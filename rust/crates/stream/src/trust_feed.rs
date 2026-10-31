@@ -267,7 +267,7 @@ impl<S: Source> TrustFeed<S> {
                 Either::Left(Some(((None, Event::Record(record)), records))) => {
                     let now = follower.protected_now(clock.now_unix_millis() / 1000);
                     let applied = follower
-                        .apply(&record.value, now)
+                        .apply_environment(&record.value, now)
                         .map_err(|_| StreamError::AccessDenied)?;
                     advance(follower, next, &mut tails, None, record.sequence);
                     follows.push(read(None, records));
@@ -276,7 +276,7 @@ impl<S: Source> TrustFeed<S> {
                         // account. Only an actual environment event retries it.
                         for (account, pending) in std::mem::take(&mut blocked) {
                             if let Some((record, records)) = pending {
-                                if follower.apply_queued(&record.value, now).is_ok() {
+                                if follower.apply_queued(&account, &record.value, now).is_ok() {
                                     let key = Some(account.clone());
                                     advance(
                                         follower,
@@ -307,7 +307,7 @@ impl<S: Source> TrustFeed<S> {
                 }
                 Either::Left(Some(((Some(account), Event::Record(record)), records))) => {
                     let now = follower.protected_now(clock.now_unix_millis() / 1000);
-                    if follower.apply(&record.value, now).is_ok() {
+                    if follower.apply_account(&account, &record.value, now).is_ok() {
                         let key = Some(account);
                         advance(follower, next, &mut tails, key.clone(), record.sequence);
                         follows.push(read(key, records));
@@ -382,14 +382,9 @@ fn open<'a, S: Source>(
                     .initialized(account)
                     .map_err(|_| StreamError::Unavailable)?;
                 let now = follower.protected_now(clock.now_unix_millis() / 1000);
-                match follower.apply_queued(&record.value, now) {
+                match follower.apply_queued(account, &record.value, now) {
                     Ok(_) => {
-                        if refused
-                            && !replayed
-                            && follower
-                                .initialized(account)
-                                .map_err(|_| StreamError::Unavailable)?
-                        {
+                        if refused && !replayed {
                             records = source.follow(&path, 0).await?;
                             position = 0;
                             replayed = true;

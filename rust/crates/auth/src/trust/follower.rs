@@ -284,6 +284,11 @@ pub struct Follower {
     state: tokio::sync::watch::Sender<FollowerState>,
 }
 
+enum Target<'a> {
+    Environment,
+    Account(&'a str),
+}
+
 impl Follower {
     /// A fenced follower pinned to `environment`'s anchor keys. It serves trust
     /// once its driver has applied every Stream up to the tail it observed and
@@ -323,13 +328,33 @@ impl Follower {
     /// # Errors
     /// Malformed, forged, gapped, rolled-back or future-dated records.
     pub fn apply(&self, record: &[u8], now: u64) -> Result<Applied, VerifyError> {
-        self.apply_record(record, now, true)
+        self.apply_record(record, now, true, None)
+    }
+
+    /// Apply only a record carried by the environment's own follow.
+    pub fn apply_environment(&self, record: &[u8], now: u64) -> Result<Applied, VerifyError> {
+        self.apply_record(record, now, true, Some(Target::Environment))
+    }
+
+    /// Apply only a record carried by this account's own follow.
+    pub fn apply_account(
+        &self,
+        account: &str,
+        record: &[u8],
+        now: u64,
+    ) -> Result<Applied, VerifyError> {
+        self.apply_record(record, now, true, Some(Target::Account(account)))
     }
 
     /// Apply a retained record without releasing its account's refusal fence.
     /// The driver calls [`Self::release`] only after the retained queue drains.
-    pub fn apply_queued(&self, record: &[u8], now: u64) -> Result<Applied, VerifyError> {
-        self.apply_record(record, now, false)
+    pub fn apply_queued(
+        &self,
+        account: &str,
+        record: &[u8],
+        now: u64,
+    ) -> Result<Applied, VerifyError> {
+        self.apply_record(record, now, false, Some(Target::Account(account)))
     }
 
     /// Release a successfully drained account queue, then wake its consumers.
@@ -342,8 +367,27 @@ impl Follower {
         self.notify(None);
     }
 
-    fn apply_record(&self, record: &[u8], now: u64, release: bool) -> Result<Applied, VerifyError> {
+    fn apply_record(
+        &self,
+        record: &[u8],
+        now: u64,
+        release: bool,
+        target: Option<Target<'_>>,
+    ) -> Result<Applied, VerifyError> {
         let record = decode(record)?.record;
+        let matches = match (&target, &record) {
+            (None, _) | (Some(Target::Environment), TrustRecordKind::Environment(_)) => true,
+            (Some(Target::Account(id)), TrustRecordKind::Keyring(signed)) => {
+                *id == signed.snapshot.account_id
+            }
+            (Some(Target::Account(id)), TrustRecordKind::Revocation(signed)) => {
+                *id == publication_account(signed)
+            }
+            _ => false,
+        };
+        if !matches {
+            return Err(VerifyError::Trust);
+        }
         let result = match &record {
             TrustRecordKind::Environment(signed) => {
                 let result = self
