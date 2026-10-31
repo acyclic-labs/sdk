@@ -212,11 +212,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
     .unwrap();
     assert!(matches!(
         provider
-            .commit(
-                genesis
-                    .publication(path.clone(), IdempotencyKey::unique())
-                    .unwrap()
-            )
+            .commit(snapshot_request(&genesis, path.clone()))
             .await
             .unwrap(),
         CommitOutcome::Committed(_)
@@ -226,6 +222,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
     let mut reference = Reference::default();
     let mut swapped = false;
     let mut interrupted = [false; 3];
+    let mut publications = 1;
     // Reach a real swap in every generated case; random suffixes then
     // interrupt preparations, completions and later swaps at commit.
     let prefix = [
@@ -306,9 +303,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
             if !actual {
                 assert_eq!(candidate, durable);
             } else {
-                let request = candidate
-                    .publication(path.clone(), IdempotencyKey::unique())
-                    .unwrap();
+                let request = snapshot_request(&candidate, path.clone());
                 if crash_before_commit {
                     interrupted[match operation {
                         1 => 0,
@@ -321,6 +316,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
                         CommitOutcome::Committed(_)
                     ));
                     swapped |= candidate.state().generation() > durable.state().generation();
+                    publications += 1;
                     reference = expected;
                 }
             }
@@ -336,6 +332,13 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
         assert_eq!(
             provider.tail(source.clone()).await.unwrap(),
             reference.items.len() as u64
+        );
+        assert_eq!(
+            provider
+                .tail(StreamPath::new("account/agent/transaction-marker").unwrap())
+                .await
+                .unwrap(),
+            publications
         );
         reference.verify(reopened.state());
     }
@@ -367,6 +370,24 @@ async fn last_snapshot(
     let record = records.try_next().await.unwrap().unwrap();
     assert!(records.try_next().await.unwrap().is_none());
     record
+}
+
+fn snapshot_request(snapshot: &Snapshot, path: StreamPath) -> acyclic_stream::CommitRequest {
+    use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, IdempotencyKey};
+
+    // A preexisting mutation witnesses that epoch conditions guard the whole
+    // caller transaction, not a separately submitted epoch-only request.
+    let mut request = CommitRequest {
+        deadline_unix_millis: None,
+        conditions: Vec::new(),
+        mutations: vec![CommitMutation::Append {
+            path: StreamPath::new("account/agent/transaction-marker").unwrap(),
+            records: vec![AppendRecord::from("joined")],
+        }],
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    snapshot.append_to(path, &mut request).unwrap();
+    request
 }
 
 #[test]
@@ -458,6 +479,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     let provider = MemoryStream::default();
     let source = StreamPath::new("account/agent/conversation").unwrap();
     let path = StreamPath::new("account/agent/epochs").unwrap();
+    let marker = StreamPath::new("account/agent/transaction-marker").unwrap();
     let genesis = Epoch {
         header: [1; 32],
         profile: [2; 32],
@@ -470,9 +492,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         },
     };
     let initial = Snapshot::genesis(genesis).unwrap();
-    let request = initial
-        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
-        .unwrap();
+    let request = snapshot_request(&initial, path.clone());
     assert!(matches!(
         provider.commit(request).await.unwrap(),
         CommitOutcome::Committed(_)
@@ -480,24 +500,19 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     // A caller cannot attach an old genesis to a newer observed head.
     assert!(matches!(
         provider
-            .commit(
-                initial
-                    .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
-                    .unwrap()
-            )
+            .commit(snapshot_request(&initial, path.clone()))
             .await
             .unwrap(),
         CommitOutcome::Conflict(_)
     ));
 
     let record = last_snapshot(&provider, &path).await;
+    assert_eq!(provider.tail(marker.clone()).await.unwrap(), 1);
     let mut first = Snapshot::decode(&record, &source, 12).unwrap();
     let mut competing = first.clone();
     let summary = first.prepare(10, 12).unwrap();
     competing.prepare(11, 12).unwrap();
-    let request = first
-        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
-        .unwrap();
+    let request = snapshot_request(&first, path.clone());
     // A crash before commit leaves the previous complete snapshot intact.
     assert_eq!(
         Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12)
@@ -511,17 +526,14 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     ));
     assert!(matches!(
         provider
-            .commit(
-                competing
-                    .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
-                    .unwrap()
-            )
+            .commit(snapshot_request(&competing, path.clone()))
             .await
             .unwrap(),
         CommitOutcome::Conflict(_)
     ));
 
     let prepared_record = last_snapshot(&provider, &path).await;
+    assert_eq!(provider.tail(marker.clone()).await.unwrap(), 2);
     let mut reopened = Snapshot::decode(&prepared_record, &source, 12).unwrap();
     assert_eq!(reopened.state().demand(), Demand::Await(summary));
     assert!(matches!(
@@ -558,9 +570,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         Err(SnapshotError::Transition(Refusal::Contradiction))
     ));
     assert_eq!(reopened, ready);
-    let request = reopened
-        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
-        .unwrap();
+    let request = snapshot_request(&reopened, path.clone());
     assert!(matches!(
         provider.commit(request).await.unwrap(),
         CommitOutcome::Committed(_)
@@ -588,9 +598,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     ));
     assert_eq!(reopened, ready);
     reopened.swap(0, next, 12).unwrap();
-    let request = reopened
-        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
-        .unwrap();
+    let request = snapshot_request(&reopened, path.clone());
     assert!(matches!(
         provider.commit(request).await.unwrap(),
         CommitOutcome::Committed(_)
@@ -604,11 +612,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     // The unchanged stale producer cannot replace the committed epoch.
     assert!(matches!(
         provider
-            .commit(
-                competing
-                    .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
-                    .unwrap()
-            )
+            .commit(snapshot_request(&competing, path.clone()))
             .await
             .unwrap(),
         CommitOutcome::Conflict(_)
@@ -616,14 +620,14 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
 
     // Removing the exact-head condition is the real publication negative: the
     // same stale producer now overwrites coverage in the authoritative stream.
-    let mut bypass = competing
-        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
-        .unwrap();
+    let mut bypass = snapshot_request(&competing, path.clone());
+    assert_eq!(provider.tail(marker.clone()).await.unwrap(), 4);
     bypass.conditions = vec![acyclic_stream::CommitCondition::Present { path: path.clone() }];
     assert!(matches!(
         provider.commit(bypass).await.unwrap(),
         CommitOutcome::Committed(_)
     ));
+    assert_eq!(provider.tail(marker).await.unwrap(), 5);
     assert_ne!(
         Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12)
             .unwrap()
