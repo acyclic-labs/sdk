@@ -99,7 +99,7 @@ The public provider ledger counts control calls at that boundary; it does not
 infer syscalls or transport requests. Current-thread allocation diagnostics
 exclude native workers and therefore do not qualify allocation coverage.
 Concurrent append/follow work remains unobserved until it can be attributed to
-its original operation. Unobserved physical syscalls, locks, I/O, allocations,
+its original operation. Unobserved physical syscalls, durability calls, locks, I/O, allocations,
 visits and idle resources stay missing, and make counting qualification fail.
 Run the deterministic observer controls with
 `cargo test --locked -p acyclic-test-support scale::tests`. They execute an
