@@ -168,7 +168,10 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         assert_eq!(work.live_allocation_bytes(), baseline);
 
         let denied = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 1),
+            acyclic_fs::performance::work_budget(
+                100_000,
+                acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+            ),
             &acyclic_fs::CancellationToken::new(),
         )
         .unwrap();
