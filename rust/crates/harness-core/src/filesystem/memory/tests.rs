@@ -491,36 +491,50 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
     let other_private = MemoryHarnessStorage::new(AgentId::new(), 4_096)
         .await?
         .content_bindings();
+    #[cfg(not(target_arch = "wasm32"))]
+    let cancellation = acyclic_fs::CancellationToken::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    let range_work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            source_bytes_read: 64 * 1024,
+            bytes_copied: 64 * 1024,
+            ..FINITE_CONTENT_BUDGET
+        },
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let range_baseline = range_work.live_allocation_bytes();
+    #[cfg(not(target_arch = "wasm32"))]
+    let original_range_work = range_work.clone();
     run_admitted_file_case(&storage, limits, move |task| {
         let read_capability = read_capability.clone();
         let readonly_project = readonly_project.clone();
         let other_private = other_private.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = original_range_work.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let cancellation = cancellation.clone();
         async move {
         let read = crate::tool::files::read()?;
         let edit = crate::tool::files::edit()?;
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-                source_bytes_read: 64 * 1024, bytes_copied: 64 * 1024, ..FINITE_CONTENT_BUDGET
-            }, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let invocation = ToolInvocation {
                 operation_id: OperationId::new(), call_id: "bounded-path".into(), name: "read".into(),
                 arguments: json!({"path":"large.txt","range":{"start":1024,"end":1040}}),
             };
             let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
-            let baseline = work.live_allocation_bytes();
+            let version;
             {
                 let (result, _custody) = read.executor.execute_with_native_context(&context, &invocation, &work)?.await?;
-                eprintln!("range execution live={} custody={}", work.live_allocation_bytes(), _custody.bytes());
                 assert_eq!(result.value["text"], "xxxxxxxxxxxxxxxx");
                 {
                     let projected = read.projection.project(&invocation, &result, Some(&work))?;
                     assert!(projected.0["value"]["version"].as_str().is_some());
-                    eprintln!("range projection live={} custody={}", work.live_allocation_bytes(), projected.1.as_ref().map_or(0, |custody| custody.bytes()));
+                    version = projected.0["value"]["version"].clone();
                     read.definition.validate_projection(&projected.0, limits, None)?;
                 }
-                eprintln!("range projection dropped live={}", work.live_allocation_bytes());
                 let reference = crate::tools::catalog::READ.bind_with_projection(crate::tool::schema::ProjectionMode::Reference)?;
                 let projected = reference.projection.project(&invocation, &result, Some(&work))?;
                 reference.definition.validate_projection(&projected.0, limits, None)?;
@@ -528,7 +542,16 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
             }
             assert!(work.receipt().source_bytes_read < 64 * 1024);
             assert!(work.receipt().bytes_copied < 64 * 1024);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            // The shared object adapter retains decoded pages on the original
+            // ledger. Reusing the pinned selection must not retain more pages
+            // or result storage; the cache owner is dropped below.
+            let cached = work.live_allocation_bytes();
+            {
+                let replay = ToolInvocation { arguments: json!({"path":"large.txt","version":version,"range":{"start":1024,"end":1040}}), ..invocation };
+                let (result, _custody) = read.executor.execute_with_native_context(&context, &replay, &work)?.await?;
+                assert_eq!(result.value["text"], "xxxxxxxxxxxxxxxx");
+            }
+            assert_eq!(work.live_allocation_bytes(), cached);
             // The old complete-file path cannot satisfy the same 4 KiB
             // selected-byte allowance for this 2 MiB source.
             assert!(call(&task, &read, json!({"path":"large.txt"})).await.is_err());
@@ -621,7 +644,11 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert!(context.observe_tool_file_once(operation, None).await?.0.is_none());
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "later");
         Ok(())
-    }}).await
+    }}).await?;
+    drop(storage);
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(range_work.live_allocation_bytes(), range_baseline);
+    Ok(())
 }
 
 #[tokio::test]

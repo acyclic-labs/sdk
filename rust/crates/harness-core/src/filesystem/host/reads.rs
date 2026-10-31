@@ -220,12 +220,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         range: acyclic_fs::ByteRange,
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<(acyclic_stream::OwnedBytes, GenerationId, u64)> {
-        #[cfg(test)]
-        let diagnostic = |phase, io: &PreparationIo| {
-            if let Some(work) = io.original_native_work() {
-                eprintln!("path-range {phase} live={}", work.live_allocation_bytes());
-            }
-        };
         let crate::conversation::ContentAccess { ceiling, io } = access;
         self.require_private_directory(volume, grant, path, io)?;
         super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
@@ -238,21 +232,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &unmeasured
         };
         let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
-        #[cfg(test)]
-        diagnostic("workspace", io);
         let workspace = self.open(&workspace_ref, Some(io)).await?;
         let generation = match expected_generation {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
             None => io.sdk(workspace.head(io, io.cancellation()).await)?,
         };
         let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
-        #[cfg(test)]
-        diagnostic("view", io);
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         bounded_io::retain(&generation, Some(io)).await?;
-        #[cfg(test)]
-        diagnostic("retain", io);
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
@@ -290,20 +278,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
                 .await,
         )?;
-        #[cfg(test)]
-        diagnostic("chunk", io);
         super::super::access::require_current(&workspace, &view.0, io).await?;
         grant.recheck(Some(io))?;
         drop(requested_hold);
         let selected_id = generation.id();
-        #[cfg(test)]
-        {
-            drop(view);
-            drop(generation);
-            drop(workspace);
-            drop(workspace_ref);
-            diagnostic("selection dropped", io);
-        }
         Ok((chunk.bytes, selected_id, length))
     }
 

@@ -46,13 +46,13 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
         json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":1,"end":4}}),
     );
     let result = ToolResult {
-        value: json!({"file":file,"text":"bab"}),
+        value: json!({"file":{"content":file},"text":"bab"}),
     };
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = FileProjection::Read(mode);
         let projected = projector.project(&input, &result, None)?.0;
         crate::executor::validate_json_schema_value(
-            &FileProjection::model_schema(mode)?,
+            &projector.schema()?,
             &projected,
             "read projection",
             &mut None,
