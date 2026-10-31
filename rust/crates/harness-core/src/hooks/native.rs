@@ -325,7 +325,7 @@ mod tests {
                 let mut tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
                 let output = tree
                     .wait_with_output(
-                        Duration::from_secs(1),
+                        acyclic_native_runtime::CaptureSchedule::new(None),
                         1_024,
                         None,
                         || Ok(()),

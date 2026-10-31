@@ -52,7 +52,7 @@ fn coalesced_notification_and_request_preserve_both_protocol_lines() -> Result<(
     let mut responses = Vec::new();
     child
         .wait_with_output(
-            Duration::from_secs(5),
+            acyclic_native_runtime::CaptureSchedule::new(None),
             4096,
             Some(CaptureInput::Exchange {
                 initial,

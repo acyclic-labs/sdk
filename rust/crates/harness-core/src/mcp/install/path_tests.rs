@@ -41,7 +41,7 @@ fn both_mcp_dialects_pin_batch_launchers_from_the_configured_search_environment(
                 .map_err(Error::process_io)?;
             let output = tree
                 .wait_with_output(
-                    std::time::Duration::from_secs(1),
+                    acyclic_native_runtime::CaptureSchedule::new(None),
                     1_024,
                     None,
                     || Ok(()),

@@ -125,7 +125,7 @@ impl acyclic_native_runtime::CaptureHandler for Capture {
     }
 }
 
-/// Captures both pipes while delivering input, with a one-minute deadline.
+/// Captures both pipes while delivering input through the original process lifetime.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
     let mut command = Command::new(build_metadata::EXECUTABLE);
     fixture.custody.configure(&mut command);
@@ -159,7 +159,7 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
     .unwrap();
     // The owned capture keeps physical cleanup alive if its caller is dropped.
     acyclic_native_runtime::spawn(tree.capture(
-        acyclic_native_runtime::CaptureSchedule::new(std::time::Duration::from_secs(60)),
+        acyclic_native_runtime::CaptureSchedule::new(None),
         None,
         Some(acyclic_native_runtime::OwnedCaptureInput::Literal(
             stdin.as_bytes().to_vec(),
