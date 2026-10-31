@@ -71,6 +71,7 @@ async fn bind(
 enum PublicationControl {
     Current,
     Altered,
+    AlteredThenRebound,
     Replaced,
     Observed,
     ForeignRevision,
@@ -128,6 +129,12 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                     match control {
                         PublicationControl::Altered => {
                             std::fs::write(&path, "foreign-in-place-value").map_err(error)?
+                        }
+                        PublicationControl::AlteredThenRebound => {
+                            std::fs::write(&path, "foreign-in-place-value").map_err(error)?;
+                            let moved = path.with_extension("moved");
+                            std::fs::rename(&path, &moved).map_err(error)?;
+                            std::fs::rename(&moved, &path).map_err(error)?;
                         }
                         PublicationControl::Replaced => {
                             let mut foreign =
@@ -321,6 +328,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     for control in [
         PublicationControl::Current,
         PublicationControl::Altered,
+        PublicationControl::AlteredThenRebound,
         PublicationControl::Replaced,
         PublicationControl::Observed,
         PublicationControl::ForeignRevision,

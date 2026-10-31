@@ -48,6 +48,9 @@ struct Observation {
     file_identity: Option<[u8; 32]>,
     // One most recent exact selected-name rebound, never a history of events.
     rebound: Option<(u64, [u8; 32])>,
+    // Only the first relevant event of this attempt can establish publication.
+    // A later rename must never erase an intervening in-place mutation.
+    awaiting_rebound: bool,
     // Closing a writable publisher can itself notify the native watch. Retain
     // it until its snapshot is already invalid, rather than suppress that event.
     published: Option<PublishedFile>,
@@ -85,14 +88,14 @@ impl State {
         CredentialRevision::Bytes(revision)
     }
 
+    // All writers hold observation; readers use the atomic without that lock.
     fn advance(&self) -> Option<u64> {
-        match self
-            .generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                value.checked_add(1)
-            }) {
-            Ok(previous) => Some(previous + 1),
-            Err(_) => {
+        match self.generation.load(Ordering::Relaxed).checked_add(1) {
+            Some(next) => {
+                self.generation.store(next, Ordering::Release);
+                Some(next)
+            }
+            None => {
                 self.lost.store(true, Ordering::Release);
                 None
             }
@@ -118,6 +121,7 @@ impl State {
         let retired = match self.observation.lock() {
             Ok(mut observation) => {
                 observation.rebound = None;
+                observation.awaiting_rebound = false;
                 self.advance();
                 observation.published.take()
             }
@@ -154,6 +158,8 @@ impl SourceChangeSink for State {
                 continue;
             }
             affected = true;
+            let awaiting_rebound = observation.awaiting_rebound;
+            observation.awaiting_rebound = false;
             observation.rebound = None;
             if retired.is_none() {
                 retired = observation.published.take();
@@ -169,7 +175,9 @@ impl SourceChangeSink for State {
                         let node = *node;
                         changes.next();
                         observation.file_identity = Some(node);
-                        observation.rebound = generation.map(|generation| (generation, node));
+                        if awaiting_rebound {
+                            observation.rebound = generation.map(|generation| (generation, node));
+                        }
                     }
                 }
             }
@@ -317,10 +325,19 @@ impl NativeCredentialSource {
                             drop(retired);
                             watch.clone().fence().await?;
                         }
-                        let initial_generation = state.generation.load(Ordering::Acquire);
-                        let revision = state
-                            .revision()
-                            .ok_or_else(|| error(CredentialSourceError::Unavailable))?;
+                        let initial_generation = {
+                            let mut observation = state
+                                .observation
+                                .lock()
+                                .map_err(|_| error(CredentialSourceError::Unavailable))?;
+                            if state.lost.load(Ordering::Acquire) {
+                                return Err(error(CredentialSourceError::Unavailable));
+                            }
+                            observation.rebound = None;
+                            observation.awaiting_rebound = true;
+                            state.generation.load(Ordering::Acquire)
+                        };
+                        let revision = state.revision_at(initial_generation);
                         let node = source
                             .lookup(
                                 source.reference(),
