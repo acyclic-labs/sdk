@@ -39,80 +39,76 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         if owner.trim().is_empty() || lease_id.into_bytes() == [0; 16] {
             return Err(OperationWindowError::LeaseIdentityConflict);
         }
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut current = self.snapshot(workspace_id).await?;
-            if expire_to_reconcile(
-                &mut current.phase,
-                now_millis,
-                OperationId::from_bytes(lease_id.into_bytes()),
-            )
-            .is_some()
-            {
-                let expected = next_revision(&mut current.revision);
-                if self.cas(workspace_id, expected, current).await? {
-                    return Err(OperationWindowError::Reconciling);
-                }
-                continue;
-            }
-            let pinned_parent = match &mut current.phase {
-                OperationWindowPhase::Idle => {
-                    let mut leases = BTreeMap::new();
-                    leases.insert(
-                        lease_id,
-                        OperationLease {
-                            id: lease_id,
-                            owner: owner.clone(),
-                            expires_at_millis,
-                        },
-                    );
-                    current.phase = OperationWindowPhase::Active {
-                        pinned_parent: parent,
-                        leases,
-                        pending_parent: None,
-                    };
-                    parent
-                }
-                OperationWindowPhase::Active {
-                    pinned_parent,
-                    leases,
-                    ..
-                } => {
-                    if let Some(existing) = leases.get(&lease_id) {
-                        if existing.owner == owner
-                            && existing.expires_at_millis == expires_at_millis
-                        {
-                            return Ok(OperationWindowLease {
-                                workspace_id,
-                                lease_id,
-                                pinned_parent: *pinned_parent,
-                                expires_at_millis,
-                            });
-                        }
-                        return Err(OperationWindowError::LeaseIdentityConflict);
-                    }
-                    leases.insert(
-                        lease_id,
-                        OperationLease {
-                            id: lease_id,
-                            owner: owner.clone(),
-                            expires_at_millis,
-                        },
-                    );
-                    *pinned_parent
-                }
-                OperationWindowPhase::Reconciling { .. } => {
-                    return Err(OperationWindowError::Reconciling);
-                }
-            };
+        let mut current = self.snapshot(workspace_id).await?;
+        if expire_to_reconcile(
+            &mut current.phase,
+            now_millis,
+            OperationId::from_bytes(lease_id.into_bytes()),
+        )
+        .is_some()
+        {
             let expected = next_revision(&mut current.revision);
             if self.cas(workspace_id, expected, current).await? {
-                return Ok(OperationWindowLease {
-                    workspace_id,
-                    lease_id,
-                    pinned_parent,
-                    expires_at_millis,
-                });
+                return Err(OperationWindowError::Reconciling);
             }
+            return Err(OperationWindowError::Contended);
+        }
+        let pinned_parent = match &mut current.phase {
+            OperationWindowPhase::Idle => {
+                let mut leases = BTreeMap::new();
+                leases.insert(
+                    lease_id,
+                    OperationLease {
+                        id: lease_id,
+                        owner,
+                        expires_at_millis,
+                    },
+                );
+                current.phase = OperationWindowPhase::Active {
+                    pinned_parent: parent,
+                    leases,
+                    pending_parent: None,
+                };
+                parent
+            }
+            OperationWindowPhase::Active {
+                pinned_parent,
+                leases,
+                ..
+            } => {
+                if let Some(existing) = leases.get(&lease_id) {
+                    if existing.owner == owner && existing.expires_at_millis == expires_at_millis {
+                        return Ok(OperationWindowLease {
+                            workspace_id,
+                            lease_id,
+                            pinned_parent: *pinned_parent,
+                            expires_at_millis,
+                        });
+                    }
+                    return Err(OperationWindowError::LeaseIdentityConflict);
+                }
+                leases.insert(
+                    lease_id,
+                    OperationLease {
+                        id: lease_id,
+                        owner,
+                        expires_at_millis,
+                    },
+                );
+                *pinned_parent
+            }
+            OperationWindowPhase::Reconciling { .. } => {
+                return Err(OperationWindowError::Reconciling);
+            }
+        };
+        let expected = next_revision(&mut current.revision);
+        if self.cas(workspace_id, expected, current).await? {
+            return Ok(OperationWindowLease {
+                workspace_id,
+                lease_id,
+                pinned_parent,
+                expires_at_millis,
+            });
         }
         Err(OperationWindowError::Contended)
     }
@@ -123,21 +119,19 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         workspace_id: WorkspaceId,
         parent: GenerationId,
     ) -> Result<bool, OperationWindowError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut current = self.snapshot(workspace_id).await?;
-            match &mut current.phase {
-                OperationWindowPhase::Idle => return Ok(false),
-                OperationWindowPhase::Active { pending_parent, .. } => {
-                    *pending_parent = Some(parent);
-                }
-                OperationWindowPhase::Reconciling {
-                    subsequent_parent, ..
-                } => *subsequent_parent = Some(parent),
+        let mut current = self.snapshot(workspace_id).await?;
+        match &mut current.phase {
+            OperationWindowPhase::Idle => return Ok(false),
+            OperationWindowPhase::Active { pending_parent, .. } => {
+                *pending_parent = Some(parent);
             }
-            let expected = next_revision(&mut current.revision);
-            if self.cas(workspace_id, expected, current).await? {
-                return Ok(true);
-            }
+            OperationWindowPhase::Reconciling {
+                subsequent_parent, ..
+            } => *subsequent_parent = Some(parent),
+        }
+        let expected = next_revision(&mut current.revision);
+        if self.cas(workspace_id, expected, current).await? {
+            return Ok(true);
         }
         Err(OperationWindowError::Contended)
     }
@@ -159,44 +153,42 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
     ) -> Result<Option<WorkspaceRebase<A, O>>, OperationWindowError<S::Error>> {
         validate_reconcile_limits(limits).map_err(OperationWindowError::Workspace)?;
         let workspace_id = workspace.id();
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut current = self.snapshot(workspace_id).await?;
-            let reconcile = match &mut current.phase {
-                OperationWindowPhase::Idle => {
-                    let ticket = OperationId::new();
-                    current.phase = OperationWindowPhase::Reconciling {
-                        ticket,
-                        pinned_parent: parent,
-                        pending_parent: Some(parent),
-                        subsequent_parent: None,
-                    };
-                    Some(OperationWindowReconcile {
-                        ticket,
-                        pinned_parent: parent,
-                        pending_parent: Some(parent),
-                    })
-                }
-                OperationWindowPhase::Active { pending_parent, .. } => {
-                    *pending_parent = Some(parent);
-                    None
-                }
-                OperationWindowPhase::Reconciling {
-                    subsequent_parent, ..
-                } => {
-                    *subsequent_parent = Some(parent);
-                    None
-                }
-            };
-            let expected = next_revision(&mut current.revision);
-            if self.cas(workspace_id, expected, current).await? {
-                return match reconcile {
-                    Some(reconcile) => self
-                        .reconcile_workspace(workspace, reconcile, limits)
-                        .await
-                        .map(Some),
-                    None => Ok(None),
+        let mut current = self.snapshot(workspace_id).await?;
+        let reconcile = match &mut current.phase {
+            OperationWindowPhase::Idle => {
+                let ticket = OperationId::new();
+                current.phase = OperationWindowPhase::Reconciling {
+                    ticket,
+                    pinned_parent: parent,
+                    pending_parent: Some(parent),
+                    subsequent_parent: None,
                 };
+                Some(OperationWindowReconcile {
+                    ticket,
+                    pinned_parent: parent,
+                    pending_parent: Some(parent),
+                })
             }
+            OperationWindowPhase::Active { pending_parent, .. } => {
+                *pending_parent = Some(parent);
+                None
+            }
+            OperationWindowPhase::Reconciling {
+                subsequent_parent, ..
+            } => {
+                *subsequent_parent = Some(parent);
+                None
+            }
+        };
+        let expected = next_revision(&mut current.revision);
+        if self.cas(workspace_id, expected, current).await? {
+            return match reconcile {
+                Some(reconcile) => self
+                    .reconcile_workspace(workspace, reconcile, limits)
+                    .await
+                    .map(Some),
+                None => Ok(None),
+            };
         }
         Err(OperationWindowError::Contended)
     }
@@ -214,38 +206,36 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         if expires_at_millis <= now_millis || expires_at_millis <= lease.expires_at_millis {
             return Err(OperationWindowError::InvalidExpiry);
         }
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut current = self.snapshot(lease.workspace_id).await?;
-            let OperationWindowPhase::Active {
+        let mut current = self.snapshot(lease.workspace_id).await?;
+        let OperationWindowPhase::Active {
+            pinned_parent,
+            leases,
+            ..
+        } = &mut current.phase
+        else {
+            return Err(OperationWindowError::StaleLease);
+        };
+        let Some(existing) = leases.get(&lease.lease_id) else {
+            return Err(OperationWindowError::StaleLease);
+        };
+        if existing.expires_at_millis != lease.expires_at_millis
+            || existing.expires_at_millis <= now_millis
+        {
+            return Err(OperationWindowError::StaleLease);
+        }
+        let pinned_parent = *pinned_parent;
+        leases
+            .get_mut(&lease.lease_id)
+            .ok_or(OperationWindowError::StaleLease)?
+            .expires_at_millis = expires_at_millis;
+        let expected = next_revision(&mut current.revision);
+        if self.cas(lease.workspace_id, expected, current).await? {
+            return Ok(OperationWindowLease {
+                workspace_id: lease.workspace_id,
+                lease_id: lease.lease_id,
                 pinned_parent,
-                leases,
-                ..
-            } = &mut current.phase
-            else {
-                return Err(OperationWindowError::StaleLease);
-            };
-            let Some(existing) = leases.get(&lease.lease_id) else {
-                return Err(OperationWindowError::StaleLease);
-            };
-            if existing.expires_at_millis != lease.expires_at_millis
-                || existing.expires_at_millis <= now_millis
-            {
-                return Err(OperationWindowError::StaleLease);
-            }
-            let pinned_parent = *pinned_parent;
-            leases
-                .get_mut(&lease.lease_id)
-                .ok_or(OperationWindowError::StaleLease)?
-                .expires_at_millis = expires_at_millis;
-            let expected = next_revision(&mut current.revision);
-            if self.cas(lease.workspace_id, expected, current).await? {
-                return Ok(OperationWindowLease {
-                    workspace_id: lease.workspace_id,
-                    lease_id: lease.lease_id,
-                    pinned_parent,
-                    expires_at_millis,
-                });
-            }
+                expires_at_millis,
+            });
         }
         Err(OperationWindowError::Contended)
     }
@@ -284,44 +274,42 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         reconciliation_ticket: OperationId,
         final_close: impl Fn() -> F,
     ) -> Result<(OperationWindowFinish, bool), OperationWindowError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut current = self.snapshot(lease.workspace_id).await?;
-            let before = current.phase.clone();
-            let mut result = close_lease(
-                &mut current.phase,
-                lease.lease_id,
-                lease.expires_at_millis,
-                now_millis,
-                reconciliation_ticket,
-            );
-            if result.is_none() && current.phase == before {
-                return Ok((OperationWindowFinish::AlreadyClosed, false));
-            }
-            let mut settled = false;
-            if let Some(OperationWindowFinish::Reconcile(reconcile)) = &mut result {
-                match final_close().await? {
-                    FinalClose::Reconcile => {}
-                    FinalClose::Settle => {
-                        current.phase = OperationWindowPhase::Idle;
-                        settled = true;
-                    }
-                    FinalClose::Rebase(parent) => {
-                        reconcile.pending_parent = Some(parent);
-                        if let OperationWindowPhase::Reconciling { pending_parent, .. } =
-                            &mut current.phase
-                        {
-                            *pending_parent = Some(parent);
-                        }
+        let mut current = self.snapshot(lease.workspace_id).await?;
+        let before = current.phase.clone();
+        let mut result = close_lease(
+            &mut current.phase,
+            lease.lease_id,
+            lease.expires_at_millis,
+            now_millis,
+            reconciliation_ticket,
+        );
+        if result.is_none() && current.phase == before {
+            return Ok((OperationWindowFinish::AlreadyClosed, false));
+        }
+        let mut settled = false;
+        if let Some(OperationWindowFinish::Reconcile(reconcile)) = &mut result {
+            match final_close().await? {
+                FinalClose::Reconcile => {}
+                FinalClose::Settle => {
+                    current.phase = OperationWindowPhase::Idle;
+                    settled = true;
+                }
+                FinalClose::Rebase(parent) => {
+                    reconcile.pending_parent = Some(parent);
+                    if let OperationWindowPhase::Reconciling { pending_parent, .. } =
+                        &mut current.phase
+                    {
+                        *pending_parent = Some(parent);
                     }
                 }
             }
-            let expected = next_revision(&mut current.revision);
-            if self.cas(lease.workspace_id, expected, current).await? {
-                return Ok((
-                    result.unwrap_or(OperationWindowFinish::AlreadyClosed),
-                    settled,
-                ));
-            }
+        }
+        let expected = next_revision(&mut current.revision);
+        if self.cas(lease.workspace_id, expected, current).await? {
+            return Ok((
+                result.unwrap_or(OperationWindowFinish::AlreadyClosed),
+                settled,
+            ));
         }
         Err(OperationWindowError::Contended)
     }
@@ -491,32 +479,29 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         now_millis: u64,
         ticket: OperationId,
     ) -> Result<Option<OperationWindowReconcile>, OperationWindowError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut current = self.snapshot(workspace_id).await?;
-            match current.phase {
-                OperationWindowPhase::Idle => return Ok(None),
-                OperationWindowPhase::Reconciling {
+        let mut current = self.snapshot(workspace_id).await?;
+        match current.phase {
+            OperationWindowPhase::Idle => return Ok(None),
+            OperationWindowPhase::Reconciling {
+                ticket,
+                pinned_parent,
+                pending_parent,
+                ..
+            } => {
+                return Ok(Some(OperationWindowReconcile {
                     ticket,
                     pinned_parent,
                     pending_parent,
-                    ..
-                } => {
-                    return Ok(Some(OperationWindowReconcile {
-                        ticket,
-                        pinned_parent,
-                        pending_parent,
-                    }));
-                }
-                OperationWindowPhase::Active { .. } => {}
+                }));
             }
-            let Some(reconcile) = expire_to_reconcile(&mut current.phase, now_millis, ticket)
-            else {
-                return Ok(None);
-            };
-            let expected = next_revision(&mut current.revision);
-            if self.cas(workspace_id, expected, current).await? {
-                return Ok(Some(reconcile));
-            }
+            OperationWindowPhase::Active { .. } => {}
+        }
+        let Some(reconcile) = expire_to_reconcile(&mut current.phase, now_millis, ticket) else {
+            return Ok(None);
+        };
+        let expected = next_revision(&mut current.revision);
+        if self.cas(workspace_id, expected, current).await? {
+            return Ok(Some(reconcile));
         }
         Err(OperationWindowError::Contended)
     }
@@ -539,31 +524,29 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         ticket: OperationId,
         next_ticket: OperationId,
     ) -> Result<(), OperationWindowError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut current = self.snapshot(workspace_id).await?;
-            match current.phase {
-                OperationWindowPhase::Reconciling {
-                    ticket: current_ticket,
-                    pinned_parent,
-                    subsequent_parent,
-                    ..
-                } if current_ticket == ticket => {
-                    current.phase = match subsequent_parent {
-                        Some(parent) => OperationWindowPhase::Reconciling {
-                            ticket: next_ticket,
-                            pinned_parent,
-                            pending_parent: Some(parent),
-                            subsequent_parent: None,
-                        },
-                        None => OperationWindowPhase::Idle,
-                    };
-                }
-                _ => return Err(OperationWindowError::StaleTicket),
+        let mut current = self.snapshot(workspace_id).await?;
+        match current.phase {
+            OperationWindowPhase::Reconciling {
+                ticket: current_ticket,
+                pinned_parent,
+                subsequent_parent,
+                ..
+            } if current_ticket == ticket => {
+                current.phase = match subsequent_parent {
+                    Some(parent) => OperationWindowPhase::Reconciling {
+                        ticket: next_ticket,
+                        pinned_parent,
+                        pending_parent: Some(parent),
+                        subsequent_parent: None,
+                    },
+                    None => OperationWindowPhase::Idle,
+                };
             }
-            let expected = next_revision(&mut current.revision);
-            if self.cas(workspace_id, expected, current).await? {
-                return Ok(());
-            }
+            _ => return Err(OperationWindowError::StaleTicket),
+        }
+        let expected = next_revision(&mut current.revision);
+        if self.cas(workspace_id, expected, current).await? {
+            return Ok(());
         }
         Err(OperationWindowError::Contended)
     }
