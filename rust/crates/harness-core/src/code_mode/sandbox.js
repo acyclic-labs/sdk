@@ -1,7 +1,9 @@
 function (seed, names) {
     "use strict";
     const enqueue = globalThis.__enqueue;
+    const admit = globalThis.__admit;
     delete globalThis.__enqueue;
+    delete globalThis.__admit;
     // Blocking shared-memory waits have no owned host producer. GC liveness
     // is nondeterministic and cannot participate in replayed control flow.
     for (const name of ["Atomics", "SharedArrayBuffer", "WeakRef", "FinalizationRegistry"]) {
@@ -71,12 +73,14 @@ function (seed, names) {
     }
     let state = "pending";
     Object.defineProperty(globalThis, "__run", {value: function (run) {
+        admit();
         Promise.resolve().then(run).then(value => {
             state = JSON.stringify(value === undefined ? null : value);
         }, () => {state = "rejected";});
     }});
     Object.defineProperty(globalThis, "__state", {value: () => state});
     Object.defineProperty(globalThis, "__complete", {value: function (ordinal, json) {
+        admit();
         const call = pending.get(ordinal);
         if (!call) throw new Error("unknown host-call ordinal");
         pending.delete(ordinal);

@@ -23,7 +23,10 @@ use serde_json::Value;
 use std::{
     collections::{HashSet, VecDeque},
     num::NonZeroUsize,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// The original invocation's admission and interruption producer.
@@ -116,6 +119,51 @@ struct QueuedCall {
     ordinal: u64,
     name: String,
     arguments: String,
+}
+
+// Protocol functions live in the realm, but permission to enter them lives in
+// Rust. Admission is consumed before any JavaScript can run, including a
+// thenable getter during promise resolution. A caught JS exception cannot
+// acknowledge a forged protocol entry.
+#[derive(Default)]
+struct Protocol {
+    admitted: AtomicBool,
+    forged: AtomicBool,
+}
+
+impl Protocol {
+    fn enter(&self) -> ProtocolLease<'_> {
+        self.admitted.store(true, Ordering::Release);
+        ProtocolLease(self)
+    }
+
+    fn consume(&self) -> rquickjs::Result<()> {
+        if self.admitted.swap(false, Ordering::AcqRel) {
+            Ok(())
+        } else {
+            self.forged.store(true, Ordering::Release);
+            Err(rquickjs::Error::new_from_js_message(
+                "code",
+                "protocol",
+                "interpreter protocol entry is not admitted",
+            ))
+        }
+    }
+
+    fn check(&self) -> Result<()> {
+        if self.forged.load(Ordering::Acquire) {
+            Err(rejected("code forged an interpreter protocol entry"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct ProtocolLease<'a>(&'a Protocol);
+impl Drop for ProtocolLease<'_> {
+    fn drop(&mut self) {
+        self.0.admitted.store(false, Ordering::Release);
+    }
 }
 
 impl CodeRuntime {
@@ -252,10 +300,18 @@ async fn run(
     control: Arc<dyn CodeControl>,
 ) -> Result<Value> {
     let queue = Arc::new(Mutex::new(VecDeque::new()));
+    let protocol = Arc::new(Protocol::default());
     let context = engine
         .phase(&control, |runtime| {
             let context = Context::full(runtime).map_err(js_error)?;
-            install(&context, outer, tools, Arc::clone(&queue))?;
+            install(
+                &context,
+                outer,
+                tools,
+                Arc::clone(&queue),
+                Arc::clone(&protocol),
+            )?;
+            let _entry = protocol.enter();
             context
                 .with(|ctx| {
                     ctx.eval::<(), _>(format!("__run(async function () {{\n{javascript}\n}});"))
@@ -264,6 +320,7 @@ async fn run(
             Ok(context)
         })
         .await?;
+    protocol.check()?;
     let mut calls = FuturesOrdered::new();
     loop {
         control.check()?;
@@ -284,6 +341,7 @@ async fn run(
                 context.with(|ctx| ctx.eval("__state()")).map_err(js_error)
             })
             .await?;
+        protocol.check()?;
         if calls.is_empty() {
             return match state.as_str() {
                 "pending" => Err(rejected("code promise has no live host-call producer")),
@@ -302,6 +360,7 @@ async fn run(
             .map_err(|_| rejected("host result is not JSON"))?;
         engine
             .phase(&control, |_| {
+                let _entry = protocol.enter();
                 context
                     .with(|ctx| {
                         let complete: Function = ctx.globals().get("__complete")?;
@@ -310,6 +369,7 @@ async fn run(
                     .map_err(js_error)
             })
             .await?;
+        protocol.check()?;
     }
 }
 
@@ -318,6 +378,7 @@ fn install(
     outer: &ToolInvocation,
     tools: &[ToolDefinition],
     queue: Arc<Mutex<VecDeque<QueuedCall>>>,
+    protocol: Arc<Protocol>,
 ) -> Result<()> {
     let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
     let allowed: HashSet<_> = names.iter().map(|name| (*name).to_owned()).collect();
@@ -363,6 +424,10 @@ fn install(
                 }),
             )?;
             ctx.globals().set("__enqueue", enqueue)?;
+            ctx.globals().set(
+                "__admit",
+                Function::new(ctx.clone(), move || protocol.consume())?,
+            )?;
             ctx.eval::<(), _>(format!("({BOOTSTRAP})({seed}, {names});"))
         })
         .map_err(js_error)
