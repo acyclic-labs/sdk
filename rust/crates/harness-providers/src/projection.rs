@@ -20,9 +20,7 @@ use acyclic_harness_core::{
     },
 };
 pub(crate) use profile::validate as validate_profile;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-use serde_json::Value;
-use serde_json::json;
+use serde_json::{Value, json};
 use wire::{Body, Item, Message};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
@@ -155,6 +153,7 @@ pub(crate) fn body_named<'a>(
     }
     let call_ids = crate::call_ids::CallIds::new(request, adapter);
     let mut messages: Vec<Message<'a>> = Vec::new();
+    let mut deferred_media = Vec::new();
     let mut system = Vec::new();
     let mut gemini = gemini::Replay::default();
     let mut effective_effort = provider
@@ -162,6 +161,13 @@ pub(crate) fn body_named<'a>(
         .as_ref()
         .and_then(|profile| profile.baseline_effort());
     for message in &request.messages {
+        // Chat and Responses put native result media in user input items.
+        // Keep every result of a parallel call batch ahead of those items.
+        if message.role != ModelRole::Tool {
+            for media in deferred_media.drain(..) {
+                sequence::push(adapter, &mut messages, media)?;
+            }
+        }
         if let ModelContent::Part(ModelContentPart::Configuration { prefix, effort }) =
             &message.content
         {
@@ -209,9 +215,19 @@ pub(crate) fn body_named<'a>(
                 &mut gemini,
                 files,
             )? {
-                sequence::push(adapter, &mut messages, projected)?;
+                if message.role == ModelRole::Tool
+                    && matches!(adapter, Adapter::Chat | Adapter::Responses)
+                    && matches!(&projected, Message::Item(Item::Json(_)))
+                {
+                    deferred_media.push(projected);
+                } else {
+                    sequence::push(adapter, &mut messages, projected)?;
+                }
             }
         }
+    }
+    for media in deferred_media {
+        sequence::push(adapter, &mut messages, media)?;
     }
     if let Some(profile) = &provider.profile {
         let desired = profile.fixed_effort().or(profile.baseline_effort());
@@ -318,6 +334,7 @@ fn project_message<'a>(
     let mut calls = Vec::new();
     let mut results = Vec::new();
     let mut ordered = Vec::new();
+    let mut tool_media = Vec::new();
     gemini.begin(message.role);
     let mut chat_reasoning = None;
     if let ModelContent::Text(text) = &message.content {
@@ -334,13 +351,13 @@ fn project_message<'a>(
             ModelContentPart::File { file, policy } => {
                 if let acyclic_harness_core::model::FileProjectionPolicy::Native(policy) = policy {
                     if role != "user" {
-                        return Err(invalid("native images require a user message"));
+                        return Err(invalid("native media requires a user message"));
                     }
                     let image = image::part(
                         adapter,
                         file.descriptor().media_type(),
                         policy,
-                        files.image()?,
+                        files.native()?,
                     )?;
                     if adapter == Adapter::Chat {
                         ordered.extend(
@@ -425,7 +442,7 @@ fn project_message<'a>(
                     adapter,
                     id: call_id.into_owned(),
                     name,
-                    payload: result_text(content, files)?,
+                    payload: result_text(adapter, content, files, &mut tool_media)?,
                     error: matches!(content, ToolResultContent::Error { .. }),
                 });
                 if adapter == Adapter::Chat {
@@ -435,6 +452,9 @@ fn project_message<'a>(
                 }
             }
         }
+    }
+    if adapter != Adapter::Chat {
+        ordered.extend(tool_media.drain(..).map(Item::Json));
     }
     match adapter {
         Adapter::Chat => {
@@ -457,6 +477,11 @@ fn project_message<'a>(
                 }));
             }
             output.extend(results.into_iter().map(Message::Item));
+            if !tool_media.is_empty() {
+                output.push(Message::Item(Item::Json(
+                    json!({"role":"user","content":tool_media}),
+                )));
+            }
             Ok(output)
         }
         Adapter::Responses => Ok(ordered.into_iter().map(Message::Item).collect()),
@@ -520,8 +545,10 @@ fn project_text(
 }
 
 fn result_text<'a>(
+    adapter: Adapter,
     content: &'a ToolResultContent,
     files: &mut FileText,
+    media: &mut Vec<Value>,
 ) -> Result<result::Payload<'a>> {
     match content {
         ToolResultContent::Json { value } => Ok(result::Payload::Json(value)),
@@ -529,6 +556,21 @@ fn result_text<'a>(
             .iter()
             .map(|part| match part {
                 ModelDataPart::Text { text } => Ok(text.clone()),
+                ModelDataPart::File {
+                    file,
+                    policy: acyclic_harness_core::model::FileProjectionPolicy::Native(policy),
+                } => {
+                    media.push(image::part(
+                        adapter,
+                        file.descriptor().media_type(),
+                        policy,
+                        files.native()?,
+                    )?);
+                    files.project(
+                        file,
+                        &acyclic_harness_core::model::FileProjectionPolicy::Reference,
+                    )
+                }
                 ModelDataPart::File { file, policy } => files.project(file, policy),
             })
             .collect::<Result<Vec<_>>>()

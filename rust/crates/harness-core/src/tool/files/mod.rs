@@ -54,6 +54,7 @@ pub use inputs::{
 mod executor;
 mod version;
 pub(crate) use executor::FileTool;
+pub(crate) use version::encode_version;
 mod assembly;
 mod authorization;
 mod notebook;

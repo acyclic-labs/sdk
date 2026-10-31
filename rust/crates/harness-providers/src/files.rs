@@ -27,7 +27,7 @@ pub(crate) struct FileText(pub(crate) std::vec::IntoIter<ResolvedFile>);
 
 pub(crate) enum ResolvedFile {
     Text(String),
-    Image(String),
+    Native(String),
 }
 
 impl From<String> for ResolvedFile {
@@ -56,10 +56,10 @@ impl FileText {
         }
     }
 
-    pub(crate) fn image(&mut self) -> Result<String> {
+    pub(crate) fn native(&mut self) -> Result<String> {
         match self.0.next() {
-            Some(ResolvedFile::Image(data)) => Ok(data),
-            _ => Err(invalid("missing resolved model image")),
+            Some(ResolvedFile::Native(data)) => Ok(data),
+            _ => Err(invalid("missing resolved native model media")),
         }
     }
 }
@@ -75,17 +75,19 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
             }
         }
         FileProjectionPolicy::Native(policy) => {
-            if !matches!(
-                policy.intent,
-                acyclic_harness_core::model::NativeMediaIntent::Image { .. }
-            ) || policy.configuration.is_some()
-                || !matches!(
+            let supported = match policy.intent {
+                acyclic_harness_core::model::NativeMediaIntent::Image { .. } => matches!(
                     file.descriptor().media_type(),
                     "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-                )
-            {
+                ),
+                acyclic_harness_core::model::NativeMediaIntent::Document { .. } => {
+                    file.descriptor().media_type() == "application/pdf"
+                }
+                _ => false,
+            };
+            if !supported || policy.configuration.is_some() {
                 return Err(Error::Unsupported(
-                    "unsupported native model image policy".into(),
+                    "unsupported native model media policy".into(),
                 ));
             }
         }
@@ -189,13 +191,21 @@ pub(crate) async fn resolve(
                 text.push(ResolvedFile::Text(value));
                 continue;
             }
-            if matches!(policy, FileProjectionPolicy::Native(_)) {
-                if acyclic_harness_core::model::image_media_type(bytes.as_slice())
-                    != Some(file.descriptor().media_type())
-                {
-                    return Err(invalid("model image bytes differ from their media type"));
+            if let FileProjectionPolicy::Native(native) = policy {
+                let valid = match native.intent {
+                    acyclic_harness_core::model::NativeMediaIntent::Image { .. } => {
+                        acyclic_harness_core::model::image_media_type(bytes.as_slice())
+                            == Some(file.descriptor().media_type())
+                    }
+                    acyclic_harness_core::model::NativeMediaIntent::Document { .. } => {
+                        bytes.starts_with(b"%PDF-")
+                    }
+                    _ => false,
+                };
+                if !valid {
+                    return Err(invalid("model media bytes differ from their declared type"));
                 }
-                text.push(ResolvedFile::Image(STANDARD.encode(bytes.as_slice())));
+                text.push(ResolvedFile::Native(STANDARD.encode(bytes.as_slice())));
                 drop(hold);
                 continue;
             }

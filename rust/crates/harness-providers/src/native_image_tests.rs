@@ -174,9 +174,9 @@ async fn image_digest_type_and_size_mismatches_cannot_reach_projection() -> Resu
 fn image_and_text_resolution_cannot_be_confused() {
     let mut text =
         crate::files::FileText(vec![crate::files::ResolvedFile::Text("body".into())].into_iter());
-    assert!(text.image().is_err());
+    assert!(text.native().is_err());
     let mut image =
-        crate::files::FileText(vec![crate::files::ResolvedFile::Image("/w==".into())].into_iter());
+        crate::files::FileText(vec![crate::files::ResolvedFile::Native("/w==".into())].into_iter());
     assert!(
         image
             .project(

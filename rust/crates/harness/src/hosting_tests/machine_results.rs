@@ -165,15 +165,7 @@ impl TurnExecutors for NativeTurns {
             let tools =
                 crate::preset::Preset::graphcoder().tools(|name| name == "shell", Vec::new())?;
             StockExecutors::new(
-                (
-                    Model::new(
-                        "test".into(),
-                        "text".into(),
-                        "1".into(),
-                        serde_json::Value::Null,
-                    )?,
-                    model,
-                ),
+                (Model::new("test".into(), "text".into(), "1".into())?, model),
                 tools,
                 (limits, CompactionPolicy::Disabled),
                 Arc::new(Tasks(bindings)),

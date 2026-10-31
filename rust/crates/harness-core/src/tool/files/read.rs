@@ -45,7 +45,13 @@ impl FileTool {
         ) {
             return self.media_result(file, selection, work);
         }
-        let maximum = context.effective_scope().limits().render_bytes.min(30_000);
+        let maximum = text_budget(
+            &file,
+            &input.0.path,
+            context.effective_scope().limits().render_bytes,
+            work,
+            io,
+        )?;
         if let Some(selection) = &selection {
             let bytes = match resolved {
                 Some(bytes) => bytes,
@@ -84,6 +90,10 @@ impl FileTool {
             .filter(|_| range.end <= length)
             .ok_or_else(|| invalid("read range exceeds source or is reversed"))?;
         let empty = count == 0;
+        // At most three extra bytes are needed to finish a UTF-8 scalar at
+        // the byte window boundary. A large requested interval never causes
+        // an equally large pinned read allocation.
+        let admitted = count.min(maximum.saturating_add(3));
         let was_resolved = resolved.is_some();
         let bytes = if let Some(bytes) = resolved {
             bytes
@@ -96,7 +106,7 @@ impl FileTool {
                         length: if empty && range.start < length {
                             1
                         } else {
-                            count
+                            admitted
                         },
                     },
                     io,
@@ -107,7 +117,7 @@ impl FileTool {
             let end = if empty && range.start < length {
                 range.start.checked_add(1)
             } else {
-                Some(range.end)
+                range.start.checked_add(admitted)
             };
             usize::try_from(range.start)
                 .ok()
@@ -117,7 +127,18 @@ impl FileTool {
         } else {
             bytes.as_ref()
         };
-        let source = read_text(selected, empty, work)?;
+        let source = if admitted < count && !empty {
+            match std::str::from_utf8(selected) {
+                Ok(text) => text,
+                Err(error) if error.error_len().is_none() => {
+                    std::str::from_utf8(&selected[..error.valid_up_to()])
+                        .map_err(|_| invalid("file read requires UTF-8 content"))?
+                }
+                Err(_) => return Err(invalid("file read requires UTF-8 content")),
+            }
+        } else {
+            read_text(selected, empty, work)?
+        };
         let shown =
             crate::tools::bounds::prefix(source, usize::try_from(maximum).unwrap_or(usize::MAX));
         let end = range.start + shown.len() as u64;
@@ -132,7 +153,7 @@ impl FileTool {
             &Read {
                 file: &file,
                 text: shown,
-                page: (shown.len() != source.len()).then_some(ReadPage {
+                page: (end < range.end).then_some(ReadPage {
                     start: range.start,
                     end,
                     next: Some(end),
@@ -177,6 +198,35 @@ impl FileTool {
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
+}
+
+fn text_budget(
+    file: &FileRef,
+    path: &str,
+    maximum: u64,
+    work: crate::NativeWork<'_>,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<u64> {
+    let (version, _hold) = super::version::encode_version(file, work)?;
+    let empty = FileView {
+        path,
+        version: &version,
+        text: Some(""),
+        page: Some(&ReadPage {
+            start: u64::MAX,
+            end: u64::MAX,
+            next: Some(u64::MAX),
+            offset: u64::MAX,
+        }),
+    };
+    let overhead = crate::executor::with_history_io(io, |history| {
+        crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+    })? + schema::json_envelope_bytes()? as u64;
+    maximum
+        .min(crate::tool::output::VIEW_BYTES)
+        .checked_sub(overhead)
+        .filter(|budget| *budget >= 6)
+        .ok_or_else(|| executor::rejection(work, "render credit cannot hold a source page"))
 }
 
 fn line_page(

@@ -75,10 +75,8 @@ impl ToolProjection for FileProjection {
                             "invalid read page provenance",
                         ));
                     }
-                    if !matches!(input.0.selection, Some(ReadSelection::Cells { .. }))
-                        && !input.0.path.ends_with(".ipynb")
-                        && (page.end.checked_sub(page.start) != Some(text.len() as u64)
-                            || page.end > file.descriptor().byte_length())
+                    if page.end.checked_sub(page.start) != Some(text.len() as u64)
+                        || page.end > file.descriptor().byte_length()
                     {
                         return Err(super::executor::rejection(
                             work,
@@ -128,9 +126,7 @@ impl ToolProjection for FileProjection {
                             ReadSelection::Image { detail } => {
                                 crate::model::NativeMediaIntent::Image { detail: *detail }
                             }
-                            ReadSelection::Pdf => crate::model::NativeMediaIntent::Document {
-                                maximum_pages: u32::MAX - 1,
-                            },
+                            ReadSelection::Pdf => crate::model::NativeMediaIntent::Document,
                             _ => {
                                 return Err(super::executor::rejection(
                                     work,
@@ -140,8 +136,8 @@ impl ToolProjection for FileProjection {
                         };
                         let policy = crate::model::NativeMediaPolicy {
                             intent,
-                            maximum_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
-                            maximum_work: crate::conversation::MAX_EXACT_JS_INTEGER,
+                            maximum_bytes: file.descriptor().byte_length().max(1),
+                            maximum_work: file.descriptor().byte_length().max(1),
                             configuration: None,
                         };
                         // The source version doubles as the compact text provenance.
@@ -165,13 +161,16 @@ impl ToolProjection for FileProjection {
                             work,
                         );
                     }
-                    return schema::project_json(
-                        &FileView {
-                            path: &input.0.path,
-                            version: &version.0,
-                            text: Some(text),
-                            page: result.0.page.as_ref(),
+                    return super::value(
+                        &ReadProjection::Json {
+                            value: FileView {
+                                path: &input.0.path,
+                                version: &version.0,
+                                text: Some(text),
+                                page: result.0.page.as_ref(),
+                            },
                         },
+                        u64::MAX,
                         work,
                     );
                 }

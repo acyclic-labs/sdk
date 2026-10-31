@@ -23,8 +23,8 @@ impl FileProjectionPolicy {
         media_type.starts_with("text/") || media_type == "application/json"
     }
 
-    /// How a file a user attaches to a prompt projects: a supported image
-    /// natively, under the default render bounds; anything else as bounded text.
+    /// How a file a user attaches to a prompt projects: supported images and PDFs
+    /// natively, under the default render credit; anything else as bounded text.
     #[must_use]
     pub fn for_attachment(file: &FileRef) -> Self {
         match file.descriptor().media_type() {
@@ -34,6 +34,15 @@ impl FileProjectionPolicy {
                     intent: NativeMediaIntent::Image {
                         detail: ImageDetail::Auto,
                     },
+                    maximum_bytes: bounds,
+                    maximum_work: bounds,
+                    configuration: None,
+                }))
+            }
+            "application/pdf" => {
+                let bounds = crate::conversation::Limits::default().render_bytes;
+                Self::Native(Box::new(NativeMediaPolicy {
+                    intent: NativeMediaIntent::Document,
                     maximum_bytes: bounds,
                     maximum_work: bounds,
                     configuration: None,
@@ -207,11 +216,9 @@ pub enum NativeMediaIntent {
         /// Positive finite frame ceiling.
         maximum_frames: u32,
     },
-    /// Complete document input.
-    Document {
-        /// Positive finite page ceiling.
-        maximum_pages: u32,
-    },
+    /// Complete PDF input. It shares the policy's byte/work credit; no hidden
+    /// page-count ceiling or eager rasterisation is introduced.
+    Document,
 }
 /// Bounded native input contract.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -275,15 +282,7 @@ impl NativeMediaPolicy {
                     ));
                 }
             }
-            NativeMediaIntent::Document { maximum_pages } => {
-                history_step(work, 1)?;
-                if *maximum_pages == 0 || *maximum_pages == u32::MAX {
-                    return Err(invalid(
-                        work,
-                        "native document page ceiling must be positive and finite",
-                    ));
-                }
-            }
+            NativeMediaIntent::Document => history_step(work, 1)?,
         }
         history_step(work, 1)?;
         if let Some(binding) = &self.configuration {

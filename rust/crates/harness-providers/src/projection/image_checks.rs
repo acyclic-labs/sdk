@@ -6,9 +6,9 @@ use acyclic_harness_core::{
         BoundedContentFuture, ContentIo, ContentResidencyVerifier, FileDescriptor, FileRef, Limits,
     },
     model::{
-        FileProjectionPolicy, ImageDetail, ModelContent, ModelContentPart, ModelMessage,
-        ModelRequest, ModelRole, NativeMediaIntent, NativeMediaPolicy, PreparedModelRequest,
-        image_media_type,
+        FileProjectionPolicy, ImageDetail, ModelContent, ModelContentPart, ModelDataPart,
+        ModelMessage, ModelRequest, ModelRole, NativeMediaIntent, NativeMediaPolicy,
+        PreparedModelRequest, ToolCall, ToolResultContent, image_media_type,
     },
 };
 use acyclic_stream::{BoxProviderFuture, OwnedBytes};
@@ -71,6 +71,7 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
             b"\xff\xd8\xff",
             b"GIF89a",
             b"RIFF0000WEBP",
+            b"%PDF-1.7\n",
         ]
         .into_iter()
         .map(|header| [header, input].concat())
@@ -90,17 +91,17 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
                 Credentials::explicit(Default::default()),
                 Arc::new(NoHttp),
             )
-            .with_content(reader.clone(), maximum_bytes);
+            .with_content(reader.clone(), maximum_bytes * 2);
             registry.register("image-test".into(), serde_json::from_value(json!({
                 "adapter":adapter,"authentication":"optional","base_url":"http://127.0.0.1:1/v1",
-                "models":{"tiny":{"capacity":{"context_tokens":32768,"output_tokens":1024},"features":{"images":true,"tools":false}}},
+                "models":{"tiny":{"capacity":{"context_tokens":32768,"output_tokens":1024},"features":{"images":true,"tools":true}}},
                 "max_event_bytes":4096,
                 "token_counter":{"path":"count_tokens","adapter":adapter,"response_field":"input_tokens","framing_tokens":0}
             })).unwrap()).unwrap();
             let provider = registry.resolve("image-test/tiny").unwrap();
             for bytes in &images {
                 reader.reads.store(0, Ordering::SeqCst);
-                let media = image_media_type(bytes).unwrap();
+                let media = image_media_type(bytes).unwrap_or("application/pdf");
                 let encoded_work = bytes.len() as u64;
                 let file = FileRef::new(
                     serde_json::from_value(json!({
@@ -145,8 +146,12 @@ async fn check_projection(
                     ModelContentPart::File {
                         file: file.clone(),
                         policy: FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
-                            intent: NativeMediaIntent::Image {
-                                detail: ImageDetail::Auto,
+                            intent: if file.descriptor().media_type() == "application/pdf" {
+                                NativeMediaIntent::Document
+                            } else {
+                                NativeMediaIntent::Image {
+                                    detail: ImageDetail::High,
+                                }
                             },
                             maximum_bytes: bytes.len() as u64,
                             maximum_work: work,
@@ -207,6 +212,22 @@ async fn check_projection(
     assert_eq!(parts[0]["text"], "before");
     assert_eq!(parts[2]["text"], "after");
     let data = match adapter {
+        Adapter::Responses if file.descriptor().media_type() == "application/pdf" => {
+            parts[1]["file_data"]
+                .as_str()
+                .unwrap()
+                .split_once(',')
+                .unwrap()
+                .1
+        }
+        Adapter::Chat if file.descriptor().media_type() == "application/pdf" => {
+            parts[1]["file"]["file_data"]
+                .as_str()
+                .unwrap()
+                .split_once(',')
+                .unwrap()
+                .1
+        }
         Adapter::Responses => {
             parts[1]["image_url"]
                 .as_str()
@@ -228,4 +249,134 @@ async fn check_projection(
     };
     assert_eq!(STANDARD.decode(data).unwrap().as_slice(), bytes);
     assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    check_result_media(provider, reader, request.request(), file, bytes, adapter).await;
+}
+
+async fn check_result_media(
+    provider: &crate::ResolvedModel,
+    reader: &Reader,
+    request: &ModelRequest,
+    file: &FileRef,
+    bytes: &[u8],
+    adapter: Adapter,
+) {
+    let ModelContentPart::File { policy, .. } = &request.messages[0].content.parts()[1] else {
+        panic!("generated native input");
+    };
+    let mut request = request.clone();
+    request
+        .tools
+        .push(acyclic_harness_core::tool::ToolDefinition {
+            name: "read".into(),
+            revision: "1".into(),
+            description: "fixture".into(),
+            input_schema: json!({"type":"object"}),
+            output_schema: json!({}),
+            projection_schema: json!({}),
+        });
+    request.messages = vec![
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("read both".into()),
+        },
+        ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Parts(
+                (0..2)
+                    .map(|index| {
+                        ModelContentPart::ToolCall(ToolCall::new(
+                            format!("read-{index}"),
+                            "read".into(),
+                            json!({}),
+                        ))
+                    })
+                    .collect(),
+            ),
+        },
+    ];
+    for index in (0..2).rev() {
+        request.messages.push(ModelMessage {
+            role: ModelRole::Tool,
+            content: ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: format!("read-{index}"),
+                name: "read".into(),
+                content: ToolResultContent::Parts {
+                    parts: vec![
+                        ModelDataPart::Text {
+                            text: format!("source-{index}"),
+                        },
+                        ModelDataPart::File {
+                            file: file.clone(),
+                            policy: policy.clone(),
+                        },
+                    ],
+                },
+            }),
+        });
+    }
+    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None).unwrap();
+    reader.reads.store(0, Ordering::SeqCst);
+    let encoded = crate::dispatch::encode(
+        provider,
+        &prepared,
+        &crate::tool_names::Names::new(prepared.request()),
+        None,
+        &provider.reasoning_origin(None, None),
+    )
+    .await
+    .unwrap();
+    let body: Value = serde_json::from_slice(&encoded).unwrap();
+    assert!(
+        crate::validate_input(adapter, &body).is_empty(),
+        "{adapter:?}: {body}"
+    );
+    let mut found = Vec::new();
+    collect_media(&body, &mut found);
+    assert_eq!(found, vec![bytes.to_vec(), bytes.to_vec()]);
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+    if matches!(adapter, Adapter::Chat | Adapter::Responses) {
+        let items = body[if adapter == Adapter::Chat {
+            "messages"
+        } else {
+            "input"
+        }]
+        .as_array()
+        .unwrap();
+        let last_result = items
+            .iter()
+            .rposition(|item| item["role"] == "tool" || item["type"] == "function_call_output")
+            .unwrap();
+        let first_media = items
+            .iter()
+            .position(|item| {
+                let mut media = Vec::new();
+                collect_media(item, &mut media);
+                !media.is_empty()
+            })
+            .unwrap();
+        assert!(last_result < first_media);
+    }
+}
+
+fn collect_media(value: &Value, found: &mut Vec<Vec<u8>>) {
+    match value {
+        Value::String(text) if text.starts_with("data:") => {
+            found.push(STANDARD.decode(text.split_once(',').unwrap().1).unwrap())
+        }
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "data" {
+                    found.push(STANDARD.decode(value.as_str().unwrap()).unwrap());
+                } else {
+                    collect_media(value, found);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_media(item, found);
+            }
+        }
+        _ => {}
+    }
 }

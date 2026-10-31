@@ -13,7 +13,7 @@ pub struct ReadFileInput {
     /// current path under the original directory read grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Optional exact UTF-8 byte interval; omission reads the complete file.
+    /// Optional UTF-8 byte interval. Large intervals return a continuation page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<super::text::TextRange>,
     /// A line, cell or native media projection. Mutually exclusive with `range`.
@@ -63,11 +63,11 @@ pub enum ReadSelection {
 )]
 #[serde(deny_unknown_fields)]
 pub struct ReadPage {
-    /// Selected byte interval in the source, or selected cell interval for notebooks.
+    /// Selected byte interval in the original source, including notebook JSON.
     pub start: u64,
     /// Exclusive end of the selected interval.
     pub end: u64,
-    /// Next byte/cell offset, absent at end of source.
+    /// Next byte offset for `range`, absent at end of source.
     pub next: Option<u64>,
     /// First zero-based line/cell in this view.
     pub offset: u64,
@@ -119,19 +119,31 @@ pub struct EditFileInput {
 pub enum NotebookEdit {
     /// Replace the source of a cell identified by index and optionally stable ID.
     Replace {
+        /// Zero-based position.
         index: u64,
+        /// Expected stable ID, when the caller has one.
         id: Option<String>,
+        /// New cell source; code outputs and execution count are cleared.
         source: String,
     },
     /// Insert before `index` (the cell count appends).
     Insert {
+        /// Zero-based insertion position; the cell count appends.
         index: u64,
+        /// New nbformat cell ID, unique within this notebook.
         id: String,
+        /// One of `code`, `markdown`, or `raw`.
         cell_type: String,
+        /// Initial cell source.
         source: String,
     },
     /// Delete exactly the selected cell.
-    Delete { index: u64, id: Option<String> },
+    Delete {
+        /// Zero-based position.
+        index: u64,
+        /// Expected stable ID, when the caller has one.
+        id: Option<String>,
+    },
 }
 
 /// Explicit single-file V4A update arguments.

@@ -20,7 +20,7 @@ fn owned_context_budget() -> acyclic_fs::WorkBudget {
 
 fn native_retention_policy() -> FileProjectionPolicy {
     FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
-        intent: crate::model::NativeMediaIntent::Document { maximum_pages: 1 },
+        intent: crate::model::NativeMediaIntent::Document,
         maximum_bytes: 1_048_576,
         maximum_work: 1,
         configuration: None,

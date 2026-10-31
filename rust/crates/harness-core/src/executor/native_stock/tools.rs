@@ -77,12 +77,13 @@ pub(in crate::executor) async fn stock_tool_call<'a, T>(
     ordinary(context.take()).await
 }
 
-pub(in crate::executor) fn stock_project_tool(
+pub(in crate::executor) async fn stock_project_tool(
     tool: &crate::tool::Tool,
     invocation: &ToolInvocation,
     result: &ToolResult,
     limits: Limits,
     io: Option<&PreparationIo>,
+    context: Option<&crate::runtime::TaskContext>,
 ) -> Result<Result<(Value, crate::model::ToolResultContent)>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let work = io.and_then(PreparationIo::original_native_work);
@@ -101,6 +102,49 @@ pub(in crate::executor) fn stock_project_tool(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = custody;
+    // Check the authored projection before the harness adds its common spill
+    // envelope. Large output is retained, never silently replaced with a prefix.
+    if let Err(violation) = with_history_io(io, |history| {
+        crate::executor::check_json_schema_value(
+            &tool.definition.projection_schema,
+            &value,
+            "tool projection",
+            history,
+        )
+    })? {
+        return Ok(Err(violation));
+    }
+    let maximum = limits.render_bytes.min(crate::tool::output::VIEW_BYTES);
+    let length = with_history_io(io, |history| {
+        crate::executor::json::json_byte_length(&value, u64::MAX, history)
+    })?;
+    let value = if length > maximum {
+        let context = context.ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "large tool output requires its original volume context",
+            )
+        })?;
+        let (bounded, custody) =
+            crate::tool::output::spill(&value, context, invocation.operation_id, maximum, io)
+                .await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io.filter(|_| work.is_some()) {
+            io.absorb_native_custody(custody.ok_or_else(|| {
+                stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Unsupported,
+                    "output spill has no native producer",
+                )
+            })?)?;
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = custody;
+        bounded
+    } else {
+        value
+    };
     let content = match tool.definition.check_projection(&value, limits, io)? {
         Ok(content) => content,
         Err(violation) => return Ok(Err(violation)),
