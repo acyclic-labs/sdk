@@ -26,7 +26,7 @@ where
             self.authorize_envelope(envelope, Some(io))?;
             // Canonicalize the envelope only. Its native body remains an exact
             // string, so this never parses or rewrites provider wire bytes.
-            let bytes = io.encode(envelope, super::MAXIMUM_PAYLOAD_BYTES, true)?;
+            let bytes = envelope.encode(io, super::MAXIMUM_PAYLOAD_BYTES)?;
             let bytes_hold = io.guard_bytes(&bytes)?;
             let reference = <Self as ExecutionJournal>::stage(
                 self,

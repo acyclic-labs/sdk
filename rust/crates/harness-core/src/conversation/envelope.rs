@@ -234,7 +234,7 @@ impl Envelope {
         io: &PreparationIo,
         maximum_bytes: u64,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        io.encode(self, maximum_bytes, false)
+        io.encode(self, maximum_bytes, true)
     }
 
     /// Restores an item with the original bounded decoder and retains its
