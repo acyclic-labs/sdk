@@ -152,7 +152,9 @@ where
         if let ExecutionEvent::ModelInline { event, .. } = event {
             self.authorize_inline_event(event, VolumeOperation::Write, io)?;
         }
-        let model = self.verify_event_refs_with_io(event, io).await?;
+        let model = self
+            .verify_event_refs_with_io(operation_id, event, io)
+            .await?;
         let limits = Limits::default();
         self.verify_canonical_publication_with_io(event, limits, io)
             .await?;

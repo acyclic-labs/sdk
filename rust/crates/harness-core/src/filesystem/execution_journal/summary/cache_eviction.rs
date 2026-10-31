@@ -20,6 +20,7 @@ async fn observed(
     event: &ModelEvent,
 ) -> Result<ExecutionEvent> {
     Ok(ExecutionEvent::Model {
+        usage: None,
         step: 0,
         purpose: ModelPurpose::Response,
         event: crate::executor::stage_json(journal, operation, key, event, None).await?,

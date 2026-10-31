@@ -20,6 +20,7 @@ pub use goal::{GOAL_INTENT, TurnGoal};
 mod handler;
 mod host;
 mod input;
+pub(crate) use input::input as turn_input;
 pub mod kernel;
 mod layout;
 mod lower;

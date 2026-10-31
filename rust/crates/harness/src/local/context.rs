@@ -109,14 +109,18 @@ impl LocalHarness {
                 ));
             }
             #[cfg(any(test, feature = "hooks"))]
-            let hooks =
-                crate::native_settings::NativeSettings::load_hooks(Arc::clone(self.settings()?))
-                    .await?;
-            #[cfg(any(test, feature = "hooks"))]
-            let hook_configuration = if hooks.is_empty() {
-                None
-            } else {
-                Some(hooks.publish(publisher, self.limits).await?)
+            let hook_configuration = match &self.settings {
+                Some(settings) => {
+                    let hooks =
+                        crate::native_settings::NativeSettings::load_hooks(Arc::clone(settings))
+                            .await?;
+                    if hooks.is_empty() {
+                        None
+                    } else {
+                        Some(hooks.publish(publisher, self.limits).await?)
+                    }
+                }
+                None => None,
             };
             let policy = ContextDiscoveryPolicy::default();
             let limits = ContextDiscoveryLimits::default();

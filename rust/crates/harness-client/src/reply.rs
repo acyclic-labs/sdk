@@ -85,6 +85,13 @@ pub enum AgentReply {
     },
     /// The committed reply to one accepted message.
     Reply { reply: Reply },
+    /// A bounded committed execution query, shared by every frontend.
+    Usage {
+        /// Exact original inbox sequence, at or after this agent's fork cut.
+        input: u64,
+        /// One fixed journal page; None marks the current committed inbox tail.
+        page: Option<acyclic_harness_core::executor::ModelUsagePage>,
+    },
     /// How far an agent has settled.
     Settlement {
         /// Settled turns: the conversation's tail.
@@ -355,6 +362,42 @@ fn validate_reply(
                 && bytes <= MAX_READ_BYTES
                 && offset.checked_add(bytes).is_some_and(|end| end <= *length)
             {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Usage { page: None, input },
+            AgentCommand::Usage {
+                input: requested, ..
+            },
+        ) => {
+            return if input >= requested {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Usage {
+                page: Some(page),
+                input,
+            },
+            AgentCommand::Usage {
+                agent,
+                after,
+                input: requested,
+            },
+        ) => {
+            return if input >= requested
+                && page.items.len() <= 32
+                && page
+                    .next
+                    .is_none_or(|next| after.checked_add(32) == Some(next))
+                && page.items.iter().all(|item| {
+                    item.version == 1 && item.agent_path.as_deref() == Some(agent.as_str())
+                }) {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)

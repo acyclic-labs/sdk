@@ -15,7 +15,7 @@ pub enum InputFormat {
 )]
 pub struct Args {
     /// Own workspace files for native coding hosts, without a provider or agent loop.
-    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "credentials", "operation"])]
+    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "credentials", "operation", "default_config", "usage_jsonl"])]
     pub host_workspace: bool,
     /// Explicit durable storage, opened only by this trusted harness owner.
     #[arg(long, requires = "host_workspace")]
@@ -27,6 +27,16 @@ pub struct Args {
     pub directory: Option<String>,
     #[arg(long)]
     pub credentials: Option<PathBuf>,
+    /// Use shipped defaults and explicit inputs only; ignore user settings,
+    /// native credential discovery and environment model selection. Signing
+    /// custody uses private files in this run's state directory.
+    #[arg(long, conflicts_with = "endpoint")]
+    pub default_config: bool,
+    /// Export committed call usage for this conversation tree after headless
+    /// settlement. A path is replaced with this snapshot; '-' writes JSONL to
+    /// stdout and sends ordinary answers to stderr. Missing metrics stay null.
+    #[arg(long, value_name = "PATH|-")]
+    pub usage_jsonl: Option<PathBuf>,
     /// JSON approval policy; defaults to the shipped `GraphCoder` policy data.
     #[arg(long)]
     pub approval_policy: Option<PathBuf>,

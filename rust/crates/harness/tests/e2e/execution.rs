@@ -461,11 +461,13 @@ async fn scenario_observations_normalize_inline_and_file_events() -> TestResult 
         )?
         .await?;
     let file = ExecutionEvent::Model {
+        usage: None,
         step: 0,
         purpose: ModelPurpose::Response,
         event: reference,
     };
     let inline = ExecutionEvent::ModelInline {
+        usage: None,
         step: 0,
         purpose: ModelPurpose::Response,
         event,

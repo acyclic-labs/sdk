@@ -32,8 +32,8 @@ proptest! {
         let state = state_directory_in(directory.path(), &project, None).unwrap();
         prop_assert_eq!(&state, &expected);
         let state = self::directory(&state).unwrap();
-        let original = Owner::open(&state, &project, None).unwrap();
-        let reopened = Owner::open(&state, &project, None).unwrap();
+        let original = Owner::open(&state, &project, None, SigningCustody::Configured).unwrap();
+        let reopened = Owner::open(&state, &project, None, SigningCustody::Configured).unwrap();
         prop_assert_eq!(original.key_ref, reopened.key_ref);
         prop_assert_eq!(original.task, reopened.task);
 

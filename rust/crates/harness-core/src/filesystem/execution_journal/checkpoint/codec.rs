@@ -26,7 +26,7 @@ pub(super) fn state_bytes(
         cursor += value.len();
         Ok(())
     };
-    put(b"EXC4")?;
+    put(b"EXC5")?;
     put(&state.operation.into_bytes())?;
     put(&state.turn.into_bytes())?;
     put(&state.volume)?;
@@ -88,7 +88,7 @@ pub(super) fn encode_state(
 }
 
 pub(super) fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Checkpoint> {
-    if bytes.len() != FRAME_BYTES || bytes.get(..4) != Some(b"EXC4") {
+    if bytes.len() != FRAME_BYTES || bytes.get(..4) != Some(b"EXC5") {
         return Err(missing(io));
     }
     fn take<const N: usize>(input: &mut &[u8], io: Option<&PreparationIo>) -> Result<[u8; N]> {

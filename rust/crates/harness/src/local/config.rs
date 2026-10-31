@@ -40,6 +40,8 @@ pub struct LocalHarnessConfig {
     pub(super) state_directory: Option<PathBuf>,
     /// Refuses ambient state and settings discovery; set only by `hermetic()`.
     pub(super) hermetic: bool,
+    /// Explicit composition that never discovers user settings or their tools.
+    pub(super) without_user_settings: bool,
     /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
@@ -134,14 +136,16 @@ impl LocalHarnessConfig {
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     pub(super) fn resolve(
         mut self,
-        settings: &crate::native_settings::SettingsConfig,
+        settings: Option<&crate::native_settings::SettingsConfig>,
         injected: bool,
     ) -> Result<Self> {
         if let Some((models, selection)) = self.models.take() {
             let selection = match selection {
                 Some(selection) => selection,
                 None => settings
-                    .configured_model()?
+                    .map(crate::native_settings::SettingsConfig::configured_model)
+                    .transpose()?
+                    .flatten()
                     .unwrap_or_else(|| models.default.clone()),
             };
             self.model = Some(models.resolve(&selection)?);
@@ -152,15 +156,18 @@ impl LocalHarnessConfig {
         }
         #[cfg(feature = "search-http")]
         {
-            let search = crate::search::SearchConfig::from_file(&settings.search_config_path())?;
-            let search = if injected {
-                search.without_native_sources()
-            } else {
-                search
-            };
-            // The preset alone selects web tools; this only binds their provider.
-            if let Some(provider) = search.provider()? {
-                self.search_provider = Some(provider);
+            if let Some(settings) = settings {
+                let search =
+                    crate::search::SearchConfig::from_file(&settings.search_config_path())?;
+                let search = if injected {
+                    search.without_native_sources()
+                } else {
+                    search
+                };
+                // The preset alone selects web tools; this only binds their provider.
+                if let Some(provider) = search.provider()? {
+                    self.search_provider = Some(provider);
+                }
             }
         }
         #[cfg(not(feature = "search-http"))]
@@ -188,6 +195,7 @@ impl LocalHarnessConfig {
             project: LocalProject::Workspace(workspace),
             state_directory: None,
             hermetic: false,
+            without_user_settings: false,
             test_state: None,
             model,
             profiles: None,
@@ -268,6 +276,15 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn hermetic(mut self) -> Self {
         self.hermetic = true;
+        self
+    }
+    /// Uses explicit model/provider bindings and shipped tools without reading
+    /// user model, MCP, search or hook configuration. Signing custody uses the
+    /// original private-file protocol in the selected state directory; reopening
+    /// state requires its original key in that same store.
+    #[must_use]
+    pub fn without_user_settings(mut self) -> Self {
+        self.without_user_settings = true;
         self
     }
     /// Embedded bindings without a checkout never allocate an unused state root.
@@ -595,19 +612,25 @@ mod resolver_tests {
         };
         for _ in 0..1000 {
             let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
-            assert_eq!(selected(config.resolve(&settings(), true)?)?, "first");
+            assert_eq!(selected(config.resolve(Some(&settings()), true)?)?, "first");
         }
         assert_eq!(constructed.load(Ordering::Relaxed), 1);
         std::fs::write(codex.path().join("config.toml"), "model = \"second\"\n")
             .map_err(storage)?;
         let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
-        assert!(selected(config.resolve(&settings(), true)?)?.ends_with("second"));
+        assert!(selected(config.resolve(Some(&settings()), true)?)?.ends_with("second"));
         let explicit = LocalHarnessConfig::resolving(
             workspace.path(),
             Arc::clone(&models),
             Some("first".into()),
         );
-        assert_eq!(selected(explicit.resolve(&settings(), true)?)?, "first");
+        assert_eq!(
+            selected(explicit.resolve(Some(&settings()), true)?)?,
+            "first"
+        );
+        let defaults = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None)
+            .without_user_settings();
+        assert_eq!(selected(defaults.resolve(None, true)?)?, "first");
         assert_eq!(constructed.load(Ordering::Relaxed), 2);
         Ok(())
     }

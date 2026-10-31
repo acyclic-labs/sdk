@@ -502,6 +502,97 @@ where
             .map_err(turn)
     }
 
+    /// Queries one original inbox input and a bounded execution journal page.
+    /// Adoption's first status supplies the fork cut; inherited inputs are skipped.
+    /// Failed turns remain discoverable without another index or publication.
+    pub async fn usage_page(
+        &self,
+        agent: &AgentPath,
+        input: u64,
+        after: u64,
+    ) -> Result<(u64, Option<crate::executor::ModelUsagePage>), Error> {
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        use crate::agent::AgentRecord as _;
+        use futures::TryStreamExt as _;
+        let provider = self.agents.provider();
+        let mut statuses = provider
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: agent.status()?,
+                from: 0,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let status = statuses
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .filter(|record| record.sequence == 0)
+            .ok_or(Error::Record("usage adoption status is missing"))?;
+        let adopted = crate::agent::StatusRecord::decode(&status.value)?.cursor;
+        let input = input.max(adopted);
+        let tail = crate::agent::inbox_tail(&**provider, agent).await?;
+        if input > tail {
+            return Err(Error::Record(
+                "usage input cursor is past the committed tail",
+            ));
+        }
+        if input == tail {
+            return Ok((input, None));
+        }
+        let mut records = provider
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: agent.inbox()?,
+                from: input,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .filter(|record| record.sequence == input)
+            .ok_or(Error::Record("committed usage input is missing"))?;
+        let record = crate::agent::InboxRecord::decode(&record.value)?;
+        let queued = match record {
+            crate::agent::InboxRecord::ForkAdopted(adoption) => {
+                if input != adopted
+                    || adoption.forked_at != input
+                    || adoption.agent != agent.id()
+                    || adoption.parent != agent.parent()
+                {
+                    return Err(Error::Record("usage adoption differs"));
+                }
+                adoption.brief.map(|brief| crate::agent::Queued {
+                    inbox: input,
+                    input: crate::agent::TurnInput::Brief {
+                        brief: Box::new(brief),
+                    },
+                })
+            }
+            record => crate::agent::turn_input(input, record),
+        };
+        let page = if let Some(queued) = queued {
+            let operation = crate::agent::turn_id(&state, &queued.input)?;
+            self.turns
+                .usage_page(&state, operation, after)
+                .await
+                .map_err(turn)?
+        } else {
+            crate::executor::ModelUsagePage {
+                items: Vec::new(),
+                next: None,
+            }
+        };
+        Ok((input, Some(page)))
+    }
+
     /// Reads at most `maximum` bytes of `file` from `offset`, through
     /// `agent`'s own authorized reader: only a file on one of `agent`'s
     /// volumes, within its scope, or the exact brief its adoption named, is

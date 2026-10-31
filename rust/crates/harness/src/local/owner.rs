@@ -1,5 +1,6 @@
 pub(super) use super::owner_record::{Owner, RootWitness};
 use super::*;
+use acyclic_native_runtime::signing_key::SigningCustody;
 use std::{fs, io::Read};
 #[cfg(any(test, feature = "native-execution"))]
 pub(in crate::local) mod exclusion;
@@ -304,6 +305,7 @@ impl Owner {
         directory: &Path,
         selection: &LocalProject,
         checkout: Option<&Checkout>,
+        custody: SigningCustody<'_>,
     ) -> Result<Self> {
         let workspace = match (selection, checkout) {
             (LocalProject::Workspace(_), Some(checkout)) => Some(checkout.path.clone()),
@@ -317,7 +319,7 @@ impl Owner {
         let path = directory.join("owner.json");
         let workspace_identity = checkout.map(|checkout| checkout.identity);
         let workspace_incarnation = checkout.map(|checkout| checkout.incarnation);
-        let owner = match Self::load(&path) {
+        let owner = match Self::load(&path, custody) {
             Ok(owner) => owner,
             Err(Error::NotFound(_)) => {
                 let project = match selection {
@@ -335,8 +337,9 @@ impl Owner {
                         &mut None,
                     )?,
                 };
-                let key_ref = acyclic_native_runtime::signing_key::SigningKeyReference::create()
-                    .map_err(storage)?;
+                let key_ref =
+                    acyclic_native_runtime::signing_key::SigningKeyReference::create(custody)
+                        .map_err(storage)?;
                 let owner = Self {
                     key: None,
                     key_ref: Some(key_ref.reference()),
@@ -355,7 +358,7 @@ impl Owner {
                 )? {
                     owner
                 } else {
-                    Self::load(&path)?
+                    Self::load(&path, custody)?
                 }
             }
             Err(error) => return Err(error),
@@ -387,7 +390,7 @@ impl Owner {
         Ok(owner)
     }
 
-    fn load(path: &Path) -> Result<Self> {
+    fn load(path: &Path, custody: SigningCustody<'_>) -> Result<Self> {
         // The lock's stable inode survives replacing owner.json. Hold it from
         // before reading a legacy seed until publication or custody rollback,
         // so another reader cannot publish a key this reader still owns.
@@ -412,10 +415,10 @@ impl Owner {
         };
         let _publication =
             acquire(file, acyclic_native_runtime::FileLockMode::Exclusive).map_err(storage)?;
-        Self::load_record(path)
+        Self::load_record(path, custody)
     }
 
-    fn load_record(path: &Path) -> Result<Self> {
+    fn load_record(path: &Path, custody: SigningCustody<'_>) -> Result<Self> {
         use acyclic_native_runtime::{owner_record, private_file};
         let record = private_file::read_for_upgrade_with(path, 65_536, |file, length| {
             let mut bytes = owner_record::SecretBytes(Vec::with_capacity(
@@ -442,7 +445,7 @@ impl Owner {
         };
         let mut owner: Self = serde_json::from_slice(&plain.0)
             .map_err(|_| Error::Invalid("invalid local owner record".into()))?;
-        let migrated = owner.retain_signing_custody()?;
+        let migrated = owner.retain_signing_custody(custody)?;
         if legacy || migrated.is_some() {
             let directory = path
                 .parent()
@@ -461,15 +464,22 @@ impl Owner {
     /// This is reachable only after `private_file` authenticated the source descriptor.
     fn retain_signing_custody(
         &mut self,
+        custody: SigningCustody<'_>,
     ) -> Result<Option<acyclic_native_runtime::signing_key::ProvisionalSigningKey>> {
         match (self.key_ref, self.key.as_mut()) {
             (Some(reference), None) => {
-                reference.with_seed(|_| ()).map_err(storage)?;
+                reference.with_seed(custody, |_| ()).map_err(storage)?;
                 Ok(None)
             }
             (None, Some(seed)) => {
-                let key = acyclic_native_runtime::signing_key::SigningKeyReference::retain(seed)
-                    .map_err(storage)?;
+                if matches!(custody, SigningCustody::PrivateFile(_)) {
+                    return Err(Error::Unauthorized(
+                        "explicit custody requires an owner created in that store; recovery: use a fresh explicit-config state directory".into(),
+                    ));
+                }
+                let key =
+                    acyclic_native_runtime::signing_key::SigningKeyReference::retain(seed, custody)
+                        .map_err(storage)?;
                 self.key_ref = Some(key.reference());
                 acyclic_native_runtime::owner_record::clear_secret(seed);
                 self.key = None;

@@ -110,7 +110,8 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Runs the binary to its process-exit event.
+/// Runs the binary through the shared native capture, exit and physical-close
+/// owner, retaining the original outer deadline without readiness polling.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
     std::fs::create_dir_all(fixture.workspace.join(".harness")).unwrap();
     std::fs::copy(catalog, fixture.workspace.join(".harness/providers.json")).unwrap();
@@ -159,8 +160,8 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
             .join("\n");
         std::fs::write(roles.join(format!("{name}.md")), source).unwrap();
     }
-    let mut command = tokio::process::Command::new(build_metadata::EXECUTABLE);
-    fixture.custody.configure(command.as_std_mut());
+    let mut command = std::process::Command::new(build_metadata::EXECUTABLE);
+    fixture.custody.configure(&mut command);
     command
         .env("CODEX_HOME", fixture.settings.join(".codex"))
         .env("HOME", &fixture.home)
@@ -177,16 +178,34 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = command.spawn().unwrap();
-    {
-        use tokio::io::AsyncWriteExt as _;
-        let mut input = child.stdin.take().unwrap();
-        input.write_all(stdin.as_bytes()).await.unwrap();
-        input.shutdown().await.unwrap();
-    }
-    child.wait_with_output().await.unwrap()
+        .stderr(Stdio::piped());
+    let stdin = stdin.to_owned();
+    tokio::task::spawn_blocking(move || {
+        use acyclic_native_runtime::{CaptureInput, ProcessInput, ProcessTree};
+        let mut child = ProcessTree::spawn(&mut command).expect("spawn GraphCoder process tree");
+        child
+            .wait_with_output(
+                std::time::Duration::from_secs(60),
+                usize::MAX,
+                Some(CaptureInput::Literal(stdin.as_bytes())),
+                || Ok(()),
+                |_| Ok(ProcessInput::default()),
+                None,
+                None,
+                None,
+            )
+            .unwrap_or_else(|failure| {
+                panic!(
+                    "GraphCoder capture failed: {}; physical_tree_retired={}; stdout={}; stderr={}",
+                    failure.error,
+                    failure.cleanup_completed,
+                    String::from_utf8_lossy(&failure.stdout),
+                    String::from_utf8_lossy(&failure.stderr)
+                )
+            })
+    })
+    .await
+    .unwrap()
 }
 
 fn succeeded(output: &Output) -> String {
@@ -225,6 +244,76 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     // Another operation is a new message to the same root agent.
     assert_eq!(succeeded(&run("second").await), "fixture answer\n");
     assert_eq!(model.generated(), 2);
+    // Invalid user settings cannot become an implicit model or tool source in
+    // default-config mode. Ordinary MCP loading still rejects these same bytes.
+    std::fs::write(fixture.settings.join(".codex/config.toml"), "[invalid\n").unwrap();
+    // A fresh explicit owner must use its selected file custody on the first
+    // process and reopen that same custody on replay, ignoring the configured
+    // fixture backend as well as the malformed ambient settings.
+    let explicit = self::fixture();
+    std::fs::write(explicit.settings.join(".codex/config.toml"), "[invalid\n").unwrap();
+    let usage = explicit._directory.path().join("usage.jsonl");
+    for _ in 0..2 {
+        assert_eq!(
+            succeeded(
+                &graphcoder(
+                    &explicit,
+                    &model.catalog,
+                    vec![
+                        "--default-config",
+                        "--usage-jsonl",
+                        usage.to_str().unwrap(),
+                        "--operation",
+                        "explicit-defaults",
+                        "-p",
+                        "hello"
+                    ],
+                    "",
+                )
+                .await
+            ),
+            "fixture answer\n"
+        );
+        assert_eq!(model.generated(), 3);
+        let rows: Vec<Value> = std::fs::read_to_string(&usage)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "replay must replace the export without duplicating calls"
+        );
+        let row = &rows[0];
+        assert_eq!(row["provider"], "graphcoder-qual");
+        assert_eq!(row["model"], "tiny");
+        assert_eq!(row["completed"], true);
+        assert_eq!(row["tokens"]["input"], 64);
+        assert_eq!(row["tokens"]["output"], 2);
+        assert!(row["tokens"]["cached"].is_null());
+        assert!(row["agent_path"].as_str().is_some());
+        assert!(row["latency_ns"].as_u64().is_some());
+    }
+    let streamed = graphcoder(
+        &explicit,
+        &model.catalog,
+        vec![
+            "--default-config",
+            "--usage-jsonl",
+            "-",
+            "--operation",
+            "explicit-defaults",
+            "-p",
+            "hello",
+        ],
+        "",
+    )
+    .await;
+    let row: Value = serde_json::from_str(succeeded(&streamed).trim()).unwrap();
+    assert_eq!(row["completed"], true);
+    assert!(String::from_utf8_lossy(&streamed.stderr).contains("fixture answer"));
+    assert_eq!(model.generated(), 3);
     model.close().await;
 }
 

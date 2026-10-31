@@ -134,12 +134,6 @@ impl LocalHarness {
             Error::Unsupported("native hosts own their agent loop and tool execution".into())
         })
     }
-    #[cfg(any(test, feature = "hooks"))]
-    fn settings(&self) -> Result<&Arc<crate::native_settings::SettingsConfig>> {
-        self.settings.as_ref().ok_or_else(|| {
-            Error::Unsupported("native hosts own their settings and permissions".into())
-        })
-    }
     /// Opens durable local state and assembles the agent host's bindings.
     pub fn open(
         config: LocalHarnessConfig,
