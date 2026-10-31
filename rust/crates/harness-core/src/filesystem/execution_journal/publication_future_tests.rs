@@ -63,6 +63,7 @@ async fn fixture_with_filesystem(
 
 #[tokio::test]
 async fn separately_composed_journals_exclude_the_same_live_operation() -> Result<()> {
+    use futures::FutureExt as _;
     let provider = acyclic_stream::MemoryStream::default();
     let objects = acyclic_objects::MemoryObjects::memory();
     let objects = Arc::new(objects);
@@ -86,7 +87,24 @@ async fn separately_composed_journals_exclude_the_same_live_operation() -> Resul
         second.claim_execution(operation, None),
         Err(Error::Conflict(_))
     ));
+    let observation = match second.acquire_execution(operation, None)? {
+        crate::executor::ExecutionAttempt::Observed(observation) => observation,
+        crate::executor::ExecutionAttempt::Owned(_) => panic!("duplicate producer admitted"),
+    };
+    let mut retired = Box::pin(observation.terminated());
+    assert!(retired.as_mut().now_or_never().is_none());
     drop(owner);
-    drop(second.claim_execution(operation, None)?);
+    let successor = second.claim_execution(operation, None)?;
+    // An occupied successor cannot redirect the pinned predecessor observation.
+    assert_eq!(
+        retired.now_or_never(),
+        Some(acyclic_fs::OperationTermination::ProducerDropped)
+    );
+    let finished = successor.observe();
+    successor.release();
+    assert_eq!(
+        finished.terminated().now_or_never(),
+        Some(acyclic_fs::OperationTermination::Released)
+    );
     Ok(())
 }

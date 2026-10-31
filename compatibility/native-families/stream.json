@@ -24,6 +24,7 @@
     "patches/napi-rs-cli-3.10.9.patch",
     "rust-toolchain.toml",
     "rust/crates/auth",
+    "rust/crates/collections",
     "rust/crates/contract-derive",
     "rust/crates/differential",
     "rust/crates/host-platform",

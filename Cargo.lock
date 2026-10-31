@@ -23,8 +23,8 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-native-runtime",
- "acyclic-observability",
  "acyclic-objects",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
@@ -184,6 +184,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-collections"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "acyclic-conformance"
 version = "0.2.0"
 dependencies = [
@@ -221,13 +228,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "acyclic-collections"
-version = "0.2.0"
-dependencies = [
- "proptest",
 ]
 
 [[package]]
@@ -757,8 +757,8 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
- "acyclic-native-runtime",
  "acyclic-auth",
+ "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-protobuf-json",
@@ -896,6 +896,7 @@ version = "0.2.0"
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections",
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-observability",
@@ -1077,6 +1078,7 @@ name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
@@ -4570,6 +4572,10 @@ name = "mod_use"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21909324aa58f5c284d91cac514c6d081210901dc372d7c8ea6a9d7e0406097a"
+
+[[package]]
+name = "model-epoch-proofs"
+version = "0.0.0"
 
 [[package]]
 name = "moxcms"

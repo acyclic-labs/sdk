@@ -22,6 +22,7 @@ model-checking = ["dep:loom"]
 test-support = ["tokio/macros", "tokio/time", "tokio/test-util", "tokio/net", "tokio/io-util"]
 
 [dependencies]
+acyclic-collections = { version = "=0.2.0", path = "../collections" }
 loom = { version = "=0.7.2", optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 bytes.workspace = true

@@ -95,7 +95,9 @@ mod operation_claim;
     )
 ))]
 mod replicated;
-pub use operation_claim::{OperationClaim, OperationClaims};
+pub use operation_claim::{
+    OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
+};
 mod follow_filter;
 mod follow_index;
 #[cfg(all(

@@ -24,8 +24,9 @@ mod tests {
         );
         let owned = first
             .operation_claims()
-            .claim([3; 48], || Ok::<_, ()>(()), |_| Ok(()))
+            .claim([3; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
             .unwrap()
+            .into_owner()
             .unwrap();
         assert!(
             second
@@ -33,18 +34,20 @@ mod tests {
                 .claim(
                     [3; 48],
                     || Ok::<_, ()>(()),
-                    |_| -> Result<(), ()> { panic!("duplicate allocated storage") }
+                    |_, _| -> Result<(), ()> { panic!("duplicate allocated storage") }
                 )
                 .unwrap()
-                .is_none()
+                .into_owner()
+                .is_err()
         );
         drop(owned);
         assert!(
             second
                 .operation_claims()
-                .claim([3; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                .claim([3; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
 
         let authority = std::sync::Arc::new(crate::MemoryAuthorityStore::default());
@@ -52,8 +55,9 @@ mod tests {
         let second = crate::Fs::new(authority, (), crate::EmbeddedCapabilities::MEMORY);
         let owned = first
             .operation_claims()
-            .claim([4; 48], || Ok::<_, ()>(()), |_| Ok(()))
+            .claim([4; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
             .unwrap()
+            .into_owner()
             .unwrap();
         assert!(
             second
@@ -61,10 +65,11 @@ mod tests {
                 .claim(
                     [4; 48],
                     || Ok::<_, ()>(()),
-                    |_| -> Result<(), ()> { panic!("duplicate allocated storage") }
+                    |_, _| -> Result<(), ()> { panic!("duplicate allocated storage") }
                 )
                 .unwrap()
-                .is_none()
+                .into_owner()
+                .is_err()
         );
         drop(owned);
     }
@@ -76,8 +81,9 @@ mod tests {
         let independent = crate::Fs::memory();
         let claim = filesystem
             .operation_claims()
-            .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
+            .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
             .unwrap()
+            .into_owner()
             .unwrap();
         let allocations = Cell::new(0);
         assert!(
@@ -86,36 +92,40 @@ mod tests {
                 .claim(
                     [1; 48],
                     || Ok::<_, ()>(()),
-                    |_| {
+                    |_, _| {
                         allocations.set(allocations.get() + 1);
                         Ok(())
                     }
                 )
                 .unwrap()
-                .is_none()
+                .into_owner()
+                .is_err()
         );
         assert_eq!(allocations.get(), 0);
         assert!(
             independent
                 .operation_claims()
-                .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
         assert!(
             alias
                 .operation_claims()
-                .claim([2; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                .claim([2; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
         drop(claim);
         assert!(
             alias
                 .operation_claims()
-                .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
     }
 
@@ -124,14 +134,15 @@ mod tests {
         let claims = OperationClaims::default();
         assert!(
             claims
-                .claim([1; 48], || Ok::<_, ()>(()), |_| Err::<(), _>(()))
+                .claim([1; 48], || Ok::<_, ()>(()), |_, _| Err::<(), _>(()))
                 .is_err()
         );
         assert!(
             claims
-                .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
     }
 }
@@ -155,9 +166,10 @@ mod models {
                     let claims = claims.clone();
                     let active = active.clone();
                     loom::thread::spawn(move || {
-                        if let Some(claim) = claims
-                            .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                        if let Ok(claim) = claims
+                            .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                             .unwrap()
+                            .into_owner()
                         {
                             assert_eq!(active.fetch_add(1, Ordering::SeqCst), 0);
                             loom::thread::yield_now();
@@ -173,9 +185,10 @@ mod models {
             assert_eq!(active.load(Ordering::SeqCst), 0);
             assert!(
                 claims
-                    .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                    .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                     .unwrap()
-                    .is_some()
+                    .into_owner()
+                    .is_ok()
             );
         });
     }

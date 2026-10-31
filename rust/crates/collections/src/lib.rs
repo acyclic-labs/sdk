@@ -4,7 +4,10 @@
 //! at most eight branches per key byte and one leaf, independent of entry count.
 //! Key widths share insertion, accounting, lookup and constant-space retirement.
 
+mod arc;
 pub mod page;
+pub use arc::arc_allocation_bytes;
+
 mod recent;
 pub use recent::RecentIndex;
 
