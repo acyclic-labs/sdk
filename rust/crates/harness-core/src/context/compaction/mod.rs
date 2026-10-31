@@ -122,3 +122,6 @@ mod tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod unknown_output_tests;
+
+mod projection;
+pub use projection::compact_projection;

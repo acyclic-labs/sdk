@@ -1,171 +1,5 @@
 use super::*;
 
-#[tokio::test]
-pub(super) async fn lost_pair_ack_recovers_both_records_without_exposing_raw_source() -> Result<()>
-{
-    let Fixture {
-        stream,
-        provider,
-        source,
-        compacted,
-        reference,
-        ..
-    } = fixture().await?;
-    stream.lose_ack.store(true, Ordering::SeqCst);
-    let key = Bytes::from_static(b"pair");
-    assert!(matches!(
-        provider
-            .append_compaction(
-                0,
-                source.clone(),
-                compacted.clone(),
-                reference.clone(),
-                key.clone()
-            )
-            .await,
-        Err(Error::Storage(_))
-    ));
-    assert_eq!(provider.tail_revision(None).await?, 2);
-    assert_eq!(provider.latest().await?, compacted);
-    let pair = provider
-        .append_compaction(0, source, compacted.clone(), reference, key)
-        .await?;
-    assert_eq!(provider.tail_revision(None).await?, 2);
-    let pin = provider
-        .latest_revision()
-        .await?
-        .ok_or_else(|| Error::Storage("missing projection".into()))?;
-    assert_eq!(pair.last(), Some(&pin));
-    provider
-        .append(2, Context::default(), None, Bytes::from_static(b"later"))
-        .await?;
-    assert_eq!(provider.latest().await?, Context::default());
-    assert_eq!(provider.revision(pin.revision).await?, pin);
-    Ok(())
-}
-
-#[tokio::test]
-pub(super) async fn malformed_pair_receipts_preserve_exact_recovery() -> Result<()> {
-    for field in [1, 2, 3] {
-        let Fixture {
-            stream,
-            provider,
-            source,
-            compacted,
-            reference,
-            ..
-        } = fixture().await?;
-        stream.append_receipt_fault.store(field, Ordering::SeqCst);
-        let key = Bytes::from_static(b"malformed-pair");
-        assert!(matches!(
-            provider
-                .append_compaction(
-                    0,
-                    source.clone(),
-                    compacted.clone(),
-                    reference.clone(),
-                    key.clone()
-                )
-                .await,
-            Err(Error::Storage(_))
-        ));
-        assert_eq!(provider.tail_revision(None).await?, 2);
-        assert_eq!(provider.latest().await?, compacted);
-        provider
-            .append_compaction(0, source, compacted, reference, key)
-            .await?;
-        assert_eq!(provider.tail_revision(None).await?, 2);
-    }
-    Ok(())
-}
-
-#[tokio::test]
-pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_recovery()
--> Result<()> {
-    let Fixture {
-        storage,
-        provider,
-        source,
-        compacted,
-        reference,
-        ..
-    } = fixture().await?;
-    provider
-        .append_compaction(
-            0,
-            source,
-            compacted.clone(),
-            reference,
-            Bytes::from_static(b"continuing-source"),
-        )
-        .await?;
-    let provider = Arc::new(provider);
-    let (model, _counts) = summary_model(2);
-    let executor = StockExecutor::new(
-        Model::new("synthetic".into(), "continuing".into(), "1".into())?,
-        model.clone(),
-        ContextPipeline::new([Arc::new(SourceStage::new(
-            "memory",
-            "1",
-            provider.clone(),
-            ContextPlacement::Prepend,
-        ))
-            as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::default(),
-    );
-    let input = TurnInput {
-        operation_id: OperationId::new(),
-        input: ModelContent::Text("later input".into()),
-        selected_context: None,
-        max_steps: 1,
-    };
-    let journal = storage.journal();
-    let output = executor.execute(input.clone(), journal.as_ref()).await?;
-    {
-        let requests = model.requests();
-        let request = requests
-            .first()
-            .ok_or_else(|| Error::Invalid("missing later admission".into()))?;
-        assert_eq!(request.messages.len(), compacted.messages.len() + 1);
-        assert_eq!(
-            request.messages.get(..compacted.messages.len()),
-            Some(compacted.messages.as_slice())
-        );
-        assert_eq!(
-            request.messages.last().map(|message| &message.content),
-            Some(&input.input)
-        );
-    }
-    provider
-        .append(
-            2,
-            Context::default(),
-            None,
-            Bytes::from_static(b"changed-source"),
-        )
-        .await?;
-    assert_eq!(executor.execute(input, journal.as_ref()).await?, output);
-    assert_eq!(model.requests().len(), 1);
-    executor
-        .execute(
-            TurnInput {
-                operation_id: OperationId::new(),
-                input: ModelContent::Text("new source admission".into()),
-                selected_context: None,
-                max_steps: 1,
-            },
-            journal.as_ref(),
-        )
-        .await?;
-    let requests = model.requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(
-        requests.last().map(|request| request.messages.len()),
-        Some(1)
-    );
-    Ok(())
-}
-
 pub(super) fn typed_payload_source() -> Context {
     Context {
         messages: vec![
@@ -206,11 +40,10 @@ pub(super) fn typed_payload_source() -> Context {
 #[tokio::test]
 pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_exchange()
 -> Result<()> {
-    let stream: Arc<LostSessionAck> = Arc::new(LostSessionAck::default());
-    let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 262_144).await?);
-    let content = Arc::new(StoredContent(storage));
-    let path = StreamPath::new("context/typed-payload")
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    use acyclic_harness::executor::ExecutionEvent;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 262_144).await?;
+    let journal = storage.journal();
+    let operation = OperationId::new();
     let limits = Limits {
         file_bytes: 262_144,
         render_bytes: 262_144,
@@ -219,63 +52,58 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
         path_bytes: 4_096,
         ..Limits::default()
     };
-    let provider = DurableContextProvider::new(
-        stream.clone(),
-        path.clone(),
-        "memory",
-        "1",
-        1,
-        content.clone(),
-        limits,
-    )?
-    .with_publisher(content.clone())?;
     let source = typed_payload_source();
-    let record = provider
-        .append(
-            0,
-            source.clone(),
-            None,
-            Bytes::from_static(b"typed-payload"),
-        )
+    let bytes = serde_json::to_vec(&source).map_err(|error| Error::Invalid(error.to_string()))?;
+    let projection = journal
+        .stage(operation, "typed-payload", &bytes, "application/json", None)?
         .await?;
-    assert!(record.content.descriptor().byte_length() > MAX_RECORD_BYTES as u64);
-    let mut records = stream
-        .read(ReadRequest {
-            key: None,
-            path: path.clone(),
-            from: 0,
-            limit: 1,
-            at_least: Default::default(),
-        })
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let stored = records
-        .next()
-        .await
-        .ok_or_else(|| Error::Storage("missing stored revision".into()))?
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    assert!(stored.value.len() < MAX_RECORD_BYTES);
-    let wire: serde_json::Value =
-        serde_json::from_slice(&stored.value).map_err(|error| Error::Invalid(error.to_string()))?;
-    let pointer: FileRef = serde_json::from_value(
-        wire.get("context")
-            .cloned()
-            .ok_or_else(|| Error::Storage("missing payload pointer".into()))?,
-    )
-    .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(pointer, record.content);
+    assert!(projection.descriptor().byte_length() > MAX_RECORD_BYTES as u64);
+    journal
+        .append(
+            operation,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    journal
+        .append(
+            operation,
+            "prepared",
+            &ExecutionEvent::ContextPrepared {
+                step: 0,
+                projection: projection.clone(),
+            },
+            None,
+        )?
+        .await?;
+    let records = journal.replay(operation, 1, 1, None)?.await?;
+    let Some(ExecutionEvent::ContextPrepared {
+        projection: retained,
+        ..
+    }) = records.first().map(|record| &record.event)
+    else {
+        return Err(Error::Storage("missing prepared context".into()));
+    };
+    assert_eq!(retained, &projection);
+    let record =
+        serde_json::to_vec(&records[0].event).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(record.len() < MAX_RECORD_BYTES);
     assert!(
-        !stored
-            .value
+        !record
             .windows(b"instruction-secret".len())
             .any(|bytes| bytes == b"instruction-secret")
     );
-    let reader = DurableContextProvider::new(stream, path, "memory", "1", 1, content, limits)?;
-    assert_eq!(reader.revision(1).await?.context, source);
+    let bytes = storage.read(retained).await?;
+    let reopened: Context =
+        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(reopened, source);
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
             model: Model::new("synthetic".into(), "typed-payload".into(), "1".into())?,
-            messages: reader.latest().await?.messages,
+            messages: reopened.messages,
             tools: vec![ToolDefinition {
                 name: "echo".into(),
                 revision: "1".into(),
@@ -300,7 +128,6 @@ pub(super) async fn checkpoint_envelope_binds_real_published_context_and_admitte
 -> Result<()> {
     let Fixture {
         storage,
-        provider,
         source,
         compacted,
         reference,
@@ -311,15 +138,19 @@ pub(super) async fn checkpoint_envelope_binds_real_published_context_and_admitte
         .as_ref()
         .ok_or_else(|| Error::Invalid("missing admitted summary".into()))?
         .operation_id;
-    let records = provider
-        .append_compaction(
-            0,
-            source.clone(),
-            compacted.clone(),
-            reference.clone(),
-            Bytes::from_static(b"checkpoint-envelope-source"),
-        )
-        .await?;
+    let mut payloads = Vec::new();
+    for (path, context) in [
+        ("checkpoint-source.json", &source),
+        ("checkpoint-retained.json", &compacted),
+    ] {
+        let bytes =
+            serde_json::to_vec(context).map_err(|error| Error::Invalid(error.to_string()))?;
+        payloads.push(
+            storage
+                .stage(operation_id, path, &bytes, "application/json", path)
+                .await?,
+        );
+    }
     let proof_bytes = reference.encode()?;
     let proof = storage
         .stage(
@@ -337,8 +168,8 @@ pub(super) async fn checkpoint_envelope_binds_real_published_context_and_admitte
             message_ids: (0..3).map(|_| uuid::Uuid::new_v4()).collect(),
             checkpoint: None,
         },
-        source: records[0].content.clone(),
-        retained: records[1].content.clone(),
+        source: payloads[0].clone(),
+        retained: payloads[1].clone(),
         compaction: proof,
     };
     checkpoint.validate_projection(&source, &compacted, &reference, Limits::default(), None)?;
@@ -370,15 +201,6 @@ pub(super) async fn checkpoint_envelope_binds_real_published_context_and_admitte
     let reopened: acyclic_harness::context::CanonicalContextCheckpoint =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(reopened, checkpoint);
-    reopened.validate_projection(
-        &records[0].context,
-        &records[1].context,
-        records[1]
-            .compaction
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("missing published proof".into()))?,
-        Limits::default(),
-        None,
-    )?;
+    reopened.validate_projection(&source, &compacted, &reference, Limits::default(), None)?;
     Ok(())
 }

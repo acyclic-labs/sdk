@@ -1,18 +1,11 @@
 //! Ordered function-based context assembly.
 
-use crate::contract::next_revision;
 use crate::{
     Result,
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef, Limits},
     model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
-use acyclic_stream::{
-    AppendOutcome, AppendRequest, IdempotencyKey as StreamIdempotencyKey, MAX_RECORD_BYTES,
-    ReadRequest, StreamError, StreamPath, StreamProvider,
-};
-use bytes::Bytes;
-use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -60,9 +53,6 @@ pub use manifest::DEFAULT_CONVENTIONS_JSON;
 
 mod checkpoint;
 pub use checkpoint::*;
-#[doc(hidden)]
-mod durable;
-pub use durable::*;
 mod validation;
 pub(crate) use validation::{
     plan_compaction_budget, restrict_context_limits, validate_compaction,

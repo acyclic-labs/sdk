@@ -3,11 +3,9 @@
 
 use acyclic_harness::context::{
     CompactionPolicy, CompactionReference, Context, ContextPipeline, ContextPlacement,
-    DurableContextProvider, ModelContextCapacity, ModelTokenCount, SourceStage,
+    ModelContextCapacity, ModelTokenCount, compact_projection,
 };
-use acyclic_harness::conversation::{
-    ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeRef,
-};
+use acyclic_harness::conversation::{ContentResidencyVerifier, FileRef, Limits};
 use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
 use acyclic_harness::filesystem::MemoryHarnessStorage;
 use acyclic_harness::model::{
@@ -17,19 +15,11 @@ use acyclic_harness::model::{
 use acyclic_harness::test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn};
 use acyclic_harness::tool::{ToolDefinition, ToolRegistry};
 use acyclic_harness::{AgentId, Error, OperationId, Result};
-use acyclic_stream::{MAX_RECORD_BYTES, ReadRequest, StreamPath, StreamProvider};
-use bytes::Bytes;
-use futures::StreamExt as _;
+use acyclic_stream::MAX_RECORD_BYTES;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-
-#[path = "../support/stream/mod.rs"]
-mod stream_fixture;
-
-use crate::context_continuation::stream_fixture as stream_fault;
-use stream_fault::LostSessionAck;
 
 struct StoredContent(Arc<MemoryHarnessStorage>);
 
@@ -119,42 +109,6 @@ impl ContentResidencyVerifier for StoredContent {
     }
 }
 
-impl ContentPublisher for StoredContent {
-    fn volume(&self) -> &VolumeRef {
-        self.0.volume()
-    }
-
-    fn stage<'a>(
-        &'a self,
-        operation: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-        access: acyclic_harness::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<
-        acyclic_harness::conversation::BoundedContentFuture<
-            'a,
-            (
-                FileRef,
-                Option<acyclic_harness::conversation::ContentHold<'a>>,
-            ),
-        >,
-    > {
-        let acyclic_harness::conversation::ContentAccess {
-            ceiling: _ceiling,
-            io,
-        } = access;
-
-        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
-            self.0
-                .stage(operation, path, bytes, media_type, display_name)
-                .await
-                .map(|file| (file, None))
-        })
-    }
-}
-
 async fn message(
     storage: &MemoryHarnessStorage,
     role: ModelRole,
@@ -180,35 +134,14 @@ async fn message(
 }
 
 struct Fixture {
-    stream: Arc<LostSessionAck>,
     storage: Arc<MemoryHarnessStorage>,
-    provider: DurableContextProvider,
     source: Context,
     compacted: Context,
     reference: CompactionReference,
 }
 
 async fn fixture() -> Result<Fixture> {
-    let stream = Arc::new(LostSessionAck::default());
     let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 65_536).await?);
-    let content = Arc::new(StoredContent(storage.clone()));
-    let provider = DurableContextProvider::new(
-        stream.clone(),
-        StreamPath::new("context/continuing").map_err(|error| Error::Invalid(error.to_string()))?,
-        "memory",
-        "1",
-        1,
-        content.clone(),
-        Limits {
-            file_bytes: 65_536,
-            render_bytes: 65_536,
-            context_messages: 32,
-            attachments: 32,
-            path_bytes: 4_096,
-            ..Limits::default()
-        },
-    )?
-    .with_publisher(content)?;
     let source = Context {
         messages: vec![
             message(&storage, ModelRole::User, "old").await?,
@@ -236,87 +169,13 @@ async fn fixture() -> Result<Fixture> {
         ModelContent::Text("Summarize the pinned source".into()),
     )
     .await?;
-    let (compacted, reference) = DurableContextProvider::compact(&source, 2, Some(summary), None)?;
+    let (compacted, reference) = compact_projection(&source, 2, Some(summary), None)?;
     Ok(Fixture {
-        stream,
         storage,
-        provider,
         source,
         compacted,
         reference,
     })
-}
-
-struct InputDependentStage {
-    revision: u32,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl acyclic_harness::context::ContextStage for InputDependentStage {
-    fn name(&self) -> &str {
-        "input-dependent"
-    }
-    fn contract(
-        &self,
-        _: Option<&acyclic_harness::conversation::ContentIo>,
-    ) -> Result<serde_json::Value> {
-        Ok(serde_json::json!({ "name": self.name(), "revision": self.revision }))
-    }
-    fn apply<'a>(
-        &'a self,
-        input: &'a acyclic_harness::context::ContextInput,
-        mut context: Context,
-        _: Limits,
-        io: Option<&'a acyclic_harness::conversation::ContentIo>,
-    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Context>> {
-        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            context.messages.push(ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(format!(
-                    "stage:{}:{}",
-                    self.revision,
-                    serde_json::to_string(&input.input)
-                        .map_err(|error| Error::Invalid(error.to_string()))?
-                )),
-            });
-            context.messages.reverse();
-            let length = u32::try_from(context.messages.len())
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            context.current_input_index =
-                context.current_input_index.map(|index| length - 1 - index);
-            Ok(context)
-        })
-    }
-}
-
-fn assert_fresh_stage_requests(provider: &ScriptedModelProvider, limits: Limits) -> usize {
-    let requests = provider.requests();
-    let responses = requests
-        .iter()
-        .filter(|request| {
-            request
-                .messages
-                .iter()
-                .any(|message| message.role == ModelRole::System)
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(responses.len(), 10);
-    for (turn, request) in responses.iter().enumerate() {
-        let systems = request
-            .messages
-            .iter()
-            .filter(|message| message.role == ModelRole::System)
-            .collect::<Vec<_>>();
-        assert_eq!(systems.len(), 1);
-        let expected = if turn < 5 { "stage:1:" } else { "stage:2:" };
-        assert!(
-            matches!(systems.first().map(|message| &message.content), Some(ModelContent::Text(text)) if text.starts_with(expected))
-        );
-        assert!(request.messages.len() <= limits.context_messages);
-    }
-    assert!(requests.len() > responses.len());
-    requests.len()
 }
 
 #[path = "../context_continuation/projection.rs"]

@@ -37,12 +37,8 @@ pub(crate) fn validate_compaction(
         };
         #[cfg(feature = "filesystem")]
         let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
-        let (reconstructed, proof) = DurableContextProvider::compact(
-            source,
-            reference.maximum_messages as usize,
-            summary,
-            io,
-        )?;
+        let (reconstructed, proof) =
+            compact_projection(source, reference.maximum_messages as usize, summary, io)?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             quota.adopt(io.owned_bytes()? - before)?;
