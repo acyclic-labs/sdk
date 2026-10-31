@@ -62,9 +62,9 @@ pub(super) struct CaptureSourceGate {
 /// Blocking native callback adapter over one async canonical checkout.
 ///
 /// The callback bridge runs on native driver threads or multithreaded Tokio
-/// executors. Entry from a current-thread executor returns
-/// [`std::io::ErrorKind::WouldBlock`] before constructing or polling checkout
-/// work, so the calling executor remains available to its completion producers.
+/// executors. A current-thread executor may complete ready checkout work;
+/// pending work returns [`std::io::ErrorKind::WouldBlock`] before parking, so
+/// the calling executor remains available to its completion producers.
 pub struct CheckoutMountSource<A: 'static, O: 'static> {
     checkout: Arc<SharedCheckout<A, O>>,
     root: NamespacePath,

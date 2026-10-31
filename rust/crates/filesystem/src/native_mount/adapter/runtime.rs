@@ -113,28 +113,24 @@ impl CallbackRuntime {
         }
     }
 
-    fn enter<T>(&self, poll: impl FnOnce() -> T) -> std::io::Result<T> {
+    fn enter<T>(&self, poll: impl FnOnce(bool) -> T) -> T {
         let current = tokio::runtime::Handle::try_current();
-        if current.as_ref().is_ok_and(|current| {
+        let may_park = !current.as_ref().is_ok_and(|current| {
             current.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread
-        }) {
-            // Entering another handle cannot run siblings on this executor.
-            // Refuse before constructing work that could depend on them.
-            return Err(std::io::ErrorKind::WouldBlock.into());
-        }
+        });
         let poll = || {
             let _runtime = self.handle.enter();
             let _inline = acyclic_native_runtime::InlineBlocking::enter();
-            poll()
+            poll(may_park)
         };
-        Ok(match current {
+        match current {
             Ok(current)
                 if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
             {
                 tokio::task::block_in_place(poll)
             }
             _ => poll(),
-        })
+        }
     }
 
     pub(in crate::native_mount) fn wait_prepared<T, E, F>(
@@ -148,9 +144,8 @@ impl CallbackRuntime {
     {
         // Admit the actual future before its constructor can run. Its box dies
         // before the allocation guard, including on cancellation and unwind.
-        let mut future = self
-            .enter(|| native_future(&prepared.work, || tokio::task::unconstrained(create())))
-            .map_err(crate::NativeTreeMaterializationError::Io)??;
+        let mut future =
+            self.enter(|_| native_future(&prepared.work, || tokio::task::unconstrained(create())))?;
         self.poll_prepared(prepared, Pin::new(&mut future))
     }
 
@@ -168,7 +163,7 @@ impl CallbackRuntime {
         E: From<crate::NativeTreeMaterializationError>,
     {
         let PreparedCallbackWait { parked, .. } = prepared;
-        self.enter(|| Self::poll(future, &parked))
+        self.enter(|may_park| Self::poll(future, &parked, may_park))
             .map_err(crate::NativeTreeMaterializationError::Io)?
     }
 
@@ -218,7 +213,7 @@ impl CallbackRuntime {
         create: impl FnOnce() -> F,
         meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<F::Output> {
-        self.enter(|| {
+        self.enter(|may_park| {
             let mut allocation = RuntimeAllocation { meter, bytes: 0 };
             let (future, _) = crate::heap_future::in_heap_admitted(
                 (create, &mut allocation),
@@ -231,17 +226,27 @@ impl CallbackRuntime {
                 changed: std::sync::Condvar::new(),
                 _allocation: None,
             });
-            Ok(Self::poll(future, &parked))
-        })?
+            Self::poll(future, &parked, may_park)
+        })
     }
 
-    fn poll<F: Future + Unpin>(mut future: F, parked: &Arc<ParkedCallback>) -> F::Output {
+    fn poll<F: Future + Unpin>(
+        mut future: F,
+        parked: &Arc<ParkedCallback>,
+        may_park: bool,
+    ) -> std::io::Result<F::Output> {
         let waker = Waker::from(Arc::clone(parked));
         let mut context = Context::from_waker(&waker);
         loop {
             if let Poll::Ready(output) = Pin::new(&mut future).poll(&mut context) {
                 drop(future);
-                return output;
+                return Ok(output);
+            }
+            // A synchronous entry cannot drive the calling current-thread
+            // executor. Ready work needs no park; pending work must yield to
+            // its original caller instead of suppressing a sibling producer.
+            if !may_park {
+                return Err(std::io::ErrorKind::WouldBlock.into());
             }
             #[cfg(test)]
             if let Some(before_park) = BEFORE_PARK.with_borrow_mut(Option::take) {
