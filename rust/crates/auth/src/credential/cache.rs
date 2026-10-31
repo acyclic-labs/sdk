@@ -1,5 +1,5 @@
 //! Opt-in cache: validity comes from the source custodian, never decoded claims.
-use super::{CredentialError, Shared, valid_credential};
+use super::{CredentialError, CustodianPlatform, Shared, valid_credential};
 use futures::future::{AbortHandle, Abortable, FutureExt, Shared as SharedFuture};
 use std::{
     future::Future,
@@ -53,9 +53,54 @@ pub struct CredentialValidity {
     pub revision: Option<CredentialRevision>,
 }
 
+/// Protected token storage together with its original allocation custody.
+///
+/// Storage is scrubbed and destroyed before its custody is released. Custody
+/// must own the original allocation backing the token; it grants no source
+/// authority and does not establish revision/expiry validity.
+pub struct CredentialToken<C> {
+    token: Zeroizing<String>,
+    _custody: C,
+}
+
+impl<C> CredentialToken<C> {
+    /// Move the original bytes and allocation together without allocating or
+    /// copying. Admit the enclosing box before constructing it for a snapshot.
+    pub fn new(token: String, custody: C) -> Self {
+        Self {
+            token: Zeroizing::new(token),
+            _custody: custody,
+        }
+    }
+}
+
+trait RetainedToken: CustodianPlatform {
+    fn token(&self) -> &str;
+}
+
+impl<C: CustodianPlatform> RetainedToken for CredentialToken<C> {
+    fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+enum Token {
+    Owned(Zeroizing<String>),
+    Retained(Box<dyn RetainedToken>),
+}
+
+impl Token {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Owned(token) => token,
+            Self::Retained(token) => token.token(),
+        }
+    }
+}
+
 /// A bounded credential and its custodian-supplied validity. Debug redacts bytes.
 pub struct CredentialSnapshot {
-    token: Zeroizing<String>,
+    token: Token,
     revision: CredentialRevision,
     expires_at: u64,
 }
@@ -82,7 +127,27 @@ impl CredentialSnapshot {
             return Err(CredentialError::Invalid);
         }
         Ok(Self {
-            token,
+            token: Token::Owned(token),
+            revision,
+            expires_at,
+        })
+    }
+
+    /// Transfer the original protected token and its allocation owner without
+    /// copying bytes or allocating another token. Rejection drops that same
+    /// owner. Successful construction retains it until the final snapshot lease
+    /// drops, including leases held by rejected or completed transport requests.
+    /// Expiry/revision must be authenticated or owned by the source custodian.
+    pub fn from_retained<C: CustodianPlatform + 'static>(
+        token: Box<CredentialToken<C>>,
+        revision: CredentialRevision,
+        expires_at: u64,
+    ) -> Result<Self, CredentialError> {
+        if !valid_credential(token.token()) {
+            return Err(CredentialError::Invalid);
+        }
+        Ok(Self {
+            token: Token::Retained(token),
             revision,
             expires_at,
         })
@@ -98,7 +163,7 @@ impl CredentialSnapshot {
 
     /// Borrow secret bytes only for the admitted transport request.
     pub fn token(&self) -> &str {
-        &self.token
+        self.token.as_str()
     }
     /// The trusted source revision at publication.
     pub fn revision(&self) -> CredentialRevision {
@@ -111,7 +176,7 @@ impl CredentialSnapshot {
 }
 
 /// Immutable snapshot ownership; native Arc, browser Rc. Dropping the last
-/// lease scrubs its token. A lease does not extend its absolute expiry.
+/// lease destroys its protected token owner. A lease does not extend expiry.
 pub type CredentialLease = Shared<CredentialSnapshot>;
 
 /// Typed refresh/validity failures. No failure returns an older credential.
@@ -247,6 +312,10 @@ impl CredentialCache {
         };
         let result = waiter.future.clone().await;
         let validity = (self.0.observe)();
+        // Token custody may reenter this cache on drop. Retire every observed
+        // or replaced lease after the guard, including early-error paths.
+        let rejected;
+        let _retired;
         let mut state = self
             .0
             .flight
@@ -258,17 +327,18 @@ impl CredentialCache {
             .ok_or(CredentialCacheError::Stale)?;
         if let Ok(snapshot) = &result {
             valid(snapshot, &validity)?;
-            if self
-                .0
-                .rejected
-                .load()
+            rejected = self.0.rejected.load();
+            if rejected
+                .as_ref()
                 .is_some_and(|rejected| rejected.token() == snapshot.token())
             {
                 return Err(CredentialCacheError::Rejected);
             }
             if !flight.published {
-                self.0.current.store(Some(snapshot.clone()));
-                self.0.rejected.store(None);
+                _retired = (
+                    self.0.current.swap(Some(snapshot.clone())),
+                    self.0.rejected.swap(None),
+                );
                 flight.published = true;
             }
         }
@@ -279,19 +349,20 @@ impl CredentialCache {
     fn waiter(&self, validity: CredentialValidity) -> Result<Resolution, CredentialCacheError> {
         // Declared before the guard so a retired flight drops outside the lock.
         let mut _retired = None;
+        let current;
         let mut state = self
             .0
             .flight
             .lock()
             .map_err(|_| CredentialCacheError::Unavailable)?;
         // A preceding refresh may have published between the warm miss and lock.
-        if let Some(snapshot) = self
-            .0
-            .current
-            .load()
-            .filter(|snapshot| valid(snapshot, &validity).is_ok())
+        current = self.0.current.load();
+        if current
+            .as_ref()
+            .is_some_and(|snapshot| valid(snapshot, &validity).is_ok())
         {
-            return Ok(Resolution::Ready(snapshot));
+            drop(state);
+            return Ok(Resolution::Ready(current.unwrap()));
         }
         // A published flight whose snapshot is no longer valid must not be
         // joined: a paused waiter can keep it stored past expiry. Its waiters
@@ -329,7 +400,7 @@ impl CredentialCache {
     /// Invalidate only the exact snapshot rejected by a server. A late 401 for
     /// an older request cannot discard a replacement credential or its refresh.
     pub fn reject(&self, rejected: &CredentialLease) -> Result<bool, CredentialCacheError> {
-        let flight = {
+        let (flight, _retired) = {
             let mut state = self
                 .0
                 .flight
@@ -338,13 +409,16 @@ impl CredentialCache {
             if !self.0.current.matches(rejected) {
                 return Ok(false);
             }
-            self.0.current.store(None);
-            self.0.rejected.store(Some(rejected.clone()));
-            if state.as_ref().is_some_and(|flight| flight.published) {
+            let retired = (
+                self.0.current.swap(None),
+                self.0.rejected.swap(Some(rejected.clone())),
+            );
+            let flight = if state.as_ref().is_some_and(|flight| flight.published) {
                 state.take()
             } else {
                 None
-            }
+            };
+            (flight, retired)
         };
         if let Some(flight) = flight {
             flight.abort.abort();
@@ -384,21 +458,26 @@ impl CredentialCache {
     }
 
     fn invalidate_current(&self, abort_pending: bool) -> Result<(), CredentialCacheError> {
-        let flight = {
+        let (flight, _retired) = {
             let mut state = self
                 .0
                 .flight
                 .lock()
                 .map_err(|_| CredentialCacheError::Unavailable)?;
-            self.0.current.store(None);
-            if abort_pending {
-                self.0.rejected.store(None);
-            }
-            if abort_pending || state.as_ref().is_some_and(|flight| flight.published) {
+            let retired = (
+                self.0.current.swap(None),
+                if abort_pending {
+                    self.0.rejected.swap(None)
+                } else {
+                    None
+                },
+            );
+            let flight = if abort_pending || state.as_ref().is_some_and(|flight| flight.published) {
                 state.take()
             } else {
                 None
-            }
+            };
+            (flight, retired)
         };
         if let Some(flight) = flight {
             flight.abort.abort();
@@ -458,5 +537,106 @@ impl Drop for Waiter {
         };
         // Source futures can own arbitrary destructors; release outside lock.
         drop(retained);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Weak,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Reenter {
+        cache: Weak<Inner>,
+        drops: Arc<AtomicUsize>,
+        locked: Arc<AtomicUsize>,
+    }
+
+    impl Drop for Reenter {
+        fn drop(&mut self) {
+            let Some(inner) = self.cache.upgrade() else {
+                return;
+            };
+            // Detect a regression before reentry could hang the test.
+            if inner.flight.try_lock().is_err() {
+                self.locked.fetch_add(1, Ordering::SeqCst);
+                return;
+            }
+            CredentialCache(inner).invalidate().unwrap();
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn retained_token_cleanup_reenters_after_slot_and_flight_retirement() {
+        use futures::{executor::block_on, future};
+        for action in 0..5 {
+            let owner = Arc::new(Mutex::new(Weak::new()));
+            let drops = Arc::new(AtomicUsize::new(0));
+            let locked = Arc::new(AtomicUsize::new(0));
+            let revision = Arc::new(AtomicUsize::new(1));
+            let cache = CredentialCache::new(
+                {
+                    let (owner, drops, locked, revision) = (
+                        owner.clone(),
+                        drops.clone(),
+                        locked.clone(),
+                        revision.clone(),
+                    );
+                    move |_| {
+                        future::ready(CredentialSnapshot::from_retained(
+                            Box::new(CredentialToken::new(
+                                format!("synthetic-{}", revision.load(Ordering::SeqCst)),
+                                Reenter {
+                                    cache: owner.lock().unwrap().clone(),
+                                    drops: drops.clone(),
+                                    locked: locked.clone(),
+                                },
+                            )),
+                            CredentialRevision::Bytes([revision.load(Ordering::SeqCst) as u8; 32]),
+                            100,
+                        ))
+                    }
+                },
+                {
+                    let revision = revision.clone();
+                    move || CredentialValidity {
+                        now_unix_seconds: 1,
+                        revision: Some(CredentialRevision::Bytes(
+                            [revision.load(Ordering::SeqCst) as u8; 32],
+                        )),
+                    }
+                },
+            );
+            *owner.lock().unwrap() = Arc::downgrade(&cache.0);
+            let lease = block_on(cache.resolve()).unwrap();
+            if action == 2 || action == 4 {
+                assert!(cache.reject(&lease).unwrap());
+            }
+            drop(lease);
+            match action {
+                0 | 2 => cache.invalidate().unwrap(),
+                1 => cache.source_changed().unwrap(),
+                3 | 4 => {
+                    revision.store(2, Ordering::SeqCst);
+                    drop(block_on(cache.resolve()).unwrap());
+                }
+                _ => unreachable!(),
+            }
+            assert!(drops.load(Ordering::SeqCst) >= 1, "action {action}");
+            assert_eq!(locked.load(Ordering::SeqCst), 0, "action {action}");
+            // The same oracle detects cleanup under the original guard without
+            // attempting a blocking reentrant acquisition.
+            let guard = cache.0.flight.lock().unwrap();
+            drop(Reenter {
+                cache: Arc::downgrade(&cache.0),
+                drops: drops.clone(),
+                locked: locked.clone(),
+            });
+            assert_eq!(locked.load(Ordering::SeqCst), 1);
+            drop(guard);
+        }
     }
 }

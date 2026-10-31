@@ -10,8 +10,8 @@ impl Slot {
     pub(super) fn load(&self) -> Option<CredentialLease> {
         self.0.load_full()
     }
-    pub(super) fn store(&self, value: Option<CredentialLease>) {
-        self.0.store(value);
+    pub(super) fn swap(&self, value: Option<CredentialLease>) -> Option<CredentialLease> {
+        self.0.swap(value)
     }
 }
 
@@ -24,8 +24,8 @@ impl Slot {
     pub(super) fn load(&self) -> Option<CredentialLease> {
         self.0.borrow().clone()
     }
-    pub(super) fn store(&self, value: Option<CredentialLease>) {
-        *self.0.borrow_mut() = value;
+    pub(super) fn swap(&self, value: Option<CredentialLease>) -> Option<CredentialLease> {
+        self.0.replace(value)
     }
 }
 

@@ -8,7 +8,7 @@ mod watch;
 pub use action::{CredentialAction, CredentialPending};
 pub use cache::{
     CredentialCache, CredentialCacheError, CredentialLease, CredentialRevision, CredentialSnapshot,
-    CredentialValidity,
+    CredentialToken, CredentialValidity,
 };
 pub use custodian::{CredentialRequest, CredentialResolution, CredentialSource, CustodianPlatform};
 use std::{future::Future, pin::Pin};

@@ -4,6 +4,121 @@ use std::sync::atomic::AtomicUsize;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+/// Synthetic token bytes; the allocation and cache/request owners are real.
+#[tokio::test]
+async fn retained_token_custody_follows_exact_snapshot_and_request_retirement() -> TestResult {
+    use acyclic_auth::credential::{CredentialProvider, CredentialToken};
+
+    fn snapshot(
+        work: &crate::NativeMaterializationWork,
+        text: &str,
+    ) -> Result<CredentialSnapshot, CredentialError> {
+        let frame = std::mem::size_of::<CredentialToken<crate::NativeAllocation>>() as u64;
+        let mut allocation = work
+            .claim(frame + text.len() as u64, 2, crate::WorkCounters::UNCHARGED)
+            .map_err(error)?;
+        let token = text.to_owned();
+        allocation
+            .reconcile_capacity(frame + token.capacity() as u64)
+            .map_err(error)?;
+        let pointer = token.as_ptr();
+        let snapshot = CredentialSnapshot::from_retained(
+            Box::new(CredentialToken::new(token, allocation)),
+            CredentialRevision::Bytes([1; 32]),
+            100,
+        )?;
+        assert_eq!(
+            snapshot.token().as_ptr(),
+            pointer,
+            "token must not be copied"
+        );
+        Ok(snapshot)
+    }
+
+    let stop = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        crate::performance::work_budget(64, 1024 * 1024),
+        &stop,
+    )
+    .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    assert!(matches!(
+        snapshot(&original, "invalid\r\ntoken"),
+        Err(CredentialError::Invalid)
+    ));
+    assert_eq!(original.live_allocation_bytes(), baseline);
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let refresh_attempts = attempts.clone();
+    let refresh_work = original.clone();
+    let cache = CredentialCache::new(
+        move |_| {
+            let attempt = refresh_attempts.fetch_add(1, Ordering::Relaxed);
+            futures::future::ready(snapshot(
+                &refresh_work,
+                if attempt < 2 {
+                    "synthetic-original"
+                } else {
+                    "synthetic-replacement"
+                },
+            ))
+        },
+        || CredentialValidity {
+            now_unix_seconds: 1,
+            revision: Some(CredentialRevision::Bytes([1; 32])),
+        },
+    );
+    let provider = CredentialProvider::from(cache.clone());
+    let old = provider.resolve().await?;
+    let retained_old = old.clone();
+    let first_bytes = original.live_allocation_bytes();
+    assert!(first_bytes > baseline);
+    let receipt = original.receipt();
+    for _ in 0..1024 {
+        let warm = provider.resolve().await?;
+        assert_eq!(warm.as_str().as_ptr(), old.as_str().as_ptr());
+        warm.check().await?;
+    }
+    assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(original.receipt(), receipt, "warm leases add no token work");
+
+    assert!(old.reject().await?);
+    assert!(matches!(
+        provider.resolve().await,
+        Err(CredentialError::Provider(error))
+            if matches!(error.downcast_ref::<CredentialCacheError>(), Some(CredentialCacheError::Rejected))
+    ));
+    assert_eq!(original.live_allocation_bytes(), first_bytes);
+    let current = provider.resolve().await?;
+    let both_bytes = original.live_allocation_bytes();
+    assert!(both_bytes > first_bytes);
+    assert!(old.check().await.is_err());
+    assert!(
+        !old.reject().await?,
+        "late 401 cannot retire the replacement"
+    );
+    current.check().await?;
+    assert!(snapshot(&original, "invalid\r\nreplacement").is_err());
+    assert_eq!(original.live_allocation_bytes(), both_bytes);
+
+    cache.invalidate()?;
+    stop.cancel();
+    drop((cache, provider));
+    assert_eq!(original.live_allocation_bytes(), both_bytes);
+    drop(old);
+    assert_eq!(original.live_allocation_bytes(), both_bytes);
+    drop(retained_old);
+    assert_eq!(
+        original.live_allocation_bytes(),
+        baseline + both_bytes - first_bytes,
+        "only the final exact original lease retires its claim"
+    );
+    assert!(current.check().await.is_err());
+    drop(current);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
 async fn native_source(
     directory: &std::path::Path,
     original: &crate::NativeMaterializationWork,
