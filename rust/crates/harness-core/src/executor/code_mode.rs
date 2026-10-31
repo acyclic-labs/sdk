@@ -171,6 +171,32 @@ impl StockExecution<'_> {
         tool: &Tool,
         context: Option<&crate::runtime::ToolContext>,
     ) -> Result<Option<ProfileDispatch>> {
+        #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+        if self.io.is_none()
+            && (tool.skill_source.is_some()
+                || (invocation.name == "code" && tool.definition.revision == CODE_REVISION)
+                || (invocation.name == "call" && tool.definition.revision == "skill-call-1"))
+            && let Some(session) = &self.stock.code_session
+        {
+            let io = session.preparation()?;
+            let mut execution = StockExecution::ordinary(self.stock);
+            execution.context = self.context;
+            execution.io = Some(&io);
+            return execution
+                .profile_dispatch_prepared(journal, invocation, tool, context)
+                .await;
+        }
+        self.profile_dispatch_prepared(journal, invocation, tool, context)
+            .await
+    }
+
+    async fn profile_dispatch_prepared(
+        &self,
+        journal: &dyn ExecutionJournal,
+        invocation: &ToolInvocation,
+        tool: &Tool,
+        context: Option<&crate::runtime::ToolContext>,
+    ) -> Result<Option<ProfileDispatch>> {
         if invocation.name == "call" && tool.definition.revision == "skill-call-1" {
             let target = crate::tools::variants::CallInput::target(&invocation.arguments)?;
             let admitted = self

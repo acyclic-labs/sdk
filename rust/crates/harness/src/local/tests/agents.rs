@@ -171,7 +171,9 @@ async fn served_shared_interpreter_uses_original_session_and_journaled_file_call
             } if name == "code" => Some(value.clone()),
             _ => None,
         })
-        .ok_or_else(|| Error::NotFound("successful code result".into()))?;
+        .ok_or_else(|| {
+            Error::NotFound(format!("successful code result: {:?}", request.messages))
+        })?;
     let file = serde_json::from_value::<crate::tool::files::FileResult>(value)
         .map_err(agent)?
         .file;

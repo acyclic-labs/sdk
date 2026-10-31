@@ -40,6 +40,18 @@ pub struct AgentSession {
 }
 
 impl SessionWork {
+    /// Starts a transient preparation frame on the same admitted ledger.
+    /// The frame cannot retain the serving producer or reset its allowance.
+    #[cfg(feature = "code-mode")]
+    pub(crate) fn preparation(&self) -> Result<PreparationIo> {
+        self.io.check_cancellation()?;
+        let work = self
+            .io
+            .original_native_work()
+            .ok_or_else(|| self.io.invalid("session has no native admission"))?;
+        PreparationIo::from_native_work(work)
+    }
+
     /// Moves the runtime's original admission into a fresh cancellation scope.
     /// No remaining allowance is copied or reset. The non-clone owner must be
     /// held by the actual serving task, never by a consumer or an agent turn.
@@ -71,11 +83,11 @@ impl SessionWork {
         let work = self
             .io
             .original_native_work()
-            .ok_or_else(|| Error::Invalid("session has no native admission".into()))?;
+            .ok_or_else(|| self.io.invalid("session has no native admission"))?;
         let mut code = self
             .code
             .lock()
-            .map_err(|_| Error::Invalid("session interpreter admission is poisoned".into()))?;
+            .map_err(|_| self.io.invalid("session interpreter admission is poisoned"))?;
         if code.is_none() {
             *code = Some(crate::code_mode::CodeRuntime::shared(work)?);
         }
@@ -89,12 +101,12 @@ impl SessionWork {
         let work = self
             .io
             .original_native_work()
-            .ok_or_else(|| Error::Invalid("session has no native admission".into()))?;
+            .ok_or_else(|| self.io.invalid("session has no native admission"))?;
         let mut accounting = Accounting(work);
         let mut agents = self
             .agents
             .lock()
-            .map_err(|_| Error::Invalid("session agent index is poisoned".into()))?;
+            .map_err(|_| self.io.invalid("session agent index is poisoned"))?;
         let slot = agents.get_or_try_insert_with(agent.to_bytes(), &mut accounting, |work| {
             let allocation = claim_arc::<AgentSession>(work.0)?;
             let io = PreparationIo::from_native_work(work.0)?;
