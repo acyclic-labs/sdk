@@ -102,7 +102,6 @@ async function prepare(test, gitOrigin) {
     models: { tiny: { capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true } } }, max_event_bytes: 65536,
     token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
   await json(fixture.catalog, { e2e: provider });
-  fixture.env.E2E_MOCK_URL = `http://127.0.0.1:${port}/${test.id}/v1`;
   fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
   fixture.requested = request => events.has(requestKey(test.id, request));
   fixture.onRequest = listener => events.subscribe(event => {

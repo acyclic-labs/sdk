@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Spool, Processes } from "./process.mjs";
-import { fenced } from "./orphan-check.mjs";
+import { alive, fenced } from "./orphan-check.mjs";
 import { expand, seed } from "./fixtures.mjs";
 
 test("orphan endpoint input works without ambient inheritance", async () => {
@@ -48,7 +48,8 @@ test("orphan endpoint input works without ambient inheritance", async () => {
     for await (const chunk of incoming) body.push(chunk);
     const record = { path: "orphan-ready", body: JSON.parse(Buffer.concat(body).toString()) };
     assert.equal(record.body.parent_pid, tree.child.pid);
-    assert.throws(() => fenced([record], "orphan-ready"), /survived owner recovery/);
+    assert.equal(alive(record.body.pid), true);
+    assert.equal(alive(record.body.parent_pid), true);
     response.end();
     const released = await tree.closed;
     assert.equal(released.code, 1);
@@ -74,7 +75,6 @@ test("orphan oracle rejects real live processes and accepts their confirmed exit
     const records = [{ path: "probe", body: { pid: identities[0], parent_pid: identities[1] } }];
     // Negative control: the barrier alone must never qualify a live process.
     assert.throws(() => fenced(records, "probe"), /survived owner recovery/);
-    await processes.close();
     await Promise.all(children.map(child => child.closed));
     fenced(records, "probe");
     assert.throws(() => fenced([], "probe"), /committed exactly once/);
