@@ -998,12 +998,12 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             None,
             &[
                 crate::filesystem::WorkspaceMutation::CreateDirectory {
-                    path: "/.agents/skills/project-context".into(),
+                    path: "/.agents/skills/context-checkpoint".into(),
                 },
                 crate::filesystem::WorkspaceMutation::PutFile {
-                    path: "/.agents/skills/project-context/SKILL.md".into(),
+                    path: "/.agents/skills/context-checkpoint/SKILL.md".into(),
                     bytes: acyclic_stream::OwnedBytes::from_static(
-                        b"---\nname: project-context\ndescription: Project-specific context\n---\nproject procedure",
+                        b"---\nname: context-checkpoint\ndescription: Project-specific context\n---\nproject procedure",
                     ),
                 },
             ],
@@ -1056,13 +1056,26 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     let child_skills = catalog(0)?;
     let project_skill = child_skills
         .iter()
-        .find(|skill| skill.name == "project-context")
+        .find(|skill| {
+            skill.name == "context-checkpoint" && &skill.source.root.volume == child_project
+        })
         .ok_or_else(|| Error::NotFound("child project skill".into()))?;
     assert_eq!(&project_skill.source.root.volume, child_project);
+    assert_eq!(
+        child_skills
+            .iter()
+            .filter(|skill| skill.name == "context-checkpoint")
+            .count(),
+        2,
+        "configured and built-in sources remain separate pinned entries",
+    );
+    assert!(child_skills.iter().any(|skill| {
+        skill.name == "context-checkpoint" && &skill.source.root.volume == child_scratch
+    }));
     assert!(
         child_skills
             .iter()
-            .filter(|skill| skill.name != "project-context")
+            .filter(|skill| skill.name != "context-checkpoint")
             .all(|skill| &skill.source.root.volume == child_scratch)
     );
     assert!(
@@ -1086,13 +1099,16 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     let parent_skills = catalog(2)?;
     let project_skill = parent_skills
         .iter()
-        .find(|skill| skill.name == "project-context")
+        .find(|skill| skill.name == "context-checkpoint" && skill.source.root.volume == project)
         .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
     assert_eq!(&project_skill.source.root.volume, &project);
+    assert!(parent_skills.iter().any(|skill| {
+        skill.name == "context-checkpoint" && skill.source.root.volume == harness.scratch
+    }));
     assert!(
         parent_skills
             .iter()
-            .filter(|skill| skill.name != "project-context")
+            .filter(|skill| skill.name != "context-checkpoint")
             .all(|skill| skill.source.root.volume == harness.scratch)
     );
     assert_ne!(child_skills, parent_skills);
