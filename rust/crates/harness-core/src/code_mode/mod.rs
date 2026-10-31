@@ -4,6 +4,7 @@
 //! No realm, process, task or runtime is retained for a dormant agent. The
 //! interpreter has no module loader, filesystem, network, timer or process API.
 
+mod custody;
 mod declarations;
 #[cfg(feature = "filesystem")]
 mod native_allocator;
@@ -16,6 +17,7 @@ use crate::{
     tool::{ToolDefinition, ToolInvocation, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture;
+use custody::Retained;
 use futures::{StreamExt, stream::FuturesOrdered};
 use rquickjs::{Context, Function, MultiWith, Runtime};
 use serde_json::Value;
@@ -170,7 +172,9 @@ impl CodeRuntime {
     /// Creates the harness's shared interpreter, without any ambient host APIs.
     pub fn new(memory: Arc<dyn CodeMemory>) -> Result<Self> {
         let runtime = Runtime::new().map_err(js_error)?;
-        runtime.set_memory_limit(memory.credit_bytes().map_or(0, NonZeroUsize::get));
+        if let Some(credit) = memory.credit_bytes() {
+            runtime.set_memory_limit(credit.get());
+        }
         let compiler = typescript::Compiler::new(&runtime)?;
         Ok(Self {
             compiler,
@@ -260,22 +264,19 @@ impl CodeRuntime {
             phase = self.phase.lock() => phase,
         };
         control.check()?;
-        let failure = Arc::new(Mutex::new(None));
+        let failure = self.retained_arc(Mutex::new(None))?;
         let interrupt_failure = Arc::clone(&failure);
         let interrupt_control = Arc::clone(&control);
-        self.runtime.set_interrupt_handler(Some(Box::new(move || {
-            match interrupt_control.check() {
-                Ok(()) => false,
-                Err(error) => {
-                    let mut failure = lock(&interrupt_failure);
-                    if failure.is_none() {
-                        *failure = Some(error);
-                    }
-                    true
+        let lease = self.interrupt_handler(move || match interrupt_control.check() {
+            Ok(()) => false,
+            Err(error) => {
+                let mut failure = lock(&interrupt_failure);
+                if failure.is_none() {
+                    *failure = Some(error);
                 }
+                true
             }
-        })));
-        let lease = PhaseLease(&self.runtime);
+        })?;
         let result = action(&self.runtime).and_then(|value| {
             while self
                 .runtime
@@ -302,14 +303,17 @@ impl CodeRuntime {
 
 // Every exit, including future drop, retires only this transient realm's jobs.
 // Native callbacks merely enqueue descriptors; cleanup cannot dispatch effects.
-struct PhaseLease<'a>(&'a Runtime);
+struct PhaseLease<'a> {
+    runtime: &'a Runtime,
+    _custody: crate::NativeCustody,
+}
 impl Drop for PhaseLease<'_> {
     fn drop(&mut self) {
-        self.0.set_interrupt_handler(Some(Box::new(|| true)));
-        while self.0.is_job_pending() {
-            let _ = self.0.execute_pending_job();
+        self.runtime.set_interrupt_handler(Some(Box::new(|| true)));
+        while self.runtime.is_job_pending() {
+            let _ = self.runtime.execute_pending_job();
         }
-        self.0.set_interrupt_handler(None);
+        self.runtime.set_interrupt_handler(None);
     }
 }
 
@@ -322,8 +326,8 @@ async fn run(
     host: Arc<dyn CodeHost + '_>,
     control: Arc<dyn CodeControl>,
 ) -> Result<Value> {
-    let queue = Arc::new(Mutex::new(VecDeque::new()));
-    let protocol = Arc::new(Protocol::default());
+    let queue = engine.retained_arc(Mutex::new(VecDeque::new()))?;
+    let protocol = engine.retained_arc(Protocol::default())?;
     let context = engine
         .phase(&control, |runtime| {
             let context = Context::full(runtime).map_err(js_error)?;
@@ -409,8 +413,8 @@ fn install(
     outer: &ToolInvocation,
     tools: &[ToolDefinition],
     input: &Value,
-    queue: Arc<Mutex<VecDeque<QueuedCall>>>,
-    protocol: Arc<Protocol>,
+    queue: Arc<Retained<Mutex<VecDeque<QueuedCall>>>>,
+    protocol: Arc<Retained<Protocol>>,
 ) -> Result<()> {
     let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
     let allowed: HashSet<_> = names.iter().map(|name| (*name).to_owned()).collect();

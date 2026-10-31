@@ -205,6 +205,36 @@ async fn javascript_cannot_catch_original_heap_exhaustion_into_success() -> Resu
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
+#[test]
+fn rust_frames_retain_exact_original_custody_until_the_last_reference() -> Result<()> {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let runtime = CodeRuntime::new_with_native_work(Arc::new(Memory), &work)?;
+    let baseline = work.live_allocation_bytes();
+    let frame = runtime.retained_arc(Mutex::new(None::<Error>))?;
+    let retained =
+        acyclic_native_runtime::arc_allocation_bytes::<Retained<Mutex<Option<Error>>>>() as u64;
+    assert_eq!(work.live_allocation_bytes(), baseline + retained);
+    let last = Arc::clone(&frame);
+    drop(frame);
+    assert_eq!(work.live_allocation_bytes(), baseline + retained);
+    drop(last);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+
+    // The same constructor must refuse before Arc allocation when the original
+    // operation credit is exhausted, retaining neither a frame nor new credit.
+    work.charge(WorkCounters {
+        allocation_operations: work.remaining()?.allocation_operations,
+        ..WorkCounters::UNCHARGED
+    })?;
+    assert!(runtime.retained_arc(Mutex::new(None::<Error>)).is_err());
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
 #[tokio::test]
 async fn caught_protocol_forgery_cannot_start_dependent_host_effects() -> Result<()> {
     let runtime = CodeRuntime::new(Arc::new(Memory))?;

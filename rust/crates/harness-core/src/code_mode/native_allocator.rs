@@ -19,6 +19,7 @@ use std::{
 /// are destroyed. Allocator failures cannot be caught and acknowledged by JS.
 pub(super) struct AllocatorState {
     first: Mutex<Option<NativeTreeMaterializationError>>,
+    work: NativeMaterializationWork,
     _custody: NativeAllocation,
 }
 
@@ -32,6 +33,12 @@ impl AllocatorState {
 
     pub(super) fn take_failure(&self) -> Option<Error> {
         lock(&self.first).take().map(Error::from)
+    }
+
+    pub(super) fn claim(&self, bytes: u64, operations: u64) -> Result<NativeAllocation> {
+        self.work
+            .claim(bytes, operations, WorkCounters::UNCHARGED)
+            .map_err(Into::into)
     }
 }
 
@@ -61,8 +68,9 @@ fn layout(payload: usize) -> std::result::Result<Layout, NativeTreeMaterializati
 
 pub(super) fn runtime(work: &NativeMaterializationWork) -> Result<(Runtime, Arc<AllocatorState>)> {
     // The two allocator-holder boxes are part of rquickjs's fixed ABI adapter.
-    // Its other Rust runtime scaffolding and TypeScript preparation are outside
-    // these C callbacks and require their own original admission before use.
+    // Its other Rust runtime scaffolding is outside these C callbacks and
+    // requires its own original admission before use. TypeScript preparation
+    // itself runs inside the credited interpreter heap.
     let metadata = acyclic_native_runtime::arc_allocation_bytes::<AllocatorState>()
         .checked_add(mem::size_of::<NativeAllocator>())
         .and_then(|bytes| bytes.checked_add(mem::size_of::<Box<dyn Allocator>>()))
@@ -72,6 +80,7 @@ pub(super) fn runtime(work: &NativeMaterializationWork) -> Result<(Runtime, Arc<
     let custody = work.claim(metadata as u64, 3, WorkCounters::UNCHARGED)?;
     let state = Arc::new(AllocatorState {
         first: Mutex::new(None),
+        work: work.clone(),
         _custody: custody,
     });
     let allocator = NativeAllocator {
