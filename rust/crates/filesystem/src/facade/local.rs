@@ -13,8 +13,6 @@ pub struct LocalOptions {
     /// publication references ahead of that frame, and flushes fully only
     /// when the two live on different devices.
     pub stream: acyclic_stream::LocalStreamLimits,
-    /// Durable immutable Objects provider options.
-    pub objects: acyclic_objects::local::LocalObjectsLimits,
     /// Optional caller-selected immutable-object admission limit.
     pub maximum_object_bytes: Option<u64>,
     /// Bounded disposable immutable-object accelerator shared by every handle.
@@ -29,7 +27,6 @@ impl LocalOptions {
         Self {
             root: root.into(),
             stream: acyclic_stream::LocalStreamLimits::default(),
-            objects: acyclic_objects::local::LocalObjectsLimits::default(),
             maximum_object_bytes: None,
             object_cache: crate::cache::ObjectCacheOptions::default(),
         }
