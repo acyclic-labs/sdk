@@ -220,6 +220,9 @@ pub use probe::{
 #[cfg(any(test, feature = "distributed"))]
 pub(crate) use publication::AuthorityActor;
 pub(crate) use publication::authority_actor;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use publication::codec_fuzz as publication_codec_fuzz;
 pub use publication::{
     GroupAbort, PublicationCache, PublicationError, PublicationFailure, PublicationIntent,
     PublicationOwner, PublicationReceipt, PublishGenerationRequest, PublishedGeneration,

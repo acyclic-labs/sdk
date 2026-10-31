@@ -30,6 +30,36 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
             None,
         );
         let length = bytes.len() as u64;
+        assert_eq!(
+            bytes.len(),
+            publication_payload_length_with_evidence(root, evidence, None)?
+        );
+        for version in [0_u16, 1, 2, 3, 5, u16::MAX] {
+            let mut header = bytes[..PAYLOAD_DOMAIN.len() + 2].to_vec();
+            header[PAYLOAD_DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
+            let mut steps = Vec::new();
+            let result =
+                decode_publication_evidence::<CanonicalDecodeError>(&header, u64::MAX, |step| {
+                    steps.push(step);
+                    Ok(())
+                });
+            assert!(
+                matches!(result, Err(CanonicalDecodeError::UnsupportedVersion(found)) if found == version)
+            );
+            assert!(matches!(
+                steps.as_slice(),
+                [
+                    crate::kernel::codec::ReadAllocationStep::BeforeCopy(2),
+                    crate::kernel::codec::ReadAllocationStep::Copied(2)
+                ]
+            ));
+        }
+        let mut invalid_flags = bytes.clone();
+        invalid_flags[publication_payload_length() - 1] = 4;
+        assert!(
+            decode_publication_evidence::<CanonicalDecodeError>(&invalid_flags, u64::MAX, accept)
+                .is_err()
+        );
         let decoded = decode_publication_evidence::<CanonicalDecodeError>(&bytes, length, accept)?;
         assert_eq!(decoded.publication, expected);
         assert_eq!(decoded.original_evidence, evidence);
