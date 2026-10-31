@@ -168,3 +168,103 @@ pub(super) fn cookie_is_hidden(held: bool) -> Result<(), Box<dyn std::error::Err
     );
     Ok(())
 }
+
+#[test]
+fn native_arrival_retains_early_batches_and_ends_on_cancel_or_producer_retirement()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = fixture(true)?;
+    let original = native_watch_work()?;
+    let file = fixture.directory.path().join("arrival");
+    let expected = relative_namespace_path(
+        fixture.directory.path(),
+        &file,
+        native_filesystem_profile(),
+        VolumeLimits::default(),
+    )?;
+    // The actual producer may deliver before registration or while the OS wait
+    // is entered. Both orderings retain the same batch, without a fence write.
+    std::fs::write(&file, b"first")?;
+    let before = original.receipt();
+    fixture.watch.wait_for_changes_with_native_work(&original)?;
+    let after = original.receipt();
+    assert_eq!(
+        before.backend_read_operations,
+        after.backend_read_operations
+    );
+    assert_eq!(
+        before.backend_write_operations,
+        after.backend_write_operations
+    );
+    assert_notice(&poll(&mut fixture.watch)?, &expected, &fixture.excluded);
+    baseline(&mut fixture.watch)?;
+
+    // The original fence settles delivery before the arrival observer exists.
+    std::fs::write(&file, b"second")?;
+    fixture.watch.fence()?;
+    fixture.watch.wait_for_changes_with_native_work(&original)?;
+    assert_notice(&poll(&mut fixture.watch)?, &expected, &fixture.excluded);
+    baseline(&mut fixture.watch)?;
+
+    let renamed = fixture.directory.path().join("renamed");
+    std::fs::rename(&file, &renamed)?;
+    fixture.watch.wait_for_changes_with_native_work(&original)?;
+    let batch = poll(&mut fixture.watch)?;
+    match batch {
+        WatchBatch::Changes { changes, .. } => assert!(changes.iter().any(
+            |change| matches!(change, WatchChange::Renamed { from, .. } if from == &expected)
+        )),
+        WatchBatch::RescanRequired { reason, .. } => {
+            assert_eq!(reason, WatchInvalidationReason::NativeRescanRequired);
+        }
+    }
+    // The real producer's fence establishes the quiet cancellation point.
+    fixture.watch.fence()?;
+    baseline(&mut fixture.watch)?;
+
+    let cancellation = CancellationToken::new();
+    let waiting = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    std::thread::scope(|scope| {
+        let (entered, entering) = std::sync::mpsc::channel();
+        let watch = &fixture.watch;
+        let waiter = scope.spawn(move || {
+            entered.send(()).expect("observer entry receiver");
+            watch.wait_for_changes_with_native_work(&waiting)
+        });
+        entering.recv().expect("observer entry producer");
+        cancellation.cancel();
+        assert!(matches!(
+            waiter.join().expect("arrival observer"),
+            Err(NativeWatchError::Cancelled(_))
+        ));
+    });
+
+    #[cfg(target_os = "linux")]
+    std::thread::scope(|scope| {
+        let (entered, entering) = std::sync::mpsc::channel();
+        let watch = &fixture.watch;
+        let original = &original;
+        let waiter = scope.spawn(move || {
+            entered.send(()).expect("observer entry receiver");
+            watch.wait_for_changes_with_native_work(original)
+        });
+        entering.recv().expect("observer entry producer");
+        let NativeWatchDriver::Source(source) = &fixture.watch.watcher else {
+            panic!("the held fixture must retain its native producer");
+        };
+        // Retire the actual original producer; no replacement error or timer.
+        source
+            .stop_with_work(&mut crate::NativeMaterializationWork::clone(original))
+            .expect("native producer retirement");
+        assert!(matches!(
+            waiter.join().expect("arrival observer"),
+            Err(NativeWatchError::SourceUnavailable)
+        ));
+        // The terminal state remains observable after its first notification.
+        assert!(matches!(
+            watch.wait_for_changes_with_native_work(original),
+            Err(NativeWatchError::SourceUnavailable)
+        ));
+    });
+    Ok(())
+}

@@ -1,6 +1,11 @@
 use super::*;
 
 impl NativeSourceWatch {
+    /// The original delivery path cannot wait for its own next batch.
+    pub(crate) fn ensure_wait_available(&self) -> Result<(), DemandError> {
+        self.delivery().ensure_stop_available()
+    }
+
     /// Invalidates observations retained by this producer's original sink.
     pub(crate) fn delivery_lost(&self) {
         self.delivery().notify_lost();
