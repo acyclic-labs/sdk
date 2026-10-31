@@ -7,6 +7,9 @@ mod linux {
         LocalHarness, LocalHarnessConfig, filesystem::hosting::LocalGuestEnrollment,
         local::host_owner::HostWorkspaceOwner,
     };
+    use acyclic_native_runtime::{
+        SERVICE_READY_ARGUMENT, ServiceReadySignal, take_service_ready_signal,
+    };
     use serde::Deserialize;
     use std::{io::Read, path::PathBuf, sync::Arc};
 
@@ -20,6 +23,20 @@ mod linux {
     }
 
     pub(super) fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let mut ready = take_service_ready_signal()?;
+        let result = serve(&mut ready);
+        if let Err(error) = &result
+            && let Some(ready) = ready.take()
+            && let Err(report) = ready.fail(&error.to_string())
+        {
+            eprintln!(
+                "step=report daemon startup failure; error={report}; recovery: acyclic-virtiofsd --socket PATH --config LOCAL_CONFIG.json --signal-ready"
+            );
+        }
+        result
+    }
+
+    fn serve(ready: &mut Option<ServiceReadySignal>) -> Result<(), Box<dyn std::error::Error>> {
         // This is the standalone process's single-threaded entry, before any
         // runtime or SDK services start. Keep the socket private at creation;
         // changing permissions after bind would leave an admission race.
@@ -32,6 +49,7 @@ mod linux {
             match option.to_str() {
                 Some("--socket") => socket = arguments.next().map(PathBuf::from),
                 Some("--config") => config = arguments.next().map(PathBuf::from),
+                Some(SERVICE_READY_ARGUMENT) => {}
                 _ => return Err("step=parse arguments; recovery: acyclic-virtiofsd --socket PATH --config LOCAL_CONFIG.json".into()),
             }
         }
@@ -70,6 +88,9 @@ mod linux {
                     path: socket.clone(),
                     identity: std::fs::symlink_metadata(&socket)?,
                 };
+                if let Some(ready) = ready.take() {
+                    ready.signal()?;
+                }
                 let connection = tokio::select! {
                     accepted = listener.accept() => {
                         let connection = accepted?.0;
