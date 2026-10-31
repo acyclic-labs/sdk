@@ -117,7 +117,7 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                 GENERATION
             );
             let request = ReportRequest {
-                request_id: GENERATION.into(),
+                request_id: "fedcba9876543210fedcba9876543210".into(),
                 generation: GENERATION.into(),
                 deadline_unix_ms: u64::MAX,
             };
@@ -187,9 +187,10 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                     let (delivered, read) = tokio::join!(delivery, owner.read_line(&mut line));
                     delivered.unwrap();
                     assert_ne!(read.unwrap(), 0);
+                    assert_eq!(line, format!("{}\n", serde_json::to_string(&ack).unwrap()));
                     let delivered: ReportAck = serde_json::from_str(&line).unwrap();
-                    assert_eq!(delivered.request_id, ack.request_id);
-                    assert_eq!(delivered.generation, ack.generation);
+                    assert_eq!(delivered.request_id, request.request_id);
+                    assert_eq!(delivered.generation, request.generation);
                     assert_eq!(delivered.outcome, ReportOutcome::Report);
                     assert_eq!(delivered.waits.len(), 1);
                     assert_eq!(delivered.waits[0].primitive, "channel-close");
