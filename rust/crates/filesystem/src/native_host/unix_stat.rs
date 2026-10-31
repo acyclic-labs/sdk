@@ -34,7 +34,7 @@ pub(super) fn clone_directory<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
-    retry_io(work, READ, || {
+    work.attempt_io(READ, || {
         #[cfg(all(test, target_os = "linux"))]
         stat_probe::directory_clone();
         directory.try_clone()
@@ -53,7 +53,7 @@ pub(super) fn open_unix<W: NativeHostWork>(
     } else {
         READ
     };
-    let result = retry_io(work, delta, || {
+    let result = work.attempt_io(delta, || {
         #[cfg(all(test, target_os = "linux"))]
         stat_probe::event("openat");
         #[cfg(all(test, target_os = "linux"))]
@@ -242,7 +242,7 @@ pub(super) fn root_file_handle<W: NativeHostWork>(
         handle_type: libc::c_int,
         f_handle: [u8; 128],
     }
-    let handle = retry_io(work, READ, || {
+    let handle = work.attempt_io(READ, || {
         #[cfg(test)]
         stat_probe::query(true);
         let mut handle = FileHandle {
@@ -312,7 +312,7 @@ pub(super) fn fstat<W: NativeHostWork>(
     name: &std::ffi::CStr,
     work: &mut W,
 ) -> Result<libc::stat, W::Error> {
-    retry_io(work, READ, || {
+    work.attempt_io(READ, || {
         #[cfg(all(test, target_os = "linux"))]
         stat_probe::fstat_query();
         #[cfg(all(test, target_os = "linux"))]

@@ -180,7 +180,7 @@ impl HostRoot {
         require_leaf(path)?;
         #[cfg(unix)]
         return unix_name(path.as_os_str(), work, |name, work| {
-            let stat = retry_io(work, READ, || {
+            let stat = work.attempt_io(READ, || {
                 let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
                 // SAFETY: held descriptor, terminated name and complete output remain live.
                 if unsafe {
