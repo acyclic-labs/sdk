@@ -182,3 +182,23 @@ fn successful_initialization_retains_its_fence_for_existing_clones() {
 fn premature_registration_blocks_failure_retry() {
     initialization(true, false, false);
 }
+
+#[test]
+fn release_waits_for_the_actual_owner_and_retained_fence() {
+    loom::model(|| {
+        let owner_exists = Arc::new(AtomicBool::new(true));
+        let fence_exists = Arc::new(AtomicBool::new(true));
+        let owner = OwnershipAnchor::new(Cleanup(owner_exists.clone()));
+        let owner = OwnershipAnchor::fenced(owner, Cleanup(fence_exists.clone()));
+        let released = owner.release_barrier();
+        let waiter = loom::thread::spawn(move || {
+            released.wait();
+            assert!(
+                !owner_exists.load(Ordering::SeqCst) && !fence_exists.load(Ordering::SeqCst),
+                "release preceded physical owner or retained-fence cleanup"
+            );
+        });
+        drop(owner);
+        waiter.join().unwrap();
+    });
+}

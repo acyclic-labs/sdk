@@ -174,7 +174,7 @@ impl<F: Files> Cache<F> {
                 return;
             }
             for (entry, handle) in victims.into_iter().flatten() {
-                entry.close(&handle);
+                entry.close(handle);
             }
         }
     }
@@ -233,6 +233,7 @@ impl<F: Files> Cache<F> {
                 open => open.clone(),
             };
             state.cached = false;
+            state.evicting = victim.is_some();
             drop(state);
             self.unlist(&mut ring, hand);
             if let Some(handle) = victim
@@ -253,6 +254,39 @@ pub(super) struct Lease<F: Files> {
     _settle: Settle<F>,
 }
 
+impl<F: Files> Lease<F> {
+    /// Discards every old byte. No other lease may write while the dirty
+    /// marker is retired; a competing lease refuses without running `discard`.
+    pub(super) fn discard(
+        &mut self,
+        discard: impl FnOnce(&F::File) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let state = self
+            ._settle
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let _flushing = self
+            .handle
+            .flushing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        check_lost(&self.handle.lost)?;
+        // The cache, this lease and any pending evictor own the descriptor.
+        // New leases and evictor release require the state lock held above.
+        if crate::sync::Arc::strong_count(&self.handle) != 2 + usize::from(state.evicting) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "discard requires the only file lease",
+            ));
+        }
+        self.handle.unsynced.store(true, Ordering::Release);
+        discard(self.handle.file())?;
+        self.handle.unsynced.store(false, Ordering::Release);
+        Ok(())
+    }
+}
 impl<F: Files> std::ops::Deref for Lease<F> {
     type Target = Handle<F>;
 
@@ -299,6 +333,8 @@ struct State<F: Files> {
     referenced: bool,
     /// Listed in the cache's ring.
     cached: bool,
+    /// One eviction retains the descriptor until its close finishes.
+    evicting: bool,
 }
 
 /// One open descriptor. It flushes the writes made through it before it
@@ -425,6 +461,7 @@ impl<F: Files> Entry<F> {
                 open: None,
                 referenced: true,
                 cached: false,
+                evicting: false,
             }),
             slot: AtomicUsize::new(0),
             lost,
@@ -566,18 +603,21 @@ impl<F: Files> Entry<F> {
 
     /// Closes `handle`, an idle descriptor of this file that an eviction
     /// took: it flushes, then leaves `open` unless the file was used since.
-    fn close(&self, handle: &crate::sync::Arc<Handle<F>>) {
+    fn close(&self, handle: crate::sync::Arc<Handle<F>>) {
         handle.close_flush();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !state.cached
             && state
                 .open
                 .as_ref()
-                .is_some_and(|open| crate::sync::Arc::ptr_eq(open, handle))
-            && crate::sync::Arc::strong_count(handle) == 2
+                .is_some_and(|open| crate::sync::Arc::ptr_eq(open, &handle))
+            && crate::sync::Arc::strong_count(&handle) == 2
         {
             state.open = None;
         }
+        // Retire the reference and its classification under the same lock.
+        drop(handle);
+        state.evicting = false;
         drop(state);
     }
 

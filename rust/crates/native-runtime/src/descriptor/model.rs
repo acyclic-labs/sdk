@@ -21,6 +21,9 @@ struct World {
     /// Writes whose flush failed as their descriptor closed.
     failed: u64,
     fail_flushes: bool,
+    flushes: u64,
+    discarded: u64,
+    flushed: u64,
     /// The one descriptor whose next flush fails, when only one does.
     failing: Option<u64>,
 }
@@ -70,6 +73,11 @@ impl SimFile {
     fn write(&self) {
         *self.world.world().unflushed.entry(self.id).or_default() += 1;
     }
+
+    fn discard(&self) {
+        let mut world = self.world.world();
+        world.discarded += world.unflushed.insert(self.id, 0).unwrap_or_default();
+    }
 }
 
 impl Drop for SimFile {
@@ -101,6 +109,7 @@ impl Files for Sim {
 
     fn flush(&self, file: &SimFile) -> io::Result<()> {
         let mut world = self.world();
+        world.flushes += 1;
         let unflushed = world.unflushed.insert(file.id, 0).unwrap_or_default();
         // A failing descriptor reports its failure once, as a Linux
         // descriptor does; a later flush of it succeeds.
@@ -112,6 +121,7 @@ impl Files for Sim {
             world.failed += unflushed;
             return Err(io::ErrorKind::StorageFull.into());
         }
+        world.flushed += unflushed;
         Ok(())
     }
 }
@@ -342,4 +352,241 @@ fn a_flush_never_succeeds_past_a_failed_close() {
             "a flush succeeded though a write was lost as a descriptor closed",
         )
     });
+}
+
+/// The replacement is already durable. Discarding its old log retires only
+/// those bytes; the former write-and-truncate path still incurs a close flush.
+#[test]
+fn an_exclusive_discard_omits_only_the_obsolete_log_flush() {
+    for former_write in [false, true] {
+        explore(move || {
+            let sim = Sim::default();
+            let cache = cache(&sim, 1);
+            let log = entry(&cache, &sim, "/log")?;
+            let mut lease = log.lease(&mut |_| Ok(())).map_err(failed)?;
+            lease
+                .write(|file| {
+                    file.write();
+                    Ok(())
+                })
+                .map_err(failed)?;
+            if former_write {
+                lease
+                    .write(|file| {
+                        file.discard();
+                        Ok(())
+                    })
+                    .map_err(failed)?;
+            } else {
+                lease
+                    .discard(|file| {
+                        file.discard();
+                        Ok(())
+                    })
+                    .map_err(failed)?;
+            }
+            drop(lease);
+            drop(log);
+            drop(cache);
+            let world = sim.world();
+            check(
+                world.discarded == 1 && world.dropped == 0,
+                "discard lost a live write",
+            )?;
+            check(
+                world.flushes == u64::from(former_write),
+                "discard retained the obsolete close flush",
+            )
+        });
+    }
+}
+
+/// An eviction's retained descriptor is not a competing writer lease.
+#[test]
+fn a_pending_eviction_does_not_refuse_the_only_discard_lease() {
+    explore(|| {
+        let sim = Sim::default();
+        let cache = cache(&sim, 1);
+        let log = entry(&cache, &sim, "/log")?;
+        append(&log).map_err(failed)?;
+        let evicting = {
+            let cache = Arc::clone(&cache);
+            let sim = sim.clone();
+            loom::thread::spawn(move || entry(&cache, &sim, "/other").map(drop))
+        };
+        let mut lease = log.lease(&mut |_| Ok(())).map_err(failed)?;
+        let discarded = lease.discard(|file| {
+            file.discard();
+            Ok(())
+        });
+        drop(lease);
+        join(evicting)??;
+        discarded.map_err(failed)?;
+        drop(log);
+        drop(cache);
+        let world = sim.world();
+        check(
+            world.dropped == 0 && world.discarded + world.flushed == 1,
+            "an eviction lost a write or refused the only discard lease",
+        )
+    });
+}
+
+/// A competing lease refuses without changing its live writes.
+#[test]
+fn a_refused_discard_preserves_live_writes() {
+    explore(|| {
+        let sim = Sim::default();
+        let cache = cache(&sim, 1);
+        let log = entry(&cache, &sim, "/log")?;
+        let mut lease = log.lease(&mut |_| Ok(())).map_err(failed)?;
+        lease
+            .write(|file| {
+                file.write();
+                Ok(())
+            })
+            .map_err(failed)?;
+        let writer = log.lease(&mut |_| Ok(())).map_err(failed)?;
+        let refused = lease.discard(|file| {
+            file.discard();
+            Ok(())
+        });
+        check(
+            refused.map_err(|error| error.kind()) == Err(io::ErrorKind::WouldBlock),
+            "discard accepted a competing lease",
+        )?;
+        check(sim.world().discarded == 0, "refused discard changed bytes")?;
+        drop(writer);
+        drop(lease);
+        drop(log);
+        drop(cache);
+        let world = sim.world();
+        check(
+            world.flushed == 1 && world.dropped == 0,
+            "refused discard lost the live write",
+        )
+    });
+}
+
+/// Starting clean, a partial failed discard must mark dirty before its
+/// callback and preserve that marker until the actual descriptor closes.
+#[test]
+fn a_failed_discard_keeps_its_close_flush_from_a_clean_descriptor() {
+    explore(|| {
+        let sim = Sim::default();
+        let cache = cache(&sim, 1);
+        let log = entry(&cache, &sim, "/log")?;
+        let mut lease = log.lease(&mut |_| Ok(())).map_err(failed)?;
+        check(sim.world().flushes == 0, "clean descriptor already flushed")?;
+        let refused = lease.discard(|file| {
+            file.write();
+            Err(io::ErrorKind::StorageFull.into())
+        });
+        check(
+            refused.map_err(|error| error.kind()) == Err(io::ErrorKind::StorageFull),
+            "discard hid the truncation failure",
+        )?;
+        drop(lease);
+        drop(log);
+        drop(cache);
+        let world = sim.world();
+        check(
+            world.flushes == 1 && world.flushed == 1 && world.dropped == 0,
+            "failed discard cleared or never set its dirty marker",
+        )
+    });
+}
+/// The same production lease gate protects every ordering of a later append
+/// and retirement. Every non-discarded write is flushed before close.
+#[test]
+fn a_discard_racing_an_append_never_clears_the_append_dirty_marker() {
+    explore(|| {
+        let sim = Sim::default();
+        let cache = cache(&sim, 1);
+        let log = entry(&cache, &sim, "/log")?;
+        append(&log).map_err(failed)?;
+        let mut lease = log.lease(&mut |_| Ok(())).map_err(failed)?;
+        let writer = {
+            let log = Arc::clone(&log);
+            loom::thread::spawn(move || append(&log))
+        };
+        if let Err(error) = lease.discard(|file| {
+            file.discard();
+            Ok(())
+        }) {
+            check(
+                error.kind() == io::ErrorKind::WouldBlock,
+                "a racing discard changed its refusal",
+            )?;
+        }
+        drop(lease);
+        join(writer)?.map_err(failed)?;
+        drop(log);
+        drop(cache);
+        let world = sim.world();
+        check(
+            world.dropped == 0 && world.discarded + world.flushed == 2,
+            "discard cleared the dirty marker of a live append",
+        )
+    });
+}
+
+/// A real eviction can retain a descriptor while its lease is reacquired.
+/// Once that close loses a write, discard must preserve its original error.
+#[test]
+fn a_discard_refuses_the_original_loss_after_an_eviction_race() {
+    let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&reached);
+    explore(move || {
+        let sim = Sim::default();
+        let cache = cache(&sim, 1);
+        let log = entry(&cache, &sim, "/log")?;
+        append(&log).map_err(failed)?;
+        sim.world().failing = Some(1);
+        let evicting = {
+            let cache = Arc::clone(&cache);
+            let sim = sim.clone();
+            loom::thread::spawn(move || entry(&cache, &sim, "/other").map(drop))
+        };
+        let acquired = log.lease(&mut |_| Ok(()));
+        join(evicting)??;
+        match acquired {
+            Ok(mut lease) if sim.world().failed != 0 => {
+                observed.store(true, std::sync::atomic::Ordering::Relaxed);
+                let original = log
+                    .lease(&mut |_| Ok(()))
+                    .err()
+                    .ok_or_else(|| "lease forgot the original close failure".to_owned())?;
+                let mut called = false;
+                let refused = lease
+                    .discard(|file| {
+                        called = true;
+                        file.discard();
+                        Ok(())
+                    })
+                    .err()
+                    .ok_or_else(|| "discard erased a retained close failure".to_owned())?;
+                check(
+                    !called
+                        && refused.kind() == original.kind()
+                        && refused.to_string() == original.to_string()
+                        && refused.kind() == io::ErrorKind::StorageFull,
+                    "discard replaced the retained error or changed bytes",
+                )?;
+                check(
+                    sim.world().discarded == 0,
+                    "discard callback changed bytes after a retained loss",
+                )
+            }
+            Ok(_) => Ok(()),
+            Err(error) => check(
+                error.kind() == io::ErrorKind::StorageFull,
+                "eviction changed the original close failure",
+            ),
+        }
+    });
+    assert!(
+        reached.load(std::sync::atomic::Ordering::Relaxed),
+        "no real eviction loss reached an already acquired discard lease"
+    );
 }
