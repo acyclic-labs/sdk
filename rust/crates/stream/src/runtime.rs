@@ -127,10 +127,13 @@ mod tests {
         schedule.set_unix_millis(100);
         let operation = schedule.scope(async {
             let (sent, received) = futures::channel::oneshot::channel();
+            let (release, entered) = futures::channel::oneshot::channel();
             let child = Box::pin(async move {
                 // Force the owned task through its pending handoff before
                 // observing context. A ready first poll does not exercise it.
-                assert!(yield_now().await.is_ok());
+                if entered.await.is_err() {
+                    return;
+                }
                 let clock = CapturedClock::capture().map(|clock| clock.unix_millis());
                 let _ = sent.send(clock);
             });
@@ -141,6 +144,7 @@ mod tests {
                 // captured clock, entropy and native-work schedule.
                 drop(tokio::spawn(child));
             }
+            assert!(release.send(()).is_ok());
             let result = received.await;
             schedule.drained().await;
             result
