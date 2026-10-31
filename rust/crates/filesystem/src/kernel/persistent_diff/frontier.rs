@@ -242,13 +242,8 @@ impl<F: Format> Side<F> {
                     return Err(FsError::InvalidDiff);
                 };
                 let value = values.get(frame.position).ok_or(FsError::InvalidDiff)?;
-                let (value, allocation) = persistent_io::clone_value::<F>(
-                    value,
-                    limits.maximum_name_bytes,
-                    accounting,
-                    None,
-                    0,
-                )?;
+                let (value, allocation) =
+                    persistent_io::clone_value::<F>(value, accounting, None, 0)?;
                 frame.position += 1;
                 let bytes = F::value_owned_bytes(&value);
                 Ok(Owned::new(value, allocation, bytes))
@@ -527,13 +522,7 @@ impl<F: Format> Cursor<F> {
         let Head::Value(value) = head else {
             return Err(FsError::InvalidDiff);
         };
-        let (key, allocation) = persistent_io::clone_key::<F>(
-            F::key(value),
-            self.limits.maximum_name_bytes,
-            accounting,
-            None,
-            0,
-        )?;
+        let (key, allocation) = persistent_io::clone_key::<F>(F::key(value), accounting, None, 0)?;
         let bytes = F::key_owned_bytes(&key);
         let mut result = Owned::new(
             ValueChange {
