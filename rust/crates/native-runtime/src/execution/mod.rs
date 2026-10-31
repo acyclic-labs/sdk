@@ -6,7 +6,7 @@
 //! Native root handles pin object identity for the grant's lifetime.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -194,13 +194,12 @@ impl ExecutionGrant {
         if !workspace.is_dir() {
             return Err(refused("execution workspace is not a directory"));
         }
-        let read = read
+        let mut read = read
             .into_iter()
             .map(|path| BoundPath::new(&path))
-            .map(|root| root.map(|root| (root.path.clone(), root)))
-            .collect::<io::Result<BTreeMap<_, _>>>()?
-            .into_values()
-            .collect();
+            .collect::<io::Result<Vec<_>>>()?;
+        read.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        read.dedup_by(|left, right| left.path == right.path);
         if matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.contains(&0)) {
             return Err(refused("TCP port zero is not a destination grant"));
         }
