@@ -88,7 +88,7 @@ fn a_minted_mount_capability_admits_exactly_its_request() {
     );
     assert_eq!(
         admit(&mounts.mint(&request(false, 2)), &read),
-        Err(MountRefusal::Narrower)
+        Err(MountRefusal::Wider)
     );
 }
 
