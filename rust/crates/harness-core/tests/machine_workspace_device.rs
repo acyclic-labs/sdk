@@ -268,7 +268,10 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
         let task = Arc::new(
             bindings
                 .build()?
-                .agent_context(&Capabilities::default(), storage.content_bindings())?
+                .agent_context(
+                    storage.owner_scope().capabilities(),
+                    storage.content_bindings(),
+                )?
                 .for_agent(
                     agent.clone(),
                     vec![acyclic_harness_core::agent::VolumeBinding {
