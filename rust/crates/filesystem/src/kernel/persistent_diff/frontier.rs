@@ -300,7 +300,6 @@ pub(crate) struct Cursor<F: Format> {
     before: Side<F>,
     after: Side<F>,
     limits: DecodeLimits,
-    pages_read: u64,
 }
 
 enum Step {
@@ -336,7 +335,6 @@ impl<F: Format> Cursor<F> {
             before: before_side,
             after: after_side,
             limits,
-            pages_read: 0,
         })
     }
 
@@ -414,13 +412,6 @@ impl<F: Format> Cursor<F> {
                 count += 1;
             }
         }
-        let pages = self
-            .pages_read
-            .checked_add(count as u64)
-            .ok_or(WorkError::Overflow)?;
-        if pages > u64::from(self.limits.maximum_visited_pages) {
-            return Err(FsError::InvalidDiff);
-        }
         let mut batch = persistent_io::read_pages_with_accounting::<S, F, _>(
             store,
             ids.into_iter().take(count),
@@ -430,7 +421,6 @@ impl<F: Format> Cursor<F> {
             None,
         )
         .await?;
-        self.pages_read = pages;
         let result = (|| {
             for side in [
                 if before { Some(&mut self.before) } else { None },

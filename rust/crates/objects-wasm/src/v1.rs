@@ -18,7 +18,11 @@ fn byte_limit(value: f64) -> Result<usize, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn encode_objects_v1_json(name: &str, bytes: &[u8], maximum: Option<f64>) -> Result<Vec<u8>, JsValue> {
+pub fn encode_objects_v1_json(
+    name: &str,
+    bytes: &[u8],
+    maximum: Option<f64>,
+) -> Result<Vec<u8>, JsValue> {
     json::encode_binary(name, bytes, maximum.map(byte_limit).transpose()?).map_err(error)
 }
 #[wasm_bindgen]
