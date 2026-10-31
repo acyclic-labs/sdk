@@ -74,3 +74,92 @@ async fn a_fork_extends_its_published_source_proof() -> Result<(), Box<dyn std::
     );
     Ok(())
 }
+
+async fn first_publication_work(
+    files: u8,
+    discard_proof: bool,
+) -> Result<WorkCounters, Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
+    let fs = Fs::memory();
+    let workspace = fs
+        .create_workspace("first-publish-source", B, &cancel)
+        .await?
+        .value;
+    for file in 0..files {
+        workspace
+            .write_text(&format!("/{file}"), &"x".repeat(5_000 + usize::from(file)))
+            .await?;
+    }
+    let source = workspace.head(B, &cancel).await?.value;
+    let child = workspace
+        .fork::<_, _, crate::WorkspaceError>(
+            "first-publish-child",
+            crate::workspace::ForkOptions::from_generation(source, crate::IdempotencyKey::new()),
+            crate::PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut |_| {
+                std::future::ready(Ok(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?
+        .value;
+    if discard_proof {
+        // Negative control: the same public fork without its installed proof
+        // has to prove its inherited closure at the first publication.
+        let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
+        drop(discarded);
+    }
+    let mut transaction = child
+        .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
+        .await?
+        .value;
+    transaction.write_text("/new", "child only").await?;
+    let receipt = transaction
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await?;
+    assert!(matches!(
+        receipt.value,
+        crate::TransactionCommit::Committed(_)
+    ));
+    assert_eq!(
+        child.read("/new", 32, B, &cancel).await?.value.as_ref(),
+        b"child only"
+    );
+    assert!(workspace.read("/new", 32, B, &cancel).await.is_err());
+    Ok(receipt.work)
+}
+
+#[tokio::test]
+async fn first_publication_reuses_the_public_forks_installed_proof()
+-> Result<(), Box<dyn std::error::Error>> {
+    let few = first_publication_work(4, false).await?;
+    let many = first_publication_work(32, false).await?;
+    let few_walked = first_publication_work(4, true).await?;
+    let many_walked = first_publication_work(32, true).await?;
+    eprintln!(
+        "first publication cached4={few:?} cached32={many:?} uncached4={few_walked:?} uncached32={many_walked:?}"
+    );
+    assert_eq!(
+        few.object_probes, many.object_probes,
+        "first publication probed the inherited closure"
+    );
+    assert!(many_walked.object_probes > few_walked.object_probes);
+    assert!(many_walked.object_bytes_read > few_walked.object_bytes_read);
+    assert!(many_walked.object_probes > many.object_probes);
+    Ok(())
+}
