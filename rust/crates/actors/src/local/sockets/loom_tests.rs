@@ -91,9 +91,12 @@ fn race(broken: bool) -> Result {
         "1-0",
         &target,
         1,
-        SocketPayload::Text {
-            text: "frame".into(),
-        },
+        input_record(
+            "1-0",
+            SocketInput::Message(SocketPayload::Text {
+                text: "frame".into(),
+            }),
+        )?,
     ))?;
     block_on(commit_close(
         &store,

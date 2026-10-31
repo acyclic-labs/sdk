@@ -108,6 +108,7 @@ pub(crate) struct Close {
     pub(crate) code: u16,
     pub(crate) reason: String,
     pub(crate) initiator: SocketCloseInitiator,
+    input: Option<AppendRecord>,
 }
 
 impl Close {
@@ -116,7 +117,22 @@ impl Close {
             code,
             reason: reason.into(),
             initiator,
+            input: None,
         }
+    }
+
+    fn prepare(&mut self, connection: &str) -> Result<(), GuestError> {
+        if self.input.is_none() {
+            self.input = Some(input_record(
+                connection,
+                SocketInput::Close {
+                    code: self.code,
+                    reason: self.reason.clone(),
+                    initiator: self.initiator.clone(),
+                },
+            )?);
+        }
+        Ok(())
     }
 }
 
@@ -240,14 +256,16 @@ pub(crate) async fn commit_close<P: StreamProvider + ?Sized>(
     close: &Close,
 ) -> Result<bool, Error> {
     let socket = layout.socket(connection)?;
-    let input = input_record(
-        connection,
-        &SocketInput::Close {
-            code: close.code,
-            reason: close.reason.clone(),
-            initiator: close.initiator.clone(),
-        },
-    )?;
+    let input = close.input.clone().map(Ok).unwrap_or_else(|| {
+        input_record(
+            connection,
+            SocketInput::Close {
+                code: close.code,
+                reason: close.reason.clone(),
+                initiator: close.initiator.clone(),
+            },
+        )
+    })?;
     let key = layout.key(&[connection.as_bytes(), b"close", &input.value])?;
     let mut effects = vec![
         append(
@@ -281,9 +299,8 @@ pub(crate) async fn commit_message<P: StreamProvider + ?Sized>(
     connection: &str,
     target: &Target,
     ordinal: u64,
-    payload: SocketPayload,
+    record: AppendRecord,
 ) -> Result<bool, Error> {
-    let record = input_record(connection, &SocketInput::Message(payload))?;
     commit(
         store,
         executor,
@@ -408,22 +425,42 @@ struct Entry {
     peer_closed: bool,
     /// Observers share the original close producer; they never own its work.
     completion: Option<CloseCompletion>,
+    completed: Option<oneshot::Sender<Result<(), Arc<Error>>>>,
     /// Dropped with the entry, which abandons a wait for the open's verdict.
     _abandon: oneshot::Sender<()>,
 }
 
 type CloseCompletion = futures::future::Shared<BoxProviderFuture<'static, Result<(), Arc<Error>>>>;
 
+impl Entry {
+    fn close_completion(&mut self) -> CloseCompletion {
+        if let Some(completion) = &self.completion {
+            return completion.clone();
+        }
+        let (completed, completion) = oneshot::channel();
+        let completion: BoxProviderFuture<'static, Result<(), Arc<Error>>> = Box::pin(async move {
+            completion
+                .await
+                .unwrap_or_else(|_| Err(Arc::new(Error::Stream(StreamError::Unavailable))))
+        });
+        let completion = completion.shared();
+        self.completed = Some(completed);
+        self.completion = Some(completion.clone());
+        completion
+    }
+}
+
 /// The claimed close owns retirement even if its executor drops the future.
 struct CloseOwner<P: StreamProvider + ?Sized + 'static> {
     shared: Arc<Shared<P>>,
     connection: String,
     completed: Option<oneshot::Sender<Result<(), Arc<Error>>>>,
+    retire: bool,
 }
 
 impl<P: StreamProvider + ?Sized + 'static> Drop for CloseOwner<P> {
     fn drop(&mut self) {
-        if self.completed.is_some() {
+        if self.retire {
             self.shared.lock().remove(&self.connection);
             // Closing this original producer returns typed loss to every waiter.
         }
@@ -432,7 +469,7 @@ impl<P: StreamProvider + ?Sized + 'static> Drop for CloseOwner<P> {
 
 /// One peer event awaiting its turn.
 enum PeerEvent {
-    Message(SocketPayload),
+    Message(AppendRecord),
     Close(Close),
 }
 
@@ -441,7 +478,7 @@ enum Step {
     Commit {
         target: Target,
         ordinal: u64,
-        payload: SocketPayload,
+        record: AppendRecord,
     },
     Close(Close),
 }
@@ -625,8 +662,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
     }
 
     /// Close every socket with Close(Runtime, 1001) and wait for each
-    /// committed one; a socket whose open is still committing closes as soon
-    /// as that commit settles.
+    /// committed one, including a socket whose open is still committing.
     /// Cancelling this observer leaves each original close running. A decided
     /// publication refusal or loss of its executor returns the original error.
     pub async fn drain(&self) -> Result<(), Arc<Error>> {
@@ -680,6 +716,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 pending,
             } => {
                 pending.get_or_insert_with(|| close.clone());
+                let _completion = entry.close_completion();
                 None
             }
             Phase::Closing => None,
@@ -688,20 +725,13 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             }
             | Phase::Open) => {
                 *phase = Phase::Closing;
-                let (completed, completion) = oneshot::channel();
-                let completion: BoxProviderFuture<'static, Result<(), Arc<Error>>> =
-                    Box::pin(async move {
-                        completion.await.unwrap_or_else(|_| {
-                            Err(Arc::new(Error::Stream(StreamError::Unavailable)))
-                        })
-                    });
-                let completion = completion.shared();
-                entry.completion = Some(completion.clone());
+                let completion = entry.close_completion();
                 Some((
                     CloseOwner {
                         shared: Arc::clone(self),
                         connection: connection.to_owned(),
-                        completed: Some(completed),
+                        completed: entry.completed.take(),
+                        retire: true,
                     },
                     completion,
                 ))
@@ -764,6 +794,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             .lock()
             .remove(&connection)
             .and_then(|mut entry| entry.final_frame.take());
+        owner.retire = false;
         if result.is_ok()
             && let Some(sender) = final_frame
         {
@@ -898,6 +929,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         open: SocketOpen,
         verdict: oneshot::Sender<SocketFrame>,
         abandoned: oneshot::Receiver<()>,
+        mut owner: CloseOwner<P>,
     ) {
         {
             let mut table = self.lock();
@@ -963,6 +995,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 drop(verdict);
             }
             let _completion = self.begin_close(&connection, close);
+            owner.retire = false;
             return;
         }
         let Some(ticket) = ticket else {
@@ -977,7 +1010,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         let reply = reply
             .map_err(|_| host_error("socket verdict is unavailable"))
             .and_then(|reply| crate::sockets::socket_verdict(reply.response(), &open));
-        let (frame, close) = match reply {
+        let (mut frame, close) = match reply {
             Ok(GuestEventResult::SocketAccept {
                 subprotocol,
                 attachment,
@@ -1014,10 +1047,19 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         };
         // Claim the close before the peer can learn the verdict and leave, so
         // the actor's own close is the one delivered.
-        if let Some(close) = close {
+        if let Some(mut close) = close {
+            if close.prepare(&connection).is_err() {
+                let reason = "socket verdict exceeds the inbox record bound";
+                frame = SocketFrame::Rejected {
+                    status: 500,
+                    reason: reason.into(),
+                };
+                close = Close::new(1011, reason, SocketCloseInitiator::Runtime);
+            }
             let _completion = self.begin_close(&connection, close);
         }
         let _peer_gone = verdict.send(frame);
+        owner.retire = false;
     }
 
     /// Commit the Open, retrying it identically while its outcome is
@@ -1142,7 +1184,9 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             );
             return Ok(());
         }
-        entry.inbound.push_back(PeerEvent::Message(payload));
+        let record = input_record(connection, SocketInput::Message(payload))
+            .map_err(|_| StreamError::InvalidArgument)?;
+        entry.inbound.push_back(PeerEvent::Message(record));
         let start = !std::mem::replace(&mut entry.draining, true);
         drop(table);
         if start {
@@ -1153,20 +1197,25 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     }
 
     /// The peer's close follows every message it sent before it.
-    fn peer_close(self: &Arc<Self>, connection: &str, close: Close) {
+    fn peer_close(self: &Arc<Self>, connection: &str, mut close: Close) -> Result<(), StreamError> {
         {
             let mut table = self.lock();
             if let Some(entry) = table.sockets.get_mut(connection) {
-                if std::mem::replace(&mut entry.peer_closed, true) {
-                    return;
+                if entry.peer_closed {
+                    return Ok(());
                 }
+                close
+                    .prepare(connection)
+                    .map_err(|_| StreamError::InvalidArgument)?;
+                entry.peer_closed = true;
                 if entry.draining {
                     entry.inbound.push_back(PeerEvent::Close(close));
-                    return;
+                    return Ok(());
                 }
             }
         }
         let _completion = self.begin_close(connection, close);
+        Ok(())
     }
 
     /// Apply `connection`'s queued peer events in order, then exit.
@@ -1183,7 +1232,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 Some(Step::Commit {
                     target,
                     ordinal,
-                    payload,
+                    record,
                 }) => {
                     let committed = commit_message(
                         &self.store,
@@ -1192,7 +1241,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                         &connection,
                         &target,
                         ordinal,
-                        payload,
+                        record,
                     )
                     .await;
                     if committed.is_err() {
@@ -1223,7 +1272,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             None
         };
         let step = match (event, entry.inbox.clone()) {
-            (Some(PeerEvent::Message(payload)), Some(inbox)) => {
+            (Some(PeerEvent::Message(record)), Some(inbox)) => {
                 entry.messages += 1;
                 return Some(Step::Commit {
                     target: Target {
@@ -1231,7 +1280,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                         inbox,
                     },
                     ordinal: entry.messages,
-                    payload,
+                    record,
                 });
             }
             (Some(PeerEvent::Close(close)), _) => Some(Step::Close(close)),
@@ -1290,8 +1339,14 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                         abandoned,
                     } => {
                         let (sender, verdict) = oneshot::channel();
+                        let owner = CloseOwner {
+                            shared: Arc::clone(&shared),
+                            connection: connection.clone(),
+                            completed: None,
+                            retire: true,
+                        };
                         shared.executor.spawn(Box::pin(
-                            Arc::clone(&shared).opening(connection, open, sender, abandoned),
+                            Arc::clone(&shared).opening(connection, open, sender, abandoned, owner),
                         ));
                         match verdict.await {
                             Ok(frame @ SocketFrame::Accepted { .. }) => Some((
@@ -1339,13 +1394,10 @@ impl<P: StreamProvider + ?Sized + 'static> SocketInbound for Inbound<P> {
     fn receive(&self, frame: Bytes) -> Result<(), StreamError> {
         match SocketFrame::decode(&frame).map_err(|_| StreamError::InvalidArgument)? {
             SocketFrame::Message(payload) => self.shared.message(&self.connection, payload),
-            SocketFrame::Close { code, reason, .. } => {
-                self.shared.peer_close(
-                    &self.connection,
-                    Close::new(code, &reason, SocketCloseInitiator::Peer),
-                );
-                Ok(())
-            }
+            SocketFrame::Close { code, reason, .. } => self.shared.peer_close(
+                &self.connection,
+                Close::new(code, &reason, SocketCloseInitiator::Peer),
+            ),
             SocketFrame::Accepted { .. } | SocketFrame::Rejected { .. } => {
                 Err(StreamError::InvalidArgument)
             }
@@ -1355,7 +1407,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketInbound for Inbound<P> {
 
 impl<P: StreamProvider + ?Sized + 'static> Drop for Inbound<P> {
     fn drop(&mut self) {
-        self.shared.peer_close(
+        let _ended = self.shared.peer_close(
             &self.connection,
             Close::new(1006, "peer went away", SocketCloseInitiator::Peer),
         );
@@ -1415,6 +1467,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketProvider for Sockets<P> {
                     draining: false,
                     peer_closed: false,
                     completion: None,
+                    completed: None,
                     _abandon: abandon,
                 },
             );
@@ -1509,10 +1562,9 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         reason: &str,
     ) -> Result<(), GuestError> {
         self.shared.with_entry(actor, socket, |_| Ok(()))?;
-        let _completion = self.shared.begin_close(
-            &socket.0,
-            Close::new(code, reason, SocketCloseInitiator::Actor),
-        );
+        let mut close = Close::new(code, reason, SocketCloseInitiator::Actor);
+        close.prepare(&socket.0)?;
+        let _completion = self.shared.begin_close(&socket.0, close);
         Ok(())
     }
 
