@@ -47,6 +47,16 @@ pub struct MachineBinding {
     pub forked_from: Option<String>,
 }
 
+/// First record at the binding path: choose before allocating. The second
+/// record is the settled binding, so both reads seek one fixed position.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisionPlan {
+    version: u32,
+    target: String,
+    source: Option<MachineBinding>,
+}
+
 /// What a provisioned target's new Machines are created from.
 #[derive(Clone)]
 pub struct ProvisionedTarget {
@@ -118,20 +128,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// # Errors
     /// When the binding cannot be read or is not a v1 binding of `target`.
     pub async fn binding(&self, agent: &AgentPath, target: &str) -> Result<Option<MachineBinding>> {
-        let path = agent.machine(target).map_err(agent_error)?;
-        let request = ReadRequest {
-            key: None,
-            path,
-            from: 0,
-            limit: 1,
-            at_least: Default::default(),
-        };
-        let mut records = match self.stream.read(request).await {
-            Ok(records) => records,
-            Err(StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let Some(record) = records.try_next().await? else {
+        let Some(record) = self.binding_record(agent, target, 1).await? else {
             return Ok(None);
         };
         let binding: MachineBinding = serde_json::from_slice(&record.value)
@@ -142,6 +139,46 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             ));
         }
         Ok(Some(binding))
+    }
+
+    async fn binding_record(
+        &self,
+        agent: &AgentPath,
+        target: &str,
+        from: u64,
+    ) -> Result<Option<acyclic_stream::Record>> {
+        let path = agent.machine(target).map_err(agent_error)?;
+        let request = ReadRequest {
+            key: None,
+            path,
+            from,
+            limit: 1,
+            at_least: Default::default(),
+        };
+        let mut records = match self.stream.read(request).await {
+            Ok(records) => records,
+            Err(StreamError::NotFound) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(records.try_next().await?)
+    }
+
+    async fn original_plan(
+        &self,
+        agent: &AgentPath,
+        target: &str,
+    ) -> Result<Option<ProvisionPlan>> {
+        let Some(record) = self.binding_record(agent, target, 0).await? else {
+            return Ok(None);
+        };
+        let plan: ProvisionPlan = serde_json::from_slice(&record.value)
+            .map_err(|error| Error::Storage(format!("Machine plan does not decode: {error}")))?;
+        if plan.version != MACHINE_BINDING_VERSION || plan.target != target {
+            return Err(Error::Storage(
+                "Machine plan is not a v1 plan of its target".into(),
+            ));
+        }
+        Ok(Some(plan))
     }
 
     /// `agent`'s Machine on `target`, created on this first use: a fork of
@@ -156,19 +193,68 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         if let Some(binding) = self.binding(agent, target).await? {
             return sandbox(provisioned, &binding);
         }
-        let parent = match agent.parent() {
-            Some(parent) => self.binding(&parent, target).await?,
-            None => None,
-        };
-        let binding = match parent {
+        let plan = self.plan(agent, provisioned).await?;
+        let binding = match plan.source {
             Some(parent) => self.fork(provisioned, agent, &parent).await?,
-            None => None,
-        };
-        let binding = match binding {
-            Some(binding) => binding,
             None => self.create(provisioned, agent).await?,
         };
         self.bind(agent, binding).await
+    }
+
+    async fn plan(&self, agent: &AgentPath, target: &ProvisionedTarget) -> Result<ProvisionPlan> {
+        if let Some(plan) = self.original_plan(agent, &target.name).await? {
+            return Ok(plan);
+        }
+        let parent = match agent.parent() {
+            Some(parent) => self.binding(&parent, &target.name).await?,
+            None => None,
+        };
+        let source = if let Some(parent) = parent {
+            let observed = target.host.inspect(&sandbox(target, &parent)?).await?;
+            (observed.contract.fork_fidelity().is_some()
+                && matches!(
+                    observed.state,
+                    MachineState::Running | MachineState::Suspended
+                ))
+            .then_some(parent)
+        } else {
+            None
+        };
+        let plan = ProvisionPlan {
+            version: MACHINE_BINDING_VERSION,
+            target: target.name.clone(),
+            source,
+        };
+        let (_, key) = intent("provision", agent, &target.name)?;
+        let path = agent.machine(&target.name).map_err(agent_error)?;
+        let value = serde_json::to_vec(&plan)
+            .map_err(|error| Error::Invalid(format!("Machine plan encode: {error}")))?;
+        // Distinct proposals race on Absent; only identical proposals share a
+        // replay key. Every loser adopts the immutable winning choice.
+        let mut digest = blake3::Hasher::new();
+        digest.update(key.as_str().as_bytes());
+        digest.update(&value);
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![CommitCondition::Absent { path: path.clone() }],
+            mutations: vec![CommitMutation::Append {
+                path,
+                records: vec![AppendRecord::from(value)],
+            }],
+            idempotency_key: acyclic_stream::IdempotencyKey::new(
+                digest.finalize().as_bytes().to_vec(),
+            )?,
+        };
+        match crate::agent::submit(&*self.stream, request)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+        {
+            crate::agent::Submitted::Committed(_) => Ok(plan),
+            _ => self
+                .original_plan(agent, &target.name)
+                .await?
+                .ok_or_else(|| Error::Storage("Machine provisioning choice is missing".into())),
+        }
     }
 
     async fn fork(
@@ -176,20 +262,8 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         target: &ProvisionedTarget,
         agent: &AgentPath,
         parent: &MachineBinding,
-    ) -> Result<Option<MachineBinding>> {
+    ) -> Result<MachineBinding> {
         let source = sandbox(target, parent)?;
-        let observed = target.host.inspect(&source).await?;
-        if observed.contract.fork_fidelity().is_none() {
-            return Ok(None);
-        }
-        // A suspended source (paused, or idled by the provider) is its own
-        // checkpoint: it forks without waking.
-        if !matches!(
-            observed.state,
-            MachineState::Running | MachineState::Suspended
-        ) {
-            return Ok(None);
-        }
         let (operation, key) = intent("fork", agent, &target.name)?;
         let (_, children) = target
             .host
@@ -199,12 +273,12 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             .into_iter()
             .next()
             .ok_or_else(|| Error::Storage("Machines forked no child".into()))?;
-        Ok(Some(MachineBinding {
+        Ok(MachineBinding {
             version: MACHINE_BINDING_VERSION,
             target: target.name.clone(),
             machine: target.host.machine_id(&child)?.to_string(),
             forked_from: Some(parent.machine.clone()),
-        }))
+        })
     }
 
     async fn create(
@@ -241,7 +315,10 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         let (_, key) = intent("bind", agent, &binding.target)?;
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Absent { path: path.clone() }],
+            conditions: vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 1,
+            }],
             mutations: vec![CommitMutation::Append {
                 path,
                 records: vec![AppendRecord::from(value)],
@@ -267,6 +344,23 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         }
     }
 
+    // A plan may precede an allocation whose acknowledgement or binding was
+    // lost. Reconcile its original key before parking or releasing resources.
+    async fn planned_binding(
+        &self,
+        agent: &AgentPath,
+        target: &str,
+    ) -> Result<Option<MachineBinding>> {
+        if let Some(binding) = self.binding(agent, target).await? {
+            return Ok(Some(binding));
+        }
+        if self.original_plan(agent, target).await?.is_none() {
+            return Ok(None);
+        }
+        self.machine(agent, target).await?;
+        self.binding(agent, target).await
+    }
+
     /// Suspends every Machine `agent` holds: what a paused agent keeps.
     /// Its next exec wakes each one.
     ///
@@ -276,7 +370,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     pub async fn suspend(&self, agent: &AgentPath) -> Result<()> {
         let pause = OperationId::new();
         for target in &self.targets {
-            let Some(binding) = self.binding(agent, &target.name).await? else {
+            let Some(binding) = self.planned_binding(agent, &target.name).await? else {
                 continue;
             };
             let key = IdempotencyKey::new(format!(
@@ -305,7 +399,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// When a provider refuses otherwise or its outcome is uncertain.
     pub async fn destroy(&self, agent: &AgentPath) -> Result<()> {
         for target in &self.targets {
-            let Some(mut binding) = self.binding(agent, &target.name).await? else {
+            let Some(mut binding) = self.planned_binding(agent, &target.name).await? else {
                 continue;
             };
             let mut holder = agent.clone();
@@ -499,3 +593,6 @@ fn intent(verb: &str, agent: &AgentPath, target: &str) -> Result<(OperationId, I
 fn agent_error(error: crate::agent::Error) -> Error {
     Error::Invalid(error.to_string())
 }
+
+#[cfg(test)]
+mod tests;

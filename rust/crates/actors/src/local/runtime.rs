@@ -73,6 +73,9 @@ struct Slot {
     inner: tokio::sync::Mutex<Inner>,
     refresh: AtomicBool,
     event_deliveries: AtomicUsize,
+    /// Control requests serialize separately from the delivery they stop.
+    control: tokio::sync::Mutex<()>,
+    pause_stop: SyncMutex<crate::guest::CancellationToken>,
 }
 
 /// An event retains its placement through cooperative batch boundaries.
@@ -222,6 +225,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 inner: tokio::sync::Mutex::new(Inner::default()),
                 refresh: AtomicBool::new(false),
                 event_deliveries: AtomicUsize::new(0),
+                control: tokio::sync::Mutex::new(()),
+                pause_stop: SyncMutex::new(crate::guest::CancellationToken::new()),
             }),
         );
         Ok(())
@@ -260,14 +265,31 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
     }
 
-    /// Durably pause or resume. Pause fences in-flight publication; resume wakes.
+    /// Durably pause or resume. Pause cancels the original active delivery and
+    /// waits for its cleanup before returning. Its input/unknown publication
+    /// remains with the same slot. Resume reopens admission and wakes it.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.pause",
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                let _refresh = RefreshOnDrop(self.slot(actor), true);
+                self.track(actor.clone())?;
+                let placement = self.pin(actor)?.ok_or(Error::Invalid(
+                    "actor placement retired during pause admission",
+                ))?;
+                let slot = &placement.0;
+                let _control = slot.control.lock().await;
+                if paused {
+                    slot.pause_stop
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .cancel();
+                }
+                // The running delivery owns this lock through handler cleanup
+                // and retained publication. No later delivery can pass its stop.
+                let _delivery = slot.inner.lock().await;
+                let _refresh = RefreshOnDrop(Some(Arc::clone(slot)), true);
                 loop {
                     let snapshot = self.store.load(actor).await?;
                     let state = snapshot
@@ -290,11 +312,34 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
                 if !paused {
+                    *slot
+                        .pause_stop
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        crate::guest::CancellationToken::new();
                     self.wake(actor);
                 }
                 Ok(())
             }
         )
+    }
+
+    // Pin under the same table lock as hibernation before awaiting delivery
+    // or control. The original event counter prevents a second live slot.
+    fn pin(&self, actor: &ActorReference) -> Result<Option<EventDelivery>, Error> {
+        let actors = self
+            .shard(actor)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(slot) = actors.get(actor) else {
+            return Ok(None);
+        };
+        slot.event_deliveries
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_add(1)
+            })
+            .map_err(|_| Error::Invalid("event delivery count overflow"))?;
+        Ok(Some(EventDelivery(Arc::clone(slot))))
     }
 
     /// Run every currently ready or due actor to quiescence, then return the
@@ -336,23 +381,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                let delivery = {
-                    // Pin the event under the same table lock as hibernation, before
-                    // waiting for admission. Cancellation drops this guard as well.
-                    let actors = self
-                        .shard(actor)
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let slot = actors
-                        .get(actor)
-                        .ok_or(Error::Invalid("actor is not tracked"))?;
-                    slot.event_deliveries
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                            count.checked_add(1)
-                        })
-                        .map_err(|_| Error::Invalid("event delivery count overflow"))?;
-                    EventDelivery(Arc::clone(slot))
-                };
+                let delivery = self
+                    .pin(actor)?
+                    .ok_or(Error::Invalid("actor is not tracked"))?;
                 while !self.deliver(actor, &delivery.0).await? {
                     // Drop both the actor lock and admission before queueing another
                     // batch. Finite event delivery still drains its committed input.
@@ -700,11 +731,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 continue;
             }
+            let pause_stop = slot
+                .pause_stop
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             if state.paused() {
                 // The alarm stays committed; only its active wake is withdrawn.
                 // A later wake must observe an external resume as well.
                 inner.observed = None;
                 slot.registration.suspend_alarm();
+                return Ok(true);
+            }
+            if pause_stop.is_cancelled() {
                 return Ok(true);
             }
             slot.registration.update_alarm(state.alarm())?;
@@ -766,6 +805,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             );
             let result = {
                 let interrupted = self.interrupt(&mut inner, cancellation.clone());
+                let paused = async {
+                    pause_stop.cancelled().await;
+                    cancellation.cancel();
+                    // The original handler owns cleanup. Its completion, or
+                    // its existing manifest deadline, releases the delivery.
+                    std::future::pending::<Error>().await
+                };
+                futures::pin_mut!(interrupted);
+                futures::pin_mut!(paused);
+                let interrupted = async {
+                    match futures::future::select(interrupted, paused).await {
+                        futures::future::Either::Left((error, _))
+                        | futures::future::Either::Right((error, _)) => error,
+                    }
+                };
                 futures::pin_mut!(interrupted);
                 match futures::future::select(
                     handled,
