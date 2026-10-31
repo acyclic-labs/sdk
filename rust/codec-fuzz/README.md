@@ -272,6 +272,18 @@ and require their original payload to admit while foreign payload, action,
 resource and audience refuse. Their four binary/JSON inputs await capture,
 shared goldens and execution. Authentication alone grants no request authority.
 
+Signed revocation publications reach authenticated checkpoint bootstrap and
+atomic delta/checkpoint application after either protobuf syntax. Canonical
+normalization preserves admission and frontier. Refusals preserve public trust
+decisions for every candidate target, retained targets and unrelated identities;
+checking only the frontier would miss a partially mutated index. Test-owned
+signing uses the production transcript to reach arbitrary entry admission.
+Foreign account/issuer, forged signature, time regression, delta gaps and repeated
+publications refuse. Five actual writer producers cover targeted changes,
+explicit epoch floors, preservation and retirement; ten binary/JSON inputs await
+capture, shared goldens and execution. These synchronous codec/model checks add
+no waits or production work and make no constant-time claim for ordered indexes.
+
 The Auth target also calls the resource component codec shared with grants:
 arbitrary opaque bytes round-trip, admitted syntax has one spelling, an
 incomplete escape refuses, and an opaque Objects key retains its separators.

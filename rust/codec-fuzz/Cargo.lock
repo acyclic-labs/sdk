@@ -96,6 +96,7 @@ dependencies = [
  "acyclic-protobuf-json",
  "acyclic-stream",
  "bytes",
+ "ed25519-dalek",
  "futures",
  "heck",
  "hex",
