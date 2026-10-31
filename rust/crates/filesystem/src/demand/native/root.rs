@@ -26,6 +26,8 @@ struct NativeDemandInner {
     #[cfg(any(target_os = "linux", windows))]
     watches: std::sync::RwLock<Vec<std::sync::Weak<crate::source_watch::NativeSourceWatch>>>,
     _ownership: SourcePayloadOwnership,
+    #[cfg(test)]
+    read_gate: std::sync::Mutex<Option<ReadGate>>,
 }
 
 /// The root a source opens: a path to open, or a root already held.
@@ -153,6 +155,9 @@ impl NativeDemandSource {
                                 &root.directory,
                                 &mut context,
                             )?;
+                            if !inline {
+                                acyclic_native_runtime::initialize_native_io_services()?;
+                            }
                             let reference = reference.unwrap_or_else(|| SourceReference {
                                 identity: *crate::identity::fresh_uuid().as_bytes(),
                                 epoch: 0,
@@ -179,6 +184,8 @@ impl NativeDemandSource {
                                     #[cfg(any(target_os = "linux", windows))]
                                     watches: std::sync::RwLock::new(Vec::new()),
                                     _ownership: ownership,
+                                    #[cfg(test)]
+                                    read_gate: std::sync::Mutex::new(None),
                                 }),
                                 #[cfg(test)]
                                 watchable: true,
@@ -398,5 +405,28 @@ impl NativeDemandSource {
             version: version(metadata),
             metadata: source_metadata(metadata),
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct ReadGate {
+    pub(crate) entered: std::sync::mpsc::Sender<Option<std::thread::ThreadId>>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
+    pub(crate) retired: std::sync::mpsc::Sender<()>,
+}
+#[cfg(test)]
+impl Drop for ReadGate {
+    fn drop(&mut self) {
+        let _ = self.retired.send(());
+    }
+}
+#[cfg(test)]
+impl NativeDemandSource {
+    pub(crate) fn hold_next_read(&self, gate: ReadGate) {
+        *self
+            .inner
+            .read_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
     }
 }

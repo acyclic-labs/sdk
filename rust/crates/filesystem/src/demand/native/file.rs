@@ -83,6 +83,25 @@ impl NativeDemandFile {
         length: u64,
         context: &mut CallbackWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
+        #[cfg(test)]
+        let _gate = {
+            let gate = self
+                .provider
+                .inner
+                .read_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(gate) = &gate {
+                gate.entered
+                    .send(Some(std::thread::current().id()))
+                    .map_err(|_| DemandError::WorkerUnavailable)?;
+                gate.release
+                    .recv()
+                    .map_err(|_| DemandError::WorkerUnavailable)?;
+            }
+            gate
+        };
         #[cfg(windows)]
         let file = self
             .file
@@ -284,9 +303,57 @@ impl DemandFile for NativeDemandFile {
         length: u64,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
-        let mut context = callback_work(accounting)?;
-        let result = self.read(offset, length, &mut context);
-        finish_context(result, context, accounting)
+        if self.provider.inner.inline {
+            let mut context = callback_work(accounting)?;
+            let result = self.read(offset, length, &mut context);
+            return finish_context(result, context, accounting);
+        }
+        let owner = crate::kernel::allocation::retained::NativeAccounting::take(accounting)?;
+        let prepared = (|| {
+            let cancelled = owner
+                .work
+                .cancellation_wait()
+                .map_err(crate::native_name::original_name_error)?;
+            let mut context = CallbackWork::Original(owner.work.clone());
+            let file = self.clone();
+            let task = acyclic_native_runtime::run_blocking_io(
+                move || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        file.read(offset, length, &mut context)
+                    }))
+                    .unwrap_or_else(|_| {
+                        context.with_original_leaf(|work| work.poison_native_original_work());
+                        Err(DemandError::OriginalWorkPoisoned)
+                    })
+                },
+                Some((owner.work.runtime_meter(), true)),
+            )
+            .map_err(|error| {
+                crate::native_name::original_name_error(owner.work.runtime_error(error))
+            })?;
+            Ok::<_, DemandError>((task, cancelled))
+        })();
+        let (mut task, cancelled) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                owner.restore(accounting)?;
+                return Err(error);
+            }
+        };
+        let deferred = acyclic_native_runtime::InlineBlocking::defer();
+        let result = task.wait_interruptible(cancelled);
+        drop(deferred);
+        drop(task);
+        match result {
+            Ok(Some(result)) => {
+                owner.restore(accounting)?;
+                result
+            }
+            Ok(None) => Err(DemandError::Cancelled),
+            Err(error) => Err(crate::native_name::original_name_error(
+                owner.work.runtime_error(error),
+            )),
+        }
     }
 }
 
