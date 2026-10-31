@@ -253,6 +253,10 @@ pub struct ConversationEntry {
     #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_results: Option<String>,
+    /// The original non-waking event batch frozen before this turn's request.
+    /// Inherited entries retain their ancestor's source and exclusive cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notices: Option<super::NoticeSelection>,
 }
 
 impl ConversationEntry {
@@ -323,6 +327,9 @@ struct Checkpoint {
     /// started with; a roster change meanwhile is the next turn's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     roster: Option<(FileRef, [u8; 32])>,
+    /// False only at the durable Notice selection cut, before opening the host.
+    opened: bool,
+    notices: Option<super::NoticeSelection>,
 }
 
 /// The input of the turn a step continues (kept in the checkpoint) and its
@@ -378,7 +385,21 @@ pub fn turn_segment(agent: &AgentState) -> Result<u32, Error> {
 /// # Errors
 /// When the turn's checkpoint is malformed.
 pub fn turn_roster(agent: &AgentState) -> Result<Option<Option<(FileRef, [u8; 32])>>, Error> {
-    Ok(checkpoint(agent)?.map(|checkpoint| checkpoint.roster))
+    Ok(checkpoint(agent)?
+        .filter(|checkpoint| checkpoint.opened)
+        .map(|checkpoint| checkpoint.roster))
+}
+
+/// The original Notice range frozen by the actor before opening this turn.
+///
+/// # Errors
+/// A malformed checkpoint or a foreign source is refused.
+pub fn turn_notices(agent: &AgentState) -> Result<Option<super::NoticeSelection>, Error> {
+    let selected = checkpoint(agent)?.and_then(|checkpoint| checkpoint.notices);
+    if let Some(selected) = &selected {
+        selected.validate(&agent.path)?;
+    }
+    Ok(selected)
 }
 
 /// Model-visible content of a turn input: a message or event file as a file
@@ -515,6 +536,7 @@ async fn settle_selection(
         targets: None,
         tool_results: None,
         steering: None,
+        notices: None,
     };
     Ok(TurnStep {
         reserved_children: 0,
@@ -528,6 +550,9 @@ async fn settle_selection(
 /// An entry's append, recording the roster it announced.
 fn appended(entry: &ConversationEntry, open: &OpenTurn) -> Result<Vec<Out>, Error> {
     let mut outs = vec![Out::Conversation(entry.encode()?)];
+    if let Some(selection) = &entry.notices {
+        outs.push(Out::Notices(selection.clone()));
+    }
     if let Some(steering) = &entry.steering {
         outs.push(Out::Steered(steering.through));
     }
@@ -580,6 +605,32 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             let (Queued { inbox, input }, segment) = starting(agent, input)?;
+            if agent.turn.is_none()
+                && !matches!(
+                    input.context(),
+                    Some(ContextAction::Rewind | ContextAction::Clear)
+                )
+                && let Some(notices) = super::NoticeSelection::pending(agent)
+            {
+                // This actor's due alarm is the only continuation producer.
+                // Commit selection before admitting a request; a crash reopens
+                // the same source range, never a newer pending batch.
+                return Ok(TurnStep {
+                    checkpoint: Some(encode(&Checkpoint {
+                        inbox,
+                        input,
+                        segment,
+                        roster: None,
+                        opened: false,
+                        notices: Some(notices),
+                    })?),
+                    reserved_children: 0,
+                    outs: Vec::new(),
+                    wait: Wait::Continue,
+                    drops: None,
+                });
+            }
+            let notices = turn_notices(agent)?;
             let turn = turn_id(agent, &input)?;
             let content = model_input(&input)?;
             let stop = cancellation;
@@ -624,6 +675,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         Some(boundary) => boundary.transcript(turn).await.map_err(host_error)?,
                         None => None,
                     },
+                    notices: notices.clone(),
                 };
                 return Ok(TurnStep {
                     reserved_children: 0,
@@ -670,6 +722,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                                             input,
                                             segment,
                                             roster: open.roster.clone(),
+                                            opened: true,
+                                            notices: notices.clone(),
                                         })?),
                                         reserved_children: 0,
                                         outs: Vec::new(),
@@ -706,6 +760,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             }
                             None => None,
                         },
+                        notices: notices.clone(),
                     };
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = if goal.is_some() {
@@ -749,6 +804,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             input,
                             segment,
                             roster: open.roster.clone(),
+                            opened: true,
+                            notices: notices.clone(),
                         })?),
                         reserved_children: 0,
                         outs,
@@ -777,6 +834,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             input,
                             segment,
                             roster: open.roster.clone(),
+                            opened: true,
+                            notices: notices.clone(),
                         })?),
                         reserved_children,
                         outs: Vec::new(),
@@ -816,6 +875,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             input,
                             segment,
                             roster: open.roster.clone(),
+                            opened: true,
+                            notices: notices.clone(),
                         })?),
                         reserved_children,
                         outs,

@@ -26,8 +26,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// code. The headerless format before it is version 1; version 2 carries a
 /// spawn brief by file reference. Version 3 binds goal runs to their committed
 /// terminal conversation entry. Version 4 lets a conversation entry name the
-/// execution-target roster its turn announced. Version 5 retains admitted
-/// boundary steering and distinguishes next-turn messages.
+/// execution-target roster its turn announced. Version 5 adds primitive Notices,
+/// frozen original Notice selections, admitted boundary steering, and next-turn messages.
 pub const RECORD_VERSION: u32 = 5;
 
 /// A persisted record of a format version this build does not read.

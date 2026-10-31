@@ -935,6 +935,7 @@ mod tests {
             targets: None,
             tool_results: None,
             steering: None,
+            notices: None,
         };
         let terminal = ConversationEntry {
             inbox: 3,

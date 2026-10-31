@@ -447,6 +447,10 @@ mod tests {
                     "tools/.results/{}",
                     crate::OperationId::from_bytes([255; 16])
                 )),
+                notices: Some(crate::agent::NoticeSelection {
+                    source: deepest.clone(),
+                    range: 0..u64::MAX,
+                }),
             }
             .encode()
             .expect("a conversation entry fits");
@@ -611,7 +615,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
+                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);

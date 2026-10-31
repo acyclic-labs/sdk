@@ -27,6 +27,7 @@ fn entry(inbox: u64, input: TurnInput) -> Result<Vec<u8>> {
         targets: None,
         tool_results: None,
         steering: None,
+        notices: None,
     }
     .encode()?)
 }

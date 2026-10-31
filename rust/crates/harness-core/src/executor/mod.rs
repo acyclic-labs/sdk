@@ -183,7 +183,7 @@ impl TurnInput {
             .ok_or_else(|| {
                 Error::Invalid("selected context must end with a user message".into())
             })?;
-        input.validate_user_input(&mut None)?;
+        input.validate_turn_input(&mut None)?;
         selected_context.validate_for_input(&input, None)?;
         Ok(Self {
             operation_id,

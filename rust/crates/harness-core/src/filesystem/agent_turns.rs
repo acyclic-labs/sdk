@@ -846,6 +846,81 @@ fn roster_id(turn: OperationId) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
+fn notice_id(turn: OperationId) -> uuid::Uuid {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.notices.v1");
+    hasher.update(&turn.into_bytes());
+    let mut bytes = [0; 16];
+    hasher.finalize_xof().fill(&mut bytes);
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// Read only the frozen original interval. A quiet event delivered during a
+/// paused turn is beyond this cut and cannot change an admitted request.
+async fn selected_notices<P: StreamProvider + ?Sized>(
+    stream: &P,
+    agent: &AgentPath,
+    selected: Option<&crate::agent::NoticeSelection>,
+    input: ModelContent,
+) -> Result<(Option<ModelContent>, Option<ModelContent>)> {
+    use crate::model::ModelContentPart;
+    use acyclic_model_render::PendingNotices;
+    let mut pending = PendingNotices::default();
+    if let Some(selected) = selected {
+        selected.validate(agent).map_err(agent_error)?;
+        let mut from = selected.range.start;
+        while from < selected.range.end {
+            let limit = u32::try_from(selected.range.end - from).unwrap_or(u32::MAX);
+            let mut records = stream
+                .read(ReadRequest {
+                    key: None,
+                    path: selected.source.inbox().map_err(agent_error)?,
+                    from,
+                    limit,
+                    at_least: Default::default(),
+                })
+                .await?;
+            let end = from + u64::from(limit);
+            while let Some(record) = records.try_next().await? {
+                if record.sequence != from || from >= end {
+                    return Err(Error::Invalid(
+                        "notice source range is not contiguous".into(),
+                    ));
+                }
+                if let crate::agent::InboxRecord::Notice { notice, .. } =
+                    crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?
+                    && !notice.wake
+                {
+                    pending
+                        .push(notice)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                }
+                from += 1;
+            }
+            if from != end {
+                return Err(Error::Invalid(
+                    "notice source ended before its frozen frontier".into(),
+                ));
+            }
+        }
+    }
+    let input = match input {
+        ModelContent::Part(ModelContentPart::Notices { notices }) => {
+            for notice in notices {
+                pending
+                    .push(notice)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+            }
+            None
+        }
+        other => Some(other),
+    };
+    let notices = pending.finish();
+    Ok((
+        (!notices.is_empty()).then_some(ModelContent::Part(ModelContentPart::Notices { notices })),
+        input,
+    ))
+}
+
 /// Stable, domain-separated identity of a directive.
 fn directive_id(domain: &str, text: &str) -> uuid::Uuid {
     let mut hasher = blake3::Hasher::new_derive_key(domain);
@@ -872,6 +947,7 @@ struct TurnContext<'a> {
     turn: OperationId,
     input: ModelContent,
     policy: Option<&'a FileRef>,
+    notices: Option<crate::agent::NoticeSelection>,
 }
 
 struct SettledTurn {
@@ -881,6 +957,7 @@ struct SettledTurn {
     output: FileRef,
     steering: Option<FileRef>,
     steered: Vec<ModelMessage>,
+    notices: Option<crate::agent::NoticeSelection>,
 }
 
 impl<'a> TurnContext<'a> {
@@ -925,6 +1002,7 @@ impl<'a> TurnContext<'a> {
                     output: entry.output,
                     steering: entry.steering.map(|steering| steering.file),
                     steered: Vec::new(),
+                    notices: entry.notices,
                 })
             })
             .collect::<Result<_>>()?;
@@ -937,6 +1015,7 @@ impl<'a> TurnContext<'a> {
             // A spawned agent runs under the approval policy it inherited,
             // staged on an ancestor's private volume.
             policy: agent.policy.as_ref(),
+            notices: crate::agent::turn_notices(agent).map_err(agent_error)?,
         })
     }
 
@@ -996,8 +1075,9 @@ impl<'a> TurnContext<'a> {
     /// `reader`, which holds [`Self::files`]. Shared instructions open every
     /// selection. Target rosters remain separate user messages before each
     /// turn input and retain their original publication identity.
-    async fn select(
+    async fn select<P: StreamProvider + ?Sized>(
         self,
+        stream: &P,
         agent: &AgentState,
         reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
@@ -1007,6 +1087,7 @@ impl<'a> TurnContext<'a> {
             checkpoint,
             settled,
             turn,
+            notices: current_notices,
             ..
         } = self;
         let summary = match checkpoint {
@@ -1066,6 +1147,7 @@ impl<'a> TurnContext<'a> {
             input: content,
             output,
             steered,
+            notices,
             ..
         } in settled
         {
@@ -1073,11 +1155,22 @@ impl<'a> TurnContext<'a> {
                 announce(&mut messages, &mut message_ids, settled, announced);
             }
             let text = staged_text(reader, &output).await?;
-            messages.push(ModelMessage {
-                role: ModelRole::User,
-                content,
-            });
-            message_ids.push(message_id(settled, ModelRole::User));
+            let (notices, content) =
+                selected_notices(stream, &agent.path, notices.as_ref(), content).await?;
+            if let Some(notices) = notices {
+                messages.push(ModelMessage {
+                    role: ModelRole::User,
+                    content: notices,
+                });
+                message_ids.push(notice_id(settled));
+            }
+            if let Some(content) = content {
+                messages.push(ModelMessage {
+                    role: ModelRole::User,
+                    content,
+                });
+                message_ids.push(message_id(settled, ModelRole::User));
+            }
             for (index, message) in steered.into_iter().enumerate() {
                 let mut hasher =
                     blake3::Hasher::new_derive_key("acyclic.harness.steering-message.v1");
@@ -1097,11 +1190,22 @@ impl<'a> TurnContext<'a> {
         if let Some(roster) = roster {
             announce(&mut messages, &mut message_ids, turn, roster);
         }
-        messages.push(ModelMessage {
-            role: ModelRole::User,
-            content: input.clone(),
-        });
-        message_ids.push(message_id(turn, ModelRole::User));
+        let (notices, input) =
+            selected_notices(stream, &agent.path, current_notices.as_ref(), input.clone()).await?;
+        if let Some(notices) = notices {
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: notices,
+            });
+            message_ids.push(notice_id(turn));
+        }
+        if let Some(input) = input {
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: input,
+            });
+            message_ids.push(message_id(turn, ModelRole::User));
+        }
         Ok(SelectedModelContext {
             selection: ModelContextSelection {
                 conversation_revision: agent.conversation_tail + 1,
@@ -1266,12 +1370,22 @@ where
                 .with_agent_approvals(Arc::clone(&approvals));
             let selected = context
                 .select(
+                    &*self.stream,
                     agent,
                     &*bindings.content.reader,
                     input,
                     roster.as_ref().map(|(file, _)| file),
                 )
                 .await?;
+            // The original selection validator requires the current input to
+            // equal its final message. A waking Notice carries the whole frozen
+            // event block after coalescing, not just the event that woke it.
+            let input = selected
+                .messages
+                .last()
+                .ok_or_else(|| Error::Invalid("selected turn has no current input".into()))?
+                .content
+                .clone();
             let journal = journal.with_bound_selection(selected.clone());
             let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
             let mut authority = TurnAuthority {
@@ -1291,7 +1405,7 @@ where
             Ok(OpenTurn {
                 executor: self
                     .executors
-                    .executor(agent, turn, input, &authority)
+                    .executor(agent, turn, &input, &authority)
                     .await?,
                 journal,
                 max_steps: self.limits.max_steps,
@@ -1302,7 +1416,7 @@ where
                 effects: Some(effects),
                 goal,
                 outputs,
-                input: Some(input.clone()),
+                input: Some(input),
                 roster,
             })
         })

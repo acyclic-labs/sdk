@@ -53,7 +53,7 @@ impl SelectedModelContext {
                 "selected context must end with the current user message".into(),
             ));
         }
-        last.content.validate_user_input(&mut None)?;
+        last.content.validate_turn_input(&mut None)?;
         for message in &self.messages {
             message.content.validate_limits(limits, &mut None)?;
         }

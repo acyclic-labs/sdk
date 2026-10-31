@@ -96,13 +96,9 @@ where
                 .admitted
                 .lock()
                 .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?;
-            admitted.through.unwrap_or_else(|| {
-                self.agent
-                    .pending_notices
-                    .as_ref()
-                    .map_or(self.inbox.saturating_add(1), |range| range.start)
-                    .max(self.agent.steered_through)
-            })
+            admitted
+                .through
+                .unwrap_or_else(|| self.inbox.saturating_add(1).max(self.agent.steered_through))
         });
         let selection = crate::agent::select_boundary(
             &*self.stream,
@@ -113,8 +109,13 @@ where
         )
         .await
         .map_err(|error| Error::Invalid(error.to_string()))?;
-        let inputs = selection.inputs.into_iter().filter(|input| input.inbox > self.inbox
-            || (input.inbox < self.inbox && matches!(&input.input, crate::agent::TurnInput::Notice { notice, .. } if !notice.wake)));
+        let initial_notices = crate::agent::turn_notices(&self.agent)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let inputs = selection.inputs.into_iter().filter(|input| {
+            !matches!(&input.input, crate::agent::TurnInput::Notice { notice, .. }
+                if !notice.wake && initial_notices.as_ref().is_some_and(|selected|
+                    selected.range.contains(&input.inbox)))
+        });
         let mut messages = Vec::new();
         let mut item = 0_u64;
         for input in inputs {
