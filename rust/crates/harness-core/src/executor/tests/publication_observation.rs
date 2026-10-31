@@ -146,9 +146,20 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
                 selected_context: None,
                 max_steps: 2,
             };
-            let result = executor.execute(input.clone(), &journal).await?;
+            let result = executor
+                .execute(input.clone(), &journal)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("fresh execution (rejected={rejected}, mode={mode}): {error:?}")
+                });
             assert_eq!(result.text, "answer");
-            assert_eq!(executor.execute(input, &journal).await?, result);
+            let replayed = executor
+                .execute(input, &journal)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("completed replay (rejected={rejected}, mode={mode}): {error:?}")
+                });
+            assert_eq!(replayed, result);
             assert_eq!(tool.0.load(Ordering::SeqCst), 1);
             assert_eq!(model.requests().len(), 2);
 
@@ -203,18 +214,26 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
                     .iter()
                     .find(|r| matches!(r.event, ExecutionEvent::ToolCompleted { .. }))
                     .unwrap();
+                let ExecutionEvent::ToolCompleted { step, call_id, .. } = &terminal.event else {
+                    unreachable!();
+                };
+                let key =
+                    tool_settlement_key(*step, call_id, ToolTerminalOutcome::Completed, None)?;
+                // A replay record carries the authenticated retry digest,
+                // rather than the original caller's settlement key.
+                assert!(matches!(
+                    journal
+                        .append(operation, &terminal.idempotency_key, &terminal.event, None)?
+                        .await,
+                    Err(Error::Conflict(_))
+                ));
                 // Restore a duplicate logical observation around a real exact-key
                 // replay. The journal remains correct; the cost oracle rejects it.
                 Publication::ToolSettlement
                     .observe(
                         operation,
                         0,
-                        journal.append(
-                            operation,
-                            &terminal.idempotency_key,
-                            &terminal.event,
-                            None,
-                        )?,
+                        journal.append(operation, &key, &terminal.event, None)?,
                     )
                     .await?;
                 assert_eq!(journal.replay(operation, 0, 100, None)?.await?, records);
