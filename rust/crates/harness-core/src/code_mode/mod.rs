@@ -454,11 +454,12 @@ fn install(
             ctx.globals()
                 .set("__input", ctx.json_parse(input.value.as_str())?)?;
             let mut ordinal = 0_u64;
-            let callback_ctx = ctx.clone();
             let enqueue = Function::new(
                 ctx.clone(),
                 rquickjs::function::MutFn::new(
-                    move |name: rquickjs::CString, arguments: rquickjs::CString| {
+                    move |callback_ctx: rquickjs::Ctx,
+                          name: rquickjs::CString,
+                          arguments: rquickjs::CString| {
                         if name.as_str() == recursive_name.value().as_str() {
                             return Err(rquickjs::Error::new_from_js_message(
                                 "name",
