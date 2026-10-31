@@ -350,7 +350,8 @@ fn authorize_volume_write(
             io,
             ErrorCode::Unauthorized,
             "task scope cannot write this volume",
-        ));
+        )
+        .tool_input());
     }
     Ok(())
 }
