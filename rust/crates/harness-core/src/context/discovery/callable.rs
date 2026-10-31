@@ -55,7 +55,12 @@ impl SkillMetadata {
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
         let revision = crate::executor::with_history_io(io, |work| {
-            let digest = crate::executor::json::canonical_json_digest(self, u64::MAX, work)?;
+            let maximum = work
+                .as_deref()
+                .map(|work| work.remaining().map(|budget| budget.bytes_encoded))
+                .transpose()?
+                .unwrap_or(u64::MAX);
+            let digest = crate::executor::json::canonical_json_digest(self, maximum, work)?;
             crate::conversation::content_label("skill-", digest, work)
         })?;
         if let Some(io) = io {
