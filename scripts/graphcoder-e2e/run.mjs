@@ -87,6 +87,7 @@ async function prepare(test, gitOrigin) {
   const begin = performance.now();
   const fixture = { id: test.id, workspace: join(test.root, test.id, "workspace"), settings: join(test.root, test.id, "settings"), catalog: join(test.root, test.id, "catalog.json") };
   const artifact = join(output, test.id); await mkdir(artifact, { recursive: true });
+  fixture.url = `http://127.0.0.1:${port}/${test.id}/v1`;
   fixture.binary = binary;
   fixture.output = artifact;
   fixture.env = environment(fixture.settings);
@@ -97,11 +98,10 @@ async function prepare(test, gitOrigin) {
   } else await mkdir(fixture.workspace, { recursive: true });
   await mkdir(fixture.settings, { recursive: true });
   await Promise.all([seed(fixture.workspace, expand(test.workspace?.files, fixture)), seed(fixture.settings, expand(test.settings, fixture))]);
-  const provider = { adapter: test.adapter ?? "responses", authentication: "optional", base_url: `http://127.0.0.1:${port}/${test.id}/v1`,
+  const provider = { adapter: test.adapter ?? "responses", authentication: "optional", base_url: fixture.url,
     models: { tiny: { capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true } } }, max_event_bytes: 65536,
     token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
   await json(fixture.catalog, { e2e: provider });
-  fixture.env.E2E_MOCK_URL = `http://127.0.0.1:${port}/${test.id}/v1`;
   fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
   fixture.requested = request => events.has(requestKey(test.id, request));
   fixture.onRequest = listener => events.subscribe(event => {

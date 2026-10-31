@@ -508,20 +508,25 @@ pub struct PolicyLayer {
 /// Resolves runtime → invocation policy layers without ambient authority.
 #[must_use]
 pub fn resolve_policies(layers: &[AuthorityPolicy]) -> Capabilities {
-    let Some(first) = layers.first() else {
+    intersect_policies(layers.iter())
+}
+
+fn intersect_policies<'a>(
+    layers: impl Iterator<Item = &'a AuthorityPolicy> + Clone,
+) -> Capabilities {
+    let mut grants = layers.clone();
+    let Some(first) = grants.next() else {
         return Capabilities::default();
     };
-    let granted = layers
-        .iter()
-        .skip(1)
-        .fold(first.grants.clone(), |current, layer| {
-            current.intersect(&layer.grants)
-        });
-    let denied = Capabilities::new(layers.iter().flat_map(|layer| layer.denies.iter()));
+    let granted = grants.fold(first.grants.clone(), |current, layer| {
+        current.intersect(&layer.grants)
+    });
+    let denied = Capabilities::new(layers.flat_map(|layer| layer.denies.iter()));
     granted.without(&denied)
 }
 
 /// Validates hierarchy order and resolves the exact effective grant.
+/// Named layers borrow their admitted policies without copying their grants.
 pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
     if layers
         .first()
@@ -534,12 +539,7 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
             "policy layers must start at runtime and be strictly ordered".into(),
         ));
     }
-    Ok(resolve_policies(
-        &layers
-            .iter()
-            .map(|layer| layer.policy.clone())
-            .collect::<Vec<_>>(),
-    ))
+    Ok(intersect_policies(layers.iter().map(|layer| &layer.policy)))
 }
 
 #[path = "contract_errors.rs"]
@@ -751,6 +751,59 @@ mod tests {
             },])
             .is_err()
         );
+        for count in [1, 100, 1000] {
+            let policy = AuthorityPolicy {
+                grants: Capabilities::new(
+                    (0..count)
+                        .map(|index| format!("tool:call:{index}"))
+                        .chain(["read", "write", "shell"].into_iter().map(str::to_owned)),
+                ),
+                denies: Capabilities::new(["shell"]),
+            };
+            let layers = [
+                PolicyLayer {
+                    level: AuthorityLevel::Runtime,
+                    policy: policy.clone(),
+                },
+                PolicyLayer {
+                    level: AuthorityLevel::Invocation,
+                    policy: AuthorityPolicy {
+                        denies: Capabilities::new(["write"]),
+                        ..policy
+                    },
+                },
+            ];
+            let direct: Vec<_> = layers.iter().map(|layer| layer.policy.clone()).collect();
+            let (resolved, [plain, named]) = acyclic_test_support::differential(
+                || resolve_policies(&direct),
+                || resolve_policy_layers(&layers).expect("ordered policy was refused"),
+            );
+            assert!(resolved.contains("read"));
+            assert!(!resolved.contains("write"));
+            assert!(!resolved.contains("shell"));
+            assert_eq!(resolved.iter().count(), count + 1);
+            assert_eq!(
+                plain, named,
+                "named policy resolution copied admitted policies at {count} grants"
+            );
+            let mut copied = None;
+            let legacy = acyclic_test_support::measure(|| {
+                copied = Some(resolve_policies(
+                    &layers
+                        .iter()
+                        .map(|layer| layer.policy.clone())
+                        .collect::<Vec<_>>(),
+                ));
+            });
+            assert_eq!(copied.as_ref(), Some(&resolved));
+            assert!(
+                legacy.count_total > named.count_total && legacy.bytes_total > named.bytes_total,
+                "restoring policy copies did not fail the allocation budget"
+            );
+            eprintln!(
+                "policy allocation counts grants={count}: copied={legacy:?}, direct={plain:?}, named={named:?}"
+            );
+        }
     }
 
     #[test]
