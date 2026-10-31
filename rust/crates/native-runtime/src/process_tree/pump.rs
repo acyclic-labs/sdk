@@ -49,6 +49,15 @@ impl From<Duration> for CaptureSchedule {
 /// Owned input for a capture that outlives its caller's borrows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OwnedCaptureInput {
+    /// Independently signalled input. Each transfer is bounded by `maximum`;
+    /// completed transfers are retired, so total input is unbounded. Closing
+    /// stdin does not terminate the process or require a stdout reply.
+    Interactive {
+        /// Initial owned bytes, written before requesting another transfer.
+        initial: Vec<u8>,
+        /// Caller-funded maximum bytes in one outstanding transfer.
+        maximum: usize,
+    },
     /// A streaming exchange with bounded queued input.
     Exchange {
         /// Bytes written before observing output.
@@ -121,6 +130,18 @@ pub trait CaptureHandler: Send + 'static {
     }
     /// Confirms that capture may continue; an error stops and cleans it up.
     fn check(&mut self) -> io::Result<()>;
+    /// Takes the next owned interactive transfer only after the previous
+    /// transfer reached the OS pipe. Empty, incomplete input means pending:
+    /// its producer must notify a signal returned by `take_wakes`, including
+    /// on producer loss. Report that loss as an error, never an empty success.
+    /// `complete` closes stdin after these bytes, without killing the tree.
+    /// This callback is not used for literal input or stdout exchanges.
+    fn input(&mut self) -> io::Result<ProcessInput> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "interactive process input has no producer",
+        ))
+    }
     /// Observes newly captured output, returning exchange input.
     fn observe(&mut self, chunk: ProcessOutput<'_>) -> io::Result<ProcessInput>;
     /// Observes the original operation on its worker, without another reader.
@@ -197,6 +218,7 @@ pub(super) fn handled_turn<H: CaptureHandler>(
         tree,
         &mut || shared.borrow_mut().check(),
         &mut |chunk| shared.borrow_mut().observe(chunk),
+        &mut || shared.borrow_mut().input(),
         &mut |progress| shared.borrow_mut().progress(progress),
         None,
     )
@@ -339,11 +361,12 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         check: &mut impl FnMut() -> io::Result<()>,
         observe: &mut impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
+        input: &mut impl FnMut() -> io::Result<ProcessInput>,
         progress: &mut impl FnMut(CaptureProgress),
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> Turn {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.advance(tree, check, observe, progress, meter)
+            self.advance(tree, check, observe, input, progress, meter)
         }));
         match result {
             Ok(Ok(true)) => Turn::Done(Ok(())),
@@ -362,6 +385,7 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         check: &mut impl FnMut() -> io::Result<()>,
         observe: &mut impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
+        input: &mut impl FnMut() -> io::Result<ProcessInput>,
         progress: &mut impl FnMut(CaptureProgress),
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
@@ -383,6 +407,7 @@ impl<'a> Pump<'a> {
             }
             check()?;
             let mut progressed = self.input.as_mut().map_or(Ok(false), |stdin| {
+                stdin.receive(input, progress)?;
                 stdin.poll_observed(tree, meter, progress)
             })?;
             let [stdout_output, stderr_output] = &mut self.output;
@@ -413,7 +438,7 @@ impl<'a> Pump<'a> {
                 let chunk = stdout_output
                     .get(before_stdout..)
                     .ok_or_else(|| io::Error::other("invalid observed process stdout"))?;
-                if let Some(input) = self.input.as_mut().filter(|input| !input.complete) {
+                if let Some(input) = self.input.as_mut().filter(|input| input.awaiting_reply()) {
                     input.observe(
                         chunk,
                         &mut |bytes| observe(ProcessOutput::Stdout(bytes)),
@@ -434,7 +459,7 @@ impl<'a> Pump<'a> {
             // Exchange replies can only arrive on stdout. EOF withdraws that
             // producer even when the root remains alive with stderr open.
             if self.stdout.is_none()
-                && let Some(input) = self.input.as_ref().filter(|input| !input.complete)
+                && let Some(input) = self.input.as_ref().filter(|input| input.awaiting_reply())
             {
                 return Err(io::Error::new(
                     if input.undelivered() {

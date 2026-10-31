@@ -125,6 +125,9 @@ impl<H: CaptureHandler> CaptureHandler for ControlledCapture<H> {
     fn observe(&mut self, output: ProcessOutput<'_>) -> io::Result<ProcessInput> {
         self.inner.observe(output)
     }
+    fn input(&mut self) -> io::Result<ProcessInput> {
+        self.inner.input()
+    }
     fn progress(&mut self, progress: CaptureProgress) {
         self.inner.progress(progress);
     }

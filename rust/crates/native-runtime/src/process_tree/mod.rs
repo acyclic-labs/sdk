@@ -923,7 +923,14 @@ impl ProcessTree {
                         break 'capture Err(error);
                     }
                 }
-                match pump.turn(self, &mut check, &mut observe, &mut |_| {}, meter) {
+                match pump.turn(
+                    self,
+                    &mut check,
+                    &mut observe,
+                    &mut || Ok(ProcessInput::default()),
+                    &mut |_| {},
+                    meter,
+                ) {
                     pump::Turn::Done(result) => break result,
                     pump::Turn::Wait => match pump.arm_with_wake(self, wake) {
                         Ok(wait) => {

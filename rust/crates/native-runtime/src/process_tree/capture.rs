@@ -43,7 +43,8 @@ pub struct ProcessCaptureFailure {
 pub struct ProcessInput {
     /// Exact additional bytes, ordered after all previously queued input.
     pub bytes: Vec<u8>,
-    /// After queued input is written, close stdin and terminate containment.
+    /// After queued input is written, close stdin. An exchange additionally
+    /// terminates containment; interactive input leaves the process running.
     pub complete: bool,
 }
 
@@ -71,6 +72,7 @@ pub(super) struct PendingStdin<'a> {
     stopped: bool,
     terminate_on_completion: bool,
     require_delivery: bool,
+    interactive: bool,
     pub(super) meter_owner: Option<std::sync::Arc<dyn crate::NativeReadMeter>>,
 }
 
@@ -94,7 +96,7 @@ impl<'a> PendingStdin<'a> {
             ));
         }
         if actual == 0 {
-            if self.terminate_on_completion {
+            if self.terminate_on_completion || self.require_delivery {
                 return Err(io::ErrorKind::BrokenPipe.into());
             }
             self.written = self.bytes.len();
@@ -146,6 +148,7 @@ impl<'a> PendingStdin<'a> {
             stopped: false,
             terminate_on_completion,
             require_delivery: false,
+            interactive: false,
             meter_owner: owner.cloned(),
         })
     }
@@ -246,14 +249,19 @@ impl<'a> PendingStdin<'a> {
 
     /// Owned input for a capture that outlives its caller; unmetered.
     pub(super) fn owned(input: super::OwnedCaptureInput) -> io::Result<PendingStdin<'static>> {
-        let (bytes, maximum, terminate_on_completion) = match input {
-            super::OwnedCaptureInput::Exchange { initial, maximum } => (initial, maximum, true),
+        let (bytes, maximum, terminate_on_completion, interactive) = match input {
+            super::OwnedCaptureInput::Interactive { initial, maximum } => {
+                (initial, maximum, false, true)
+            }
+            super::OwnedCaptureInput::Exchange { initial, maximum } => {
+                (initial, maximum, true, false)
+            }
             super::OwnedCaptureInput::Literal(bytes) => {
                 let maximum = bytes.len();
-                (bytes, maximum, false)
+                (bytes, maximum, false, false)
             }
         };
-        if (terminate_on_completion && maximum == 0) || bytes.len() > maximum {
+        if ((terminate_on_completion || interactive) && maximum == 0) || bytes.len() > maximum {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid process input allowance",
@@ -263,10 +271,11 @@ impl<'a> PendingStdin<'a> {
             bytes: std::borrow::Cow::Owned(bytes),
             written: 0,
             maximum,
-            complete: !terminate_on_completion,
+            complete: !terminate_on_completion && !interactive,
             stopped: false,
             terminate_on_completion,
-            require_delivery: false,
+            require_delivery: interactive,
+            interactive,
             meter_owner: None,
         })
     }
@@ -281,6 +290,39 @@ impl<'a> PendingStdin<'a> {
         self.stopped
     }
 
+    pub(super) fn awaiting_reply(&self) -> bool {
+        self.terminate_on_completion && !self.complete
+    }
+
+    /// Reuses the original writer and moves its next owned buffer. No prefix
+    /// compaction or historical input retention is needed between transfers.
+    pub(super) fn receive(
+        &mut self,
+        next: &mut impl FnMut() -> io::Result<ProcessInput>,
+        progress: &mut impl FnMut(CaptureProgress),
+    ) -> io::Result<()> {
+        if !self.interactive || self.complete || self.writing() {
+            return Ok(());
+        }
+        // Retire the original payload before returning its transfer credit to
+        // the producer through the next callback.
+        self.bytes = std::borrow::Cow::Owned(Vec::new());
+        self.written = 0;
+        let next = next()?;
+        if next.bytes.len() > self.maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "interactive process input exceeds transfer credit",
+            ));
+        }
+        if !next.bytes.is_empty() {
+            progress(CaptureProgress::InputAccepted(next.bytes.len()));
+        }
+        self.bytes = std::borrow::Cow::Owned(next.bytes);
+        self.complete = next.complete;
+        Ok(())
+    }
+
     /// Whether queued input still waits for room in the pipe.
     pub(super) fn writing(&self) -> bool {
         self.written < self.bytes.len()
@@ -288,7 +330,7 @@ impl<'a> PendingStdin<'a> {
 
     /// Whether an exchange still holds input the child never took.
     pub(super) fn undelivered(&self) -> bool {
-        self.terminate_on_completion && self.written < self.bytes.len()
+        (self.terminate_on_completion || self.require_delivery) && self.writing()
     }
 
     pub(super) fn observe(
