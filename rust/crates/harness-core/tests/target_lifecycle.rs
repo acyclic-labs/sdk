@@ -354,6 +354,7 @@ impl TurnDriver for Spawner {
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
+                        profile: None,
                         intent: intent("c"),
                         brief: None,
                         volumes: Vec::new(),
@@ -376,6 +377,7 @@ fn user() -> Sender {
 
 fn adopted(agent: AgentId) -> ForkAdopted {
     ForkAdopted {
+        profile: None,
         agent,
         parent: None,
         forked_at: 0,
