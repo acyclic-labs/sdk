@@ -1,5 +1,5 @@
 /** Objects v1 clients: account-scoped, content-addressed blobs. Public messages are generated from the canonical descriptor. */
-import { create, fromBinary, toBinary, type DescMessage, type MessageInitShape, type MessageShape } from "@bufbuild/protobuf";
+import { clone, create, fromBinary, toBinary, type DescMessage, type MessageInitShape, type MessageShape } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { ObjectsV1Memory, ObjectsV1Request as RustRequest, objects_v1_digest, verify_objects_v1 } from "../generated/wasm/acyclic_objects_wasm.js";
 import type { ObjectsV1BinaryReply } from "../generated/wasm/acyclic_objects_wasm.js";
@@ -21,10 +21,10 @@ export function objectsV1Error(value: unknown): ObjectsV1Error {
 /** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
 export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
-/** The BLAKE3-256 digest naming `bytes` as a plain blob. */
+/** The BLAKE3-256 digest naming `bytes` as a plain blob, captured before returning. */
 export async function blobDigest(bytes: Uint8Array): Promise<wire.Digest> {
   const ready = ensureObjectsWasm();
-  if (ready !== undefined) await ready;
+  if (ready !== undefined) { bytes = snapshotBytes(bytes); await ready; }
   return create(wire.DigestSchema, { blake3: objects_v1_digest(bytes) });
 }
 
@@ -154,7 +154,8 @@ async function availabilityRequest(digest: wire.Digest, signal: AbortSignal | un
 
 /**
  * One canonical route per call. Every reply is checked against its request by
- * the same Rust rules the Rust clients use before it is returned.
+ * the same Rust rules the Rust clients use before it is returned. Caller inputs
+ * are captured before each method returns its promise.
  */
 export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
   /** Own one lazy request through this provider's original transport. */
@@ -165,10 +166,10 @@ export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
     return availabilityRequest(digest, signal, input => RustRequest.observe(this, input));
   }
   protected async call<I extends DescMessage, O extends DescMessage>(route: string, input: I, output: O, value: MessageInitShape<I>): Promise<MessageShape<O>> {
-    const ready = ensureObjectsWasm();
-    if (ready !== undefined) await ready;
     try {
       const bytes = toBinary(input, create(input, value));
+      const ready = ensureObjectsWasm();
+      if (ready !== undefined) await ready;
       const request = this.open(route, bytes);
       try {
         const reply = await request.next();
@@ -180,16 +181,22 @@ export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
   }
   /** Publishes `body` under its own digest; `references` must already exist. */
   async put(body: Uint8Array, references: readonly wire.Digest[] = []): Promise<wire.PutResponse> {
-    const digest = await blobDigest(body);
-    return this.call("blobs/put", wire.PutBlobRequestSchema, wire.PutResponseSchema, { digest, body, references: [...references] });
+    let request = create(wire.PutBlobRequestSchema, { body, references: [...references] });
+    const ready = ensureObjectsWasm();
+    if (ready !== undefined) { request = clone(wire.PutBlobRequestSchema, request); await ready; }
+    request.digest = create(wire.DigestSchema, { blake3: objects_v1_digest(request.body) });
+    return this.call("blobs/put", wire.PutBlobRequestSchema, wire.PutResponseSchema, request);
   }
   /**
    * Publishes many blobs in one call. Results answer members in order; a member that references or repeats an
    * earlier member starts once it settled, and a failed member (`error`) leaves every other member as reported.
    */
   async putBlobs(puts: readonly { readonly body: Uint8Array; readonly references?: readonly wire.Digest[] }[]): Promise<wire.PutResult[]> {
-    const members = await Promise.all(puts.map(async ({ body, references = [] }) => ({ digest: await blobDigest(body), body, references: [...references] })));
-    return (await this.call("blobs/put-batch", wire.PutBlobsRequestSchema, wire.PutBlobsResponseSchema, { puts: members })).results;
+    let request = create(wire.PutBlobsRequestSchema, { puts: puts.map(({ body, references = [] }) => ({ body, references: [...references] })) });
+    const ready = ensureObjectsWasm();
+    if (ready !== undefined) { request = clone(wire.PutBlobsRequestSchema, request); await ready; }
+    for (const put of request.puts) put.digest = create(wire.DigestSchema, { blake3: objects_v1_digest(put.body) });
+    return (await this.call("blobs/put-batch", wire.PutBlobsRequestSchema, wire.PutBlobsResponseSchema, request)).results;
   }
   putManifest(manifest: MessageInitShape<typeof wire.ManifestSchema>) { return this.call("blobs/put-manifest", wire.PutManifestRequestSchema, wire.PutResponseSchema, { manifest }); }
   get(value: MessageInitShape<typeof wire.GetBlobRequestSchema>) { return this.call("blobs/get", wire.GetBlobRequestSchema, wire.GetBlobResponseSchema, value); }

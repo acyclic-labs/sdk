@@ -11,6 +11,25 @@ export async function lifecycle(provider) {
   const digest = verified(created).digest;
   assert.deepEqual(digest.blake3, (await blobDigest(bytes)).blake3);
   assert.equal(verified(created).length, BigInt(bytes.length));
+  // Publication owns both the body and references before returning its promise.
+  const captured = new Uint8Array([81, 82, 83]);
+  const reference = { ...digest, blake3: digest.blake3.slice() };
+  const publishing = provider.put(captured, [reference]);
+  captured.fill(0);
+  reference.blake3.fill(0);
+  const published = verified(await publishing).digest;
+  assert.deepEqual((await provider.get({ digest: published, maximumBytes: 3n })).body, new Uint8Array([81, 82, 83]));
+  assert.deepEqual((await provider.head(published)).references.map(value => value.blake3), [digest.blake3]);
+  const member = new Uint8Array([84, 85, 86]);
+  const batchReferences = [{ ...digest, blake3: digest.blake3.slice() }];
+  const batchRequest = [{ body: member, references: batchReferences }];
+  const publishingBatch = provider.putBlobs(batchRequest);
+  member.fill(0);
+  batchReferences[0].blake3.fill(0);
+  batchRequest.length = 0;
+  const batchDigest = verified((await publishingBatch)[0].outcome.value).digest;
+  assert.deepEqual((await provider.get({ digest: batchDigest, maximumBytes: 3n })).body, new Uint8Array([84, 85, 86]));
+  assert.deepEqual((await provider.head(batchDigest)).references.map(value => value.blake3), [digest.blake3]);
   assert.equal((await provider.put(bytes)).outcome.case, "alreadyExists");
   const whole = await provider.get({ digest, maximumBytes: BigInt(bytes.length) });
   assert.deepEqual(whole.body, bytes);
