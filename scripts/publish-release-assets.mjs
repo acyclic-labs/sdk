@@ -5,6 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Annotated tags retain an already-existing immutable object, so each step
+// advances through the actual ancestry rather than rechecking visibility.
+export function resolveTagTarget(ref, readTag) {
+  while (ref?.type === 'tag') ref = readTag(ref.sha);
+  return ref;
+}
+
 export function admitRelease(release, source, version) {
   if (release.tag_name !== `acyclic-v${version}` || release.target_commitish !== source) {
     throw new Error('Existing release names a different version or source; refusing to replace it');
@@ -44,9 +51,8 @@ export async function publish({ env = process.env, directory = env.RELEASE_ASSET
   } catch (error) {
     if (!String(error.stderr).includes('HTTP 404')) throw error;
   }
-  for (let depth = 0; ref?.type === 'tag'; depth++) {
-    if (depth > 10) throw new Error('Tag nesting exceeds the release limit');
-    ref = JSON.parse(gh('api', `repos/${repository}/git/tags/${ref.sha}`)).object;
+  if (ref?.type === 'tag') {
+    ref = resolveTagTarget(ref, sha => JSON.parse(gh('api', `repos/${repository}/git/tags/${sha}`)).object);
   }
   if (ref && (ref.type !== 'commit' || ref.sha !== source)) {
     throw new Error('Existing tag points to a different source');

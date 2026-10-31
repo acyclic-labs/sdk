@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseNpmView, publishNativeAssembly, verifyPublicationAttempt, waitForPublishedExact } from "./publish-npm-packages.mjs";
+import { parseNpmView, publishNativeAssembly } from "./publish-npm-packages.mjs";
 
 test("native parent publication waits for every exact companion and stops on failure", async () => {
   const assembly = { companions: ["linux", "mac", "windows"].map(name => ({ name, version: "0.2.0", asset: `${name}.tgz` })), parent: { name: "parent", version: "0.2.0", asset: "parent.tgz" } };
@@ -27,64 +27,33 @@ test("npm view tolerates an unpublished or partially visible field", () => {
   );
 });
 
-test("publication waits for exact bytes and latest to propagate", async () => {
-  const integrities = [null, "sha512-exact", "sha512-exact"];
-  const latest = ["0.1.4", "0.1.5"];
-  let pauses = 0;
-  await waitForPublishedExact("@acyclic-labs/harness", "0.1.5", "sha512-exact", {
-    readIntegrity: () => integrities.shift(),
-    readLatest: () => latest.shift(),
-    pause: async () => { pauses += 1; },
-    now: () => 0,
-  });
-  assert.equal(pauses, 2);
-});
-
-test("publication rejects mismatched bytes and bounded nonvisibility", async () => {
-  await assert.rejects(
-    waitForPublishedExact("package", "0.1.5", "sha512-exact", {
-      readIntegrity: () => "sha512-other",
-    }),
-    /exists with different bytes/,
-  );
-  let time = 0;
-  await assert.rejects(
-    waitForPublishedExact("package", "0.1.5", "sha512-exact", {
-      readIntegrity: () => null,
-      pause: async () => { time = 10; },
-      now: () => time,
-      timeoutMs: 10,
-    }),
-    /did not become visible/,
-  );
-  time = 0;
-  await assert.rejects(
-    waitForPublishedExact("package", "0.1.5", "sha512-exact", {
-      readIntegrity: () => "sha512-exact",
-      readLatest: () => "0.1.4",
-      pause: async () => { time = 10; },
-      now: () => time,
-      timeoutMs: 10,
-    }),
-    /repair the dist-tag interactively/,
-  );
-});
-
-test("a duplicate publish response waits for a previously accepted exact archive", async () => {
-  let reads = 0;
-  await verifyPublicationAttempt(
-    { status: 1, stdout: "", stderr: "npm error You cannot publish over the previously published versions: 0.1.5." },
-    "@acyclic-labs/harness", "0.1.5", "sha512-exact",
-    {
-      readIntegrity: () => (++reads === 1 ? null : "sha512-exact"),
-      readLatest: () => "0.1.5",
-      pause: async () => {},
-      now: () => 0,
-    },
-  );
-  assert.equal(reads, 2);
-  await assert.rejects(
-    verifyPublicationAttempt({ status: 1, stderr: "npm error E401 Unauthorized" }, "package", "0.1.5", "sha512-exact"),
-    /npm publication failed/,
-  );
+// These are the deleted source mechanisms, not fabricated registry responses.
+// Reintroducing either cadence must fail even behind its old helper name.
+test("the source rule rejects the deleted registry visibility windows", async () => {
+  const { newPollingSites } = await import("./no-polling.mjs");
+  const { readFileSync } = await import("node:fs");
+  for (const [file, removed] of [
+    ["publish-npm-packages.mjs", `
+async function waitForPublishedExact(name, version) {
+  const deadline = Date.now() + 300_000;
+  while (true) {
+    if (await visible(name, version)) return;
+    if (Date.now() >= deadline) throw new Error("not visible");
+    await delay(5_000);
+  }
+}`],
+    ["publish-cargo-crates.mjs", `
+async function waitForRegistry(name, version) {
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    if (await registryVersion(name, version)) return;
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 2_000));
+  }
+}`],
+  ]) {
+    const path = `scripts/${file}`;
+    const current = readFileSync(new URL(file, import.meta.url), "utf8");
+    const sites = newPollingSites(path, current, `${current}\n${removed}`);
+    assert.ok(sites.some(site => site.kind === "timer-or-readiness" || site.kind === "loop"), file);
+    assert.doesNotMatch(current, /waitForPublishedExact|waitForRegistry|setTimeout|node:timers|timeoutMs/);
+  }
 });

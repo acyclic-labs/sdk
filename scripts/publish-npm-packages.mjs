@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
+import { RegistryPublicationPending, publicationCommand } from "./registry-publication.mjs";
 import { verifyNativeAssembly } from "./assemble-stream-native-package.mjs";
 import { verifyNativeAssembly as verifyActorsNativeAssembly } from "./assemble-actors-native-package.mjs";
 
@@ -45,39 +45,26 @@ function publishedLatest(name) {
   );
 }
 
-export async function waitForPublishedExact(name, version, expectedIntegrity, probes = {}) {
-  const readIntegrity = probes.readIntegrity ?? publishedIntegrity;
-  const readLatest = probes.readLatest ?? publishedLatest;
-  const pause = probes.pause ?? delay;
-  const now = probes.now ?? Date.now;
-  const deadline = now() + (probes.timeoutMs ?? 300_000);
-  let observedIntegrity;
-  let latest;
-  while (true) {
-    observedIntegrity = readIntegrity(name, version);
-    if (observedIntegrity !== null && observedIntegrity !== expectedIntegrity) {
-      fail(`${name}@${version} exists with different bytes`);
-    }
-    if (observedIntegrity === expectedIntegrity) {
-      latest = readLatest(name);
-      if (latest === version) return;
-    }
-    if (now() >= deadline) {
-      if (observedIntegrity === expectedIntegrity && latest !== null) {
-        fail(`${name} latest is ${latest}, not ${version}; repair the dist-tag interactively`);
-      }
-      fail(`${name}@${version} did not become visible with exact bytes and latest tag; observed integrity: ${observedIntegrity ?? "not found"}, latest: ${latest ?? "not found"}`);
-    }
-    await pause(5_000);
+function inspectPublishedExact(name, version, expectedIntegrity, {
+  integrity: observedIntegrity = publishedIntegrity(name, version), publicationStatus,
+}) {
+  if (observedIntegrity !== null && observedIntegrity !== expectedIntegrity) {
+    fail(`step=npm-publication-identity ${name}@${version} exists with different bytes; recovery command: ${publicationCommand()}`);
+  }
+  // Do not query a tag for an archive that has not become observable.
+  const latest = observedIntegrity === expectedIntegrity ? publishedLatest(name) : null;
+  if (observedIntegrity !== expectedIntegrity || latest !== version) {
+    throw new RegistryPublicationPending("npm", name, version,
+      { integrity: observedIntegrity, latest, publicationStatus });
   }
 }
 
-export async function verifyPublicationAttempt(publication, name, version, expectedIntegrity, probes = {}) {
+function verifyPublicationAttempt(publication, name, version, expectedIntegrity) {
   const output = `${publication.stdout ?? ""}\n${publication.stderr ?? ""}`;
   if (publication.status !== 0 && !/cannot publish over (?:the )?previously published versions?/i.test(output)) {
-    fail(`npm publication failed for ${name}@${version}: ${output}`);
+    fail(`step=npm-publication ${name}@${version} failed: ${output}; recovery command: ${publicationCommand()}`);
   }
-  await waitForPublishedExact(name, version, expectedIntegrity, probes);
+  inspectPublishedExact(name, version, expectedIntegrity, { publicationStatus: publication.status });
 }
 
 async function main() {
@@ -114,7 +101,7 @@ async function main() {
       continue;
     }
 
-    await publishExact(item.name, releaseVersion, archive);
+    publishExact(item.name, releaseVersion, archive);
   }
 }
 
@@ -123,21 +110,20 @@ export async function publishNativeAssembly(assembly, directory, publish = publi
   await publish(assembly.parent.name, assembly.parent.version, join(directory, assembly.parent.asset));
 }
 
-async function publishExact(name, version, archive) {
-    const expectedIntegrity = integrity(archive);
-    const observedIntegrity = publishedIntegrity(name, version);
-    if (observedIntegrity !== null) {
-      if (observedIntegrity !== expectedIntegrity) fail(`${name}@${version} exists with different bytes`);
-      console.log(`Already published exact archive: ${name}@${version}`);
-      await waitForPublishedExact(name, version, expectedIntegrity);
-      return;
-    }
+function publishExact(name, version, archive) {
+  const expectedIntegrity = integrity(archive);
+  const observedIntegrity = publishedIntegrity(name, version);
+  if (observedIntegrity !== null) {
+    inspectPublishedExact(name, version, expectedIntegrity, { integrity: observedIntegrity });
+    console.log(`Already published exact archive: ${name}@${version}`);
+    return;
+  }
 
-    const publication = run("npm", ["publish", archive, "--access", "public", "--tag", "latest", "--provenance"]);
-    process.stdout.write(publication.stdout ?? "");
-    process.stderr.write(publication.stderr ?? "");
-    await verifyPublicationAttempt(publication, name, version, expectedIntegrity);
-    console.log(`Published and verified: ${name}@${version}`);
+  const publication = run("npm", ["publish", archive, "--access", "public", "--tag", "latest", "--provenance"]);
+  process.stdout.write(publication.stdout ?? "");
+  process.stderr.write(publication.stderr ?? "");
+  verifyPublicationAttempt(publication, name, version, expectedIntegrity);
+  console.log(`Published and verified: ${name}@${version}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
