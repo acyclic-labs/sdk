@@ -108,6 +108,29 @@ fn a_mount_capability_wider_or_unsealed_than_its_request_is_refused() {
         ),
         Ok(())
     );
+    for extra in [
+        filesystem(
+            &mount_resource(read.workspace_id, request(false, 2).generation_id),
+            &reads,
+        ),
+        filesystem(&format!("{resource}/child"), &["fs/write"]),
+    ] {
+        let mut grants = filesystem(&resource, &reads);
+        grants.grants.extend(extra.grants);
+        assert_eq!(
+            admit(&custom(&mounts, grants, &audience, expires), &read),
+            Err(MountRefusal::Wider)
+        );
+    }
+    let mut point = filesystem(&resource, &reads);
+    let GrantKind::Filesystem(grant) = &mut point.grants[0].kind else {
+        panic!("filesystem fixture")
+    };
+    grant.grant.resource.prefix = false;
+    assert_eq!(
+        admit(&custom(&mounts, point, &audience, expires), &read),
+        Err(MountRefusal::Narrower)
+    );
     // Every generation of the volume.
     assert_eq!(
         admit(

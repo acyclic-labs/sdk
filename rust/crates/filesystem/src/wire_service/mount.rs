@@ -159,6 +159,38 @@ pub fn admit_mount(
     }
     let audience = mount_audience(request.workspace_id);
     let resource = mount_resource(request.workspace_id, request.generation_id);
+    let grants = ceiling(&blocks).ok_or(MountRefusal::NotFilesystem)?;
+    let allowed = actions(request.writable);
+    for grant in &grants.grants {
+        let GrantKind::Filesystem(grant) = &grant.kind else {
+            return Err(MountRefusal::NotFilesystem);
+        };
+        let pattern = &grant.grant.resource;
+        if !(pattern.name == resource
+            || pattern
+                .name
+                .strip_prefix(&resource)
+                .is_some_and(|suffix| suffix.starts_with('/')))
+            || grant
+                .grant
+                .actions
+                .iter()
+                .any(|action| !allowed.contains(action))
+        {
+            return Err(MountRefusal::Wider);
+        }
+    }
+    // A point grant at the root cannot serve a mounted tree. Every requested
+    // action must cover the entire pinned subtree, not just a sampled path.
+    if allowed.iter().any(|action| {
+        !grants.grants.iter().any(|grant| {
+            matches!(&grant.kind, GrantKind::Filesystem(grant)
+            if grant.grant.resource.name == resource && grant.grant.resource.prefix
+                && grant.grant.actions.contains(action))
+        })
+    }) {
+        return Err(MountRefusal::Narrower);
+    }
     let mut other = request.workspace_id.into_bytes();
     other[0] ^= 1;
     let other = mount_audience(WorkspaceId::from_bytes(other));
