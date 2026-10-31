@@ -250,11 +250,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = self.open(&workspace_ref, Some(io)).await?;
         let generation = match expected_generation {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+            None => self.current_generation(&workspace, io).await?,
         };
         let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        let data_access = super::super::access::selected_data_access(
+            &workspace,
+            &generation,
+            grant.policy_scope(),
+            None,
+            io,
+        )
+        .await?;
+        if let Some((_, view)) = &data_access {
+            super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
+            super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        }
         bounded_io::retain(&generation, Some(io)).await?;
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
@@ -294,6 +306,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await,
         )?;
         super::super::access::require_current(&workspace, &view.0, io).await?;
+        if let Some((workspace, view)) = &data_access {
+            super::super::access::require_current(workspace, &view.0, io).await?;
+        }
         grant.recheck(Some(io))?;
         drop(requested_hold);
         let selected_id = generation.id();

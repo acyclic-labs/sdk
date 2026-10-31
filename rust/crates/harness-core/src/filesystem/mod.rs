@@ -279,7 +279,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )?),
             };
             let root = self.open(&workspace, io).await?;
-            let opened = self.select_current_workspace(&root, active_io).await?;
+            // Host records stay with the same volume owner as their readers
+            // and journal. User content follows the selected project branch.
+            let opened = if internal_class.is_some() {
+                root.clone()
+            } else {
+                self.select_current_workspace(&root, active_io).await?
+            };
             let prior = active_io.sdk(
                 opened
                     .operation_generation(operation, active_io, active_io.cancellation())

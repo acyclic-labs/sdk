@@ -7,7 +7,7 @@ use proptest::prelude::*;
 #[tokio::test]
 async fn inherited_directory_intersects_current_root_and_data_policy()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let (host, volume, grant, writer) = fixture([true; 8]).await?;
+    let (host, volume, grant, writer) = fixture([true; 8], VolumeClass::AgentPrivate).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let reference = bounded_io::content_workspace(&host.provider, &volume, None)?;
     let root = host.open(&reference, None).await?;
@@ -131,6 +131,73 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
             .await
             .is_err()
     );
+    // Internal approvals/effects keep the original private-volume owner even
+    // while user data is selected from a descendant.
+    {
+        let child_before = child
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .id();
+        let files = crate::filesystem::agent_internal::AgentInternalFiles::new(
+            host.clone(),
+            volume.clone(),
+            writer.clone(),
+        );
+        assert_eq!(
+            files
+                .create("branch-owner/action.json", b"first", 4096)
+                .await?,
+            None
+        );
+        assert_eq!(
+            files
+                .read("branch-owner/action.json", 4096)
+                .await?
+                .as_deref(),
+            Some(b"first".as_slice())
+        );
+        assert_eq!(files.list("branch-owner").await?, ["action.json"]);
+        assert_eq!(
+            files
+                .create("branch-owner/action.json", b"later", 4096)
+                .await?
+                .as_deref(),
+            Some(b"first".as_slice())
+        );
+        assert_eq!(
+            child
+                .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .id(),
+            child_before
+        );
+    }
+    let range_grant = ContentGrant::verify_directory_read(
+        &writer.copy_verifier(&mut None)?,
+        writer.policy_scope(),
+        &volume,
+        "rows",
+        &mut None,
+    )?;
+    for pinned in [None, Some(&generation)] {
+        let (bytes, length) = host
+            .read_private_range(
+                &volume,
+                &range_grant,
+                "rows/02",
+                pinned,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 2,
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(bytes.as_ref(), if pinned.is_some() { b"ow" } else { b"ra" });
+        assert_eq!(length, if pinned.is_some() { 3 } else { 10 });
+    }
     let before_policy_change = child
         .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .await?
@@ -180,10 +247,29 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         let mut deny = policy.layers[0][0].clone();
         deny.id = "inherited-list-denial".into();
         deny.effect = acyclic_fs::access::Effect::Deny;
-        deny.actions = [Action::List, Action::Write].into_iter().collect();
+        deny.actions = [Action::List, Action::Read, Action::Write]
+            .into_iter()
+            .collect();
         deny.resource.path = hidden.into();
         policy.layers[0].push(deny);
         write_policy(workspace, &policy).await?;
+        for pinned in [None, Some(&generation)] {
+            let denied = host
+                .read_private_range(
+                    &volume,
+                    &range_grant,
+                    hidden,
+                    pinned,
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: 1,
+                    },
+                    None,
+                )
+                .await
+                .expect_err("root and descendant policy must both authorize saved ranges");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        }
         let (_, page) = host
             .list_private_directory(&volume, &grant, "rows", options)
             .await?;
@@ -336,6 +422,7 @@ async fn write_policy(
 
 async fn fixture(
     mask: [bool; 8],
+    class: VolumeClass,
 ) -> Result<(
     Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
     VolumeRef,
@@ -352,8 +439,12 @@ async fn fixture(
     let volume = VolumeRef::new(
         provider,
         "project".into(),
-        VolumeClass::Project,
-        VolumeOwner::Project("owner".into()),
+        class,
+        if class == VolumeClass::AgentPrivate {
+            VolumeOwner::Agent(AgentId::from_bytes([9; 16]))
+        } else {
+            VolumeOwner::Project("owner".into())
+        },
         &mut None,
     )?;
     host.create_volume(&volume).await?;
@@ -441,7 +532,7 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         runtime.block_on(async {
-            let (host, volume, grant, _) = fixture(mask).await?;
+            let (host, volume, grant, _) = fixture(mask, VolumeClass::Project).await?;
             let caller = crate::Capabilities::new([Capability {
                 layers: vec![std::iter::once("rows".into())
                     .chain(caller_mask.into_iter().enumerate().filter(|(_, keep)| *keep)
