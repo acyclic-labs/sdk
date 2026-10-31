@@ -129,6 +129,10 @@ async fn native_custody_keeps_exact_results_and_terminates_on_producer_loss()
     assert_eq!(&provider.commit(request.clone()).await?, outcome);
     drop(cloned);
     drop(pending);
+    // Committed history still physically belongs to the provider. Its native
+    // storage must stay funded until that original owner retires as well.
+    assert!(meter.held.load(Ordering::SeqCst) > 0);
+    drop(provider);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
 
@@ -136,19 +140,33 @@ async fn native_custody_keeps_exact_results_and_terminates_on_producer_loss()
     // Cancelling the selected waiter must pass its event to the next waiter.
     let meter = Arc::new(Meter::default());
     let (pending, producer) = NativePending::prepare_native(
-        provider,
+        Arc::new(MemoryStream::default()),
         request.try_clone_native(&meter.original())?,
         meter.original(),
     )?;
     let mut first = Box::pin(pending.result());
     let mut second = Box::pin(pending.result());
-    let mut context = Context::from_waker(std::task::Waker::noop());
-    assert!(first.as_mut().poll(&mut context).is_pending());
-    assert!(second.as_mut().poll(&mut context).is_pending());
+    struct Wake(std::sync::atomic::AtomicUsize);
+    impl futures::task::ArcWake for Wake {
+        fn wake_by_ref(this: &Arc<Self>) {
+            this.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let first_wake = Arc::new(Wake(std::sync::atomic::AtomicUsize::new(0)));
+    let second_wake = Arc::new(Wake(std::sync::atomic::AtomicUsize::new(0)));
+    let first_waker = futures::task::waker(first_wake.clone());
+    let second_waker = futures::task::waker(second_wake.clone());
+    let mut first_context = Context::from_waker(&first_waker);
+    let mut second_context = Context::from_waker(&second_waker);
+    assert!(first.as_mut().poll(&mut first_context).is_pending());
+    assert!(second.as_mut().poll(&mut second_context).is_pending());
     drop(producer);
+    assert_eq!(first_wake.0.load(Ordering::SeqCst), 1);
+    assert_eq!(second_wake.0.load(Ordering::SeqCst), 0);
     drop(first);
+    assert_eq!(second_wake.0.load(Ordering::SeqCst), 1);
     assert!(matches!(
-        second.as_mut().poll(&mut context),
+        second.as_mut().poll(&mut second_context),
         std::task::Poll::Ready(Err(StreamError::Unavailable))
     ));
     drop(second);
@@ -159,5 +177,24 @@ async fn native_custody_keeps_exact_results_and_terminates_on_producer_loss()
     drop(pending);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
+
+    for allowed in 0..physical.count_current as u64 {
+        let meter = Arc::new(Meter::default());
+        let funded = request.try_clone_native(&meter.original())?;
+        meter.limit.store(
+            meter.allocations.load(Ordering::SeqCst) + allowed,
+            Ordering::SeqCst,
+        );
+        assert!(
+            NativePending::prepare_native(
+                Arc::new(MemoryStream::default()),
+                funded,
+                meter.original(),
+            )
+            .is_err()
+        );
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+    }
     Ok(())
 }
