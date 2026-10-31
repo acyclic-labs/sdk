@@ -52,6 +52,7 @@ fn save(
 }
 
 fn capture() -> Result<(), Box<dyn Error>> {
+    std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
     capture_identity_vectors()?;
     let mut manifest =
         String::from("# Captured SDK encoder output\n# path\tbytes\tsha256\tproducer\n");
