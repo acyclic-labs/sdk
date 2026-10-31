@@ -36,6 +36,7 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
         "work refusal must precede the first output change"
     );
     assert_eq!(denied.spent().items_examined, 0);
+    memory_index_retains_full_identity_and_atomic_refusal().await?;
 
     // The original logical end is an input invariant, not the routing upper
     // bound: the rightmost leaf must still be able to grow past that end.
@@ -235,6 +236,89 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
             history_roots(&store, 2_006_604_908_912_946_961, shape(shape_index), true).await?;
         assert_eq!(single, batched);
         assert_eq!(single, rebuilt);
+    }
+    Ok(())
+}
+
+async fn memory_index_retains_full_identity_and_atomic_refusal()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::storage::{HashedObject, ObjectStorage, ObjectWrite};
+    use acyclic_stream::OwnedBytes;
+
+    let cancellation = CancellationToken::new();
+    let body = OwnedBytes::from_static(b"identity");
+    let plain = HashedObject::new(crate::ObjectKind::Blob, body.clone()).object_id();
+    let store = MemoryObjectStore::default();
+    for count in 0..=256_u64 {
+        let id = ObjectId {
+            storage: (count != 0).then(|| ObjectStorage {
+                locator: Digest::from_bytes([0; 32]),
+                root_file_id: crate::FileId::from_bytes([0; 16]),
+                origin_generation: object_digest(&count.to_be_bytes()),
+            }),
+            ..plain
+        };
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        store.put(id, body.clone(), &mut work).await?;
+        assert_eq!(work.spent().bytes_copied, 0);
+        // At most two radix nodes and the original standalone ledger owner.
+        assert!(work.spent().allocation_operations <= 3);
+        assert_eq!(work.spent().object_bytes_written, body.len() as u64);
+        assert!(work.spent().items_examined <= (24 * ObjectId::ENCODED_LEN + 4) as u64);
+        if matches!(count, 0 | 63 | 255 | 256) {
+            let mut read = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            assert_eq!(store.read(plain, 8, &mut read).await?.bytes, body);
+            assert!(read.spent().items_examined <= (8 * ObjectId::ENCODED_LEN + 1) as u64);
+            assert_eq!(read.spent().allocation_operations, 0);
+        }
+    }
+
+    let first = HashedObject::new(crate::ObjectKind::Blob, OwnedBytes::from_static(b"first"));
+    let second = HashedObject::new(crate::ObjectKind::Blob, OwnedBytes::from_static(b"second"));
+    let writes = [first.clone(), second, first].map(|object| ObjectWrite {
+        object_id: object.object_id(),
+        bytes: object.bytes().clone(),
+    });
+    // Two unique keys need three nodes, one original ledger owner and the
+    // batch rollback buffer; the repeated third key allocates nothing.
+    for allowance in 0..=5 {
+        let batch = MemoryObjectStore::default();
+        let mut work = crate::AuthorityWork::new(
+            WorkBudget {
+                allocation_operations: allowance,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        let result = batch.put_many(&writes, &mut work).await;
+        assert_eq!(result.is_ok(), allowance == 5);
+        for write in &writes {
+            let mut read = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            assert_eq!(
+                batch.contains(write.object_id, &mut read).await?,
+                result.is_ok()
+            );
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let native_cancel = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &native_cancel)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let native = MemoryObjectStore::default();
+        native
+            .put(
+                plain,
+                body,
+                &mut crate::AuthorityWork::native(&original, &native_cancel),
+            )
+            .await?;
+        assert!(original.live_allocation_bytes() > baseline);
+        native_cancel.cancel();
+        drop(native);
+        assert_eq!(original.live_allocation_bytes(), baseline);
     }
     Ok(())
 }
