@@ -167,8 +167,7 @@ impl Cut<'_> {
             self.execution_condition.clone(),
             page_condition,
         ] {
-            custody.reserve(request.conditions.len() + 1, &mut request.conditions)?;
-            request.conditions.push(condition);
+            crate::distributed::add_condition(request, custody, condition)?;
         }
         if let Some((observation, checkpoint)) = publication {
             add_records(
@@ -197,8 +196,11 @@ impl Cut<'_> {
                     return Err(invalid(None));
                 }
                 previous = Some(path);
-                custody.reserve(request.conditions.len() + 1, &mut request.conditions)?;
-                request.conditions.push(contribution.condition.clone());
+                crate::distributed::add_condition(
+                    request,
+                    custody,
+                    contribution.condition.clone(),
+                )?;
                 add_records(
                     request,
                     custody,
