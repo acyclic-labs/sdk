@@ -5,15 +5,7 @@ use serde_json::{Value, value::RawValue};
 use std::{borrow::Cow, collections::VecDeque};
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Part<'a> {
-    #[serde(default, borrow)]
-    text: Cow<'a, str>,
-    thought: Option<bool>,
-    #[serde(rename = "thoughtSignature", borrow)]
-    _signature: Option<Cow<'a, str>>,
-    function_call: Option<serde::de::IgnoredAny>,
-}
+struct Text<'a>(#[serde(borrow)] Cow<'a, str>);
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
@@ -27,7 +19,7 @@ mod tests {
             let raw = format!(r#"{{"functionCall":{{"name":"read","args":{{"nested":["\u{surrogate:04x}"]}}}},"thoughtSignature":"original=="}}"#);
             // Negative control: skipping functionCall alone accepts malformed
             // nested string tokens. Native replay must validate the whole part.
-            prop_assert!(serde_json::from_str::<Part<'_>>(&raw).is_ok());
+            prop_assert!(serde_json::from_str::<crate::protocol::gemini::Part<&RawValue>>(&raw).is_ok());
             prop_assert!(Replay::default().native(raw.as_bytes(), false).is_err());
         }
     }
@@ -75,8 +67,7 @@ impl<'a> Replay<'a> {
         if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
             return Err(crate::invalid("invalid retained Gemini part"));
         }
-        let part: Part<'_> = serde_json::from_str(raw.get())
-            .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
+        let part = crate::protocol::gemini::native_part(raw)?;
         if part.function_call.is_some() {
             // A signature authenticates this exact part, including the call.
             // Retain its bytes rather than reconstructing a signed envelope.
@@ -84,8 +75,14 @@ impl<'a> Replay<'a> {
             return Ok(None);
         }
         self.call = None;
-        if suppress_display && part.thought != Some(true) && !part.text.is_empty() {
-            self.visible.push_back(part.text);
+        if suppress_display && part.thought.is_none_or(|thought| thought.get() != "true") {
+            if let Some(text) = part.text {
+                let Text(text): Text<'a> = serde_json::from_str(text.get())
+                    .map_err(|_| crate::invalid("invalid retained Gemini text"))?;
+                if !text.is_empty() {
+                    self.visible.push_back(text);
+                }
+            }
         }
         Ok(Some(Item::Native(raw)))
     }

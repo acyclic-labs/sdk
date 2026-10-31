@@ -211,6 +211,49 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
     let mut answer = String::new();
     append(events, &mut request, &mut answer);
     finish(&mut request, &answer);
+    // Native Part data is a union. A matching canonical call cannot authorize
+    // replaying a second data field hidden in the same signed envelope.
+    for extra in [
+        "text",
+        "inlineData",
+        "functionResponse",
+        "fileData",
+        "executableCode",
+        "codeExecutionResult",
+        "toolCall",
+        "toolResponse",
+    ] {
+        let mut changed = request.clone();
+        let block = changed
+            .messages
+            .iter_mut()
+            .find_map(|message| match &mut message.content {
+                ModelContent::Part(ModelContentPart::Reasoning { block }) => Some(block),
+                _ => None,
+            })
+            .unwrap();
+        let mut part: Value = serde_json::from_slice(&block.continuity).unwrap();
+        part[extra] = if extra == "text" {
+            json!("ambiguous")
+        } else {
+            json!({})
+        };
+        block.continuity = serde_json::to_vec(&part).unwrap();
+        assert!(
+            projection::body(&provider, &changed).is_err(),
+            "ambiguous signed {extra} must refuse"
+        );
+        let mut body = projection::body(&provider, &request).unwrap();
+        body["contents"][1]["parts"][0] = part;
+        assert!(crate::validate_input(Adapter::Gemini, &body).contains(&"GEM-SEQ-03"));
+        let (foreign, _) = super::provider(Adapter::Responses, 200);
+        assert!(
+            !projection::body(&foreign, &changed)
+                .unwrap()
+                .to_string()
+                .contains("thoughtSignature")
+        );
+    }
     for field in ["name", "arguments", "binding"] {
         let mut changed = request.clone();
         let call = changed
@@ -397,20 +440,139 @@ fn shrunk_split_answer_fixture_preserves_text_for_every_target() {
 
 #[test]
 fn malformed_native_part_fields_fail_before_publication() {
-    for part in [
+    let mut parts = vec![
         json!({"text":"answer","thought":"true"}),
         json!({"text":"answer","thoughtSignature":1}),
         json!({"text":"answer","functionCall":{"name":"echo","args":{}}}),
-    ] {
+    ];
+    // Generated union/shape mutations, not captured provider fixtures. The
+    // original parser's retained call must also be withheld on a later error.
+    let fields = [
+        "text",
+        "inlineData",
+        "functionCall",
+        "functionResponse",
+        "fileData",
+        "executableCode",
+        "codeExecutionResult",
+        "toolCall",
+        "toolResponse",
+    ];
+    // Shape admission must not reject every opaque union member. This checks
+    // only the outer Part contract, not a server tool's nested protocol.
+    for field in fields
+        .iter()
+        .copied()
+        .map(Some)
+        .chain(std::iter::once(None))
+    {
+        let payload = match field {
+            Some("text") => json!("answer"),
+            Some("functionCall") => json!({"name":"echo","args":{}}),
+            _ => json!({}),
+        };
+        let member = field.map_or_else(String::new, |field| format!(",{field:?}:{payload}"));
+        let raw = format!(
+            r#"{{ "thoughtSignature":"original\u003d", "extension":{{"kept":true}}{member} }}"#
+        );
+        let mut replay = crate::projection::gemini::Replay::default();
+        let item = replay.native(raw.as_bytes(), false).unwrap();
+        if field == Some("functionCall") {
+            assert!(item.is_none());
+            assert_eq!(
+                replay
+                    .take_call(None, "echo", &json!({}))
+                    .unwrap()
+                    .unwrap()
+                    .get(),
+                raw
+            );
+        } else {
+            assert_eq!(serde_json::to_vec(&item.unwrap()).unwrap(), raw.as_bytes());
+        }
+        let input = format!(
+            "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{raw}]}},\"finishReason\":\"STOP\"}}]}}\n\n"
+        );
+        let events = futures::executor::block_on(
+            stream::events(Adapter::Gemini, chunks(&input, 1), 4096, parser_dispatch())
+                .try_collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(events.iter().any(|event| matches!(event,ModelEvent::ReasoningBlock {block} if block.continuity == raw.as_bytes())));
+    }
+    for (index, first) in fields.iter().enumerate() {
+        for second in &fields[index + 1..] {
+            let mut part = json!({"thoughtSignature":"original==","extension":{"kept":true}});
+            for field in [*first, *second] {
+                part[field] = if field == "text" {
+                    json!("answer")
+                } else if field == "functionCall" {
+                    json!({"name":"echo","args":{}})
+                } else {
+                    json!({})
+                };
+            }
+            parts.push(part);
+        }
+        if *first != "text" {
+            for value in [json!("object"), json!(false), json!(1), json!([])] {
+                let mut part = json!({"thoughtSignature":"original=="});
+                part[*first] = value;
+                parts.push(part);
+            }
+        }
+    }
+    let unsigned: Vec<_> = parts
+        .iter()
+        .filter(|part| part["thoughtSignature"].is_string())
+        .map(|part| {
+            let mut part = part.clone();
+            part.as_object_mut().unwrap().remove("thoughtSignature");
+            part
+        })
+        .collect();
+    parts.extend(unsigned);
+    for part in parts {
+        let raw = serde_json::to_vec(&part).unwrap();
+        assert!(
+            crate::projection::gemini::Replay::default()
+                .native(&raw, false)
+                .is_err()
+        );
         let input = format!(
             "data: {}\n\n",
-            json!({"candidates":[{"content":{"parts":[part]},"finishReason":"STOP"}]})
+            json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"prior","args":{}},"thoughtSignature":"prior=="},part]},"finishReason":"STOP"}]})
         );
         let result = futures::executor::block_on(
             stream::events(Adapter::Gemini, chunks(&input, 1), 4096, parser_dispatch())
-                .try_collect::<Vec<_>>(),
+                .collect::<Vec<_>>(),
         );
-        assert!(matches!(result, Err(Error::Invalid(_))));
+        assert_eq!(result.len(), 1);
+        assert!(matches!(result[0], Err(Error::Invalid(_))));
+    }
+    for field in fields {
+        let payload = match field {
+            "text" => json!("answer"),
+            "functionCall" => json!({"name":"echo","args":{}}),
+            _ => json!({}),
+        };
+        let raw = format!(
+            r#"{{"thoughtSignature":"original==",{field:?}:{payload},{field:?}:{payload}}}"#
+        );
+        assert!(
+            crate::projection::gemini::Replay::default()
+                .native(raw.as_bytes(), false)
+                .is_err()
+        );
+        let input = format!(
+            "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{{\"functionCall\":{{\"name\":\"prior\",\"args\":{{}}}},\"thoughtSignature\":\"prior==\"}},{raw}]}},\"finishReason\":\"STOP\"}}]}}\n\n"
+        );
+        let events = futures::executor::block_on(
+            stream::events(Adapter::Gemini, chunks(&input, 1), 4096, parser_dispatch())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Err(Error::Invalid(_))));
     }
 }
 

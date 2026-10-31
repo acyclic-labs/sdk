@@ -71,19 +71,20 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             .ok_or_else(|| invalid("missing Gemini content"))?
             .parts;
         for (part, raw) in parts.iter().zip(raw) {
-            if !part.is_object()
-                || present(part.get("text")).is_some_and(|value| !value.is_string())
-                || present(part.get("thought")).is_some_and(|value| !value.is_boolean())
-                || present(part.get("thoughtSignature")).is_some_and(|value| !value.is_string())
-                || (part["text"].is_string() && present(part.get("functionCall")).is_some())
-            {
+            let native = part["thought"] == true || part["thoughtSignature"].is_string();
+            if native {
+                // Admit the exact retained envelope with replay's same decoder.
+                // In particular, a Value must not hide duplicate data fields
+                // that native replay would reject after a call executed.
+                crate::protocol::gemini::native_part(raw)?;
+            } else if crate::protocol::gemini::Part::of(part).is_none() {
                 return Err(invalid(
                     "Gemini content part decode failed; recovery: return an object with correctly typed native fields",
                 ));
             }
             text(&mut events, &part["text"], part["thought"] == true);
             let position = (state.calls.len() + state.thinking.len()) as u64;
-            if part["thought"] == true || part["thoughtSignature"].is_string() {
+            if native {
                 state.raw_part(
                     position,
                     part,
