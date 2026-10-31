@@ -121,7 +121,7 @@ impl Pending {
             let reader = writer.reader();
             let previous = reader.get(root, &key).await?.map(|read| read.reference());
             let value = encode(entry, previous);
-            root = Some(writer.set(root, key, value.as_slice()).await?);
+            root = Some(writer.set(root, key, value.as_slice(), false).await?);
         }
         Ok(root)
     }
@@ -316,7 +316,12 @@ pub(super) async fn tool_state<P: crate::store::JournalProvider + ?Sized>(
     let mut read = reader.get(root, &key(Some(step))).await?;
     let mut sequence = tail.checked_add(1).ok_or_else(|| invalid(io))?;
     while let Some(node) = read {
-        let Node::Leaf { key: found, value } = node.node(io)? else {
+        let Node::Leaf {
+            key: found,
+            value,
+            segmented: false,
+        } = node.node(io)?
+        else {
             return Err(invalid(io));
         };
         if found != key(Some(step)) {
@@ -525,7 +530,12 @@ async fn collect_step<P: crate::store::JournalProvider + ?Sized>(
         if count > maximum {
             return Err(invalid(io));
         }
-        let Node::Leaf { key: found, value } = node.node(io)? else {
+        let Node::Leaf {
+            key: found,
+            value,
+            segmented: false,
+        } = node.node(io)?
+        else {
             return Err(invalid(io));
         };
         if found != key(step) {

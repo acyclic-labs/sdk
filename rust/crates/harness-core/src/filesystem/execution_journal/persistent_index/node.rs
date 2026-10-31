@@ -4,8 +4,15 @@ pub(super) const LEAF_HEADER_BYTES: usize = 33;
 
 #[derive(Clone, Copy)]
 pub(in crate::filesystem::execution_journal) enum Node<'a> {
-    Leaf { key: [u8; 32], value: &'a [u8] },
-    Branch { bit: u16, children: [NodeRef; 2] },
+    Leaf {
+        key: [u8; 32],
+        value: &'a [u8],
+        segmented: bool,
+    },
+    Branch {
+        bit: u16,
+        children: [NodeRef; 2],
+    },
 }
 
 impl<'a> Node<'a> {
@@ -16,7 +23,7 @@ impl<'a> Node<'a> {
     ) -> Result<Self> {
         let malformed = || invalid(io, "execution index node is malformed");
         let version = [bytes.first().copied().ok_or_else(malformed)? >> 4];
-        acyclic_auth::format::header(&version, b"", &[1], malformed, || {
+        acyclic_auth::format::header(&version, b"", &[2], malformed, || {
             canonical_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
@@ -30,15 +37,19 @@ impl<'a> Node<'a> {
         // SDK records already frame the value length; duplicating it here
         // costs bytes in every immutable copy of every changed key path.
         match bytes.first() {
-            Some(0x10) => {
+            Some(tag @ (0x20 | 0x22)) => {
                 let key = bytes
                     .get(1..LEAF_HEADER_BYTES)
                     .and_then(|key| key.try_into().ok())
                     .ok_or_else(malformed)?;
                 let value = bytes.get(LEAF_HEADER_BYTES..).ok_or_else(malformed)?;
-                Ok(Self::Leaf { key, value })
+                Ok(Self::Leaf {
+                    key,
+                    value,
+                    segmented: *tag == 0x22,
+                })
             }
-            Some(0x11) => {
+            Some(0x21) => {
                 let bit = u16::from(*bytes.get(1).ok_or_else(malformed)?);
                 let mut input = bytes.get(2..).ok_or_else(malformed)?;
                 let mut link = || -> Result<NodeRef> {
@@ -93,13 +104,17 @@ impl<'a> Node<'a> {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let mut bytes = crate::core::reserve_copy_vector(length, &mut quota)?;
             match self {
-                Self::Leaf { key, value } => {
-                    bytes.push(0x10);
+                Self::Leaf {
+                    key,
+                    value,
+                    segmented,
+                } => {
+                    bytes.push(if *segmented { 0x22 } else { 0x20 });
                     bytes.extend_from_slice(key);
                     bytes.extend_from_slice(value);
                 }
                 Self::Branch { bit, children } => {
-                    bytes.push(0x11);
+                    bytes.push(0x21);
                     bytes.push(
                         u8::try_from(*bit)
                             .map_err(|_| invalid(io, "execution index bit overflows"))?,
@@ -161,6 +176,7 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
 
     pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
         for sequence in [0, u64::MAX] {
+            super::super::value::codec_fuzz::check(bytes, sequence);
             let ordinary = Node::decode(bytes, sequence, None);
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -198,7 +214,7 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
                 for end in 0..required {
                     assert!(Node::decode(&encoded[..end], sequence, None).is_err());
                 }
-                for version in [0, 2, 15] {
+                for version in [0, 1, 15] {
                     let header = [(encoded[0] & 15) | (version << 4)];
                     assert_eq!(
                         Node::decode(&header, sequence, None).err().unwrap().code(),
@@ -206,7 +222,7 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
                     );
                 }
                 assert_eq!(
-                    Node::decode(&[0x12], sequence, None).err().unwrap().code(),
+                    Node::decode(&[0x23], sequence, None).err().unwrap().code(),
                     crate::wire::ErrorCode::Storage
                 );
                 if matches!(value, Node::Branch { .. }) {
@@ -222,6 +238,25 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
     pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>>
     {
         let mut seeds = Vec::new();
+        seeds.push((
+            "execution-index-segmented-value",
+            super::super::value::codec_fuzz::seed()?,
+        ));
+        use crate::filesystem::execution_journal::checkpoint_maps::Entry;
+        for (name, marker) in [
+            ("execution-index-inline-exv1-position", *b"EXV1"),
+            ("execution-index-inline-exv2-position", *b"EXV2"),
+        ] {
+            let position = (u64::from(u32::from_le_bytes(marker)), [9; 32]);
+            let value = position.encode(None)?;
+            let (bytes, _) = Node::Leaf {
+                key: [6; 32],
+                value: &value,
+                segmented: false,
+            }
+            .encode(None)?;
+            seeds.push((name, bytes.to_vec()));
+        }
         for (name, value) in [
             ("execution-index-leaf-empty", b"".as_slice()),
             ("execution-index-leaf-value", b"retained summary".as_slice()),
@@ -229,6 +264,7 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
             let (bytes, _) = Node::Leaf {
                 key: [6; 32],
                 value,
+                segmented: false,
             }
             .encode(None)?;
             Node::decode(&bytes, u64::MAX, None)?;
@@ -277,7 +313,7 @@ mod tests {
 
     #[test]
     fn page_sequences_are_canonical_at_every_varint_boundary() -> Result<()> {
-        for header in [0x00, 0x01, 0x20, 0x21, 0xf0, 0xf1] {
+        for header in [0x00, 0x01, 0x10, 0x11, 0x12, 0xf0, 0xf1] {
             assert_eq!(
                 Node::decode(&[header], 0, None)
                     .err()
@@ -286,7 +322,7 @@ mod tests {
             );
         }
         assert_eq!(
-            Node::decode(&[0x12], 0, None)
+            Node::decode(&[0x23], 0, None)
                 .err()
                 .map(|error| error.code()),
             Some(crate::wire::ErrorCode::Storage)

@@ -44,7 +44,7 @@ pub(super) mod codec_fuzz {
     }
 }
 
-trait Entry: serde::de::DeserializeOwned + Serialize + crate::HeapLayout {
+pub(super) trait Entry: serde::de::DeserializeOwned + Serialize + crate::HeapLayout {
     #[cfg(test)]
     fn heap_bytes(&self) -> Result<u64> {
         Ok(0)
@@ -355,7 +355,12 @@ pub(super) async fn retry_entry<P: crate::store::JournalProvider + ?Sized>(
     let Some(read) = reader.get(state.roots[0], &retry).await? else {
         return Ok(None);
     };
-    let persistent_index::node::Node::Leaf { value, .. } = read.node(io)? else {
+    let persistent_index::node::Node::Leaf {
+        value,
+        segmented: false,
+        ..
+    } = read.node(io)?
+    else {
         return Err(corrupt(io));
     };
     let entry = <(u64, [u8; 32])>::decode(value, io)?;

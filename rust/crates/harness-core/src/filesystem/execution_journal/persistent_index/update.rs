@@ -129,9 +129,14 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
         root: Option<NodeRef>,
         key: [u8; 32],
         value: &[u8],
+        segmented: bool,
     ) -> Result<NodeRef> {
         let Some(mut current) = root else {
-            return self.stage(Node::Leaf { key, value });
+            return self.stage(Node::Leaf {
+                key,
+                value,
+                segmented,
+            });
         };
         let mut path = std::mem::take(&mut self.scratch.path);
         path.values.clear();
@@ -180,7 +185,11 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
                 .position(|ancestor| usize::from(ancestor.bit) >= difference)
                 .unwrap_or(path.values.len())
         });
-        let mut replacement = self.stage(Node::Leaf { key, value })?;
+        let mut replacement = self.stage(Node::Leaf {
+            key,
+            value,
+            segmented,
+        })?;
         if let Some(difference) = difference {
             let bit = u16::try_from(difference).map_err(|_| {
                 invalid(
