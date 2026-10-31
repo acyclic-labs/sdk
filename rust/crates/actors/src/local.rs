@@ -329,6 +329,30 @@ impl PreparedPublish {
     pub const fn request(&self) -> &CommitRequest {
         &self.request
     }
+    /// Join admission fences without manufacturing a companion mutation. The
+    /// original state fence cannot be weakened, and disagreeing cuts are refused.
+    pub fn require(&mut self, required: Vec<CommitCondition>) -> Result<(), Error> {
+        if self.sealed {
+            return Err(Error::Invalid(
+                "sealed actor publication cannot accept conditions",
+            ));
+        }
+        for condition in required {
+            let path = condition_path(&condition);
+            if self.own.as_ref() == Some(path) {
+                return Err(Error::Invalid("condition targets actor state stream"));
+            }
+            let conditions = &mut self.request.conditions;
+            match conditions.binary_search_by(|existing| condition_path(existing).cmp(path)) {
+                Ok(index) if conditions.get(index) != Some(&condition) => {
+                    return Err(Error::Invalid("effects disagree on one stream's cut"));
+                }
+                Ok(_) => {}
+                Err(index) => conditions.insert(index, condition),
+            }
+        }
+        Ok(())
+    }
     /// Add one participant, keeping conditions canonical (one per path, sorted)
     /// and merging appends to the same path in order. The actor's own state
     /// stream cannot be named; disagreeing cuts on one path are refused.
@@ -355,22 +379,9 @@ impl PreparedPublish {
         {
             return Err(Error::Invalid("effect changes the host's invocation reply"));
         }
+        self.require(effect.conditions)?;
         let Self { own, request, .. } = self;
         let touches_own = |path: &StreamPath| own.as_ref() == Some(path);
-        for condition in effect.conditions {
-            let path = condition_path(&condition);
-            if touches_own(path) {
-                return Err(Error::Invalid("effect targets actor state stream"));
-            }
-            let conditions = &mut request.conditions;
-            match conditions.binary_search_by(|existing| condition_path(existing).cmp(path)) {
-                Ok(index) if conditions.get(index) != Some(&condition) => {
-                    return Err(Error::Invalid("effects disagree on one stream's cut"));
-                }
-                Ok(_) => {}
-                Err(index) => conditions.insert(index, condition),
-            }
-        }
         let mutations = &mut request.mutations;
         match effect.mutation {
             CommitMutation::Append { path, records } => {

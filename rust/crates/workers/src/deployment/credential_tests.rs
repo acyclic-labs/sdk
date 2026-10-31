@@ -31,6 +31,7 @@ fn credential_failure_covers_every_lifecycle_operation() {
                         0 => matches!(
                             client
                                 .invoke(&wire::InvokeWorkerRequest {
+                                    deployment_envelope: Vec::new(),
                                     worker_name: "worker-a".into(),
                                     method: "POST".into(),
                                     url: "/".into(),
@@ -52,6 +53,7 @@ fn credential_failure_covers_every_lifecycle_operation() {
                         _ => matches!(
                             client
                                 .deploy(&wire::DeploymentRequest {
+                                    publication: Vec::new(),
                                     name: "worker-a".into(),
                                     code_sha256: vec![1; 32],
                                     worker_limits: Some(wire::WorkerLimits {

@@ -102,6 +102,7 @@ impl AgentCall {
         result: &Result<AgentReply, acyclic_harness_core::agent::Error>,
     ) -> Result<Bytes, CommandError> {
         let response = wire::InvokeActorResponse {
+            deployment_envelope: Vec::new(),
             status: 200,
             headers: Vec::new(),
             body: encode_agent_reply(result, &self.command)?,
@@ -130,6 +131,7 @@ impl AgentBinding {
     #[must_use]
     pub fn discovery() -> Self {
         Self(wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             actor_id: DISCOVERY_ACTOR.into(),
             method: "POST".into(),
             url: DISCOVERY_URL.into(),
@@ -322,6 +324,7 @@ mod tests {
 
     fn invocation(body: Vec<u8>) -> wire::InvokeActorRequest {
         wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             actor_id: "fixture".into(),
             method: "POST".into(),
             url: "https://fixture.invalid/command".into(),

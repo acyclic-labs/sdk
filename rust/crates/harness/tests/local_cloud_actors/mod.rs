@@ -177,6 +177,7 @@ async fn append_events(
 
 fn create() -> wire::DeploymentRequest {
     wire::DeploymentRequest {
+        publication: Vec::new(),
         entry_source: None,
         name: NAMESPACE.into(),
         account_id: Vec::new(),
@@ -280,6 +281,7 @@ async fn invoke_response(
 ) -> TestResult<wire::InvokeActorResponse> {
     Ok(client
         .invoke_actor(wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             invocation_order: None,
             namespace: Some(NAMESPACE.into()),
             account_id: Vec::new(),
@@ -364,6 +366,7 @@ proptest::proptest! {
     #[test]
     fn invocation_oracle_checks_exact_state_and_status(counter in -1000i32..1000) {
         let mut response = wire::InvokeActorResponse {
+            deployment_envelope: Vec::new(),
             status: 200,
             body: format!("{{\"counter\":{counter},\"version\":1,\"events\":[]}}").into_bytes(),
             ..Default::default()
@@ -373,6 +376,7 @@ proptest::proptest! {
         // the correct counter and an updated configuration revision.
         assert!(state_with_version(&response, counter, 2).is_err());
         let migrated = wire::InvokeActorResponse {
+            deployment_envelope: Vec::new(),
             status: 200,
             body: format!("{{\"counter\":{counter},\"version\":2,\"events\":[],\"migratedFrom\":1}}").into_bytes(),
             ..Default::default()
@@ -404,6 +408,7 @@ fn delivery_oracle_rejects_omission_duplication_and_reordering(chars in proptest
         (vec![events[1].clone(), events[0].clone()], false),
     ] {
         let response = wire::InvokeActorResponse {
+            deployment_envelope: Vec::new(),
             status: 200,
             body: format!(
                 "{{\"counter\":0,\"version\":1,\"events\":{}}}",

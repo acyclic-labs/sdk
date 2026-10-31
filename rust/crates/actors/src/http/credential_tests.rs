@@ -135,6 +135,7 @@ async fn deployment_kind_mismatch_is_rejected_before_credentials_or_io()
         1024,
     )?;
     let worker = wire::DeploymentRequest {
+        publication: Vec::new(),
         entry_source: None,
         name: "worker".into(),
         code_sha256: vec![1; 32],
@@ -153,6 +154,7 @@ async fn deployment_kind_mismatch_is_rejected_before_credentials_or_io()
         Err(Error::InvalidArgument)
     ));
     let namespace = wire::DeploymentRequest {
+        publication: Vec::new(),
         entry_source: None,
         secrets: Vec::new(),
         fetch: None,

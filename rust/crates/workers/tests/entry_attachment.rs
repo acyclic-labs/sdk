@@ -289,6 +289,7 @@ async fn accepted_configuration<P: Blobs>(
         },
     ] {
         let invalid = wire::DeploymentRequest {
+            publication: Vec::new(),
             entry_source: Some(bad_source),
             ..request.clone()
         };

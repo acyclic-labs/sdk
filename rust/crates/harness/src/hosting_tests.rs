@@ -132,6 +132,7 @@ fn credential(resource: &str) -> Bytes {
 
 fn invocation(namespace: &str, command: &AgentCommand) -> Result<Bytes> {
     Ok(wire::InvokeActorRequest {
+        deployment_envelope: Vec::new(),
         actor_id: "root".into(),
         method: "POST".into(),
         url: "https://agents.invalid/command".into(),

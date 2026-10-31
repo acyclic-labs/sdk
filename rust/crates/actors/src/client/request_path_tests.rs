@@ -36,6 +36,7 @@ impl tonic::server::UnaryService<wire::InvokeActorRequest> for Echo {
         );
         let request = request.into_inner();
         std::future::ready(Ok(tonic::Response::new(wire::InvokeActorResponse {
+            deployment_envelope: Vec::new(),
             status: 200,
             body: request.body,
             headers: request.headers,
@@ -86,6 +87,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             CredentialProvider::new(|| std::future::ready(Ok("fixture".into()))),
         );
         let request = wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             invocation_order: None,
             namespace: None,
             account_id: Vec::new(),
@@ -109,6 +111,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             assert_eq!(response.body, request.body);
         }
         let renewed = wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             body: vec![8],
             ..request.clone()
         };
@@ -121,6 +124,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
         assert_eq!(response.body, vec![8]);
         client.call("InvokeActor", &request.encode_to_vec()).await?;
         let invalid = wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             actor_id: String::new(),
             ..request
         };
@@ -219,6 +223,7 @@ fn request_path_measure_admitted_request_conversion() -> Result<(), Error> {
         let requests: Result<Vec<_>, _> = (0..256)
             .map(|_| {
                 domain::InvokeActorRequest::try_from(wire::InvokeActorRequest {
+                    deployment_envelope: Vec::new(),
                     invocation_order: None,
                     namespace: None,
                     account_id: Vec::new(),

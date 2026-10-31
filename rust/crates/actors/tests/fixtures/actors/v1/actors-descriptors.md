@@ -90,3 +90,15 @@ Its descriptor was copied to both Rust paths. The independent Buf build and
 canonicalization used the commands above on that same source. These captures
 replace the predecessor schema outputs; no descriptor bytes were combined by
 hand. Manifest digests were written by `scripts/check-compatibility-digests.mjs`.
+
+The 2026-10-31 captures at source b52985ed1e combine the canonical shared
+SecretRef import with the current Actor fork and selected-entry fields.
+The Rust and independent Buf pipelines above were run on that source; the
+Rust capture was copied to both Rust descriptor paths. No descriptor bytes
+were combined by hand.
+
+The 2026-10-31 live-update capture, based on main `909744ee57`, adds the v1
+publication upload and deployment envelope fields. The Rust metadata exporter
+and its maintained-proto comparison passed on bb2. The independent pinned Buf
+build and canonicalizer above also ran there. Rust bytes were copied only to
+the two Rust paths; Buf bytes were copied only to `actors-buf-v1.bin`.

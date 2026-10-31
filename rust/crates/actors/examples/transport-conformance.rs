@@ -30,6 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut actors_grpc = actors::grpc::connect(endpoint, token, Some(ca.as_bytes())).await?;
     let actors_http = actors::http::Client::new(http_endpoint, token, 1024 * 1024)?;
     let request = actors::wire::DeploymentRequest {
+        publication: Vec::new(),
         entry_source: None,
         name: "example".into(),
         code_sha256: vec![1; 32],
@@ -47,6 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     actors_grpc.deploy_namespace(request.clone()).await?;
     actors_http.deploy_namespace(&request).await?;
     let request = actors::wire::DeploymentRequest {
+        publication: Vec::new(),
         entry_source: None,
         secrets: Vec::new(),
         fetch: None,
@@ -144,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         9
     );
     let request = actors::wire::InvokeActorRequest {
+        deployment_envelope: Vec::new(),
         actor_id: "actor-a".into(),
         namespace: None,
         account_id: Vec::new(),
@@ -167,6 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     actors_grpc.delete_all(request.clone()).await?;
     actors_http.delete_all(&request).await?;
     let worker = actors::wire::InvokeWorkerRequest {
+        deployment_envelope: Vec::new(),
         worker_name: "example".into(),
         method: "POST".into(),
         url: "/invoke".into(),

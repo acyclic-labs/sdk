@@ -296,6 +296,7 @@ where
     pub fn binding(&self) -> acyclic_actors::wire::InvokeActorRequest {
         let within = self.bound.within();
         acyclic_actors::wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             actor_id: within.id().to_owned(),
             method: "POST".into(),
             url: BINDING_URL.into(),

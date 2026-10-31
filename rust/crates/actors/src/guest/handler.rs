@@ -236,6 +236,21 @@ pub trait Composition: acyclic_stream::ProviderPlatform + 'static {
 pub trait Handler: acyclic_stream::ProviderPlatform {
     /// The package's immutable code, codec, subscriptions and bindings.
     fn manifest(&self) -> &Manifest;
+    /// Original host-bound admission fences, applied to both success and failure
+    /// replies at the sole publication boundary. Guests cannot remove them.
+    fn publication_conditions(&self) -> Vec<CommitCondition> {
+        Vec::new()
+    }
+    /// Expose a resumable await in an already committed checkpoint. Hosts must
+    /// validate its original journal publication and suspend old execution
+    /// before admitting a cut. None reports an unsupported/non-yielding boundary;
+    /// it cannot authorize idle-free cutover or cancellation of accepted work.
+    fn handoff(
+        &self,
+        _checkpoint: &Checkpoint,
+    ) -> Result<Option<crate::live_update::DurableAwait>, GuestError> {
+        Ok(None)
+    }
     /// Compute a transition without independently acknowledging input or effects.
     fn on_record<'a>(
         &'a self,

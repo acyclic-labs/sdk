@@ -14,6 +14,7 @@ const TOOLS: &str = "fs:/fixture/tools";
 
 fn route() -> wire::InvokeActorRequest {
     wire::InvokeActorRequest {
+        deployment_envelope: Vec::new(),
         actor_id: "root".into(),
         namespace: Some("fixture".into()),
         account_id: b"account".into(),

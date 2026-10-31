@@ -75,6 +75,11 @@ pub struct InvokeActorRequest {
     #[wire(tag = 95, message)]
     #[ts(optional)]
     invocation_order: Option<InvocationOrder>,
+    /// Original host-bound caller deployment provenance. External callers have
+    /// no deployment; Cloud refuses a guest attempting to choose this metadata.
+    #[wire(tag = 96, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    deployment_envelope: Vec<u8>,
 }
 
 impl InvokeActorRequest {
@@ -87,6 +92,7 @@ impl InvokeActorRequest {
         headers: Vec<Header>,
     ) -> Self {
         Self {
+            deployment_envelope: Vec::new(),
             namespace: None,
             account_id: Vec::new(),
             actor_id,
@@ -132,7 +138,7 @@ impl InvokeActorRequest {
 }
 
 /// Typed invocation response with byte-preserving body and headers.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = InvokeActorResponse::validate_from_proto)]
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorResponse.ts")]
 #[ts(rename_all = "camelCase")]
@@ -144,6 +150,10 @@ pub struct InvokeActorResponse {
     body: Vec<u8>,
     #[wire(tag = 3, message)]
     headers: Vec<Header>,
+    /// Original request provenance retained in the reply/receipt, not a grant.
+    #[wire(tag = 4, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    deployment_envelope: Vec<u8>,
 }
 
 impl InvokeActorResponse {
@@ -188,6 +198,10 @@ pub struct InvokeWorkerRequest {
     #[wire(tag = 94)]
     #[ts(optional)]
     rpc_method: Option<String>,
+    /// Same scoped caller contract as Actor RPCs.
+    #[wire(tag = 96, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    deployment_envelope: Vec<u8>,
 }
 
 impl InvokeWorkerRequest {
@@ -200,6 +214,7 @@ impl InvokeWorkerRequest {
         headers: Vec<Header>,
     ) -> Result<Self, DomainError> {
         let request = Self {
+            deployment_envelope: Vec::new(),
             account_id: Vec::new(),
             worker_name,
             binding_name: None,
@@ -233,6 +248,32 @@ impl InvokeWorkerRequest {
         &self.headers
     }
 }
+
+macro_rules! deployment_provenance {
+    ($($ty:ty),+ $(,)?) => { $(
+        impl $ty {
+            /// Retain original host-bound provenance through forwarding and replies.
+            /// The host authenticates it; this setter conveys no execution grant.
+            pub fn with_deployment_envelope(mut self, envelope: &crate::live_update::CallEnvelope) -> Result<Self, crate::live_update::Error> {
+                envelope.validate()?;
+                self.deployment_envelope = crate::live_update::encode(envelope)?;
+                Ok(self)
+            }
+            /// Decode the SDK-owned canonical caller contract; absence identifies
+            /// a caller outside an Actor deployment, not an implicit epoch zero.
+            pub fn deployment_envelope(&self) -> Result<Option<crate::live_update::CallEnvelope>, crate::live_update::Error> {
+                if self.deployment_envelope.is_empty() { Ok(None) }
+                else { crate::live_update::decode_envelope(&self.deployment_envelope).map(Some) }
+            }
+
+            fn validate_envelope(&self) -> Result<(), DomainError> {
+                self.deployment_envelope().map_err(|_| DomainError::Contract(crate::ContractError::InvalidArgument))?;
+                Ok(())
+            }
+        }
+    )+ };
+}
+deployment_provenance!(InvokeActorRequest, InvokeWorkerRequest, InvokeActorResponse);
 
 impl InvokeWorkerRequest {
     /// A named binding, admitted by the host, authorizes private RPC/fetch.
@@ -278,6 +319,7 @@ impl InvokeWorkerRequest {
 
 impl InvokeActorRequest {
     fn validate_from_proto(&self) -> Result<(), DomainError> {
+        self.validate_envelope()?;
         if let Some(hint) = &self.location_hint {
             crate::addressing::validate_location_hint(hint)?;
         }
@@ -292,6 +334,7 @@ impl InvokeActorRequest {
 
 impl InvokeWorkerRequest {
     fn validate_from_proto(&self) -> Result<(), DomainError> {
+        self.validate_envelope()?;
         crate::addressing::validate_dns_label(self.worker_name.as_str().as_bytes())
             .map_err(|_| DomainError::InvalidBinding)?;
         if self.binding_name.as_ref().is_some_and(String::is_empty)
@@ -300,5 +343,11 @@ impl InvokeWorkerRequest {
             return Err(DomainError::InvalidBinding);
         }
         Ok(())
+    }
+}
+
+impl InvokeActorResponse {
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        self.validate_envelope()
     }
 }
