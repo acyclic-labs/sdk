@@ -1,5 +1,5 @@
 //! Opt-in cache: validity comes from the source custodian, never decoded claims.
-use super::{CredentialError, Shared, valid_credential};
+use super::{CredentialError, CustodianPlatform, Shared, valid_credential};
 use futures::future::{AbortHandle, Abortable, FutureExt, Shared as SharedFuture};
 use std::{
     future::Future,
@@ -53,9 +53,54 @@ pub struct CredentialValidity {
     pub revision: Option<CredentialRevision>,
 }
 
+/// Protected token storage together with its original allocation custody.
+///
+/// Storage is scrubbed and destroyed before its custody is released. Custody
+/// must own the original allocation backing the token; it grants no source
+/// authority and does not establish revision/expiry validity.
+pub struct CredentialToken<C> {
+    token: Zeroizing<String>,
+    _custody: C,
+}
+
+impl<C> CredentialToken<C> {
+    /// Move the original bytes and allocation together without allocating or
+    /// copying. Admit the enclosing box before constructing it for a snapshot.
+    pub fn new(token: String, custody: C) -> Self {
+        Self {
+            token: Zeroizing::new(token),
+            _custody: custody,
+        }
+    }
+}
+
+trait RetainedToken: CustodianPlatform {
+    fn token(&self) -> &str;
+}
+
+impl<C: CustodianPlatform> RetainedToken for CredentialToken<C> {
+    fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+enum Token {
+    Owned(Zeroizing<String>),
+    Retained(Box<dyn RetainedToken>),
+}
+
+impl Token {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Owned(token) => token,
+            Self::Retained(token) => token.token(),
+        }
+    }
+}
+
 /// A bounded credential and its custodian-supplied validity. Debug redacts bytes.
 pub struct CredentialSnapshot {
-    token: Zeroizing<String>,
+    token: Token,
     revision: CredentialRevision,
     expires_at: u64,
 }
@@ -82,7 +127,27 @@ impl CredentialSnapshot {
             return Err(CredentialError::Invalid);
         }
         Ok(Self {
-            token,
+            token: Token::Owned(token),
+            revision,
+            expires_at,
+        })
+    }
+
+    /// Transfer the original protected token and its allocation owner without
+    /// copying bytes or allocating another token. Rejection drops that same
+    /// owner. Successful construction retains it until the final snapshot lease
+    /// drops, including leases held by rejected or completed transport requests.
+    /// Expiry/revision must be authenticated or owned by the source custodian.
+    pub fn from_retained<C: CustodianPlatform + 'static>(
+        token: Box<CredentialToken<C>>,
+        revision: CredentialRevision,
+        expires_at: u64,
+    ) -> Result<Self, CredentialError> {
+        if !valid_credential(token.token()) {
+            return Err(CredentialError::Invalid);
+        }
+        Ok(Self {
+            token: Token::Retained(token),
             revision,
             expires_at,
         })
@@ -98,7 +163,7 @@ impl CredentialSnapshot {
 
     /// Borrow secret bytes only for the admitted transport request.
     pub fn token(&self) -> &str {
-        &self.token
+        self.token.as_str()
     }
     /// The trusted source revision at publication.
     pub fn revision(&self) -> CredentialRevision {
@@ -111,7 +176,7 @@ impl CredentialSnapshot {
 }
 
 /// Immutable snapshot ownership; native Arc, browser Rc. Dropping the last
-/// lease scrubs its token. A lease does not extend its absolute expiry.
+/// lease destroys its protected token owner. A lease does not extend expiry.
 pub type CredentialLease = Shared<CredentialSnapshot>;
 
 /// Typed refresh/validity failures. No failure returns an older credential.
