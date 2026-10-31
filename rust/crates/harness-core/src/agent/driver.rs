@@ -611,7 +611,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                                             segment,
                                             roster: open.roster.clone(),
                                         })?),
-                                        reserved_children: 0,
                                         outs: Vec::new(),
                                         wait: Wait::Continue,
                                         drops: None,
