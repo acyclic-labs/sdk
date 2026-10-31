@@ -317,6 +317,7 @@ mod tests {
             }
             Ok(domain::InvokeActorResponse::try_from(
                 crate::wire::InvokeActorResponse {
+                    deployment_envelope: Vec::new(),
                     status: 200,
                     ..Default::default()
                 },

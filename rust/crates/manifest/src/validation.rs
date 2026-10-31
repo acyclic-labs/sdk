@@ -688,6 +688,7 @@ fn lower_actor_unchecked(
     let selected_secrets = deployment_secrets(secrets, entry)?;
     let selected_fetch = deployment_fetch(entry)?;
     DeploymentRequest::try_from(acyclic_actors::wire::DeploymentRequest {
+        publication: Vec::new(),
         entry_source: source.map(Into::into),
         name: entry.name.clone(),
         code_sha256: digest.into(),
@@ -964,6 +965,7 @@ fn lower_worker_unchecked(
     let selected_secrets = deployment_secrets(secrets, entry)?;
     let selected_fetch = deployment_fetch(entry)?;
     DeploymentRequest::try_from(acyclic_actors::wire::DeploymentRequest {
+        publication: Vec::new(),
         entry_source: source.map(Into::into),
         name: entry.name.clone(),
         code_sha256: digest.into(),

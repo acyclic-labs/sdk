@@ -65,6 +65,22 @@ fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
 
 /// Validates an explicit namespace or named script deployment before admission.
 pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), ContractError> {
+    if !request.publication.is_empty() {
+        let publication: crate::live_update::Publication =
+            crate::live_update::decode(&request.publication)
+                .map_err(|_| ContractError::InvalidArgument)?;
+        publication
+            .version()
+            .map_err(|_| ContractError::InvalidArgument)?;
+        if (!request.account_id.is_empty() && publication.deployment.account != request.account_id)
+            || !publication
+                .artifacts
+                .get(&request.name)
+                .is_some_and(|artifact| artifact.code.as_slice() == request.code_sha256)
+        {
+            return Err(ContractError::InvalidArgument);
+        }
+    }
     if (!request.account_id.is_empty()
         && crate::addressing::AccountId::new(&request.account_id).is_err())
         || crate::addressing::NamespaceId::validate_deployment(request.name.as_bytes()).is_err()

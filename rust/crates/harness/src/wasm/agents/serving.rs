@@ -110,6 +110,7 @@ impl WasmAgentServer {
             .map_err(|_| js_error(Error::Invalid("recipient namespace must be UTF-8".into())))?;
         let within = owner.within()?;
         let binding = wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             actor_id: "root".into(),
             method: "POST".into(),
             url: "https://agents.invalid/command".into(),

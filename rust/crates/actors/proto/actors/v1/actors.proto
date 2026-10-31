@@ -131,6 +131,7 @@ message DeploymentRequest {
   repeated SecretSelection secrets = 12;
   FetchBinding fetch = 13;
   EntrySource entry_source = 14;
+  bytes publication = 15;
 }
 
 message DeploymentResponse {
@@ -204,12 +205,14 @@ message InvokeActorRequest {
   optional string binding_name = 93;
   optional string rpc_method = 94;
   InvocationOrder invocation_order = 95;
+  bytes deployment_envelope = 96;
 }
 
 message InvokeActorResponse {
   uint32 status = 1;
   bytes body = 2;
   repeated Header headers = 3;
+  bytes deployment_envelope = 4;
 }
 
 message InvokeWorkerRequest {
@@ -221,6 +224,7 @@ message InvokeWorkerRequest {
   bytes account_id = 91;
   optional string binding_name = 92;
   optional string rpc_method = 94;
+  bytes deployment_envelope = 96;
 }
 
 message RemoveSubscriptionRequest {

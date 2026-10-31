@@ -26,6 +26,8 @@ pub mod guest;
 pub mod hosting;
 /// Inbox invocation protocol shared by native and hosted actors.
 pub mod invocation;
+/// Deployment versions, cohort selection, call provenance and durable handoff.
+pub mod live_update;
 /// Provider-backed actor storage and the single-node `local::Runtime`.
 pub mod local;
 /// Namespace-bound IDs, references and ordered stubs with implicit activation.
@@ -87,6 +89,7 @@ mod tests {
     #[test]
     fn subscription_start_is_exactly_one_choice() -> Result<(), ContractError> {
         let mut create = wire::DeploymentRequest {
+            publication: Vec::new(),
             entry_source: None,
             secrets: Vec::new(),
             fetch: None,
@@ -319,6 +322,7 @@ mod tests {
         assert!(matches!(
             client
                 .deploy_namespace(&wire::DeploymentRequest {
+                    publication: Vec::new(),
                     entry_source: None,
                     name: "tracing".into(),
                     code_sha256: vec![1; 32],

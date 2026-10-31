@@ -15,11 +15,13 @@ mod limits;
 mod pause;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Trigger};
+#[cfg(test)]
+use acyclic_stream::AppendRequest;
 use acyclic_stream::query_sync::SyncMutex;
 use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
 use acyclic_stream::{
-    AppendRequest, BoxProviderFuture, IdempotencyKey, ProviderPlatform, Record, RecordStream,
-    StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
+    BoxProviderFuture, IdempotencyKey, ProviderPlatform, Record, RecordStream, StreamError,
+    StreamPath, StreamProvider, UnixMillisClock as _,
 };
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 pub use limits::RuntimeLimits;
@@ -835,7 +837,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             // Release any pending provider I/O before checkpoint publication.
             inner.follows.clear();
-            let publication = match result {
+            let mut publication = match result {
                 Ok(transition) => {
                     if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
                         > limits.checkpoint_bytes()
@@ -867,6 +869,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 Err(error) => return Err(error),
             };
+            publication.require(self.handler.publication_conditions())?;
             match self.store.submit_retained(publication).await {
                 Ok(observed) => {
                     inner.observed = Some(Arc::new(

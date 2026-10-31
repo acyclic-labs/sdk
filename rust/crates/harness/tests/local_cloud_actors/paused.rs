@@ -129,6 +129,7 @@ async fn published_poison_actor(
         .ok_or("missing deployment")?;
     actors
         .invoke_actor(wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             actor_id: ID.into(),
             namespace: Some(NS.into()),
             method: "GET".into(),

@@ -24,6 +24,8 @@ struct RequestWire {
     request: Bytes,
     #[prost(string, tag = "5")]
     state_path: String,
+    #[prost(bytes = "bytes", tag = "6")]
+    deployment_envelope: Bytes,
 }
 
 /// Exact operation identity and request bytes admitted to one actor's inbox.
@@ -34,6 +36,7 @@ pub struct Invocation {
     subscription: String,
     operation: Bytes,
     request: Bytes,
+    deployment_envelope: Bytes,
 }
 
 impl Invocation {
@@ -52,6 +55,7 @@ impl Invocation {
             subscription,
             operation,
             request,
+            deployment_envelope: Bytes::new(),
         })
     }
 
@@ -72,6 +76,27 @@ impl Invocation {
         &self.request
     }
 
+    /// Bind the host-admitted caller metadata to the original durable input.
+    pub fn with_deployment_envelope(
+        mut self,
+        envelope: &crate::live_update::CallEnvelope,
+    ) -> Result<Self, crate::live_update::Error> {
+        envelope.validate()?;
+        self.deployment_envelope = crate::live_update::encode(envelope)?.into();
+        Ok(self)
+    }
+
+    /// Original caller provenance; queues/retries never replace its epoch.
+    pub fn deployment_envelope(
+        &self,
+    ) -> Result<Option<crate::live_update::CallEnvelope>, crate::live_update::Error> {
+        if self.deployment_envelope.is_empty() {
+            Ok(None)
+        } else {
+            crate::live_update::decode_envelope(&self.deployment_envelope).map(Some)
+        }
+    }
+
     /// Canonical inbox record bound to the admitting Store's original state
     /// path. Ordinary records have no invocation marker.
     pub fn record(&self, state_path: &StreamPath) -> Result<AppendRecord, GuestError> {
@@ -82,6 +107,7 @@ impl Invocation {
                 operation: self.operation.clone(),
                 request: self.request.clone(),
                 state_path: state_path.as_str().into(),
+                deployment_envelope: self.deployment_envelope.clone(),
             }
             .encode_to_vec()
             .into(),
@@ -115,12 +141,14 @@ impl Invocation {
             return Err(invalid());
         }
         let path = StreamPath::new(wire.state_path).map_err(|_| invalid())?;
-        let invocation = Self::new(
+        let mut invocation = Self::new(
             ActorReference::decode(&wire.actor).map_err(|_| invalid())?,
             wire.subscription,
             wire.operation,
             wire.request,
         )?;
+        invocation.deployment_envelope = wire.deployment_envelope;
+        invocation.deployment_envelope().map_err(|_| invalid())?;
         Ok(Some((path, invocation)))
     }
 

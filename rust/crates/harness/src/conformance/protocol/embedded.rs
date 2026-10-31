@@ -199,6 +199,7 @@ pub async fn open<B: Backend + ?Sized>(
     );
     client.register_credential(0, credential(server.resource()))?;
     let binding = wire::InvokeActorRequest {
+        deployment_envelope: Vec::new(),
         actor_id: "root".into(),
         method: "POST".into(),
         url: "https://agents.invalid/command".into(),

@@ -102,6 +102,7 @@ impl AgentCall {
         result: &Result<AgentReply, acyclic_harness_core::agent::Error>,
     ) -> Result<Bytes, CommandError> {
         let response = wire::InvokeActorResponse {
+            deployment_envelope: self.invocation.deployment_envelope.clone(),
             status: 200,
             headers: Vec::new(),
             body: encode_agent_reply(result, &self.command)?,
@@ -130,6 +131,7 @@ impl AgentBinding {
     #[must_use]
     pub fn discovery() -> Self {
         Self(wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             actor_id: DISCOVERY_ACTOR.into(),
             method: "POST".into(),
             url: DISCOVERY_URL.into(),
@@ -322,6 +324,7 @@ mod tests {
 
     fn invocation(body: Vec<u8>) -> wire::InvokeActorRequest {
         wire::InvokeActorRequest {
+            deployment_envelope: Vec::new(),
             actor_id: "fixture".into(),
             method: "POST".into(),
             url: "https://fixture.invalid/command".into(),
@@ -333,8 +336,26 @@ mod tests {
     #[test]
     fn host_and_client_share_exact_invocation_and_reply_schema()
     -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_actors::live_update::{CallEnvelope, DeploymentId, Pin, Version, encode};
+        use std::num::NonZeroU64;
+
         let original = b"{ \"kind\" : \"root\" }";
-        let encoded = invocation(original.to_vec()).encode_to_vec();
+        let caller = encode(&CallEnvelope {
+            deployment: DeploymentId {
+                account: b"account".to_vec(),
+                name: "caller".into(),
+            },
+            pin: Pin::Cohort("original".into()),
+            epoch: NonZeroU64::MIN,
+            version: Version {
+                number: NonZeroU64::MIN,
+                digest: [1; 32],
+            },
+            contract: [2; 32],
+        })?;
+        let mut request = invocation(original.to_vec());
+        request.deployment_envelope = caller.clone();
+        let encoded = request.encode_to_vec();
         let call = AgentCall::decode(&encoded)?;
         assert_eq!(call.invocation().body.as_slice(), original);
         assert!(matches!(call.command(), AgentCommand::Root {}));
@@ -347,11 +368,19 @@ mod tests {
         let encoded = call.reply(&result)?;
         let response = wire::InvokeActorResponse::decode(encoded)?;
         assert_eq!(response.status, 200);
+        assert_eq!(response.deployment_envelope, caller);
         assert!(matches!(
             decode_agent_reply(&response.body, &AgentCommand::Root {})?,
             Ok(AgentReply::Root { agent: actual }) if actual == agent
         ));
         assert!(matches!(&result, Ok(AgentReply::Root { agent: actual }) if actual == &agent));
+        let refused = call.reply(&Err(acyclic_harness_core::agent::Error::NoSuchAgent))?;
+        let response = wire::InvokeActorResponse::decode(refused)?;
+        assert_eq!(response.deployment_envelope, caller);
+        assert!(matches!(
+            decode_agent_reply(&response.body, call.command())?,
+            Err(failure) if failure.code() == "no_such_agent"
+        ));
         Ok(())
     }
 

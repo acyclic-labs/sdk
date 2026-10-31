@@ -10,6 +10,7 @@ export { credentialProvider, type CredentialProvider, type CredentialOptions } f
 
 export * from "./namespace.js";
 export * from "./durable.js";
+export * as liveUpdate from "./live-update.js";
 
 export { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody, type Fetch } from "./binding-fetch.js";
 export { materializeActorState, type ActorStateHost, type ActorStateBinding, type ActorStateTransaction } from "./state-binding.js";

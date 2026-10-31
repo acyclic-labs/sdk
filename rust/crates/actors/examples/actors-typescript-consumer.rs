@@ -4,6 +4,7 @@ use acyclic_actors::{validate_deployment, wire};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = wire::DeploymentRequest {
+        publication: Vec::new(),
         entry_source: None,
         secrets: Vec::new(),
         fetch: None,

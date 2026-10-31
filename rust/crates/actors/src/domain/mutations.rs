@@ -38,9 +38,30 @@ pub struct DeploymentRequest {
     #[wire(tag = 14, message)]
     #[ts(optional)]
     entry_source: Option<EntrySource>,
+    /// Canonical live_update::Publication v1 document, empty for a direct
+    /// deployment. Cloud validates and stores an immutable version when present.
+    #[wire(tag = 15, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    publication: Vec<u8>,
 }
 
 impl DeploymentRequest {
+    /// Upload the immutable, scoped version-set declaration with its code.
+    /// Cloud validates both call directions and all retained handoff obligations.
+    pub fn with_publication(
+        mut self,
+        publication: &crate::live_update::Publication,
+    ) -> Result<Self, crate::live_update::Error> {
+        self.publication = crate::live_update::encode(publication)?;
+        self.validate_from_proto()
+            .map_err(|_| crate::live_update::Error::Invalid("publication upload scope"))?;
+        Ok(self)
+    }
+
+    /// Canonical upload bytes; an empty value denotes a direct deployment.
+    pub fn publication(&self) -> &[u8] {
+        &self.publication
+    }
     /// Exact immutable selection admitted with this configuration, when supplied.
     pub fn entry_source(&self) -> Option<&EntrySource> {
         self.entry_source.as_ref()
@@ -56,6 +77,7 @@ impl DeploymentRequest {
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
         let wire = wire::DeploymentRequest {
+            publication: Vec::new(),
             entry_source: None,
             worker_limits: None,
             name: name.as_str().to_owned(),
@@ -84,6 +106,7 @@ impl DeploymentRequest {
         crate::addressing::validate_dns_label(name.as_str().as_bytes())
             .map_err(|_| DomainError::Contract(crate::ContractError::InvalidArgument))?;
         Self::try_from(wire::DeploymentRequest {
+            publication: Vec::new(),
             entry_source: None,
             code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),

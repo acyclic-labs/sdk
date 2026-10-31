@@ -25,6 +25,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 acyclic_actors::timers::typescript(),
             )?;
             std::fs::write(parent.join("guest.ts"), acyclic_actors::guest::typescript())?;
+            std::fs::write(
+                parent.join("live-update.ts"),
+                acyclic_actors::live_update::typescript(),
+            )?;
             <acyclic_actors::client::ErrorMetadata as ts_rs::TS>::export_all(
                 &ts_rs::Config::default().with_out_dir(parent),
             )?;

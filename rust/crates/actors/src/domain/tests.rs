@@ -109,6 +109,7 @@ fn positive_u64_is_the_single_limits_admission_predicate() {
 #[test]
 fn invoke_round_trips_without_rewriting_wire_fields() {
     let wire = wire::InvokeActorRequest {
+        deployment_envelope: Vec::new(),
         invocation_order: None,
         namespace: None,
         account_id: Vec::new(),
@@ -136,6 +137,7 @@ fn invoke_round_trips_without_rewriting_wire_fields() {
 #[test]
 fn invoke_rejects_only_the_existing_actor_id_presence_violation() {
     let wire = wire::InvokeActorRequest {
+        deployment_envelope: Vec::new(),
         invocation_order: None,
         namespace: None,
         account_id: Vec::new(),
@@ -282,6 +284,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         resource: "bucket/a".into(),
     };
     let create = wire::DeploymentRequest {
+        publication: Vec::new(),
         entry_source: None,
         secrets: Vec::new(),
         fetch: None,
