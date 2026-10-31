@@ -4,6 +4,10 @@
 //! Packing borrows the original admitted entries, allocates nothing and returns
 //! only contiguous nonempty slices. It never reads another page or a backend.
 
+pub mod merge;
+pub mod rewrite;
+pub mod selection;
+
 /// One child page and the exact first key in its subtree.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Child<K, P> {
