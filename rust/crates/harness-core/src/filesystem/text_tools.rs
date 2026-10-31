@@ -3,7 +3,7 @@ use super::FilesystemHost;
 use crate::{
     Error, IdempotencyKey, Result,
     conversation::{ContentGrant, FileRef, VolumeOperation, is_internal_path},
-    tool::edit::{allocation, exact_replace, validate_edit_bound},
+    tool::edit::{Replacement, allocation, replace_sequence, validate_edit_bound},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use serde::{Deserialize, Serialize};
@@ -19,17 +19,22 @@ pub struct ExactTextReplacement {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
-    /// Edits one immutable source under separate verified read/write grants.
+    /// Applies a nonempty sequence to one immutable source under separate
+    /// verified read/write grants. Every replacement sees its predecessor's
+    /// result; all validation precedes the single conditional publication.
     pub async fn edit_text(
         &self,
         source: &FileRef,
         read: &ContentGrant,
         write: &ContentGrant,
-        replacement: &ExactTextReplacement,
+        replacements: &[ExactTextReplacement],
         maximum_bytes: u64,
         idempotency_key: &IdempotencyKey,
     ) -> Result<FileRef> {
         validate_edit_bound(maximum_bytes)?;
+        if replacements.is_empty() {
+            return Err(Error::Invalid("exact edit sequence is empty".into()));
+        }
         source.validate(&mut None)?;
         if is_internal_path(source.path()) {
             return Err(Error::Unauthorized(
@@ -40,10 +45,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let bytes = self.read_content(source, read, maximum_bytes, None).await?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| Error::Invalid("exact text edit requires UTF-8 content".into()))?;
-        let result = exact_replace(
+        let result = replace_sequence(
             text,
-            &replacement.old_text,
-            &replacement.new_text,
+            replacements.iter().map(|replacement| Replacement {
+                old_text: &replacement.old_text,
+                new_text: &replacement.new_text,
+                replace_all: false,
+            }),
             maximum_bytes,
             &mut allocation(None, 0)?,
         )?;
