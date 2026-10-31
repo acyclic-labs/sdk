@@ -90,8 +90,18 @@ fn source_range_and_renderer_model_identity_fence_shared_summaries() {
         key,
         summary: None,
     };
-    assert_eq!(invalid.validate(29), Err(InvalidEpoch::OutsidePrefix));
-    assert_eq!(invalid.validate(30), Err(InvalidEpoch::MissingCoverage));
+    assert_eq!(
+        invalid.validate(&other.source, 30),
+        Err(InvalidEpoch::Source)
+    );
+    assert_eq!(
+        invalid.validate(&invalid.key.source, 29),
+        Err(InvalidEpoch::OutsidePrefix)
+    );
+    assert_eq!(
+        invalid.validate(&invalid.key.source, 30),
+        Err(InvalidEpoch::MissingCoverage)
+    );
 }
 
 /// Full materialized model: a summary marks source items individually. It
