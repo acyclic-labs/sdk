@@ -10,8 +10,11 @@
 //! comes only from overlap: there is no timer or batching window, and a lone
 //! request issues exactly one drain. Processes share drains the same way,
 //! through two counters in a per-device file each maps, with the file's lock
-//! held across a drain. Per request the cost is O(1): two locks, at most one
-//! drain, one wake.
+//! held across a drain. The file lives in the user's system temporary
+//! directory, never `TMPDIR`: processes that each get their own `TMPDIR`
+//! (every GraphCoder case, every sandboxed tool) would otherwise each drain
+//! alone and saturate the device together. Per request the cost is O(1): two
+//! locks, at most one drain, one wake.
 //!
 //! Linux and Windows have no such split: `fdatasync` and `FlushFileBuffers`
 //! must run per file to make that file's own metadata durable, and the Linux
@@ -121,7 +124,7 @@ pub(crate) fn full(
         // reports its own failure.
         Err(_) => return drain(descriptor),
     }
-    let Ok(id) = apple::id(descriptor) else {
+    let Ok(Some(id)) = apple::local_device(descriptor) else {
         return drain(descriptor);
     };
     let device = apple::device(id);
@@ -138,7 +141,9 @@ mod apple {
     use std::collections::BTreeMap;
     use std::io;
     use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     #[cfg(not(test))]
@@ -195,23 +200,63 @@ mod apple {
         })
     }
 
-    /// The device holding `descriptor`'s file.
-    pub(super) fn id(descriptor: std::os::fd::BorrowedFd<'_>) -> io::Result<u64> {
+    /// The local device holding `descriptor`'s file, or `None` on a
+    /// filesystem with no local device, such as an NFS or FUSE-T view. There
+    /// a full flush is the filesystem's own request, never a device drain
+    /// another file's request could share, and every mount has a fresh
+    /// device number: tracking them would grow the device table and leave a
+    /// counter file behind per mount.
+    pub(super) fn local_device(descriptor: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<u64>> {
+        let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        // SAFETY: fstatfs fills `filesystem` from the held live descriptor.
+        if unsafe { libc::fstatfs(descriptor.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fstatfs succeeded, so it initialized `filesystem`.
+        let flags = unsafe { filesystem.assume_init() }.f_flags;
+        if flags & libc::MNT_LOCAL.cast_unsigned() == 0 {
+            return Ok(None);
+        }
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         // SAFETY: fstat fills `stat` from the held live descriptor.
         if unsafe { libc::fstat(descriptor.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: fstat succeeded, so it initialized `stat`.
-        Ok(i64::from(unsafe { stat.assume_init() }.st_dev).cast_unsigned())
+        Ok(Some(
+            i64::from(unsafe { stat.assume_init() }.st_dev).cast_unsigned(),
+        ))
     }
 
     const COUNTERS: usize = 2 * size_of::<u64>();
 
-    /// Maps the device's counter file in this user's private temporary
-    /// directory. A file another user could write would let them forge a
-    /// finished drain, so anything not owned by this user, or open to
-    /// anyone else, is refused.
+    /// The device's counter file in this user's private temporary directory,
+    /// as the system names it for the user, so every process of the user
+    /// finds the same file whatever its environment says.
+    fn counter_path(id: u64) -> io::Result<PathBuf> {
+        let mut directory = [0_u8; libc::PATH_MAX as usize];
+        // SAFETY: confstr writes at most `directory.len()` bytes and returns
+        // the length the whole value needs, its NUL included.
+        let needed = unsafe {
+            libc::confstr(
+                libc::_CS_DARWIN_USER_TEMP_DIR,
+                directory.as_mut_ptr().cast(),
+                directory.len(),
+            )
+        };
+        let directory = match needed {
+            0 => return Err(io::Error::last_os_error()),
+            needed => directory
+                .get(..needed - 1)
+                .ok_or(io::ErrorKind::InvalidData)?,
+        };
+        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(directory))
+            .join(format!("acyclic-device-v1-{id:016x}.drain")))
+    }
+
+    /// Maps the device's counter file. A file another user could write
+    /// would let them forge a finished drain, so anything not owned by this
+    /// user, or open to anyone else, is refused.
     fn shared(id: u64) -> io::Result<Shared> {
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -220,7 +265,7 @@ mod apple {
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(std::env::temp_dir().join(format!("acyclic-device-v1-{id:016x}.drain")))?;
+            .open(counter_path(id)?)?;
         let metadata = file.metadata()?;
         if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -390,7 +435,7 @@ mod apple {
         #[test]
         fn a_waiting_process_recovers_when_the_drain_holder_exits() -> io::Result<()> {
             let id = (u64::from(std::process::id()) << 32) | 0xdead_fade;
-            let path = std::env::temp_dir().join(format!("acyclic-device-v1-{id:016x}.drain"));
+            let path = counter_path(id)?;
             let result = (|| {
                 let shared = shared(id)?;
                 let before = shared.started.load(Ordering::SeqCst);
@@ -420,7 +465,7 @@ mod apple {
         #[test]
         fn processes_share_a_drain_that_started_after_their_ticket() -> io::Result<()> {
             let id = (u64::from(std::process::id()) << 32) | 0xdead_beef;
-            let path = std::env::temp_dir().join(format!("acyclic-device-v1-{id:016x}.drain"));
+            let path = counter_path(id)?;
             let result = (|| {
                 let (first, second) = (shared(id)?, shared(id)?);
                 let drains = std::cell::Cell::new(0);
@@ -452,6 +497,55 @@ mod apple {
                 Ok(())
             })();
             std::fs::remove_file(&path)?;
+            result
+        }
+
+        const CHILD: &str = "ACYCLIC_DEVICE_FLUSH_CHILD";
+
+        /// Run only as the child of the test below, in its own process.
+        #[test]
+        #[ignore = "a child process of processes_with_their_own_tmpdir_share_one_drain"]
+        fn child_settles_one_drain() -> io::Result<()> {
+            let id = std::env::var(CHILD).map_err(io::Error::other)?;
+            let shared = shared(u64::from_str_radix(&id, 16).map_err(io::Error::other)?)?;
+            shared.settle(shared.ticket(), || Ok(()))
+        }
+
+        /// A process with its own `TMPDIR` drains after this process takes
+        /// its ticket; that drain covers this process. With the counters
+        /// under `TMPDIR` the two would never meet and this process would
+        /// drain again (the negative control is this test on that layout).
+        #[test]
+        fn processes_with_their_own_tmpdir_share_one_drain() -> io::Result<()> {
+            let id = (u64::from(std::process::id()) << 32) | 0x7e57_d1a0;
+            let own = tempfile::tempdir()?;
+            let result = (|| {
+                let parent = shared(id)?;
+                let ticket = parent.ticket();
+                let child = std::process::Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        "device_flush::apple::tests::child_settles_one_drain",
+                        "--ignored",
+                        "--test-threads=1",
+                    ])
+                    .env(CHILD, format!("{id:016x}"))
+                    .env("TMPDIR", own.path())
+                    .output()?;
+                assert!(
+                    child.status.success()
+                        && String::from_utf8_lossy(&child.stdout).contains("1 passed"),
+                    "child failed: {child:?}"
+                );
+                let mut drains = 0;
+                parent.settle(ticket, || {
+                    drains += 1;
+                    Ok(())
+                })?;
+                assert_eq!(drains, 0, "the other process's drain covers this ticket");
+                Ok(())
+            })();
+            std::fs::remove_file(counter_path(id)?)?;
             result
         }
     }
