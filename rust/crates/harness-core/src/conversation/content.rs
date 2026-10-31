@@ -349,10 +349,153 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 }
 
+/// One member of a conditional atomic content publication. Sources retain their
+/// immutable descriptor and version; paths are relative to the bound volume.
+pub enum ContentChange<'a> {
+    /// Creates a path only while it remains absent.
+    CreateAbsent {
+        path: &'a str,
+        bytes: &'a [u8],
+        media_type: &'a str,
+        display_name: &'a str,
+    },
+    /// Replaces exactly the source version, refusing a concurrent publication.
+    UpdateExpected {
+        source: &'a FileRef,
+        bytes: &'a [u8],
+    },
+    /// Removes exactly the source version.
+    DeleteExpected { source: &'a FileRef },
+}
+
+impl ContentChange<'_> {
+    /// Exact destination path covered by the publication.
+    pub fn path(&self) -> &str {
+        match self {
+            Self::CreateAbsent { path, .. } => path,
+            Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => source.path(),
+        }
+    }
+    /// Original immutable source, when this change replaces or removes a file.
+    pub fn source(&self) -> Option<&FileRef> {
+        match self {
+            Self::CreateAbsent { .. } => None,
+            Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => Some(source),
+        }
+    }
+}
+
+/// One original publication action, retained through recovery and authorization.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ContentChangeResult {
+    /// Newly created file at the committed cut.
+    Created(FileRef),
+    /// Replaced file at the committed cut.
+    Updated(FileRef),
+    /// Removed path, relative to the original bound volume.
+    Deleted(String),
+}
+
+impl ContentChangeResult {
+    /// Exact path whose original action must be authorized.
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Created(file) | Self::Updated(file) => file.path(),
+            Self::Deleted(path) => path,
+        }
+    }
+
+    /// A created or replaced file; deletion does not invent a resulting file.
+    pub fn file(&self) -> Option<&FileRef> {
+        match self {
+            Self::Created(file) | Self::Updated(file) => Some(file),
+            Self::Deleted(_) => None,
+        }
+    }
+}
+
+/// The original atomic publication cut, including a batch containing only deletes.
+/// Serialization projects its resulting files without copying the retained members.
+#[derive(Debug, Eq, PartialEq)]
+pub struct ContentChanges {
+    /// Exact committed generation; never inferred from a later head.
+    pub generation: GenerationRef,
+    /// Original actions and paths, in request order.
+    pub members: Vec<ContentChangeResult>,
+}
+
+impl ContentChanges {
+    /// Borrows created and replaced files at the original cut.
+    pub fn files(&self) -> impl Iterator<Item = &FileRef> {
+        self.members.iter().filter_map(ContentChangeResult::file)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.members.iter().try_fold(
+            crate::core::owned_sum([
+                self.generation.logical_owned_bytes()?,
+                self.members.capacity() as u64 * std::mem::size_of::<ContentChangeResult>() as u64,
+            ])?,
+            |total, member| {
+                crate::core::owned_sum([
+                    total,
+                    match member {
+                        ContentChangeResult::Created(file) | ContentChangeResult::Updated(file) => {
+                            file.logical_owned_bytes()?
+                        }
+                        ContentChangeResult::Deleted(path) => path.capacity() as u64,
+                    },
+                ])
+            },
+        )
+    }
+}
+
+impl serde::Serialize for ContentChanges {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.files())
+    }
+}
+
 /// Owner-bound, bounded publication on the caller's existing ledger.
 /// A supplied caller ceiling only restricts the authenticated writer. Filesystem
 /// providers intersect it with persisted policy through their shared decision.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
+    /// Observes only the successful request at its original publication cut.
+    /// Callers authenticate the original complete invocation before recovery.
+    fn observe_changes<'a, 'io: 'a>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _operation_id: OperationId,
+        _maximum_receipt_bytes: u64,
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (Option<ContentChanges>, Option<ContentHold<'io>>)>> {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "conditional publication observation is unavailable",
+        ))
+    }
+    /// Atomically publishes conditional changes under one original operation.
+    /// The operation receipt binds the complete ordered request. A replay
+    /// returns its original files; a changed request refuses before publication.
+    fn stage_changes<'a, 'io: 'a>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _operation_id: OperationId,
+        _changes: &'a [ContentChange<'a>],
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (ContentChanges, Option<ContentHold<'io>>)>> {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "conditional content publication is unavailable",
+        ))
+    }
     /// Resolves the exact destination before the caller checks write authority.
     /// Paths remain relative to the selected volume in returned file references.
     fn destination<'a>(

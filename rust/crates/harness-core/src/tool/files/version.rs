@@ -23,7 +23,7 @@ pub(super) fn decode_tool_version(
     let io = owned_io.as_ref();
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let io = None;
-    let (volume, relative) = context.tool_path_selection(path, io)?;
+    let (volume, relative) = context.tool_read_path_selection(path, io)?;
     let (file, custody) = decode_version(&relative, version, work)?;
     if file.volume() != volume {
         return Err(super::executor::rejection(

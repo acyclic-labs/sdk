@@ -242,3 +242,5 @@ impl<A, O> FilesystemHost<A, O> {
         Ok(identity == witness._identity)
     }
 }
+
+mod content_changes;
