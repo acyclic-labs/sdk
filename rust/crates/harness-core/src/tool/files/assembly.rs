@@ -22,7 +22,7 @@ impl FileTool {
                 "Apply exact V4A update-file diff hunks to one authorized immutable file; @@ headers, exact context and optional EOF; ambiguous context fails",
                 schema::input::<PatchFileInput>()?,
                 schema::output::<FileResult>()?,
-                mode.schema::<FileResult>()?,
+                FileProjection::model_schema(mode)?,
                 FileProjection::Publication(mode),
             ),
             Self::Search { .. } => (

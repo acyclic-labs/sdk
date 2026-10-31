@@ -78,13 +78,22 @@ type CaptureResult = std::io::Result<
 >;
 
 /// What the spawn turn left: a finished result, or a running capture.
-enum Started<T, H> {
+enum Started<T, H: acyclic_native_runtime::CaptureHandler> {
     Finished(CaptureResult, T),
     Running(
         acyclic_native_runtime::TaskHandle<
             std::io::Result<acyclic_native_runtime::CaptureOutcome<H>>,
         >,
     ),
+    Streaming(acyclic_native_runtime::ProcessCaptureStream<H>),
+}
+
+/// Whether output is collected or owned solely by the streaming observer.
+pub enum OutputRetention {
+    /// Collect the complete output up to the invocation's protective limit.
+    Collect,
+    /// Deliver bounded chunks to the observer and retain only terminal status.
+    Observe,
 }
 
 #[doc(hidden)]
@@ -96,6 +105,7 @@ pub async fn capture_with_custody<T: Send + 'static>(
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
     custody: T,
     wake: Option<acyclic_native_runtime::ProcessWake>,
+    retention: OutputRetention,
 ) -> Result<(Option<NativeProcessResult>, T)> {
     // Native capture callbacks may await durable publication on Tokio's
     // blocking pool, so they run on main's independent native host service.
@@ -117,12 +127,21 @@ pub async fn capture_with_custody<T: Send + 'static>(
                     );
                     // Transfer physical custody before returning from the
                     // worker. Losing the waiter cannot drop an unsubmitted tree.
-                    Started::Running(spawner.spawn(tree.capture(
-                        schedule,
-                        invocation.maximum_output_bytes,
-                        input,
-                        handler,
-                    )))
+                    match retention {
+                        OutputRetention::Collect => Started::Running(spawner.spawn(tree.capture(
+                            schedule,
+                            invocation.maximum_output_bytes,
+                            input,
+                            handler,
+                        ))),
+                        OutputRetention::Observe => Started::Streaming(tree.stream_capture(
+                            &spawner,
+                            schedule,
+                            invocation.maximum_output_bytes,
+                            input,
+                            handler,
+                        )),
+                    }
                 }
                 Ok(Err(output)) => Started::Finished(Ok(output), handler.custody),
                 Err(error) => Started::Finished(Err(error), handler.custody),
@@ -140,6 +159,13 @@ pub async fn capture_with_custody<T: Send + 'static>(
             // finishes, even if its awaiting task is cancelled.
             let outcome = capture.await.and_then(|outcome| outcome).map_err(|error| {
                 Error::Storage(format!("native process observer interrupted: {error}"))
+            })?;
+            (Ok(outcome.result), outcome.handler.custody)
+        }
+        Started::Streaming(mut stream) => {
+            while stream.recv().await.is_some() {}
+            let outcome = stream.finish().await.map_err(|error| {
+                Error::Storage(format!("native process stream interrupted: {error}; recovery: reconcile the original command"))
             })?;
             (Ok(outcome.result), outcome.handler.custody)
         }

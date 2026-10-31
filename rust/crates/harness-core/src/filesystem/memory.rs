@@ -350,6 +350,7 @@ impl<
     #[must_use]
     pub fn content_bindings(&self) -> ContentBindings {
         ContentBindings {
+            volume: self.volume.clone(),
             reader: self.content_verifier.clone(),
             writer: Some(self.publisher.clone()),
         }

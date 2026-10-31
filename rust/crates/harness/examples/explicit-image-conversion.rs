@@ -147,11 +147,15 @@ impl ToolExecutor for ImageConversion {
                     ));
                 }
                 let read = ToolInvocation {
-                    arguments: json!({"file":input.source}),
+                    arguments: json!({
+                        "path": input.source.path(),
+                        "version": serde_json::to_string(&input.source)
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                    }),
                     ..invocation.clone()
                 };
                 let write = ToolInvocation {
-                    arguments: json!({"path":input.destination,"text":"","media_type":MIME,"display_name":"converted.img1"}),
+                    arguments: json!({"path":input.destination,"content":""}),
                     ..invocation.clone()
                 };
                 self.read.authorize(None, Some(context), &read, None)?;

@@ -1,6 +1,6 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"shell",
   "arguments":{"command":"printf changed > plans/a.md; printf diagnostic >&2"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"results":{"call":{"content":{"value":{"stderr":"diagnostic"}}}}},
+ "expect":{"results":{"call":{"content":{"kind":"parts","parts":[{"kind":"text","text":"Exit code: 0\ndiagnostic"}]}}}},
  "platforms":{
   "windows": {
     "turns": [

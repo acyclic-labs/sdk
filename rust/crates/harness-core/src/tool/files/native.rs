@@ -20,19 +20,23 @@ macro_rules! record {
             }
         };
     }
-record!(ReadFileInput, self, self.file.logical_owned_bytes()?);
+record!(
+    ReadFileInput,
+    self,
+    self.path.capacity(),
+    self.version.as_ref().map_or(0, String::capacity)
+);
 record!(
     WriteFileInput,
     self,
     self.path.capacity(),
-    self.text.capacity(),
-    self.media_type.capacity(),
-    self.display_name.capacity()
+    self.content.capacity()
 );
 record!(
     EditFileInput,
     self,
-    self.file.logical_owned_bytes()?,
+    self.path.capacity(),
+    self.version.as_ref().map_or(0, String::capacity),
     self.old_text.capacity(),
     self.new_text.capacity()
 );
@@ -43,3 +47,9 @@ record!(
     self.diff.capacity()
 );
 record!(FileResult, self, self.file.logical_owned_bytes()?);
+record!(
+    ReadFileResult,
+    self,
+    self.file.logical_owned_bytes()?,
+    self.text.capacity()
+);

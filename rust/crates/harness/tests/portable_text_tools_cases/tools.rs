@@ -1,5 +1,108 @@
 use super::*;
 
+#[path = "../../examples/explicit-image-conversion.rs"]
+mod image_conversion;
+
+#[tokio::test]
+async fn image_conversion_authorizes_the_pinned_source_before_reading() -> Result<()> {
+    use acyclic_harness::{
+        conversation::ContentAccess,
+        filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
+        runtime::ToolContext,
+        tool::ToolInvocation,
+    };
+    let provider = ProviderRef::new("images".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let agent = AgentId::new();
+    let volume = VolumeRef::new(
+        provider,
+        "images".into(),
+        VolumeClass::Project,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    host.create_volume(&volume).await?;
+    let issuer = AuthorityRoot::new(
+        "images",
+        [19; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "images".into(),
+        },
+    );
+    let read = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write = volume.capability(VolumeOperation::Write, &mut None)?;
+    let grants = Capabilities::new([read, write.clone()]);
+    let scope = issuer.bootstrap_scope("owner", &grants, Some(agent), &mut None)?;
+    let verifier = issuer.verifier(&mut None)?;
+    let writer =
+        FilesystemContentPublisher::new(host.clone(), &volume, &verifier, &scope, 4096, None)?;
+    let reader = FilesystemContentVerifier::new(host, &verifier, &scope, 4096, None)?;
+    let mut bytes = b"IMG1".to_vec();
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&[0x80, 0xff]);
+    let source = writer
+        .stage(
+            OperationId::new(),
+            "source.img1",
+            &bytes,
+            "application/x-harness-native-fixture",
+            "source.img1",
+            ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    let tool = image_conversion::conversion_tool()?;
+    let operation = OperationId::new();
+    let invocation = ToolInvocation {
+        operation_id: operation,
+        call_id: "convert".into(),
+        name: tool.definition.name.clone(),
+        arguments: serde_json::to_value(image_conversion::ConvertImage {
+            source: source.clone(),
+            destination: "derived.img1".into(),
+            mask: 0x5a,
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?,
+    };
+    let denied = ToolContext::new(
+        content_context(
+            reader.clone(),
+            Some(writer.clone()),
+            Capabilities::new([write]),
+        )
+        .await?,
+        operation,
+        "convert",
+    )?;
+    assert!(
+        tool.executor
+            .authorize(None, Some(&denied), &invocation, None)
+            .is_err()
+    );
+    let context = ToolContext::new(
+        content_context(reader, Some(writer), grants).await?,
+        operation,
+        "convert",
+    )?;
+    tool.executor
+        .authorize(None, Some(&context), &invocation, None)?;
+    let result = tool
+        .executor
+        .execute(invocation, Some(context.clone()))
+        .await?;
+    let converted: image_conversion::ConvertedImage =
+        serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(converted.source, source);
+    bytes[8] ^= 0x5a;
+    bytes[9] ^= 0x5a;
+    assert_eq!(
+        context.read_file(&converted.derived, None).await?.as_ref(),
+        bytes
+    );
+    Ok(())
+}
+
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
@@ -84,7 +187,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         operation_id: read_operation,
         call_id: "read".into(),
         name: read_tool.definition.name.clone(),
-        arguments: json!({"file":source}),
+        arguments: json!({"path":source.path(),"version":serde_json::to_string(&source).unwrap()}),
     };
     assert_eq!(
         read_tool
@@ -95,7 +198,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             )
             .await?
             .value,
-        json!("one two")
+        json!({"file":source,"text":"one two"})
     );
     for wrong_context in [
         ToolContext::new(task.clone(), OperationId::new(), "read")?,
@@ -119,7 +222,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         operation_id: operation,
         call_id: "edit".into(),
         name: tool.definition.name.clone(),
-        arguments: json!({"file":source,"old_text":"two","new_text":"three"}),
+        arguments: json!({"path":source.path(),"version":serde_json::to_string(&source).unwrap(),"old_text":"two","new_text":"three"}),
     };
     let context = ToolContext::new(task.clone(), operation, "edit")?;
     let first = tool
@@ -169,8 +272,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         operation_id: write_operation,
         call_id: "write".into(),
         name: write_tool.definition.name.clone(),
-        arguments: json!({"path":"second.txt","text":"exact \u{e9}\r\n",
-            "media_type":"text/plain","display_name":"second.txt"}),
+        arguments: json!({"path":"second.txt","content":"exact \u{e9}\r\n"}),
     };
     let write_context = ToolContext::new(task.clone(), write_operation, "write")?;
     let written = write_tool
@@ -292,7 +394,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await?
             .ok_or_else(|| Error::Invalid("pinned read was not reconciled".into()))?
             .value,
-        json!("one two")
+        json!({"file":source,"text":"one two"})
     );
     let fresh = OperationId::new();
     let stale = ToolInvocation {
@@ -350,7 +452,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             operation_id: op,
             call_id: "invalid-path".into(),
             name: write_tool.definition.name.clone(),
-            arguments: json!({"path":path,"text":"secret","media_type":"text/plain","display_name":"text"}),
+            arguments: json!({"path":path,"content":"secret"}),
         };
         assert!(matches!(
             write_tool

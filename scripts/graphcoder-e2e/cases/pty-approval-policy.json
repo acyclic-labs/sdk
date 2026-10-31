@@ -14,9 +14,7 @@
             "name": "write",
             "arguments": {
               "path": "approved.txt",
-              "text": "APPROVED_E2E\n",
-              "media_type": "text/plain",
-              "display_name": "approved.txt"
+              "content": "APPROVED_E2E\n"
             }
           }
         ]

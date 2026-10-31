@@ -256,7 +256,7 @@ impl ContentPublisher for CheckoutPublisher {
             &relative,
             self.tools.clock.now_unix_millis() / 1000,
         )?;
-        Ok((&mount.view.volume, std::borrow::Cow::Owned(relative)))
+        Ok((&mount.view.volume, relative))
     }
 
     // A native tool call's IO bounds its own reads and encoding; the

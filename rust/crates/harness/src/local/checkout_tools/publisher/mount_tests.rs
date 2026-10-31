@@ -105,17 +105,17 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         )?
         .await?;
     let context = ToolContext::new(task, OperationId::new(), "select-branch")?;
-    tools
-        .execute(
-            ToolInvocation {
-                operation_id: context.operation_id(),
-                call_id: context.call_id().into(),
-                name: "fs".into(),
-                arguments: serde_json::json!({"command": "checkout -b topic"}),
-            },
-            Some(context),
-        )
-        .await?;
+    {
+        let mut state = lock_owned(StateArc::clone(&tools.state)).await;
+        tools
+            .fs(
+                crate::tools::parse_fs_command("checkout -b topic")?,
+                &context,
+                &mut state,
+                &mounted,
+            )
+            .await?;
+    }
     let selected = {
         let state = lock_owned(StateArc::clone(&tools.state)).await;
         publisher.selected_workspace(&state)?
@@ -260,6 +260,173 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         .await?;
     assert_eq!(file.volume(), harness.scratch());
     assert_eq!(file.path(), "note");
+    // The exact workspace resolver is shared with writes. Reads need neither
+    // a writer binding nor write authority, including version-token replay.
+    let context_for = |grants: Capabilities, writable: bool| -> Result<_> {
+        let content = crate::runtime::ContentBindings {
+            volume: harness.project.clone(),
+            reader: harness.client_reader()?,
+            writer: if writable {
+                Some(Arc::new(CheckoutPublisher::new(
+                    Arc::clone(&publisher.tools),
+                    Arc::clone(&harness.files),
+                    &harness.project,
+                    &harness.verifier,
+                    harness.limits.file_bytes,
+                )) as Arc<dyn ContentPublisher>)
+            } else {
+                None
+            },
+        };
+        let runtime = crate::runtime::Bindings {
+            targets: Some(crate::local::agents::home(publisher.tools.clone())?),
+            scope: RuntimeScope::new(grants, harness.limits.clone())?,
+            content: Some(content),
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?;
+        runtime
+            .agent_context(
+                &Capabilities::default(),
+                crate::runtime::ContentBindings {
+                    volume: harness.journal.clone(),
+                    reader: harness.client_reader()?,
+                    writer: Some(Publisher::new(
+                        harness.files.clone(),
+                        &harness.journal,
+                        &harness.verifier,
+                        &harness.signed,
+                        harness.limits.file_bytes,
+                        None,
+                    )?),
+                },
+            )
+            .map(Arc::new)
+    };
+    let scratch_read = Capabilities::new([
+        "tool:call:read".into(),
+        harness
+            .scratch()
+            .capability(VolumeOperation::Read, &mut None)?,
+    ]);
+    let read_context = context_for(scratch_read, false)?;
+    let read = crate::tool::files::read()?;
+    let run = |task: Arc<crate::runtime::TaskContext>, tool: crate::tool::Tool, arguments| async move {
+        let context = ToolContext::new(task, OperationId::new(), "mounted-file")?;
+        let invocation = ToolInvocation {
+            operation_id: context.operation_id(),
+            call_id: context.call_id().into(),
+            name: tool.definition.name.clone(),
+            arguments,
+        };
+        let result = tool
+            .executor
+            .execute(invocation.clone(), Some(context))
+            .await?;
+        let projected = tool.projection.project(&invocation, &result, None)?.0;
+        Ok::<_, Error>((result, projected))
+    };
+    let path = ".volumes/scratch/note";
+    let token = serde_json::to_string(&file).map_err(storage)?;
+    for version in [serde_json::Value::Null, serde_json::json!(token)] {
+        let (result, projected) = run(
+            read_context.clone(),
+            crate::tool::files::read()?,
+            serde_json::json!({"path": path, "version": version}),
+        )
+        .await?;
+        assert_eq!(result.value["text"], "first");
+        assert_eq!(
+            result.value["file"],
+            serde_json::to_value(&file).map_err(storage)?
+        );
+        assert!(projected.to_string().contains(path));
+    }
+    let wrong_path = run(
+        read_context.clone(),
+        read,
+        serde_json::json!({"path": ".volumes/scratch/other", "version": token}),
+    )
+    .await;
+    assert!(wrong_path.is_err());
+    let project_context = context_for(
+        Capabilities::new([
+            "tool:call:read".into(),
+            harness
+                .project
+                .capability(VolumeOperation::Read, &mut None)?,
+        ]),
+        false,
+    )?;
+    for version in [serde_json::Value::Null, serde_json::json!(token)] {
+        assert!(
+            run(
+                project_context.clone(),
+                crate::tool::files::read()?,
+                serde_json::json!({"path": path, "version": version})
+            )
+            .await
+            .is_err()
+        );
+    }
+    let private = Publisher::new(
+        harness.files.clone(),
+        &harness.journal,
+        &harness.verifier,
+        &harness.signed,
+        harness.limits.file_bytes,
+        None,
+    )?;
+    let (other, _) = private
+        .stage_once(
+            OperationId::new(),
+            "note",
+            b"private",
+            "text/plain",
+            "note",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let full_context = context_for(harness.signed.capabilities().clone(), true)?;
+    assert!(
+        run(
+            full_context.clone(),
+            crate::tool::files::read()?,
+            serde_json::json!({
+                "path": path, "version": serde_json::to_string(&other).map_err(storage)?,
+            })
+        )
+        .await
+        .is_err(),
+        "a same-path token from another volume must not route authority"
+    );
+    let (edit_result, _) = run(
+        full_context.clone(),
+        crate::tool::files::edit()?,
+        serde_json::json!({"path": path, "version": token,
+            "old_text": "first", "new_text": "second"}),
+    )
+    .await?;
+    assert_eq!(edit_result.value["file"]["path"], "note");
+    let changed: FileRef =
+        serde_json::from_value(edit_result.value["file"].clone()).map_err(storage)?;
+    assert!(
+        run(
+            full_context,
+            crate::tool::files::edit()?,
+            serde_json::json!({"path": path, "version": token,
+            "old_text": "first", "new_text": "stale"})
+        )
+        .await
+        .is_err()
+    );
+    let (replayed, _) = run(
+        read_context,
+        crate::tool::files::read()?,
+        serde_json::json!({"path": path, "version": token}),
+    )
+    .await?;
+    assert_eq!(replayed.value["text"], "first");
     let project_only = Capabilities::new([
         harness
             .project
@@ -309,7 +476,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         file
     );
     let (edited, _) = publisher
-        .stage_at(OperationId::new(), &file, b"edited", None, None)?
+        .stage_at(OperationId::new(), &changed, b"edited", None, None)?
         .await?;
     assert_eq!(edited.volume(), harness.scratch());
     // Auxiliary volumes exist physically only while a native command owns its

@@ -3,7 +3,8 @@ use super::*;
 use proptest::prelude::*;
 
 fn exchange(file: &FileRef, range: Option<(u64, u64)>) -> [ModelMessage; 2] {
-    let mut arguments = serde_json::json!({"file": file});
+    let mut arguments =
+        serde_json::json!({"path":file.path(),"version":serde_json::to_string(file).unwrap()});
     if let Some((start, end)) = range {
         arguments["range"] = serde_json::json!({"start":start,"end":end});
     }
@@ -22,7 +23,7 @@ fn exchange(file: &FileRef, range: Option<(u64, u64)>) -> [ModelMessage; 2] {
                 call_id: "reused".into(),
                 name: "read".into(),
                 content: ToolResultContent::Json {
-                    value: Value::String("rules".into()),
+                    value: serde_json::json!({"path":file.path(),"version":serde_json::to_string(file).unwrap(),"text":"rules"}),
                 },
             }),
         },
@@ -43,15 +44,16 @@ fn fixture(reads: usize) -> Vec<ModelMessage> {
 }
 fn result_body(message: &ModelMessage) -> &str {
     let ModelContent::Part(ModelContentPart::ToolResult {
-        content: ToolResultContent::Json {
-            value: Value::String(body),
-        },
+        content: ToolResultContent::Json { value },
         ..
     }) = &message.content
     else {
         panic!("result exchange lost")
     };
-    body
+    value
+        .get("text")
+        .and_then(Value::as_str)
+        .expect("read text")
 }
 #[test]
 fn reused_ids_consume_pending_calls_in_both_orders_and_partial_reads() {
@@ -111,10 +113,11 @@ proptest! {
                     use sha2::Digest;
                     for exchange in messages[1..].chunks_exact_mut(2) {
                         let ModelContent::Part(ModelContentPart::ToolCall(call))=&exchange[0].content else { unreachable!() };
-                        let input:crate::tool::files::ReadFileInput=serde_json::from_value(call.arguments.clone()).unwrap();
-                        let ModelContent::Part(ModelContentPart::ToolResult { content:ToolResultContent::Json{value:Value::String(body)},.. })=&mut exchange[1].content else { unreachable!() };
+                        let file:FileRef=serde_json::from_str(call.arguments["version"].as_str().unwrap()).unwrap();
+                        let ModelContent::Part(ModelContentPart::ToolResult { content:ToolResultContent::Json{value},.. })=&mut exchange[1].content else { unreachable!() };
+                        let Some(Value::String(body))=value.get_mut("text") else { unreachable!() };
                         let hash:[u8;32]=sha2::Sha256::digest(body.as_bytes()).into();
-                        assert_eq!(hash,*input.file.descriptor().sha256());
+                        assert_eq!(hash,*file.descriptor().sha256());
                         acyclic_test_support::differential::record(("verify",body.len() as u64));
                         *body="Read completed; instructions already included from AGENTS.md for ..".into();
                     }
@@ -126,7 +129,7 @@ proptest! {
                 prop_assert_eq!(trace.iter().filter(|(name,_)|*name=="verify").copied().collect::<Vec<_>>(),baseline_trace);
                 let custody:Vec<_>=trace.iter().filter(|(name,_)|name.starts_with("custody-")).map(|(name,_)|*name).collect();
                 let expected_custody=if native {
-                    ["custody-take","custody-absorb","custody-transfer","custody-absorb"].repeat(count)
+                    ["custody-take"].repeat(count)
                 } else { Vec::new() };
                 prop_assert_eq!(custody,expected_custody);
                 prop_assert_eq!(serde_json::to_vec(&output).unwrap(),serde_json::to_vec(&baseline).unwrap());

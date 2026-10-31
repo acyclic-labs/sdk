@@ -927,8 +927,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
                 "write-seed".into(),
                 "write".into(),
                 serde_json::json!({
-                    "path": "seed.txt", "text": text,
-                    "media_type": "text/plain", "display_name": "seed.txt",
+                    "path": "seed.txt", "content": text,
                 }),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
@@ -1166,7 +1165,76 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
     // The child's brief turn, then the parent's own.
     let turns = ["child", "parent"].map(|text| super::ScriptedTurn::Text(text.into()));
-    let (_directory, harness, _provider) = checkout_scripted(&[], super::scripted(turns)).await?;
+    let recorded = Arc::new(std::sync::OnceLock::<std::sync::Weak<ScriptedModelProvider>>::new());
+    let parent_cwd = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
+    let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (source, parent, observed) = (recorded.clone(), parent_cwd.clone(), checked.clone());
+    let provider = Arc::new(
+        ScriptedModelProvider::new(turns)
+            .with_context_capacity(super::capacity())
+            .with_dispatch_observer(move |_| {
+                let provider = source
+                    .get()
+                    .and_then(std::sync::Weak::upgrade)
+                    .expect("live provider");
+                if provider.request_count() != 1 {
+                    return;
+                }
+                let request = provider.last_request().expect("child request");
+                let cwd = request
+                    .messages
+                    .iter()
+                    .find_map(|message| match &message.content {
+                        crate::model::ModelContent::Text(text) => text
+                            .split_once("<cwd>")
+                            .and_then(|(_, tail)| tail.split_once("</cwd>"))
+                            .map(|(cwd, _)| cwd.to_owned()),
+                        content => content.parts().iter().find_map(|part| match part {
+                            crate::model::ModelContentPart::Text { text } => text
+                                .split_once("<cwd>")
+                                .and_then(|(_, tail)| tail.split_once("</cwd>"))
+                                .map(|(cwd, _)| cwd.to_owned()),
+                            _ => None,
+                        }),
+                    })
+                    .expect("child environment cwd");
+                // Inspect the live binding while the turn still owns its mount.
+                let cwd = std::path::Path::new(&cwd)
+                    .canonicalize()
+                    .expect("live child cwd");
+                assert_ne!(
+                    cwd,
+                    parent
+                        .get()
+                        .expect("parent cwd")
+                        .canonicalize()
+                        .expect("live parent cwd")
+                );
+                assert_eq!(
+                    std::fs::read(cwd.join("context-sentinel")).expect("child fork source"),
+                    b"inherited"
+                );
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            }),
+    );
+    recorded
+        .set(Arc::downgrade(&provider))
+        .expect("one provider binding");
+    let (_directory, harness, provider) = checkout_scripted(
+        &[("context-sentinel".into(), b"inherited".to_vec())],
+        provider,
+    )
+    .await?;
+    parent_cwd
+        .set(
+            harness
+                .workspace
+                .as_ref()
+                .expect("root workspace")
+                .path
+                .clone(),
+        )
+        .expect("one parent binding");
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
@@ -1182,6 +1250,15 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
         return Err(Error::Invalid("spawn was not delivered".into()));
     };
     let entries = settled(&agents, &child).await?;
+    let request = provider
+        .request(0)
+        .ok_or_else(|| Error::NotFound("child request".into()))?;
+    let context = serde_json::to_string(&request).map_err(agent)?;
+    assert!(context.contains(&format!("working for parent {root}")));
+    assert!(context.contains("final message is your report"));
+    assert!(context.contains(&format!("Use send with agent {root}")));
+    assert!(checked.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(context.contains("git_status"));
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Brief { brief: file } = entry.input else {
         return Err(Error::Invalid(

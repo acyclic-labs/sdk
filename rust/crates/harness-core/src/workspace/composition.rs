@@ -2,6 +2,8 @@ use crate::{Error, Result, conversation::VolumeRef};
 use acyclic_fs::access::{
     Action, Capability, Context, MountMode, PathTrie, Policy, Principal, Resource,
 };
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+use std::borrow::Cow;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     path::{Component, Path, PathBuf},
@@ -44,11 +46,28 @@ pub struct Mount<T> {
 impl<T> Mount<T> {
     /// Uses the same compiled decision for tools and native provider callbacks.
     pub fn check(&self, action: Action, path: &str, now: u64) -> Result<()> {
+        self.check_with_work(action, path, now, None)
+    }
+
+    /// Uses the original invocation ledger for cancellation and typed refusal.
+    pub fn check_with_work(
+        &self,
+        action: Action,
+        path: &str,
+        now: u64,
+        work: crate::NativeWork<'_>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            work.remaining()?;
+        }
         if self.access.decide(action, path, now).allowed {
             return Ok(());
         }
-        Err(Error::Unauthorized(
-            "filesystem policy or signed capability denied access".into(),
+        Err(path_error(
+            crate::wire::ErrorCode::Unauthorized,
+            "filesystem policy or signed capability denied access",
+            work,
         ))
     }
 }
@@ -64,7 +83,57 @@ impl<T> MountTable<T> {
     /// Resolves either a task-relative path or an exact volume's relative path.
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     #[doc(hidden)]
-    pub fn file(&self, volume: Option<&VolumeRef>, path: &str) -> Result<(&Mount<T>, String)> {
+    pub fn file<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &'a str,
+    ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
+        self.file_with_work(volume, path, None)
+    }
+
+    /// Borrowed canonical content-path routing on the original tool ledger.
+    /// Explicit-volume native routing is refused before allocating a path.
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    #[doc(hidden)]
+    pub fn file_with_work<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &'a str,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
+        if volume.is_none() {
+            #[cfg(not(target_arch = "wasm32"))]
+            let io = work
+                .map(crate::filesystem::PreparationIo::from_native_work)
+                .transpose()?;
+            #[cfg(target_arch = "wasm32")]
+            let io: Option<&crate::filesystem::PreparationIo> = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            let io = io.as_ref();
+            crate::executor::with_history_io(io, |history| {
+                crate::conversation::validate_content_path(path, history)
+            })?;
+            if Path::new(path)
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+            {
+                return Err(path_error(
+                    crate::wire::ErrorCode::Invalid,
+                    "path escapes the task view",
+                    work,
+                ));
+            }
+            return self
+                .select(path, work)
+                .map(|(mount, path)| (mount, Cow::Borrowed(path)));
+        }
+        if work.is_some() {
+            return Err(path_error(
+                crate::wire::ErrorCode::Unsupported,
+                "native explicit-volume path allocation is unavailable; recovery: resolve the canonical mounted content path",
+                work,
+            ));
+        }
         let selected = if let Some(volume) = volume {
             let (prefix, _) = self
                 .mounts()
@@ -81,7 +150,7 @@ impl<T> MountTable<T> {
                 "file path names another mounted volume".into(),
             ));
         }
-        Ok(selected)
+        Ok((selected.0, Cow::Owned(selected.1)))
     }
     /// Resolves a qualifier through the visible namespace, never by opening a
     /// model-supplied volume identity.
@@ -132,23 +201,58 @@ impl<T> MountTable<T> {
                 _ => return Err(Error::Invalid("path escapes the task view".into())),
             }
         }
-        let mut prefix = relative.as_str();
+        self.select(&relative, None)
+            .map(|(mount, path)| (mount, path.to_owned()))
+    }
+
+    fn select<'a>(
+        &self,
+        relative: &'a str,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(&Mount<T>, &'a str)> {
+        let mut prefix = relative;
         loop {
             if let Some(entry) = self.entries.get(prefix) {
                 let mount = entry.as_ref().ok_or_else(|| {
-                    Error::NotFound("volume is not mounted in this task view".into())
+                    path_error(
+                        crate::wire::ErrorCode::NotFound,
+                        "volume is not mounted in this task view",
+                        work,
+                    )
                 })?;
                 let selected = relative
                     .get(prefix.len()..)
                     .unwrap_or_default()
                     .trim_start_matches('/');
-                return Ok((mount, selected.into()));
+                return Ok((mount, selected));
             }
             if prefix.is_empty() {
-                return Err(Error::Unauthorized("task has no primary view".into()));
+                return Err(path_error(
+                    crate::wire::ErrorCode::Unauthorized,
+                    "task has no primary view",
+                    work,
+                ));
             }
             prefix = prefix.rsplit_once('/').map_or("", |(parent, _)| parent);
         }
+    }
+}
+
+fn path_error(
+    code: crate::wire::ErrorCode,
+    reason: &'static str,
+    work: crate::NativeWork<'_>,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.is_some() {
+        return Error::NativeBoundary { code, reason };
+    }
+    let _ = work;
+    match code {
+        crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
+        crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
+        crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
+        _ => Error::Unauthorized(reason.into()),
     }
 }
 

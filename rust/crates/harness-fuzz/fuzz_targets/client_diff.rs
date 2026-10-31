@@ -1,5 +1,6 @@
 #![no_main]
 
+use acyclic_harness::context;
 use libfuzzer_sys::fuzz_target;
 
 #[path = "../../harness/tests/support/file_diff_case.rs"]

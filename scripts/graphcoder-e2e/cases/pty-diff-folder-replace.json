@@ -15,9 +15,7 @@
             "name": "write",
             "arguments": {
               "path": "folder/a.txt",
-              "text": "FOLDER_EDIT_E2E\n",
-              "media_type": "text/plain",
-              "display_name": "a.txt"
+              "content": "FOLDER_EDIT_E2E\n"
             }
           }
         ]

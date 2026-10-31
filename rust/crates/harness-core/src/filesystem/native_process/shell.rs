@@ -33,6 +33,7 @@ pub(crate) async fn run<T>(
         check,
         (),
         None,
+        capture::OutputRetention::Collect,
     )
     .await
     .map(|(output, ())| output)

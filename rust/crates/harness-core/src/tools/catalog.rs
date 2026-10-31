@@ -4,7 +4,8 @@ use crate::{
     tool::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolProjection,
         files::{
-            EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, WriteFileInput,
+            EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, ReadFileResult,
+            WriteFileInput,
         },
         schema::{self, ProjectionMode},
     },
@@ -93,15 +94,15 @@ static SHELL: ToolSpec = ToolSpec {
     binding: ToolBinding::Workspace,
     input: schema::input::<super::ShellInput>,
     output: object,
-    projection_schema: command_projection,
+    projection_schema: |_| schema::text_projection_schema(),
     executor: super::workspace_executor::executor,
-    projection: |_| Arc::new(JsonToolProjection),
+    projection: |_| Arc::new(super::shell::ShellProjection),
 };
 
 static FS: ToolSpec = ToolSpec {
     name: "fs",
-    revision: "1",
-    description: "Run one git facade command, including diff and merge of agents/<ref>; --volume <name> selects a granted mount for diff, log, show, status or merge",
+    revision: "2",
+    description: "Inspect or merge a child's fork: diff agents/<name> or merge agents/<name>. --volume <name> selects a mounted volume. Use shell for other git commands",
     hook_names: &[],
     binding: ToolBinding::Workspace,
     input: || {
@@ -119,39 +120,39 @@ static FS: ToolSpec = ToolSpec {
 
 pub(crate) static READ: ToolSpec = ToolSpec {
     name: "read",
-    revision: "portable-6",
-    description: "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
+    revision: "portable-7",
+    description: "Read UTF-8 from a project path. Reuse the returned opaque version to pin a later read or edit; optionally select [start, end) byte offsets",
     hook_names: &["Read"],
     binding: ToolBinding::Volume,
     input: schema::input::<ReadFileInput>,
-    output: schema::output::<String>,
-    projection_schema: ProjectionMode::schema::<String>,
+    output: schema::output::<ReadFileResult>,
+    projection_schema: FileProjection::model_schema,
     executor: |_| Arc::new(FileTool::Read),
     projection: |mode| Arc::new(FileProjection::Read(mode)),
 };
 
 pub(crate) static WRITE: ToolSpec = ToolSpec {
     name: "write",
-    revision: "portable-5",
-    description: "Write bounded UTF-8 through the original owner-bound content publisher",
+    revision: "portable-6",
+    description: "Write UTF-8 content to a workspace path, creating or replacing the file",
     hook_names: &["Write"],
     binding: ToolBinding::Volume,
     input: schema::input::<WriteFileInput>,
     output: schema::output::<FileResult>,
-    projection_schema: ProjectionMode::schema::<FileResult>,
+    projection_schema: FileProjection::model_schema,
     executor: |_| Arc::new(FileTool::Write),
     projection: |mode| Arc::new(FileProjection::Publication(mode)),
 };
 
 pub(crate) static EDIT: ToolSpec = ToolSpec {
     name: "edit",
-    revision: "portable-5",
-    description: "Replace one exact UTF-8 match at an authorized pinned source generation",
+    revision: "portable-6",
+    description: "Replace one exact UTF-8 match in a project path. Reuse a prior read's opaque version to reject an edit against a changed source",
     hook_names: &["Edit"],
     binding: ToolBinding::Volume,
     input: schema::input::<EditFileInput>,
     output: schema::output::<FileResult>,
-    projection_schema: ProjectionMode::schema::<FileResult>,
+    projection_schema: FileProjection::model_schema,
     executor: |_| Arc::new(FileTool::Edit),
     projection: |mode| Arc::new(FileProjection::Publication(mode)),
 };

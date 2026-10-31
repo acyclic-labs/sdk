@@ -1,6 +1,6 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"shell",
   "arguments":{"command":"printf 'α🦀\\n' > plans/a.md; printf 'λ🦀'"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"files":{"plans/a.md":"α🦀\n"},"results":{"call":{"content":{"value":{"stdout":"λ🦀"}}}}},
+ "expect":{"files":{"plans/a.md":"α🦀\n"},"results":{"call":{"content":{"kind":"parts","parts":[{"kind":"text","text":"Exit code: 0\nλ🦀"}]}}}},
  "platforms":{
   "windows": {
     "turns": [

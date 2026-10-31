@@ -25,6 +25,30 @@ pub trait TargetResolver: acyclic_stream::ProviderPlatform {
     /// # Errors
     /// [`Error::Target`] when it is unknown or offline.
     fn resolve(&self, target: Option<&str>) -> Result<Arc<Target>>;
+
+    /// Resolves a content path through the home target's original read policy.
+    /// The returned volume remains borrowed from the retained target binding.
+    fn read_path<'a>(
+        &'a self,
+        _path: &'a str,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(
+        &'a crate::conversation::VolumeRef,
+        std::borrow::Cow<'a, str>,
+    )> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "home target has no path resolver; recovery: bind the original workspace path resolver",
+            });
+        }
+        let _ = work;
+        Err(Error::Unsupported(
+            "home target has no path resolver; recovery: bind the original workspace path resolver"
+                .into(),
+        ))
+    }
 }
 
 /// A tree whose every target runs in this process: today the home target,
@@ -92,6 +116,18 @@ impl InProcessTargets {
 }
 
 impl TargetResolver for InProcessTargets {
+    fn read_path<'a>(
+        &'a self,
+        path: &'a str,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(
+        &'a crate::conversation::VolumeRef,
+        std::borrow::Cow<'a, str>,
+    )> {
+        self.roster.select(None).map_err(Error::Target)?;
+        self.targets[0].executor.read_path(path, work)
+    }
+
     fn roster(&self) -> &Arc<Roster> {
         &self.roster
     }

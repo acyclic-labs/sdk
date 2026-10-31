@@ -7,7 +7,7 @@ use acyclic_harness::{
     resources::ProviderRef,
     tool::{
         Tool, ToolInvocation, ToolProjection, ToolResult,
-        files::{self, FileProjection, FileResult, ReadFileInput},
+        files::{self, FileProjection, FileResult, ReadFileInput, ReadFileResult},
         schema::ProjectionMode,
         text::{self, SearchOptions, TextRange},
         text_files::{self, SearchInput, SearchResult},
@@ -96,13 +96,17 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         &mut None,
     )?;
     let read_input = ReadFileInput {
-        file: file.clone(),
+        path: file.path().into(),
+        version: Some(serde_json::to_string(&file)?),
         range: Some(TextRange { start: 5, end: 9 }),
     };
     let read = "🦀";
     let read_invocation = invocation("read", value(&read_input)?);
     let read_result = ToolResult {
-        value: value(&read)?,
+        value: value(ReadFileResult {
+            file: file.clone(),
+            text: read.into(),
+        })?,
     };
     let search_input = SearchInput {
         file: file.clone(),
@@ -123,12 +127,16 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         value: value(&search)?,
     };
     let exact_input = ReadFileInput {
-        file: file.clone(),
+        path: file.path().into(),
+        version: Some(serde_json::to_string(&file)?),
         range: None,
     };
     let exact_invocation = invocation("read", value(&exact_input)?);
     let exact_result = ToolResult {
-        value: value(source)?,
+        value: value(ReadFileResult {
+            file: file.clone(),
+            text: source.into(),
+        })?,
     };
     let file_result = ToolResult {
         value: value(FileResult { file: file.clone() })?,
@@ -141,7 +149,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "tool_definitions":definitions,
             "source":{"file":file,"text":source},
             "range_read":{
-                "input":read_input,"canonical":read,
+                "input":read_input,"canonical":read_result.value,
                 "full":FileProjection::Read(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,
                 "reference":FileProjection::Read(ProjectionMode::Reference).project(&read_invocation,&read_result,None)?.0,
             },

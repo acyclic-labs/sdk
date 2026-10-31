@@ -92,8 +92,7 @@ pub struct LocalHarness {
     journal: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
-    /// The agents' defaults: prompt, tools, open-children bound and approval
-    /// policy. Every turn's tools and executor are built from it.
+    /// The agents' host-backed tools and approval policy.
     preset: crate::preset::Preset,
     approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     /// Absent for passive native-host coordination.
