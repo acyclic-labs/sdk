@@ -504,6 +504,98 @@ fn environment_rotation_replays_and_refuses_retired_signers() {
 }
 
 #[test]
+fn account_publication_does_not_hold_global_storage_or_accept_a_retired_signer() {
+    let world = world();
+    let trust = follower(&world);
+    let (mut other, records) = world.issuer.genesis("other", key(9), NOW).unwrap();
+    for record in records {
+        trust.apply(&record, NOW).unwrap();
+    }
+    trust.serve("other");
+    let leaf = key(10);
+    let signer = CertifiedSigner::new(
+        world.issuer.certify(&other, certification(&leaf)).unwrap(),
+        leaf,
+    )
+    .unwrap();
+    let token = signer.mint(vec![], key(11), &trust, NOW).unwrap();
+    assert!(token.check(&trust, NOW).is_ok());
+
+    let frontier =
+        KeyringFrontier::resume("account", &world.issuer.anchor(), &slices(&world.genesis))
+            .unwrap();
+    let old = world
+        .issuer
+        .keyring_for(&frontier, &key(2).verifying_key(), 1, NOW)
+        .unwrap();
+    let TrustRecordKind::Keyring(signed) = decode(&old).unwrap().record else {
+        panic!("the original writer emitted an account keyring")
+    };
+    let account = trust.find_account("account").unwrap().unwrap();
+    let mut held = account.write().unwrap();
+    // Negative control: this account really is unavailable to another writer.
+    assert!(account.try_write().is_err());
+    let (keys, revision) = {
+        let environment = trust.environment.read().unwrap();
+        (environment.keys.clone(), environment.sequence)
+    };
+    let prepared = prepare_keyring(&held, &signed, &keys, NOW).unwrap();
+
+    // Keep the original account lock across independent real signature
+    // verification, revocation publication, and environment rotation. Neither
+    // the account registry nor environment lock belongs to that held work.
+    assert!(trust.accounts.try_write().is_ok());
+    let mut changed = trust.changed();
+    assert!((&mut changed).now_or_never().is_none());
+    let revoked = other
+        .revoke(&[(token.block_ids()[0], NOW + 10_000)], NOW)
+        .unwrap();
+    assert_eq!(trust.apply(&revoked, NOW), Ok(Applied::Changed));
+    assert_eq!(changed.now_or_never(), Some(Ok(())));
+    assert_eq!(token.check(&trust, NOW).err(), Some(VerifyError::Revoked));
+
+    let successor = Issuer::new("test", key(5));
+    let mut environment = EnvironmentFrontier::genesis("test", world.issuer.anchor());
+    let rotation = world
+        .issuer
+        .environment_keyring(&mut environment, &successor.anchor(), NOW)
+        .unwrap();
+    assert_eq!(trust.apply(&rotation, NOW), Ok(Applied::Changed));
+    // This is the production publication phase after successful authentication,
+    // with an intervening real signed rotation. An obsolete proof cannot commit.
+    let sequence = held.keyring.as_ref().unwrap().sequence;
+    assert_eq!(
+        trust.publish_keyring(&mut held, revision, prepared),
+        Err(VerifyError::Unavailable)
+    );
+    assert_eq!(held.keyring.as_ref().unwrap().sequence, sequence);
+    drop(held);
+    assert_eq!(trust.apply(&old, NOW), Err(VerifyError::Signature));
+    assert_eq!(trust.account("account").err(), Some(VerifyError::Trust));
+
+    // The same original frontier advances through the current signer's real
+    // writer; no state rollback, history copy, or replacement account is needed.
+    let current = successor
+        .keyring_for(&frontier, &key(2).verifying_key(), 1, NOW)
+        .unwrap();
+    assert_eq!(trust.apply(&current, NOW), Ok(Applied::Changed));
+    assert!(trust.account("account").is_ok());
+    assert_eq!(trust.apply(&current, NOW), Ok(Applied::Duplicate));
+    // The account-local lock still composes the global generation cut: a read
+    // spanning a full disconnect/resume cannot return its pre-disconnect data.
+    assert_eq!(
+        trust.with_account("account", |_, _| {
+            trust.fence(FenceCause::LostFollow);
+            trust.resume();
+        }),
+        Err(VerifyError::Unavailable)
+    );
+    assert_eq!(trust.account("account").err(), Some(VerifyError::Trust));
+    trust.serve("account");
+    assert!(trust.account("account").is_ok());
+}
+
+#[test]
 fn forged_records_are_refused() {
     let world = world();
     let trust = Follower::new("test", world.issuer.anchor());

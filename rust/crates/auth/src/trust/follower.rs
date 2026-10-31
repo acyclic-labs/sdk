@@ -28,7 +28,8 @@
 //! valid only in that generation. Reads check the generation before and after
 //! accessing account state. Fenced reads refuse as [`VerifyError::Unavailable`].
 //! No task per account; one hash lookup per trust read. Publication wakes still
-//! reach all subscribers, and record verification still shares the account lock.
+//! reach all subscribers. Record verification holds only its own account lock;
+//! keyring publication also checks the environment revision it authenticated.
 use super::{ChangeSource, Changed, SourceClosed};
 use crate::{
     ENVIRONMENT_DOMAIN, KEYRING_DOMAIN,
@@ -284,7 +285,7 @@ pub enum FollowerState {
 /// Follows signed trust records for any number of accounts of one environment.
 pub struct Follower {
     environment: RwLock<EnvironmentFrontier>,
-    accounts: RwLock<HashMap<String, Account>>,
+    accounts: RwLock<HashMap<String, Arc<RwLock<Account>>>>,
     floor: AtomicU64,
     // The original state watch serializes generation updates and their wakes.
     generation: AtomicU64,
@@ -367,8 +368,8 @@ impl Follower {
 
     /// Release a successfully drained account queue, then wake its consumers.
     pub fn release(&self, account: &str) {
-        if let Ok(mut accounts) = self.accounts.write()
-            && let Some(account) = accounts.get_mut(account)
+        if let Ok(Some(account)) = self.find_account(account)
+            && let Ok(mut account) = account.write()
         {
             account.poisoned = false;
         }
@@ -437,18 +438,22 @@ impl Follower {
         now: u64,
         release: bool,
     ) -> Result<(Applied, u64), VerifyError> {
-        let environment = self
-            .environment
-            .read()
-            .map_err(|_| VerifyError::Unavailable)?
-            .keys
-            .clone();
-        let mut accounts = self
-            .accounts
-            .write()
-            .map_err(|_| VerifyError::Unavailable)?;
-        let account = accounts.entry(id.to_owned()).or_default();
-        let result = account.apply(id, record, &environment, now);
+        let account = self.account_entry(id)?;
+        let mut account = account.write().map_err(|_| VerifyError::Unavailable)?;
+        let result = match record {
+            TrustRecordKind::Keyring(signed) => {
+                let (keys, revision) = {
+                    let environment = self
+                        .environment
+                        .read()
+                        .map_err(|_| VerifyError::Unavailable)?;
+                    (environment.keys.clone(), environment.sequence)
+                };
+                prepare_keyring(&account, signed, &keys, now)
+                    .and_then(|prepared| self.publish_keyring(&mut account, revision, prepared))
+            }
+            _ => account.apply(id, record, &[], now),
+        };
         match &result {
             Ok((Applied::Changed, _)) if release => account.poisoned = false,
             Ok((Applied::Changed, _)) => {}
@@ -456,6 +461,47 @@ impl Follower {
             Err(_) => account.poisoned = true,
         }
         result
+    }
+
+    fn publish_keyring(
+        &self,
+        account: &mut Account,
+        revision: u64,
+        prepared: PreparedKeyring,
+    ) -> Result<(Applied, u64), VerifyError> {
+        let environment = self
+            .environment
+            .read()
+            .map_err(|_| VerifyError::Unavailable)?;
+        if environment.sequence != revision {
+            return Err(VerifyError::Unavailable);
+        }
+        let retired = prepared.next.and_then(|next| account.keyring.replace(next));
+        // Retiring an old checkpoint can free accumulated indexes. It must not
+        // retain the environment publication lock during that destruction.
+        drop(environment);
+        drop(retired);
+        Ok(prepared.result)
+    }
+
+    fn find_account(&self, id: &str) -> Result<Option<Arc<RwLock<Account>>>, VerifyError> {
+        Ok(self
+            .accounts
+            .read()
+            .map_err(|_| VerifyError::Unavailable)?
+            .get(id)
+            .cloned())
+    }
+
+    fn account_entry(&self, id: &str) -> Result<Arc<RwLock<Account>>, VerifyError> {
+        if let Some(account) = self.find_account(id)? {
+            return Ok(account);
+        }
+        let mut accounts = self
+            .accounts
+            .write()
+            .map_err(|_| VerifyError::Unavailable)?;
+        Ok(accounts.entry(id.to_owned()).or_default().clone())
     }
 
     /// Refuse all trust and wake every change wait, so consumers recheck and
@@ -515,8 +561,9 @@ impl Follower {
     }
 
     fn acknowledge(&self, account: &str, generation: u64) {
-        if let Ok(mut accounts) = self.accounts.write() {
-            let account = accounts.entry(account.to_owned()).or_default();
+        if let Ok(account) = self.account_entry(account)
+            && let Ok(mut account) = account.write()
+        {
             // A delayed older call must not undo a newer catch-up acknowledgement.
             account.serving_generation = account.serving_generation.max(generation);
         }
@@ -527,18 +574,21 @@ impl Follower {
     /// This is replay progress only: it does not assert serving, current trust
     /// or permission. Readers must still use the `Trust` implementation.
     pub fn initialized(&self, account: &str) -> Result<bool, VerifyError> {
-        let accounts = self.accounts.read().map_err(|_| VerifyError::Unavailable)?;
-        Ok(accounts
-            .get(account)
-            .is_some_and(|account| account.keyring.is_some() && account.revocations.is_some()))
+        let Some(account) = self.find_account(account)? else {
+            return Ok(false);
+        };
+        let account = account.read().map_err(|_| VerifyError::Unavailable)?;
+        Ok(account.keyring.is_some() && account.revocations.is_some())
     }
 
     /// A record on `account`'s Stream was refused, whatever the cause,
     /// an undecodable record included: fence that account until a record
     /// for it applies.
     pub fn refuse(&self, account: &str) {
-        if let Ok(mut accounts) = self.accounts.write() {
-            accounts.entry(account.to_owned()).or_default().poisoned = true;
+        if let Ok(account) = self.account_entry(account)
+            && let Ok(mut account) = account.write()
+        {
+            account.poisoned = true;
         }
         self.notify(None);
     }
@@ -619,17 +669,21 @@ impl Follower {
         read: impl FnOnce(&Keyring, &RevocationState) -> T,
     ) -> Result<T, VerifyError> {
         let generation = self.serving_generation()?;
-        let accounts = self.accounts.read().map_err(|_| VerifyError::Unavailable)?;
-        let result = match accounts.get(id) {
-            Some(Account {
-                keyring: Some(keyring),
-                revocations: Some(revocations),
-                serving_generation: served,
-                poisoned: false,
-            }) if *served == generation => Ok(read(keyring, revocations)),
-            _ => Err(VerifyError::Trust),
+        let result = match self.find_account(id)? {
+            Some(account) => {
+                let account = account.read().map_err(|_| VerifyError::Unavailable)?;
+                match &*account {
+                    Account {
+                        keyring: Some(keyring),
+                        revocations: Some(revocations),
+                        serving_generation: served,
+                        poisoned: false,
+                    } if *served == generation => Ok(read(keyring, revocations)),
+                    _ => Err(VerifyError::Trust),
+                }
+            }
+            None => Err(VerifyError::Trust),
         };
-        drop(accounts);
         // Withdrawal never waits for account locks or record verification.
         // Discard a read spanning any disconnect/reconnect, even if the driver
         // has already resumed by the time this read finishes.
@@ -656,6 +710,24 @@ fn keyring(
     environment: &[BlockId],
     now: u64,
 ) -> Result<(Applied, u64), VerifyError> {
+    let prepared = prepare_keyring(account, signed, environment, now)?;
+    if let Some(next) = prepared.next {
+        account.keyring = Some(next);
+    }
+    Ok(prepared.result)
+}
+
+struct PreparedKeyring {
+    result: (Applied, u64),
+    next: Option<Keyring>,
+}
+
+fn prepare_keyring(
+    account: &Account,
+    signed: &SignedKeyringSnapshot,
+    environment: &[BlockId],
+    now: u64,
+) -> Result<PreparedKeyring, VerifyError> {
     let next = &signed.snapshot;
     let mut revoked_blocks = HashMap::with_capacity(next.revocations.len());
     for revocation in &next.revocations {
@@ -674,7 +746,10 @@ fn keyring(
 
     if let Some(current) = &account.keyring {
         if next.sequence <= current.sequence {
-            return Ok((Applied::Duplicate, current.issued_at));
+            return Ok(PreparedKeyring {
+                result: (Applied::Duplicate, current.issued_at),
+                next: None,
+            });
         }
         let rolled_back = next.minimum_key_epoch < current.minimum_key_epoch
             || next.issued_at_unix_seconds < current.issued_at
@@ -731,7 +806,7 @@ fn keyring(
         .as_slice()
         .try_into()
         .map_err(|_| VerifyError::Malformed)?;
-    account.keyring = Some(Keyring {
+    let next_keyring = Keyring {
         sequence: next.sequence,
         digest: block_id(&message, &signed.signature),
         issued_at: next.issued_at_unix_seconds,
@@ -739,8 +814,11 @@ fn keyring(
         minimum_key_epoch: next.minimum_key_epoch,
         revoked_keys: next.revoked_key_ids.iter().cloned().collect(),
         revoked_blocks,
-    });
-    Ok((Applied::Changed, next.issued_at_unix_seconds))
+    };
+    Ok(PreparedKeyring {
+        result: (Applied::Changed, next.issued_at_unix_seconds),
+        next: Some(next_keyring),
+    })
 }
 
 fn revocation(
