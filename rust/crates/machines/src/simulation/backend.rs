@@ -751,7 +751,7 @@ impl MachinesProvider for SimulatedMachines {
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
                 let observation = self.inspect_operation(operation).await?;
-                Ok(stream::once(async move { Ok(observation) }).boxed())
+                Ok(Box::pin(stream::once(async move { Ok(observation) })) as OperationStream)
             }
         )
     }
