@@ -16,8 +16,8 @@ impl Clone for OwnershipAnchor {
 }
 
 struct ReleaseState<T> {
-    complete: Mutex<bool>,
-    synchronous: Condvar,
+    complete: crate::sync::Mutex<bool>,
+    synchronous: crate::sync::Condvar,
     asynchronous: tokio::sync::Notify,
     value: T,
 }
@@ -39,8 +39,8 @@ impl<T> OwnershipReleaseSignal<T> {
     #[must_use]
     pub fn new(value: T) -> Self {
         Self(Arc::new(ReleaseState {
-            complete: Mutex::new(false),
-            synchronous: Condvar::new(),
+            complete: crate::sync::Mutex::new(false),
+            synchronous: crate::sync::Condvar::new(),
             asynchronous: tokio::sync::Notify::new(),
             value,
         }))
