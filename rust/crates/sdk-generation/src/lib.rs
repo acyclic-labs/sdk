@@ -29,7 +29,8 @@ mod toolchains;
 use toolchains::*;
 mod artifacts;
 use sdk_docs::is_library_target;
-mod cache_record;
+#[doc(hidden)]
+pub mod cache_record;
 #[path = "../../sdk-docs/src/concrete_versions.rs"]
 mod concrete_versions;
 mod file_cache;
