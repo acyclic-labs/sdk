@@ -118,61 +118,53 @@ where
             self.limits.minimum_multipart_part_bytes,
         )?;
         let registry = Self::multipart_registry_path(&upload_id)?;
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
-            let (registry_condition, registry_tail) = match provider.tail(registry.clone()).await {
-                Ok(tail) => (
-                    acyclic_stream::CommitCondition::Tail {
-                        path: registry.clone(),
-                        expected: tail,
+        let (registry_condition, registry_tail) = match provider.tail(registry.clone()).await {
+            Ok(tail) => (
+                acyclic_stream::CommitCondition::Tail {
+                    path: registry.clone(),
+                    expected: tail,
+                },
+                tail,
+            ),
+            Err(acyclic_stream::StreamError::NotFound) => (
+                acyclic_stream::CommitCondition::Absent {
+                    path: registry.clone(),
+                },
+                0,
+            ),
+            Err(error) => return Err(stream_read_error(&error)),
+        };
+        let attempt =
+            Self::multipart_cas_operation(&upload_id, b"create\0", operation, registry_tail)?;
+        match provider
+            .commit(acyclic_stream::CommitRequest {
+                deadline_unix_millis: None,
+                conditions: vec![
+                    registry_condition,
+                    acyclic_stream::CommitCondition::Absent { path: path.clone() },
+                ],
+                mutations: vec![
+                    acyclic_stream::CommitMutation::Append {
+                        path: registry,
+                        records: vec![Bytes::copy_from_slice(path.as_str().as_bytes()).into()],
                     },
-                    tail,
-                ),
-                Err(acyclic_stream::StreamError::NotFound) => (
-                    acyclic_stream::CommitCondition::Absent {
-                        path: registry.clone(),
+                    acyclic_stream::CommitMutation::Append {
+                        path,
+                        records: vec![record.into()],
                     },
-                    0,
-                ),
-                Err(error) => return Err(stream_read_error(&error)),
-            };
-            let attempt =
-                Self::multipart_cas_operation(&upload_id, b"create\0", operation, registry_tail)?;
-            match provider
-                .commit(acyclic_stream::CommitRequest {
-                    deadline_unix_millis: None,
-                    conditions: vec![
-                        registry_condition,
-                        acyclic_stream::CommitCondition::Absent { path: path.clone() },
-                    ],
-                    mutations: vec![
-                        acyclic_stream::CommitMutation::Append {
-                            path: registry.clone(),
-                            records: vec![Bytes::copy_from_slice(path.as_str().as_bytes()).into()],
-                        },
-                        acyclic_stream::CommitMutation::Append {
-                            path: path.clone(),
-                            records: vec![record.clone().into()],
-                        },
-                    ],
-                    idempotency_key: attempt,
-                })
-                .await
-                .map_err(|error| stream_write_error(&error))?
-            {
-                acyclic_stream::CommitOutcome::Committed(_) => break,
-                acyclic_stream::CommitOutcome::Conflict(_) => {
-                    if let Ok(snapshot) = self.multipart_snapshot(&workspace, &upload_id).await {
-                        if snapshot.key != request.input.key {
-                            return Err(s3s::s3_error!(InvalidRequest));
-                        }
-                        break;
-                    }
-                    continue;
+                ],
+                idempotency_key: attempt,
+            })
+            .await
+            .map_err(|error| stream_write_error(&error))?
+        {
+            acyclic_stream::CommitOutcome::Committed(_) => {}
+            acyclic_stream::CommitOutcome::Conflict(_) => {
+                let snapshot = self.multipart_snapshot(&workspace, &upload_id).await?;
+                if snapshot.key != request.input.key {
+                    return Err(s3s::s3_error!(InvalidRequest));
                 }
             }
-        }
-        if provider.tail(path.clone()).await.is_err() {
-            return Err(s3s::s3_error!(SlowDown));
         }
         Ok(S3Response::new(CreateMultipartUploadOutput {
             bucket: Some(request.input.bucket),
@@ -224,51 +216,49 @@ where
         }
         verify_crc32(&source, expected_crc32)?;
         let etag_value = format!("\"{}\"", hex::encode(staged.root().digest.as_bytes()));
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
-            let snapshot = self
-                .multipart_snapshot(&workspace, &request.input.upload_id)
-                .await?;
-            if snapshot.key != request.input.key || snapshot.terminal.is_some() {
-                return Err(s3s::s3_error!(NoSuchUpload));
-            }
-            if let Some((existing_number, existing_etag)) =
-                snapshot.operations.get(&operation.into_bytes())
-            {
-                if *existing_number != part_number || existing_etag != &etag_value {
-                    return Err(s3s::s3_error!(InvalidRequest));
-                }
-                return Ok(S3Response::new(UploadPartOutput {
-                    checksum_crc32: request.input.checksum_crc32.clone(),
-                    e_tag: Some(etag(existing_etag)?),
-                    ..UploadPartOutput::default()
-                }));
-            }
-            if snapshot.tail.saturating_add(2) >= u64::from(self.limits.maximum_multipart_records) {
-                return Err(s3s::s3_error!(SlowDown));
-            }
-            if self
-                .multipart_append(
-                    &workspace,
-                    &request.input.upload_id,
-                    snapshot.tail,
-                    encode_multipart_part(part_number, staged, operation, &etag_value),
-                    Self::multipart_cas_operation(
-                        &request.input.upload_id,
-                        b"part\0",
-                        operation,
-                        snapshot.tail,
-                    )?,
-                )
-                .await?
-            {
-                return Ok(S3Response::new(UploadPartOutput {
-                    checksum_crc32: request.input.checksum_crc32.clone(),
-                    e_tag: Some(etag(&etag_value)?),
-                    ..UploadPartOutput::default()
-                }));
-            }
+        let snapshot = self
+            .multipart_snapshot(&workspace, &request.input.upload_id)
+            .await?;
+        if snapshot.key != request.input.key || snapshot.terminal.is_some() {
+            return Err(s3s::s3_error!(NoSuchUpload));
         }
-        return Err(s3s::s3_error!(SlowDown));
+        if let Some((existing_number, existing_etag)) =
+            snapshot.operations.get(&operation.into_bytes())
+        {
+            if *existing_number != part_number || existing_etag != &etag_value {
+                return Err(s3s::s3_error!(InvalidRequest));
+            }
+            return Ok(S3Response::new(UploadPartOutput {
+                checksum_crc32: request.input.checksum_crc32.clone(),
+                e_tag: Some(etag(existing_etag)?),
+                ..UploadPartOutput::default()
+            }));
+        }
+        if snapshot.tail.saturating_add(2) >= u64::from(self.limits.maximum_multipart_records) {
+            return Err(s3s::s3_error!(SlowDown));
+        }
+        if self
+            .multipart_append(
+                &workspace,
+                &request.input.upload_id,
+                snapshot.tail,
+                encode_multipart_part(part_number, staged, operation, &etag_value),
+                Self::multipart_cas_operation(
+                    &request.input.upload_id,
+                    b"part\0",
+                    operation,
+                    snapshot.tail,
+                )?,
+            )
+            .await?
+        {
+            return Ok(S3Response::new(UploadPartOutput {
+                checksum_crc32: request.input.checksum_crc32.clone(),
+                e_tag: Some(etag(&etag_value)?),
+                ..UploadPartOutput::default()
+            }));
+        }
+        Err(s3s::s3_error!(SlowDown))
     }
 
     async fn s3_list_parts(
@@ -435,36 +425,34 @@ where
             return Err(s3s::s3_error!(NotImplemented));
         }
         let operation = request_operation(&request)?;
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
-            let snapshot = self
-                .multipart_snapshot(&workspace, &request.input.upload_id)
-                .await?;
-            if snapshot.key != request.input.key {
-                return Err(s3s::s3_error!(NoSuchUpload));
+        let snapshot = self
+            .multipart_snapshot(&workspace, &request.input.upload_id)
+            .await?;
+        if snapshot.key != request.input.key {
+            return Err(s3s::s3_error!(NoSuchUpload));
+        }
+        match snapshot.terminal {
+            Some(MultipartTerminal::Aborted) => {
+                return Ok(S3Response::new(AbortMultipartUploadOutput::default()));
             }
-            match snapshot.terminal {
-                Some(MultipartTerminal::Aborted) => {
-                    return Ok(S3Response::new(AbortMultipartUploadOutput::default()));
-                }
-                Some(_) => return Err(s3s::s3_error!(NoSuchUpload)),
-                None => {
-                    if self
-                        .multipart_append(
-                            &workspace,
+            Some(_) => return Err(s3s::s3_error!(NoSuchUpload)),
+            None => {
+                if self
+                    .multipart_append(
+                        &workspace,
+                        &request.input.upload_id,
+                        snapshot.tail,
+                        encode_multipart_aborted(),
+                        Self::multipart_cas_operation(
                             &request.input.upload_id,
+                            b"abort\0",
+                            operation,
                             snapshot.tail,
-                            encode_multipart_aborted(),
-                            Self::multipart_cas_operation(
-                                &request.input.upload_id,
-                                b"abort\0",
-                                operation,
-                                snapshot.tail,
-                            )?,
-                        )
-                        .await?
-                    {
-                        return Ok(S3Response::new(AbortMultipartUploadOutput::default()));
-                    }
+                        )?,
+                    )
+                    .await?
+                {
+                    return Ok(S3Response::new(AbortMultipartUploadOutput::default()));
                 }
             }
         }

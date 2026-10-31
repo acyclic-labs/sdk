@@ -37,109 +37,107 @@ where
     let cancellation = work.cancellation();
     let carrier = &mut adapter::NativeDemandCarrier::Native(work);
     let operation = crate::OperationId::new();
-    for _ in 0..MAXIMUM_PROMOTION_RETRIES {
-        carrier.with_work(|work| mount_items(work, 1))?;
-        let mut candidate = authored
-            .shared_checkout()
-            .candidate(None, carrier, cancellation, Some(authored.cancellation()))
-            .await?;
-        candidate.deadline = authored.mutation_deadline()?;
-        if candidate.checkout.bound_authored_operation_id().is_none() {
-            candidate.checkout.bind_authored_operation(operation);
-        }
-        let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
-        let source = lazy
+    carrier.with_work(|work| mount_items(work, 1))?;
+    let mut candidate = authored
+        .shared_checkout()
+        .candidate(None, carrier, cancellation, Some(authored.cancellation()))
+        .await?;
+    candidate.deadline = authored.mutation_deadline()?;
+    if candidate.checkout.bound_authored_operation_id().is_none() {
+        candidate.checkout.bind_authored_operation(operation);
+    }
+    let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
+    let source = lazy
+        .source_lookup(lazy.source_reference(), path, &mut accounting)
+        .await
+        .map_err(lazy_error)?;
+    let changed = lazy
+        .stage_into_checkout(
+            &mut candidate.checkout,
+            path,
+            expected_source,
+            u64::MAX,
+            &mut accounting,
+        )
+        .await
+        .map_err(lazy_error)?;
+    if !changed {
+        return Ok(());
+    }
+    let (root, _allocation) = authored.namespace_path(&MountPath::root(), carrier)?;
+    let (installed, _allocation) = adapter::installed_changes(
+        &candidate.base,
+        &candidate.checkout,
+        InstallScope::Subtree(&root),
+        carrier,
+        cancellation,
+    )
+    .await?;
+    let stamp = authored.shared_checkout().ledger.stamp();
+    if stamp != candidate.stamp {
+        // Accept a hint only after revalidating the exact imported source version.
+        let current = lazy
             .source_lookup(lazy.source_reference(), path, &mut accounting)
             .await
             .map_err(lazy_error)?;
-        let changed = lazy
-            .stage_into_checkout(
-                &mut candidate.checkout,
-                path,
-                expected_source,
-                u64::MAX,
-                &mut accounting,
-            )
-            .await
-            .map_err(lazy_error)?;
-        if !changed {
-            return Ok(());
+        if source
+            .as_ref()
+            .zip(current.as_ref())
+            .is_some_and(|(before, after)| {
+                before.file_identity == after.file_identity && before.version == after.version
+            })
+        {
+            candidate.stamp = stamp;
         }
-        let (root, _allocation) = authored.namespace_path(&MountPath::root(), carrier)?;
-        let (installed, _allocation) = adapter::installed_changes(
-            &candidate.base,
-            &candidate.checkout,
-            InstallScope::Subtree(&root),
+    }
+    let installed = authored
+        .shared_checkout()
+        .install_candidate(
+            (candidate, None),
             carrier,
             cancellation,
+            Some(authored.cancellation()),
+            |carrier, stamp| {
+                if authored.shared_checkout().ledger.stamp() != stamp {
+                    return Err(MountSourceError::Stale);
+                }
+                authored
+                    .shared_checkout()
+                    .ledger
+                    .record_deferred(&ViewChange::Effect(&installed), carrier)
+            },
+            |checkout, candidate, prepared| {
+                cancellation
+                    .commit_if_both_live(authored.cancellation(), || {
+                        checkout.adopt_prepared_candidate(
+                            &candidate.base,
+                            candidate.checkout,
+                            prepared,
+                        )
+                    })
+                    .map_err(|_| MountSourceError::Cancelled)
+            },
         )
         .await?;
-        let stamp = authored.shared_checkout().ledger.stamp();
-        if stamp != candidate.stamp {
-            // Accept a hint only after revalidating the exact imported source version.
-            let current = lazy
-                .source_lookup(lazy.source_reference(), path, &mut accounting)
-                .await
-                .map_err(lazy_error)?;
-            if source
-                .as_ref()
-                .zip(current.as_ref())
-                .is_some_and(|(before, after)| {
-                    before.file_identity == after.file_identity && before.version == after.version
-                })
-            {
-                candidate.stamp = stamp;
-            }
-        }
-        let installed = authored
+    if installed == Some(super::super::MountPublication::PerMutation) {
+        return authored
             .shared_checkout()
-            .install_candidate(
-                (candidate, None),
-                carrier,
-                cancellation,
+            .publish(
+                crate::PublicationPermit::Unrestricted,
+                crate::kernel::KernelAccounting::native(work, cancellation),
                 Some(authored.cancellation()),
-                |carrier, stamp| {
-                    if authored.shared_checkout().ledger.stamp() != stamp {
-                        return Err(MountSourceError::Stale);
-                    }
-                    authored
-                        .shared_checkout()
-                        .ledger
-                        .record_deferred(&ViewChange::Effect(&installed), carrier)
-                },
-                |checkout, candidate, prepared| {
-                    cancellation
-                        .commit_if_both_live(authored.cancellation(), || {
-                            checkout.adopt_prepared_candidate(
-                                &candidate.base,
-                                candidate.checkout,
-                                prepared,
-                            )
-                        })
-                        .map_err(|_| MountSourceError::Cancelled)
-                },
+                &mut adapter::source_publication_guard(
+                    authored.callback_guard().cloned(),
+                    Some(authored.cancellation().clone()),
+                ),
+                None,
+                &mut None,
             )
-            .await?;
-        if installed == Some(super::super::MountPublication::PerMutation) {
-            return authored
-                .shared_checkout()
-                .publish(
-                    crate::PublicationPermit::Unrestricted,
-                    crate::kernel::KernelAccounting::native(work, cancellation),
-                    Some(authored.cancellation()),
-                    &mut adapter::source_publication_guard(
-                        authored.callback_guard().cloned(),
-                        Some(authored.cancellation().clone()),
-                    ),
-                    None,
-                    &mut None,
-                )
-                .await
-                .map_err(|(error, _)| error);
-        }
-        if installed.is_some() {
-            return Ok(());
-        }
+            .await
+            .map_err(|(error, _)| error);
+    }
+    if installed.is_some() {
+        return Ok(());
     }
     Err(MountSourceError::Stale)
 }

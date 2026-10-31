@@ -554,24 +554,12 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let attempts = if cursor.is_some() {
-            1
-        } else {
-            MAXIMUM_INTERRUPTED_LISTINGS
-        };
-        let mut page = Err(MountSourceError::Stale);
-        for _ in 0..attempts {
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..crate::WorkCounters::UNCHARGED
-            })
-            .map_err(MountSourceError::NativeWork)?;
-            page = self.directory_page(path, cursor, maximum_entries, work);
-            if !matches!(page, Err(MountSourceError::Stale)) {
-                break;
-            }
-        }
-        let mut page = page?;
+        work.charge(crate::WorkCounters {
+            items_examined: 1,
+            ..crate::WorkCounters::UNCHARGED
+        })
+        .map_err(MountSourceError::NativeWork)?;
+        let mut page = self.directory_page(path, cursor, maximum_entries, work)?;
         while page.entries.is_empty() {
             work.charge(crate::WorkCounters {
                 items_examined: 1,
