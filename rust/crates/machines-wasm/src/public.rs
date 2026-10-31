@@ -728,10 +728,14 @@ pub struct UsageOut {
     start_unix_ms: SafeNumber,
     #[tsify(type = "number")]
     end_unix_ms: SafeNumber,
+    /// Guest vCPU time actually run, in nanoseconds. Granted but idle cores add nothing.
     #[tsify(type = "bigint")]
-    elastic_cpu_ns: u64,
+    cpu_ns: u64,
+    /// Proportional set size (Pss) of guest memory integrated over time, in byte-seconds.
+    /// Pages shared with fork relatives are split between them, so the charges add
+    /// up to host memory actually used.
     #[tsify(type = "bigint")]
-    private_resident_byte_seconds: u64,
+    resident_byte_seconds: u64,
     #[tsify(type = "bigint")]
     durable_private_bytes: u64,
     #[serde(with = "serde_bytes")]
@@ -748,8 +752,8 @@ fn usage_out(value: UsageReceipt) -> UsageOut {
         machine: value.machine.to_string(),
         start_unix_ms: SafeNumber(value.start_unix_ms),
         end_unix_ms: SafeNumber(value.end_unix_ms),
-        elastic_cpu_ns: value.elastic_cpu_ns,
-        private_resident_byte_seconds: value.private_resident_byte_seconds,
+        cpu_ns: value.cpu_ns,
+        resident_byte_seconds: value.resident_byte_seconds,
         durable_private_bytes: value.durable_private_bytes,
         lineage_receipt_sha256: value.lineage_receipt_sha256.to_vec(),
         egress_bytes: value.egress_bytes,
