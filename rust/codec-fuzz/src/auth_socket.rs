@@ -39,7 +39,7 @@ fn admitted(value: WebsocketConnectGrant) {
             assert!(!rule(&grant, Host::Dns(host), 0));
         }
         assert!(!rule(&grant, Host::Dns("bad/name"), port));
-        let forbidden = if port == 443 { 80 } else { 443 };
+        let forbidden: u16 = if port == 443 { 80 } else { 443 };
         let restricted = WebsocketConnectGrant {
             rules: vec![SocketHostRule {
                 host: entry.host.clone(),
