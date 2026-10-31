@@ -305,6 +305,10 @@ impl ModelContentPart {
     fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
         history_step(quota.work(), 1)?;
         Ok(match self {
+            Self::Configuration { prefix, effort } => Self::Configuration {
+                prefix: *prefix,
+                effort: *effort,
+            },
             Self::Text { text } => Self::Text {
                 text: copy_text(text, quota)?,
             },

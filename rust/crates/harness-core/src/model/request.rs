@@ -95,6 +95,7 @@ impl ModelRequest {
         for message in messages {
             charge_items(io, 1)?;
             with_history_io(io, |work| message.content.validate_limits(limits, work))?;
+            let standalone = matches!(message.content, ModelContent::Part(_));
             let empty = message.content.parts().is_empty();
             let parts = match &mut message.content {
                 ModelContent::Text(_) => &mut [][..],
@@ -103,7 +104,7 @@ impl ModelRequest {
             };
             for part in parts {
                 charge_items(io, 1)?;
-                Self::validate_part(message.role, part, &tools, &mut pending, io)?;
+                Self::validate_part(message.role, part, standalone, &tools, &mut pending, io)?;
             }
             if message.role == ModelRole::Tool && empty {
                 return Err(Error::Invalid("tool role requires a paired result".into()));
@@ -177,11 +178,23 @@ impl ModelRequest {
     fn validate_part<'a>(
         role: ModelRole,
         part: &'a mut ModelContentPart,
+        standalone: bool,
         tools: &BTreeMap<&str, &crate::tool::ToolDefinition>,
         pending: &mut BTreeMap<&'a String, PendingCall<'a>>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         match part {
+            ModelContentPart::Configuration { effort, .. } => {
+                if role != ModelRole::User
+                    || !standalone
+                    || !pending.is_empty()
+                    || *effort == acyclic_model_render::Effort::Adaptive
+                {
+                    return Err(Error::Invalid(
+                        "configuration update must be a concrete user-boundary item".into(),
+                    ));
+                }
+            }
             ModelContentPart::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,

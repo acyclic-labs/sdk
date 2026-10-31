@@ -30,7 +30,7 @@ pub enum Effort {
     Medium,
     /// High effort.
     High,
-    /// Adaptive effort, only where the provider admits it.
+    /// Follow the model profile's reasoning policy, without a fixed role override.
     Adaptive,
 }
 

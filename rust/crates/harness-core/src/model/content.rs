@@ -50,6 +50,19 @@ pub enum ModelContent {
 )]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelContentPart {
+    /// Host-admitted fixed effort change at its original conversation position.
+    /// Direct user inputs cannot introduce configuration changes.
+    Configuration {
+        /// Frozen model prefix to which this change belongs. Alloy members
+        /// replay only their own updates; an epoch replacement clears them.
+        prefix: [u8; 32],
+        /// Concrete effort; adaptive policy belongs to the frozen model profile.
+        #[cfg_attr(
+            feature = "wasm",
+            tsify(type = "'low' | 'medium' | 'high' | 'adaptive'")
+        )]
+        effort: acyclic_model_render::Effort,
+    },
     /// Plain text.
     Text {
         /// Model-visible text.
@@ -194,7 +207,7 @@ impl ModelContent {
                 ModelContentPart::ToolResult { content, .. } => {
                     content.validate_limits(limits, work)?;
                 }
-                ModelContentPart::Text { .. } => {}
+                ModelContentPart::Text { .. } | ModelContentPart::Configuration { .. } => {}
             }
         }
         let mut references = 0usize;

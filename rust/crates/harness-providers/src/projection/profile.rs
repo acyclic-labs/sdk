@@ -5,10 +5,13 @@ use acyclic_model_render::{Cache, Effort, Reasoning};
 use serde_json::{Map, Value, json};
 
 pub(crate) fn validate(adapter: Adapter, binding: &ModelProfileBinding) -> Result<()> {
-    if binding.overlay_effort().is_some() {
+    if binding.fixed_effort().is_some() && adapter != Adapter::Responses {
         return Err(invalid(
-            "role effort requires an admitted appended configuration item",
+            "fixed role effort requires an epoch on this protocol",
         ));
+    }
+    if binding.fixed_effort().is_some() && binding.reasoning() == Reasoning::Disabled {
+        return Err(invalid("a role cannot enable disabled reasoning"));
     }
     if !matches!(
         (adapter, binding.cache()),
@@ -176,6 +179,109 @@ mod tests {
             let (prepared, _) = crate::tests::request(&provider)?;
             let body = crate::projection::body(&provider, prepared.request())?;
             assert_eq!(body.pointer(pointer), Some(&json!("high")));
+            let adaptive_role = RoleFile::parse(
+                "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\neffort: adaptive\nmax_output_tokens: 64\n---\n",
+            )?;
+            let adaptive = resolve(&model, &adaptive_role, &project, &agent)?;
+            let (fresh, _) = crate::tests::provider(adapter, 200);
+            let adaptive = fresh.with_profile(&adaptive)?;
+            assert!(
+                adaptive
+                    .profile_binding()
+                    .unwrap()
+                    .configuration_update(None)
+                    .is_none()
+            );
+            let (adaptive_request, _) = crate::tests::request(&adaptive)?;
+            let adaptive_body = crate::projection::body(&adaptive, adaptive_request.request())?;
+            assert_eq!(adaptive_body.pointer(pointer), Some(&json!("high")));
+            if adapter == Adapter::Responses {
+                use acyclic_harness_core::model::{
+                    ModelContent, ModelContentPart, ModelMessage, ModelRole, PreparedModelRequest,
+                };
+                let fixed_role = RoleFile::parse(
+                    "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\neffort: low\nmax_output_tokens: 64\n---\n",
+                )?;
+                let fixed = resolve(&model, &fixed_role, &project, &agent)?;
+                let (fresh, _) = crate::tests::provider(adapter, 200);
+                let fixed = fresh.with_profile(&fixed)?;
+                let (request, _) = crate::tests::request(&fixed)?;
+                let mut request = request.request().clone();
+                // Actual omission control: admitting the profile alone must not
+                // silently rewrite the root field or manufacture an input item.
+                assert!(crate::projection::body(&fixed, &request).is_err());
+                let update = fixed
+                    .profile_binding()
+                    .unwrap()
+                    .configuration_update(None)
+                    .unwrap();
+                request.messages.insert(0, update.clone());
+                let prepared = PreparedModelRequest::prepare(request, Default::default(), None)?;
+                let mut request = prepared.request().clone();
+                let projected = crate::projection::body(&fixed, &request)?;
+                assert_eq!(projected["reasoning"], body["reasoning"]);
+                assert_eq!(projected["tools"], body["tools"]);
+                assert_eq!(projected["prompt_cache_key"], body["prompt_cache_key"]);
+                assert_eq!(
+                    projected["input"][0],
+                    json!({"type":"configuration_update","reasoning":{"effort":"low"}})
+                );
+                assert_eq!(
+                    &projected["input"].as_array().unwrap()[1..],
+                    body["input"].as_array().unwrap()
+                );
+                let retained: acyclic_harness_core::model::ModelRequest =
+                    serde_json::from_slice(prepared.bytes()).unwrap();
+                assert_eq!(crate::projection::body(&fixed, &retained)?, projected);
+                request.messages.insert(1, update.clone());
+                assert!(crate::projection::body(&fixed, &request).is_err());
+                request.messages.remove(1);
+                let mut foreign = update.clone();
+                let ModelContent::Part(ModelContentPart::Configuration { prefix, .. }) =
+                    &mut foreign.content
+                else {
+                    unreachable!()
+                };
+                prefix[0] ^= 1;
+                request.messages.insert(1, foreign.clone());
+                request.messages.insert(2, update.clone());
+                assert!(crate::projection::body(&fixed, &request).is_err());
+                request.messages.remove(2);
+                assert_eq!(crate::projection::body(&fixed, &request)?, projected);
+                request.messages.remove(1);
+                // Returning to the adaptive role restores its frozen baseline,
+                // rather than retaining the preceding role's fixed override.
+                request.messages.push(ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("settled".into()),
+                });
+                request.messages.push(
+                    adaptive
+                        .profile_binding()
+                        .unwrap()
+                        .configuration_update(Some(Effort::Low))
+                        .unwrap(),
+                );
+                request.model = adaptive.model().clone();
+                let restored = crate::projection::body(&adaptive, &request)?;
+                assert_eq!(restored["reasoning"], body["reasoning"]);
+                assert_eq!(
+                    restored["input"].as_array().unwrap().last().unwrap(),
+                    &json!({"type":"configuration_update","reasoning":{"effort":"high"}})
+                );
+                let mut wrong = update.clone();
+                wrong.role = ModelRole::Assistant;
+                let mut invalid = prepared.request().clone();
+                invalid.messages[0] = wrong;
+                assert!(PreparedModelRequest::prepare(invalid, Default::default(), None).is_err());
+                assert!(update.content.validate_user_input(&mut None).is_err());
+                let mut invalid = prepared.request().clone();
+                invalid.messages[0].content = ModelContent::Parts(vec![match update.content {
+                    ModelContent::Part(part) => part,
+                    _ => unreachable!(),
+                }]);
+                assert!(PreparedModelRequest::prepare(invalid, Default::default(), None).is_err());
+            }
             let mut wrong_request = prepared.request().clone();
             wrong_request.max_output_tokens = Some(65);
             assert!(crate::projection::body(&provider, &wrong_request).is_err());
