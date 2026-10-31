@@ -1,4 +1,4 @@
-use acyclic_stream::testing::{RequestLedger, Requests};
+use acyclic_stream::testing::{RequestClass, RequestLedger, Requests};
 use acyclic_test_support::{
     AllocationInfo,
     scale::{Idle, Operation, Point, Sample, Work},
@@ -104,17 +104,20 @@ struct Row {
     raw_ns: Vec<f64>,
     work: Sample,
     coordinator_allocations: Vec<Option<[u64; 2]>>,
+    provider_requests: Vec<Option<[u64; 7]>>,
 }
 
 pub(super) struct Before {
     requests: Requests,
     allocations: Option<AllocationInfo>,
+    requested_query: Option<RequestClass>,
 }
 
 #[derive(Default)]
 pub(super) struct Observation {
     work: Work,
     coordinator_allocations: Option<[u64; 2]>,
+    provider_requests: Option<[u64; 7]>,
 }
 
 impl Measurements {
@@ -137,22 +140,40 @@ impl Measurements {
         self.operations.contains(&operation)
     }
 
-    pub(super) fn start(&self) -> Before {
+    pub(super) fn start(&self, requested_query: Option<RequestClass>) -> Before {
         Before {
             requests: self.requests.requests(),
             allocations: acyclic_test_support::current_allocations(),
+            requested_query,
         }
     }
 
-    pub(super) fn stop(&self, before: Before) -> Observation {
+    pub(super) fn stop(&self, before: Before) -> Result<Observation> {
         let requests = self.requests.requests().since(before.requests);
+        // A requested query supplies the operation's data. Exclude exactly
+        // that original dispatch, preserving every additional probe, even
+        // another call in the same class.
+        let direct = if let Some(class) = before.requested_query {
+            if !matches!(class, RequestClass::Head | RequestClass::List)
+                || requests.class(class) == 0
+            {
+                return Err("requested query has no original provider dispatch".into());
+            }
+            1
+        } else {
+            0
+        };
+        let control = requests
+            .control()
+            .checked_sub(direct)
+            .ok_or("requested query exceeds observed provider calls")?;
         let allocations = before
             .allocations
             .zip(acyclic_test_support::current_allocations());
-        Observation {
+        Ok(Observation {
             // Request accounting observes the public provider boundary. It
             // does not infer physical syscalls, locks or transport traffic.
-            work: Work([None, None, None, None, Some(requests.control()), None, None]),
+            work: Work([None, None, None, None, Some(control), None, None]),
             // This allocator scope cannot observe native worker threads; keep
             // it diagnostic instead of qualifying the allocation dimension.
             coordinator_allocations: allocations.map(|(before, after)| {
@@ -161,7 +182,23 @@ impl Measurements {
                     after.bytes_total - before.bytes_total,
                 ]
             }),
+            provider_requests: Some([
+                requests.data(),
+                requests.class(RequestClass::Metadata),
+                requests.class(RequestClass::List),
+                requests.class(RequestClass::Head),
+                requests.class(RequestClass::Lease),
+                requests.class(RequestClass::Token),
+                direct,
+            ]),
+        })
+    }
+
+    pub(super) fn require_one_control(observation: &Observation) -> Result {
+        if observation.work.0[4] != Some(1) {
+            return Err("redundant query was hidden by requested-data classification".into());
         }
+        Ok(())
     }
 
     pub(super) fn record(
@@ -179,11 +216,13 @@ impl Measurements {
             raw_ns: Vec::new(),
             work: Sample::new(operation),
             coordinator_allocations: Vec::new(),
+            provider_requests: Vec::new(),
         });
         row.raw_ns.push(ns(elapsed));
         row.work.record(observation.work, &self.recovery)?;
         row.coordinator_allocations
             .push(observation.coordinator_allocations);
+        row.provider_requests.push(observation.provider_requests);
         Ok(())
     }
 
@@ -216,6 +255,7 @@ impl Measurements {
                 raw_ns,
                 work,
                 coordinator_allocations,
+                provider_requests,
             } = row;
             let quantiles = Quantiles::new(&mut raw_ns.clone())?;
             let floor_ns = floors.compose(terms);
@@ -245,6 +285,9 @@ impl Measurements {
                 }).collect::<BTreeMap<_, _>>(),
                 "coordinator_allocations_scope": "current thread only; excluded from qualification",
                 "coordinator_allocations_count_and_bytes": coordinator_allocations,
+                "provider_request_columns": ["data", "metadata", "list", "head", "lease", "token", "requested_query_dispatches"],
+                "provider_request_counts": provider_requests,
+                "control_request_scope": "public metadata/list/head/lease/token calls excluding exactly the original requested query; additional probes remain controls",
             }))?;
             point.samples.push(work);
         }

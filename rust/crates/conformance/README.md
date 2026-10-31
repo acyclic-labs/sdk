@@ -125,3 +125,6 @@ timestamp pair excludes the additional cost of async polling and observers.
 Zero-duration samples are retained when both timestamps occupy the same clock
 tick. Resolution flags also use the smallest positive timer-only observation;
 an entirely unresolved timer or a zero-median semantic floor refuses calibration.
+Requested HEAD and LIST results are data. The shared observer excludes exactly
+the original query dispatch from control overhead, retains every provider class,
+and checks that an additional real HEAD remains one control request.
