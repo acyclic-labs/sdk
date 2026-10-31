@@ -118,7 +118,7 @@ async fn source_staging_preserves_chunks_and_rejects_lost_producer()
         finished: false,
         original: None,
     };
-    let mut adapter = ContentSourceAdapter::new(Pin::new(&mut source));
+    let mut adapter = ContentSourceAdapter::new(Pin::<&mut Producer>::new(&mut source));
     let staged = checkout
         .stage_content(&mut adapter, 64, WorkBudget::UNBOUNDED, &cancellation)
         .await?
@@ -141,7 +141,7 @@ async fn source_staging_preserves_chunks_and_rejects_lost_producer()
         finished: false,
         original: None,
     };
-    let mut adapter = ContentSourceAdapter::new(Pin::new(&mut lost));
+    let mut adapter = ContentSourceAdapter::new(Pin::<&mut Producer>::new(&mut lost));
     assert!(
         checkout
             .stage_content(&mut adapter, 64, WorkBudget::UNBOUNDED, &cancellation)
@@ -172,7 +172,7 @@ async fn source_staging_preserves_chunks_and_rejects_lost_producer()
         finished: false,
         original: Some(work.clone()),
     };
-    let mut adapter = ContentSourceAdapter::new(Pin::new(&mut native));
+    let mut adapter = ContentSourceAdapter::new(Pin::<&mut Producer>::new(&mut native));
     let mut destination = [0; 8];
     assert!(matches!(
         adapter

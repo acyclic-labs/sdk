@@ -375,7 +375,8 @@ mod tests {
                     assert!(!source.prepare_spill(prefix.to_vec(), false)?);
                 }
                 assert!(source.prepare_spill(b"continued".to_vec(), false)?);
-                let mut adapter = ContentSourceAdapter::new(Pin::new(&mut source));
+                let mut adapter =
+                    ContentSourceAdapter::new(Pin::<&mut ExecSource>::new(&mut source));
                 let staged = checkout
                     .stage_content(&mut adapter, 64, WorkBudget::UNBOUNDED, &cancellation)
                     .await;

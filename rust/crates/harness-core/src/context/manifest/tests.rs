@@ -125,7 +125,7 @@ proptest! {
         )?, crate::model::ToolResultContent::Json { value: json!(text) });
         prop_assert!(registered.definition.validate_projection(
             &json!({"kind":"parts","value":text}), Limits::default(), None,
-        ).is_err());
+        ).is_err(), "callable skill projection must reject a different content kind");
         let before = registry.definitions(None)?;
         for runtime in [
             json!({"kind":"unknown","script":"skills/inspect/run"}),
