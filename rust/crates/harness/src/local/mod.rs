@@ -99,7 +99,6 @@ pub struct LocalHarness {
         Arc<crate::profile::Profiles>,
         Arc<dyn crate::profile::ProfileModels>,
     )>,
-    context_manifest: Option<crate::conversation::FileRef>,
     /// The verifier of a served tree's caller and clients; see
     /// [`LocalHarnessConfig::served`].
     served: Option<Arc<dyn Verifier>>,
