@@ -85,10 +85,17 @@ impl LogFrame {
 
     /// Appends the frame whose body is `parts`, in order, to `out`.
     pub fn encode(&self, parts: &[&[u8]], out: &mut Vec<u8>) -> io::Result<()> {
-        let body = parts.iter().map(|part| part.len() as u64).sum::<u64>();
+        let body = parts.iter().try_fold(0_u64, |length, part| {
+            length
+                .checked_add(part.len() as u64)
+                .ok_or(io::ErrorKind::InvalidInput)
+        })?;
         let (prefix, width) = self.prefix(body).ok_or(io::ErrorKind::InvalidInput)?;
         let prefix = prefix.get(..width).ok_or(io::ErrorKind::InvalidInput)?;
-        out.reserve(usize::try_from(self.frame_bytes(body)).map_err(io::Error::other)?);
+        let frame_bytes = body
+            .checked_add(self.frame_bytes(0))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        out.reserve(usize::try_from(frame_bytes).map_err(io::Error::other)?);
         out.extend_from_slice(prefix);
         for part in parts {
             out.extend_from_slice(part);
@@ -110,11 +117,10 @@ impl LogFrame {
         let Ok(length) = usize::try_from(length) else {
             return false;
         };
-        let Some(body) = bytes.get(width..width + length) else {
+        let Some((body, tail)) = bytes[width..].split_at_checked(length) else {
             return false;
         };
-        bytes
-            .get(width + length..width + length + Self::CHECKSUM_BYTES)
+        tail.get(..Self::CHECKSUM_BYTES)
             .is_some_and(|checksum| checksum == self.checksum(prefix, body))
     }
 
@@ -131,7 +137,10 @@ impl LogFrame {
         let Some(length) = self.body_length(prefix) else {
             return Ok(None);
         };
-        if remaining < self.frame_bytes(length) {
+        if remaining
+            .checked_sub(self.frame_bytes(0))
+            .is_none_or(|available| length > available)
+        {
             return Ok(None);
         }
         let mut body = vec![0; usize::try_from(length).map_err(io::Error::other)?];
@@ -165,6 +174,10 @@ mod tests {
             format.encode(&[b"ab", b"cde"], &mut frame).unwrap();
             assert_eq!(frame.len() as u64, format.frame_bytes(5));
             assert!(format.is_valid(&frame));
+            assert_eq!(
+                format.read(frame.as_slice(), frame.len() as u64).unwrap(),
+                Some(b"abcde".to_vec())
+            );
             for cut in 0..frame.len() {
                 assert!(!format.is_valid(frame.get(..cut).unwrap()), "cut at {cut}");
             }
@@ -177,5 +190,27 @@ mod tests {
         // A body outside the log's bounds never encodes.
         assert!(NARROW.encode(&[&[0; 65]], &mut Vec::new()).is_err());
         assert!(NARROW.encode(&[], &mut Vec::new()).is_err());
+
+        // Corrupt the length of a frame from the shipping encoder. Even a
+        // declared body that fits usize may overflow when framing is added.
+        let format = LogFrame {
+            maximum_body: u64::MAX,
+            ..WIDE
+        };
+        let mut frame = Vec::new();
+        format.encode(&[b"abcde"], &mut frame).unwrap();
+        for length in [u64::from(u32::MAX), usize::MAX as u64, u64::MAX] {
+            frame[..8].copy_from_slice(&length.to_le_bytes());
+            assert!(!format.is_valid(&frame), "declared {length}");
+            assert!(
+                format
+                    .read(frame.as_slice(), frame.len() as u64)
+                    .unwrap()
+                    .is_none()
+            );
+            if length == u64::MAX {
+                assert!(format.read(frame.as_slice(), u64::MAX).unwrap().is_none());
+            }
+        }
     }
 }
