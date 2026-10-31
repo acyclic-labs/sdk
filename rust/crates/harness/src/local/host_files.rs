@@ -23,10 +23,10 @@ use futures::StreamExt as _;
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::io::Read as _;
-use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError, Weak, mpsc};
 
 #[cfg(all(test, not(loom)))]
 mod tests;
@@ -100,7 +100,7 @@ struct Request {
 /// nested clients keep disposable custody files outside authored child views.
 pub fn workspace_root(cwd: &Path) -> Result<PathBuf> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-    if let Some(bridge) = lock(&REGISTRY).live(&cwd) {
+    if let Some(bridge) = Registry::live(&REGISTRY, &cwd) {
         return Ok(bridge.workspace.clone());
     }
     discover(&cwd).map(|(_, endpoint)| endpoint.workspace)
@@ -383,35 +383,45 @@ impl Drop for Waiting {
 /// discovery and connection happen once per owner lifetime, not per request.
 #[derive(Default)]
 struct Registry {
-    located: BTreeMap<PathBuf, PathBuf>,
-    bridges: BTreeMap<PathBuf, Arc<Bridge>>,
+    located: HashMap<PathBuf, Weak<Bridge>>,
+    bridges: HashMap<PathBuf, Connection>,
 }
 
-static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
-    located: BTreeMap::new(),
-    bridges: BTreeMap::new(),
-});
+type Connection = Arc<Mutex<Option<Arc<Bridge>>>>;
+
+static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
 
 impl Registry {
-    fn live(&self, cwd: &Path) -> Option<Arc<Bridge>> {
-        self.located
-            .get(cwd)
-            .and_then(|directory| self.bridges.get(directory))
-            .filter(|bridge| bridge.live())
-            .cloned()
+    fn live(registry: &Mutex<Self>, cwd: &Path) -> Option<Arc<Bridge>> {
+        let bridge = lock(registry).located.get(cwd)?.upgrade()?;
+        bridge.live().then_some(bridge)
     }
 
-    fn bridge(&mut self, cwd: &Path) -> Result<Arc<Bridge>> {
-        if let Some(bridge) = self.live(cwd) {
+    fn bridge(
+        registry: &Mutex<Self>,
+        cwd: &Path,
+        open: impl FnOnce(&Path, Endpoint) -> Result<Bridge>,
+    ) -> Result<Arc<Bridge>> {
+        if let Some(bridge) = Self::live(registry, cwd) {
             return Ok(bridge);
         }
         let (directory, endpoint) = discover(cwd)?;
-        self.located.insert(cwd.to_path_buf(), directory.clone());
-        if let Some(bridge) = self.bridges.get(&directory).filter(|bridge| bridge.live()) {
-            return Ok(Arc::clone(bridge));
-        }
-        let bridge = Arc::new(Bridge::open(&directory, endpoint)?);
-        self.bridges.insert(directory, Arc::clone(&bridge));
+        let connection = Arc::clone(lock(registry).bridges.entry(directory.clone()).or_default());
+        // Only callers connecting to this owner wait behind its native opens.
+        // Discovery, watcher registration and owner-exit observation never hold
+        // the registry; the connection guard releases on either result.
+        let mut connected = lock(&connection);
+        let bridge = match connected.as_ref().filter(|bridge| bridge.live()) {
+            Some(bridge) => Arc::clone(bridge),
+            None => {
+                let bridge = Arc::new(open(&directory, endpoint)?);
+                *connected = Some(Arc::clone(&bridge));
+                bridge
+            }
+        };
+        lock(registry)
+            .located
+            .insert(cwd.to_path_buf(), Arc::downgrade(&bridge));
         Ok(bridge)
     }
 }
@@ -419,8 +429,12 @@ impl Registry {
 /// Contacts an existing harness. Does not select state, acquire a lifecycle
 /// lock, publish an executable identity, or start any service or agent.
 pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
+    request_with(&REGISTRY, cwd, action)
+}
+
+fn request_with(registry: &Mutex<Registry>, cwd: &Path, action: HostAction) -> Result<Value> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-    let bridge = lock(&REGISTRY).bridge(&cwd)?;
+    let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
     let operation = OperationId::new();
     let key = status_key(&action);
     let request = Request {
