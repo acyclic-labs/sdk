@@ -68,19 +68,12 @@ fn records(
     sequence: Sequence,
     work: &mut AuthorityWork<'_>,
 ) -> Result<Vec<AppendRecord>, AuthorityStoreError> {
-    let mut context = [0; 56];
-    context
-        .get_mut(..16)
-        .ok_or(crate::WorkError::Overflow)?
-        .copy_from_slice(&seal.volume().into_bytes());
-    context
-        .get_mut(16..48)
-        .ok_or(crate::WorkError::Overflow)?
-        .copy_from_slice(seal.root().digest.as_bytes());
-    context
-        .get_mut(48..)
-        .ok_or(crate::WorkError::Overflow)?
-        .copy_from_slice(&sequence.get().to_le_bytes());
+    let context = crate::PublicationContext {
+        volume: seal.volume(),
+        generation: GenerationId::from_root(seal.root()),
+        authority_sequence: sequence,
+    }
+    .encode();
     let mut entries = work.vec(seal.paths().len().max(1))?;
     for change in seal.paths() {
         work.check()?;
@@ -101,7 +94,7 @@ fn records(
     // Native encoding/folding can change byte order. Equal bounded keys cannot
     // share one typed record, so their complete path facts use adjacent chunks.
     entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then(a.metadata.cmp(&b.metadata)));
-    encode_chunks(&context, &entries, work)
+    encode_chunks(context.as_ref(), &entries, work)
 }
 
 fn encode_chunks(

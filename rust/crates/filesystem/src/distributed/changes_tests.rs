@@ -203,6 +203,17 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
         .await
         .ok_or("initial changes missing")??;
     let initial_envelope = streams.read_commit(initial.commit_id).await?;
+    let initial_changes = acyclic_stream::decode_changes(initial.value.as_ref())?;
+    let (initial_head, initial_root) =
+        fixture_publication_root(&store, authority, &cancellation).await?;
+    assert_eq!(
+        crate::PublicationContext::from_bytes(initial_changes.context.as_ref())?,
+        crate::PublicationContext {
+            volume: workspace.id().volume_id(),
+            generation: GenerationId::from_root(initial_root),
+            authority_sequence: initial_head.sequence,
+        }
+    );
     let authority_path = stream_path(authority, "/records")?;
     assert!(
         initial_envelope
@@ -249,6 +260,16 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
         b"public-visible"
     );
     let decoded = acyclic_stream::decode_changes(record.value.as_ref())?;
+    let (published_head, published_root) =
+        fixture_publication_root(&store, authority, &cancellation).await?;
+    assert_eq!(
+        crate::PublicationContext::from_bytes(decoded.context.as_ref())?,
+        crate::PublicationContext {
+            volume: workspace.id().volume_id(),
+            generation: GenerationId::from_root(published_root),
+            authority_sequence: published_head.sequence,
+        }
+    );
     assert_eq!(decoded.entries.len(), 1);
     assert!(
         !record
