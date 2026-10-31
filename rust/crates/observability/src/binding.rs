@@ -38,6 +38,8 @@ impl Binding {
     /// admission can replace inherited provenance on its own new root. The key
     /// is fixed-size and cannot own a producer. One allocation is funded by the
     /// caller's permit; all copies share it through final diagnostic retirement.
+    /// Operation roots reuse their existing collector storage. A non-operation
+    /// root also needs the registry's ordinary extension storage for its token.
     pub fn attach<K: Copy + Send + Sync + 'static>(
         span: &Span,
         key: K,

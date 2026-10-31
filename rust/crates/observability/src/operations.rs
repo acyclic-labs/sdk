@@ -687,6 +687,11 @@ struct Operation {
     error_kind: Option<Box<str>>,
 }
 
+struct SpanState {
+    operation: Option<Operation>,
+    binding: Option<crate::Binding>,
+}
+
 pub(crate) fn attach_binding(
     span: &Span,
     make: impl FnOnce(Id) -> crate::Binding,
@@ -699,19 +704,28 @@ pub(crate) fn attach_binding(
         let span = registry.span(id).ok_or(BindingError::SpanUnavailable)?;
         let mut extensions = span.extensions_mut();
         if extensions
-            .get_mut::<Operation>()
+            .get_mut::<SpanState>()
+            .and_then(|state| state.operation.as_ref())
             .is_some_and(|op| op.completed)
         {
             return Err(BindingError::Completed);
         }
         if extensions
-            .get_mut::<crate::Binding>()
+            .get_mut::<SpanState>()
+            .and_then(|state| state.binding.as_ref())
             .is_some_and(|binding| binding.root_id() == id)
         {
             return Err(BindingError::AlreadyBound);
         }
         let binding = make(id.clone());
-        extensions.replace(binding.clone());
+        if let Some(state) = extensions.get_mut::<SpanState>() {
+            state.binding = Some(binding.clone());
+        } else {
+            extensions.insert(SpanState {
+                operation: None,
+                binding: Some(binding.clone()),
+            });
+        }
         Ok(binding)
     })
     .unwrap_or(Err(BindingError::SpanUnavailable))
@@ -806,17 +820,25 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             };
             parent
                 .and_then(|parent| context.span(parent))
-                .and_then(|parent| parent.extensions().get::<crate::Binding>().cloned())
+                .and_then(|parent| {
+                    parent
+                        .extensions()
+                        .get::<SpanState>()
+                        .and_then(|state| state.binding.clone())
+                })
         } else {
             None
         };
-        if let Some(binding) = binding.as_ref()
-            && let Some(span) = context.span(id)
-        {
-            span.extensions_mut().insert(binding.clone());
-        }
         if !metadata.name().starts_with("acyclic.") || metadata.fields().field("outcome").is_none()
         {
+            if let Some(binding) = binding
+                && let Some(span) = context.span(id)
+            {
+                span.extensions_mut().insert(SpanState {
+                    operation: None,
+                    binding: Some(binding),
+                });
+            }
             return;
         }
         let Some(span) = context.span(id) else { return };
@@ -858,7 +880,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 parent_id: operation.parent_id.take(),
                 durability: operation.durability.take(),
                 work: operation.work.take(),
-                binding,
+                binding: binding.clone(),
                 metadata,
                 rpc: operation.rpc.take(),
                 elapsed: operation.started.elapsed(),
@@ -867,7 +889,10 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             });
             operation.completed = true;
         }
-        span.extensions_mut().insert(operation);
+        span.extensions_mut().insert(SpanState {
+            operation: Some(operation),
+            binding,
+        });
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
@@ -882,12 +907,15 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         }
         let Some(span) = context.span(id) else { return };
         let mut extensions = span.extensions_mut();
+        let Some(state) = extensions.get_mut::<SpanState>() else {
+            return;
+        };
         let binding = self
             .0
             .binding_details()
-            .then(|| extensions.get_mut::<crate::Binding>().cloned())
+            .then(|| state.binding.clone())
             .flatten();
-        let Some(operation) = extensions.get_mut::<Operation>() else {
+        let Some(operation) = state.operation.as_mut() else {
             return;
         };
         if operation.completed {
@@ -934,12 +962,11 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let Some(span) = context.span(&id) else {
             return;
         };
-        let (operation, binding) = {
-            let mut extensions = span.extensions_mut();
-            let binding = extensions.remove::<crate::Binding>();
-            (extensions.remove::<Operation>(), binding)
-        };
-        if let Some(operation) = operation
+        let state = span.extensions_mut().remove::<SpanState>();
+        if let Some(SpanState {
+            operation: Some(operation),
+            binding,
+        }) = state
             && !operation.completed
         {
             self.0.record_owned(OwnedSample {

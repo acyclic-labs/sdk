@@ -85,8 +85,10 @@ Missing or filtered parents leave provenance unknown. Attach after terminal
 completion, duplicate attachment to the same root, and a disabled or unavailable
 registry return typed errors. Counters-only sinks propagate no token.
 
-One allocation at explicit binding admission holds the fixed key and its
-caller-supplied credit. Clones share that allocation through diagnostic
+One shared identity allocation at explicit binding admission holds the fixed
+key and its caller-supplied credit. Operation spans reuse their existing
+collector record for the token; a non-operation root or bridge also needs the
+registry's ordinary extension storage. Clones share the identity through diagnostic
 retirement, retaining neither a span nor physical work. Each admitted export
 record still owns its separate output credit through processing. Neither token
 nor record retirement completes the operation or certifies a provider range,
@@ -132,6 +134,7 @@ Run the independent operation lifecycle and allocation witnesses with:
 cargo test --locked -p acyclic-observability --test operations one_terminal_sample_survives_retained_handles_and_producer_loss -- --exact
 cargo test --locked -p acyclic-observability --test operations disabled_operation_allocates_nothing_with_enabled_negative_control -- --exact
 cargo test --locked -p acyclic-observability --test operations credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink -- --exact
+cargo test --locked -p acyclic-observability --test operations admitted_identity_survives_original_worker_and_credited_terminal_retirement -- --exact --nocapture
 ```
 
 Measure the disabled, selected-metrics, and credited detail-export costs with

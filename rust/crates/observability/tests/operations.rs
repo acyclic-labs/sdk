@@ -195,9 +195,18 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
             let unrelated: Vec<_> = (0..population)
                 .map(|_| tracing::info_span!(parent: None, "unrelated.live"))
                 .collect();
-            let root = tracing::info_span!(parent: None, "bound.owner");
+            let root = tracing::info_span!(parent: None, "acyclic.test.bound_owner", outcome = tracing::field::Empty);
             let credit = Arc::new(Semaphore::new(1));
-            let binding = Binding::attach(&root, 17_u64, credit.clone().try_acquire_owned()?)?;
+            let permit = credit.clone().try_acquire_owned()?;
+            let mut binding = None;
+            let admission = acyclic_test_support::measure(|| {
+                binding = Some(Binding::attach(&root, 17_u64, permit))
+            });
+            assert_eq!(
+                admission.count_total, 1,
+                "binding reuses the operation's existing registry storage"
+            );
+            let binding = binding.ok_or("binding admission did not run")??;
             let one = || {
                 let span = tracing::info_span!(parent: &root, "acyclic.test.fixed_detail", outcome = tracing::field::Empty, work.items = tracing::field::Empty);
                 span.record("work.items", 1_u64).record("outcome", "ok");
@@ -210,6 +219,7 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
             let mut one = one;
             one(); // Warm callsite, queue block, registry storage and allocator.
             let cost = acyclic_test_support::measure(one);
+            eprintln!("population={population} binding={admission:?} terminal={cost:?}");
             if let Some(expected) = baseline {
                 assert_eq!(cost, expected, "detail cost grew with unrelated operations");
             } else {
@@ -224,6 +234,8 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
                 scan.bytes_total
                     >= population as u64 * std::mem::size_of::<Option<tracing::Id>>() as u64
             );
+            root.record("outcome", "ok");
+            drop(ready(output.recv())?.ok_or("original owner terminal absent")?);
             drop(binding);
             drop(root);
             assert_eq!(credit.available_permits(), 1);
