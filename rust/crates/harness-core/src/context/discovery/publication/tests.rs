@@ -323,9 +323,17 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         )?
         .await?;
     let binding_cancellation = CancellationToken::new();
-    let mut binding_budget = session.remaining()?;
-    binding_budget.bytes_encoded = u64::MAX;
-    let binding_io = PreparationIo::from_budget(binding_budget, &binding_cancellation)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let binding_work = {
+        let mut budget = session.remaining()?;
+        budget.bytes_encoded = u64::MAX;
+        acyclic_fs::NativeMaterializationWork::new(budget, &binding_cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let binding_io = PreparationIo::from_native_work(&binding_work)?;
+    #[cfg(target_arch = "wasm32")]
+    let binding_io = PreparationIo::from_budget(session.remaining()?, &binding_cancellation)?;
     let mut binding = journal
         .bind_context_source(&volume, workspace.id().volume_id(), cursor, &binding_io)?
         .await?;
