@@ -101,10 +101,29 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     {
         let grant =
             ExecutionGrant::new(&workspace, access, read.clone(), ExecutionNetwork::Off).unwrap();
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", "(printf changed > escape) 2>/dev/null; (printf created > new) 2>/dev/null; cat escape 2>/dev/null; true"])
-            .current_dir(&workspace).env_clear().stdin(Stdio::null())
-            .stdout(Stdio::piped()).stderr(Stdio::piped());
+        let command = || {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "(printf changed > escape) 2>/dev/null; (printf created > new) 2>/dev/null; cat escape 2>/dev/null; true"])
+                .current_dir(&workspace).stdin(Stdio::null())
+                .stdout(Stdio::piped()).stderr(Stdio::piped());
+            command
+        };
+        // A valid filesystem grant cannot expose ambient host secrets. Refuse
+        // before native preparation; the same real command below is admitted
+        // only after its environment has been made explicit.
+        let error = match ProcessTree::spawn_granted(command(), &grant, custody) {
+            Ok(_) => panic!("confined command inherited the host environment"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("requires an explicit environment")
+        );
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
+        assert!(!workspace.join("new").exists());
+        let mut command = command();
+        command.env_clear();
         let mut tree = match ProcessTree::spawn_granted(command, &grant, custody) {
             Ok(tree) => tree,
             Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {

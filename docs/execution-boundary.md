@@ -10,6 +10,11 @@ or read-only access, and network authority. It is not a model tool parameter,
 environment override, additional configuration hierarchy or sandbox service.
 The existing approval/decision files remain authoritative. No separate system
 event path is introduced; lifecycle consumers use the shared session Notice.
+Confined launches require an explicit environment (`env_clear` plus selected
+variables) and an explicit workspace working directory. They refuse ambient
+environment inheritance before allocating native enforcement objects, so host
+secrets are not exposed by a command's default environment. Selection of any
+explicit variable remains the authenticated host's responsibility.
 
 `ExecutionGrant::attenuate` permits narrower workspace/read roots, removal of
 writes, and narrower networking. It refuses an increase of authority. Linux

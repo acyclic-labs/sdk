@@ -43,7 +43,13 @@ pub(super) fn capset(
     capabilities: &[Capabilities; 2],
 ) -> Result<(), i32> {
     // SAFETY: capability version 3 uses exactly these two initialized words.
-    status(unsafe { libc::syscall(libc::SYS_capset, header, capabilities.as_ptr()) })
+    status(unsafe {
+        libc::syscall(
+            libc::SYS_capset,
+            core::ptr::from_ref(header),
+            capabilities.as_ptr(),
+        )
+    })
 }
 
 pub(super) fn no_new_privileges() -> Result<(), i32> {
@@ -58,5 +64,5 @@ pub(super) fn restrict_filesystem(ruleset: i32) -> Result<(), i32> {
 
 pub(super) fn restrict_syscalls(program: &Program) -> Result<(), i32> {
     // SAFETY: enter borrows the complete instruction buffer for this call.
-    status(unsafe { libc::syscall(libc::SYS_seccomp, 1, 0, program) })
+    status(unsafe { libc::syscall(libc::SYS_seccomp, 1, 0, core::ptr::from_ref(program)) })
 }

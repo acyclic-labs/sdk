@@ -251,6 +251,26 @@ impl ExecutionGrant {
         &self.0.workspace
     }
 
+    pub(crate) fn validate_launch(
+        &self,
+        cwd: Option<&Path>,
+        explicit_environment: bool,
+    ) -> io::Result<()> {
+        if !explicit_environment {
+            return Err(refused(
+                "confined execution requires an explicit environment",
+            ));
+        }
+        let cwd = cwd
+            .ok_or_else(|| refused("confined execution requires an explicit working directory"))?;
+        if !canonical(cwd)?.starts_with(self.workspace()) {
+            return Err(refused(
+                "execution working directory escapes the granted workspace",
+            ));
+        }
+        Ok(())
+    }
+
     /// Prepares OS objects without starting untrusted code. A failure is a
     /// refusal, never an instruction to retry without confinement.
     pub fn prepare(&self) -> io::Result<PreparedExecution> {
@@ -291,17 +311,6 @@ impl std::fmt::Debug for PreparedExecution {
 }
 
 impl PreparedExecution {
-    pub(crate) fn validate_cwd(&self, cwd: Option<&Path>) -> io::Result<()> {
-        let cwd = cwd
-            .ok_or_else(|| refused("confined execution requires an explicit working directory"))?;
-        if !canonical(cwd)?.starts_with(self.grant.workspace()) {
-            return Err(refused(
-                "execution working directory escapes the granted workspace",
-            ));
-        }
-        Ok(())
-    }
-
     /// Adds enforcement after the process owner's custody hook. The command
     /// has already been admitted once and is consumed by the launch owner.
     pub(crate) fn install(self, _command: &mut std::process::Command) -> io::Result<()> {

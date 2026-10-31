@@ -237,8 +237,8 @@ impl ProcessTree {
         grant: &crate::execution::ExecutionGrant,
         custody: Option<&ProcessCustody>,
     ) -> io::Result<Self> {
+        grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
         let boundary = grant.prepare()?;
-        boundary.validate_cwd(command.get_current_dir())?;
         command.boundary = Some(boundary);
         let result = match custody {
             Some(custody) => Self::spawn_in_custody(&mut command, custody),
