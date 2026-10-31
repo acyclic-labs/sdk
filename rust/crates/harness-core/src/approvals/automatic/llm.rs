@@ -32,6 +32,7 @@ pub(super) async fn review_model(
     let io = scope.io();
     #[cfg(not(feature = "filesystem"))]
     let io = execution.1;
+    let profile = provider.model_profile(model)?;
     let mut messages = Vec::new();
     crate::executor::stock_vec_push(
         &mut messages,
@@ -44,6 +45,9 @@ pub(super) async fn review_model(
         },
         io,
     )?;
+    if let Some(update) = profile.and_then(|profile| profile.configuration_update(None)) {
+        crate::executor::stock_vec_push(&mut messages, update, io)?;
+    }
     let source = Context {
         messages,
         ..Context::default()
@@ -61,10 +65,7 @@ pub(super) async fn review_model(
         ToolRegistry::default(),
     )
     .with_limits(limits);
-    if let Some(maximum) = provider
-        .model_profile(model)?
-        .and_then(|profile| profile.max_output_tokens())
-    {
+    if let Some(maximum) = profile.and_then(|profile| profile.max_output_tokens()) {
         executor = executor.with_max_output_tokens(maximum)?;
     }
     let binding = crate::executor::with_history_io(io, |work| {
