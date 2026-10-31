@@ -73,23 +73,24 @@ impl CheckoutPublisher {
                     .await?;
                 let (receipt, hold) = if let Some(changes) = changes {
                     if original.is_none() && (native.is_some() || mount.view.source.is_none()) {
-                        BoundedContentFuture::new(access.io, || async {
-                            if let Some(native) = native {
+                        if let Some(native) = native {
+                            BoundedContentFuture::new(access.io, || async {
                                 native.sync().await?;
-                            } else if mount.view.source.is_none() {
-                                self.tools
-                                    .capture(
-                                        (&physical, view),
-                                        watcher,
-                                        operation,
-                                        0,
-                                        PublicationPermit::Unrestricted,
-                                    )?
-                                    .await?;
-                            }
-                            Ok(())
-                        })?
-                        .await?;
+                                Ok(())
+                            })?
+                            .await?;
+                        } else {
+                            BoundedContentFuture::new(access.io, || {
+                                capture::capture(
+                                    (&self.tools.capture_options, &self.tools.capture_policy),
+                                    (&physical, view),
+                                    watcher,
+                                    (operation, 0),
+                                    PublicationPermit::Unrestricted,
+                                )
+                            })?
+                            .await?;
+                        }
                     }
                     // The original transaction validates the complete request even on replay.
                     drop(original);

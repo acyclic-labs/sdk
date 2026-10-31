@@ -526,6 +526,36 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     let deleted = [ContentChange::DeleteExpected {
         source: &patched_files[0],
     }];
+    let without_delete = Capabilities::new([
+        harness
+            .scratch()
+            .capability(VolumeOperation::Write, &mut None)?,
+        acyclic_fs::access::Capability::whole_volume(
+            None,
+            &[
+                acyclic_fs::access::Action::Create,
+                acyclic_fs::access::Action::Write,
+                acyclic_fs::access::Action::MergeInto,
+            ],
+        )
+        .to_scope_label()
+        .map_err(storage)?,
+    ]);
+    assert!(
+        publisher
+            .stage_changes(
+                harness.scratch(),
+                OperationId::new(),
+                &deleted,
+                ContentAccess {
+                    ceiling: Some(&without_delete),
+                    io: None,
+                },
+            )?
+            .await
+            .is_err(),
+        "a caller's explicit content ceiling must still refuse deletion"
+    );
     let delete_operation = OperationId::new();
     let (deletion, _) = publisher
         .stage_changes(
