@@ -2,7 +2,7 @@
   "id": "orphan-fencing",
   "workspace": {
     "kind": "plain",
-    "files": {}
+    "files": { "orphan-endpoint.txt": "{{url}}" }
   },
   "model": {
     "steps": [
@@ -15,7 +15,7 @@
             "id": "native-tree",
             "name": "shell",
             "arguments": {
-              "command": "node \"{{support}}/orphan.mjs\" tree \"{{url}}\""
+              "command": "node \"{{support}}/orphan.mjs\" tree orphan-endpoint.txt"
             }
           }
         ]
