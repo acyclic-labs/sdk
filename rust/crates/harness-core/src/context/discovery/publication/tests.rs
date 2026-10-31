@@ -192,6 +192,10 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     source
         .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
         .await?;
+    assert!(
+        session.remaining()?.object_bytes_read < 4_000_000,
+        "selected prefix read escaped its original IO"
+    );
     let pending = source.pending()?.ok_or("no pending publication")?;
     assert_eq!(pending.from(), cursor);
     assert_eq!(
