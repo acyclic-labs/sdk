@@ -231,7 +231,7 @@ async fn range_plan_exposes_nearest_authenticated_unvisited_page()
         Some(ResidencyHint {
             request: ObjectReadRequest {
                 object_id: second,
-                maximum_bytes: limits.maximum_page_object_bytes(),
+                maximum_bytes: limits.maximum_object_bytes,
             },
             reason: ResidencyReason::SequentialRange,
         })

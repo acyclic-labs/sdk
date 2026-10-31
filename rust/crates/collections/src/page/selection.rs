@@ -5,6 +5,8 @@ use std::ops::Range;
 
 /// The next original child and the mutations bounded by its next sibling.
 pub struct Selected<'a, K, P> {
+    /// Original child position, for exact inherited endpoint ownership.
+    pub index: usize,
     /// The original child, borrowed without cloning its key or reference.
     pub child: &'a Child<K, P>,
     /// The next sibling's key; `None` leaves the caller's inherited upper bound.
@@ -65,6 +67,7 @@ impl Cursor {
         }
         charge_item()?;
         Ok(Some(Selected {
+            index,
             child,
             upper,
             mutations: start..self.mutation_cursor,

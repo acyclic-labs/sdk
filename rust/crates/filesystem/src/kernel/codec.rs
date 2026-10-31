@@ -53,7 +53,10 @@ pub struct DecodeLimits {
     pub maximum_name_bytes: u32,
     /// Maximum entries or children in one page.
     pub maximum_page_items: u32,
-    /// Maximum canonical bytes in one authenticated index/page object.
+    /// Canonical bytes at which an index page splits. Directory, attribute,
+    /// file-table and extent pages never refuse an item for it: an item past
+    /// half of it gets a page of its own, bounded only by
+    /// `maximum_object_bytes`.
     pub maximum_page_bytes: u32,
     /// Maximum authenticated page levels followed by one operation.
     pub maximum_page_height: u16,

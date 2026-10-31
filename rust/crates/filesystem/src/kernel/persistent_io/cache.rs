@@ -67,7 +67,7 @@ async fn read_cold_object<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
     data_custody: Option<&crate::kernel::ProofDataCustody>,
 ) -> Result<(ObjectRead, u64), FsError> {
-    let maximum = limits.maximum_page_object_bytes();
+    let maximum = limits.maximum_object_bytes;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
         let mut frame = super::batch::batch_in_heap(accounting, |_| async {

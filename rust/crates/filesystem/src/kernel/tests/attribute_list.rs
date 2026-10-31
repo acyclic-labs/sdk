@@ -126,7 +126,7 @@ async fn bounded_attribute_listing_exposes_one_authenticated_metadata_successor(
         Some(ResidencyHint {
             request: crate::ObjectReadRequest {
                 object_id: expected,
-                maximum_bytes: limits.maximum_page_object_bytes(),
+                maximum_bytes: limits.maximum_object_bytes,
             },
             reason: ResidencyReason::MetadataSuccessor,
         })

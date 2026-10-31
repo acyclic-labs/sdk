@@ -97,92 +97,130 @@ impl<E: std::error::Error + 'static> std::error::Error for PackingError<E> {
     }
 }
 
-/// A contiguous page partition over the original admitted entries.
-///
-/// Construction measures each entry once. Each successful step consumes at
-/// least one entry; all steps together examine at most twice the entries plus
-/// one boundary candidate per page. Returned visit counts let the original
-/// caller account for its work without copying an allowance into this engine.
-pub struct PageChunks<'a, T, L, const HEADER_BYTES: usize, const TARGET_BYTES: usize> {
-    items: &'a [T],
-    encoded_length: L,
-    start: usize,
-    remaining_bytes: usize,
-    limits: PackingLimits,
+/// A stable 64-bit hash of a key's bytes. Page boundaries derive from it, so
+/// it is part of the persisted tree shape and never changes within v1.
+pub fn stable_hash(bytes: &[u8]) -> u64 {
+    // FNV-1a, finished by the splitmix64 mixer.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    mix(hash)
 }
 
-impl<'a, T, L, E, const HEADER_BYTES: usize, const TARGET_BYTES: usize>
-    PageChunks<'a, T, L, HEADER_BYTES, TARGET_BYTES>
+const fn mix(mut value: u64) -> u64 {
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+/// Splits one level's items into pages at content-defined boundaries.
+///
+/// Whether a page closes depends only on the items since the page began and
+/// the item at hand. A page closes when it holds two items and the item's key
+/// hash, mixed with the level, falls under a threshold weighted by the item's
+/// encoded bytes, so pages average about `TARGET_BYTES`. It also closes
+/// at the item limit, and once two items pass half its byte capacity. No
+/// item is certain to close a page, so a change's carry stops at a boundary
+/// within a few pages even when the item limit is small. The byte bound
+/// splits work and never refuses it: a leaf item larger than half the
+/// capacity closes the page it joins, and internal pages always take two
+/// summaries, so every level shrinks. Whether a page closes never looks past
+/// the item at hand, so chunking resumed from any page start reproduces every
+/// later page, and the tree's shape is a function of its contents alone.
+pub struct PageChunks<'a, T, L, H, const HEADER_BYTES: usize, const TARGET_BYTES: usize> {
+    items: &'a [T],
+    encoded_length: L,
+    key_hash: H,
+    salt: u64,
+    start: usize,
+    maximum_items: usize,
+    capacity: usize,
+    minimum_weight: usize,
+    leaf: bool,
+}
+
+impl<'a, T, L, H, E, const HEADER_BYTES: usize, const TARGET_BYTES: usize>
+    PageChunks<'a, T, L, H, HEADER_BYTES, TARGET_BYTES>
 where
     L: Fn(&T) -> Result<usize, E>,
+    H: Fn(&T) -> u64,
 {
-    /// Measures the original entries and returns the number examined.
-    /// The codec's header size and nonzero soft target are compile-time
-    /// parameters, so the cursor retains no per-operation layout metadata.
+    /// Retains original slices; construction allocates and scans nothing.
     pub fn new(
         items: &'a [T],
         limits: PackingLimits,
+        level: u16,
         encoded_length: L,
-    ) -> Result<(Self, u64), PackingError<E>> {
-        if TARGET_BYTES == 0 {
+        key_hash: H,
+    ) -> Result<Self, PackingError<E>> {
+        if TARGET_BYTES == 0 || limits.maximum_items == 0 {
             return Err(PackingError::InvalidLimits);
         }
-        let mut remaining_bytes = 0_usize;
-        for item in items {
-            remaining_bytes = remaining_bytes
-                .checked_add(encoded_length(item).map_err(PackingError::Encode)?)
-                .ok_or(PackingError::ItemTooLarge)?;
-        }
-        Ok((
-            Self {
-                items,
-                encoded_length,
-                start: 0,
-                remaining_bytes,
-                limits,
-            },
-            items.len() as u64,
-        ))
+        let maximum_items = limits.maximum_items;
+        let maximum_bytes = limits.maximum_bytes;
+        Ok(Self {
+            items,
+            encoded_length,
+            key_hash,
+            salt: mix(u64::from(level).wrapping_add(0x9e37_79b9_7f4a_7c15)),
+            start: 0,
+            maximum_items,
+            capacity: maximum_bytes.saturating_sub(HEADER_BYTES),
+            // Boundaries come often enough that the item limit rarely forces
+            // a cut: at least one in a quarter of the limit. No item is a
+            // certain boundary, or pages would be positional and an insert
+            // would shift every page after it.
+            minimum_weight: TARGET_BYTES
+                .saturating_mul(4)
+                .div_ceil(maximum_items.max(1))
+                .min(TARGET_BYTES / 2),
+            leaf: level == 0,
+        })
     }
 
-    /// Returns the next nonempty page and its entry count, or a typed refusal.
-    /// Exhaustion performs no encoder work and returns `None` permanently.
-    pub fn next_page(&mut self) -> Result<Option<(&'a [T], u64)>, PackingError<E>> {
-        let Some(rest) = self.items.get(self.start..).filter(|rest| !rest.is_empty()) else {
+    fn boundary(&self, item: &T, bytes: usize) -> bool {
+        let weight = bytes.max(self.minimum_weight);
+        let hash = mix((self.key_hash)(item) ^ self.salt);
+        u128::from(hash) * (TARGET_BYTES as u128) < (weight as u128) << 64
+    }
+
+    /// The next page, the items it examined, and whether a boundary closed
+    /// it; an unclosed page ended only because the items ran out.
+    pub fn next_page(&mut self) -> Result<Option<(&'a [T], u64, bool)>, PackingError<E>> {
+        let items = self.items;
+        let Some(rest) = items.get(self.start..).filter(|rest| !rest.is_empty()) else {
             return Ok(None);
         };
-        let pages = self
-            .remaining_bytes
-            .div_ceil(TARGET_BYTES)
-            .max(rest.len().div_ceil(self.limits.maximum_items.max(1)))
-            .max(1);
-        let share = self.remaining_bytes.div_ceil(pages);
+        if self.maximum_items == 0 {
+            return Err(PackingError::InvalidLimits);
+        }
+        let half = self.capacity / 2;
         let mut count = 0_usize;
         let mut payload = 0_usize;
+        let mut closed = false;
         for item in rest {
-            if count == self.limits.maximum_items || (count >= 2 && payload >= share) {
+            let bytes = (self.encoded_length)(item).map_err(PackingError::Encode)?;
+            if self.leaf && bytes > half {
+                // A large item closes the page it joins. Cutting before it
+                // instead would make this page depend on the next item, so
+                // removing the large item would leave a stale cut.
+                count += 1;
+                closed = true;
                 break;
             }
-            let item_bytes = (self.encoded_length)(item).map_err(PackingError::Encode)?;
-            let next = payload
-                .checked_add(item_bytes)
-                .ok_or(PackingError::ItemTooLarge)?;
-            if next
-                .checked_add(HEADER_BYTES)
-                .is_none_or(|bytes| bytes > self.limits.maximum_bytes)
-            {
-                break;
-            }
-            payload = next;
+            payload = payload.saturating_add(bytes);
             count += 1;
+            if count == self.maximum_items
+                || (count >= 2 && (payload > half || self.boundary(item, bytes)))
+            {
+                closed = true;
+                break;
+            }
         }
-        let page = rest
-            .get(..count)
-            .filter(|page| !page.is_empty())
-            .ok_or(PackingError::ItemTooLarge)?;
+        let page = &rest[..count];
         self.start += count;
-        self.remaining_bytes = self.remaining_bytes.saturating_sub(payload);
-        Ok(Some((page, count as u64)))
+        Ok(Some((page, count as u64, closed)))
     }
 }
 

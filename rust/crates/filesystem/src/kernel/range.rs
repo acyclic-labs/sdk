@@ -433,7 +433,7 @@ impl RangeMachine {
                             ResidencyHint {
                                 request: ObjectReadRequest {
                                     object_id: child.page,
-                                    maximum_bytes: self.limits.maximum_page_object_bytes(),
+                                    maximum_bytes: self.limits.maximum_object_bytes,
                                 },
                                 reason: ResidencyReason::SequentialRange,
                             },
@@ -544,7 +544,7 @@ async fn run_range_async<S: AsyncObjectStore>(
         let (read, retained) = super::file_read::read_object_with_accounting(
             store,
             expected.page,
-            request.limits.maximum_page_object_bytes(),
+            request.limits.maximum_object_bytes,
             accounting,
             cancellation,
         )

@@ -58,9 +58,10 @@ async fn original_mutation_refuses_index_copy_before_allocating_or_reading()
 async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (root, _) = three_leaf_tree(&store).await?;
+    let (root, _) = two_leaf_tree(&store).await?;
     let first = entry("a", 1, FileKind::Fifo)?;
-    let first_page = tree_page_id(&TreePage::Leaf(vec![first.clone()]), 8)?;
+    let first_leaf = TreePage::Leaf(vec![first.clone(), entry("m", 2, FileKind::Regular)?]);
+    let first_page = tree_page_id(&first_leaf, 8)?;
     let mutations = [
         TreeMutation::Replace {
             entry: first,
@@ -86,7 +87,7 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
         root,
         &mutations,
         2,
-        DecodeLimits::default(),
+        pair_limits(),
         &mut accounting,
         &cancellation,
     )
@@ -113,7 +114,7 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
             .is_ok()
     );
     let first_page_bytes = encode_tree_page(
-        &TreePage::Leaf(vec![entry("a", 1, FileKind::Fifo)?]),
+        &first_leaf,
         8,
         |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
@@ -143,6 +144,55 @@ fn entry(value: &str, byte: u8, kind: FileKind) -> Result<TreeEntry, Box<dyn std
 }
 
 use crate::test_support::put_tree_page as put;
+
+/// Two-item pages: the item limit closes each page at its second item, so
+/// canonical pages are pairs, whatever the keys hash to.
+fn pair_limits() -> DecodeLimits {
+    DecodeLimits {
+        maximum_page_items: 2,
+        ..DecodeLimits::default()
+    }
+}
+
+/// The canonical tree of `a m n x`: leaves `[a m]` and `[n x]` under one root.
+async fn two_leaf_tree(
+    store: &MemoryObjectStore,
+) -> Result<(ObjectId, [ObjectId; 2]), Box<dyn std::error::Error>> {
+    let empty = put(store, &TreePage::Leaf(Vec::new()), 8).await?;
+    let root = apply_tree_mutations(
+        store,
+        empty,
+        vec![
+            TreeMutation::Insert(entry("a", 1, FileKind::Regular)?),
+            TreeMutation::Insert(entry("m", 2, FileKind::Regular)?),
+            TreeMutation::Insert(entry("n", 3, FileKind::Regular)?),
+            TreeMutation::Insert(entry("x", 4, FileKind::Regular)?),
+        ],
+        4,
+        pair_limits(),
+        WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .await?
+    .value;
+    let bytes = store
+        .read(
+            root,
+            u64::MAX,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
+    let TreePage::Internal(children) = decode_tree_page(&bytes, pair_limits(), &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?
+    else {
+        return Err("two-leaf root is not internal".into());
+    };
+    let [left, right] = children.as_slice() else {
+        return Err("two-leaf root does not hold two leaves".into());
+    };
+    Ok((root, [left.page, right.page]))
+}
 
 async fn three_leaf_tree(
     store: &MemoryObjectStore,
@@ -196,22 +246,22 @@ async fn three_leaf_tree(
 async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let (root, leaves) = three_leaf_tree(&store).await?;
+    let (root, leaves) = two_leaf_tree(&store).await?;
     let receipt = apply_tree_mutations(
         &store,
         root,
         vec![
             TreeMutation::Replace {
-                entry: entry("m", 2, FileKind::Fifo)?,
-                expected_file_id: FileId::from_bytes([2; 16]),
-            },
-            TreeMutation::Replace {
                 entry: entry("n", 3, FileKind::Fifo)?,
                 expected_file_id: FileId::from_bytes([3; 16]),
             },
+            TreeMutation::Replace {
+                entry: entry("x", 4, FileKind::Fifo)?,
+                expected_file_id: FileId::from_bytes([4; 16]),
+            },
         ],
         8,
-        DecodeLimits::default(),
+        pair_limits(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
@@ -225,16 +275,15 @@ async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn
             &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
         )
         .await?;
-    let TreePage::Internal(children) =
-        decode_tree_page(&root_bytes, DecodeLimits::default(), &mut |_| {
-            Ok::<_, crate::kernel::CanonicalDecodeError>(())
-        })?
+    let TreePage::Internal(children) = decode_tree_page(&root_bytes, pair_limits(), &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?
     else {
         return Err("candidate root is not internal".into());
     };
+    assert_eq!(children.len(), 2);
     assert_eq!(children[0].page, leaves[0]);
     assert_ne!(children[1].page, leaves[1]);
-    assert_eq!(children[2].page, leaves[2]);
     Ok(())
 }
 
@@ -759,6 +808,7 @@ async fn point_inserts_rewrite_bounded_pages_however_large_the_directory()
     let store = MemoryObjectStore::default();
     let mut root = put(&store, &TreePage::Leaf(Vec::new()), 1_024).await?;
     let mut largest_late_rewrite = 0;
+    let mut late_rewrites = 0;
     for step in 0..ENTRIES {
         // A fixed permutation spreads inserts across every leaf.
         let ordinal = step * 7_919 % ENTRIES;
@@ -779,13 +829,21 @@ async fn point_inserts_rewrite_bounded_pages_however_large_the_directory()
         root = receipt.value;
         if step >= ENTRIES / 2 {
             largest_late_rewrite = largest_late_rewrite.max(receipt.work.bytes_encoded);
+            late_rewrites += receipt.work.bytes_encoded;
         }
     }
-    // Only the touched leaf and its ancestors are re-encoded, each near the
-    // soft target, however many entries the directory already holds.
-    let page_bound = u64::try_from(crate::kernel::persistent_btree::TARGET_PAGE_BYTES + 512)?;
+    // Only the touched leaf and its ancestors are re-encoded. Content-defined
+    // page sizes are geometric around the soft target, so an insert lands in
+    // a page of twice the target on average and rarely past a few times it,
+    // however many entries the directory already holds.
+    let target = u64::try_from(crate::kernel::persistent_btree::TARGET_PAGE_BYTES)?;
+    let mean = late_rewrites / u64::from(ENTRIES - ENTRIES / 2);
     assert!(
-        largest_late_rewrite <= 3 * page_bound,
+        mean <= 6 * target,
+        "an insert re-encoded {mean} bytes on average"
+    );
+    assert!(
+        largest_late_rewrite <= 16 * target,
         "one insert re-encoded {largest_late_rewrite} bytes"
     );
     let listing = crate::kernel::list_tree_entries(

@@ -31,6 +31,10 @@ impl Format for AttributeFormat {
         ObjectKind::AttributePage
     }
 
+    fn key_hash(key: &Self::Key) -> u64 {
+        super::persistent_btree::stable_hash(key.as_bytes())
+    }
+
     fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
