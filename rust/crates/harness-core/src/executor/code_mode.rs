@@ -63,6 +63,18 @@ impl Tool {
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         let source = SkillSource::admitted(source, runtime, &definition, io)?;
+        if let Some(io) = io {
+            // These two concrete zero-sized implementations still own their
+            // Arc headers. Admit them before allocation on the same payload
+            // custody that the original registry consumes with this tool.
+            let work = acyclic_fs::WorkCounters {
+                allocation_operations: 2,
+                ..Default::default()
+            };
+            io.preflight(work)?;
+            io.retain_owned(filesystem_skill_marker_bytes())?;
+            io.charge(work)?;
+        }
         Ok(Self {
             skill_source: Some(source),
             definition,
@@ -71,6 +83,14 @@ impl Tool {
             projection: Arc::new(JsonToolProjection),
         })
     }
+}
+
+/// Retained concrete implementations owned by each admitted filesystem skill.
+/// The trait-object pointers themselves are already counted in `Tool`.
+pub(crate) const fn filesystem_skill_marker_bytes() -> u64 {
+    (std::mem::size_of::<ProfileFunction>()
+        + std::mem::size_of::<JsonToolProjection>()
+        + 4 * std::mem::size_of::<usize>()) as u64
 }
 
 // This marker has no alternate execution implementation. Only the stock
