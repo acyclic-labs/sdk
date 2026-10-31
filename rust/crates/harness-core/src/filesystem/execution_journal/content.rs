@@ -274,7 +274,11 @@ where
         let result = async {
             let io = check_io;
             let refs = match event {
-                ExecutionEvent::ContextPrepared { projection, .. } => {
+                ExecutionEvent::ConversationItem {
+                    envelope: projection,
+                    ..
+                }
+                | ExecutionEvent::ContextPrepared { projection, .. } => {
                     [Some(projection), None, None]
                 }
                 ExecutionEvent::ContextCompacted {
@@ -314,6 +318,9 @@ where
                     .transpose()?
                     .flatten();
                 let bytes = owned_bytes.as_ref();
+                if matches!(event, ExecutionEvent::ConversationItem { .. }) {
+                    self.verify_conversation_envelope(bytes, reference, io)?;
+                }
                 if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
                     let limits = Limits::default();
                     let before = io.map(PreparationIo::owned_bytes).transpose()?;

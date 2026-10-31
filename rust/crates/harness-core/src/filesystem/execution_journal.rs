@@ -41,6 +41,7 @@ mod indexed_publication;
 mod inline_tests;
 mod interactions;
 mod observations;
+mod conversation;
 mod persistent_index;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
