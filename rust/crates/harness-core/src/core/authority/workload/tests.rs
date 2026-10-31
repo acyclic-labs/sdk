@@ -11,6 +11,130 @@ fn fixture() -> AuthorityRoot {
 }
 
 #[test]
+fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result<()> {
+    use futures::FutureExt;
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    struct Clock(AtomicU64);
+    impl acyclic_stream::UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::Acquire)
+        }
+    }
+    let timestamp = 1_800_000_000;
+    let clock = Arc::new(Clock(AtomicU64::new(timestamp * 1000)));
+    let issuer = AuthorityRoot::with_clock(
+        "owner",
+        [29; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "root".into(),
+        },
+        clock.clone(),
+    );
+    let grants = Capabilities::new(["event:append"]);
+    let root = issuer.bootstrap_scope("root", &grants, None, &mut None)?;
+    let child = issuer.attenuate(&root, "child", &grants)?;
+    let descendant = issuer.attenuate(&child, "descendant", &grants)?;
+    let sibling = issuer.attenuate(&root, "sibling", &grants)?;
+    let verifier = issuer.verifier(&mut None)?;
+    let changes = issuer.trust_changes();
+    let changed = changes.changed();
+    let mut revisions = issuer.trust_revisions();
+    let ready = Barrier::new(2);
+    std::thread::scope(|threads| -> Result<()> {
+        let first = threads.spawn(|| {
+            ready.wait();
+            issuer.revoke_workload(&child)
+        });
+        ready.wait();
+        let second = issuer.revoke_workload(&child);
+        let first = first.join().expect("revocation worker panicked");
+        assert!(
+            first.is_ok() && second.is_ok(),
+            "repeated revocation rejected its exact authenticated target"
+        );
+        Ok(())
+    })?;
+    assert_eq!(
+        changed.now_or_never(),
+        Some(Ok(())),
+        "revocation publication did not wake its original owner"
+    );
+    assert_eq!(*revisions.borrow_and_update(), 1);
+    assert!(verifier.verify(&child, &mut None).is_err());
+    assert!(verifier.verify(&descendant, &mut None).is_err());
+    verifier.verify(&sibling, &mut None)?;
+
+    let original = issuer.public_trust_revision()?.0;
+    issuer.revoke_workload(&child)?;
+    let (result, signatures) =
+        acyclic_test_support::differential::observe(|| (), |()| issuer.revoke_workload(&child));
+    result?;
+    let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
+    assert!(
+        signatures.is_empty(),
+        "repeated target reauthenticated its signatures"
+    );
+    assert!(Arc::ptr_eq(&original, &issuer.public_trust_revision()?.0));
+    assert!(!revisions.has_changed().map_err(unauthorized)?);
+
+    // A matching revoked proof alone does not authenticate the submitted scope.
+    for field in 0..7 {
+        let mut forged = child.clone();
+        match field {
+            0 => forged.id.push_str("-changed"),
+            1 => forged.capabilities = Capabilities::new(["effect:plan"]),
+            2 => forged.agent = Some(AgentId::from_bytes([3; 16])),
+            3 => forged.parent_proof = Some([4; 32]),
+            4 => *forged.proof = *sibling.proof,
+            5 => forged.issuer.push_str("-foreign"),
+            _ => *forged.workload.last_mut().expect("signed scope is empty") ^= 1,
+        }
+        assert!(issuer.revoke_workload(&forged).is_err());
+    }
+    let other = issuer.with_audience(Authority {
+        kind: AggregateKind::Task,
+        id: "foreign".into(),
+    });
+    assert!(other.revoke_workload(&child).is_err());
+    {
+        let mut trust = issuer.runtime.public.trust.write().map_err(unauthorized)?;
+        Arc::make_mut(&mut trust).minimum_key_epoch = 2;
+    }
+    assert!(issuer.revoke_workload(&child).is_err());
+    {
+        let mut trust = issuer.runtime.public.trust.write().map_err(unauthorized)?;
+        Arc::make_mut(&mut trust).minimum_key_epoch = 1;
+    }
+    issuer.revoke_workload(&root)?;
+    assert!(
+        issuer.revoke_workload(&child).is_err(),
+        "target exemption also exempted its revoked ancestor"
+    );
+    assert_eq!(*revisions.borrow_and_update(), 2);
+    clock
+        .0
+        .store((timestamp + CERTIFICATE_SECONDS) * 1000, Ordering::Release);
+    assert!(
+        issuer.revoke_workload(&root).is_err(),
+        "revocation exemption ignored original expiry"
+    );
+    assert!(!revisions.has_changed().map_err(unauthorized)?);
+    let closed = changes.changed();
+    drop(other);
+    drop(issuer);
+    assert_eq!(
+        closed.now_or_never(),
+        Some(Err(acyclic_auth::trust::SourceClosed))
+    );
+    Ok(())
+}
+
+#[test]
 fn alternating_live_scopes_share_certificate_authentication_and_recheck_authority() -> Result<()> {
     let issuer = fixture();
     let grants = Capabilities::new(["event:append"]);
