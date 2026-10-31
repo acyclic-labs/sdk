@@ -318,23 +318,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 let placement = self.pin(actor)?.ok_or(Error::Invalid(
                     "actor placement retired during pause admission",
                 ))?;
-                let store =
-                    Store::new(Arc::clone(self.store.provider()), self.store.root().clone());
-                let actor = actor.clone();
-                let (send, receive) = futures::channel::oneshot::channel();
-                PlatformExecutor.spawn_owned(Box::pin(async move {
-                    let slot = &placement.0;
-                    let _control = slot.control.lock().await;
-                    let result = pause::apply(&store, &actor, slot, paused, transition).await;
-                    // An abandoned waiter cannot discard the exact Unknown
-                    // publication. The next control caller receives it first.
-                    if let Err(Err(error)) = send.send(result) {
-                        slot.inner.lock().await.control_failure = Some(Box::new(error));
-                    }
-                }));
-                receive
-                    .await
-                    .unwrap_or(Err(Error::Stream(StreamError::Unavailable)))
+                pause::start(
+                    Store::new(Arc::clone(self.store.provider()), self.store.root().clone()),
+                    actor.clone(),
+                    placement,
+                    paused,
+                    transition,
+                )
+                .await
             }
         )
     }

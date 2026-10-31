@@ -108,12 +108,55 @@ impl StreamProvider for Provider {
 #[tokio::test]
 async fn pause_retains_decision_cleanup_and_unknown_after_waiter_loss() -> TestResult {
     active_cleanup_and_queued_controls().await?;
+    completed_unread_failure().await?;
     replacement_and_producer_loss().await?;
     for fault in [Fault::Load, Fault::Refuse, Fault::Unknown] {
         for abandon in [false, true] {
             publication_cut(fault, abandon).await?;
         }
     }
+    Ok(())
+}
+
+async fn completed_unread_failure() -> TestResult {
+    let provider = Arc::new(Provider::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "pause-unread", &[b"emit"]).await?;
+    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    runtime.track(address.clone())?;
+    let (entered, release) = provider.arm(Fault::Unknown);
+    release.send(()).map_err(|_| "lost original provider cut")?;
+    // The real MemoryStream decision and failed reply are ready in the
+    // executor's inline poll. Its completion is queued before this future is
+    // polled, reproducing disconnect after send but before receive.
+    let completion = super::super::pause::start(
+        Store::new(Arc::clone(&provider), root()?),
+        address.clone(),
+        runtime.pin(&address)?.ok_or("missing original placement")?,
+        true,
+        std::future::ready(()),
+    );
+    entered.await?;
+    let slot = runtime.slot(&address).ok_or("missing original placement")?;
+    assert!(
+        slot.inner.lock().await.control_failure.is_some(),
+        "unread completed pause lost its original Unknown"
+    );
+    assert!(!runtime.release(&address));
+    drop(completion);
+    let Err(Error::Unknown {
+        publication,
+        source: StreamError::Unavailable,
+    }) = runtime.pause(&address, false).await
+    else {
+        return Err("unread completed pause lost its original Unknown".into());
+    };
+    let before = runtime.store.load(&address).await?;
+    runtime.store.submit(*publication).await?;
+    assert_eq!(runtime.store.load(&address).await?.anchor, before.anchor);
+    runtime.pause(&address, false).await?;
+    runtime.drain_actor(&address).await?;
+    assert_eq!(records(&*provider, "out/pause-unread").await?.len(), 1);
     Ok(())
 }
 
