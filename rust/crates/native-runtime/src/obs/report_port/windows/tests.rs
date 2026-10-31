@@ -58,7 +58,10 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
             tokio::select! {
                 biased;
                 result = pipe.connect() => result.unwrap(),
-                () = exited => panic!("selected report producer exited before connecting"),
+                outcome = exited => {
+                    outcome.into_result().unwrap();
+                    panic!("selected report producer exited before connecting");
+                },
             }
             let mut pipe = BufReader::new(pipe);
             let mut line = String::new();
@@ -92,7 +95,7 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
             // Dropping a pending asynchronous pipe can retain its handle until
             // this runtime drains cancellation. Keep its driver runnable while
             // the selected process observes EOF and exits.
-            tree.readiness().unwrap().await;
+            tree.readiness().unwrap().await.into_result().unwrap();
             assert!(tree.try_wait(None).unwrap().unwrap().success());
             tree.terminate_descendants().unwrap();
             assert!(!tree.is_reaped(), "signalling containment retains direct-child retirement custody");
