@@ -1,11 +1,11 @@
-//! The Linux launcher of custodied trees: one small process per owner, from
+//! The Linux launcher of custodied trees: one small process per launch, from
 //! which every custodied tree's warden is cloned.
 //!
 //! Forking the owner copies its whole address space, once for the warden and
 //! again for each process the warden forks, and leaves the copy holding
 //! whatever the host's other threads held: its allocator, locks and fork
 //! handlers. The runner is instead a separate static image, built with this
-//! library (`runner/main.rs`), that the owner execs once from a sealed memory
+//! library (`runner/main.rs`), that the caller execs from a shared sealed memory
 //! file: its clones and the warden's forks copy only the runner's few pages,
 //! and hold nothing of the host, whatever host loaded this library.
 //!
@@ -36,9 +36,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread::ThreadId;
 
 /// The runner's image, built with this library.
 static IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/runner"));
@@ -58,23 +56,12 @@ const HAS_GID: u8 = 4;
 /// Resource limits a request carries: every Linux limit, 0..`RLIM_NLIMITS`.
 const LIMITS: u32 = 16;
 
-#[derive(PartialEq, Eq)]
-struct Security {
-    settings: Vec<u8>,
-    // Filter counts identify additions only within the original thread's
-    // monotone filter stack. Equal counts in different threads do not attest
-    // equal programs. ThreadId is lifetime-unique, unlike a reusable OS TID.
-    filtered_caller: Option<ThreadId>,
-    reusable: bool,
-}
-
-/// Appends what a fork of the owner would have inherited but the long-lived
-/// runner cannot know: the owner's current file-creation mask and resource
-/// limits and launching thread's signal mask. Returns the security state
-/// that must still match the runner's original owner before it may clone.
-fn put_settings(body: &mut Vec<u8>) -> io::Result<Security> {
+/// Appends current launch settings restored after the static runner's exec.
+/// Kernel security restrictions are inherited by a fresh runner on every
+/// launch: status fields cannot attest Landlock or other opaque policies.
+fn put_settings(body: &mut Vec<u8>) -> io::Result<()> {
     // Read without changing it; umask(2) can only set it.
-    let mut status = std::fs::read("/proc/thread-self/status")?;
+    let status = std::fs::read("/proc/thread-self/status")?;
     let mask = status
         .split(|byte| *byte == b'\n')
         .find_map(|line| line.strip_prefix(b"Umask:"))
@@ -96,19 +83,6 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<Security> {
         .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
         .ok_or(io::ErrorKind::InvalidData)?;
     body.extend_from_slice(&ignored.to_ne_bytes());
-    let filtered = status
-        .split(|byte| *byte == b'\n')
-        .find_map(|line| line.strip_prefix(b"Seccomp:"))
-        .and_then(|value| std::str::from_utf8(value).ok())
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .ok_or(io::ErrorKind::InvalidData)?
-        != 0;
-    let filter_count_known = status
-        .split(|byte| *byte == b'\n')
-        .find_map(|line| line.strip_prefix(b"Seccomp_filters:"))
-        .and_then(|value| std::str::from_utf8(value).ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .is_some();
     for resource in 0..LIMITS {
         let mut limit = libc::rlimit {
             rlim_cur: 0,
@@ -121,42 +95,7 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<Security> {
         body.extend_from_slice(&limit.rlim_cur.to_ne_bytes());
         body.extend_from_slice(&limit.rlim_max.to_ne_bytes());
     }
-    // Reuse the status allocation. Credentials (including supplementary
-    // groups and capabilities), ignored signals and security restrictions must
-    // be inherited from the current caller, never an earlier privileged one.
-    let mut read = 0;
-    let mut written = 0;
-    while read < status.len() {
-        let length = status[read..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(status.len() - read, |end| end + 1);
-        let line = &status[read..read + length];
-        if [
-            b"Uid:".as_slice(),
-            b"Gid:",
-            b"Groups:",
-            b"SigIgn:",
-            b"Cap",
-            b"NoNewPrivs:",
-            b"Seccomp",
-        ]
-        .iter()
-        .any(|prefix| line.starts_with(prefix))
-        {
-            status.copy_within(read..read + length, written);
-            written += length;
-        }
-        read += length;
-    }
-    status.truncate(written);
-    Ok(Security {
-        settings: status,
-        filtered_caller: filtered.then(|| std::thread::current().id()),
-        // Older kernels do not expose the monotone stack count. Launch under
-        // the current caller each time rather than asserting filter equality.
-        reusable: !filtered || filter_count_known,
-    })
+    Ok(())
 }
 
 /// Appends a slot per standard stream, and the descriptor each sent one
@@ -213,7 +152,7 @@ fn encode(
     body: &mut Vec<u8>,
     command: &ProcessCommand,
     environment: &BTreeMap<&OsStr, &OsStr>,
-) -> io::Result<Security> {
+) -> io::Result<()> {
     let identity = &command.unix;
     let flags = [
         (command.cwd.is_some(), HAS_CWD),
@@ -227,7 +166,7 @@ fn encode(
     body.extend_from_slice(&identity.uid.unwrap_or_default().to_ne_bytes());
     body.extend_from_slice(&identity.gid.unwrap_or_default().to_ne_bytes());
     body.extend_from_slice(&std::process::id().to_ne_bytes());
-    let security = put_settings(body)?;
+    put_settings(body)?;
     put_count(body, 1 + command.args.len());
     put_count(body, environment.len());
     put_string(body, &[command.program.as_bytes()])?;
@@ -248,7 +187,7 @@ fn encode(
     for (key, value) in environment {
         put_string(body, &[key.as_bytes(), b"=", value.as_bytes()])?;
     }
-    Ok(security)
+    Ok(())
 }
 
 /// Has the runner start `command` in `directory`'s custody. Returns the
@@ -305,13 +244,13 @@ pub(super) fn start(
     ];
     let mut body = Vec::new();
     let (theirs, ours) = slots(command, open_streams, &mut descriptors, &mut body)?;
-    let security = encode(&mut body, command, &environment)?;
+    encode(&mut body, command, &environment)?;
     let mut message = Vec::with_capacity(8 + body.len());
     put_count(&mut message, body.len());
     message.extend_from_slice(&body);
     // Retain the original runner, including its group anchor and control
     // socket, until the original exec acknowledgement closes this reply.
-    let launch_owner = send(&descriptors, &message, security)?;
+    let launch_owner = send(&descriptors, &message)?;
     #[cfg(test)]
     LAUNCH_SENT.with(|notice| {
         if let Some(notice) = notice.borrow_mut().take() {
@@ -387,10 +326,8 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 /// This owner's runner: its control socket and process.
 struct Runner {
     owner: u32,
-    security: Security,
     control: Option<UnixStream>,
     pid: pid_t,
-    reaped: AtomicBool,
 }
 
 static RUNNER: Mutex<Option<Arc<Runner>>> = Mutex::new(None);
@@ -401,7 +338,7 @@ thread_local! {
 }
 
 impl Runner {
-    fn start(security: Security) -> io::Result<Self> {
+    fn start() -> io::Result<Self> {
         let image = image()?;
         let (control, theirs) = UnixStream::pair()?;
         // The runner's standard input is its control socket.
@@ -421,25 +358,9 @@ impl Runner {
         let pid = pid_t::try_from(runner.id()).map_err(|_| io::ErrorKind::InvalidData)?;
         Ok(Self {
             owner: std::process::id(),
-            security,
             control: Some(control),
             pid,
-            reaped: AtomicBool::new(false),
         })
-    }
-
-    /// Whether this runner still serves this process: it is alive, and this
-    /// is the process that started it, not a fork of it.
-    fn serves(&self) -> bool {
-        if self.owner != std::process::id() {
-            return false;
-        }
-        let mut status = 0;
-        // SAFETY: this process's own unreaped child and writable storage.
-        if unsafe { libc::waitpid(self.pid, &raw mut status, libc::WNOHANG) } == self.pid {
-            self.reaped.store(true, Ordering::Relaxed);
-        }
-        !self.reaped.load(Ordering::Relaxed)
     }
 }
 
@@ -448,7 +369,7 @@ impl Drop for Runner {
         // EOF ends the original control loop even when a credential drop
         // means the owner can no longer signal its earlier privileged child.
         drop(self.control.take());
-        if self.owner == std::process::id() && !self.reaped.load(Ordering::Relaxed) {
+        if self.owner == std::process::id() {
             // SAFETY: this process's own unreaped child, so the PID is its.
             unsafe { libc::kill(self.pid, libc::SIGKILL) };
             let mut status = 0;
@@ -517,41 +438,55 @@ fn runner() -> std::sync::MutexGuard<'static, Option<Arc<Runner>>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Sends one request, starting a runner when none serves this process.
-fn send(descriptors: &[RawFd], message: &[u8], security: Security) -> io::Result<Arc<Runner>> {
-    let mut slot = runner();
-    if slot
-        .as_mut()
-        .is_some_and(|runner| !security.reusable || runner.security != security || !runner.serves())
-        && let Some(stale) = slot.take()
-    {
-        drop(stale);
-    }
-    if slot.is_none() {
-        *slot = Some(Arc::new(Runner::start(security)?));
-    }
-    let runner = slot.as_mut().ok_or(io::ErrorKind::NotFound)?;
-    let sent = send_message(
-        runner.control.as_ref().ok_or(io::ErrorKind::BrokenPipe)?,
+/// Each launch inherits the current caller's opaque kernel policy. Never
+/// reuse an earlier runner based on a partial userspace security fingerprint.
+fn send(descriptors: &[RawFd], message: &[u8]) -> io::Result<Arc<Runner>> {
+    let launch = Arc::new(Runner::start()?);
+    // Replace only the dispatch reference. Original requests keep their own
+    // runner until exec acknowledgement; no lock spans spawn or reply waits.
+    let previous = runner().replace(Arc::clone(&launch));
+    drop(previous);
+    #[cfg(test)]
+    LAUNCH_SENT.with(|notice| {
+        if notice.borrow().is_some() {
+            // Stop the actual new producer before sending its original request.
+            // SAFETY: our unreaped child; wait for its native stopped event.
+            unsafe {
+                assert_eq!(libc::kill(launch.pid, libc::SIGSTOP), 0);
+                let mut status = 0;
+                assert_eq!(
+                    libc::waitpid(launch.pid, &raw mut status, libc::WUNTRACED),
+                    launch.pid
+                );
+                assert!(libc::WIFSTOPPED(status));
+            }
+        }
+    });
+    if let Err(error) = send_message(
+        launch.control.as_ref().ok_or(io::ErrorKind::BrokenPipe)?,
         descriptors,
         message,
-    )
-    .map(|()| Arc::clone(runner));
-    if sent.is_err() {
-        // Withdraw a partially written request even while earlier launches
-        // retain this runner: receive must reach EOF, not wait for its tail.
-        let _ = runner
-            .control
-            .as_ref()
-            .ok_or(io::ErrorKind::BrokenPipe)?
-            .shutdown(std::net::Shutdown::Write);
-    }
-    if sent.is_err()
-        && let Some(failed) = slot.take()
-    {
+    ) {
+        // Withdraw a partial request before its original reply can wait for
+        // bytes that will never arrive. Do not remove a newer launch's slot.
+        if let Some(control) = &launch.control {
+            let _ = control.shutdown(std::net::Shutdown::Write);
+        }
+        let failed = {
+            let mut slot = runner();
+            if slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &launch))
+            {
+                slot.take()
+            } else {
+                None
+            }
+        };
         drop(failed);
+        return Err(error);
     }
-    sent
+    Ok(launch)
 }
 
 /// Writes `message`, carrying `descriptors` with its first byte.

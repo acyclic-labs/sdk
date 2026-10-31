@@ -263,6 +263,8 @@ fn runner_owner_helper() {
         Ok("filters") => filtered_owners(),
         Ok("filter-probe") => filter_probe(),
         Ok("overlap") => overlapping_owners(),
+        Ok("landlock") => landlock_owner(),
+        Ok("truncate-probe") => truncate_probe(),
         Ok("parent") => parent_owner(),
         Ok(_) => killed_runner_owner(),
         Err(_) => {}
@@ -371,19 +373,11 @@ fn security_owner() {
                 let observed = status(&first_custody);
                 assert_ne!(field(&direct, "SigBlk:"), field(&before, "SigBlk:"));
                 assert_eq!(field(&observed, "SigBlk:"), field(&direct, "SigBlk:"));
-                if field(&before, "Seccomp:").ends_with('0') {
-                    assert_eq!(
-                        runner_pid(),
-                        Some(first_runner),
-                        "a signal mask needs no replacement runner"
-                    );
-                } else {
-                    assert_ne!(
-                        runner_pid(),
-                        Some(first_runner),
-                        "another filtered thread has no shared policy attestation"
-                    );
-                }
+                assert_ne!(
+                    runner_pid(),
+                    Some(first_runner),
+                    "each launch inherits its actual caller policy"
+                );
             })
             .join()
             .expect("launching thread");
@@ -466,7 +460,133 @@ fn security_owner() {
 fn launch_admission_preserves_current_security_and_signal_state() {
     owner("security");
     owner("filters");
+    owner("landlock");
     owner("overlap");
+}
+
+fn truncate_probe() {
+    let path = std::env::var_os("ACYCLIC_RUNNER_TRUNCATE_PATH").expect("probe path");
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open probe");
+    match file.set_len(0) {
+        Ok(()) => println!("truncate allowed"),
+        Err(error) => {
+            assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+            println!("truncate denied");
+        }
+    }
+}
+
+/// Landlock changes the calling thread's inherited policy without changing
+/// NoNewPrivs or the seccomp status fields, even on the same thread.
+fn landlock_owner() {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    let (root, custody) = custody();
+    let path = root.path().join("protected");
+    fs::write(&path, b"original bytes").expect("protected file");
+    // SAFETY: irreversible restriction confined to this original helper.
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+        0
+    );
+    let probe = || {
+        let mut command = ProcessCommand::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "process_tree::runner::tests::runner_owner_helper",
+                "--nocapture",
+            ])
+            .env(MODE, "truncate-probe")
+            .env("ACYCLIC_RUNNER_TRUNCATE_PATH", &path);
+        output(&mut command, &custody)
+    };
+    assert!(
+        probe().contains("truncate allowed"),
+        "unrestricted original launch must exercise truncation"
+    );
+    fs::write(&path, b"original bytes").expect("restore original bytes");
+    let before = fs::read_to_string("/proc/thread-self/status").expect("original status");
+    // ABI 3 introduced TRUNCATE (bit 14). The ruleset handles only that
+    // operation, so original custody record creation and reading remain legal.
+    #[repr(C)]
+    struct Ruleset {
+        handled_access_fs: u64,
+    }
+    let rules = Ruleset {
+        handled_access_fs: 1 << 14,
+    };
+    // SAFETY: readable version-one prefix of the native ruleset structure.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            &raw const rules,
+            std::mem::size_of_val(&rules),
+            0,
+        )
+    };
+    assert!(
+        fd >= 0,
+        "Landlock truncate admission refused: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: the successful syscall transferred this descriptor.
+    let rules = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd).expect("ruleset fd")) };
+    // No allow rules: deny truncation for this thread and future children.
+    // SAFETY: live ruleset descriptor and zero flags, after NoNewPrivs.
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_landlock_restrict_self, rules.as_raw_fd(), 0) },
+        0
+    );
+    let after = fs::read_to_string("/proc/thread-self/status").expect("restricted status");
+    let fingerprint = |status: &str| {
+        status
+            .lines()
+            .filter(|line| {
+                [
+                    "Uid:",
+                    "Gid:",
+                    "Groups:",
+                    "SigIgn:",
+                    "Cap",
+                    "NoNewPrivs:",
+                    "Seccomp",
+                ]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+            })
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        fingerprint(&before),
+        fingerprint(&after),
+        "status cannot attest Landlock identity"
+    );
+    let direct = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "process_tree::runner::tests::runner_owner_helper",
+            "--nocapture",
+        ])
+        .env(MODE, "truncate-probe")
+        .env("ACYCLIC_RUNNER_TRUNCATE_PATH", &path)
+        .output()
+        .expect("direct restricted child");
+    assert!(direct.status.success());
+    assert!(
+        String::from_utf8(direct.stdout)
+            .expect("direct output")
+            .contains("truncate denied")
+    );
+    assert!(
+        probe().contains("truncate denied"),
+        "custodied launch bypassed the current Landlock domain"
+    );
+    assert_eq!(fs::read(&path).expect("original bytes"), b"original bytes");
+    retire_runner();
 }
 
 /// Installs one real thread-local filter, retaining all other syscall rules.
@@ -601,17 +721,6 @@ fn overlapping_owners() {
     std::thread::scope(|scope| {
         let first = scope.spawn(|| {
             let (_root, custody) = custody();
-            let mut warm = ProcessCommand::new("/bin/true");
-            output(&mut warm, &custody);
-            let pid = libc::pid_t::try_from(runner_pid().expect("first runner")).expect("pid");
-            // SAFETY: this owner's original unreaped runner; wait for the OS's
-            // stopped event before sending its next real launch request.
-            unsafe {
-                assert_eq!(libc::kill(pid, libc::SIGSTOP), 0);
-                let mut status = 0;
-                assert_eq!(libc::waitpid(pid, &raw mut status, libc::WUNTRACED), pid);
-                assert!(libc::WIFSTOPPED(status));
-            }
             super::LAUNCH_SENT.with(|notice| *notice.borrow_mut() = Some(sent));
             let mut pending = ProcessCommand::new("/bin/echo");
             pending.arg("original launch");
