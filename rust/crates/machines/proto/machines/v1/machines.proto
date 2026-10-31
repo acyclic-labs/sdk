@@ -432,11 +432,14 @@ message UsageReceipt {
   MachineId machine = 1;
   uint64 start_unix_ms = 2;
   uint64 end_unix_ms = 3;
-  uint64 elastic_cpu_ns = 4;
-  // CPU is billed on actual CPU time only; reserved cores are not metered.
+  // Guest vCPU time actually run, in nanoseconds. Granted but idle cores add nothing.
+  uint64 cpu_ns = 4;
   reserved 5;
   reserved "dedicated_cpu_ns";
-  uint64 private_resident_byte_seconds = 6;
+  // Proportional set size (Pss) of guest memory integrated over time, in byte-seconds.
+  // Pages shared with fork relatives are split between them, so the charges add
+  // up to host memory actually used.
+  uint64 resident_byte_seconds = 6;
   uint64 durable_private_bytes = 7;
   reserved 8;
   reserved "lineage_shared_bytes";

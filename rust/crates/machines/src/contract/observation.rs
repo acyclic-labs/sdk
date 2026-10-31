@@ -90,8 +90,12 @@ pub struct UsageReceipt {
     pub machine: MachineId,
     pub start_unix_ms: u64,
     pub end_unix_ms: u64,
-    pub elastic_cpu_ns: u64,
-    pub private_resident_byte_seconds: u64,
+    /// Guest vCPU time actually run, in nanoseconds. Granted but idle cores add nothing.
+    pub cpu_ns: u64,
+    /// Proportional set size (Pss) of guest memory integrated over time, in byte-seconds.
+    /// Pages shared with fork relatives are split between them, so the charges add
+    /// up to host memory actually used.
+    pub resident_byte_seconds: u64,
     pub durable_private_bytes: u64,
     /// Commitment to the separately signed account-lineage storage receipt.
     pub lineage_receipt_sha256: [u8; 32],
