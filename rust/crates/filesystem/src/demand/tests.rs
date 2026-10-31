@@ -63,11 +63,16 @@ async fn native_source(
 }
 
 #[derive(Default)]
-struct RecordedChanges(Mutex<Vec<SourceChange>>, std::sync::atomic::AtomicBool);
+struct RecordedChanges(Mutex<(Vec<SourceChange>, bool)>, std::sync::Condvar);
 
 impl SourceChangeSink for RecordedChanges {
     fn delivery_lost(&self) {
-        self.1.store(true, std::sync::atomic::Ordering::Release);
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1 = true;
+        self.1.notify_all();
     }
 
     fn source_changed(
@@ -76,21 +81,28 @@ impl SourceChangeSink for RecordedChanges {
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), DemandError> {
         accounting.check().map_err(DemandError::from)?;
-        if let Ok(mut recorded) = self.0.lock() {
-            recorded.extend_from_slice(changes);
-        }
+        let mut state = self.0.lock().map_err(|_| DemandError::WorkerUnavailable)?;
+        state.0.extend_from_slice(changes);
+        self.1.notify_all();
         Ok(())
     }
 }
 
 impl RecordedChanges {
-    fn take(&self) -> Result<Vec<SourceChange>, Box<dyn Error>> {
-        if self.1.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(DemandError::SourceUnavailable.into());
+    fn wait(
+        &self,
+        reported: impl Fn(&[SourceChange]) -> bool,
+    ) -> Result<Vec<SourceChange>, Box<dyn Error>> {
+        let mut state = self.0.lock().map_err(|_| "recording poisoned")?;
+        loop {
+            if state.1 {
+                return Err(DemandError::SourceUnavailable.into());
+            }
+            if reported(&state.0) {
+                return Ok(std::mem::take(&mut state.0));
+            }
+            state = self.1.wait(state).map_err(|_| "recording poisoned")?;
         }
-        Ok(std::mem::take(
-            &mut *self.0.lock().map_err(|_| "recording poisoned")?,
-        ))
     }
 
     fn until(
@@ -102,13 +114,7 @@ impl RecordedChanges {
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         ))?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut changes = self.take()?;
-        while !reported(&changes) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            changes.extend(self.take()?);
-        }
-        Ok(changes)
+        self.wait(reported)
     }
 }
 
@@ -171,6 +177,14 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
     #[cfg(not(target_os = "macos"))]
     assert!(!changes.contains(&SourceChange::Everything));
     assert!(watch.is_exact());
+    drop(watch);
+    let lost = recorded
+        .wait(|_| true)
+        .expect_err("lost producer accepted a new observation");
+    assert!(matches!(
+        lost.downcast_ref::<DemandError>(),
+        Some(DemandError::SourceUnavailable)
+    ));
     Ok(())
 }
 
