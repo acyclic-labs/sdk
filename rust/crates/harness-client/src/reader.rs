@@ -16,6 +16,7 @@
 mod backing;
 mod cache;
 mod credential;
+mod demand;
 mod driver;
 
 pub use backing::RecordBytes;
@@ -23,6 +24,7 @@ use cache::Key;
 pub use cache::{Listing, RecordCache, SnapshotError};
 pub use credential::CredentialStatus;
 use credential::{Access, Credentials};
+use demand::Demands;
 pub use driver::Driver;
 
 use acyclic_stream::OwnedBytes;
@@ -422,7 +424,7 @@ pub struct Reader {
     credentials: Option<Credentials>,
     pending_snapshot: Option<Vec<u8>>,
     driver: Option<std::sync::Arc<()>>,
-    demand: BTreeMap<OpKey, Demand>,
+    demand: Demands,
     next_ticket: u64,
     inflight: BTreeMap<u64, InFlight>,
     keys: BTreeMap<OpKey, u64>,
@@ -462,7 +464,7 @@ impl Reader {
             credentials: None,
             pending_snapshot: None,
             driver: None,
-            demand: BTreeMap::new(),
+            demand: Demands::default(),
             next_ticket: 0,
             inflight: BTreeMap::new(),
             keys: BTreeMap::new(),
@@ -728,37 +730,19 @@ impl Reader {
         }
         self.cache
             .retain_passed(|cache, key| wants.iter().any(|(want, _)| covers(cache, want, key)));
-        let mut previous: BTreeMap<_, _> = std::mem::take(&mut self.demand)
-            .into_iter()
-            .map(|(key, demand)| (key, demand.ticket))
-            .collect();
-        let mut demand = BTreeMap::<OpKey, Demand>::new();
+        self.demand.begin_plan();
         for (want, priority) in wants {
             let Some((key, paging)) = self.resolve(&want) else {
                 continue;
             };
-            if let Some(existing) = demand.get_mut(&key) {
-                existing.priority = existing.priority.min(priority);
-                continue;
-            }
-            let ticket = previous.remove(&key).unwrap_or_else(|| {
-                let ticket = self.next_ticket;
-                self.next_ticket += 1;
-                ticket
-            });
-            demand.insert(
-                key,
-                Demand {
-                    priority,
-                    paging,
-                    ticket,
-                },
-            );
+            self.demand
+                .want(key, priority, paging, &mut self.next_ticket);
         }
+        self.demand.finish_plan();
         // A prefetch becoming visible counts as visible immediately, rather
         // than occupying prefetch credit until its original request ends.
         for flight in self.inflight.values_mut() {
-            if let Some(wanted) = demand.get(&flight.key) {
+            if let Some(wanted) = self.demand.get(&flight.key) {
                 flight.priority = wanted.priority;
             }
         }
@@ -766,14 +750,13 @@ impl Reader {
             .inflight
             .iter()
             .filter(|(_, flight)| {
-                flight.priority == Priority::Prefetch && !demand.contains_key(&flight.key)
+                flight.priority == Priority::Prefetch && !self.demand.contains_key(&flight.key)
             })
             .map(|(id, _)| *id)
             .collect();
         for id in stale {
             self.cancel(id);
         }
-        self.demand = demand;
     }
 
     /// Mark one visible want's cached values and facts in use this frame.
@@ -913,20 +896,13 @@ impl Reader {
             .values()
             .filter(|flight| flight.priority == Priority::Prefetch)
             .count();
-        let mut demand: Vec<_> = self.demand.iter_mut().collect();
-        demand.sort_by_key(|(_, demand)| {
-            let head_start = if demand.priority == Priority::Prefetch {
-                self.policy.requests as u128
-            } else {
-                0
-            };
-            (u128::from(demand.ticket) + head_start, demand.ticket)
-        });
-        for (key, pending) in demand {
+        let mut demand = self.demand.ordered();
+        while let Some((key, pending)) = demand.next_admitted(
+            prefetch && prefetching < self.policy.prefetch_requests,
+            self.policy.requests,
+        ) {
             let Demand {
-                priority,
-                paging,
-                ticket,
+                priority, paging, ..
             } = pending;
             if self.inflight.len() >= limit {
                 break;
@@ -938,9 +914,6 @@ impl Reader {
                 continue;
             }
             if *priority == Priority::Prefetch {
-                if !prefetch || prefetching >= self.policy.prefetch_requests {
-                    continue;
-                }
                 prefetching += 1;
             }
             let id = self.next_id;
@@ -978,10 +951,14 @@ impl Reader {
                 },
             );
             self.keys.insert(key.clone(), id);
-            *ticket = self.next_ticket;
-            self.next_ticket += 1;
             self.issued += 1;
             ops.push(op);
+        }
+        for op in &ops {
+            if let Some(flight) = self.inflight.get(&op.id()) {
+                self.demand.rotate(&flight.key, self.next_ticket);
+                self.next_ticket += 1;
+            }
         }
         ops
     }
@@ -1741,6 +1718,7 @@ mod reader_tests {
         let stream = StreamPath::new("test/many-wants").unwrap();
         let mut reader = Reader::new(ReaderPolicy {
             read_limit: 1,
+            prefetch_requests: 0,
             ..ReaderPolicy::default()
         })
         .unwrap();
@@ -1760,16 +1738,63 @@ mod reader_tests {
             .collect();
         reader.begin_frame(0);
         reader.plan(wants.iter().cloned());
+        // Move retained requests between priority indexes, reverse renderer
+        // order, and repeat each key at lower priority. None resets its age
+        // or allows the later duplicate to downgrade visible demand.
+        reader.plan(
+            wants
+                .iter()
+                .map(|(want, _)| (want.clone(), Priority::Prefetch)),
+        );
+        reader.plan(
+            wants.iter().cloned().rev().chain(
+                wants
+                    .iter()
+                    .map(|(want, _)| (want.clone(), Priority::Prefetch)),
+            ),
+        );
         assert_eq!(reader.residency().demand, 4097);
+        let dormant: Vec<_> = (0..4097)
+            .map(|index| {
+                (
+                    Want::Last {
+                        stream: StreamPath::new(format!("test/dormant-{index}")).unwrap(),
+                        count: 1,
+                    },
+                    Priority::Prefetch,
+                )
+            })
+            .collect();
+        reader.plan(wants.iter().chain(&dormant).cloned());
+        assert_eq!(reader.residency().demand, 8194);
         let mut completed = BTreeSet::new();
         for now in 1..=4097 {
             // The driver can consume successive credit windows before the
             // renderer plans another frame. A completion retires that key.
             let ops = reader.poll(now);
+            let visits = reader.demand.take_visits();
+            assert!(
+                visits <= ops.len() + 1,
+                "dispatch visited {visits} candidates for {} requests",
+                ops.len()
+            );
             if ops.is_empty() {
                 break;
             }
             assert!(ops.len() <= reader.policy.requests);
+            if completed.is_empty() {
+                assert_eq!(
+                    ops.iter()
+                        .map(|op| match op {
+                            Op::Read { from, .. } => *from,
+                            _ => panic!("known-origin range read"),
+                        })
+                        .collect::<Vec<_>>(),
+                    (0..ops.len() as u64)
+                        .map(|index| index * 2)
+                        .collect::<Vec<_>>()
+                );
+            }
             for op in ops {
                 let Op::Read { id, from, .. } = op else {
                     panic!("known-origin range read")
@@ -1782,7 +1807,9 @@ mod reader_tests {
             }
         }
         assert_eq!(completed.len(), wants.len());
+        assert_eq!(reader.residency().demand, dormant.len());
         assert!(reader.poll(4098).is_empty());
+        assert_eq!(reader.demand.take_visits(), 0);
         assert!(frame(&mut reader, 4098, &wants).is_empty());
     }
 
