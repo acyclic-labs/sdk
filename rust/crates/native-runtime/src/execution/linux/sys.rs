@@ -25,6 +25,11 @@ pub(super) fn seal_descriptors() -> Result<(), i32> {
     status(unsafe { libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 4_u32) })
 }
 
+pub(super) fn working_directory(fd: i32) -> Result<(), i32> {
+    // SAFETY: preparation retains this verified directory until child entry.
+    status(unsafe { libc::fchdir(fd) }.into())
+}
+
 pub(super) fn stdio_metadata(fd: i32) -> Result<(u32, u64), i32> {
     // SAFETY: all-zero stat is valid output storage for fstat.
     let mut metadata: libc::stat = unsafe { core::mem::zeroed() };

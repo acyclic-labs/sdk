@@ -275,7 +275,7 @@ impl ExecutionGrant {
         &self,
         cwd: Option<&Path>,
         explicit_environment: bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<PathBuf> {
         if !explicit_environment {
             return Err(refused(
                 "confined execution requires an explicit environment",
@@ -283,28 +283,30 @@ impl ExecutionGrant {
         }
         let cwd = cwd
             .ok_or_else(|| refused("confined execution requires an explicit working directory"))?;
-        if !canonical(cwd)?.starts_with(self.workspace()) {
+        let cwd = canonical(cwd)?;
+        if !cwd.starts_with(self.workspace()) {
             return Err(refused(
                 "execution working directory escapes the granted workspace",
             ));
         }
-        Ok(())
+        Ok(cwd)
     }
 
     /// Prepares OS objects without starting untrusted code. A failure is a
     /// refusal, never an instruction to retry without confinement.
     pub fn prepare(&self) -> io::Result<PreparedExecution> {
-        self.prepare_controlled(None)
+        self.prepare_launch(None, None)
     }
 
-    pub(crate) fn prepare_controlled(
+    pub(crate) fn prepare_launch(
         &self,
+        _cwd: Option<&Path>,
         _meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<PreparedExecution> {
         #[cfg(target_os = "linux")]
         let workspace = self.0.workspace.bind_controlled(_meter)?;
         #[cfg(target_os = "linux")]
-        let platform = linux::Prepared::new(&self.0, workspace, _meter)?;
+        let platform = linux::Prepared::new(&self.0, workspace, _cwd, _meter)?;
         #[cfg(not(target_os = "linux"))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
@@ -335,6 +337,11 @@ impl std::fmt::Debug for PreparedExecution {
 }
 
 impl PreparedExecution {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn working_directory(&self) -> &std::fs::File {
+        self.platform.working_directory()
+    }
+
     /// Adds enforcement after the process owner's custody hook. The command
     /// has already been admitted once and is consumed by the launch owner.
     pub(crate) fn install(self, _command: &mut std::process::Command) -> io::Result<()> {
@@ -386,4 +393,4 @@ fn unavailable(reason: impl std::fmt::Display) -> io::Error {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

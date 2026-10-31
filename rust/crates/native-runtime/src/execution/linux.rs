@@ -47,6 +47,10 @@ const FILE: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14);
 const CONNECT_TCP: u64 = 1 << 1;
 
 pub(super) fn open_beneath(root: &File, relative: &Path) -> io::Result<File> {
+    open_beneath_with_flags(root, relative, 0)
+}
+
+fn open_beneath_with_flags(root: &File, relative: &Path, flags: i32) -> io::Result<File> {
     #[repr(C)]
     struct OpenHow {
         flags: u64,
@@ -56,7 +60,7 @@ pub(super) fn open_beneath(root: &File, relative: &Path) -> io::Result<File> {
     let path = CString::new(relative.as_os_str().as_bytes())
         .map_err(|_| refused("invalid relative grant path"))?;
     let how = OpenHow {
-        flags: (libc::O_PATH | libc::O_CLOEXEC) as u64,
+        flags: (libc::O_PATH | libc::O_CLOEXEC | flags) as u64,
         mode: 0,
         // BENEATH | NO_SYMLINKS: resolution stays under this native object,
         // even when an ancestor is renamed or replaced during the syscall.
@@ -76,7 +80,7 @@ pub(super) fn open_beneath(root: &File, relative: &Path) -> io::Result<File> {
     if descriptor < 0 {
         let error = io::Error::last_os_error();
         return Err(if error.raw_os_error() == Some(libc::ENOSYS) {
-            unavailable("native grant attenuation requires openat2")
+            unavailable("rooted execution path resolution requires openat2")
         } else {
             failure(error)
         });
@@ -107,9 +111,14 @@ struct PortRule {
 
 pub(super) struct Prepared {
     ruleset: OwnedFd,
+    cwd: File,
 }
 
 impl Prepared {
+    pub(super) fn working_directory(&self) -> &File {
+        &self.cwd
+    }
+
     pub(super) fn encode(
         &self,
         filter: &[Instruction],
@@ -134,6 +143,7 @@ impl Prepared {
     pub(super) fn new(
         grant: &Grant,
         root: File,
+        cwd: Option<&Path>,
         meter: Option<&dyn NativeReadMeter>,
     ) -> io::Result<Self> {
         // ABI 6 supplies signal and abstract-UNIX scoping; earlier ABIs cannot
@@ -185,18 +195,41 @@ impl Prepared {
             // Acquire RAII ownership before checking a late recording failure.
             Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
         })?;
-        let prepared = Self { ruleset };
+        // Resolve the selected directory beneath the original verified root,
+        // rather than trusting the earlier canonical path at child launch.
+        // The root itself needs no additional open or duplicate descriptor.
+        let relative = cwd
+            .unwrap_or(&grant.workspace)
+            .strip_prefix(&grant.workspace.path)
+            .map_err(|_| refused("execution working directory escapes the granted workspace"))?;
+        let directory = if relative.as_os_str().is_empty() {
+            None
+        } else {
+            Some(native_control_attempt(meter, Read, || {
+                open_beneath_with_flags(&root, relative, libc::O_DIRECTORY)
+            })?)
+        };
+        let prepared = Self {
+            ruleset,
+            cwd: directory.unwrap_or(root),
+        };
         let workspace = READ
             | if grant.access == ExecutionAccess::WorkspaceWrite {
                 WRITE
             } else {
                 0
             };
-        prepared.path(&root, workspace, grant.workspace.is_dir, meter)?;
+        // The pinned workspace handle is the exact object just verified by
+        // binding; when cwd is nested, the reopened root can already close.
+        prepared.path(
+            &grant.workspace._object,
+            workspace,
+            grant.workspace.is_dir,
+            meter,
+        )?;
         // The kernel ruleset owns the inserted inode reference. The grant
         // independently pins every original object against identity reuse;
         // another live descriptor per rule buys no additional guarantee.
-        drop(root);
         for root in &grant.read {
             prepared.path(&root.bind_controlled(meter)?, READ, root.is_dir, meter)?;
         }
@@ -272,6 +305,7 @@ impl Prepared {
     }
 
     fn enter(&self, grant: &ExecutionGrant) -> io::Result<()> {
+        sys::working_directory(self.cwd.as_raw_fd()).map_err(io::Error::from_raw_os_error)?;
         entry::enter(self.ruleset.as_raw_fd(), &grant.0.filter)
             .map_err(io::Error::from_raw_os_error)
     }

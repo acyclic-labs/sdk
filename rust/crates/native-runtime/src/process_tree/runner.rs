@@ -171,7 +171,7 @@ fn encode(
 ) -> io::Result<Option<RawFd>> {
     let identity = &command.unix;
     let flags = [
-        (command.cwd.is_some(), HAS_CWD),
+        (command.cwd.is_some() && command.boundary.is_none(), HAS_CWD),
         (identity.uid.is_some(), HAS_UID),
         (identity.gid.is_some(), HAS_GID),
         (command.boundary.is_some(), HAS_BOUNDARY),
@@ -192,7 +192,9 @@ fn encode(
         .map(|boundary| boundary.encode_linux(body))
         .transpose()?;
     put_string(body, &[command.program.as_bytes()])?;
-    if let Some(cwd) = &command.cwd {
+    if let Some(cwd) = &command.cwd
+        && command.boundary.is_none()
+    {
         put_string(body, &[cwd.as_os_str().as_bytes()])?;
     }
     put_string(
@@ -250,19 +252,30 @@ pub(super) fn start(
         fd != directory.as_raw_fd() && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0
     });
     let (reply, reply_end) = pipe()?;
-    // The child starts where the owner is now, then in its own directory.
+    // Granted launches reuse this original descriptor role for the held cwd.
+    // Trusted launches retain the owner's cwd, followed by their path change.
     // A path descriptor is enough for fchdir and needs no read access.
-    let here = {
+    let here = if command.boundary.is_none() {
         use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-            .open(".")?
+        Some(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+                .open(".")?,
+        )
+    } else {
+        None
     };
+    let directory_handle = command
+        .boundary
+        .as_ref()
+        .map(|boundary| boundary.working_directory())
+        .or(here.as_ref())
+        .ok_or(io::ErrorKind::InvalidInput)?;
     let mut descriptors = [
         directory.as_raw_fd(),
         reply_end.as_raw_fd(),
-        here.as_raw_fd(),
+        directory_handle.as_raw_fd(),
         -1,
         -1,
         -1,

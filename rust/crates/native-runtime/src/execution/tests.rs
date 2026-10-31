@@ -4,7 +4,7 @@ use super::*;
 mod ipc;
 
 #[cfg(target_os = "linux")]
-fn system_read_roots() -> Vec<PathBuf> {
+pub(crate) fn system_read_roots() -> Vec<PathBuf> {
     ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
         .into_iter()
         .map(PathBuf::from)
@@ -244,7 +244,10 @@ fn native_preparation_preserves_original_operation_admission_and_late_failures()
     use std::sync::atomic::Ordering;
     let root = tempfile::tempdir().unwrap();
     let read = root.path().join("source");
+    let nested = root.path().join("nested");
     std::fs::write(&read, "read-only root").unwrap();
+    std::fs::create_dir(&nested).unwrap();
+    let nested = std::fs::canonicalize(nested).unwrap();
     let grant = ExecutionGrant::new(
         root.path(),
         ExecutionAccess::ReadOnly,
@@ -255,37 +258,44 @@ fn native_preparation_preserves_original_operation_admission_and_late_failures()
     // Workspace and regular-file open/identity/rules, the ABI query and ruleset
     // creation, two device open/metadata/rules, and one TCP port rule.
     let roots = 2;
-    let operations = 3 * roots + 2 + 2 * 3 + 1;
-    let admission = (0..=operations).map(|limit| (limit, None));
-    let recording = (1..=operations).map(|failure| (u64::MAX, Some(failure)));
-    for (limit, failure) in admission.chain(recording) {
-        let mut meter = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
-        meter.fail_recorded_operation = failure;
-        let prepared = match grant.prepare_controlled(Some(&meter)) {
-            Ok(prepared) => prepared,
-            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-                // No supported-kernel claim is made on this path. Admission
-                // failures before the facility query still run on any kernel.
-                assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
-                return;
-            }
-            Err(error) => {
-                assert!(failure.is_some() || limit < operations, "{error}");
-                assert_eq!(error.kind(), io::ErrorKind::Other, "{error}");
-                assert_eq!(
-                    meter.used_operations.load(Ordering::Acquire),
-                    failure.unwrap_or(limit),
-                );
-                continue;
-            }
-        };
-        assert_eq!((limit, failure), (operations, None));
-        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2 * roots + 5);
-        assert_eq!(meter.write_attempts.load(Ordering::Acquire), roots + 4);
-        drop(prepared);
-        // The identical native preparation without an invocation ceiling is
-        // the real-kernel negative control for the rejected funded attempts.
-        grant.prepare().unwrap();
+    for cwd in [None, Some(nested.as_path())] {
+        // A nested cwd adds exactly its single admitted openat2 operation.
+        let directory_open = u64::from(cwd.is_some());
+        let operations = 3 * roots + 2 + 2 * 3 + 1 + directory_open;
+        let admission = (0..=operations).map(|limit| (limit, None));
+        let recording = (1..=operations).map(|failure| (u64::MAX, Some(failure)));
+        for (limit, failure) in admission.chain(recording) {
+            let mut meter = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
+            meter.fail_recorded_operation = failure;
+            let prepared = match grant.prepare_launch(cwd, Some(&meter)) {
+                Ok(prepared) => prepared,
+                Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                    // No supported-kernel claim is made on this path. Admission
+                    // failures before the facility query still run on any kernel.
+                    assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+                    return;
+                }
+                Err(error) => {
+                    assert!(failure.is_some() || limit < operations, "{error}");
+                    assert_eq!(error.kind(), io::ErrorKind::Other, "{error}");
+                    assert_eq!(
+                        meter.used_operations.load(Ordering::Acquire),
+                        failure.unwrap_or(limit),
+                    );
+                    continue;
+                }
+            };
+            assert_eq!((limit, failure), (operations, None));
+            assert_eq!(
+                meter.read_attempts.load(Ordering::Acquire),
+                2 * roots + 5 + directory_open
+            );
+            assert_eq!(meter.write_attempts.load(Ordering::Acquire), roots + 4);
+            drop(prepared);
+            // The identical native preparation without an invocation ceiling is
+            // the real-kernel negative control for the rejected funded attempts.
+            grant.prepare_launch(cwd, None).unwrap();
+        }
     }
 }
 

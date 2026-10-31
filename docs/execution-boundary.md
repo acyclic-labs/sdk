@@ -15,6 +15,14 @@ variables) and an explicit workspace working directory. They refuse ambient
 environment inheritance before allocating native enforcement objects, so host
 secrets are not exposed by a command's default environment. Selection of any
 explicit variable remains the authenticated host's responsibility.
+Linux resolves that working directory beneath the verified workspace object
+with `openat2`, refusing substituted symlinks. Preparation holds the directory
+through the original launch; subsequent path replacement cannot select a
+different object. The direct child uses `fchdir` instead of resolving the path
+again. Custodied launches reuse their existing working-directory descriptor
+role and omit the redundant path string; the decoder refuses a confined
+request that also selects a path-based directory. Descriptor count, warden
+ordering and the single request/acknowledgement remain unchanged.
 
 `ExecutionGrant::attenuate` permits narrower workspace/read roots, removal of
 writes, and narrower networking. It refuses an increase of authority. Linux
@@ -94,6 +102,13 @@ checked against the original grant, then closed after its rule is inserted.
 The kernel ruleset retains its own object references; the immutable grant
 also pins the original roots. Preparation keeps only one temporary root
 descriptor, with no root-descriptor vector or copied root collection.
+The selected working directory is the one retained directory descriptor;
+binding another root temporarily needs one additional descriptor. Selecting
+the workspace itself reuses its existing open. A nested directory adds one
+metered `openat2` and one temporary NUL-terminated relative-path allocation
+and copy, with no extra metadata query. On the custodied
+path this replaces the original open of the host working directory and removes
+the child's second `chdir`. Direct launches replace `chdir` with `fchdir`.
 Root file types are bound with their identities at grant construction. A
 pinned inode's type cannot change; launch reuses that type after checking
 identity, removing one repeated metadata syscall per declared root.

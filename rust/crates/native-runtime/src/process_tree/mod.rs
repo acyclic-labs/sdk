@@ -107,6 +107,8 @@ mod prepared;
 pub use prepared::PreparedClosedProcess;
 #[cfg(test)]
 mod custody_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod execution_boundary_tests;
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod platform;
@@ -275,8 +277,10 @@ impl ProcessTree {
         if let Some(meter) = meter {
             meter.check()?;
         }
-        grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
-        command.boundary = Some(grant.prepare_controlled(meter)?);
+        command.boundary = Some({
+            let cwd = grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
+            grant.prepare_launch(Some(&cwd), meter)?
+        });
         let result = match custody {
             Some(custody) => {
                 Self::spawn_in_custody_controlled(&mut command, custody, meter, retained)
@@ -367,6 +371,11 @@ impl ProcessTree {
             #[cfg(unix)]
             {
                 let boundary = command.boundary.take();
+                if boundary.is_some() {
+                    // The boundary installs its held directory in the child.
+                    // Do not resolve the admitted path a second time in std.
+                    command.cwd = None;
+                }
                 let mut native = command.to_std()?;
                 if let Some(boundary) = boundary {
                     boundary.install(&mut native)?;

@@ -478,6 +478,11 @@ fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
             kinds, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc,
         )
     };
+    // A confined request's original `here` descriptor is its bound cwd.
+    // Reject a second path-based selection before any warden is created.
+    if flags & (HAS_BOUNDARY | HAS_CWD) == (HAS_BOUNDARY | HAS_CWD) {
+        return Err(invalid);
+    }
     let mut next = 3;
     let mut streams = [Slot::Null; 3];
     for (stream, kind) in streams.iter_mut().zip(slots) {
