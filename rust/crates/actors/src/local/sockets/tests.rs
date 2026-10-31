@@ -445,8 +445,16 @@ impl HeldCloseExecutor {
 async fn close_fixture(
     sockets: &Sockets<MemoryStream>,
     label: &str,
-) -> Result<(String, StreamPath, oneshot::Receiver<Bytes>, SocketOpen), Box<dyn std::error::Error>>
-{
+) -> Result<
+    (
+        String,
+        StreamPath,
+        oneshot::Receiver<Bytes>,
+        SocketOpen,
+        mpsc::Receiver<Bytes>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let shared = &sockets.shared;
     let actor = ActorReference::new(b"account", b"sockets", label.as_bytes())?;
     let inbox = StreamPath::new(format!("close/{label}"))?;
@@ -476,7 +484,7 @@ async fn close_fixture(
         shared.incarnation,
         shared.next.fetch_add(1, Ordering::Relaxed)
     );
-    let (outbound, _frames) = mpsc::channel(acyclic_stream::MAX_ITEMS);
+    let (outbound, frames) = mpsc::channel(acyclic_stream::MAX_ITEMS);
     let (final_frame, last) = oneshot::channel();
     let (abandon, _abandoned) = oneshot::channel();
     shared
@@ -514,7 +522,7 @@ async fn close_fixture(
         resume_after: 0,
         reconnected: false,
     };
-    Ok((connection, inbox, last, open))
+    Ok((connection, inbox, last, open, frames))
 }
 
 /// The actual Open creates its invocation, socket stream and ledger. Only the
@@ -522,8 +530,16 @@ async fn close_fixture(
 async fn admitted_close_fixture(
     sockets: &Sockets<MemoryStream>,
     label: &str,
-) -> Result<(String, StreamPath, oneshot::Receiver<Bytes>), Box<dyn std::error::Error>> {
-    let (connection, inbox, last, open) = close_fixture(sockets, label).await?;
+) -> Result<
+    (
+        String,
+        StreamPath,
+        oneshot::Receiver<Bytes>,
+        mpsc::Receiver<Bytes>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let (connection, inbox, last, open, frames) = close_fixture(sockets, label).await?;
     let shared = &sockets.shared;
     assert!(matches!(
         shared.commit_open(&connection, &open).await?,
@@ -535,7 +551,7 @@ async fn admitted_close_fixture(
         .get_mut(&connection)
         .ok_or(Error::Invalid("fixture lost its original open"))?
         .phase = Phase::Open;
-    Ok((connection, inbox, last))
+    Ok((connection, inbox, last, frames))
 }
 
 #[tokio::test]
@@ -548,7 +564,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     )
     .await?;
     let shared = &sockets.shared;
-    let (connection, inbox, last) = admitted_close_fixture(&sockets, "peer-order").await?;
+    let (connection, inbox, last, _frames) = admitted_close_fixture(&sockets, "peer-order").await?;
     shared.message(
         &connection,
         SocketPayload::Text {
@@ -601,7 +617,8 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     );
     assert!(sockets.is_empty());
 
-    let (connection, inbox, last) = admitted_close_fixture(&sockets, "cancel-drain").await?;
+    let (connection, inbox, last, _frames) =
+        admitted_close_fixture(&sockets, "cancel-drain").await?;
     let mut first = Box::pin(sockets.drain());
     assert!(futures::poll!(&mut first).is_pending());
     drop(first);
@@ -628,7 +645,8 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         2
     );
 
-    let (connection, inbox, last) = admitted_close_fixture(&sockets, "lost-producer").await?;
+    let (connection, inbox, last, _frames) =
+        admitted_close_fixture(&sockets, "lost-producer").await?;
     let mut waiting = Box::pin(sockets.drain());
     assert!(futures::poll!(&mut waiting).is_pending());
     drop(executor.take()?); // Drop the actual close future before its first poll.
@@ -654,7 +672,8 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         "lost close work must retire its live entry"
     );
 
-    let (connection, inbox, last) = admitted_close_fixture(&sockets, "refused-close").await?;
+    let (connection, inbox, last, _frames) =
+        admitted_close_fixture(&sockets, "refused-close").await?;
     shared
         .store
         .provider()
@@ -682,7 +701,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         } else {
             "held-opening"
         };
-        let (connection, inbox, last, open) = close_fixture(&sockets, label).await?;
+        let (connection, inbox, last, open, _frames) = close_fixture(&sockets, label).await?;
         // Hold the original ledger cut before the actual Open can publish.
         let ledger = shared.ledger.write().await;
         let (verdict, _reply) = oneshot::channel();
@@ -752,7 +771,8 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         assert!(sockets.is_empty());
     }
 
-    let (connection, inbox, last) = admitted_close_fixture(&sockets, "record-bound").await?;
+    let (connection, inbox, last, _frames) =
+        admitted_close_fixture(&sockets, "record-bound").await?;
     let inbound = Inbound {
         shared: Arc::clone(shared),
         connection: connection.clone(),
@@ -839,6 +859,99 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         matches!(SocketFrame::decode(&last.await?)?, SocketFrame::Close { code: 1000, reason, .. } if reason == "fits")
     );
     assert_eq!(records(&shared.store, &inbox).await?.len(), 3);
+    assert!(sockets.is_empty());
+
+    let (connection, inbox, last, mut frames) =
+        admitted_close_fixture(&sockets, "outbound-bound").await?;
+    let actor = shared
+        .lock()
+        .sockets
+        .get(&connection)
+        .ok_or("lost original outbound actor")?
+        .actor
+        .clone();
+    let socket = WebSocketId(connection.clone());
+    for payload in [
+        SocketPayload::Binary {
+            binary: vec![0; maximum].into(),
+        },
+        SocketPayload::Text {
+            text: "x".repeat(maximum),
+        },
+    ] {
+        assert_eq!(
+            sockets.web_socket_send(&actor, &socket, payload),
+            Err(host_error(
+                "WebSocket frame exceeds the channel record bound"
+            ))
+        );
+        assert!(frames.is_empty(), "refused output must not reach the peer");
+        let table = shared.lock();
+        let entry = table
+            .sockets
+            .get(&connection)
+            .ok_or("refused output retired its socket")?;
+        assert!(matches!(entry.phase, Phase::Open));
+        assert!(!entry.peer_closed);
+    }
+    assert!(
+        executor.tasks.lock().unwrap().is_empty(),
+        "refusal cannot start a Close"
+    );
+    for binary in [false, true] {
+        let seed_len = maximum - 128;
+        let payload = |len| {
+            if binary {
+                SocketPayload::Binary {
+                    binary: vec![0; len].into(),
+                }
+            } else {
+                SocketPayload::Text {
+                    text: "x".repeat(len),
+                }
+            }
+        };
+        let overhead = SocketFrame::Message(payload(seed_len)).encode().len() - seed_len;
+        let expected = payload(maximum - overhead);
+        sockets.web_socket_send(&actor, &socket, expected.clone())?;
+        assert_eq!(
+            frames.len(),
+            1,
+            "successful send must queue the actual frame"
+        );
+        let frame = frames
+            .recv()
+            .await
+            .ok_or("accepted outbound frame lost its producer")?;
+        assert_eq!(frame.len(), maximum);
+        assert_eq!(SocketFrame::decode(&frame)?, SocketFrame::Message(expected));
+    }
+    assert_eq!(
+        records(&shared.store, &inbox).await?.len(),
+        1,
+        "outbound sends perform no publication"
+    );
+    let mut outbound = Arc::clone(shared).outbound(Outbound::Open { frames, last });
+    sockets.web_socket_send(
+        &actor,
+        &socket,
+        SocketPayload::Text {
+            text: "still open".into(),
+        },
+    )?;
+    shared.peer_close(
+        &connection,
+        Close::new(1000, "done", SocketCloseInitiator::Peer),
+    )?;
+    executor.take()?.await;
+    assert!(
+        matches!(SocketFrame::decode(&outbound.next().await.ok_or("lost accepted output")??)?, SocketFrame::Message(SocketPayload::Text { text }) if text == "still open")
+    );
+    assert!(
+        matches!(SocketFrame::decode(&outbound.next().await.ok_or("lost original Close")??)?, SocketFrame::Close { code: 1000, reason, .. } if reason == "done")
+    );
+    assert!(outbound.next().await.is_none());
+    assert_eq!(records(&shared.store, &inbox).await?.len(), 2);
     assert!(sockets.is_empty());
     Ok(())
 }
