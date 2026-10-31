@@ -92,6 +92,10 @@ pub enum AgentReply {
         input: u64,
         /// One fixed journal page; None marks the current committed inbox tail.
         page: Option<acyclic_harness_core::executor::ModelUsagePage>,
+        /// The original actor checkpoint consumed this input and retains no
+        /// paused, queued or overflowed work at or before it. A short page or
+        /// status cursor alone does not establish this fence.
+        settled: bool,
     },
     /// How far an agent has settled.
     Settlement {
@@ -374,12 +378,18 @@ fn validate_reply(
             };
         }
         (
-            AgentReply::Usage { page: None, input },
+            AgentReply::Usage {
+                page: None,
+                input,
+                settled,
+            },
             AgentCommand::Usage {
-                input: requested, ..
+                input: requested,
+                wait,
+                ..
             },
         ) => {
-            return if input >= requested {
+            return if input >= requested && !wait && !settled {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
@@ -389,18 +399,25 @@ fn validate_reply(
             AgentReply::Usage {
                 page: Some(page),
                 input,
+                settled,
             },
             AgentCommand::Usage {
                 agent,
                 after,
                 input: requested,
+                wait,
             },
         ) => {
             return if input >= requested
+                && (!wait || *settled || page.end > *after)
                 && page.items.len() <= 32
-                && page
-                    .next
-                    .is_none_or(|next| after.checked_add(32) == Some(next))
+                && page.end.checked_sub(*after).is_some_and(|visited| {
+                    visited <= 32
+                        && page.items.len() as u64 <= visited
+                        && page
+                            .next
+                            .is_none_or(|next| next == page.end && visited == 32)
+                })
                 && page.items.iter().all(|item| {
                     item.version == 1 && item.agent_path.as_deref() == Some(agent.as_str())
                 }) {
@@ -679,6 +696,84 @@ mod tests {
             encode_agent_reply(&Ok(reply), &command),
             Err(CommandError::Capacity)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn usage_reply_frontiers_preserve_empty_and_partial_source_progress()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_harness_core::executor::ModelUsagePage;
+        let agent = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([1; 16]));
+        for after in [0, 7, u64::MAX - 32, u64::MAX] {
+            let command = AgentCommand::Usage {
+                agent: agent.clone(),
+                input: 3,
+                after,
+                wait: false,
+            };
+            for visited in [0, 1, 31, 32] {
+                let Some(end) = after.checked_add(visited) else {
+                    continue;
+                };
+                let reply = AgentReply::Usage {
+                    input: 3,
+                    settled: false,
+                    page: Some(ModelUsagePage {
+                        items: vec![],
+                        end,
+                        next: (visited == 32).then_some(end),
+                    }),
+                };
+                let bytes = encode_agent_reply(&Ok(reply), &command)?;
+                assert!(matches!(decode_agent_reply(&bytes, &command)?,
+                    Ok(AgentReply::Usage { page: Some(page), .. }) if page.end == end));
+                let live = AgentCommand::Usage {
+                    agent: agent.clone(),
+                    input: 3,
+                    after,
+                    wait: true,
+                };
+                if visited == 0 {
+                    assert!(
+                        matches!(
+                            decode_agent_reply(&bytes, &live),
+                            Err(CommandError::Invalid)
+                        ),
+                        "a quiet live page cannot masquerade as a progress event"
+                    );
+                    let mut envelope = Envelope::decode(bytes.as_slice())?;
+                    let Some(envelope::Value::Reply(body)) = &mut envelope.value else {
+                        return Err("usage envelope lost its reply".into());
+                    };
+                    let mut value: serde_json::Value = serde_json::from_slice(body)?;
+                    value["settled"] = true.into();
+                    *body = serde_json::to_vec(&value)?;
+                    assert!(decode_agent_reply(&envelope.encode_to_vec(), &live)?.is_ok());
+                } else {
+                    assert!(decode_agent_reply(&bytes, &live)?.is_ok());
+                }
+                // Mutate the actual reply envelope: a premature continuation,
+                // backward cursor or a skipped page must not advance the view.
+                for (bad_end, next) in [
+                    (end, Some(end.wrapping_add(1))),
+                    (after.wrapping_sub(1), None),
+                    (after.wrapping_add(33), None),
+                ] {
+                    let mut envelope = Envelope::decode(bytes.as_slice())?;
+                    let Some(envelope::Value::Reply(body)) = &mut envelope.value else {
+                        return Err("usage envelope lost its reply".into());
+                    };
+                    let mut value: serde_json::Value = serde_json::from_slice(body)?;
+                    value["page"]["end"] = bad_end.into();
+                    value["page"]["next"] = serde_json::to_value(next)?;
+                    *body = serde_json::to_vec(&value)?;
+                    assert!(matches!(
+                        decode_agent_reply(&envelope.encode_to_vec(), &command),
+                        Err(CommandError::Invalid)
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 

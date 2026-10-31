@@ -503,12 +503,16 @@ where
     /// Queries one original inbox input and a bounded execution journal page.
     /// Adoption's first status supplies the fork cut; inherited inputs are skipped.
     /// Failed turns remain discoverable without another index or publication.
+    /// `wait` parks a quiet query on the original inbox/journal/actor producers.
+    /// The final flag requires the actor's committed consumed-input fence and
+    /// no retained turn, queue or overflow work at or before that input.
     pub async fn usage_page(
         &self,
         agent: &AgentPath,
         input: u64,
         after: u64,
-    ) -> Result<(u64, Option<crate::executor::ModelUsagePage>), Error> {
+        wait: bool,
+    ) -> Result<(u64, Option<crate::executor::ModelUsagePage>, bool), Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         use crate::agent::AgentRecord as _;
@@ -538,23 +542,33 @@ where
                 "usage input cursor is past the committed tail",
             ));
         }
-        if input == tail {
-            return Ok((input, None));
-        }
-        let mut records = provider
-            .read(acyclic_stream::ReadRequest {
-                key: None,
-                path: agent.inbox()?,
-                from: input,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await
-            .map_err(Error::Stream)?;
-        let record = records
-            .try_next()
-            .await
-            .map_err(Error::Stream)?
+        let record = if input == tail {
+            if !wait {
+                return Ok((input, None, false));
+            }
+            let mut request = acyclic_stream::FollowRequest::new(agent.inbox()?, input);
+            request.when_absent = acyclic_stream::WhenAbsent::Wait;
+            loop {
+                let (_, actor_cut) = self.agents.input_progress(agent, input).await?;
+                tokio::select! {
+                    record = self.usage_record(request.clone()) => break Some(record?),
+                    changed = self.usage_record(actor_cut) => { changed?; }
+                }
+            }
+        } else {
+            let mut records = provider
+                .read(acyclic_stream::ReadRequest {
+                    key: None,
+                    path: agent.inbox()?,
+                    from: input,
+                    limit: 1,
+                    at_least: Default::default(),
+                })
+                .await
+                .map_err(Error::Stream)?;
+            records.try_next().await.map_err(Error::Stream)?
+        };
+        let record = record
             .filter(|record| record.sequence == input)
             .ok_or(Error::Record("committed usage input is missing"))?;
         let record = crate::agent::InboxRecord::decode(&record.value)?;
@@ -576,19 +590,67 @@ where
             }
             record => crate::agent::turn_input(input, record),
         };
-        let page = if let Some(queued) = queued {
-            let operation = crate::agent::turn_id(&state, &queued.input)?;
-            self.turns
-                .usage_page(&state, operation, after)
-                .await
-                .map_err(turn)?
+        let journal = if let Some(queued) = queued {
+            Some((
+                self.turns.usage_journal(&state).await.map_err(turn)?,
+                crate::agent::turn_id(&state, &queued.input)?,
+            ))
         } else {
-            crate::executor::ModelUsagePage {
-                items: Vec::new(),
-                next: None,
-            }
+            None
         };
-        Ok((input, Some(page)))
+        loop {
+            // Observe settlement before the journal page: a settled actor can
+            // only name an execution whose original journal writes preceded it.
+            let (settled, actor_cut) = self.agents.input_progress(agent, input).await?;
+            let page = if let Some((journal, operation)) = &journal {
+                crate::executor::usage_page(journal, *operation, agent.as_str(), after)
+                    .await
+                    .map_err(turn)?
+            } else {
+                crate::executor::ModelUsagePage {
+                    items: Vec::new(),
+                    end: after,
+                    next: None,
+                }
+            };
+            if !wait || settled || page.end > after {
+                return Ok((input, Some(page), settled));
+            }
+            // Both continuations start at their original observations, so an
+            // append between the page and this wait remains visible. No task,
+            // timer or status recheck produces readiness.
+            let actor_changed = self.usage_record(actor_cut);
+            if let Some((journal, operation)) = &journal {
+                let journal_changed =
+                    self.usage_record(journal.usage_follow(*operation, page.end).map_err(turn)?);
+                tokio::select! {
+                    result = journal_changed => result?,
+                    result = actor_changed => result?,
+                };
+            } else {
+                actor_changed.await?;
+            }
+        }
+    }
+
+    /// Every query wait names an original producer. A closed producer cannot
+    /// become an empty successful page or leave its consumer hanging.
+    async fn usage_record(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::Record, Error> {
+        use futures::TryStreamExt as _;
+        let updates = self
+            .agents
+            .provider()
+            .follow(request)
+            .await
+            .map_err(Error::Stream)?;
+        acyclic_stream::records_only(updates)
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))
     }
 
     /// Reads at most `maximum` bytes of `file` from `offset`, through

@@ -419,10 +419,16 @@ where
                 agent,
                 input,
                 after,
+                wait,
             } => {
                 let agent = self.within_tree(agent)?;
-                let (input, page) = self.bound.usage_page(agent, *input, *after).await?;
-                Ok(AgentReply::Usage { input, page })
+                let (input, page, settled) =
+                    self.bound.usage_page(agent, *input, *after, *wait).await?;
+                Ok(AgentReply::Usage {
+                    input,
+                    page,
+                    settled,
+                })
             }
             AgentCommand::Read {
                 agent,
@@ -860,7 +866,10 @@ where
             let result = server
                 .dispatch(call.command(), &by, &approver, &authorization)
                 .await;
-            if matches!(&result, Ok(AgentReply::Diff { .. })) {
+            if matches!(
+                &result,
+                Ok(AgentReply::Diff { .. } | AgentReply::Usage { .. })
+            ) {
                 // The source may have awaited IO. No path or patch leaves after
                 // its original call credential or current host policy is revoked.
                 let principal = authorization.principal()?;

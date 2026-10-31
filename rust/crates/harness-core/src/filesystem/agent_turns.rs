@@ -606,15 +606,13 @@ where
             .await
     }
 
-    /// Reads a fixed page through this agent's original private journal grant.
-    pub async fn usage_page(
+    /// Opens the usage query through this agent's original private journal grant.
+    pub(super) async fn usage_journal(
         &self,
         agent: &AgentState,
-        operation: OperationId,
-        after: u64,
-    ) -> Result<crate::executor::ModelUsagePage> {
+    ) -> Result<FilesystemExecutionJournal<P, A, O>> {
         let (journal, _, _) = self.journal(self.admit(agent)?, &[]).await?;
-        crate::executor::usage_page(&journal, operation, agent.path.as_str(), after).await
+        Ok(journal)
     }
 
     /// `agent`'s verified admission; it performs no IO.

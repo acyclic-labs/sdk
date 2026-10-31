@@ -6,6 +6,20 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Original append continuation of this admitted private journal. The
+    /// hosting query retains it internally; it grants no public Stream access.
+    pub(in crate::filesystem) fn usage_follow(
+        &self,
+        operation: OperationId,
+        after: u64,
+    ) -> Result<acyclic_stream::FollowRequest> {
+        self.require_operation(operation, None)?;
+        let path = crate::distributed::execution_path(operation, &mut None)?;
+        let mut request = acyclic_stream::FollowRequest::new(path, after);
+        request.when_absent = acyclic_stream::WhenAbsent::Wait;
+        Ok(request)
+    }
+
     pub(super) fn journal_read_stream_error(
         _native_io: Option<&PreparationIo>,
         code: crate::wire::ErrorCode,

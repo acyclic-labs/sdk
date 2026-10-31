@@ -145,6 +145,27 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         crate::executor::ModelTokenUsage::default()
     );
     assert_eq!(before.items[0].latency_ns, None);
+    assert_eq!(before.end, 2);
+    assert_eq!(before.next, None);
+    let quiet =
+        crate::executor::usage_page(&journal, operation, "agents/usage", before.end).await?;
+    assert!(quiet.items.is_empty());
+    assert_eq!(quiet.end, before.end);
+    assert_eq!(quiet.next, None);
+    let change = async {
+        let updates = journal
+            .stream
+            .follow(journal.usage_follow(operation, quiet.end)?)
+            .await?;
+        let record = futures::StreamExt::next(&mut acyclic_stream::records_only(updates)).await;
+        assert!(matches!(record, Some(Ok(_))));
+        Ok::<(), Error>(())
+    };
+    let mut changed = std::pin::pin!(change);
+    assert!(
+        futures::poll!(&mut changed).is_pending(),
+        "the original producer is quiet"
+    );
     usage.dispatch.operation_id = OperationId::new();
     assert!(
         crate::executor::append_model_event(
@@ -188,6 +209,17 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         )
         .await?;
     }
+    changed.await?;
+    // Registration after the publication still starts at the same exclusive
+    // cut, rather than resolving a new head and losing this terminal record.
+    let updates = journal
+        .stream
+        .follow(journal.usage_follow(operation, quiet.end)?)
+        .await?;
+    assert!(matches!(
+        futures::StreamExt::next(&mut acyclic_stream::records_only(updates)).await,
+        Some(Ok(_))
+    ));
     let records = journal.records(operation, 0, 64, None).await?;
     assert_eq!(records.len(), 3);
     let ExecutionEvent::Model {
@@ -210,6 +242,16 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     assert!(after.items[1].completed);
     assert_eq!(after.items[0].dispatch, after.items[1].dispatch);
     assert_eq!(after.items[1].tokens, usage.tokens);
+    assert_eq!(after.end, 3);
+    let resumed =
+        crate::executor::usage_page(&journal, operation, "agents/usage", quiet.end).await?;
+    assert_eq!(resumed.items.len(), 1);
+    assert!(resumed.items[0].completed);
+    assert_eq!(resumed.items[0].dispatch, before.items[0].dispatch);
+    assert_eq!(resumed.end, after.end);
+    assert_eq!(resumed.next, None);
+    // Rescanning the prior prefix would duplicate the admitted contribution.
+    assert!(after.items.len() > resumed.items.len());
     Ok(())
 }
 

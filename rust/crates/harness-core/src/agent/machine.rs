@@ -154,6 +154,17 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
+    /// Exclusive inbox prefix with no remaining turn or queued work, at the
+    /// actor's original consumed cursor. Consumption alone may checkpoint a
+    /// paused turn or move later inputs into the retained window. Fixed
+    /// comparisons suffice; no queue, child or history scan is required.
+    pub fn settled_before(&self, consumed: u64) -> u64 {
+        consumed
+            .min(self.turn.as_ref().map_or(consumed, |turn| turn.inbox))
+            .min(self.queued.front().map_or(consumed, |queued| queued.inbox))
+            .min(self.overflow.unwrap_or(consumed))
+    }
+
     /// State at adoption, before the first step.
     ///
     /// # Errors

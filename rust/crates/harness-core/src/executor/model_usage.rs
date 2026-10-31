@@ -151,7 +151,12 @@ pub(crate) fn validate(
 pub struct ModelUsagePage {
     /// Admissions and completions in their original commit order.
     pub items: Vec<ModelUsageRecord>,
+    /// Exclusive original journal position after every visited observation,
+    /// including observations without usage. Resume here after a source event;
+    /// an empty or short page does not establish that this turn has settled.
+    pub end: u64,
     /// Exclusive journal continuation, including pages with no model calls.
+    /// None means this page reached the currently observed tail, not finality.
     pub next: Option<u64>,
 }
 
@@ -166,12 +171,11 @@ pub async fn usage_page(
 ) -> Result<ModelUsagePage> {
     const PAGE: u32 = 32;
     let records = journal.replay(operation, after, PAGE, None)?.await?;
+    let end = after
+        .checked_add(records.len() as u64)
+        .ok_or_else(|| Error::Invalid("usage journal continuation overflows".into()))?;
     let next = if records.len() == PAGE as usize {
-        Some(
-            after
-                .checked_add(u64::from(PAGE))
-                .ok_or_else(|| Error::Invalid("usage journal continuation overflows".into()))?,
-        )
+        Some(end)
     } else {
         None
     };
@@ -216,7 +220,7 @@ pub async fn usage_page(
             _ => {}
         }
     }
-    Ok(ModelUsagePage { items, next })
+    Ok(ModelUsagePage { items, end, next })
 }
 
 pub(super) struct CallClock {
