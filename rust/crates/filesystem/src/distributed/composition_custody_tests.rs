@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes, StreamError, StreamProvider as _};
+use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes, StreamError};
 
 #[tokio::test]
 async fn native_request_transfer_keeps_original_context_and_live_commit_backing()
@@ -8,8 +8,8 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     let root =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
-    let (original, stop) = root.invocation_view()?;
     let baseline = root.live_allocation_bytes();
+    let (original, stop) = root.invocation_view()?;
     let mut work = AuthorityWork::native(&original, &cancellation);
     let meter = work.native_meter()?;
     let path = StreamPath::new("agent/custody")?;
@@ -86,8 +86,8 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     // the request's existing live capacity, even after cancellation.
     let bytes = work.vec::<u8>(23)?;
     let retained = commit.allocation.as_ref().unwrap().bytes();
-    let receipt = root.receipt();
     stop.cancel();
+    let receipt = root.receipt();
     commit.retain_request_custody(&mut work)?;
     assert_eq!(commit.allocation.as_ref().unwrap().bytes(), retained + 23);
     assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 0);
@@ -109,7 +109,12 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     assert_eq!(root.live_allocation_bytes(), live);
     assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
     drop(stopped);
+    drop(request);
     drop(commit);
+    // Cancellation retires its funded parent registration. Compare the root
+    // before invocation admission with the root after every invocation owner.
+    drop(original);
+    drop(stop);
     assert_eq!(root.live_allocation_bytes(), baseline);
     Ok(())
 }

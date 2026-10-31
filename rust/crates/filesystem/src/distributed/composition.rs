@@ -28,6 +28,9 @@ struct Contribution {
 ///
 /// Dropping it without a committed receipt is safe: every contributed actor
 /// reloads its durable state on next use.
+/// Native preparation retains paid backing under its original ledger, resource
+/// and invocation. Further preparation cannot replace that custody with work
+/// from another context; a refusal preserves the original request and funding.
 #[must_use = "a composed filesystem commit does nothing until it is submitted"]
 pub struct FilesystemCommit {
     request: CommitRequest,
