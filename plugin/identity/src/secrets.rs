@@ -298,7 +298,18 @@ mod tests {
     async fn secrets_cli_value_file_uses_private_bearer_and_shared_http_with_redacted_failures()
     -> Result<(), Box<dyn std::error::Error>> {
         const OPEN_INPUT: &str = "ACYCLIC_SECRETS_OPEN_INPUT_CONTROL";
-        if std::env::var_os(OPEN_INPUT).is_some() {
+        if let Some(mode) = std::env::var_os(OPEN_INPUT) {
+            if mode == "value" {
+                assert_eq!(*read_stdin_value().await?, "λ\n".repeat(30_000));
+                return Ok(());
+            }
+            if mode == "invalid" {
+                let Err(error) = read_stdin_value().await else {
+                    return Err("invalid UTF-8 input admitted".into());
+                };
+                assert_eq!(error.code, "secrets_input_error");
+                return Ok(());
+            }
             let input = read_stdin_value();
             tokio::pin!(input);
             tokio::select! {
@@ -311,8 +322,9 @@ mod tests {
             // Cancel the EOF wait while the original parent still owns its writer.
             return Ok(());
         }
-        let executable = std::env::current_exe()?;
-        let output = acyclic_native_runtime::run_blocking_io(
+        for mode in ["open", "value", "invalid"] {
+            let executable = std::env::current_exe()?;
+            let output = acyclic_native_runtime::run_blocking_io(
             move || {
                 let mut child = std::process::Command::new(executable)
                     .args([
@@ -320,12 +332,21 @@ mod tests {
                         "secrets::tests::secrets_cli_value_file_uses_private_bearer_and_shared_http_with_redacted_failures",
                         "--nocapture",
                     ])
-                    .env(OPEN_INPUT, "1")
+                    .env(OPEN_INPUT, mode)
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
                     .spawn()?;
-                let writer = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+                let mut writer = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+                if mode != "open" {
+                    use std::io::Write as _;
+                    match mode {
+                        "value" => writer.write_all("λ\n".repeat(30_000).as_bytes())?,
+                        _ => writer.write_all(&[0xff])?,
+                    }
+                    drop(writer);
+                    return child.wait_with_output();
+                }
                 let result = child.wait_with_output();
                 drop(writer);
                 result
@@ -333,10 +354,11 @@ mod tests {
             None,
         )?
         .await??;
-        assert!(
-            output.status.success(),
-            "open-input child failed: {output:?}"
-        );
+            assert!(
+                output.status.success(),
+                "{mode} input child failed: {output:?}"
+            );
+        }
         use axum::{
             Router,
             body::Bytes,

@@ -19,11 +19,14 @@ use zeroize::{Zeroize, Zeroizing};
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
 
-/// Input read on its own thread; end of input is a zero-byte read.
+/// Input read on its own process-owned thread; end of input is a zero-byte read.
+/// Queued and unread bytes are scrubbed on destruction, consumed bytes immediately.
+/// An unexpected reader loss is `BrokenPipe`, rather than a successful EOF.
 pub struct Stdin {
     chunks: mpsc::Receiver<io::Result<Zeroizing<Vec<u8>>>>,
     current: Zeroizing<Vec<u8>>,
     consumed: usize,
+    eof: bool,
 }
 
 /// This process's stdin. It has one reader, so a second call is refused.
@@ -49,7 +52,10 @@ fn reader(mut input: impl Read + Send + 'static) -> io::Result<Stdin> {
             let mut buffer = Zeroizing::new(vec![0; 64 * 1024]);
             loop {
                 let chunk = match input.read(&mut buffer) {
-                    Ok(0) => return,
+                    Ok(0) => {
+                        let _closed = sender.blocking_send(Ok(Zeroizing::new(Vec::new())));
+                        return;
+                    }
                     Ok(read) => buffer
                         .get_mut(..read)
                         .map(|bytes| {
@@ -77,6 +83,7 @@ fn reader(mut input: impl Read + Send + 'static) -> io::Result<Stdin> {
         chunks,
         current: Zeroizing::new(Vec::new()),
         consumed: 0,
+        eof: false,
     })
 }
 
@@ -87,17 +94,18 @@ impl AsyncRead for Stdin {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        if buf.remaining() == 0 {
+        if buf.remaining() == 0 || this.eof {
             return Poll::Ready(Ok(()));
         }
         if this.consumed == this.current.len() {
             match ready!(this.chunks.poll_recv(cx)) {
                 Some(Ok(chunk)) => {
+                    this.eof = chunk.is_empty();
                     this.current = chunk;
                     this.consumed = 0;
                 }
                 Some(Err(error)) => return Poll::Ready(Err(error)),
-                None => return Poll::Ready(Ok(())),
+                None => return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
             }
         }
         let read = (this.current.len() - this.consumed).min(buf.remaining());
