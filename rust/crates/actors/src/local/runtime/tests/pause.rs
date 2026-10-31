@@ -129,6 +129,8 @@ async fn active_cleanup_and_queued_controls() -> TestResult {
         gate: tokio::sync::Semaphore::new(0),
     });
     let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    runtime.track(address.clone())?;
+    runtime.track(unrelated.clone())?;
     let mut delivery = Box::pin(runtime.drain_actor(&address));
     assert!(futures::poll!(delivery.as_mut()).is_pending());
     assert_eq!(handler.active.load(Ordering::SeqCst), 1);
@@ -204,6 +206,7 @@ async fn active_cleanup_and_queued_controls() -> TestResult {
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     );
+    reopened.track(address.clone())?;
     reopened.drain_actor(&address).await?;
     assert_eq!(records(&*provider, "out/pause-owner").await?.len(), 1);
     Ok(())
@@ -305,6 +308,7 @@ async fn publication_cut(fault: Fault, abandon: bool) -> TestResult {
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     );
+    reopened.track(address.clone())?;
     reopened.drain_actor(&address).await?;
     assert_eq!(records(&*provider, "out/pause-cut").await?.len(), 1);
     Ok(())
