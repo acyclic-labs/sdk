@@ -543,9 +543,6 @@ pub use identity::assistant_message_id;
 /// Immutable model wire items shared with the pure request renderer.
 pub mod wire;
 
-/// Durable summarized-prefix and verbatim-suffix epoch protocol.
-pub mod epochs;
-
 /// Versioned items encoded through the original bounded journal boundary.
 #[cfg(feature = "filesystem")]
 pub mod envelope;
