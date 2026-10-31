@@ -8,6 +8,9 @@
 //! through its own provider and [`StreamAuthorityStore::settle`].
 use super::*;
 
+mod append;
+pub use append::{FilesystemAppendPreparation, PreparedFilesystemAppend};
+
 /// One prepared actor transition, sealed only by the composed commit receipt.
 struct Contribution {
     actor: crate::kernel::allocation::retained::RetainedArc<crate::kernel::AuthorityActor>,

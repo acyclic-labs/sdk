@@ -1,15 +1,15 @@
 use super::*;
 
-struct PreparedGroup<'a> {
-    anchor: AuthoritySnapshot,
-    receipts: crate::kernel::Owned<Vec<AppendReceipt<'a>>>,
-    transaction: CommitRequest,
-    deadline: Option<u64>,
+pub(in crate::distributed) struct PreparedGroup<'a> {
+    pub(in crate::distributed) anchor: AuthoritySnapshot,
+    pub(in crate::distributed) receipts: crate::kernel::Owned<Vec<AppendReceipt<'a>>>,
+    pub(in crate::distributed) transaction: CommitRequest,
+    pub(in crate::distributed) deadline: Option<u64>,
     deadline_owner: usize,
 }
 
 impl PreparedGroup<'_> {
-    fn project(
+    pub(in crate::distributed) fn project(
         &self,
         placement: &AuthorityPlacement,
         projection: crate::distributed::actor::Projection,
@@ -40,7 +40,7 @@ impl PreparedGroup<'_> {
     }
 }
 
-enum GroupPreparation<'a> {
+pub(in crate::distributed) enum GroupPreparation<'a> {
     Ready(PreparedGroup<'a>),
     Rejected {
         index: usize,
@@ -65,7 +65,7 @@ impl GroupPreparation<'_> {
     }
 }
 
-fn group_first<'a>(
+pub(in crate::distributed) fn group_first<'a>(
     requests: &'a [crate::GuardedAppend],
     cuts: &[crate::PolicyCut],
 ) -> Result<&'a crate::GuardedAppend, AuthorityStoreError> {
@@ -196,7 +196,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         result
     }
 
-    async fn settle_group<G: AuthorityGuard>(
+    pub(in crate::distributed) async fn settle_group<G: AuthorityGuard>(
         &self,
         prepared: &[AppendReceipt<'_>],
         anchor: AuthoritySnapshot,
@@ -298,7 +298,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         })
     }
 
-    async fn prepare_group<'a, G: AuthorityGuard>(
+    pub(in crate::distributed) async fn prepare_group<'a, G: AuthorityGuard>(
         &self,
         requests: &'a [crate::GuardedAppend],
         work: &mut AuthorityWork<'_>,
@@ -413,6 +413,23 @@ fn extend_transaction(
     next: CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<(), AuthorityStoreError> {
+    let key = work.folded_key(
+        b"authority-group-attempt\0",
+        &prefix.idempotency_key,
+        &next.idempotency_key,
+    )?;
+    merge_transaction(prefix, next, work)?;
+    prefix.idempotency_key = key;
+    Ok(())
+}
+
+// Both authority groups and caller compositions use the same ordered append
+// merge. The caller's original key is retained; a group's key is folded above.
+pub(in crate::distributed) fn merge_transaction(
+    prefix: &mut CommitRequest,
+    next: CommitRequest,
+    work: &mut AuthorityWork<'_>,
+) -> Result<(), AuthorityStoreError> {
     let view = AppendView {
         cursor: None,
         projection: None,
@@ -446,11 +463,10 @@ fn extend_transaction(
         merge_append(&mut mutations, mutation, work)?;
     }
     prefix.mutations = mutations;
-    prefix.idempotency_key = work.folded_key(
-        b"authority-group-attempt\0",
-        &prefix.idempotency_key,
-        &next.idempotency_key,
-    )?;
+    prefix.deadline_unix_millis = match (prefix.deadline_unix_millis, next.deadline_unix_millis) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     Ok(())
 }
 
