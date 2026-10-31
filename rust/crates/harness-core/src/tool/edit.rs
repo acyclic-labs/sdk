@@ -317,13 +317,19 @@ fn replace_into(
         // complete character preserves UTF-8 and finds every later start.
         let next_start = start + old_text.chars().next().map_or(0, char::len_utf8);
         charge(work, 0, (source.len() - next_start) as u64)?;
-        if source[next_start..].contains(old_text) {
-            // Only the refusal path counts all non-overlapping occurrences,
-            // for the native harness's exact diagnostic. Successful edits keep
-            // their original search/copy work. Overlap-only ambiguity retains
-            // the stronger shared unique-match contract.
-            charge(work, 0, source.len() as u64)?;
-            let occurrences = source.match_indices(old_text).count();
+        if let Some(next) = source[next_start..].find(old_text) {
+            // The original uniqueness search already found the second start.
+            // Count only the unconsumed suffix for the native diagnostic;
+            // successful edits retain their original search/copy work.
+            let next = next_start + next;
+            let first_end = start + old_text.len();
+            let (found, remaining) = if next >= first_end {
+                (2, next + old_text.len())
+            } else {
+                (1, first_end)
+            };
+            charge(work, 0, (source.len() - remaining) as u64)?;
+            let occurrences = found + source[remaining..].match_indices(old_text).count();
             return Err(if occurrences > 1 {
                 EditRejection::error(occurrences)
             } else {
@@ -489,10 +495,16 @@ mod tests {
                             if matches.len() == 1 {
                                 assert_eq!(result.ok(), Some(source.replacen(&needle, "X", 1)));
                             } else {
-                                assert_eq!(
-                                    result.unwrap_err().code(),
-                                    crate::wire::ErrorCode::Conflict
-                                );
+                                let error = result.unwrap_err();
+                                assert_eq!(error.code(), crate::wire::ErrorCode::Conflict);
+                                let non_overlapping = source.match_indices(&needle).count();
+                                match error {
+                                    Error::ExactEdit(cause) => {
+                                        assert!(non_overlapping > 1);
+                                        assert_eq!(cause.occurrences, non_overlapping);
+                                    }
+                                    _ => assert_eq!(non_overlapping, 1),
+                                }
                             }
                         }
                     }
