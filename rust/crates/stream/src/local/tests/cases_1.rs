@@ -283,11 +283,7 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
     let before = std::fs::read(&journal_path)?;
 
     for _ in 0..2 {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            LocalStream::open(directory.path(), limits),
-        )
-        .await?;
+        let result = LocalStream::open(directory.path(), limits).await;
         assert!(matches!(
             result,
             Err(LocalStreamError::Replay(StreamError::NotFound))

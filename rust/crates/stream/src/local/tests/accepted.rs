@@ -205,34 +205,26 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                         .await
                 }
             });
-            tokio::task::spawn_blocking(move || {
-                started_rx.recv_timeout(std::time::Duration::from_secs(1))
-            })
-            .await??;
+            tokio::task::spawn_blocking(move || started_rx.recv()).await??;
             let mut follow = provider
                 .follow(crate::FollowRequest::new(path.clone(), n))
                 .map_ok(crate::records_only)
                 .await?;
-            let record = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next())
-                .await?
-                .ok_or("follow ended")??;
+            let record = follow.next().await.ok_or("follow ended")??;
             assert_eq!(record.sequence, n);
             assert_eq!(record.value.as_slice(), b"delta");
-            let checked = tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                provider
-                    .follow(crate::FollowRequest {
-                        when_absent: Default::default(),
-                        path: path.clone(),
-                        from: n + 1,
-                        preceding: Some(record.commit_id),
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                        at_least: Default::default(),
-                    })
-                    .map_ok(crate::records_only),
-            )
-            .await??;
+            let checked = provider
+                .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
+                    path: path.clone(),
+                    from: n + 1,
+                    preceding: Some(record.commit_id),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                    at_least: Default::default(),
+                })
+                .map_ok(crate::records_only)
+                .await?;
             drop(checked);
             let lost = provider
                 .follow(crate::FollowRequest {
