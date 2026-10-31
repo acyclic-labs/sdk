@@ -259,3 +259,33 @@ fn producer_failure_is_terminal_and_cannot_be_relabelled_ready() {
     );
     assert_eq!(state, unchanged);
 }
+
+#[test]
+fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
+    let id = [5; 32];
+    let mut state = State::default();
+    state.prepare(id, 10, 12).unwrap();
+    for completion in [None, Some(Completion::Ready), Some(Completion::Failed)] {
+        let pending = protocol::Pending {
+            completion,
+            ..state.pending().unwrap()
+        };
+        let restored = State::restore(0, 0, Some(pending), 12).unwrap();
+        let mut expected = state;
+        if let Some(outcome) = completion {
+            expected.complete(id, outcome).unwrap();
+        }
+        assert_eq!(restored, expected);
+        assert_eq!(State::restore(1, 0, Some(pending), 12), Err(Refusal::Stale));
+        assert_eq!(
+            State::restore(0, 10, Some(pending), 12),
+            Err(Refusal::Range)
+        );
+        assert_eq!(State::restore(0, 0, Some(pending), 9), Err(Refusal::Range));
+    }
+    assert_eq!(State::restore(0, 13, None, 12), Err(Refusal::Range));
+    // Dropping the pending slot on restore would grant another producer.
+    let mut lost = State::default();
+    assert!(lost.prepare([6; 32], 11, 12).is_ok());
+    assert_eq!(state.prepare([6; 32], 11, 12), Err(Refusal::Busy));
+}

@@ -58,7 +58,7 @@ fn failed_summary_never_swaps_or_changes_its_outcome() {
     let generation: u64 = kani::any();
     kani::assume(end > cursor);
     let id = [0; 32];
-    let mut state = protocol::State::at(generation, cursor);
+    let mut state = protocol::State::restore(generation, cursor, None, end).unwrap();
     assert!(state.prepare(id, end, end).is_ok());
     assert!(state.complete(id, protocol::Completion::Failed).is_ok());
     let failed = state;
@@ -76,7 +76,7 @@ fn stale_generation_and_exhaustion_leave_ready_state_unchanged() {
     let expected: u64 = kani::any();
     kani::assume(expected != generation);
     let id = [0; 32];
-    let mut state = protocol::State::at(generation, 0);
+    let mut state = protocol::State::restore(generation, 0, None, 1).unwrap();
     assert!(state.prepare(id, 1, 1).is_ok());
     assert!(state.complete(id, protocol::Completion::Ready).is_ok());
     let ready = state;
