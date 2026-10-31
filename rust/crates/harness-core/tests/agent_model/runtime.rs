@@ -350,6 +350,7 @@ async fn conversation_follow_waits_on_actual_status_publication_and_preserves_re
         },
         output: super::driver::file("output")?,
         outcome: Default::default(),
+        goal: None,
     }
     .encode()?;
     assert!(matches!(
