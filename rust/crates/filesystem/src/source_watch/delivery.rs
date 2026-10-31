@@ -1,6 +1,10 @@
 use super::*;
 
 impl Delivery {
+    pub(super) fn notify_lost(&self) {
+        self.callback(|| self.sink.delivery_lost());
+    }
+
     pub(super) fn new<W: SourceDemandReadWork>(
         sink: Arc<dyn HostChangeSink>,
         work: &mut W,
@@ -95,7 +99,7 @@ impl Delivery {
             *failed = Some((error, prior));
         }
         drop(failed);
-        self.sink.delivery_lost();
+        self.notify_lost();
     }
 
     pub(super) fn take_failure<W: SourceDemandReadWork>(

@@ -3,7 +3,7 @@ use super::*;
 impl NativeSourceWatch {
     /// Invalidates observations retained by this producer's original sink.
     pub(crate) fn delivery_lost(&self) {
-        self.delivery().sink.delivery_lost();
+        self.delivery().notify_lost();
     }
 
     /// Injects a terminal failure into this actual producer's original delivery.

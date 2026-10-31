@@ -4,7 +4,11 @@ use std::sync::atomic::AtomicUsize;
 use std::task::{Context, Poll};
 
 #[derive(Default)]
-struct Loss(CancellationToken, AtomicUsize);
+struct Loss(
+    CancellationToken,
+    AtomicUsize,
+    std::sync::Mutex<Option<std::sync::Weak<crate::source_watch::NativeSourceWatch>>>,
+);
 
 impl SourceChangeSink for Loss {
     fn source_changed(
@@ -17,6 +21,21 @@ impl SourceChangeSink for Loss {
     }
 
     fn delivery_lost(&self) {
+        let physical = self
+            .2
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(physical) = physical {
+            assert!(
+                matches!(
+                    physical.stop_accepted_cleanup(),
+                    Err(DemandError::WorkerUnavailable)
+                ),
+                "reentrant retirement must refuse before acquiring the physical owner"
+            );
+        }
         self.0.cancel();
     }
 }
@@ -88,6 +107,7 @@ async fn source_watch_preserves_fence_and_delivery_loss() -> Result<(), Box<dyn 
     assert!(changed.as_mut().poll(&mut context).is_pending());
     assert!(!peer_lost.0.is_cancelled());
 
+    *lost.2.lock().unwrap() = Some(Arc::downgrade(&physical));
     // Fault injection enters the actual producer's existing failure path.
     // No event loop, timer or subsequent fence supplies the loss notification.
     let before = original.receipt();
