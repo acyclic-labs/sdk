@@ -19,9 +19,10 @@ use crate::guest::{Delivery, Handler, Trigger};
 #[cfg(test)]
 use acyclic_stream::AppendRequest;
 use acyclic_stream::query_sync::SyncMutex;
-use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
+use acyclic_stream::runtime::PlatformExecutor;
 use acyclic_stream::{
-    BoxProviderFuture, IdempotencyKey, Record, RecordStream, StreamError, StreamPath, StreamProvider,
+    BoxProviderFuture, IdempotencyKey, Record, RecordStream, StreamError, StreamPath,
+    StreamProvider,
 };
 use clock::sleep;
 pub use clock::{Clock, ClockControl, ClockError, ControlledClock, SystemClock};
