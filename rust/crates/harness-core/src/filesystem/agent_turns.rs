@@ -806,7 +806,7 @@ where
         let path = agent.path.conversation().map_err(agent_error)?;
         let mut entries = Vec::new();
         while from < end {
-            let limit = u32::try_from(end - from).unwrap_or(u32::MAX);
+            let limit = (end - from).min(acyclic_stream::MAX_ITEMS as u64) as u32;
             let through = from + u64::from(limit);
             let records = self
                 .stream
@@ -828,8 +828,12 @@ where
     }
 }
 
-fn agent_error(error: crate::agent::Error) -> Error {
-    Error::Invalid(error.to_string())
+pub(super) fn agent_error(error: crate::agent::Error) -> Error {
+    match error {
+        crate::agent::Error::Stream(cause) => cause.into(),
+        crate::agent::Error::Turn(cause) => *cause,
+        other => Error::Invalid(other.to_string()),
+    }
 }
 
 /// Stable message identity of one side of a settled or current turn.
@@ -874,7 +878,7 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
         selected.validate(agent).map_err(agent_error)?;
         let mut from = selected.range.start;
         while from < selected.range.end {
-            let limit = u32::try_from(selected.range.end - from).unwrap_or(u32::MAX);
+            let limit = (selected.range.end - from).min(acyclic_stream::MAX_ITEMS as u64) as u32;
             let records = stream
                 .read(ReadRequest {
                     key: None,

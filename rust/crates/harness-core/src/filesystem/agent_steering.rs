@@ -4,7 +4,7 @@
 use super::{
     FilesystemContentVerifier, FilesystemHost,
     agent_internal::AgentInternalFiles,
-    agent_turns::{AdmittedAgent, TurnAdmission},
+    agent_turns::{AdmittedAgent, TurnAdmission, agent_error},
 };
 use crate::{
     Error, OperationId, Result,
@@ -127,9 +127,8 @@ where
             frozen.map(|cut| cut.through),
         )
         .await
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        let initial_notices = crate::agent::turn_notices(&self.agent)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        .map_err(agent_error)?;
+        let initial_notices = crate::agent::turn_notices(&self.agent).map_err(agent_error)?;
         let inputs = selection.inputs.into_iter().filter(|input| {
             !matches!(&input.input, crate::agent::TurnInput::Notice { notice, .. }
                 if !notice.wake && initial_notices.as_ref().is_some_and(|selected|
@@ -138,8 +137,7 @@ where
         let mut messages = Vec::new();
         let mut item = 0_u64;
         for input in inputs {
-            let content = crate::agent::model_input(&input.input)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let content = crate::agent::model_input(&input.input).map_err(agent_error)?;
             let external = content.file_refs().cloned().collect::<Vec<_>>();
             let authority = AdmittedAgent::verify(
                 &self.issuer,
@@ -156,15 +154,15 @@ where
                 crate::conversation::MAX_EXACT_JS_INTEGER,
                 None,
             )?;
-            let content = crate::agent::expand_attachments(content, &*reader).await?;
-            let mut parts = match content {
-                ModelContent::Text(text) => vec![ModelContentPart::Text { text }],
-                ModelContent::Part(part) => vec![part],
-                ModelContent::Parts(parts) => parts,
+            let mut content = crate::agent::expand_attachments(content, &*reader).await?;
+            let parts = match &mut content {
+                ModelContent::Text(_) => &mut [][..],
+                ModelContent::Part(part) => std::slice::from_mut(part),
+                ModelContent::Parts(parts) => parts.as_mut_slice(),
             };
             // Pin newly authorized content into the private volume. The running
             // executor keeps its original scope; no live grant is widened.
-            for part in &mut parts {
+            for part in parts {
                 if let ModelContentPart::File { file, .. } = part {
                     let bytes = reader
                         .read(file, file.descriptor().byte_length(), None, None)?
@@ -191,7 +189,7 @@ where
             }
             messages.push(ModelMessage {
                 role: ModelRole::User,
-                content: ModelContent::Parts(parts),
+                content,
             });
         }
         Ok(Selected {
@@ -240,13 +238,6 @@ where
             .filter(|selected| selected.operation == operation && selected.step == step)
             .map(|selected| selected.cut)
             .ok_or_else(|| Error::Storage("request has no selected steering range".into()))
-    }
-
-    fn visible_through(&self) -> Option<u64> {
-        self.admitted
-            .lock()
-            .ok()
-            .and_then(|admitted| admitted.through)
     }
 
     fn admitted(&self, operation: OperationId, step: u32) -> BoxProviderFuture<'_, Result<()>> {

@@ -249,6 +249,91 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
 }
 
 #[tokio::test]
+async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_prefix() -> Result {
+    let stream = Arc::new(MemoryStream::default());
+    let path = super::create(&stream, id(216)).await?;
+    let (filesystem, binding) = private(&path).await?;
+    let model = Arc::new(ScriptedModelProvider::new([]));
+    let host = FilesystemTurnHost::new(
+        stream.clone(),
+        filesystem,
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    );
+    let mut adoption = adopted(path.id());
+    adoption.volumes = vec![binding];
+    let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+    let operation = OperationId::from_bytes([216; 16]);
+    let open = host
+        .open(
+            &state,
+            operation,
+            0,
+            &ModelContent::Text("initial".into()),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+    let boundary = open.journal.model_boundary().ok_or("no boundary")?;
+    assert!(boundary.messages(operation, 0, None).await?.is_empty());
+    boundary.admitted(operation, 0).await?;
+    for (name, wake) in [("quiet", false), ("waking", true)] {
+        let record = InboxRecord::Notice {
+            id: intent(name),
+            notice: acyclic_harness_core::conversation::wire::Notice {
+                source: "events".into(),
+                kind: "source.changed".into(),
+                body: serde_json::json!({"name": name}),
+                wake,
+                coalesce_key: None,
+            },
+        };
+        submit(&*stream, send(&path, &super::user(), &record)?).await?;
+    }
+    let messages = boundary.messages(operation, 1, None).await?;
+    assert_eq!(messages.len(), 2);
+    for message in &messages {
+        assert!(matches!(
+            &message.content,
+            ModelContent::Part(ModelContentPart::Notices { notices }) if notices.len() == 1
+        ));
+        message
+            .content
+            .validate_limits(Default::default(), &mut None)?;
+    }
+    let cut = boundary.selection(operation, 1)?;
+    assert_eq!(
+        cut,
+        BoundaryCut {
+            from: 1,
+            through: 3
+        }
+    );
+    assert!(boundary.transcript(operation).await?.is_none());
+    boundary.admitted(operation, 1).await?;
+    let transcript = boundary
+        .transcript(operation)
+        .await?
+        .ok_or("no transcript")?;
+    assert_eq!(transcript.through, cut.through);
+    assert!(boundary.messages(operation, 2, None).await?.is_empty());
+    assert!(
+        model.requests().is_empty(),
+        "boundary observation never dispatches"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -> Result {
     use acyclic_harness_core::{conversation::wire::Notice, model::ModelContentPart};
 

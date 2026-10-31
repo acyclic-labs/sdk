@@ -7,7 +7,9 @@
 //! queued and read back in inbox order, and an approval response taken out of
 //! order resumes the waiting turn instead of starting an entry. So the entry
 //! answering a request is found by binary search over the agent's own committed
-//! range. A goal run joins its original request to its terminal conversation
+//! range. A steering message joins the preceding entry through its admitted
+//! exclusive cursor, verifying its identity at the original inbox sequence.
+//! A goal run joins its original request to its terminal conversation
 //! entry through the one reference committed with that entry; no output is copied.
 
 use super::{AgentRecord as _, AgentState, ConversationEntry, Error, IntentId, TurnInput};
@@ -55,11 +57,15 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
 ) -> Result<Reply, Error> {
     let conversation = state.path.conversation()?;
     let (mut low, mut high) = (state.conversation_base, state.conversation_tail);
+    let mut preceding = None;
     while low < high {
         let middle = low + (high - low) / 2;
         let entry = entry(provider, &conversation, middle).await?;
         match entry.inbox.cmp(&inbox) {
-            std::cmp::Ordering::Less => low = middle + 1,
+            std::cmp::Ordering::Less => {
+                low = middle + 1;
+                preceding = Some((middle, entry));
+            }
             std::cmp::Ordering::Greater => high = middle,
             std::cmp::Ordering::Equal => {
                 return match &entry.input {
@@ -72,6 +78,40 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
                 };
             }
         }
+    }
+    if let Some((sequence, entry)) = preceding
+        && entry
+            .steering
+            .as_ref()
+            .is_some_and(|steering| inbox < steering.through)
+    {
+        // Every Message before this admitted cursor passed the same boundary;
+        // controls are not messages and a FollowUp stops that boundary. Read
+        // exactly the requested immutable source record, never the transcript.
+        let mut records = provider
+            .read(ReadRequest {
+                key: None,
+                path: state.path.inbox()?,
+                from: inbox,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .filter(|record| record.sequence == inbox)
+            .ok_or(Error::Record("admitted steering input is missing"))?;
+        return match super::InboxRecord::decode(&record.value)? {
+            super::InboxRecord::Message(message) if &message.id == id => {
+                goal_reply(provider, state, sequence, entry).await
+            }
+            _ => Err(Error::Conflict(
+                "the inbox sequence admitted another request",
+            )),
+        };
     }
     let queued = state.queued.iter().any(|queued| queued.inbox == inbox);
     let unread = state

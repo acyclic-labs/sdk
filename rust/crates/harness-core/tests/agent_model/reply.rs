@@ -158,3 +158,73 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Result {
+    let provider = MemoryStream::default();
+    let path = create(&provider, id(11)).await?;
+    for name in ["initial", "steered", "after"] {
+        let record = InboxRecord::Message(Message {
+            from: user(),
+            id: intent(name),
+            body: Box::new(file(name)?),
+            attachments: None,
+        });
+        submit(&provider, send(&path, &user(), &record)?).await?;
+    }
+    let selected = select_boundary(&provider, &path, 2, 1, Some(3)).await?;
+    assert_eq!(selected.inputs.len(), 1);
+    let mut settled = ConversationEntry::decode(&entry(1, message("initial")?)?)?;
+    settled.steering = Some(SteeringTranscript {
+        through: selected.through,
+        file: file("transcript")?,
+    });
+    append(
+        &provider,
+        &path,
+        vec![settled.encode()?, entry(3, message("after")?)?],
+    )
+    .await?;
+    let mut state = AgentState::adopted(path, &super::adopted(id(11))).expect("adopts");
+    state.queued.push_back(Queued {
+        inbox: 2,
+        input: message("steered")?,
+    });
+    // Staging an entry is not settling it: only the committed tail admits it.
+    assert_eq!(
+        reply(&provider, &state, 4, &intent("steered"), 2).await?,
+        Reply::Pending
+    );
+    state.conversation_tail = 1;
+    state.queued.clear();
+    state.steered_through = selected.through;
+    assert!(matches!(
+        reply(&provider, &state, 4, &intent("steered"), 2).await?,
+        Reply::Answered { sequence: 0, entry, origin: None } if entry == settled
+    ));
+    assert!(matches!(
+        reply(&provider, &state, 4, &intent("wrong"), 2).await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        reply(&provider, &state, 4, &intent("after"), 3).await?,
+        Reply::Dropped,
+        "the exclusive admitted cursor cannot answer a later input"
+    );
+    state.conversation_tail = 2;
+    assert!(matches!(
+        reply(&provider, &state, 4, &intent("steered"), 2).await?,
+        Reply::Answered { sequence: 0, .. }
+    ));
+    assert!(matches!(
+        reply(&provider, &state, 4, &intent("after"), 3).await?,
+        Reply::Answered { sequence: 1, .. }
+    ));
+    // Fork history cannot answer a request accepted by the child itself.
+    state.conversation_base = 1;
+    assert_eq!(
+        reply(&provider, &state, 4, &intent("steered"), 2).await?,
+        Reply::Dropped
+    );
+    Ok(())
+}

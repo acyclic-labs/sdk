@@ -76,27 +76,29 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
             return Err(Error::Record("steering inbox is not contiguous"));
         }
         let input = InboxRecord::decode(&record.value)?;
-        if matches!(input, InboxRecord::Cancel(_) | InboxRecord::Archive(_))
-            || record.sequence > initial
-                && matches!(input, InboxRecord::FollowUp(_) | InboxRecord::Context(_))
-        {
-            break;
-        }
+        let queued = match input {
+            InboxRecord::Cancel(_) | InboxRecord::Archive(_) => break,
+            InboxRecord::Notice { id, notice } => Some(Queued {
+                inbox: record.sequence,
+                input: super::TurnInput::Notice { id, notice },
+            }),
+            InboxRecord::Message(_) => turn_input(record.sequence, input),
+            other => {
+                // Inputs that keep their own turn are queue barriers. Passing
+                // one would let a later steering message settle before an
+                // earlier turn, destroying the inbox/conversation ordering.
+                if record.sequence > initial && turn_input(record.sequence, other).is_some() {
+                    break;
+                }
+                None
+            }
+        };
         selection.through = record
             .sequence
             .checked_add(1)
             .ok_or(Error::Record("steering inbox cursor overflow"))?;
-        match input {
-            InboxRecord::Notice { id, notice } => selection.inputs.push(Queued {
-                inbox: record.sequence,
-                input: super::TurnInput::Notice { id, notice },
-            }),
-            InboxRecord::Message(_) => {
-                if let Some(input) = turn_input(record.sequence, input) {
-                    selection.inputs.push(input);
-                }
-            }
-            _ => {}
+        if let Some(input) = queued {
+            selection.inputs.push(input);
         }
     }
     if until.is_some_and(|until| until != selection.through) {
@@ -118,10 +120,6 @@ pub trait ModelBoundary: acyclic_stream::ProviderPlatform {
 
     /// Range selected for this request; published by the existing request journal.
     fn selection(&self, operation: crate::OperationId, step: u32) -> crate::Result<BoundaryCut>;
-
-    /// Exclusive inbox cursor actually included in an admitted model request.
-    /// Enqueuing or merely selecting a batch does not advance this cursor.
-    fn visible_through(&self) -> Option<u64>;
 
     /// Called only after ModelStarted is durable, including on replay. A frozen
     /// selection alone never claims recipient visibility or removes queue input.
