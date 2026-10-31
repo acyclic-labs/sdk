@@ -60,10 +60,11 @@ test("actual Codex installs and removes the exact native plugin in its fixture p
       assert.equal(registered[0].root, packageRoot);
       assert.equal(registered[0].marketplaceSource.sourceType, "local");
       assert.equal(registered[0].marketplaceSource.source, packageRoot);
+      const originalConfig = await readFile(join(env.CODEX_HOME, "config.toml"));
       assert.equal((await run(executable, ["install", "codex", "--plugin-root", packageRoot])).code, 0);
+      assert.deepEqual(await readFile(join(env.CODEX_HOME, "config.toml")), originalConfig);
       assert.deepEqual(await list(), installed);
       step = "refuse a foreign source before changing the admitted registration";
-      const originalConfig = await readFile(join(env.CODEX_HOME, "config.toml"));
       const foreign = join(root, "foreign");
       await mkdir(join(foreign, ".agents/plugins"), { recursive: true });
       await copyFile(join(packageRoot, ".agents/plugins/marketplace.json"), join(foreign, ".agents/plugins/marketplace.json"));
