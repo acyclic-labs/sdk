@@ -179,7 +179,7 @@ impl SkillPublicationCut {
                     member.commit.as_bytes(),
                     member.end,
                     member.context.volume.into_bytes(),
-                    generation.as_ref(),
+                    &generation[..],
                     member.context.authority_sequence.get(),
                 )
             });
@@ -191,7 +191,9 @@ impl SkillPublicationCut {
                 self.executing_volume.into_bytes(),
                 member,
             ),
-            io.remaining()?.bytes_encoded,
+            io.remaining()?
+                .bytes_encoded
+                .min(acyclic_stream::MAX_RECORD_BYTES as u64),
             true,
         )
     }
