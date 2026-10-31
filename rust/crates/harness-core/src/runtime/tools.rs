@@ -575,8 +575,8 @@ impl ToolContext {
         let work = io.and_then(crate::executor::PreparationIo::original_native_work);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let work = None;
-        if let Some(workspace) = self.task().harness.workspace_tools.as_ref() {
-            return workspace.read_path(path, work).map_err(Error::tool_input);
+        if let Some(targets) = self.task().harness.targets.as_ref() {
+            return targets.read_path(path, work).map_err(Error::tool_input);
         }
         Ok((
             &self.task().tool_read_content().volume,
