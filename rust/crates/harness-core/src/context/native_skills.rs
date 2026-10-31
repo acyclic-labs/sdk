@@ -589,8 +589,13 @@ impl SkillReader for ProjectCatalog<'_> {
         relative: &'a str,
         cut: &'a Self::Revision,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
-        Box::pin(async move {
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (acyclic_stream::OwnedBytes, PinnedContextPath),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
             let path = format!("/{relative}");
             let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                 work: self.directory.work,
@@ -722,8 +727,13 @@ impl SkillReader for UserCatalogSource<'_> {
         path: &'a str,
         reference: &'a SourceReference,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
-        Box::pin(async move {
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (acyclic_stream::OwnedBytes, PinnedContextPath),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
             let cancellation = self.work.cancellation();
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
             let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {

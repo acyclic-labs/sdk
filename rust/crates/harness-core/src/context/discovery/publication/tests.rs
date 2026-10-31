@@ -212,17 +212,17 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let blocked = PreparationIo::from_budget(
         WorkBudget {
             allocation_operations: 0,
-            ..WorkBudget::UNBOUNDED
+            ..acyclic_fs::performance::work_budget(4_000_000, 4_000_000)
         },
         &cancel,
     )?;
-    let refused = VolumeDiscovery {
+    let mut discovery = VolumeDiscovery {
         reader: reader.as_ref(),
         root: &metadata.source.root,
         io: Some(&blocked),
-    }
-    .skill_prefix(&metadata.source.path, &metadata.source.generation, 32_768)
-    .await;
+    };
+    let refused =
+        discovery.skill_prefix(&metadata.source.path, &metadata.source.generation, 32_768);
     assert!(
         refused.is_err(),
         "prefix escaped its original allocation owner"
