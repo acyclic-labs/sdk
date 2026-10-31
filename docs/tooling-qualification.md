@@ -195,7 +195,7 @@ File-backed event keys now retain only byte offsets, lengths and the original tr
 
 Linux x86_64: three focused collector controls passed. Sixteen existing controls passed after restoring their isolated pinned dependency. Actual full-payload retention and omitted wait removal each failed the unchanged oracle. The first aggregate remains a missing-dependency refusal for the original runner; only its unreached checks were resumed. The collector implementation in this composition is byte-identical to that qualified source. No combined-head test, RSS measurement or speedup is inferred.
 
-Current scoped test-source accounting against `1c01073e7d55fac04c98e323ab90235d5a293824`: 1,962 added / 2,131 removed; **169 net lines removed**. Dedicated test-code paths and explicit inline/model regressions are counted once; unchanged main observer controls, non-code fixtures/provenance, upstream imports, Cargo metadata and preserved proof moves earn no deletion credit. Historical baseline tables above retain their original source and conventions.
+Current scoped test-source accounting against `1c01073e7d55fac04c98e323ab90235d5a293824`: 1,964 added / 2,133 removed; **169 net lines removed**. Dedicated test-code paths and explicit inline/model regressions are counted once; unchanged main observer controls, non-code fixtures/provenance, upstream imports, Cargo metadata and preserved proof moves earn no deletion credit. Historical baseline tables above retain their original source and conventions.
 
 ## Preparation and executable custody
 
