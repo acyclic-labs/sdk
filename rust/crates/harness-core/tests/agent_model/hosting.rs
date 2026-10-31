@@ -480,7 +480,7 @@ async fn every_sealed_write_is_attested_and_an_unknown_retry_presents_the_same_e
     assert_eq!(held.request(), &request);
     let original = stream
         .inner
-        .inspect_idempotency(request.idempotency_key)
+        .inspect_idempotency(request.idempotency_key.clone())
         .await?
         .ok_or("the unknown result must already be committed")?;
     let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &original.outcome else {
