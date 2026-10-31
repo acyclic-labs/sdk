@@ -1,7 +1,7 @@
 //! Invocation uses the existing input, checkpoint publication and stream replay.
 use super::{AppliedCut, Error, Snapshot, State, Store, covers};
 use crate::{
-    guest::{Effect, Trigger},
+    guest::{Effect, GuestError, Trigger},
     invocation::Invocation,
 };
 use acyclic_stream::StreamProviderExt as _;
@@ -27,6 +27,9 @@ struct ReplyWire {
     revision: u64,
     #[prost(bytes = "bytes", tag = "5")]
     response: Bytes,
+    /// Canonical public GuestError value; mutually exclusive with response.
+    #[prost(bytes = "bytes", optional, tag = "6")]
+    failure: Option<Bytes>,
 }
 
 /// Original committed input, retained while waiting or reconciling a reply.
@@ -219,8 +222,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         )
     }
 
-    /// Observe the original reply after its explicit committed input cut. The
-    /// state follow registers and rechecks through wait_applied; no polling,
+    /// Observe the original reply after its explicit committed input cut.
+    /// A committed guest failure returns [`Error::InvocationFailed`] with its
+    /// original typed cause and receipt. The state follow registers and rechecks
+    /// through wait_applied; no polling,
     /// scheduler, input replay or second journal is introduced here.
     pub async fn wait_invocation(
         &self,
@@ -253,7 +258,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 )
                 .try_next()
                 .await?
-                .ok_or(StreamError::Unavailable)?;
+                .ok_or(Error::Invalid("consumed invocation has no reply"))?;
                 let wire = ReplyWire::decode(reply.value.as_ref())
                     .map_err(|_| Error::Invalid("invalid invocation reply"))?;
                 if wire.encode_to_vec().as_slice() != reply.value.as_ref()
@@ -295,16 +300,58 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         "invocation reply is not co-committed with consumed input",
                     ));
                 }
+                let receipt = InvocationReceipt {
+                    ticket,
+                    state,
+                    reply,
+                };
+                if let Some(failure) = wire.failure {
+                    let source: GuestError = serde_json::from_slice(&failure)
+                        .map_err(|_| Error::Invalid("invalid invocation failure"))?;
+                    if !wire.response.is_empty()
+                        || serde_json::to_vec(&source)
+                            .map_err(|_| Error::Invalid("invalid invocation failure"))?
+                            .as_slice()
+                            != failure.as_ref()
+                    {
+                        return Err(Error::Invalid("non-canonical invocation failure"));
+                    }
+                    return Err(Error::InvocationFailed {
+                        source,
+                        receipt: Box::new(receipt),
+                    });
+                }
                 Ok(CommittedInvocation {
                     response: wire.response,
-                    receipt: InvocationReceipt {
-                        ticket,
-                        state,
-                        reply,
-                    },
+                    receipt,
                 })
             }
         )
+
+    }
+
+    /// A failed invocation consumes only its original input and retains every
+    /// previously committed guest value. No failed-attempt effects can escape.
+    pub(super) fn prepare_invocation_failure(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        trigger: &Trigger,
+        delivered: Option<&Record>,
+        failure: &GuestError,
+        key: IdempotencyKey,
+    ) -> Result<Option<super::PreparedPublish>, Error> {
+        let Some((path, reply)) =
+            self.invocation_reply(previous, trigger, delivered, Some(Err(failure)), &[])?
+        else {
+            return Ok(None);
+        };
+        let original = super::owned(previous, epoch)?;
+        let mut state = original.clone();
+        super::consume(&mut state, &original.alarm, trigger)?;
+        let mut prepared = self.prepare(previous, state, vec![reply], key)?;
+        prepared.reply = Some(path);
+        Ok(Some(prepared))
     }
 
     pub(super) fn invocation_reply(
@@ -312,7 +359,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         previous: &Snapshot,
         trigger: &Trigger,
         delivered: Option<&Record>,
-        response: Option<&Bytes>,
+        outcome: Option<Result<&Bytes, &GuestError>>,
         effects: &[Effect],
     ) -> Result<Option<(StreamPath, Effect)>, Error> {
         let invocation = delivered
@@ -320,7 +367,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .transpose()?
             .flatten();
         let Some((state_path, invocation)) = invocation else {
-            return if response.is_none() {
+            return if !matches!(outcome, Some(Ok(_))) {
                 Ok(None)
             } else {
                 Err(Error::Invalid("response without an invocation"))
@@ -331,7 +378,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             || self.actor(&previous.path)? != *invocation.actor()
             || !matches!(trigger, Trigger::Record { subscription, sequence } if subscription == invocation.subscription() && *sequence == record.sequence)
         {
-            return if response.is_none() {
+            return if !matches!(outcome, Some(Ok(_))) {
                 Ok(None)
             } else {
                 Err(Error::Invalid(
@@ -348,6 +395,18 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 "guest effect targets the host's invocation reply",
             ));
         }
+        let (response, failure) =
+            match outcome.ok_or(Error::Invalid("invocation has no response"))? {
+                Ok(response) => (response.clone(), None),
+                Err(failure) => (
+                    Bytes::new(),
+                    Some(
+                        serde_json::to_vec(failure)
+                            .map_err(|_| Error::Invalid("invocation failure does not encode"))?
+                            .into(),
+                    ),
+                ),
+            };
         let value = ReplyWire {
             request_digest: Sha256::digest(&record.value).to_vec().into(),
             input_commit: Bytes::copy_from_slice(record.commit_id.as_bytes()),
@@ -356,9 +415,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 .tail
                 .checked_add(1)
                 .ok_or(Error::Invalid("invocation revision overflow"))?,
-            response: response
-                .ok_or(Error::Invalid("invocation has no response"))?
-                .clone(),
+            response,
+            failure,
         }
         .encode_to_vec();
         Ok(Some((

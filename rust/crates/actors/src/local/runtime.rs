@@ -758,7 +758,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 cancellation.clone(),
             );
             let result = {
-                let interrupted = self.interrupt(&mut inner, cancellation);
+                let interrupted = self.interrupt(&mut inner, cancellation.clone());
                 futures::pin_mut!(interrupted);
                 match futures::future::select(
                     handled,
@@ -780,20 +780,38 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             // Release any pending provider I/O before checkpoint publication.
             inner.follows.clear();
-            let transition = result?;
-            if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
-                > limits.checkpoint_bytes()
-            {
-                return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
-            }
-            let publication = self.store.prepare_publish(
-                &snapshot,
-                epoch,
-                &trigger,
-                record.as_ref(),
-                transition,
-                key(&snapshot, "publish")?,
-            )?;
+            let publication = match result {
+                Ok(transition) => {
+                    if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
+                        > limits.checkpoint_bytes()
+                    {
+                        return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+                    }
+                    self.store.prepare_publish(
+                        &snapshot,
+                        epoch,
+                        &trigger,
+                        record.as_ref(),
+                        transition,
+                        key(&snapshot, "publish")?,
+                    )?
+                }
+                Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
+                    let Some(publication) = self.store.prepare_invocation_failure(
+                        &snapshot,
+                        epoch,
+                        &trigger,
+                        record.as_ref(),
+                        &failure,
+                        key(&snapshot, "publish")?,
+                    )?
+                    else {
+                        return Err(Error::Handler(failure));
+                    };
+                    publication
+                }
+                Err(error) => return Err(error),
+            };
             match self.store.submit_retained(publication).await {
                 Ok(observed) => {
                     inner.observed = Some(Arc::new(

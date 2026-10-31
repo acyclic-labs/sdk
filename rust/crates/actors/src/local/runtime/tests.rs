@@ -13,6 +13,7 @@ use futures::future::BoxFuture;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+mod invocation_failure;
 
 fn root() -> Result<StreamPath, StreamError> {
     StreamPath::new("harness/actors")

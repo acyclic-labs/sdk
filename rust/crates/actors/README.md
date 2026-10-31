@@ -104,6 +104,22 @@ time plus data/control request counts. A downstream service can instrument
 physical dispatch with the same ledger; counts at an API wrapper boundary alone
 do not establish physical network traffic. No benchmark is scheduled by CI.
 
+### Invocation failures
+
+`local::Store::invoke` and `wait_invocation` return `Error::InvocationFailed`
+when the guest rejects a committed, explicitly addressed invocation. The error
+retains its original typed `GuestError` and an `InvocationReceipt` proving that
+the input cursor and failure reply committed together. The failure keeps the
+previous checkpoint, metadata, journal and alarm; failed-attempt effects are
+discarded. Retrying the same invocation, including after reopening storage,
+returns that original cause and receipt without running the guest again.
+
+Failure uses the same conditional publication as a successful response. It adds
+no commit or durability barrier. Cancelled attempts and ordinary unmarked input
+failures remain queued and retain the runtime's existing error behavior. Provider
+errors keep their storage or unknown-outcome classification; an absent reply
+after proven consumption is an invalid publication, not a successful response.
+
 ### Guest durable state binding
 
 `domain::Binding::actor_state(name)` selects the executing actor's own state.

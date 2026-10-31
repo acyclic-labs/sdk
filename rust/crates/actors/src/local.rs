@@ -57,6 +57,15 @@ pub enum Error {
     /// The handler failed; nothing was published and the input stays queued.
     #[error(transparent)]
     Handler(#[from] GuestError),
+    /// A deterministic guest failure was committed with its consumed input.
+    /// Reconciliation returns this same terminal result, never a new attempt.
+    #[error("actor invocation failed: {source}")]
+    InvocationFailed {
+        /// Original typed guest failure, including its exact detail.
+        source: GuestError,
+        /// Original co-committed state and failure reply.
+        receipt: Box<InvocationReceipt>,
+    },
     /// A request contradicts the durable state machine.
     #[error("invalid actor transition: {0}")]
     Invalid(&'static str),
@@ -72,6 +81,7 @@ impl Error {
             Self::Conflict => "conflict",
             Self::Paused => "paused",
             Self::Handler(_) => "handler",
+            Self::InvocationFailed { .. } => "invocation_failed",
             Self::Invalid(_) => "invalid",
         }
     }
@@ -666,7 +676,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             previous,
             trigger,
             delivered,
-            transition.response.as_ref(),
+            transition.response.as_ref().map(Ok),
             &transition.effects,
         )? {
             transition.effects.push(reply);
@@ -896,6 +906,13 @@ fn next(
     trigger: &Trigger,
     transition: &Transition,
 ) -> Result<State, Error> {
+    consume(&mut state, original_alarm, trigger)?;
+    change_alarm(&mut state.alarm, transition.alarm)?;
+    state.checkpoint = Some(transition.checkpoint.clone());
+    Ok(state)
+}
+
+fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Result<(), Error> {
     if state.paused {
         return Err(Error::Paused);
     }
@@ -935,9 +952,7 @@ fn next(
             }
         }
     }
-    change_alarm(&mut state.alarm, transition.alarm)?;
-    state.checkpoint = Some(transition.checkpoint.clone());
-    Ok(state)
+    Ok(())
 }
 
 fn change_alarm(alarm: &mut Alarm, change: AlarmChange) -> Result<(), Error> {
