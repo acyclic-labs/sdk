@@ -109,12 +109,74 @@ impl StreamProvider for Provider {
 async fn pause_retains_decision_cleanup_and_unknown_after_waiter_loss() -> TestResult {
     active_cleanup_and_queued_controls().await?;
     completed_unread_failure().await?;
+    failed_pause_reports_before_held_delivery().await?;
     replacement_and_producer_loss().await?;
     for fault in [Fault::Load, Fault::Refuse, Fault::Unknown] {
         for abandon in [false, true] {
             publication_cut(fault, abandon).await?;
         }
     }
+    Ok(())
+}
+
+async fn failed_pause_reports_before_held_delivery() -> TestResult {
+    let provider = Arc::new(Provider::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "pause-error-delivery", &[b"emit"]).await?;
+    let handler = Arc::new(Gated {
+        package: Package::new()?,
+        active: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+        gate: tokio::sync::Semaphore::new(0),
+    });
+    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    runtime.track(address.clone())?;
+    let (entered, release) = provider.arm(Fault::Load);
+    let mut failed = Box::pin(runtime.pause(&address, true));
+    assert!(futures::poll!(failed.as_mut()).is_pending());
+    entered.await?;
+    // Queue the real delivery before the original failed load completes. The
+    // mutex's own wake drives it; its handler holds the original gate permit.
+    let mut delivery = Box::pin(runtime.drain_actor(&address));
+    assert!(futures::poll!(delivery.as_mut()).is_pending());
+    release.send(()).map_err(|_| "lost failed load producer")?;
+    futures::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(delivery.as_mut(), cx).is_pending());
+        if handler.active.load(Ordering::SeqCst) == 1 {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
+    let slot = runtime.slot(&address).ok_or("missing original placement")?;
+    assert!(
+        slot.delivery_control
+            .lock()
+            .expect("control lock")
+            .failure
+            .is_some(),
+        "failed pause lost error custody to a queued delivery"
+    );
+    assert!(matches!(
+        failed.await,
+        Err(Error::Stream(StreamError::AccessDenied))
+    ));
+    assert_eq!(handler.active.load(Ordering::SeqCst), 1);
+    // Taking the error cannot wait for this held handler. A later pause can
+    // now cancel it and retain cleanup, rather than queue behind an error read.
+    let mut late = Box::pin(runtime.pause(&address, true));
+    assert!(futures::poll!(late.as_mut()).is_pending());
+    drop(late);
+    handler.gate.add_permits(1);
+    let (_delivery_outcome, resumed) = futures::join!(delivery, runtime.pause(&address, false));
+    resumed?;
+    handler.gate.add_permits(1);
+    runtime.drain_actor(&address).await?;
+    assert_eq!(
+        records(&*provider, "out/pause-error-delivery").await?.len(),
+        1
+    );
     Ok(())
 }
 
@@ -139,7 +201,11 @@ async fn completed_unread_failure() -> TestResult {
     entered.await?;
     let slot = runtime.slot(&address).ok_or("missing original placement")?;
     assert!(
-        slot.inner.lock().await.control_failure.is_some(),
+        slot.delivery_control
+            .lock()
+            .expect("control lock")
+            .failure
+            .is_some(),
         "unread completed pause lost its original Unknown"
     );
     assert!(!runtime.release(&address));
@@ -277,7 +343,11 @@ async fn publication_cut(fault: Fault, abandon: bool) -> TestResult {
         let slot = runtime.slot(&address).ok_or("lost placement")?;
         let control = slot.control.lock().await;
         assert!(
-            slot.inner.lock().await.control_failure.is_some(),
+            slot.delivery_control
+                .lock()
+                .expect("control lock")
+                .failure
+                .is_some(),
             "abandoned error lost its original outcome"
         );
         drop(control);

@@ -83,6 +83,8 @@ struct Slot {
 struct DeliveryControl {
     paused: bool,
     cancellation: Option<crate::guest::CancellationToken>,
+    /// An unread control result retains its original uncertain publication.
+    failure: Option<Box<Error>>,
 }
 
 // Registration borrows the original delivery token; Drop clears it before
@@ -133,8 +135,6 @@ struct Inner {
     last_input: Option<String>,
     /// The exact request and participant custody survive an unknown acknowledgement.
     pending: Option<(Arc<Snapshot>, PreparedPublish)>,
-    /// An abandoned control result retains its original uncertain publication.
-    control_failure: Option<Box<Error>>,
 }
 
 enum Event {
@@ -270,7 +270,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let Ok(mut inner) = slot.inner.try_lock() else {
             return false;
         };
-        if inner.pending.is_some() || inner.control_failure.is_some() {
+        if inner.pending.is_some()
+            || slot
+                .delivery_control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .failure
+                .is_some()
+        {
             return false;
         }
         inner.released = true;

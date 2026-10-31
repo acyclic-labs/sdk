@@ -9,8 +9,14 @@ struct Failure {
 }
 
 impl Failure {
-    async fn take(self) -> Error {
-        let error = self.slot.inner.lock().await.control_failure.take();
+    fn take(self) -> Error {
+        let error = self
+            .slot
+            .delivery_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failure
+            .take();
         // The original control owner retains its lock through this take, so
         // another control cannot consume a living observer's result.
         drop(self.acknowledgement);
@@ -39,8 +45,7 @@ where
             Ok(value) => {
                 let _ = send.send(Ok(value));
             }
-            Err(error) => {
-                slot.inner.lock().await.control_failure = Some(Box::new(error));
+            Err(()) => {
                 let (acknowledgement, taken) = futures::channel::oneshot::channel();
                 let _ = send.send(Err(Failure {
                     slot: Arc::clone(slot),
@@ -55,7 +60,7 @@ where
     async move {
         match receive.await {
             Ok(Ok(value)) => Ok(value),
-            Ok(Err(failure)) => Err(failure.take().await),
+            Ok(Err(failure)) => Err(failure.take()),
             Err(_) => Err(Error::Stream(StreamError::Unavailable)),
         }
     }
@@ -87,12 +92,15 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
     slot: &Slot,
     paused: bool,
     transition: impl std::future::Future<Output = T>,
-) -> Result<T, Error> {
+) -> Result<T, ()> {
     let (mut gate, cancellation) = {
         let mut control = slot
             .delivery_control
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if control.failure.is_some() {
+            return Err(());
+        }
         let gate = Gate {
             slot,
             decided: control.paused,
@@ -108,41 +116,54 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
     }
     // The original delivery retains this lock through physical cleanup and
     // publication settlement. A later control cannot pass either transition.
-    let mut delivery = slot.inner.lock().await;
-    if let Some(error) = delivery.control_failure.take() {
-        return Err(*error);
-    }
-    let mut epoch = (delivery.epoch != 0).then_some(delivery.epoch);
-    loop {
-        let snapshot = store.load(actor).await?;
-        let state = snapshot
-            .state()
-            .ok_or(Error::Invalid("actor state was never created"))?;
-        if epoch.is_some_and(|epoch| epoch != state.epoch()) {
-            return Err(Error::Conflict);
-        }
-        epoch = Some(state.epoch());
-        gate.decided = state.paused();
-        if state.paused() == paused {
-            break;
-        }
-        let operation = if paused { "pause" } else { "resume" };
-        match store
-            .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
-            .await
-        {
-            Err(Error::Conflict) => {}
-            result => {
-                result?;
-                gate.decided = paused;
+    let delivery = slot.inner.lock().await;
+    let result = async {
+        let mut epoch = (delivery.epoch != 0).then_some(delivery.epoch);
+        loop {
+            let snapshot = store.load(actor).await?;
+            let state = snapshot
+                .state()
+                .ok_or(Error::Invalid("actor state was never created"))?;
+            if epoch.is_some_and(|epoch| epoch != state.epoch()) {
+                return Err(Error::Conflict);
+            }
+            epoch = Some(state.epoch());
+            gate.decided = state.paused();
+            if state.paused() == paused {
                 break;
             }
+            let operation = if paused { "pause" } else { "resume" };
+            match store
+                .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
+                .await
+            {
+                Err(Error::Conflict) => {}
+                result => {
+                    result?;
+                    gate.decided = paused;
+                    break;
+                }
+            }
         }
+        Ok(transition.await)
     }
-    let result = transition.await;
+    .await;
+    let result = match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            // Publish error custody before reopening delivery. Its waiter and
+            // later controls use this same short control lock, never the
+            // delivery lock an unrelated handler/provider may retain.
+            slot.delivery_control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .failure = Some(Box::new(error));
+            Err(())
+        }
+    };
     // Keep delivery custody until resource transition completion, then publish
     // the gate decision before allowing a queued delivery to acquire the lock.
     drop(gate);
     drop(delivery);
-    Ok(result)
+    result
 }
