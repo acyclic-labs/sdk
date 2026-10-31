@@ -9,6 +9,7 @@ acyclic_test_support::counting_allocator!();
 mod args;
 mod headless;
 mod lifecycle;
+mod usage_export;
 mod view;
 
 use acyclic_harness::{
@@ -219,24 +220,16 @@ async fn drive(
         }
         return phase(|| view::run(conversation, args.inline, args.resume)).await;
     }
-    use std::io::Write as _;
     let usage_stdout = args
         .usage_jsonl
         .as_ref()
         .is_some_and(|path| path.as_os_str() == "-");
     // Admit the explicit output before sending any model work. The snapshot
     // replaces an earlier export, so replaying a prompt never appends duplicates.
-    let mut usage: Option<Box<dyn std::io::Write>> = args
+    let mut usage = args
         .usage_jsonl
-        .as_ref()
-        .map(|path| {
-            if usage_stdout {
-                Ok(Box::new(std::io::stdout().lock()) as Box<dyn std::io::Write>)
-            } else {
-                std::fs::File::create(path)
-                    .map(|file| Box::new(std::io::BufWriter::new(file)) as Box<dyn std::io::Write>)
-            }
-        })
+        .as_deref()
+        .map(usage_export::Output::open)
         .transpose()?;
     let mut output: Box<dyn std::io::Write> = if usage_stdout {
         Box::new(std::io::stderr().lock())
@@ -248,15 +241,15 @@ async fn drive(
     } else {
         phase(|| headless::jsonl(&conversation, &operation, &mut output)).await
     };
-    if let Some(usage) = &mut usage {
+    if let Some(mut usage) = usage.take() {
         // A refused/failed run can still have committed admissions. Exporting
         // them never changes its result into success or fabricates completion.
         let exported = conversation
-            .write_usage_jsonl(usage.as_mut())
+            .write_usage_jsonl(usage.writer())
             .await
             .and_then(|()| {
                 usage
-                    .flush()
+                    .finish()
                     .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
             });
         if let Err(error) = exported {
