@@ -569,6 +569,7 @@ impl Shared {
         }
         *retired = true;
         self.retiring.store(true, Ordering::Release);
+        self.delivery.notify_lost();
         let mut reading = self.reading();
         if self.delivery.original.is_some() {
             self.finish_native_reader_locked(&mut reading);
@@ -589,6 +590,7 @@ impl Shared {
         }
         *retired = true;
         self.retiring.store(true, Ordering::Release);
+        self.delivery.notify_lost();
         if self.delivery.original.is_some() {
             self.finish_native_reader_locked(&mut reading);
         }
