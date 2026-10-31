@@ -5,6 +5,7 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { RegistryPublicationPending, publicationCommand } from "./registry-publication.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const order = JSON.parse(readFileSync(join(root, "release", "cargo-crates.json"), "utf8"));
@@ -120,21 +121,6 @@ export function registryArchiveMatches(name, version, observed, checksum, source
   return unchanged.status === 0 ? "equivalent" : null;
 }
 
-async function waitForRegistry(name, version, checksum, sourceSha, item) {
-  for (let attempt = 0; attempt < 90; attempt += 1) {
-    const observed = await registryVersion(name, version);
-    if (observed) {
-      if (observed.yanked) fail(`${name}@${version} is yanked`);
-      if (!registryArchiveMatches(name, version, observed, checksum, sourceSha, item)) {
-        fail(`${name}@${version} exists with different contents`);
-      }
-      return;
-    }
-    await new Promise(resolveDelay => setTimeout(resolveDelay, 2_000));
-  }
-  fail(`${name}@${version} did not become visible on crates.io`);
-}
-
 async function publish(sourceSha, releaseVersion) {
   if (!/^[0-9a-f]{40}$/.test(sourceSha)) fail("source commit must be a full lowercase Git SHA-1");
   if (!/^\d+\.\d+\.\d+(?:[+-][0-9A-Za-z.-]+)?$/.test(releaseVersion)) fail("release version is invalid");
@@ -156,13 +142,20 @@ async function publish(sourceSha, releaseVersion) {
       continue;
     }
     const result = run("cargo", ["publish", "--locked", "--no-verify", "--manifest-path", item.manifest_path], { stdio: "inherit" });
-    if (result.status !== 0) {
-      const raced = await registryVersion(name, releaseVersion);
-      if (!raced || raced.yanked || !registryArchiveMatches(name, releaseVersion, raced, checksum, sourceSha, item)) {
-        fail(`cargo publish failed for ${name}`);
+    // The publisher has ended. Inspect propagation once, preserving exact bytes
+    // even when that publisher lost its success reply or another caller won.
+    const published = await registryVersion(name, releaseVersion);
+    if (!published) {
+      if (result.status !== 0) {
+        fail(`step=cargo-publication ${name}@${releaseVersion} failed and its acceptance is unobservable; recovery command: ${publicationCommand()}`);
       }
+      throw new RegistryPublicationPending("cargo", name, releaseVersion,
+        { visible: false, publicationStatus: result.status });
     }
-    await waitForRegistry(name, releaseVersion, checksum, sourceSha, item);
+    if (published.yanked) fail(`step=cargo-publication-identity ${name}@${releaseVersion} is yanked; recovery command: ${publicationCommand()}`);
+    if (!registryArchiveMatches(name, releaseVersion, published, checksum, sourceSha, item)) {
+      fail(`step=cargo-publication-identity ${name}@${releaseVersion} exists with different contents; recovery command: ${publicationCommand()}`);
+    }
     console.log(`Published and verified: ${name}@${releaseVersion}`);
   }
 }
