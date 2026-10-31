@@ -368,6 +368,10 @@ export type ActorStateCommit = {
  */
 writes: Array<ActorMetadataWrite>,
 /**
+ * Keys removed in this same publication, before applying assignments.
+ */
+deletions: Array<string>,
+/**
  * Original committed journal tail, as exact u64 decimal.
  */
 journalFrom: string,
