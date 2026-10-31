@@ -181,7 +181,12 @@ fn native_session_events_retain_the_original_meter_and_process_owner() {
     );
     original.cancelled.store(false, Ordering::Release);
     while !slot.pump_stdin().unwrap() {
-        slot.io(&observer).unwrap().readiness().unwrap().0.block();
+        slot.io(&observer)
+            .unwrap()
+            .stdin_readiness()
+            .unwrap()
+            .0
+            .block();
     }
     slot.require_stdin_complete().unwrap();
     assert!(

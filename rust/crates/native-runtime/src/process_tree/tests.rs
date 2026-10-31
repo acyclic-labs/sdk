@@ -757,12 +757,19 @@ fn queued_stdin_delivers_exact_bytes_and_eof_through_the_capture_pump() {
         io::ErrorKind::AlreadyExists
     );
     while !tree.pump_stdin().expect("nonblocking prompt progress") {
-        tree.readiness()
+        tree.stdin_readiness()
             .expect("arm original stdin or exit")
             .0
             .block();
     }
     tree.require_stdin_complete().expect("prompt delivered");
+    assert_eq!(
+        tree.stdin_readiness()
+            .err()
+            .expect("no input remains")
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
     assert!(
         tree.wait_exit(None)
             .expect("original publisher exit")

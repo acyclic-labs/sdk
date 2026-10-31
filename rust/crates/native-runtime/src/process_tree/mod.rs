@@ -499,6 +499,32 @@ impl ProcessTree {
     /// owner then reads without waiting, as before; no thread or timer runs
     /// while it waits.
     pub fn readiness(&mut self) -> io::Result<ProcessReadiness> {
+        self.readiness_for(true)
+    }
+
+    /// Waits only for queued stdin progress or the original child's exit.
+    /// Call after [`Self::pump_stdin`] returns false. Unread output cannot
+    /// wake this wait; its owner must consume output separately if the child
+    /// needs that output drained before accepting input.
+    pub fn stdin_readiness(&mut self) -> io::Result<ProcessReadiness> {
+        if !self
+            .queued_stdin
+            .as_ref()
+            .is_some_and(PendingStdin::writing)
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        if self.child.is_none() {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        #[cfg(windows)]
+        if self.writer.0.is_none() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.readiness_for(false)
+    }
+
+    fn readiness_for(&mut self, output: bool) -> io::Result<ProcessReadiness> {
         let writing = self
             .queued_stdin
             .as_ref()
@@ -509,12 +535,12 @@ impl ProcessTree {
             if self.child.is_some() {
                 self.prepare_exit_source()?;
             }
-            let mut sources = Vec::with_capacity(4);
+            let mut sources = Vec::with_capacity(if output { 4 } else { 2 });
             if let Some(child) = &self.child {
-                if let Some(pipe) = &child.stdout {
+                if output && let Some(pipe) = &child.stdout {
                     sources.push(events::Source::Readable(pipe.as_fd()));
                 }
-                if let Some(pipe) = &child.stderr {
+                if output && let Some(pipe) = &child.stderr {
                     sources.push(events::Source::Readable(pipe.as_fd()));
                 }
                 if writing && let Some(pipe) = &child.stdin {
@@ -531,23 +557,27 @@ impl ProcessTree {
                 return events::arm(&[], None).map(ProcessReadiness);
             };
             let [stdout, stderr] = &mut self.readers;
-            if stdout.is_none()
+            if output
+                && stdout.is_none()
                 && let Some(pipe) = &child.stdout
             {
                 *stdout = Some(events::PipeOperation::reader(pipe)?);
             }
-            if stderr.is_none()
+            if output
+                && stderr.is_none()
                 && let Some(pipe) = &child.stderr
             {
                 *stderr = Some(events::PipeOperation::reader(pipe)?);
             }
-            let mut sources = Vec::with_capacity(4);
-            if child.stdout.is_some()
+            let mut sources = Vec::with_capacity(if output { 4 } else { 2 });
+            if output
+                && child.stdout.is_some()
                 && let Some(reader) = &self.readers[0]
             {
                 sources.push(events::Source::Pipe(reader));
             }
-            if child.stderr.is_some()
+            if output
+                && child.stderr.is_some()
                 && let Some(reader) = &self.readers[1]
             {
                 sources.push(events::Source::Pipe(reader));
