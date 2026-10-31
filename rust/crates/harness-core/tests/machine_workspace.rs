@@ -2,8 +2,11 @@
 use acyclic_harness_core::{Error, Result, machines::MachinesHost, resources::ProviderRef};
 use acyclic_machines::{Image, MachineId, MachineObservation};
 use std::sync::Arc;
-#[tokio::test]
-async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
+async fn workspace_fixture() -> Result<(
+    acyclic_harness_core::core::AuthorityRoot,
+    acyclic_harness_core::core::Scope,
+    acyclic_harness_core::machines::MachinesWorkspace,
+)> {
     use acyclic_harness_core::{
         conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
         core::{AggregateKind, Authority, AuthorityRoot},
@@ -89,7 +92,12 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
         other_volume.capability(VolumeOperation::Write, &mut None)?,
         shell_grant,
     ]);
-    let scope = issuer.bootstrap_scope("local-machine", &grants, None, &mut None)?;
+    let scope = issuer.bootstrap_scope(
+        "local-machine",
+        &grants,
+        Some(acyclic_harness_core::AgentId::from_bytes([41; 16])),
+        &mut None,
+    )?;
     // Both volumes are authorized; only the original physical selection binds.
     assert!(matches!(
         host.workspace(
@@ -122,6 +130,12 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
             .into(),
             &acyclic_host_platform::shell::PLATFORM,
         )?;
+    Ok((issuer, scope, workspace))
+}
+
+#[tokio::test]
+async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
+    let (issuer, scope, workspace) = workspace_fixture().await?;
     let command = if cfg!(windows) {
         "[Console]::Out.Write('out'); [Console]::Error.Write('err'); exit 7"
     } else {
@@ -163,3 +177,6 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
     ));
     Ok(())
 }
+
+#[path = "machine_workspace_device.rs"]
+mod device_runner;

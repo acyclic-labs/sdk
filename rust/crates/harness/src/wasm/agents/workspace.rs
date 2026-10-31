@@ -30,7 +30,10 @@ impl WasmMachinesWorkspace {
     pub(super) fn target(&self) -> crate::agent::TargetRecord {
         crate::runtime::InProcessTargets::record(
             ("machine", crate::approvals::HUMAN_APPROVER),
-            crate::agent::TargetClass::Provisioned,
+            (
+                crate::agent::TargetClass::Provisioned,
+                crate::agent::DeviceKind::VirtualMachine,
+            ),
             "linux",
             self.workspace.shell_spec(),
         )

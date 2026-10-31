@@ -8,6 +8,14 @@ pub struct ActorSocket {
     cursor: Cursor,
 }
 
+/// Write projection of one original socket. It cannot reopen or replay it,
+/// and stops working when the owning socket is dropped or its session ends.
+#[derive(Clone)]
+pub struct ActorSocketSender {
+    client: Client,
+    id: u64,
+}
+
 impl Client {
     /// Opens one socket to the actor named by the encoded `open` request.
     /// The host admits it as `actors/invoke` on the actor's resource. Frames
@@ -35,24 +43,19 @@ impl Client {
 }
 
 impl ActorSocket {
+    /// Retains the original write channel so upload credit never prevents
+    /// observing this socket's incoming Close.
+    #[must_use]
+    pub fn sender(&self) -> ActorSocketSender {
+        ActorSocketSender {
+            client: self.cursor.client.clone(),
+            id: self.cursor.id,
+        }
+    }
+
     /// Sends one frame to the host, in order with every earlier frame.
     pub async fn send(&self, frame: Bytes) -> Result<(), StreamError> {
-        if frame.is_empty() || frame.len() > crate::MAX_RECORD_BYTES {
-            return Err(StreamError::InvalidArgument);
-        }
-        let (sent, result) = oneshot::channel();
-        self.cursor
-            .client
-            .pool
-            .commands
-            .send(Command::Socket {
-                id: self.cursor.id,
-                frame,
-                sent,
-            })
-            .await
-            .map_err(|_| StreamError::Unavailable)?;
-        result.await.map_err(|_| StreamError::Unavailable)?
+        self.sender().send(frame).await
     }
 
     /// The next frame from the host; `None` once the host ended the channel.
@@ -78,5 +81,27 @@ impl ActorSocket {
                 _ => Err(StreamError::InvalidResponse),
             };
         }
+    }
+}
+
+impl ActorSocketSender {
+    /// Sends once on the original socket, retaining its existing credit and
+    /// exact send result. No retry or replacement connection is created.
+    pub async fn send(&self, frame: Bytes) -> Result<(), StreamError> {
+        if frame.is_empty() || frame.len() > crate::MAX_RECORD_BYTES {
+            return Err(StreamError::InvalidArgument);
+        }
+        let (sent, result) = oneshot::channel();
+        self.client
+            .pool
+            .commands
+            .send(Command::Socket {
+                id: self.id,
+                frame,
+                sent,
+            })
+            .await
+            .map_err(|_| StreamError::Unavailable)?;
+        result.await.map_err(|_| StreamError::Unavailable)?
     }
 }

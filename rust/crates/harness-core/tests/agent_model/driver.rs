@@ -248,6 +248,7 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
         os: os.into(),
         shell: "bash".into(),
         path_style: PathStyle::Posix,
+        device_kind: DeviceKind::Desktop,
         state: TargetState::Online,
     };
     let roster = |os| Roster::home(device(os)).expect("valid roster");

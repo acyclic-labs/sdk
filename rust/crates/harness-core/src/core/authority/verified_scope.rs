@@ -11,6 +11,13 @@ pub(crate) struct VerifiedScope {
 }
 
 impl AuthorityVerifier {
+    /// Original authenticated trust publisher, without signing custody.
+    /// Register before checking authority; producer loss ends active use.
+    #[must_use]
+    pub fn trust_changes(&self) -> std::sync::Arc<dyn acyclic_auth::trust::ChangeSource> {
+        self.public.changes.clone()
+    }
+
     #[cfg(feature = "filesystem")]
     pub(crate) fn bind_checkpoint_stop(&mut self, stop: &acyclic_actors::guest::CancellationToken) {
         if let runtime_signing::AdmissionPort::Platform(_, _, checkpoint_stop) = &mut self.admission

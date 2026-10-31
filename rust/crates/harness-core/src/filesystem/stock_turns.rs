@@ -85,7 +85,7 @@ impl TurnContext for Tasks {
     }
 
     fn roster(&self, _: &AgentState) -> Option<Arc<crate::agent::Roster>> {
-        self.0.targets().map(|targets| Arc::clone(targets.roster()))
+        self.0.targets().map(|targets| targets.roster())
     }
 }
 

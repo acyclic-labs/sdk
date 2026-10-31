@@ -60,6 +60,21 @@ impl PathStyle {
     }
 }
 
+/// What kind of machine a target is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKind {
+    /// A user's workstation or laptop.
+    Desktop,
+    /// A server.
+    Server,
+    /// A virtual machine.
+    VirtualMachine,
+    /// A container.
+    Container,
+}
+
 /// Whether a target takes commands now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -88,6 +103,8 @@ pub struct TargetRecord {
     pub shell: String,
     /// How its paths are spelled.
     pub path_style: PathStyle,
+    /// What kind of machine it is.
+    pub device_kind: DeviceKind,
     /// Whether it takes commands now.
     pub state: TargetState,
 }
@@ -137,12 +154,15 @@ pub struct Roster {
 }
 
 /// Why a call's target cannot take it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refused {
     /// No listed target has that name, or the user has no device.
     Unknown,
     /// The target is listed but not connected.
     Offline,
+    /// The device declined to run the command, for this reason: its
+    /// owner's policy refused it, or its grant did not verify there.
+    Declined(String),
 }
 
 /// A call refused because of its target; the model reads exactly this text
@@ -161,9 +181,16 @@ impl std::error::Error for TargetRefusal {}
 
 impl fmt::Display for TargetRefusal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let state = match self.refused {
+        let state = match &self.refused {
             Refused::Unknown => "unknown",
             Refused::Offline => "offline",
+            Refused::Declined(reason) => {
+                return write!(
+                    formatter,
+                    "target '{}' declined the command: {reason}",
+                    self.target
+                );
+            }
         };
         write!(formatter, "target '{}' is {state}; online: ", self.target)?;
         if self.online.is_empty() {
@@ -273,6 +300,7 @@ mod tests {
             os: "linux".into(),
             shell: "bash".into(),
             path_style: PathStyle::Posix,
+            device_kind: DeviceKind::Desktop,
             state,
         }
     }

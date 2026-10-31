@@ -20,7 +20,7 @@ mod data;
 mod socket;
 use admissions::Admissions;
 pub use application::{ApplicationDelivery, ApplicationSubscription};
-pub use socket::ActorSocket;
+pub use socket::{ActorSocket, ActorSocketSender};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod cache;
 mod credit;
