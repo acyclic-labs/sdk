@@ -2,12 +2,39 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import initializeManifest, { validate, verifyArtifact } from "../generated/wasm/acyclic_manifest.js";
+import initializeManifest, { validate, verifyArtifact, parseSecretReference } from "../generated/wasm/acyclic_manifest.js";
 
 // The selected asset is the actual module produced for this package.
 const module = await readFile(new URL("../generated/wasm/acyclic_manifest_bg.wasm", import.meta.url));
 await initializeManifest({ module_or_path: module });
 const fixture = JSON.parse(await readFile(new URL("../../../../rust/crates/manifest/fuzz/corpus/manifest_json/valid.json", import.meta.url), "utf8"));
+
+test("standalone secret reference admission uses the deployment grammar", () => {
+  const segment = "a".repeat(63);
+  const maximum = `secrets:/${segment}/${segment}/${segment}/${"b".repeat(55)}`;
+  for (const reference of ["secrets:/A_b-9", "secrets:/models/Primary", maximum]) {
+    assert.equal(parseSecretReference(reference), reference);
+    const manifest = structuredClone(fixture);
+    manifest.environments[0].secrets[0].reference = reference;
+    validate(JSON.stringify(manifest));
+  }
+  for (const reference of ["", "secret:/a", "SECRETS:/a", "secrets:/", "secrets://a",
+    "secrets:/a/", "secrets:/a//b", "secrets:/a/../b", "secrets:/a/./b",
+    "secrets:/a%2Fb", "secrets:/a?version=1", "secrets:/a#part", "secrets:/a:b",
+    "secrets:/a\\b", "secrets:/a\u0000", "secrets:/é", `secrets:/${segment}a`,
+    `${maximum}b`, "Bearer ordinary-sentinel", "https://user:sentinel@example.com/"]) {
+    assert.throws(() => parseSecretReference(reference), error => {
+      assert.equal(error.name, "ManifestError");
+      assert.equal(error.path, "reference");
+      assert.equal(error.rule, "secret-reference");
+      assert.equal(error.message, "manifest reference: secret-reference");
+      return true;
+    });
+    const manifest = structuredClone(fixture);
+    manifest.environments[0].secrets[0].reference = reference;
+    assert.throws(() => validate(JSON.stringify(manifest)), /secret-reference/);
+  }
+});
 
 test("Node calls the Rust cross-reference, secret and hostname rules", () => {
   validate(JSON.stringify(fixture));
