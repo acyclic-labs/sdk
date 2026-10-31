@@ -2,58 +2,60 @@
   "exact_read": {
     "canonical": {
       "file": {
-        "descriptor": {
-          "byte_length": 18,
-          "media_type": "text/plain",
-          "sha256": [
-            159,
-            11,
-            173,
-            16,
-            70,
-            100,
-            181,
-            179,
-            188,
-            132,
-            6,
-            49,
-            141,
-            46,
-            22,
-            171,
-            176,
-            2,
-            45,
-            236,
-            231,
-            189,
-            189,
-            66,
-            110,
-            99,
-            139,
-            89,
-            193,
-            36,
-            129,
-            108
-          ]
-        },
-        "display_name": "source.txt",
-        "path": "source.txt",
-        "version": "generation-1",
-        "volume": {
-          "class": "agent_private",
-          "id": "private",
-          "owner": {
-            "id": "33333333-3333-3333-3333-333333333333",
-            "kind": "agent"
+        "content": {
+          "descriptor": {
+            "byte_length": 18,
+            "media_type": "text/plain",
+            "sha256": [
+              159,
+              11,
+              173,
+              16,
+              70,
+              100,
+              181,
+              179,
+              188,
+              132,
+              6,
+              49,
+              141,
+              46,
+              22,
+              171,
+              176,
+              2,
+              45,
+              236,
+              231,
+              189,
+              189,
+              66,
+              110,
+              99,
+              139,
+              89,
+              193,
+              36,
+              129,
+              108
+            ]
           },
-          "provider": {
-            "family": "filesystem",
-            "namespace": "file-contract",
-            "version": "1"
+          "display_name": "source.txt",
+          "path": "source.txt",
+          "version": "generation-1",
+          "volume": {
+            "class": "agent_private",
+            "id": "private",
+            "owner": {
+              "id": "33333333-3333-3333-3333-333333333333",
+              "kind": "agent"
+            },
+            "provider": {
+              "family": "filesystem",
+              "namespace": "file-contract",
+              "version": "1"
+            }
           }
         }
       },
@@ -553,58 +555,60 @@
   "range_read": {
     "canonical": {
       "file": {
-        "descriptor": {
-          "byte_length": 18,
-          "media_type": "text/plain",
-          "sha256": [
-            159,
-            11,
-            173,
-            16,
-            70,
-            100,
-            181,
-            179,
-            188,
-            132,
-            6,
-            49,
-            141,
-            46,
-            22,
-            171,
-            176,
-            2,
-            45,
-            236,
-            231,
-            189,
-            189,
-            66,
-            110,
-            99,
-            139,
-            89,
-            193,
-            36,
-            129,
-            108
-          ]
-        },
-        "display_name": "source.txt",
-        "path": "source.txt",
-        "version": "generation-1",
-        "volume": {
-          "class": "agent_private",
-          "id": "private",
-          "owner": {
-            "id": "33333333-3333-3333-3333-333333333333",
-            "kind": "agent"
+        "content": {
+          "descriptor": {
+            "byte_length": 18,
+            "media_type": "text/plain",
+            "sha256": [
+              159,
+              11,
+              173,
+              16,
+              70,
+              100,
+              181,
+              179,
+              188,
+              132,
+              6,
+              49,
+              141,
+              46,
+              22,
+              171,
+              176,
+              2,
+              45,
+              236,
+              231,
+              189,
+              189,
+              66,
+              110,
+              99,
+              139,
+              89,
+              193,
+              36,
+              129,
+              108
+            ]
           },
-          "provider": {
-            "family": "filesystem",
-            "namespace": "file-contract",
-            "version": "1"
+          "display_name": "source.txt",
+          "path": "source.txt",
+          "version": "generation-1",
+          "volume": {
+            "class": "agent_private",
+            "id": "private",
+            "owner": {
+              "id": "33333333-3333-3333-3333-333333333333",
+              "kind": "agent"
+            },
+            "provider": {
+              "family": "filesystem",
+              "namespace": "file-contract",
+              "version": "1"
+            }
           }
         }
       },
@@ -855,6 +859,68 @@
               ],
               "type": "object"
             },
+            "FilePathSelection": {
+              "additionalProperties": false,
+              "description": "An immutable authored file selection. This identifies the selected generation\nand path; it makes no whole-file digest or native snapshot completeness claim.",
+              "properties": {
+                "byte_length": {
+                  "description": "Length obtained by that producer's original stat.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "generation": {
+                  "$ref": "#/$defs/GenerationRef",
+                  "description": "Generation retained by the original read producer."
+                },
+                "path": {
+                  "description": "Validated path relative to that volume.",
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef",
+                  "description": "Original selected volume."
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "generation",
+                "byte_length"
+              ],
+              "type": "object"
+            },
+            "FileReadSource": {
+              "description": "Immutable identity retained by a read. A bounded authored selection does not\nclaim a whole-file content digest.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "A verified complete content descriptor.",
+                  "properties": {
+                    "content": {
+                      "$ref": "#/$defs/FileRef"
+                    }
+                  },
+                  "required": [
+                    "content"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "The exact authored generation selected by the original range reader.",
+                  "properties": {
+                    "authored": {
+                      "$ref": "#/$defs/FilePathSelection"
+                    }
+                  },
+                  "required": [
+                    "authored"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "FileRef": {
               "additionalProperties": false,
               "description": "An immutable version of a file within a scoped volume.",
@@ -884,6 +950,10 @@
               ],
               "type": "object"
             },
+            "GenerationRef": {
+              "$ref": "#/$defs/ResourceRef",
+              "description": "Reference to an immutable Filesystem generation."
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -904,6 +974,85 @@
               "required": [
                 "namespace",
                 "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "ResourceKind": {
+              "description": "Semantic kind of a provider-owned reference.",
+              "oneOf": [
+                {
+                  "const": "workspace",
+                  "description": "Mutable workspace head.",
+                  "type": "string"
+                },
+                {
+                  "const": "generation",
+                  "description": "Immutable workspace generation.",
+                  "type": "string"
+                },
+                {
+                  "const": "artifact",
+                  "description": "Immutable content or machine image.",
+                  "type": "string"
+                },
+                {
+                  "const": "sandbox",
+                  "description": "Live isolated execution allocation.",
+                  "type": "string"
+                },
+                {
+                  "const": "checkpoint",
+                  "description": "Immutable sandbox checkpoint.",
+                  "type": "string"
+                },
+                {
+                  "const": "stream",
+                  "description": "Durable event stream.",
+                  "type": "string"
+                },
+                {
+                  "const": "context",
+                  "description": "Immutable model context.",
+                  "type": "string"
+                },
+                {
+                  "const": "run",
+                  "description": "Recoverable model run.",
+                  "type": "string"
+                }
+              ]
+            },
+            "ResourceRef": {
+              "additionalProperties": false,
+              "description": "Bounded opaque identity whose interpretation belongs only to its provider.",
+              "properties": {
+                "key": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "$ref": "#/$defs/ResourceKind"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "provider",
+                "key",
                 "version"
               ],
               "type": "object"
@@ -1018,7 +1167,7 @@
           "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
           "properties": {
             "file": {
-              "$ref": "#/$defs/FileRef",
+              "$ref": "#/$defs/FileReadSource",
               "description": "Original immutable source, used for grant and replay validation."
             },
             "text": {
@@ -1080,41 +1229,41 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-7"
+        "revision": "portable-8"
       },
       "definition_digest": [
-        161,
-        110,
-        53,
-        191,
         73,
-        161,
-        188,
-        18,
-        85,
-        137,
-        120,
-        205,
-        1,
-        228,
-        210,
-        213,
-        224,
-        131,
-        137,
-        163,
+        212,
+        250,
+        222,
+        148,
+        204,
+        41,
         42,
-        18,
-        218,
-        61,
-        112,
-        104,
+        232,
+        166,
+        234,
+        39,
+        164,
+        230,
+        41,
+        103,
+        131,
+        248,
+        151,
+        82,
+        0,
+        155,
+        105,
+        185,
         14,
-        115,
-        254,
-        156,
-        208,
-        132
+        104,
+        143,
+        131,
+        139,
+        58,
+        175,
+        125
       ],
       "variant": "exact_read_full"
     },
@@ -1217,6 +1366,68 @@
               ],
               "type": "object"
             },
+            "FilePathSelection": {
+              "additionalProperties": false,
+              "description": "An immutable authored file selection. This identifies the selected generation\nand path; it makes no whole-file digest or native snapshot completeness claim.",
+              "properties": {
+                "byte_length": {
+                  "description": "Length obtained by that producer's original stat.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "generation": {
+                  "$ref": "#/$defs/GenerationRef",
+                  "description": "Generation retained by the original read producer."
+                },
+                "path": {
+                  "description": "Validated path relative to that volume.",
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef",
+                  "description": "Original selected volume."
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "generation",
+                "byte_length"
+              ],
+              "type": "object"
+            },
+            "FileReadSource": {
+              "description": "Immutable identity retained by a read. A bounded authored selection does not\nclaim a whole-file content digest.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "A verified complete content descriptor.",
+                  "properties": {
+                    "content": {
+                      "$ref": "#/$defs/FileRef"
+                    }
+                  },
+                  "required": [
+                    "content"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "The exact authored generation selected by the original range reader.",
+                  "properties": {
+                    "authored": {
+                      "$ref": "#/$defs/FilePathSelection"
+                    }
+                  },
+                  "required": [
+                    "authored"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "FileRef": {
               "additionalProperties": false,
               "description": "An immutable version of a file within a scoped volume.",
@@ -1246,6 +1457,10 @@
               ],
               "type": "object"
             },
+            "GenerationRef": {
+              "$ref": "#/$defs/ResourceRef",
+              "description": "Reference to an immutable Filesystem generation."
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -1266,6 +1481,85 @@
               "required": [
                 "namespace",
                 "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "ResourceKind": {
+              "description": "Semantic kind of a provider-owned reference.",
+              "oneOf": [
+                {
+                  "const": "workspace",
+                  "description": "Mutable workspace head.",
+                  "type": "string"
+                },
+                {
+                  "const": "generation",
+                  "description": "Immutable workspace generation.",
+                  "type": "string"
+                },
+                {
+                  "const": "artifact",
+                  "description": "Immutable content or machine image.",
+                  "type": "string"
+                },
+                {
+                  "const": "sandbox",
+                  "description": "Live isolated execution allocation.",
+                  "type": "string"
+                },
+                {
+                  "const": "checkpoint",
+                  "description": "Immutable sandbox checkpoint.",
+                  "type": "string"
+                },
+                {
+                  "const": "stream",
+                  "description": "Durable event stream.",
+                  "type": "string"
+                },
+                {
+                  "const": "context",
+                  "description": "Immutable model context.",
+                  "type": "string"
+                },
+                {
+                  "const": "run",
+                  "description": "Recoverable model run.",
+                  "type": "string"
+                }
+              ]
+            },
+            "ResourceRef": {
+              "additionalProperties": false,
+              "description": "Bounded opaque identity whose interpretation belongs only to its provider.",
+              "properties": {
+                "key": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "$ref": "#/$defs/ResourceKind"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "provider",
+                "key",
                 "version"
               ],
               "type": "object"
@@ -1380,7 +1674,7 @@
           "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
           "properties": {
             "file": {
-              "$ref": "#/$defs/FileRef",
+              "$ref": "#/$defs/FileReadSource",
               "description": "Original immutable source, used for grant and replay validation."
             },
             "text": {
@@ -1458,6 +1752,49 @@
               ],
               "type": "object"
             },
+            "FileView": {
+              "description": "Model-visible file identity; the version is opaque and grants no authority.",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "version"
+              ],
+              "type": "object"
+            },
+            "JsonProjection": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/FileView"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -1529,6 +1866,32 @@
                 "reference"
               ],
               "type": "string"
+            },
+            "ReferenceProjection": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "parts",
+                      "type": "string"
+                    },
+                    "parts": {
+                      "items": {
+                        "$ref": "#/$defs/ReferencePart"
+                      },
+                      "maxItems": 2,
+                      "minItems": 2,
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "parts"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
@@ -1635,68 +1998,50 @@
               "type": "object"
             }
           },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
           "oneOf": [
             {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "parts",
-                  "type": "string"
-                },
-                "parts": {
-                  "items": {
-                    "$ref": "#/$defs/ReferencePart"
-                  },
-                  "maxItems": 2,
-                  "minItems": 2,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "kind",
-                "parts"
-              ],
-              "type": "object"
+              "$ref": "#/$defs/ReferenceProjection"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection"
             }
-          ],
-          "title": "ReferenceProjection"
+          ]
         },
-        "revision": "portable-7"
+        "revision": "portable-8"
       },
       "definition_digest": [
-        204,
-        64,
-        105,
-        139,
-        110,
+        68,
+        199,
+        170,
+        50,
+        38,
+        146,
+        29,
+        249,
+        225,
+        243,
+        56,
+        25,
+        156,
         147,
-        45,
-        242,
-        10,
-        141,
-        3,
-        171,
-        149,
-        222,
-        110,
-        118,
-        150,
-        6,
-        213,
-        26,
-        117,
-        1,
-        193,
-        61,
+        66,
         115,
-        32,
-        64,
-        207,
         210,
-        31,
-        114,
-        7
+        119,
+        83,
+        133,
+        11,
+        89,
+        188,
+        118,
+        175,
+        200,
+        180,
+        132,
+        23,
+        160,
+        107,
+        99
       ],
       "variant": "exact_read_reference"
     },
@@ -3496,6 +3841,68 @@
               ],
               "type": "object"
             },
+            "FilePathSelection": {
+              "additionalProperties": false,
+              "description": "An immutable authored file selection. This identifies the selected generation\nand path; it makes no whole-file digest or native snapshot completeness claim.",
+              "properties": {
+                "byte_length": {
+                  "description": "Length obtained by that producer's original stat.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "generation": {
+                  "$ref": "#/$defs/GenerationRef",
+                  "description": "Generation retained by the original read producer."
+                },
+                "path": {
+                  "description": "Validated path relative to that volume.",
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef",
+                  "description": "Original selected volume."
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "generation",
+                "byte_length"
+              ],
+              "type": "object"
+            },
+            "FileReadSource": {
+              "description": "Immutable identity retained by a read. A bounded authored selection does not\nclaim a whole-file content digest.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "A verified complete content descriptor.",
+                  "properties": {
+                    "content": {
+                      "$ref": "#/$defs/FileRef"
+                    }
+                  },
+                  "required": [
+                    "content"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "The exact authored generation selected by the original range reader.",
+                  "properties": {
+                    "authored": {
+                      "$ref": "#/$defs/FilePathSelection"
+                    }
+                  },
+                  "required": [
+                    "authored"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "FileRef": {
               "additionalProperties": false,
               "description": "An immutable version of a file within a scoped volume.",
@@ -3525,6 +3932,10 @@
               ],
               "type": "object"
             },
+            "GenerationRef": {
+              "$ref": "#/$defs/ResourceRef",
+              "description": "Reference to an immutable Filesystem generation."
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -3545,6 +3956,85 @@
               "required": [
                 "namespace",
                 "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "ResourceKind": {
+              "description": "Semantic kind of a provider-owned reference.",
+              "oneOf": [
+                {
+                  "const": "workspace",
+                  "description": "Mutable workspace head.",
+                  "type": "string"
+                },
+                {
+                  "const": "generation",
+                  "description": "Immutable workspace generation.",
+                  "type": "string"
+                },
+                {
+                  "const": "artifact",
+                  "description": "Immutable content or machine image.",
+                  "type": "string"
+                },
+                {
+                  "const": "sandbox",
+                  "description": "Live isolated execution allocation.",
+                  "type": "string"
+                },
+                {
+                  "const": "checkpoint",
+                  "description": "Immutable sandbox checkpoint.",
+                  "type": "string"
+                },
+                {
+                  "const": "stream",
+                  "description": "Durable event stream.",
+                  "type": "string"
+                },
+                {
+                  "const": "context",
+                  "description": "Immutable model context.",
+                  "type": "string"
+                },
+                {
+                  "const": "run",
+                  "description": "Recoverable model run.",
+                  "type": "string"
+                }
+              ]
+            },
+            "ResourceRef": {
+              "additionalProperties": false,
+              "description": "Bounded opaque identity whose interpretation belongs only to its provider.",
+              "properties": {
+                "key": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "$ref": "#/$defs/ResourceKind"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "provider",
+                "key",
                 "version"
               ],
               "type": "object"
@@ -3659,7 +4149,7 @@
           "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
           "properties": {
             "file": {
-              "$ref": "#/$defs/FileRef",
+              "$ref": "#/$defs/FileReadSource",
               "description": "Original immutable source, used for grant and replay validation."
             },
             "text": {
@@ -3721,41 +4211,41 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-7"
+        "revision": "portable-8"
       },
       "definition_digest": [
-        161,
-        110,
-        53,
-        191,
         73,
-        161,
-        188,
-        18,
-        85,
-        137,
-        120,
-        205,
-        1,
-        228,
-        210,
-        213,
-        224,
-        131,
-        137,
-        163,
+        212,
+        250,
+        222,
+        148,
+        204,
+        41,
         42,
-        18,
-        218,
-        61,
-        112,
-        104,
+        232,
+        166,
+        234,
+        39,
+        164,
+        230,
+        41,
+        103,
+        131,
+        248,
+        151,
+        82,
+        0,
+        155,
+        105,
+        185,
         14,
-        115,
-        254,
-        156,
-        208,
-        132
+        104,
+        143,
+        131,
+        139,
+        58,
+        175,
+        125
       ],
       "variant": "range_read_full"
     },
@@ -3858,6 +4348,68 @@
               ],
               "type": "object"
             },
+            "FilePathSelection": {
+              "additionalProperties": false,
+              "description": "An immutable authored file selection. This identifies the selected generation\nand path; it makes no whole-file digest or native snapshot completeness claim.",
+              "properties": {
+                "byte_length": {
+                  "description": "Length obtained by that producer's original stat.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "generation": {
+                  "$ref": "#/$defs/GenerationRef",
+                  "description": "Generation retained by the original read producer."
+                },
+                "path": {
+                  "description": "Validated path relative to that volume.",
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef",
+                  "description": "Original selected volume."
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "generation",
+                "byte_length"
+              ],
+              "type": "object"
+            },
+            "FileReadSource": {
+              "description": "Immutable identity retained by a read. A bounded authored selection does not\nclaim a whole-file content digest.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "A verified complete content descriptor.",
+                  "properties": {
+                    "content": {
+                      "$ref": "#/$defs/FileRef"
+                    }
+                  },
+                  "required": [
+                    "content"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "The exact authored generation selected by the original range reader.",
+                  "properties": {
+                    "authored": {
+                      "$ref": "#/$defs/FilePathSelection"
+                    }
+                  },
+                  "required": [
+                    "authored"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "FileRef": {
               "additionalProperties": false,
               "description": "An immutable version of a file within a scoped volume.",
@@ -3887,6 +4439,10 @@
               ],
               "type": "object"
             },
+            "GenerationRef": {
+              "$ref": "#/$defs/ResourceRef",
+              "description": "Reference to an immutable Filesystem generation."
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -3907,6 +4463,85 @@
               "required": [
                 "namespace",
                 "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "ResourceKind": {
+              "description": "Semantic kind of a provider-owned reference.",
+              "oneOf": [
+                {
+                  "const": "workspace",
+                  "description": "Mutable workspace head.",
+                  "type": "string"
+                },
+                {
+                  "const": "generation",
+                  "description": "Immutable workspace generation.",
+                  "type": "string"
+                },
+                {
+                  "const": "artifact",
+                  "description": "Immutable content or machine image.",
+                  "type": "string"
+                },
+                {
+                  "const": "sandbox",
+                  "description": "Live isolated execution allocation.",
+                  "type": "string"
+                },
+                {
+                  "const": "checkpoint",
+                  "description": "Immutable sandbox checkpoint.",
+                  "type": "string"
+                },
+                {
+                  "const": "stream",
+                  "description": "Durable event stream.",
+                  "type": "string"
+                },
+                {
+                  "const": "context",
+                  "description": "Immutable model context.",
+                  "type": "string"
+                },
+                {
+                  "const": "run",
+                  "description": "Recoverable model run.",
+                  "type": "string"
+                }
+              ]
+            },
+            "ResourceRef": {
+              "additionalProperties": false,
+              "description": "Bounded opaque identity whose interpretation belongs only to its provider.",
+              "properties": {
+                "key": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "$ref": "#/$defs/ResourceKind"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "provider",
+                "key",
                 "version"
               ],
               "type": "object"
@@ -4021,7 +4656,7 @@
           "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
           "properties": {
             "file": {
-              "$ref": "#/$defs/FileRef",
+              "$ref": "#/$defs/FileReadSource",
               "description": "Original immutable source, used for grant and replay validation."
             },
             "text": {
@@ -4099,6 +4734,49 @@
               ],
               "type": "object"
             },
+            "FileView": {
+              "description": "Model-visible file identity; the version is opaque and grants no authority.",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "version"
+              ],
+              "type": "object"
+            },
+            "JsonProjection": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/FileView"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -4170,6 +4848,32 @@
                 "reference"
               ],
               "type": "string"
+            },
+            "ReferenceProjection": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "parts",
+                      "type": "string"
+                    },
+                    "parts": {
+                      "items": {
+                        "$ref": "#/$defs/ReferencePart"
+                      },
+                      "maxItems": 2,
+                      "minItems": 2,
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "parts"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
@@ -4276,68 +4980,50 @@
               "type": "object"
             }
           },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
           "oneOf": [
             {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "parts",
-                  "type": "string"
-                },
-                "parts": {
-                  "items": {
-                    "$ref": "#/$defs/ReferencePart"
-                  },
-                  "maxItems": 2,
-                  "minItems": 2,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "kind",
-                "parts"
-              ],
-              "type": "object"
+              "$ref": "#/$defs/ReferenceProjection"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection"
             }
-          ],
-          "title": "ReferenceProjection"
+          ]
         },
-        "revision": "portable-7"
+        "revision": "portable-8"
       },
       "definition_digest": [
-        204,
-        64,
-        105,
-        139,
-        110,
+        68,
+        199,
+        170,
+        50,
+        38,
+        146,
+        29,
+        249,
+        225,
+        243,
+        56,
+        25,
+        156,
         147,
-        45,
-        242,
-        10,
-        141,
-        3,
-        171,
-        149,
-        222,
-        110,
-        118,
-        150,
-        6,
-        213,
-        26,
-        117,
-        1,
-        193,
-        61,
+        66,
         115,
-        32,
-        64,
-        207,
         210,
-        31,
-        114,
-        7
+        119,
+        83,
+        133,
+        11,
+        89,
+        188,
+        118,
+        175,
+        200,
+        180,
+        132,
+        23,
+        160,
+        107,
+        99
       ],
       "variant": "range_read_reference"
     },
