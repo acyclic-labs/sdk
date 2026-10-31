@@ -114,6 +114,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-collections"
+version = "0.2.0"
+
+[[package]]
 name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
@@ -132,6 +136,7 @@ name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-fs-base",
  "acyclic-fs-wire",
  "acyclic-native-runtime",
@@ -333,6 +338,7 @@ dependencies = [
  "rustix",
  "security-framework 3.7.0",
  "serde",
+ "serde_json",
  "sha2 0.11.1",
  "subtle",
  "tokio",
@@ -349,6 +355,7 @@ name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-contract-derive",
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
