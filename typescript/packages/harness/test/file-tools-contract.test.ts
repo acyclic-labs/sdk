@@ -77,7 +77,7 @@ test("native file results and Full/Reference projections pass actual WASM contra
       expect(JSON.parse(value.full.value.version.slice("authored-file-v1:".length)))
         .toEqual(value.canonical.file.authored);
       const wrongSource = structuredClone(value.canonical);
-      wrongSource.file.authored.generation.kind = "workspace";
+      delete wrongSource.file.authored.generation;
       expect(() => contracts.validateToolResult(definition("range_read_full"), { value: wrongSource })).toThrow();
       const wrongProjection = structuredClone(value.reference);
       delete wrongProjection.value.version;
