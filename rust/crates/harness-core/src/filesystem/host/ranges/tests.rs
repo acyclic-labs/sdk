@@ -251,6 +251,16 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
     let (host, file) = ordinary(&body).await?;
     let volume = file.volume();
     let read = grant(volume, VolumeOperation::Read)?;
+    let workspace = bounded_io::content_workspace(&host.provider, volume, None)?;
+    host.apply(
+        &workspace,
+        None,
+        &[crate::filesystem::WorkspaceMutation::CreateDirectory {
+            path: "/directory".into(),
+        }],
+        &IdempotencyKey::new("directory")?,
+    )
+    .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = || acyclic_fs::WorkBudget {
         source_bytes_read: 64 * 1024,
@@ -279,13 +289,39 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         (&body[offset..], body.len() as u64)
     );
     assert!(work.receipt().source_bytes_read < 64 * 1024);
+    for (path, maximum, code) in [
+        ("missing", u64::MAX, crate::wire::ErrorCode::NotFound),
+        ("directory", u64::MAX, crate::wire::ErrorCode::Invalid),
+        ("ordinary", 1, crate::wire::ErrorCode::Invalid),
+    ] {
+        let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let error = host
+            .read_private_path(
+                volume,
+                &read,
+                path,
+                None,
+                maximum,
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), code);
+        assert!(error.is_tool_failure(), "{error:?}");
+        assert!(!error.is_native_failure(), "{error:?}");
+    }
     // Negative control: reading the same file by path under the same
     // allowance loads all of it, and fails.
     let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    assert!(
-        host.read_private_path(
+    let error = host
+        .read_private_path(
             volume,
             &read,
             "ordinary",
@@ -297,8 +333,12 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
             },
         )
         .await
-        .is_err()
+        .unwrap_err();
+    assert!(
+        error.is_native_failure(),
+        "actual byte-credit loss must remain terminal: {error:?}"
     );
+    assert!(!error.is_tool_failure());
     let (bytes, _) = host
         .read_private_range(
             volume,
