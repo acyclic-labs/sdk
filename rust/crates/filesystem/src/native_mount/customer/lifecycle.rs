@@ -22,6 +22,24 @@ pub(crate) fn with_session_work(
     })
 }
 
+/// Makes every later retirement of this session remove its destination,
+/// on the source's original meter. A view's destination is its issuance's.
+pub(crate) fn prepare_destination_cleanup(
+    session: &Mutex<Option<NativeMountSession>>,
+    source: &dyn MountFilesystem,
+) -> Result<(), MountLifecycleError> {
+    let work = source
+        .native_original_work()?
+        .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+    let mut owner = session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(session) = owner.as_mut() {
+        session.prepare_destination_cleanup(&work)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn with_live_session(
     session: &Mutex<Option<NativeMountSession>>,
     operation: impl FnOnce(&NativeMountSession) -> Result<(), NativeMountError>,

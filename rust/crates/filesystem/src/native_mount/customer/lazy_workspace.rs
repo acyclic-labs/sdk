@@ -52,7 +52,7 @@ where
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
         let destination = super::super::shared_view_destination(options.view_root.as_deref())?;
-        self.mount(destination.path(), options.for_task_view())
+        self.mount_with_destination(MountDestination::View(destination), options.for_task_view())
             .await
     }
 
@@ -65,13 +65,24 @@ where
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
+        self.mount_with_destination(MountDestination::Existing(destination.as_ref()), options)
+            .await
+    }
+
+    async fn mount_with_destination(
+        &self,
+        destination: MountDestination<'_>,
+        options: MountOptions,
+    ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
         let _startup = super::super::admit_mount_startup().await?;
         let work = options.work(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )?;
         let work = &work;
-        let destination = work.path(destination.as_ref(), None)?;
+        let funded = work.path(destination.path(), None)?;
+        let issued = destination.into_issued();
+        let destination = funded;
         let destination_custody = destination.1;
         let destination = destination.0;
         let options_bytes = match &options.subdirectory {
@@ -105,8 +116,9 @@ where
             1,
             crate::WorkCounters::default(),
         )?;
-        let prepared =
-            super::super::prepare_native_mount_start(work).map_err(NativeMountError::from)?;
+        let prepared = super::super::prepare_native_mount_start(work)
+            .map_err(NativeMountError::from)?
+            .with_view_destination(issued);
         let request = NativeMountRequest {
             mount_id: MountId::new(),
             volume_id,

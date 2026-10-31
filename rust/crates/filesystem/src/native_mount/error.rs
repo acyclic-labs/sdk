@@ -12,6 +12,9 @@ pub enum NativeMountError {
     /// Destination must already exist and be empty.
     #[error("mount destination must be an existing empty directory")]
     InvalidDestination,
+    /// The named destination, or the parent it is opened through, does not exist.
+    #[error("mount destination {0:?} does not exist")]
+    MissingDestination(std::path::PathBuf),
     /// The destination lies inside another native projection, which the
     /// platform cannot nest.
     #[error("mount destination lies inside another native projection")]

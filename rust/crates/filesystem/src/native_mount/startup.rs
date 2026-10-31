@@ -47,6 +47,7 @@ impl std::error::Error for NativeMountStartupFailure {
 pub struct PreparedNativeMountStart {
     pub(super) buffer: Box<std::mem::MaybeUninit<NativeMountStartupFailure>>,
     pub(super) custody: crate::NativeAllocation,
+    view_destination: Option<IssuedDestination>,
 }
 impl PreparedNativeMountStart {
     pub(super) fn new(
@@ -60,14 +61,35 @@ impl PreparedNativeMountStart {
         Ok(Self {
             buffer: Box::new(std::mem::MaybeUninit::uninit()),
             custody,
+            view_destination: None,
         })
     }
+    pub(crate) fn with_view_destination(mut self, destination: Option<IssuedDestination>) -> Self {
+        self.view_destination = destination;
+        self
+    }
+
+    pub(super) fn prepare_view_destination(
+        &mut self,
+        guard: &mut MountDestinationGuard,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        if let Some(destination) = self.view_destination.as_mut() {
+            destination.prepare_cleanup(guard, work)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn failed(
         self,
         error: NativeMountError,
         owner: NativeMountSession,
     ) -> Box<NativeMountStartupFailure> {
-        let Self { buffer, custody } = self;
+        let Self {
+            buffer,
+            custody,
+            view_destination: _view_destination,
+        } = self;
         Box::write(
             buffer,
             NativeMountStartupFailure {

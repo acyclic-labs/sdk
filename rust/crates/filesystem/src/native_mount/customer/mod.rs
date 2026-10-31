@@ -21,6 +21,28 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
+// A view transfers the issuance, while explicit mounts borrow their caller's path.
+enum MountDestination<'a> {
+    Existing(&'a Path),
+    View(super::IssuedDestination),
+}
+
+impl MountDestination<'_> {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Existing(path) => path,
+            Self::View(issued) => issued.path(),
+        }
+    }
+
+    fn into_issued(self) -> Option<super::IssuedDestination> {
+        match self {
+            Self::Existing(_) => None,
+            Self::View(issued) => Some(issued),
+        }
+    }
+}
+
 mod file_io;
 mod lazy_mount;
 mod mount;

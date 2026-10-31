@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write as _;
 use std::process::Stdio;
 
 const CHILD: &str = "native_mount::darwin_mount::tests::reclaim::crashed_owner";
@@ -243,11 +244,14 @@ impl ForeignMount {
         })
     }
 
+    /// A retained producer or cleanup failure fails retirement too.
     fn stop(&mut self) -> Result<(), NativeMountError> {
-        self.session
-            .stop(&crate::native_mount::NativeSessionStopWork::Meter(
-                &self.work,
-            ))
+        let mut failures =
+            self.session
+                .stop(&crate::native_mount::NativeSessionStopWork::Meter(
+                    &self.work,
+                ))?;
+        failures.take().map_or(Ok(()), Err)
     }
 }
 

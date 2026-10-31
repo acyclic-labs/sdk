@@ -80,19 +80,7 @@ where
         self.sync().await?;
         self.advance_to_head().await?;
         if retire {
-            let work = self
-                .source
-                .native_original_work()?
-                .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-            {
-                let mut owner = self
-                    .session
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(session) = owner.as_mut() {
-                    session.prepare_destination_cleanup(&work)?;
-                }
-            }
+            self.prepare_command_cleanup()?;
             self.detach()?;
         }
         Ok(())
@@ -121,18 +109,7 @@ where
     }
 
     fn prepare_command_cleanup(&self) -> Result<(), MountLifecycleError> {
-        let work = self
-            .source
-            .native_original_work()?
-            .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-        let mut owner = self
-            .session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(session) = owner.as_mut() {
-            session.prepare_destination_cleanup(&work)?;
-        }
-        Ok(())
+        prepare_destination_cleanup(&self.session, self.source.as_ref())
     }
 
     /// Synchronously publishes and detaches for foreign-runtime worker threads.
@@ -208,7 +185,7 @@ where
         options: MountOptions,
     ) -> Result<Mount<A, O>, MountLifecycleError> {
         let destination = super::super::shared_view_destination(options.view_root.as_deref())?;
-        self.mount(destination.path(), options.for_task_view())
+        self.mount_with_destination(MountDestination::View(destination), options.for_task_view())
             .await
     }
 
@@ -226,12 +203,23 @@ where
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<Mount<A, O>, MountLifecycleError> {
+        self.mount_with_destination(MountDestination::Existing(destination.as_ref()), options)
+            .await
+    }
+
+    async fn mount_with_destination(
+        &self,
+        destination: MountDestination<'_>,
+        options: MountOptions,
+    ) -> Result<Mount<A, O>, MountLifecycleError> {
         let _startup = super::super::admit_mount_startup().await?;
         let work = options.work(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )?;
-        let destination = work.path(destination.as_ref(), None)?;
+        let funded = work.path(destination.path(), None)?;
+        let issued = destination.into_issued();
+        let destination = funded;
         let destination_custody = destination.1;
         let destination = destination.0;
         let guard = options.callback_guard.clone();
@@ -239,8 +227,9 @@ where
         let options = options.native_context(&work, guard, original.as_ref());
         let source = self.native_source(&options).await?;
         let session_destination = work.path(&destination, None)?;
-        let prepared =
-            super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;
+        let prepared = super::super::prepare_native_mount_start(&work)
+            .map_err(NativeMountError::from)?
+            .with_view_destination(issued);
         let session = prepared.start(
             NativeMountRequest {
                 mount_id: MountId::new(),
