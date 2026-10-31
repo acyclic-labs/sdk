@@ -360,6 +360,18 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         .await?
         .ok_or("original publication retry lost")?;
     receipt.confirm()?;
+    let mut observer = None;
+    let epoch_record =
+        crate::store::operations::one_record(&streams, binding.epoch_path(), 0, &mut observer)
+            .await?
+            .ok_or("durable epoch missing")?;
+    let execution = crate::distributed::execution_path(operation, &mut observer)?;
+    let observation = crate::store::operations::one_record(&streams, &execution, 1, &mut observer)
+        .await?
+        .ok_or("durable conversation observation missing")?;
+    assert_eq!(epoch_record.commit_id, observation.commit_id);
+    let restored_epoch = Snapshot::decode(&epoch_record, &epoch.epoch().key.source, 0)?;
+    assert_eq!(restored_epoch.epoch(), epoch.epoch());
     let observations = journal.replay(operation, 0, 3, Some(&session))?.await?;
     assert_eq!(observations.len(), 2, "retry appended another observation");
     let ExecutionEvent::ConversationItem { envelope, .. } = &observations[1].event else {

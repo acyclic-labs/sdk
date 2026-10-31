@@ -33,6 +33,12 @@ pub struct ContextCheckpoint<'io> {
 }
 
 impl ContextCheckpoint<'_> {
+    /// Fixed original destination for the epoch owner's authorized last-record
+    /// recovery. This borrows the admitted path and grants no read authority.
+    pub fn epoch_path(&self) -> &acyclic_stream::StreamPath {
+        &self.epoch
+    }
+
     /// Original durable cursor used when opening the one authorized source follow.
     pub fn cursor(&self) -> SourceCursor {
         self.cursor
