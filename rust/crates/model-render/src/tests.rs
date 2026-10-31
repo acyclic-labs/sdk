@@ -523,37 +523,120 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
 
 #[test]
 fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
+    #[derive(Default)]
     struct Counter {
-        writes: usize,
-        bytes: usize,
+        writes: Vec<(*const u8, usize)>,
+        bytes: Vec<u8>,
     }
     impl Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.writes += 1;
-            self.bytes += bytes.len();
+            self.writes.push((bytes.as_ptr(), bytes.len()));
+            self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
         fn flush(&mut self) -> io::Result<()> {
             unreachable!("durability belongs to commit")
         }
     }
-    let source = item(Family::Responses, ItemKind::Message, "one selected item");
-    let header = header(Family::Responses);
-    let mut sink = Counter {
-        writes: 0,
-        bytes: 0,
-    };
-    let mut visited = 0;
-    let selected = std::iter::once(&source).inspect(|_| visited += 1);
-    render(&header, selected, Tail, &mut sink).unwrap();
-    assert_eq!(visited, 1);
-    // write_all omits the empty first separator: header, item, tail.
-    assert_eq!(sink.writes, 3);
-    assert_eq!(
-        sink.bytes,
-        header.bytes().len() + source.wire().get().len() + Tail.bytes().len()
-    );
-    // A look-behind read violates the same work oracle.
-    let _ = std::iter::once(&source).inspect(|_| visited += 1).count();
-    assert_ne!(visited, 1);
+    for family in FAMILIES {
+        let header = header(family);
+        let sources = [
+            item(family, ItemKind::Message, "task"),
+            item(family, ItemKind::Reasoning, "retained reasoning"),
+            item(family, ItemKind::Message, "retained tool reply"),
+            item(family, ItemKind::Message, "next turn"),
+        ];
+        let borrowed_segments = |writes: &[(*const u8, usize)], selected: &[WireItem]| {
+            writes.len() == 2 * selected.len() + 1
+                && writes[0] == (header.bytes().as_ptr(), header.bytes().len())
+                && selected.iter().enumerate().all(|(index, source)| {
+                    let position = if index == 0 { 1 } else { 2 * index + 1 };
+                    writes[position] == (source.wire().get().as_ptr(), source.wire().get().len())
+                })
+        };
+        let mut first = Vec::new();
+        for (phase, selected) in [
+            ("first", &sources[..3]),
+            ("repeat", &sources[..3]),
+            ("append", &sources[..]),
+        ] {
+            let mut sink = Counter::default();
+            let mut visited = 0;
+            render(
+                &header,
+                selected.iter().inspect(|_| visited += 1),
+                Tail,
+                &mut sink,
+            )
+            .unwrap();
+            assert_eq!(visited, selected.len());
+            // Header, first item, then separator/item pairs, finally tail.
+            assert!(borrowed_segments(&sink.writes, selected));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&sink.bytes).unwrap(),
+                reference(family, "producing-provider", selected)
+            );
+            match phase {
+                "first" => first = sink.bytes.clone(),
+                "repeat" => assert_eq!(sink.bytes, first),
+                _ => assert!(
+                    sink.bytes
+                        .starts_with(&first[..first.len() - Tail.bytes().len()])
+                ),
+            }
+            // These are generated IR measurements, not provider fixtures or
+            // live cache/token/task-quality results. The command receipt pins
+            // source and platform; retain the actual inputs and raw counts.
+            println!(
+                "{}",
+                json!({
+                    "version": 1,
+                    "task": "selected-native-item-replay",
+                    "input_kind": "generated_ir",
+                    "phase": phase,
+                    "target": target(family, "producing-provider"),
+                    "renderer_version": RENDERER_VERSION,
+                    "epoch": header.epoch(),
+                    "header": std::str::from_utf8(header.bytes()).unwrap(),
+                    "items": selected,
+                    "request": std::str::from_utf8(&sink.bytes).unwrap(),
+                    "selected_visits": visited,
+                    "sink_writes": sink.writes.len(),
+                    "request_bytes": sink.bytes.len(),
+                    "borrowed_payload_bytes": selected.iter().map(|source| source.wire().get().len()).sum::<usize>(),
+                    "latency_ns": Value::Null,
+                    "tokens": Value::Null,
+                    "cache_hits": Value::Null,
+                    "tool_execution": Value::Null,
+                    "terminal_quality": Value::Null,
+                })
+            );
+            // Restoring a second traversal changes the work oracle even when
+            // output bytes remain identical.
+            let _ = selected.iter().inspect(|_| visited += 1).count();
+            assert_ne!(visited, selected.len());
+            // A copy preserves every byte while failing the SAME borrowing
+            // oracle against the actual successful renderer's write trace.
+            let copied = selected[1].wire().get().as_bytes().to_vec();
+            assert_eq!(copied, selected[1].wire().get().as_bytes());
+            sink.writes[3] = (copied.as_ptr(), copied.len());
+            assert!(!borrowed_segments(&sink.writes, selected));
+        }
+        // Removing either native reasoning or the reply must fail the same
+        // ordered request oracle, rather than merely changing elapsed time.
+        for omitted in [1, 2] {
+            let mut lost = Vec::new();
+            render(
+                &header,
+                sources[..3]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, item)| (index != omitted).then_some(item)),
+                Tail,
+                &mut lost,
+            )
+            .unwrap();
+            assert_ne!(lost, first);
+        }
+    }
 }
