@@ -325,7 +325,7 @@ async fn truncated_unary_body_fails_without_retry() {
     assert_eq!(server.requests().len(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn cancelling_a_pending_unary_body_closes_the_connection() {
     let (prefix_written, prefix) = oneshot::channel();
     let (peer_closed, closed) = oneshot::channel();
@@ -345,10 +345,12 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
             result = &mut reading => panic!("body completed while held: {}", result.is_ok()),
             ready = prefix => ready.unwrap(),
         }
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        assert!(
+            futures::poll!(reading.as_mut()).is_pending(),
+            "the original held response acquired an implicit request deadline"
+        );
     }
-    tokio::time::timeout(Duration::from_secs(1), closed)
-        .await
-        .unwrap()
-        .unwrap();
+    closed.await.unwrap();
     assert_eq!(server.requests().len(), 1);
 }
