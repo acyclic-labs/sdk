@@ -118,6 +118,10 @@ fn swap_precedes_wake_and_lost_follow_fences() {
 
     let (other, _) = credential(&world, &trust, 1);
     let fenced = trust.changed();
+    // A withdrawal must progress even while account storage is unavailable.
+    // This held write lock is a negative control for the former population walk.
+    let accounts = trust.accounts.write().unwrap();
+    assert!(trust.accounts.try_write().is_err());
     trust.fence(FenceCause::LostFollow);
     // A fence wakes waiters to recheck; only a close is an error.
     assert_eq!(fenced.now_or_never(), Some(Ok(())));
@@ -128,6 +132,7 @@ fn swap_precedes_wake_and_lost_follow_fences() {
         verify::verify(&other, &trust, NOW).err(),
         Some(VerifyError::Unavailable)
     );
+    drop(accounts);
     trust.resume();
     // A waiter registered while fenced is woken by the resume.
     assert_eq!(waiting.now_or_never(), Some(Ok(())));
@@ -138,6 +143,59 @@ fn swap_precedes_wake_and_lost_follow_fences() {
     );
     trust.serve("account");
     assert!(verify::verify(&other, &trust, NOW).is_ok());
+
+    // An account read cannot accept an old generation even if the environment
+    // has resumed again before that read finishes. The original account lock
+    // remains held by with_account throughout this real withdrawal.
+    assert_eq!(
+        trust.with_account("account", |_, _| {
+            trust.fence(FenceCause::LostFollow);
+            trust.resume();
+        }),
+        Err(VerifyError::Unavailable)
+    );
+    assert_eq!(
+        verify::verify(&other, &trust, NOW).err(),
+        Some(VerifyError::Trust)
+    );
+    trust.serve("account");
+    assert!(verify::verify(&other, &trust, NOW).is_ok());
+
+    // Reconnecting, including repeated disconnects, invalidates every earlier
+    // acknowledgement without destroying authenticated replay frontiers.
+    let (_, genesis) = world.issuer.genesis("second", key(4), NOW).unwrap();
+    for record in genesis {
+        trust.apply(&record, NOW).unwrap();
+    }
+    trust.serve("second");
+    assert!(trust.account("second").is_ok());
+    trust.connect();
+    trust.fence(FenceCause::LostFollow);
+    trust.connect();
+    trust.serve("account");
+    trust.resume();
+    assert!(verify::verify(&other, &trust, NOW).is_ok());
+    assert!(trust.initialized("second").unwrap());
+    assert_eq!(trust.account("second").err(), Some(VerifyError::Trust));
+    trust.serve("second");
+    assert!(trust.account("second").is_ok());
+
+    // A wrapping generation would resurrect an earlier acknowledgement.
+    // Exhaustion therefore closes the same original publication owner.
+    trust.generation.store(u64::MAX, Ordering::Relaxed);
+    let ended = trust.changed();
+    trust.connect();
+    assert_eq!(ended.now_or_never(), Some(Err(SourceClosed)));
+    assert_eq!(
+        *trust.state().borrow(),
+        FollowerState::Closed(FenceCause::GenerationExhausted)
+    );
+    trust.resume();
+    trust.serve("account");
+    assert_eq!(
+        verify::verify(&other, &trust, NOW).err(),
+        Some(VerifyError::Unavailable)
+    );
 }
 
 /// `record`, a keyring, with `edit` applied and re-signed by `signer`: a

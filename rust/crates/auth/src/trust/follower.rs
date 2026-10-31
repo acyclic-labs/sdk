@@ -23,9 +23,12 @@
 //! reads the new trust. A refused account record fences that account until a
 //! record for it applies; a refused environment record or a lost follow fences
 //! everything until the driver catches up again ([`Follower::resume`],
-//! [`Follower::serve`]). Fenced reads refuse as
-//! [`VerifyError::Unavailable`]. Cost: O(1) per account, no task per account,
-//! one hash lookup per trust read.
+//! [`Follower::serve`]). A global withdrawal advances one generation without
+//! locking or visiting accounts; each account's caught-up acknowledgement is
+//! valid only in that generation. Reads check the generation before and after
+//! accessing account state. Fenced reads refuse as [`VerifyError::Unavailable`].
+//! No task per account; one hash lookup per trust read. Publication wakes still
+//! reach all subscribers, and record verification still shares the account lock.
 use super::{ChangeSource, Changed, SourceClosed};
 use crate::{
     ENVIRONMENT_DOMAIN, KEYRING_DOMAIN,
@@ -209,8 +212,8 @@ pub(super) struct Keyring {
 pub(super) struct Account {
     pub(super) keyring: Option<Keyring>,
     pub(super) revocations: Option<RevocationState>,
-    /// The driver applied this account's Stream through its observed tail.
-    serving: bool,
+    /// Generation in which the driver caught up to this account's observed tail.
+    serving_generation: u64,
     /// A refused record; cleared only by a record that applies.
     poisoned: bool,
 }
@@ -260,6 +263,8 @@ pub enum FenceCause {
     Refused,
     /// The driver stopped for good.
     Shutdown,
+    /// Local generations cannot advance without reusing an old acknowledgement.
+    GenerationExhausted,
 }
 
 /// A follower's serving state. Every trust publication also notifies its
@@ -281,6 +286,8 @@ pub struct Follower {
     environment: RwLock<EnvironmentFrontier>,
     accounts: RwLock<HashMap<String, Account>>,
     floor: AtomicU64,
+    // The original state watch serializes generation updates and their wakes.
+    generation: AtomicU64,
     state: tokio::sync::watch::Sender<FollowerState>,
 }
 
@@ -299,6 +306,7 @@ impl Follower {
             environment: RwLock::new(EnvironmentFrontier::genesis(environment, anchor)),
             accounts: RwLock::default(),
             floor: AtomicU64::new(0),
+            generation: AtomicU64::new(1),
             state: tokio::sync::watch::Sender::new(FollowerState::Connecting),
         }
     }
@@ -453,7 +461,9 @@ impl Follower {
     /// Refuse all trust and wake every change wait, so consumers recheck and
     /// fence live authority. Every account stays fenced until its Stream is
     /// caught up again ([`Self::serve`]). Waits registered while fenced wake
-    /// on the next transition.
+    /// on the next transition. Invalidating account acknowledgements does not
+    /// acquire account storage or traverse the followed population; notifying
+    /// the original watch still costs work proportional to actual waiters.
     pub fn fence(&self, cause: FenceCause) {
         self.withdraw(FollowerState::Fenced(cause));
     }
@@ -470,12 +480,18 @@ impl Follower {
     }
 
     fn withdraw(&self, state: FollowerState) {
-        self.notify(Some(state));
-        if let Ok(mut accounts) = self.accounts.write() {
-            for account in accounts.values_mut() {
-                account.serving = false;
+        self.state.send_modify(|current| {
+            if !matches!(current, FollowerState::Closed(_)) {
+                *current = if matches!(state, FollowerState::Closed(_)) {
+                    state
+                } else if let Some(next) = self.generation.load(Ordering::Relaxed).checked_add(1) {
+                    self.generation.store(next, Ordering::Relaxed);
+                    state
+                } else {
+                    FollowerState::Closed(FenceCause::GenerationExhausted)
+                };
             }
-        }
+        });
     }
 
     /// The driver applied the environment Stream through the tail it observed
@@ -488,8 +504,18 @@ impl Follower {
     /// The driver applied `account`'s Stream through the tail it observed
     /// when it (re)connected; its trust may now be served.
     pub fn serve(&self, account: &str) {
+        let generation = {
+            let state = self.state.borrow();
+            if matches!(*state, FollowerState::Closed(_)) {
+                return;
+            }
+            self.generation.load(Ordering::Relaxed)
+        };
         if let Ok(mut accounts) = self.accounts.write() {
-            accounts.entry(account.to_owned()).or_default().serving = true;
+            accounts
+                .entry(account.to_owned())
+                .or_default()
+                .serving_generation = generation;
         }
         self.notify(None);
     }
@@ -543,6 +569,15 @@ impl Follower {
         }
     }
 
+    fn serving_generation(&self) -> Result<u64, VerifyError> {
+        let state = self.state.borrow();
+        if matches!(*state, FollowerState::Serving) {
+            Ok(self.generation.load(Ordering::Relaxed))
+        } else {
+            Err(VerifyError::Unavailable)
+        }
+    }
+
     /// `account`'s current trust as a self-contained [`Snapshot`], for an owner
     /// that hands trust to an isolated guest along with its own publications.
     ///
@@ -580,17 +615,25 @@ impl Follower {
         id: &str,
         read: impl FnOnce(&Keyring, &RevocationState) -> T,
     ) -> Result<T, VerifyError> {
-        self.check()?;
+        let generation = self.serving_generation()?;
         let accounts = self.accounts.read().map_err(|_| VerifyError::Unavailable)?;
-        match accounts.get(id) {
+        let result = match accounts.get(id) {
             Some(Account {
                 keyring: Some(keyring),
                 revocations: Some(revocations),
-                serving: true,
+                serving_generation: served,
                 poisoned: false,
-            }) => Ok(read(keyring, revocations)),
+            }) if *served == generation => Ok(read(keyring, revocations)),
             _ => Err(VerifyError::Trust),
+        };
+        drop(accounts);
+        // Withdrawal never waits for account locks or record verification.
+        // Discard a read spanning any disconnect/reconnect, even if the driver
+        // has already resumed by the time this read finishes.
+        if self.serving_generation()? != generation {
+            return Err(VerifyError::Unavailable);
         }
+        result
     }
 }
 
