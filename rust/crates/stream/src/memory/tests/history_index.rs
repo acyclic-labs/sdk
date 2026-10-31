@@ -300,6 +300,31 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
     let History::Batch { records, .. } = selected_state.history.as_deref().unwrap() else {
         unreachable!()
     };
+    // A cut before (or exactly at) the current batch needs only the original
+    // Prefix owner. Its unreadable batch must not consume index funding or
+    // make a valid fork fail when that additional capacity is unavailable.
+    for cut in [0, 3, 20] {
+        let mutations = [CommitMutation::Fork {
+            source: selected.clone(),
+            destination: path("indexed/funded-prefix")?,
+            at_tail: cut,
+            exclude: Vec::new(),
+            records: Vec::new(),
+        }];
+        let (facts, _facts) = provider.facts(&state, &mutations, CommitId::default(), 0)?;
+        let meter = Arc::new(Meter::default());
+        let admitted = provider.with_context(Work::new(meter.original())?);
+        let allocations = meter.allocations.load(Ordering::SeqCst);
+        let held = meter.held.load(Ordering::SeqCst);
+        meter.limit.store(allocations + 1, Ordering::SeqCst);
+        let prepared = admitted.history(&state, &facts[0])?;
+        assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations + 1);
+        drop(prepared);
+        assert_eq!(meter.held.load(Ordering::SeqCst), held);
+        drop(admitted);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+    }
     for allowance in 0..=3 {
         let meter = Arc::new(Meter::default());
         let work = Work::new(meter.original())?;

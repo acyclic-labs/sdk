@@ -211,15 +211,16 @@ impl MemoryStream {
         state: &State,
         fact: &CommittedMutation,
     ) -> Result<PreparedHistory, StreamError> {
-        let source_path = match fact {
-            CommittedMutation::Append(append) => &append.path,
-            CommittedMutation::Fork(fork) => &fork.source,
+        let (source_path, before) = match fact {
+            CommittedMutation::Append(append) => (&append.path, None),
+            CommittedMutation::Fork(fork) => (&fork.source, Some(fork.forked_at)),
         };
         let original = state.paths.get(source_path);
         let mut ranges = original.map_or_else(HistoryRanges::default, |path| path.ranges.clone());
         if let Some(History::Batch { records, .. }) =
             original.and_then(|path| path.history.as_deref())
             && let Some(first) = records.records.first()
+            && before.is_none_or(|before| first.sequence < before)
         {
             ranges = ranges.insert(
                 first.sequence.to_be_bytes(),
@@ -227,8 +228,8 @@ impl MemoryStream {
                 &mut HistoryIndexWork(self),
             )?;
         }
-        if let CommittedMutation::Fork(fork) = fact {
-            ranges = ranges.prefix(fork.forked_at.to_be_bytes());
+        if let Some(before) = before {
+            ranges = ranges.prefix(before.to_be_bytes());
         }
         let parent = match fact {
             CommittedMutation::Append(append) => state
