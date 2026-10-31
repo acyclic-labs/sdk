@@ -12,6 +12,9 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod context;
+pub use context::PublicationContext;
+
 struct ChangeData {
     volume: VolumeId,
     config: VolumeConfig,
