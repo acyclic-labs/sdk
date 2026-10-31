@@ -991,6 +991,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                 invocation: &invocation,
                 metadata: &Value::Null,
                 target: None,
+                filesystem: None,
             },
             None,
         )
@@ -1038,6 +1039,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                 invocation: &invocation,
                 metadata: &Value::Null,
                 target: None,
+                filesystem: None,
             },
             std::slice::from_ref(&definition),
             Limits::default(),

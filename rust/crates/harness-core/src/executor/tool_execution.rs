@@ -332,6 +332,11 @@ impl StockExecution<'_> {
                                     .map(|target| stock_string_copy(&target.name, self.io))
                                     .transpose()?
                             },
+                            filesystem: if started || target.is_some() {
+                                None
+                            } else {
+                                self.filesystem_binding(&invocation)
+                            },
                         },
                         tool,
                         &mut context,
@@ -432,6 +437,22 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         original: Option<&crate::tool::RecordedInvocation>,
     ) -> Result<Result<Option<Arc<crate::runtime::Target>>>> {
+        if let Some(original) = original {
+            if let Some(identity) = original.filesystem {
+                return if original.target.is_none()
+                    && self.filesystem_binding(invocation) == Some(identity)
+                {
+                    Ok(Ok(None))
+                } else {
+                    Err(Error::Indeterminate(invocation.operation_id))
+                };
+            }
+            if original.target.is_none() && crate::runtime::is_workspace_call(invocation) {
+                return Err(Error::Indeterminate(invocation.operation_id));
+            }
+        } else if self.filesystem_binding(invocation).is_some() {
+            return Ok(Ok(None));
+        }
         let Some(targets) = self.context.and_then(|(task, _)| task.harness.targets()) else {
             return if original.is_some_and(|original| original.target.is_some()) {
                 Err(Error::Indeterminate(invocation.operation_id))
@@ -457,6 +478,15 @@ impl StockExecution<'_> {
             return Ok(Ok(Some(target)));
         }
         Ok(crate::runtime::call_target(&**targets, invocation).transpose())
+    }
+
+    fn filesystem_binding(&self, invocation: &ToolInvocation) -> Option<[u8; 32]> {
+        if invocation.name != "fs" {
+            return None;
+        }
+        self.context
+            .and_then(|(task, _)| task.harness.filesystem.as_ref())
+            .map(|filesystem| filesystem.binding_identity())
     }
 
     /// Admits a call before dispatch. Every refusal a tool reports settles as the call's result;

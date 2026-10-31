@@ -78,7 +78,7 @@ pub struct TurnAuthority {
     /// What the turn's `wait` observes of the agent's children.
     pub children: Option<Arc<dyn crate::agent::TurnChildren>>,
     /// Commands bound to the original filesystem placement, if supplied.
-    pub workspace_tools: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    pub workspace_tools: Option<Arc<dyn crate::runtime::FilesystemExecutor>>,
 }
 
 /// The conversation authority of one agent over its bound volumes.
@@ -416,11 +416,13 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::filesystem) type WorkspaceToolsFactory = Arc<
-    dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::tool::ToolExecutor>> + Send + Sync,
+    dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::runtime::FilesystemExecutor>>
+        + Send
+        + Sync,
 >;
 #[cfg(target_arch = "wasm32")]
 pub(in crate::filesystem) type WorkspaceToolsFactory =
-    Arc<dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::tool::ToolExecutor>>>;
+    Arc<dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::runtime::FilesystemExecutor>>>;
 
 /// A turn's bindings before its approval gate is resolved.
 struct Bindings {

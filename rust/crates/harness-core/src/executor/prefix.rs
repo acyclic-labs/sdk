@@ -124,6 +124,7 @@ impl StockExecution<'_> {
                             invocation: &invocation,
                             metadata: &metadata,
                             target: None,
+                            filesystem: None,
                         },
                         request.tools(),
                         self.stock.limits,

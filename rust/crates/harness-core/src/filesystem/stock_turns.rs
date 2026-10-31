@@ -112,7 +112,8 @@ impl TurnContext for Grants {
                 return executor.with_tool_authority(scope, authority.approval.clone());
             }
             let harness = crate::runtime::Bindings {
-                workspace_tools: authority.workspace_tools.clone(),
+                targets: None,
+                filesystem: authority.workspace_tools.clone(),
                 scope,
                 content: Some(authority.content.clone()),
                 artifacts: None,
