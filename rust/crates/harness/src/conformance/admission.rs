@@ -14,10 +14,7 @@ use acyclic_harness_core::{
     model::ModelContent,
     resources::ProviderRef,
 };
-use acyclic_stream::{
-    BoxProviderFuture, UnixMillisClock,
-    runtime::{Executor as _, PlatformExecutor},
-};
+use acyclic_stream::{BoxProviderFuture, UnixMillisClock};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -76,6 +73,7 @@ async fn admission(
     audience: Authority,
     binding: &VolumeBinding,
     case: Case,
+    clock: &super::fixtures::AuthorityClock,
 ) -> Result<TurnAdmission> {
     if matches!(case, Case::LocalRoot) {
         return Ok(TurnAdmission::LocalRoot);
@@ -99,7 +97,7 @@ async fn admission(
     match case {
         Case::Revoked => root.revoke_workload(&scope)?,
         Case::Expired => {
-            let now = acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000;
+            let now = clock.now_unix_millis() / 1000;
             let deadline = now + 1;
             scope = scope.with_workload_expiry(
                 deadline,
@@ -107,9 +105,6 @@ async fn admission(
                 &audience,
                 now,
             )?;
-            let delay = (deadline * 1000)
-                .saturating_sub(acyclic_stream::SystemUnixMillisClock.now_unix_millis());
-            PlatformExecutor.sleep(u32::try_from(delay + 1)?).await;
         }
         Case::Widened => {
             let wider = Capabilities::new([
@@ -154,8 +149,20 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         kind: AggregateKind::Conversation,
         id: "workload".into(),
     };
-    let root = AuthorityRoot::new("conformance", [7; 32], audience.clone());
-    let admission = admission(&root, audience, &fixture.binding, case).await?;
+    let clock = Arc::new(super::fixtures::AuthorityClock::new());
+    let root = AuthorityRoot::with_clock("conformance", [7; 32], audience.clone(), clock.clone());
+    let admission = admission(&root, audience, &fixture.binding, case, &clock).await?;
+    if matches!(case, Case::Expired) {
+        check_scope(
+            &root,
+            &admission,
+            &fixture.path,
+            &fixture.binding,
+            Case::Admitted,
+        )
+        .await?;
+        clock.advance_to((clock.now_unix_millis() / 1000 + 1) * 1000);
+    }
     check_scope(&root, &admission, &fixture.path, &fixture.binding, case).await?;
     fixture
         .check(
