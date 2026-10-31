@@ -13,6 +13,10 @@ pub use append::{FilesystemAppendPreparation, PreparedFilesystemAppend};
 mod result;
 pub use result::{FilesystemCommitResult, PreparedFilesystemCommit};
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "composition_custody_tests.rs"]
+mod custody_tests;
+
 /// One prepared actor transition, sealed only by the composed commit receipt.
 struct Contribution {
     actor: crate::kernel::allocation::retained::RetainedArc<crate::kernel::AuthorityActor>,
