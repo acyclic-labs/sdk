@@ -59,9 +59,9 @@ impl AsyncRead for ProcessPipeReader {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{ProcessCommand as Command, ProcessStdio as Stdio};
     use super::*;
     use std::io;
-    use std::process::{Command, Stdio};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     fn exchange(future: impl Future<Output = io::Result<()>>) -> io::Result<()> {

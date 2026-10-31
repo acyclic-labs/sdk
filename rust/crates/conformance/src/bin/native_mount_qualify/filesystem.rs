@@ -184,7 +184,7 @@ fn resolve_git_dir(root: &Path) -> Result<PathBuf, Failure> {
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Result<Vec<u8>, Failure> {
-    let output = tool_output(Command::new("git").args(args).current_dir(root))?;
+    let output = tool_output(ProcessCommand::new("git").args(args).current_dir(root))?;
     if !output.status.success() {
         return Err(format!(
             "git {} failed: {}",

@@ -1,6 +1,5 @@
 use super::*;
 use std::io::Write;
-use std::process::Stdio;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -60,7 +59,7 @@ fn event_capture_child() -> io::Result<()> {
 }
 
 fn child(mode: &str) -> io::Result<ProcessTree> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -68,9 +67,9 @@ fn child(mode: &str) -> io::Result<ProcessTree> {
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", mode)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     ProcessTree::spawn(&mut command)
 }
 

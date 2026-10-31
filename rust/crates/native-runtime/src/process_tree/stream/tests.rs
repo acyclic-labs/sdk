@@ -1,7 +1,6 @@
 use super::*;
 use std::collections::VecDeque;
 use std::io::Write;
-use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -10,7 +9,7 @@ fn child() -> io::Result<()> {
         return Ok(());
     };
     if mode == "wrapper" {
-        let status = Command::new(std::env::current_exe()?)
+        let status = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
                 "process_tree::stream::tests::child",
@@ -84,7 +83,7 @@ fn start(
     Addresses,
     ProcessWake,
 )> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -92,9 +91,9 @@ fn start(
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_STREAM_CAPTURE", mode)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
     let child = tree.child.as_mut().unwrap();
     let pid = child.id();

@@ -102,7 +102,7 @@ fn exit_wait_fixture() {
 }
 
 fn child(status: &str) -> io::Result<ProcessTree> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -111,12 +111,12 @@ fn child(status: &str) -> io::Result<ProcessTree> {
         .env("ACYCLIC_TEST_EXIT_WAIT", "1")
         .env("ACYCLIC_TEST_EXIT_STATUS", status)
         .stdin(if status == "gated" {
-            std::process::Stdio::piped()
+            ProcessStdio::piped()
         } else {
-            std::process::Stdio::null()
+            ProcessStdio::null()
         })
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     ProcessTree::spawn(&mut command)
 }
 

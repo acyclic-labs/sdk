@@ -125,7 +125,7 @@ pub(super) fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(),
     let mut children = Vec::with_capacity(count);
     for index in 0..count {
         let child = spawn_captured_child(
-            Command::new(&executable)
+            ProcessCommand::new(&executable)
                 .arg("--parallel-io-child")
                 .arg(mount)
                 .arg(index.to_string())

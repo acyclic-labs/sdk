@@ -1,11 +1,11 @@
 //! The job wait must sleep for member exit rather than query on a timer.
 use super::*;
-use std::process::Stdio;
+use crate::{ProcessCommand, ProcessStdio};
 use std::sync::atomic::Ordering;
 
 #[test]
 fn a_quiet_job_wait_has_no_periodic_queries() -> io::Result<()> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -13,9 +13,9 @@ fn a_quiet_job_wait_has_no_periodic_queries() -> io::Result<()> {
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     let mut tree = super::super::ProcessTree::spawn(&mut command)?;
     // This fixture has one member and no descendants. Let that member exit
     // naturally after the kill has already been issued by its previous owner.

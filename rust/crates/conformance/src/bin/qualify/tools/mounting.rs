@@ -136,8 +136,6 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
         }
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
-
             // ProjFS identifies an import from outside the virtualization
             // root with an empty callback source. The provider must capture
             // the destination instead of treating that empty name as `/`.
@@ -146,12 +144,11 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
             let external = work.join("external-import.txt");
             let imported_host = mount_dir.join("imported.txt");
             fs::write(&external, b"imported through rename\n")?;
-            let status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
+            let status = acyclic_native_runtime::process_status(acyclic_native_runtime::ProcessCommand::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command"])
                 .arg("Move-Item -LiteralPath $env:ACYCLIC_MOVE_SOURCE -Destination $env:ACYCLIC_MOVE_DESTINATION -ErrorAction Stop")
                 .env("ACYCLIC_MOVE_SOURCE", &external)
-                .env("ACYCLIC_MOVE_DESTINATION", &imported_host)
-                .creation_flags(0x0800_0000), std::time::Duration::from_secs(120))?;
+                .env("ACYCLIC_MOVE_DESTINATION", &imported_host), std::time::Duration::from_secs(120))?;
             if !status.success() {
                 return Err(format!("external rename helper failed: {status}").into());
             }
@@ -170,12 +167,11 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
             }
             drop(file);
             let exported = work.join("external-export.txt");
-            let status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
+            let status = acyclic_native_runtime::process_status(acyclic_native_runtime::ProcessCommand::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command"])
                 .arg("Move-Item -LiteralPath $env:ACYCLIC_MOVE_SOURCE -Destination $env:ACYCLIC_MOVE_DESTINATION -ErrorAction Stop")
                 .env("ACYCLIC_MOVE_SOURCE", &imported_host)
-                .env("ACYCLIC_MOVE_DESTINATION", &exported)
-                .creation_flags(0x0800_0000), std::time::Duration::from_secs(120))?;
+                .env("ACYCLIC_MOVE_DESTINATION", &exported), std::time::Duration::from_secs(120))?;
             if !status.success() {
                 return Err(format!("external export helper failed: {status}").into());
             }
@@ -188,12 +184,11 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
             let external_tree = work.join("external-tree");
             fs::create_dir(&external_tree)?;
             fs::write(external_tree.join("payload.txt"), b"rejected import\n")?;
-            let status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
+            let status = acyclic_native_runtime::process_status(acyclic_native_runtime::ProcessCommand::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command"])
                 .arg("Move-Item -LiteralPath $env:ACYCLIC_MOVE_SOURCE -Destination $env:ACYCLIC_MOVE_DESTINATION -ErrorAction Stop")
                 .env("ACYCLIC_MOVE_SOURCE", &external_tree)
-                .env("ACYCLIC_MOVE_DESTINATION", mount_dir.join("imported-tree"))
-                .creation_flags(0x0800_0000), std::time::Duration::from_secs(120))?;
+                .env("ACYCLIC_MOVE_DESTINATION", mount_dir.join("imported-tree")), std::time::Duration::from_secs(120))?;
             if status.success() {
                 return Err(
                     "ProjFS admitted an external directory without an exact close boundary".into(),

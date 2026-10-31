@@ -183,7 +183,7 @@ fn component_opens_keep_each_ancestors_original_access_check()
     let root = test_root(temporary.path())?;
     let acl = |arguments: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
         let output = acyclic_native_runtime::process_output(
-            std::process::Command::new("icacls.exe")
+            acyclic_native_runtime::ProcessCommand::new("icacls.exe")
                 .arg(&parent)
                 .args(arguments),
             std::time::Duration::from_secs(5),

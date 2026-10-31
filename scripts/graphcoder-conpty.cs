@@ -85,18 +85,26 @@ public static class GraphcoderConPty {
     }
     static void AdmitSuspendedProcess(uint pid) {
         string endpoint = Environment.GetEnvironmentVariable("ACYCLIC_PROCESS_CUSTODY_ADMISSION");
-        int separator = endpoint == null ? -1 : endpoint.LastIndexOf(':');
-        int port;
-        if (separator < 0 || endpoint.Substring(0, separator) != "127.0.0.1" ||
-            !Int32.TryParse(endpoint.Substring(separator + 1), out port))
+        string[] parts = endpoint == null ? new string[0] : endpoint.Split('/');
+        int separator = parts.Length == 3 ? parts[0].LastIndexOf(':') : -1;
+        int port; ulong tree;
+        if (separator < 0 || parts[0].Substring(0, separator) != "127.0.0.1" ||
+            !Int32.TryParse(parts[0].Substring(separator + 1), out port) ||
+            !UInt64.TryParse(parts[1], out tree) || parts[2].Length != 32)
             throw new InvalidOperationException("missing native custody admission endpoint");
+        // The tree's secret proves this request comes from one of its members.
+        byte[] secret = new byte[16];
+        for (int i = 0; i < 16; i++) secret[i] = Convert.ToByte(parts[2].Substring(2 * i, 2), 16);
         // The native core validates Job membership and owns the stable wait.
         // This adapter retains the original suspended process until its ACK.
         using (var client = new TcpClient()) {
             client.NoDelay = true;
             client.Connect(IPAddress.Loopback, port);
             using (var stream = client.GetStream()) {
-                byte[] bytes = { (byte)pid, (byte)(pid >> 8), (byte)(pid >> 16), (byte)(pid >> 24) };
+                var bytes = new byte[28];
+                BitConverter.GetBytes(pid).CopyTo(bytes, 0);
+                BitConverter.GetBytes(tree).CopyTo(bytes, 4);
+                secret.CopyTo(bytes, 12);
                 stream.Write(bytes, 0, bytes.Length);
                 if (stream.ReadByte() != 1) throw new IOException("native custodian rejected ConPTY child");
             }

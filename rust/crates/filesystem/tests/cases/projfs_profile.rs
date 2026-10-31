@@ -88,7 +88,7 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
 
     phase("client-start")?;
     let started = Instant::now();
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--ignored",

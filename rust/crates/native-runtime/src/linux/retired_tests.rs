@@ -38,7 +38,7 @@ fn retired_compio_proactor_cannot_drop_pending_key() -> io::Result<()> {
     }
     drop(driver);
     let status = crate::process_status(
-        std::process::Command::new(std::env::current_exe()?)
+        crate::ProcessCommand::new(std::env::current_exe()?)
             .arg("--exact")
             .arg("linux::retired::tests::retired_compio_proactor_cannot_drop_pending_key")
             .env(CHILD, "1"),

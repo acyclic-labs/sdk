@@ -466,12 +466,12 @@ async fn native_child_is_initialized_once_and_kept_until_the_transport_drops() -
 async fn invalid_bounds_and_spawn_failures_are_explicit() -> Result<()> {
     for (bytes, timeout) in [(0, 1), (1, 0)] {
         assert!(matches!(
-            StdioMcpTransport::spawn(Command::new("not-used"), bytes, timeout).await,
+            StdioMcpTransport::spawn(ProcessCommand::new("not-used"), bytes, timeout).await,
             Err(Error::Invalid(_))
         ));
     }
     let directory = tempfile::tempdir().map_err(Error::process_io)?;
-    let command = Command::new(directory.path().join("nonexistent-mcp-server"));
+    let command = ProcessCommand::new(directory.path().join("nonexistent-mcp-server"));
     assert!(matches!(
         StdioMcpTransport::spawn(command, 4096, 5_000).await,
         Err(Error::Process(crate::ProcessError::NotFound { .. }))

@@ -42,7 +42,7 @@ fn fresh_process_recovery_initializes_its_registry() -> Result<(), Box<dyn std::
         drop(crashed.file.take());
         drop(crashed);
         let output = acyclic_native_runtime::process_output(
-            std::process::Command::new(std::env::current_exe()?)
+            acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?)
                 .args(["--exact", "native_mount::tests::recovery_bootstrap::fresh_process_recovery_initializes_its_registry", "--nocapture"])
                 .env(MODE, mode)
                 .env(DESTINATION, &destination),

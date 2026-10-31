@@ -1,9 +1,8 @@
 use super::*;
-use std::process::Stdio;
 
 #[test]
 fn an_unconfirmed_pipe_error_retains_the_pending_request_until_settled() -> io::Result<()> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -11,9 +10,9 @@ fn an_unconfirmed_pipe_error_retains_the_pending_request_until_settled() -> io::
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     let mut tree = ProcessTree::spawn(&mut command)?;
     let pipe = tree
         .child

@@ -192,7 +192,7 @@ impl ProcessTreeStorage {
     /// that slot cannot be replaced by a later spawn, even after termination.
     pub fn spawn(
         &mut self,
-        command: &mut Command,
+        command: &mut ProcessCommand,
         custody: Option<&ProcessCustody>,
     ) -> io::Result<()> {
         let meter = Arc::clone(self.slot.meter());

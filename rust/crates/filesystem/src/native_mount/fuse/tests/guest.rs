@@ -8,10 +8,9 @@ use super::super::packet_session::PacketSession;
 use super::super::vhost_session::VhostSession;
 use super::super::{FuseProjection, ProjectionCache, ProjectionConfig};
 use super::*;
-use acyclic_native_runtime::{ProcessInput, ProcessTree};
+use acyclic_native_runtime::{ProcessCommand, ProcessInput, ProcessStdio, ProcessTree};
 use std::num::{NonZeroU16, NonZeroU32};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::process::{Command, Stdio};
 
 #[test]
 #[ignore = "requires prepared Linux guest artifacts, KVM, QEMU and cloud-hypervisor"]
@@ -146,11 +145,11 @@ fn standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete()
     Ok(())
 }
 
-fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> Command {
+fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> ProcessCommand {
     let kernel = artifacts.join("kernel");
     let initramfs = artifacts.join("initramfs.gz");
     let mut command = if vmm == "qemu" {
-        let mut command = Command::new("qemu-system-x86_64");
+        let mut command = ProcessCommand::new("qemu-system-x86_64");
         command
             .args([
                 "-enable-kvm",
@@ -183,7 +182,7 @@ fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> Command {
             .arg(format!("socket,id=fs,path={}", socket.display()));
         command
     } else {
-        let mut command = Command::new(artifacts.join("cloud-hypervisor"));
+        let mut command = ProcessCommand::new(artifacts.join("cloud-hypervisor"));
         command
             .args([
                 "--cpus",
@@ -210,8 +209,8 @@ fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> Command {
     };
     command
         .env_remove("RUST_LOG")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     command
 }
