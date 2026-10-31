@@ -15,6 +15,7 @@ use crate::{
 };
 use acyclic_stream::{BoxProviderFuture, StreamPath};
 use serde::{Deserialize, Serialize};
+use std::ops::ControlFlow;
 
 /// Identity prefix of a goal continuation: `goal:{loop}:{n}`, where `loop` is
 /// the turn that started the loop and `n` counts its continuations from 1.
@@ -102,37 +103,33 @@ fn next_intent(run: &str, count: &str) -> Result<IntentId, Error> {
 
 /// What `agent`'s turn `turn`, started by `input`, does about its goal once it
 /// settles: the continuation to send, or nothing. An exhausted allowance
-/// rewrites GOAL.md as `blocked` and sends nothing.
-pub async fn settle(
+/// rewrites GOAL.md as `blocked` and sends nothing. A concurrent edit continues
+/// the original turn through its committed actor checkpoint.
+pub(super) async fn settle(
     agent: &AgentState,
     input: &TurnInput,
     turn: OperationId,
     goal: &dyn TurnGoal,
-) -> Result<Option<Out>, Error> {
+) -> Result<ControlFlow<Option<Out>>, Error> {
     let failed = |error| Error::Turn(Box::new(error));
     // Goals continue root agents; a child reports to its parent when its
     // brief is done, whatever its forked scratch holds.
     if agent.parent.is_some() {
-        return Ok(None);
+        return Ok(ControlFlow::Break(None));
     }
     let policy = goal.policy();
     let (run, count) = continuation(&agent.path, input).unwrap_or((turn, "0"));
-    let run = run.to_string();
-    let view = loop {
-        let Some(view) = goal.read().await.map_err(failed)? else {
-            return Ok(None);
-        };
-        if view.status != GoalStatus::Active {
-            return Ok(None);
-        }
-        if policy
-            .max_continuations
-            .is_none_or(|maximum| count.parse::<u32>().is_ok_and(|count| count < maximum))
-        {
-            break view;
-        }
-        // A concurrent edit wins the conditioned rewrite: decide again on it.
-        match goal
+    let Some(view) = goal.read().await.map_err(failed)? else {
+        return Ok(ControlFlow::Break(None));
+    };
+    if view.status != GoalStatus::Active {
+        return Ok(ControlFlow::Break(None));
+    }
+    if !policy
+        .max_continuations
+        .is_none_or(|maximum| count.parse::<u32>().is_ok_and(|count| count < maximum))
+    {
+        return match goal
             .rewrite(
                 &view,
                 &policy.blocked(&view).expect("selected exhausted allowance"),
@@ -140,13 +137,13 @@ pub async fn settle(
             )
             .await
         {
-            Ok(()) => return Ok(None),
-            Err(crate::Error::Conflict(_)) => continue,
-            Err(error) => return Err(failed(error)),
-        }
-    };
-    let id = next_intent(&run, count)?;
-    Ok(Some(Out::Send {
+            Ok(()) => Ok(ControlFlow::Break(None)),
+            Err(crate::Error::Conflict(_)) => Ok(ControlFlow::Continue(())),
+            Err(error) => Err(failed(error)),
+        };
+    }
+    let id = next_intent(&run.to_string(), count)?;
+    Ok(ControlFlow::Break(Some(Out::Send {
         to: agent.path.clone(),
         record: InboxRecord::Message(Message {
             from: Sender::Agent {
@@ -156,5 +153,5 @@ pub async fn settle(
             body: Box::new(view.source),
             attachments: None,
         }),
-    }))
+    })))
 }
