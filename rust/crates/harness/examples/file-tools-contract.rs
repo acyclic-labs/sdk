@@ -109,6 +109,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         value: value(ReadFileResult {
             file: files::FileReadSource::Content(file.clone()),
             text: read.into(),
+            page: None,
+            media: None,
         })?,
     };
     let authored_input = ReadFileInput {

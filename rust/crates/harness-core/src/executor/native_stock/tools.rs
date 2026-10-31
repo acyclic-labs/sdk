@@ -114,7 +114,9 @@ pub(in crate::executor) async fn stock_project_tool(
     })? {
         return Ok(Err(violation));
     }
-    let maximum = limits.render_bytes.min(crate::tool::output::VIEW_BYTES);
+    let maximum = context.map_or(limits.render_bytes, |_| {
+        limits.render_bytes.min(crate::tool::output::VIEW_BYTES)
+    });
     let length = with_history_io(io, |history| {
         crate::executor::json::json_byte_length(&value, u64::MAX, history)
     })?;
@@ -126,9 +128,14 @@ pub(in crate::executor) async fn stock_project_tool(
                 "large tool output requires its original volume context",
             )
         })?;
-        let (bounded, custody) =
-            crate::tool::output::spill(&value, context, invocation.operation_id, maximum, io)
-                .await?;
+        let (bounded, custody) = crate::tool::output::spill(
+            &value,
+            context,
+            invocation.operation_id,
+            limits.render_bytes,
+            io,
+        )
+        .await?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io.filter(|_| work.is_some()) {
             io.absorb_native_custody(custody.ok_or_else(|| {

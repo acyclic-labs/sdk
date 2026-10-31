@@ -82,6 +82,18 @@ impl ToolProjection for FileProjection {
                 let io = owned_io.as_ref();
                 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
                 let io: Option<&crate::executor::PreparationIo> = None;
+                if let Some(requested) = &input.0.selection {
+                    let native =
+                        matches!(requested, ReadSelection::Image { .. } | ReadSelection::Pdf);
+                    if native != result.0.media.is_some()
+                        || (native && result.0.media.as_ref() != Some(requested))
+                    {
+                        return Err(super::executor::rejection(
+                            work,
+                            "read result differs from requested projection",
+                        ));
+                    }
+                }
                 if let Some(page) = &result.0.page {
                     if page.start > page.end || (result.0.media.is_some()) {
                         return Err(super::executor::rejection(
@@ -91,6 +103,26 @@ impl ToolProjection for FileProjection {
                     }
                     if page.end.checked_sub(page.start) != Some(text.len() as u64)
                         || page.end > file.byte_length()
+                        || page
+                            .next
+                            .is_some_and(|next| next != page.end || next > file.byte_length())
+                        || input
+                            .0
+                            .range
+                            .is_some_and(|range| page.start != range.start || page.end > range.end)
+                        || match input.0.selection {
+                            Some(
+                                ReadSelection::Lines { offset, .. }
+                                | ReadSelection::Cells { offset, .. },
+                            ) => page.offset != offset,
+                            Some(ReadSelection::Image { .. } | ReadSelection::Pdf) => true,
+                            None if input.0.path.ends_with(".ipynb") && input.0.range.is_none() => {
+                                page.offset != 0
+                            }
+                            None => {
+                                page.offset != 0 || (input.0.range.is_none() && page.start != 0)
+                            }
+                        }
                     {
                         return Err(super::executor::rejection(
                             work,
@@ -147,7 +179,10 @@ impl ToolProjection for FileProjection {
                     let version = super::version::encode_source(file, work)?;
                     if let Some(media) = &result.0.media {
                         let FileReadSource::Content(file) = file else {
-                            return Err(super::executor::rejection(work, "native media requires a complete content descriptor"));
+                            return Err(super::executor::rejection(
+                                work,
+                                "native media requires a complete content descriptor",
+                            ));
                         };
                         let intent = match media {
                             ReadSelection::Image { detail } => {

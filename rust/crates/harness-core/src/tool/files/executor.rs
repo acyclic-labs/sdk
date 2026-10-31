@@ -159,59 +159,6 @@ impl FileTool {
             )
             .await
     }
-    pub(super) async fn read_path_range(
-        &self,
-        context: &ToolContext,
-        input: &ReadFileInput,
-        original: Option<&crate::conversation::FilePathSelection>,
-        work: crate::NativeWork<'_>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
-        let invalid = |reason| rejection(work, reason);
-        let range = input
-            .range
-            .or_else(|| {
-                original.map(|file| super::text::TextRange {
-                    start: 0,
-                    end: file.byte_length,
-                })
-            })
-            .ok_or_else(|| invalid("path range is missing"))?;
-        let count = range
-            .end
-            .checked_sub(range.start)
-            .ok_or_else(|| invalid("read range is reversed"))?;
-        let maximum = context
-            .effective_scope()
-            .limits()
-            .render_bytes
-            .min(context.effective_scope().limits().file_bytes);
-        if count > maximum {
-            return Err(invalid("file selection exceeds text rendering bound"));
-        }
-        let empty = count == 0;
-        let (selected, bytes, retained) = context
-            .read_tool_path_range(
-                &input.path,
-                original.map(|file| &file.generation),
-                acyclic_fs::ByteRange {
-                    offset: range.start,
-                    length: if empty { 1 } else { count },
-                },
-                io,
-            )
-            .await?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let _source_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = retained;
-        if range.end > selected.byte_length || original.is_some_and(|file| file != &selected) {
-            return Err(invalid("read result belongs to another selection"));
-        }
-        let text = read_text(bytes.as_ref(), empty, work)?;
-        read_result(FileReadSource::Authored(selected), text, work)
-    }
-
     pub(super) async fn source(
         &self,
         context: &ToolContext,
@@ -560,20 +507,6 @@ pub(super) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Er
     } else {
         Error::Invalid(reason.into())
     }
-}
-
-fn read_result(
-    file: FileReadSource,
-    text: &str,
-    work: crate::NativeWork<'_>,
-) -> Result<(ToolResult, crate::NativeCustody)> {
-    #[derive(Serialize)]
-    struct Read<'a> {
-        file: FileReadSource,
-        text: &'a str,
-    }
-    let encoded = super::value(&Read { file, text }, u64::MAX, work)?;
-    Ok((ToolResult { value: encoded.0 }, encoded.1))
 }
 
 pub(super) fn read_text<'a>(

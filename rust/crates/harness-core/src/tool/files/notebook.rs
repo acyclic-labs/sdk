@@ -98,10 +98,14 @@ pub(super) fn read(
 ) -> Result<(String, ReadPage, crate::NativeCustody)> {
     let notebook = notebook(source, work)?;
     let mut interval = None;
+    let mut empty_boundary = None;
     let mut next_cell = offset;
     let count = each(
         &notebook,
         |index, cell| {
+            if index == offset {
+                empty_boundary = Some(span(source, cell).0);
+            }
             if index >= offset && index - offset < limit.unwrap_or(u64::MAX) {
                 let (start, end) = span(source, cell);
                 let first = interval.map_or(start, |(first, _)| first);
@@ -120,7 +124,7 @@ pub(super) fn read(
         ));
     }
     let (start, end) = interval.unwrap_or_else(|| {
-        let end = span(source, notebook.cells).1 - 1;
+        let end = empty_boundary.unwrap_or_else(|| span(source, notebook.cells).1 - 1);
         (end, end)
     });
     let selected = source
@@ -215,8 +219,8 @@ pub(super) fn edit(
         return Err(executor::rejection(work, "cell index exceeds notebook"));
     }
     let mut substitutions: [Option<(usize, usize, &str)>; 3] = [None; 3];
+    let _replacement_hold;
     let replacement;
-    let replacement_hold;
     match operation {
         NotebookEdit::Replace {
             source: new_source, ..
@@ -230,7 +234,7 @@ pub(super) fn edit(
                     "cell ID differs from the selected cell",
                 ));
             }
-            (replacement, replacement_hold) = encoded(new_source, work)?;
+            (replacement, _replacement_hold) = encoded(new_source, work)?;
             let (start, end) = span(source, cell.source);
             substitutions[0] = Some((start, end, &replacement));
             if cell.cell_type == "code" {
@@ -275,7 +279,7 @@ pub(super) fn edit(
                 execution_count: Option<()>,
             }
             // execution_count must be null for code cells; serialization of Some(()) is null.
-            (replacement, replacement_hold) = encoded(
+            (replacement, _replacement_hold) = encoded(
                 &NewCell {
                     id,
                     cell_type,
@@ -311,7 +315,7 @@ pub(super) fn edit(
                 (start, end, "")
             });
             replacement = String::new();
-            replacement_hold = None;
+            _replacement_hold = None;
         }
     }
     substitutions.sort_unstable_by_key(|entry| entry.map_or(usize::MAX, |entry| entry.0));
@@ -353,7 +357,5 @@ pub(super) fn edit(
             .get(cursor..)
             .ok_or_else(|| executor::rejection(work, "invalid notebook span"))?,
     );
-    drop(replacement);
-    drop(replacement_hold);
     Ok((text, hold))
 }

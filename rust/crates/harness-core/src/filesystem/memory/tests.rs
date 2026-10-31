@@ -552,10 +552,15 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
                 assert_eq!(result.value["text"], "xxxxxxxxxxxxxxxx");
             }
             assert_eq!(work.live_allocation_bytes(), cached);
-            // The old complete-file path cannot satisfy the same 4 KiB
-            // selected-byte allowance for this 2 MiB source.
-            assert!(call(&task, &read, json!({"path":"large.txt"})).await.is_err());
+            // Default reads page the same large source under the selected-byte
+            // allowance. Direct whole-body resolution remains a negative control.
+            let (page_invocation, page_result) = call(&task, &read, json!({"path":"large.txt"})).await?;
+            let next = page_result.value["page"]["next"].as_u64().expect("bounded continuation");
+            assert!(next > 0 && next < 2 * 1024 * 1024);
+            let projected = read.projection.project(&page_invocation, &page_result, None)?.0;
+            read.definition.validate_projection(&projected, limits, None)?;
             let io = crate::executor::PreparationIo::from_native_work(&work)?;
+            assert!(context.read_tool_path("large.txt", None, Some(&io)).await.is_err());
             cancellation.cancel();
             assert!(context.read_tool_path_range("large.txt", None,
                 acyclic_fs::ByteRange { offset: 1024, length: 16 }, Some(&io)).await.is_err());
@@ -597,9 +602,13 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert_eq!(result.value["text"], "one");
         let projected = read.projection.project(&invocation, &result, None)?.0;
         let version = projected["value"]["version"].as_str().expect("opaque version");
-        let source: FileRef = serde_json::from_str(version).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(source.path(), "notes/one.txt");
-        assert_eq!(task.read_file(&source, None).await?.as_ref(), b"one");
+        let source: crate::tool::files::ReadFileResult = serde_json::from_value(result.value.clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let crate::tool::files::FileReadSource::Authored(source) = source.file else {
+            return Err(Error::Invalid("bounded path read did not retain its authored selection".into()));
+        };
+        assert_eq!(source.path, "notes/one.txt");
+        assert_eq!(source.byte_length, 3);
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":version})).await?.1.value, result.value);
 
         let (range_invocation, range_result) = call(&task, &read,
