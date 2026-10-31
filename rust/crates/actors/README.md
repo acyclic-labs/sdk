@@ -104,6 +104,15 @@ time plus data/control request counts. A downstream service can instrument
 physical dispatch with the same ledger; counts at an API wrapper boundary alone
 do not establish physical network traffic. No benchmark is scheduled by CI.
 
+### Reservation transitions
+
+`reservation::Book::step` validates the request, accounts for due grants and
+encodes its decision before changing the book. An error leaves every grant,
+counter and generation unchanged. An exact live grant can still be released
+when the generation counter cannot admit another grant. The transition visits
+due grants and the addressed grant; it does not copy unrelated grants. The
+existing tree lookups and whole-checkpoint package encoding remain.
+
 ### Finite delivery
 
 `local::Runtime::drain` drives ready actors concurrently through the same
