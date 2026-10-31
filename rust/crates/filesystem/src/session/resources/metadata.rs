@@ -233,6 +233,7 @@ mod tests {
             volume,
             generation: crate::GenerationId::new(crate::Digest::from_bytes([8; 32])),
             authority_sequence: crate::Sequence::new(1),
+            records_after: 2,
         }
         .encode();
         let appended =
