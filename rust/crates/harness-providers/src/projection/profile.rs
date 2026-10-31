@@ -102,11 +102,6 @@ pub(super) fn project(
         }
         _ => {}
     }
-    if adapter == Adapter::Gemini {
-        if let Some(Value::Object(config)) = fields.get_mut("generationConfig") {
-            config.insert("temperature".into(), json!(1.0));
-        }
-    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
