@@ -145,7 +145,13 @@ fn fills_share_capacity_and_only_coalesce_within_their_namespace() {
     assert_eq!(first.stats().unwrap().in_flight, 0);
 }
 
-fn drops_after_unlock(hold_lock: bool) -> bool {
+enum Retirement {
+    Clear,
+    Eviction,
+    Locked,
+}
+
+fn drops_after_unlock(retirement: Retirement) -> bool {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct ObserveDrop {
@@ -180,21 +186,80 @@ fn drops_after_unlock(hold_lock: bool) -> bool {
             )
             .unwrap(),
     );
-    if hold_lock {
-        // Restore the old destruction boundary: the observer must detect it.
-        let mut state = cache.lock_state().unwrap();
-        drop(cache.shared.clear(&mut state).unwrap());
-    } else {
-        cache.clear().unwrap();
+    match retirement {
+        Retirement::Locked => {
+            // Restore the old destruction boundary: the observer must detect it.
+            let mut state = cache.lock_state().unwrap();
+            drop(cache.shared.clear(&mut state).unwrap());
+        }
+        Retirement::Clear => cache.clear().unwrap(),
+        Retirement::Eviction => {
+            cache
+                .insert(object(2), OwnedBytes::from_static(b"two"))
+                .unwrap();
+        }
     }
     unlocked.load(Ordering::SeqCst)
 }
 
+fn reentrant_eviction_preserves_new_admission() {
+    struct Reenter {
+        namespace: std::sync::Weak<Namespace>,
+        target: ObjectId,
+    }
+    impl Drop for Reenter {
+        fn drop(&mut self) {
+            let store = CachedObjectStore {
+                inner: (),
+                shared: self.namespace.upgrade().unwrap(),
+            };
+            assert!(
+                store
+                    .insert(self.target, OwnedBytes::from_static(b"new"))
+                    .unwrap()
+            );
+        }
+    }
+
+    for same_key in [false, true] {
+        let cache = store(1, 1);
+        let requested = object(3);
+        let reentered = if same_key { requested } else { object(2) };
+        let value = DecodedCacheValue {
+            value: Arc::new(Reenter {
+                namespace: Arc::downgrade(&cache.shared),
+                target: reentered,
+            }),
+            ..decoded()
+        };
+        drop(
+            cache
+                .decoded_admit(
+                    DecodedCacheKey::new::<Reenter>(object(1), Default::default()),
+                    value,
+                )
+                .unwrap(),
+        );
+        assert_eq!(
+            cache
+                .insert(requested, OwnedBytes::from_static(b"new"))
+                .unwrap(),
+            same_key
+        );
+        assert!(cache.cached_contains(reentered).unwrap());
+        assert_eq!(cache.stats().unwrap().resident_entries, 1);
+        assert_eq!(cache.stats().unwrap().resident_bytes, 3);
+        assert_eq!(cache.stats().unwrap().evictions, 1);
+    }
+}
+
 #[test]
 fn namespace_retirement_preserves_peers_leases_and_unlocked_destruction() {
-    assert!(drops_after_unlock(false));
+    assert!(drops_after_unlock(Retirement::Clear));
+    assert!(drops_after_unlock(Retirement::Eviction));
+    reentrant_eviction_preserves_new_admission();
     assert!(
-        !drops_after_unlock(true),
+        !drops_after_unlock(Retirement::Locked),
         "drop observer missed the held lock"
     );
     let first = store(4, 2);
