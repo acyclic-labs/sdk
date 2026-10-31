@@ -105,7 +105,7 @@ impl State {
         self.cursor
     }
 
-    /// Existing preparation, also retained across a crash or inherited fork.
+    /// Existing preparation, retained across a crash until its terminal swap.
     #[must_use]
     pub const fn pending(self) -> Option<Pending> {
         self.pending
@@ -194,17 +194,16 @@ impl State {
         Ok(())
     }
 
-    /// Forks inherit only summaries contained in their common source prefix.
-    /// The same pending identity follows the fork; no new producer is granted.
+    /// Fan-out follows the parent's completed swap. An unfinished or failed
+    /// producer cannot be discarded or replicated into children. Forks inherit
+    /// only a committed summary contained in their common source prefix.
     pub fn fork(self, common_prefix: u64) -> Result<Self, Refusal> {
         if self.cursor > common_prefix {
             return Err(Refusal::Range);
         }
-        Ok(Self {
-            pending: self
-                .pending
-                .filter(|pending| pending.through <= common_prefix),
-            ..self
-        })
+        if self.pending.is_some() {
+            return Err(Refusal::NotReady);
+        }
+        Ok(self)
     }
 }
