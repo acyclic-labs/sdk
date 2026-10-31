@@ -273,22 +273,19 @@ proptest! {
         };
         prop_assert!(validate_work(&make(count * 4)?)? <= validate_work(&make(count)?)? * 5);
     }
-    /// Plain API keys, bearer credentials and credential-bearing URLs never become refs.
+    /// Plain API keys, bearer credentials, credential-bearing URLs, unversioned
+    /// addresses and version 0 never decode: only the canonical reference does.
     #[test]
     fn plaintext_credentials_are_never_secret_references(payload in "[A-Za-z0-9_-]{1,120}") {
-        for value in [format!("sk-ant-api03-{payload}"), format!("Bearer {payload}"),
-            format!("https://user:{payload}@provider.example/"), format!("secrets:/user:{payload}"),
-            format!("secrets:/{payload}@provider"), payload.to_owned(), format!("secrets:/{payload}?token=key")] {
-            prop_assert!(SecretReference::new(value.clone()).is_err());
+        for value in [json!(format!("sk-ant-api03-{payload}")), json!(format!("Bearer {payload}")),
+            json!(format!("https://user:{payload}@provider.example/")), json!(format!("secrets:/models/{payload}")),
+            json!({"scope": "models", "name": payload, "version": "0"})] {
             let mut json: Value = serde_json::from_slice(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))?;
-            *json.pointer_mut("/environments/0/secrets/0/reference").ok_or_else(missing)? = value.into();
-            prop_assert_eq!(parse(&serde_json::to_vec(&json)?).map_err(|error| error.rule), Err("secret-reference".to_owned()));
+            *json.pointer_mut("/environments/0/secrets/0/reference").ok_or_else(missing)? = value;
+            prop_assert_eq!(parse(&serde_json::to_vec(&json)?).map_err(|error| error.rule), Err("invalid-json-or-contract".to_owned()));
         }
-        let reference = SecretReference::new(format!("secrets:/models/{payload}"));
-        prop_assert_eq!(reference.is_ok(), payload.len() <= 63);
-        if let Ok(reference) = reference {
-            prop_assert_eq!(serde_json::from_str::<SecretReference>(&serde_json::to_string(&reference)?)?, reference);
-        }
+        let reference = SecretRef::new("models".into(), payload.clone(), 1)?;
+        prop_assert_eq!(serde_json::from_str::<SecretRef>(&serde_json::to_string(&reference)?)?, reference);
     }
 
     #[test]
@@ -853,10 +850,13 @@ fn actor_and_worker_lowering_carry_only_explicit_secret_selections()
     let mut manifest = fixture()?;
     let environment = manifest.environments.first_mut().ok_or_else(missing)?;
     add_worker(environment)?;
-    environment.secrets.push(SecretRef {
-        name: "UNLISTED".to_owned(),
-        reference: SecretReference::new("secrets:/private/unlisted".to_owned())?,
-    });
+    environment.secrets.push(
+        SecretSelection::new(
+            "UNLISTED".to_owned(),
+            SecretRef::new("private".to_owned(), "unlisted".to_owned(), 1)?,
+        )?
+        .into(),
+    );
     for worker in [false, true] {
         let index = if worker {
             environment.entries.len() - 1
@@ -885,9 +885,9 @@ fn actor_and_worker_lowering_carry_only_explicit_secret_selections()
         let declared = environment
             .secrets
             .iter()
-            .find(|s| s.name == "MODEL_KEY")
+            .find(|s| s.name() == "MODEL_KEY")
             .ok_or_else(missing)?;
-        assert_eq!(secret.reference(), declared.reference.as_str());
+        assert_eq!(secret.reference(), declared.reference());
         assert!(!selected.iter().any(|s| s.name() == "UNLISTED"));
         let wire: acyclic_actors::wire::DeploymentRequest = request.clone().into();
         assert_eq!(
@@ -1025,7 +1025,7 @@ fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
     entry.host_fetch.push(HostFetch {
         name: "machinesEndpoint".into(),
         origin: origin.clone(),
-        credential: HostCredential::account_leaf(),
+        credential: HostCredential::AccountLeaf {},
     });
     if let EntryRuntime::ActorNamespace { actor_machine, .. } = &mut entry.runtime {
         *actor_machine = Some(ActorMachine {
@@ -1096,15 +1096,21 @@ fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
     );
     assert_eq!(host(&|h| h.origin.host = String::new()), authority);
     assert_eq!(host(&|h| h.origin.port = 0), authority);
-    assert_eq!(
-        host(&|h| h.credential.reference =
-            SecretReference::new("secrets:/leaf".into()).expect("reference")),
-        Some("secret-reference".to_owned())
-    );
     // Both credential schemes admit, and the guest can reach neither the
     // endpoint's credential nor its origin under either of them.
     let exposed = Some("host-fetch-exposed".to_owned());
-    for scheme in [CredentialScheme::Bearer, CredentialScheme::AccountLeaf] {
+    let bearer = SecretRef::new("machines".into(), "key".into(), 1)?;
+    for credential in [
+        HostCredential::Bearer {
+            reference: bearer.clone().into(),
+        },
+        HostCredential::AccountLeaf {},
+    ] {
+        // The same variable at any version is the same exposure.
+        let shadow = match &credential {
+            HostCredential::Bearer { .. } => SecretRef::new("machines".into(), "key".into(), 2)?,
+            HostCredential::AccountLeaf {} => SecretRef::new("account".into(), "leaf".into(), 7)?,
+        };
         let mut manifest = manifest.clone();
         let host = manifest
             .environments
@@ -1112,7 +1118,7 @@ fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
             .and_then(|environment| environment.entries.first_mut())
             .and_then(|entry| entry.host_fetch.first_mut())
             .ok_or_else(missing)?;
-        host.credential.scheme = scheme;
+        host.credential = credential;
         validate(&manifest)?;
         let refused = |change: &dyn Fn(&mut Environment)| {
             let mut manifest = manifest.clone();
@@ -1123,11 +1129,9 @@ fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
         };
         assert_eq!(
             refused(&|environment| {
-                environment.secrets.push(SecretRef {
-                    name: "MACHINES_KEY".into(),
-                    reference: SecretReference::new(HostCredential::ACCOUNT_LEAF.into())
-                        .expect("reference"),
-                });
+                if let Ok(selection) = SecretSelection::new("MACHINES_KEY".into(), shadow.clone()) {
+                    environment.secrets.push(selection.into());
+                }
                 if let Some(entry) = environment.entries.first_mut() {
                     entry.secrets.push("MACHINES_KEY".into());
                 }
@@ -1145,17 +1149,18 @@ fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
             }),
             exposed
         );
-        // An inline credential decodes but is refused by the reference rule.
+        // An inline credential never decodes, under either scheme.
         let mut json = serde_json::to_value(&manifest)?;
         let credential = "/environments/0/entries/0/hostFetch/0/credential";
-        *json
-            .pointer_mut(&format!("{credential}/reference"))
-            .ok_or_else(missing)? = json!("inline-leaf-key");
+        json.pointer_mut(credential)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(missing)?
+            .insert("reference".into(), json!("inline-leaf-key"));
         assert_eq!(
             parse(&serde_json::to_vec(&json)?)
                 .err()
                 .map(|error| error.rule),
-            Some("secret-reference".to_owned())
+            Some("invalid-json-or-contract".to_owned())
         );
         // A scheme the platform cannot mint is refused on decode.
         let mut json = serde_json::to_value(&manifest)?;

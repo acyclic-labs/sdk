@@ -1,18 +1,20 @@
 Catalog authentication may name a host-protected credential:
 
 ```json
-{"authentication":{"bearer":{"secret_reference":"secrets:/models/primary"}}}
+{"authentication":{"bearer":{"secret_reference":{"scope":"models","name":"primary","version":"1"}}}}
 ```
 
 Use `api_key_secret` instead of `bearer` for the adapter's API-key header.
 The remaining `ProviderSpec` fields still select the ordinary endpoint dialect,
-model capacities and verified token counter. A reference never falls back to
-native provider keys or a CLI login.
+model capacities and verified token counter. The reference is the canonical
+versioned `SecretRef`; rotating the key is a new version in the catalog. A
+reference never falls back to native provider keys or a CLI login.
 
 Native hosts inject `CredentialResolver` through
 `Registry::with_credential_resolver`. Browser and Worker hosts call
 `ModelRegistry.bindCredentials(resolver)` before resolving models. The resolver
-receives the original endpoint origin, canonical reference and header scheme.
+receives the original endpoint origin, the canonical `{scope, name, version}`
+reference and header scheme.
 It selects existing deployment authority without IO, returning an authenticated
 32-byte account scope and a protected fetch capability. Rotation within that
 account preserves scope; a different account must have a different scope.

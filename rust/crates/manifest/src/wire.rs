@@ -195,6 +195,17 @@ contract!(
     acyclic_actors::FILE_DESCRIPTOR_SET
 );
 contract!(
+    acyclic_actors::domain::SecretSelection,
+    acyclic_actors::contract::SecretSelectionProto,
+    acyclic_actors::FILE_DESCRIPTOR_SET
+);
+// The shared reference's descriptor travels in every embedding contract's set.
+contract!(
+    acyclic_auth::secrets::SecretRef,
+    acyclic_auth::secrets::SecretRefProto,
+    acyclic_actors::FILE_DESCRIPTOR_SET
+);
+contract!(
     acyclic_auth::contract::ResourcePattern,
     acyclic_auth::contract::ResourcePatternProto,
     acyclic_auth::FILE_DESCRIPTOR_SET

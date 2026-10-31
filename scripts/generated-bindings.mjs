@@ -16,7 +16,7 @@ export const packagedTypeScriptBindings = [
   ["auth/v1/auth_pb", ["auth"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
-  ["harness/v2/resources_pb", ["machines"], "compatibility"],
+  ["harness/v2/resources_pb", ["machines", "actors"], "compatibility"],
   ["objects/v1/objects_pb", ["objects"]],
   ["stream/v1/stream_pb", ["stream"]],
   ["stream/v1/session_pb", ["stream"]],

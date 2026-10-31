@@ -12,8 +12,9 @@ mod javascript;
 mod selection;
 mod validation;
 pub mod wire;
-pub use acyclic_actors::domain::{ActorLimits, Binding, SubscriptionSpec};
+pub use acyclic_actors::domain::{ActorLimits, Binding, SecretSelection, SubscriptionSpec};
 pub use acyclic_auth::contract::{Limits, ResourceGrant, ResourcePattern};
+pub use acyclic_auth::secrets::SecretRef;
 pub use entry_closure::{EntryClosure, EntryObject, PreparedDeployment, PreparedEntry};
 pub use generation::{environment_typescript, json_schema, typescript};
 pub use selection::select_entry;
@@ -57,8 +58,9 @@ pub struct Environment {
     pub bindings: Vec<Contract<Binding>>,
     /// Named typed workload grants; account spend entitlements remain host-owned.
     pub grants: Vec<BindingGrant>,
-    /// Credential-store references available only through explicit selection.
-    pub secrets: Vec<SecretRef>,
+    /// Canonical secret references available only through explicit selection.
+    #[ts(type = "SecretSelection[]")]
+    pub secrets: Vec<Contract<SecretSelection>>,
     /// UTC schedules delivering idempotent records to subscribed inboxes.
     pub crons: Vec<CronSpec>,
     /// Content-addressed asset bundle declarations.
@@ -242,44 +244,32 @@ pub struct HostFetch {
     pub credential: HostCredential,
 }
 
-/// One credential-store reference and its HTTP authentication scheme.
+/// The credential the platform attaches to a host-only endpoint, as the
+/// `Authorization` header. An unknown scheme is refused on decode, never ignored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HostCredential {
-    /// Authentication scheme of the `Authorization` header.
-    pub scheme: CredentialScheme,
-    /// Credential-store address; no environment secret may declare it.
-    pub reference: SecretReference,
+#[serde(tag = "scheme", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum HostCredential {
+    /// The referenced secret is the bearer: `Authorization: Bearer <secret>`.
+    Bearer {
+        /// No environment secret may select the same variable.
+        #[ts(type = "SecretRef")]
+        reference: Contract<SecretRef>,
+    },
+    /// The platform's own account leaf, `{key, certificate, birth}` in its leaf
+    /// encoding, read only by the host. For each exchange the host mints a
+    /// short-lived bearer its own platform verifies, with lifetime
+    /// `min(caller deadline, platform maximum bearer lifetime)`, scoped to this
+    /// endpoint where the platform supports it, and sends it as
+    /// `Authorization: Bearer <minted>`. No stored token is refreshed. The
+    /// host owns the leaf's version, so the manifest names no reference. A
+    /// struct variant, so any extra field, such as an inline key, is refused
+    /// on decode; serde ignores the fields of a unit variant.
+    AccountLeaf {},
 }
 
 impl HostCredential {
-    /// The platform's account leaf, shared by every host-only endpoint that
-    /// mints its bearers from it.
+    /// The account leaf's variable, which no environment secret may select.
     pub const ACCOUNT_LEAF: &str = "secrets:/account/leaf";
-
-    /// Mint each exchange's bearer from [`Self::ACCOUNT_LEAF`].
-    pub fn account_leaf() -> Self {
-        Self {
-            scheme: CredentialScheme::AccountLeaf,
-            reference: SecretReference(Self::ACCOUNT_LEAF.to_owned()),
-        }
-    }
-}
-
-/// How the host turns the referenced secret into the `Authorization` header.
-/// An unknown scheme is refused on decode, never ignored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "kebab-case")]
-pub enum CredentialScheme {
-    /// The secret is the bearer: `Authorization: Bearer <secret>`.
-    Bearer,
-    /// The secret is the JSON `{key, certificate, birth}` in the platform's
-    /// leaf encoding, read only by the host. For each exchange the host mints
-    /// a short-lived bearer its own platform verifies, with lifetime
-    /// `min(caller deadline, platform maximum bearer lifetime)`, scoped to this
-    /// endpoint where the platform supports it, and sends it as
-    /// `Authorization: Bearer <minted>`. No stored token is refreshed.
-    AccountLeaf,
 }
 
 /// Exact canonical DNS authority, resolved and pinned by the host before use.
@@ -290,59 +280,6 @@ pub struct EgressRule {
     pub host: String,
     /// The host always uses TLS with certificate validation, on this port.
     pub port: u16,
-}
-
-/// Typed credential-store reference, resolved by the host outside the manifest.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SecretRef {
-    /// Declaration name; environment names are DNS labels, env properties are identifiers.
-    pub name: String,
-    /// Only secrets:/ followed by nonempty ASCII identifier path segments.
-    pub reference: SecretReference,
-}
-
-/// Credential-store address; never a credential value or URL. `SecretReference::new`
-/// and `parse` admit only valid addresses. Decoding defers that check to validation,
-/// so an inline credential is refused with its typed `secret-reference` rule.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(transparent)]
-#[ts(type = "string")]
-pub struct SecretReference(String);
-
-impl JsonSchema for SecretReference {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "SecretReference".into()
-    }
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({"type":"string", "maxLength":256,
-            "pattern":"^secrets:/[A-Za-z0-9_-]{1,63}(/[A-Za-z0-9_-]{1,63})*$"})
-    }
-}
-
-impl SecretReference {
-    /// Admit only bounded secrets:/ identifier paths.
-    pub fn new(value: String) -> Result<Self, ManifestError> {
-        if !acyclic_actors::domain::SecretSelection::valid_reference(&value) {
-            return Err(ManifestError::invalid("reference", "secret-reference"));
-        }
-        Ok(Self(value))
-    }
-    /// Return the validated credential-store address.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-impl TryFrom<String> for SecretReference {
-    type Error = ManifestError;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-impl From<SecretReference> for String {
-    fn from(value: SecretReference) -> Self {
-        value.0
-    }
 }
 
 /// UTC numeric five-field cron; restricted day-of-month and weekday use OR.

@@ -65,3 +65,9 @@ through `secrets::Resolver`, either the bytes that version wrote or a typed
 `ResolveError`. The resolved `SecretValue` is redacted and zeroed on drop.
 Protected values remain with the host credential adapter; they never enter
 guest environments, streams, volumes, tool journals or logs.
+
+Actors selections, manifest host credentials and model authentication use this
+same recorded reference and its shared `acyclic.harness.v2.SecretRef` wire form.
+Native configuration variable names remain explicit host inputs. They do not
+claim the immutable version of a published secret, and file content hashes do
+not manufacture one.

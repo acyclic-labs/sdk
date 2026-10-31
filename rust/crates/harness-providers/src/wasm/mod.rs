@@ -82,9 +82,11 @@ export interface ModelCredentialBinding {
    * and body reads. Failures carry the numeric harness ErrorCode. */
   readonly fetch: ProviderFetch;
 }
+/** The canonical secret reference; `version` is a decimal u64 string. */
+export type SecretRef = { scope: string; name: string; version: string };
 /** Select existing deployment authority without IO. Scope is 32 authenticated
- * account bytes, stable across rotation. Bind never resolves a secret value. */
-export type ModelCredentialResolver = (origin: string, secretReference: string,
+ * account bytes, stable across versions. Bind never resolves a secret value. */
+export type ModelCredentialResolver = (origin: string, secretReference: SecretRef,
   scheme: 'bearer' | 'api_key' | 'google_api_key') => ModelCredentialBinding;
 "#;
 

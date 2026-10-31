@@ -1,96 +1,28 @@
-//! Host-held secrets. Configuration names a secret by [`SecretRef`]; only the
-//! host resolves it, through its one [`SecretSource`], so no secret enters
-//! guest code, a stream or a volume. A platform implements [`SecretSource`]
-//! over its secrets product; self-hosters use [`EnvSecrets`] or
-//! [`FileSecrets`].
-
+//! Host-only native credential inputs. Configuration supplies an explicit
+//! variable or file name; it does not manufacture a published secret version.
+//! Recorded credentials use Auth's canonical `SecretRef` and `Resolver`.
+use acyclic_auth::secrets::SecretValue;
 use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
-use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
 
-/// Longest secret name.
-pub const MAX_SECRET_NAME_BYTES: usize = 256;
-
-/// The name of a secret, never its value: ASCII letters, digits, `.`, `_`
-/// and `-`, not starting with `.`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct SecretRef(String);
-
-impl SecretRef {
-    /// Validates `name`.
-    ///
-    /// # Errors
-    /// [`crate::Error::Invalid`] for an empty, overlong or ill-formed name.
-    pub fn new(name: impl Into<String>) -> crate::Result<Self> {
-        let name = name.into();
-        let valid = !name.is_empty()
-            && name.len() <= MAX_SECRET_NAME_BYTES
-            && !name.starts_with('.')
-            && name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
-        if valid {
-            Ok(Self(name))
-        } else {
-            Err(crate::Error::Invalid("invalid secret name".into()))
-        }
-    }
-
-    /// The name.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for SecretRef {
-    type Error = crate::Error;
-
-    fn try_from(name: String) -> crate::Result<Self> {
-        Self::new(name)
-    }
-}
-
-impl From<SecretRef> for String {
-    fn from(reference: SecretRef) -> Self {
-        reference.0
-    }
-}
-
-/// A resolved secret, held only by the host: never printed, zeroed on drop.
-pub struct Secret(Zeroizing<String>);
-
-impl Secret {
-    /// Takes ownership of `value`.
-    #[must_use]
-    pub fn new(value: String) -> Self {
-        Self(Zeroizing::new(value))
-    }
-
-    /// The value, for the one host call that presents it.
-    #[must_use]
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Secret(..)")
-    }
-}
-
-/// The host's one source of secrets.
+/// Original native configuration source. Values stay with the host adapter.
 pub trait SecretSource: ProviderPlatform + 'static {
-    /// Resolves `reference`; `None` when the source holds no such secret.
+    /// Read the explicitly selected native input once. No immutable revision
+    /// or authority is inferred from its name, timestamp or content hash.
     fn secret<'a>(
         &'a self,
-        reference: &'a SecretRef,
-    ) -> BoxProviderFuture<'a, crate::Result<Option<Secret>>>;
+        name: &'a str,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<SecretValue>>>;
 }
 
-/// Secrets in the host process's environment, one variable per name.
+fn component(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// Explicit credential variables in the original host process.
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "mcp-stdio", feature = "mcp-http")
@@ -105,22 +37,20 @@ pub struct EnvSecrets;
 impl SecretSource for EnvSecrets {
     fn secret<'a>(
         &'a self,
-        reference: &'a SecretRef,
-    ) -> BoxProviderFuture<'a, crate::Result<Option<Secret>>> {
-        let value = crate::native_environment::variable(reference.as_str())
-            .map(|value| {
-                value
-                    .into_string()
-                    .map(Secret::new)
-                    .map_err(|_| crate::Error::Invalid("secret is not UTF-8".into()))
-            })
-            .transpose();
-        Box::pin(std::future::ready(value))
+        name: &'a str,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<SecretValue>>> {
+        let value = if component(name) {
+            crate::native_environment::variable(name)
+                .map(|value| SecretValue::new(value.into_encoded_bytes()))
+        } else {
+            None
+        };
+        Box::pin(std::future::ready(Ok(value)))
     }
 }
 
-/// Secrets as files in one directory, one file per name (a mounted secrets
-/// volume); a trailing newline is not part of the secret.
+/// Explicit credential files held by the original host. A trailing newline is
+/// not part of the value. This adapter makes no published-version claim.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug)]
 pub struct FileSecrets {
@@ -129,7 +59,7 @@ pub struct FileSecrets {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl FileSecrets {
-    /// Secrets in `directory`.
+    /// Bind the original host's selected directory.
     #[must_use]
     pub fn new(directory: impl Into<std::path::PathBuf>) -> Self {
         Self {
@@ -142,12 +72,13 @@ impl FileSecrets {
 impl SecretSource for FileSecrets {
     fn secret<'a>(
         &'a self,
-        reference: &'a SecretRef,
-    ) -> BoxProviderFuture<'a, crate::Result<Option<Secret>>> {
-        // A validated name is one path component, so it never leaves the directory.
-        let path = self.directory.join(reference.as_str());
+        name: &'a str,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<SecretValue>>> {
+        if !component(name) {
+            return Box::pin(std::future::ready(Ok(None)));
+        }
+        let path = self.directory.join(name);
         Box::pin(async move {
-            // A slow mount blocks a blocking worker, never the caller's thread.
             match tokio::runtime::Handle::try_current() {
                 Ok(runtime) => runtime
                     .spawn_blocking(move || read_secret(&path))
@@ -160,33 +91,54 @@ impl SecretSource for FileSecrets {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn read_secret(path: &std::path::Path) -> crate::Result<Option<Secret>> {
-    match std::fs::read_to_string(path) {
-        Ok(mut value) => {
-            let kept = value.trim_end_matches(['\r', '\n']).len();
-            value.truncate(kept);
-            Ok(Some(Secret::new(value)))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(crate::Error::Storage("secret file is unreadable".into())),
-    }
+fn read_secret(path: &std::path::Path) -> crate::Result<Option<SecretValue>> {
+    let mut value = match std::fs::read(path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(crate::Error::Storage("secret file is unreadable".into())),
+    };
+    let kept = value.len()
+        - value
+            .iter()
+            .rev()
+            .take_while(|byte| matches!(byte, b'\r' | b'\n'))
+            .count();
+    value[kept..].fill(0);
+    value.truncate(kept);
+    Ok(Some(SecretValue::new(value)))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
-    #[test]
-    fn names_are_one_path_component() {
-        for name in ["", ".env", "../key", "a/b", "a b"] {
-            assert!(SecretRef::new(name).is_err(), "{name:?}");
+    #[tokio::test]
+    async fn explicit_native_inputs_do_not_fabricate_published_versions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("token");
+        std::fs::write(&path, b"first\n")?;
+        let source = FileSecrets::new(directory.path());
+        assert_eq!(
+            source
+                .secret("token")
+                .await?
+                .ok_or("missing input")?
+                .expose(),
+            b"first"
+        );
+        std::fs::write(&path, b"replacement")?;
+        assert_eq!(
+            source
+                .secret("token")
+                .await?
+                .ok_or("missing input")?
+                .expose(),
+            b"replacement"
+        );
+        for name in ["", "../token", "token/", ".env", "a/b"] {
+            assert!(source.secret(name).await?.is_none());
         }
-        assert!(SecretRef::new("openai.api_key-1").is_ok());
-        assert!(SecretRef::new("x".repeat(MAX_SECRET_NAME_BYTES + 1)).is_err());
-    }
-
-    #[test]
-    fn a_secret_is_never_printed() {
-        assert_eq!(format!("{:?}", Secret::new("hunter2".into())), "Secret(..)");
+        Ok(())
     }
 }

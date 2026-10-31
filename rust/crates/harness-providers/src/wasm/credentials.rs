@@ -32,12 +32,14 @@ impl CredentialResolver for Resolver {
         };
         let refused =
             |cause| crate::http::browser::failure(cause, "protected model binding failed");
+        let reference = serde_wasm_bindgen::to_value(reference)
+            .map_err(|_| invalid("secret reference must encode"))?;
         let binding = self
             .0
             .call3(
                 &JsValue::UNDEFINED,
                 &origin.into(),
-                &reference.into(),
+                &reference,
                 &scheme.into(),
             )
             .map_err(refused)?;

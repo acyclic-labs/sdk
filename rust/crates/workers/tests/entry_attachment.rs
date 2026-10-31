@@ -51,7 +51,7 @@ fn manifest(module: &[u8]) -> TestResult<DeploymentManifest> {
         "actions":["streams/read"]},"limits":null
     }))?);
     environment.secrets.push(serde_json::from_value(json!({
-        "name":"PRIVATE_KEY","reference":"secrets:/private/model"
+        "name":"PRIVATE_KEY","reference":{"scope":"private","name":"model","version":"1"}
     }))?);
     Ok(manifest)
 }

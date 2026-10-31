@@ -615,7 +615,7 @@ fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result
     let environment = |_: &str| None::<std::ffi::OsString>;
     let credentials = BTreeMap::from([(
         "TOKEN".to_owned(),
-        crate::secrets::Secret::new("secret".into()),
+        zeroize::Zeroizing::new("secret".to_owned()),
     )]);
     let headers = native::headers_for(
         &BTreeMap::from([("X-Static".into(), "${MISSING:-fallback}".into())]),

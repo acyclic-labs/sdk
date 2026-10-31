@@ -216,7 +216,7 @@ fn validate_environment<'a>(
     require(!entries.is_empty(), p, "entries-required")?;
     let bindings = index(&environment.bindings, |b| b.name(), p)?;
     let grants = index(&environment.grants, |g| &g.name, p)?;
-    let secrets = index(&environment.secrets, |s| &s.name, p)?;
+    let secrets = index(&environment.secrets, |s| s.name(), p)?;
     work += entries.len() + bindings.len() + grants.len() + secrets.len();
     let actions = grant_actions(environment, p, &mut work)?;
     for binding in &environment.bindings {
@@ -239,12 +239,7 @@ fn validate_environment<'a>(
         work += 2;
     }
     for secret in &environment.secrets {
-        require(identifier(&secret.name), p, "secret-name")?;
-        require(
-            acyclic_actors::domain::SecretSelection::valid_reference(secret.reference.as_str()),
-            p,
-            "secret-reference",
-        )?;
+        require(identifier(secret.name()), p, "secret-name")?;
         work += 1;
     }
     let (selected, subscribed) = validate_entries(environment, p, &bindings, &secrets, &mut work)?;
@@ -396,16 +391,16 @@ fn validate_entries<'a>(
     environment: &'a Environment,
     p: &str,
     bindings: &Names<'a, Contract<Binding>>,
-    secrets: &Names<'a, SecretRef>,
+    secrets: &Names<'a, Contract<SecretSelection>>,
     work: &mut usize,
 ) -> Result<(Selections<'a>, Selections<'a>), ManifestError> {
     let mut selected = HashMap::new();
     let mut subscribed = HashMap::new();
     // Everything any guest of this environment can reach: host-only endpoints exclude both.
-    let guest_references: HashSet<&str> = environment
+    let guest_references: HashSet<String> = environment
         .secrets
         .iter()
-        .map(|secret| secret.reference.as_str())
+        .map(|secret| secret.reference().resource())
         .collect();
     let guest_origins: HashSet<(&str, u16)> = environment
         .entries
@@ -485,19 +480,13 @@ fn validate_entries<'a>(
                 u32::from(host.origin.port),
             )
             .map_err(|_| ManifestError::invalid(&ep, "https-authority"))?;
-            // A host credential lives in the platform's credential store,
-            // always below a store collection: `secrets:/<seg>(/<seg>)+`.
-            let reference = host.credential.reference.as_str();
+            // Any version of the host's variable is the same exposure.
+            let host_resource = match &host.credential {
+                HostCredential::Bearer { reference } => reference.resource(),
+                HostCredential::AccountLeaf {} => HostCredential::ACCOUNT_LEAF.to_owned(),
+            };
             require(
-                acyclic_actors::domain::SecretSelection::valid_reference(reference)
-                    && reference
-                        .strip_prefix("secrets:/")
-                        .is_some_and(|path| path.contains('/')),
-                &ep,
-                "secret-reference",
-            )?;
-            require(
-                !guest_references.contains(host.credential.reference.as_str())
+                !guest_references.contains(&host_resource)
                     && !guest_origins.contains(&(host.origin.host.as_str(), host.origin.port)),
                 &ep,
                 "host-fetch-exposed",
@@ -668,11 +657,7 @@ pub(crate) fn lower_admitted(
     source: Option<acyclic_actors::domain::EntrySource>,
 ) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
     let bindings = environment.bindings.iter().map(|b| (b.name(), b)).collect();
-    let secrets = environment
-        .secrets
-        .iter()
-        .map(|s| (s.name.as_str(), s))
-        .collect();
+    let secrets = environment.secrets.iter().map(|s| (s.name(), s)).collect();
     match entry.runtime {
         EntryRuntime::ActorNamespace { .. } => {
             lower_actor_unchecked(&bindings, &secrets, entry, idempotency_key, source)
@@ -684,7 +669,7 @@ pub(crate) fn lower_admitted(
 }
 fn lower_actor_unchecked(
     bindings: &HashMap<&str, &Contract<Binding>>,
-    secrets: &HashMap<&str, &SecretRef>,
+    secrets: &HashMap<&str, &Contract<SecretSelection>>,
     entry: &Entry,
     idempotency_key: &str,
     source: Option<acyclic_actors::domain::EntrySource>,
@@ -800,8 +785,9 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
             }
         }
         for secret in &env.secrets {
-            budget.text(&secret.name)?;
-            budget.text(secret.reference.as_str())?;
+            budget.text(secret.name())?;
+            budget.text(secret.reference().scope())?;
+            budget.text(secret.reference().name())?;
         }
         for entry in &env.entries {
             if let EntryRuntime::ActorNamespace {
@@ -963,7 +949,7 @@ pub fn lower_worker(
 }
 fn lower_worker_unchecked(
     bindings: &HashMap<&str, &Contract<Binding>>,
-    secrets: &HashMap<&str, &SecretRef>,
+    secrets: &HashMap<&str, &Contract<SecretSelection>>,
     entry: &Entry,
     idempotency_key: &str,
     source: Option<acyclic_actors::domain::EntrySource>,
@@ -1050,21 +1036,17 @@ fn deployment_parts(
 }
 
 fn deployment_secrets(
-    secrets: &HashMap<&str, &SecretRef>,
+    secrets: &HashMap<&str, &Contract<SecretSelection>>,
     entry: &Entry,
-) -> Result<Vec<acyclic_actors::domain::SecretSelection>, ManifestError> {
+) -> Result<Vec<SecretSelection>, ManifestError> {
     entry
         .secrets
         .iter()
         .map(|name| {
-            let secret = secrets
+            secrets
                 .get(name.as_str())
-                .ok_or_else(|| ManifestError::invalid("secrets", "unknown-secret"))?;
-            acyclic_actors::domain::SecretSelection::new(
-                secret.name.clone(),
-                secret.reference.as_str().to_owned(),
-            )
-            .map_err(|_| ManifestError::invalid("secrets", "secret-reference"))
+                .map(|secret| secret.0.clone())
+                .ok_or_else(|| ManifestError::invalid("secrets", "unknown-secret"))
         })
         .collect()
 }

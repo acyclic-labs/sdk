@@ -122,8 +122,14 @@ impl File {
                             text.push('\n');
                         }
                     }
+                    let shared: &[&[&'static str]] = &[#(<#messages>::IMPORTS),*];
+                    let mut imports = shared.iter().flat_map(|list| list.iter().copied()).collect::<::std::collections::BTreeSet<_>>();
                     if text.contains("(acyclic.validation.v1.auth)") {
-                        text = text.replacen("\n\noption go_package", "\n\nimport \"validation/v1/options.proto\";\n\noption go_package", 1);
+                        imports.insert("validation/v1/options.proto");
+                    }
+                    if !imports.is_empty() {
+                        let block = imports.iter().map(|import| format!("import \"{import}\";\n")).collect::<String>();
+                        text = text.replacen("\n\noption go_package", &format!("\n\n{block}\noption go_package"), 1);
                     }
                     let path = root.join(#path);
                     if let Some(parent) = path.parent() { ::std::fs::create_dir_all(parent)?; }

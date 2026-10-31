@@ -2,7 +2,7 @@
  * The Rust validator remains the sole admission rule set; this adds only the
  * harness entry's own selection of its descriptor bindings. */
 import type { ActorLimits, Binding, BindingGrant, DeploymentManifest, EntryAsset, HostCredential,
-  SubscriptionSpec, VolumeProvider } from "@acyclic-labs/workers/manifest";
+  SecretRef, SubscriptionSpec, VolumeProvider } from "@acyclic-labs/workers/manifest";
 import type { ProviderSpec } from "@acyclic-labs/harness";
 import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH, OBJECTS_ENDPOINT } from "./bindings.js";
 
@@ -33,12 +33,12 @@ export class HarnessManifestError extends Error {
   }
 }
 
-/** The credential-store reference named by the provider authentication. The Rust
- * manifest validator is the sole judge of whether it is a protected reference. */
-function reference(authentication: ProviderSpec["authentication"]): string {
+/** The canonical versioned reference named by the provider authentication. The
+ * Rust manifest validator is the sole judge of whether it is a reference. */
+function reference(authentication: ProviderSpec["authentication"]): SecretRef | undefined {
   const credential = typeof authentication === "object" && authentication !== null
-    ? Object.values(authentication)[0] as { secret_reference?: string } | undefined : undefined;
-  return credential?.secret_reference ?? "";
+    ? Object.values(authentication)[0] as { secret_reference?: SecretRef } | undefined : undefined;
+  return credential?.secret_reference;
 }
 
 /** `volumeProvider` is the owner's `options.filesystem_provider`: the platform
@@ -84,7 +84,7 @@ export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpe
       }],
       bindings: deployment.bindings,
       grants: deployment.grants,
-      secrets: secrets.map(name => ({ name, reference: reference(spec.authentication) })),
+      secrets: secrets.map(name => ({ name, reference: reference(spec.authentication) as SecretRef })),
       crons: [],
       assets: [],
       routes: [],

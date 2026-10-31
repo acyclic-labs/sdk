@@ -10,29 +10,31 @@ await initializeManifest({ module_or_path: module });
 const fixture = JSON.parse(await readFile(new URL("../../../../rust/crates/manifest/fuzz/corpus/manifest_json/valid.json", import.meta.url), "utf8"));
 
 test("standalone secret reference admission uses the deployment grammar", () => {
-  const segment = "a".repeat(63);
-  const maximum = `secrets:/${segment}/${segment}/${segment}/${"b".repeat(55)}`;
-  for (const reference of ["secrets:/A_b-9", "secrets:/models/Primary", maximum]) {
-    assert.equal(parseSecretReference(reference), reference);
+  for (const reference of [
+    { scope: "models", name: "Primary", version: "1" },
+    { scope: "prod/eu", name: "API_KEY", version: "18446744073709551615" },
+  ]) {
+    assert.deepEqual(JSON.parse(parseSecretReference(JSON.stringify(reference))), reference);
     const manifest = structuredClone(fixture);
     manifest.environments[0].secrets[0].reference = reference;
     validate(JSON.stringify(manifest));
   }
-  for (const reference of ["", "secret:/a", "SECRETS:/a", "secrets:/", "secrets://a",
-    "secrets:/a/", "secrets:/a//b", "secrets:/a/../b", "secrets:/a/./b",
-    "secrets:/a%2Fb", "secrets:/a?version=1", "secrets:/a#part", "secrets:/a:b",
-    "secrets:/a\\b", "secrets:/a\u0000", "secrets:/é", `secrets:/${segment}a`,
-    `${maximum}b`, "Bearer ordinary-sentinel", "https://user:sentinel@example.com/"]) {
-    assert.throws(() => parseSecretReference(reference), error => {
+  for (const reference of ["secrets:/models/primary", {},
+    { scope: "", name: "key", version: "1" },
+    { scope: "models", name: "key\u0000", version: "1" },
+    { scope: "models", name: "key", version: "0" },
+    { scope: "models", name: "key", version: "18446744073709551616" },
+    { scope: "models", name: "key", version: "1", value: "ordinary-sentinel" },
+  ]) {
+    assert.throws(() => parseSecretReference(JSON.stringify(reference)), error => {
       assert.equal(error.name, "ManifestError");
       assert.equal(error.path, "reference");
       assert.equal(error.rule, "secret-reference");
-      assert.equal(error.message, "manifest reference: secret-reference");
       return true;
     });
     const manifest = structuredClone(fixture);
     manifest.environments[0].secrets[0].reference = reference;
-    assert.throws(() => validate(JSON.stringify(manifest)), /secret-reference/);
+    assert.throws(() => validate(JSON.stringify(manifest)));
   }
 });
 

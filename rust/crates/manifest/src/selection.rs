@@ -48,7 +48,7 @@ pub fn select_entry(
             secrets: environment
                 .secrets
                 .into_iter()
-                .filter(|secret| secrets.contains(secret.name.as_str()))
+                .filter(|secret| secrets.contains(secret.name()))
                 .collect(),
             crons: environment
                 .crons

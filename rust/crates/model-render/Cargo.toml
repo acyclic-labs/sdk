@@ -9,7 +9,7 @@ publish.workspace = true
 description = "Deterministic rendering of immutable model conversation items"
 
 [features]
-browser = ["dep:tsify"]
+browser = ["dep:tsify", "dep:wasm-bindgen"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
@@ -17,6 +17,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

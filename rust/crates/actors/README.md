@@ -70,13 +70,17 @@ Manifest lowering resolves only names explicitly listed in `entry.secrets`
 against `environment.secrets`. Declaring a secret in an environment grants no
 entry access to it. Both runtime kinds use this same lowering function.
 
-References use the bounded `secrets:/scope/name` grammar. They are addresses,
-never plaintext, versions, bearer tokens or unwrap credentials. Resolution and
+Each reference is the canonical `acyclic_auth::secrets::SecretRef`
+`{scope, name, version}`, encoded as the shared `acyclic.harness.v2.SecretRef`
+from `harness/v2/resources.proto`. The version is immutable, so a deployment
+resolves to exactly the bytes that version wrote or fails typed. References
+are never plaintext, bearer tokens or unwrap credentials. Resolution and
 authorization belong to the deployment host; SDK lowering never reads a value.
 
 ### Mixed rollout
 
-`SecretSelection` uses new message fields 1 (`name`) and 2 (`reference`).
+`SecretSelection` carries fields 1 (`name`) and 3 (`reference`). Field 2,
+the retired unversioned address, is never reused.
 DeploymentRequest appends field 12; UpdateNamespaceRequest appends field 7.
 Existing field numbers, wire kinds and meanings are unchanged. Writers never
 encode selections as bindings, reuse predecessor fields or send credential

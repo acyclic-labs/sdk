@@ -10,8 +10,8 @@ import { HARNESS_BINDINGS, MODEL_FETCH, HarnessActorError } from "./bindings.js"
 import { harnessStreamLedger } from "./streams.js";
 export { HarnessActorError } from "./bindings.js";
 
-/** The artifact owner's configuration. Credentials appear only as protected
- * `secrets:/` references inside `model.spec.authentication`. */
+/** The artifact owner's configuration. Credentials appear only as canonical
+ * versioned secret references inside `model.spec.authentication`. */
 export interface HarnessActorConfig {
   readonly options: BrowserAgentOptions;
   readonly model: {

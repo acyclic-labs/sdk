@@ -231,9 +231,6 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
-    if let Some(reference) = config.authentication.secret_reference() {
-        crate::authorization::reference(reference)?;
-    }
     config.timeouts.validate()?;
     for (name, value) in &config.headers {
         if name.is_empty()
