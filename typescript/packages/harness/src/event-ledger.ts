@@ -38,7 +38,7 @@ export class EventStreamLedger implements StreamLedger {
   }
 
   register(actor: string, paths: string[]) { return this.wakes.register(actor, paths); }
-  pending(): number { return this.wakes.pending().length; }
+  pending(): number { return this.wakes.pendingCount(); }
 
   dispatch(actor: string, operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>> {
     // A wait parks until later writes apply, so it never holds the write order.
