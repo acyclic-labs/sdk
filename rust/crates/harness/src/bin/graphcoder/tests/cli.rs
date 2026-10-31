@@ -237,6 +237,11 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     };
     assert_eq!(succeeded(&run("first").await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
+    assert_eq!(
+        model.requests.lock().unwrap()[0]["max_output_tokens"],
+        1024,
+        "an absent role reservation uses the selected model's verified output capacity"
+    );
     // The same operation names the same message: a second process prints the
     // settled answer without generating again.
     assert_eq!(succeeded(&run("first").await), "fixture answer\n");

@@ -52,6 +52,21 @@ impl StockExecutor {
         let key = format!("{}/{}", self.model.provider, self.model.name);
         let resolved = profiles.for_model(&pin, &key)?;
         self.max_output_tokens = resolved.overlay().max_output_tokens;
+        if !matches!(
+            self.compaction,
+            Some(crate::context::CompactionPolicy::Disabled)
+        ) {
+            let capacity = resolved
+                .bind_model(&self.model, resolved.prefix().capacity.model)?
+                .capacity();
+            let output = capacity.output_reservation(self.max_output_tokens)?;
+            let mut policy =
+                crate::context::ThresholdCompaction::for_reservation(capacity, 0, output)?;
+            if let Some(crate::context::CompactionPolicy::Threshold(selected)) = &self.compaction {
+                policy.recent_tokens = policy.recent_tokens.min(selected.recent_tokens);
+            }
+            self.compaction = Some(crate::context::CompactionPolicy::Threshold(policy));
+        }
         self = self.with_context_stage(Arc::new(crate::context::SourceStage::new(
             "profile-instructions",
             blake3::Hash::from(resolved.digest()).to_hex().to_string(),

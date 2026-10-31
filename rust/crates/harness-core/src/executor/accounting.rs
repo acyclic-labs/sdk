@@ -128,7 +128,12 @@ impl StockExecution<'_> {
                     &self.stock.model,
                     self.io,
                 )?;
-                policy.validate(capacity, self.output_tokens())?;
+                let output = if self.has_profile() {
+                    Some(capacity.output_reservation(self.output_tokens())?)
+                } else {
+                    self.output_tokens()
+                };
+                policy.validate(capacity, output)?;
                 Ok(Some(capacity))
             }
         }

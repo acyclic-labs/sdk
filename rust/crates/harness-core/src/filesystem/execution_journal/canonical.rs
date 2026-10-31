@@ -67,7 +67,7 @@ mod tests {
                     "---\nversion: 1\nname: orchestrator\nmodel: test/profile\ncontext: top_level\nmay_spawn: [reviewer]\n---\nParent directive.",
                 )?,
                 RoleFile::parse(
-                    "---\nversion: 1\nname: reviewer\nmodel: test/profile\ncontext: fresh\nmay_spawn: []\n---\nReview directive.",
+                    "---\nversion: 1\nname: reviewer\nmodel: test/profile\ncontext: fresh\nmay_spawn: []\nmax_output_tokens: 512\n---\nReview directive.",
                 )?,
             ],
             ProjectLayer::parse("---\nversion: 1\n---\nProject instruction.")?,
@@ -102,6 +102,10 @@ mod tests {
             };
             let result = executor.execute(input.clone(), &journal).await?;
             let request = provider.request(index).expect("original model dispatch");
+            assert_eq!(
+                request.max_output_tokens,
+                if index == 0 { None } else { Some(512) }
+            );
             let expected = [
                 crate::preset::AGENT_PROMPT,
                 "Family instruction.",
