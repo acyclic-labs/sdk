@@ -18,17 +18,31 @@ pub struct HeldRoot {
 impl HeldRoot {
     /// Removes a leaf relative to this held directory without following links.
     #[cfg(any(test, feature = "native-mount"))]
-    pub fn remove_file(&self, leaf: &Path) -> Result<(), DemandError> {
+    pub fn remove_file(
+        &self,
+        leaf: &Path,
+        durability: NativeDurability,
+    ) -> Result<(), DemandError> {
         self.root
-            .remove_record_file(leaf, &mut crate::native_host::ordinary_work())
+            .remove_record_file(leaf, durability, &mut crate::native_host::ordinary_work())
     }
 
     /// Publishes complete immutable bytes without replacing a name or following
     /// links. Replacing this root's path cannot redirect the publication.
+    /// `durability` selects atomic visibility or persistence of bytes and name.
     #[cfg(any(test, feature = "native-mount"))]
-    pub fn publish_immutable(&self, leaf: &Path, bytes: &[u8]) -> Result<(), DemandError> {
-        self.root
-            .publish_immutable(leaf, bytes, &mut crate::native_host::ordinary_work())
+    pub fn publish_immutable(
+        &self,
+        leaf: &Path,
+        bytes: &[u8],
+        durability: NativeDurability,
+    ) -> Result<(), DemandError> {
+        self.root.publish_immutable(
+            leaf,
+            bytes,
+            durability,
+            &mut crate::native_host::ordinary_work(),
+        )
     }
 
     /// Opens an existing descendant directory without following links or
@@ -87,14 +101,20 @@ impl HeldRoot {
     }
 
     /// The held directory at `relative` below this root, each missing
-    /// component created in its held parent and never through a link. Each
-    /// parent is synced, including parents of concurrently created children,
-    /// before returning, so records below it have a durable reachable name.
-    pub fn create_directories(&self, relative: &Path) -> Result<Self, DemandError> {
+    /// component created in its held parent and never through a link. Durable
+    /// admission syncs each parent, including parents of existing children,
+    /// so records below it have a durable reachable name.
+    pub fn create_directories(
+        &self,
+        relative: &Path,
+        durability: NativeDurability,
+    ) -> Result<Self, DemandError> {
         Ok(Self {
-            root: self
-                .root
-                .create_directories(relative, &mut crate::native_host::ordinary_work())?,
+            root: self.root.create_directories(
+                relative,
+                durability,
+                &mut crate::native_host::ordinary_work(),
+            )?,
             path: self.path.join(relative),
         })
     }

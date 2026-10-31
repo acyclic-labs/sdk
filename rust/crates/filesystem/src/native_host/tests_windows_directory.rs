@@ -162,8 +162,12 @@ fn component_opens_reject_real_junctions_at_every_depth_and_disposition()
             let path = test_path(name);
             assert!(directory_path(&root.directory, &path, create, &mut ordinary_work()).is_err());
             assert!(
-                root.create_directories(Path::new(name), &mut ordinary_work())
-                    .is_err()
+                root.create_directories(
+                    Path::new(name),
+                    NativeDurability::Durable,
+                    &mut ordinary_work()
+                )
+                .is_err()
             );
         }
     }
@@ -204,7 +208,11 @@ fn component_opens_keep_each_ancestors_original_access_check()
             &mut ordinary_work(),
         )
     });
-    let held_creation = root.create_directories(Path::new(r"parent\child"), &mut ordinary_work());
+    let held_creation = root.create_directories(
+        Path::new(r"parent\child"),
+        NativeDurability::Durable,
+        &mut ordinary_work(),
+    );
     acl(&["/reset"])?;
     assert!(
         unchecked.is_ok(),
@@ -232,7 +240,8 @@ fn held_creation_queries_only_the_returned_identity_without_dropping_barriers()
             let (created, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
                 || stat_probe::Probe::rescan(false),
                 |probe| {
-                    let created = root.create_directories(&relative, &mut work);
+                    let created =
+                        root.create_directories(&relative, NativeDurability::Durable, &mut work);
                     probe.publish();
                     created
                 },

@@ -304,8 +304,8 @@ pub use multi_root::{
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
-    CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, HeldRoot, SearchRoot,
-    WatchCaptureReceipt, capture_baseline, capture_held_paths, capture_paths,
+    CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, HeldRoot, NativeDurability,
+    SearchRoot, WatchCaptureReceipt, capture_baseline, capture_held_paths, capture_paths,
     capture_root_identity, capture_subtree, capture_watch_batch, file_identity, hold_root,
     hold_search_root, host_path_to_namespace, namespace_to_host_path,
 };

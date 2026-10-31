@@ -292,7 +292,7 @@ impl Exclusion {
         };
         let info = self
             .common
-            .create_directories(Path::new("info"))
+            .create_directories(Path::new("info"), acyclic_fs::NativeDurability::Durable)
             .map_err(denied)?;
         // Serialize the read/append pair across processes; retain opaque user
         // bytes and avoid duplicate records on reopen.
