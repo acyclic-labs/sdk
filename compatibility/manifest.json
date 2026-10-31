@@ -17,7 +17,7 @@
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:dcf497ebd35741a5029ab90cf27baa2f48920666a2bdd4e44336020f120d9a29",
+      "schemaDigest": "sha256:df69e686e2c2247a2119c1aa09a1293560617a1173f6b59b57fd0999b9ea74ce",
       "conformanceDigest": "sha256:3da8cc65b19c2b710c3922b621fc28afd75268a7b7c66959cbb3a24472e95340"
     },
     "filesystem": {
@@ -37,9 +37,9 @@
     "objects": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:cfd0c3b0956033cae13f9e8db39ddb3b691a2a8d3a8756ea6fec57033130ce3e",
+      "schemaDigest": "sha256:b2dd73e2751bc2f1a07a51edcddee4e4d39a028b96ee9ac3bb27624ead9bfa10",
       "descriptorDigest": "sha256:457f72584f2233dbe1025c012dfaf0c5ef4da74002570c286595cdb45b5ffd64",
-      "conformanceDigest": "sha256:e408022b99d34fde59ef5cf5d2fdb85be98c3a8f7a094987259903b9a23ee549"
+      "conformanceDigest": "sha256:aa8e481cc88a703625d4c517c6ffaddd1ff6cb207514663432a160ac23fba973"
     },
     "machines": {
       "version": "0.2.0",
