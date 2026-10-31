@@ -23,7 +23,8 @@ const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 /// Refreshes serialize in memory and defer to concurrent CLI writes.
 /// File reads, parsing and publication use the shared native I/O service.
 /// Cancelling an admitted publication does not undo it: its original lock and
-/// accounting remain owned until physical completion.
+/// accounting remain owned until physical completion. Metered callers initialize
+/// the shared native I/O services before admitting their original work.
 pub struct CodexLogin {
     path: std::sync::Arc<Path>,
     account: OnceLock<Option<blake3::Hash>>,

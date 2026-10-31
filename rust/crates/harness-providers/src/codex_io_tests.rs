@@ -6,6 +6,8 @@ use futures::{FutureExt as _, future::Either};
 /// is produced inside publication, so cancellation follows physical admission.
 #[tokio::test]
 async fn accepted_publication_retains_ownership_after_observer_cancellation() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(acyclic_fs::NativeTreeMaterializationError::Io)?;
     let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
     let control = async move {
         let result = schedule.scope(publication_control()).await;
@@ -62,7 +64,10 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
         .boxed();
     let publication = match futures::future::select(entering, publication).await {
         Either::Left((entered, publication)) => {
-            entered.expect("publication must reach the original event");
+            if entered.is_err() {
+                publication.await?;
+                panic!("publication completed without its original event");
+            }
             publication
         }
         Either::Right(_) => panic!("publication completed before its release event"),
@@ -103,7 +108,8 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
     let mut permit = Some(login.refresh.acquire().await.ok().unwrap());
     let path = root.path().join("auth.json");
     let original = read(&path, &mut io)?;
-    let updated = document(&original, &mut io)?;
+    let mut updated = document(&original, &mut io)?;
+    updated["tokens"]["access_token"] = json!(jwt(now + 10_800));
     let (producer, event) = std::sync::mpsc::channel::<()>();
     drop(producer);
     let error = io
