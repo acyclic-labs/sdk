@@ -31,3 +31,13 @@ message VolumeRef {
   VolumeClass volume_class = 3;
   VolumeOwner owner = 4;
 }
+
+// The one reference that selects a secret into a process. version is the scope
+// generation of the write that produced the value and is never reused, so a
+// reference resolves to exactly that value or fails. Records carry only this
+// reference; the host resolves the value at exec time into the target process.
+message SecretRef {
+  string scope = 1;
+  string name = 2;
+  uint64 version = 3;
+}

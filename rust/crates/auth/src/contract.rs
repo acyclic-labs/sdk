@@ -7,6 +7,8 @@ mod revocation;
 pub use revocation::*;
 mod caller;
 pub use caller::*;
+mod secrets;
+pub use secrets::*;
 
 /// Attested principal category.
 #[acyclic_contract_derive::enumeration(error = Error, unknown = Error::UnknownEnum)]
@@ -479,6 +481,15 @@ pub enum TipProof {
         SocketPortRangeProto,
         SocketHostRuleProto,
         WebsocketConnectGrantProto,
+        SecretPutRequestProto,
+        SecretListCursorProto,
+        SecretListRequestProto,
+        SecretDeleteRequestProto,
+        SecretMutationReplyProto,
+        SecretListReplyProto,
+        SecretVariableProto,
+        PlainSecretVariableProto,
+        ProtectedSecretVariableProto,
         GrantProto,
         GrantSetProto,
         AttributeProto,
@@ -501,7 +512,7 @@ pub enum TipProof {
         CallerAuthorityProto,
         CallerContextProto
     ),
-    enums(PrincipalKind, AuditDecision)
+    enums(PrincipalKind, AuditDecision, SecretKind)
 )]
 pub struct AuthFile;
 

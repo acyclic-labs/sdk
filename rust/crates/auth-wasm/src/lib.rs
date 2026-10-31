@@ -2,6 +2,8 @@
 #[cfg(target_arch = "wasm32")]
 mod addressing;
 #[cfg(target_arch = "wasm32")]
+mod secrets;
+#[cfg(target_arch = "wasm32")]
 mod wasm;
 
 pub use acyclic_auth::trust::{Snapshot, block_ids};

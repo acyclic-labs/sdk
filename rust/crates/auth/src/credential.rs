@@ -306,3 +306,24 @@ pub fn bearer_bytes(value: &str) -> Vec<u8> {
     bytes.extend_from_slice(value.as_bytes());
     bytes
 }
+
+/// Admit an origin only: no embedded credential, query, fragment or path.
+/// HTTPS is required except for the loopback hosts used by local tools.
+pub fn endpoint(value: &str) -> Result<url::Url, CredentialError> {
+    let url = url::Url::parse(value).map_err(|_| CredentialError::Invalid)?;
+    let local = url.host_str() == Some("localhost")
+        || matches!(url.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
+        || matches!(url.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
+    if url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path() == "/"
+        && url.host().is_some()
+        && (url.scheme() == "https" || url.scheme() == "http" && local)
+    {
+        Ok(url)
+    } else {
+        Err(CredentialError::Invalid)
+    }
+}

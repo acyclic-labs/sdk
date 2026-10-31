@@ -289,13 +289,29 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
         owner_checks.push(options::owner_check(&file, &ty, field.kind != "oneof"));
     }
     let post = options.post.map(|post| quote!(#post(&result)?;));
+    let (debug_attribute, debug_impl) = if options.redacted {
+        (
+            quote!(#[prost(skip_debug)]),
+            quote! {
+                impl ::core::fmt::Debug for #wire {
+                    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                        f.write_str(concat!(stringify!(#wire), "([redacted])"))
+                    }
+                }
+            },
+        )
+    } else {
+        (quote!(), quote!())
+    };
     Ok(quote! {
         #input
         #(#oneof_checks)*
         #(#owner_checks)*
         #[doc = "Wire shadow derived from the semantic declaration."]
         #[derive(Clone, PartialEq, ::prost::Message)]
+        #debug_attribute
         #visibility struct #wire { #(#declarations,)* }
+        #debug_impl
         impl #wire {
             #[doc = "The unique compiler-linked file owner."]
             pub const FILE: #file = #file;

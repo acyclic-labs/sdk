@@ -30,7 +30,8 @@
     "./guest-admission": {
       "types": "./dist/guest-admission.d.ts",
       "default": "./dist/guest-admission.js"
-    }
+    },
+    "./conformance": "./generated/conformance/secrets-v1.json"
   },
   "files": [
     "dist",

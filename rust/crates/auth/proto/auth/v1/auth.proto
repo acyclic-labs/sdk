@@ -93,6 +93,13 @@ enum PrincipalKind {
   PRINCIPAL_KIND_ANONYMOUS = 5;
 }
 
+enum SecretKind {
+  SECRET_KIND_UNSPECIFIED = 0;
+  SECRET_KIND_PLAIN = 1;
+  SECRET_KIND_PROTECTED = 2;
+  SECRET_KIND_DELETED = 3;
+}
+
 message AdmittedCapability {
   bytes workload = 1;
   bytes receipt = 2;
@@ -323,6 +330,12 @@ message Pin {
   }
 }
 
+message PlainSecretVariable {
+  string name = 1;
+  uint64 version = 2;
+  string value = 3;
+}
+
 message Principal {
   PrincipalKind kind = 1;
   string id = 2;
@@ -330,6 +343,11 @@ message Principal {
   repeated string groups = 4;
   repeated string roles = 5;
   repeated Attribute attributes = 6;
+}
+
+message ProtectedSecretVariable {
+  string name = 1;
+  uint64 version = 2;
 }
 
 message RecordAttributes {
@@ -371,6 +389,51 @@ message RevocationDelta {
   repeated KeyRevocation keys = 5;
   repeated Revocation blocks = 6;
   optional uint64 revoke_all_before_epoch = 7;
+}
+
+message SecretDeleteRequest {
+  string scope = 1;
+  string name = 2;
+  uint64 expected_generation = 3;
+}
+
+message SecretListCursor {
+  uint64 generation = 1;
+  string after = 2;
+}
+
+message SecretListReply {
+  uint64 generation = 1;
+  repeated SecretVariable variables = 2;
+  SecretListCursor next_cursor = 3;
+}
+
+message SecretListRequest {
+  string scope = 1;
+  SecretListCursor cursor = 2;
+  uint32 page_size = 3;
+}
+
+message SecretMutationReply {
+  uint64 generation = 1;
+  string name = 2;
+  uint64 version = 3;
+  SecretKind kind = 4;
+}
+
+message SecretPutRequest {
+  string scope = 1;
+  string name = 2;
+  SecretKind kind = 3;
+  string value = 4;
+  uint64 expected_generation = 5;
+}
+
+message SecretVariable {
+  oneof kind {
+    PlainSecretVariable plain = 1;
+    ProtectedSecretVariable protected = 2;
+  }
 }
 
 message SignedAllowance {
