@@ -19,6 +19,76 @@ fn json_seed(
         .map_err(|error| format!("protobuf JSON seed {}: {error:?}", decoder.name).into())
 }
 
+// Protobuf maps and JSON object members have no wire-order contract. Keep the
+// original captured packet, while comparing fresh writers through the original
+// descriptor/JSON codec. Canonical persisted formats still compare exact bytes.
+fn equivalent(target: &str, fresh: &[u8], saved: &[u8]) -> Result<bool, Box<dyn Error>> {
+    if fresh == saved {
+        return Ok(true);
+    }
+    if !matches!(target, "protobuf" | "protobuf_json") {
+        return Ok(false);
+    }
+    let (Some((selector, fresh)), Some((original, saved))) = (
+        fresh.split_first_chunk::<8>(),
+        saved.split_first_chunk::<8>(),
+    ) else {
+        return Ok(false);
+    };
+    if selector != original {
+        return Ok(false);
+    }
+    let index = usize::try_from(u64::from_le_bytes(*selector))?;
+    let decoder = DECODERS
+        .get(index)
+        .ok_or("golden selector has no decoder")?;
+    let value = |bytes: &[u8]| -> Result<serde_json::Value, Box<dyn Error>> {
+        if target == "protobuf" {
+            let json =
+                acyclic_protobuf_json::encode(acyclic_codec_fuzz::descriptor(decoder), bytes)
+                    .map_err(|error| format!("golden protobuf projection: {error:?}"))?;
+            Ok(serde_json::from_slice(&json)?)
+        } else {
+            Ok(serde_json::from_slice(bytes)?)
+        }
+    };
+    Ok(value(fresh)? == value(saved)?)
+}
+
+fn golden_controls() -> Result<(), Box<dyn Error>> {
+    let name = "acyclic.harness.v2.ConversationMessage-user";
+    let saved = acyclic_proto_build::golden::frame(&format!("corpus/protobuf/{name}"))?;
+    let (selector, payload) = saved
+        .split_first_chunk::<8>()
+        .ok_or("short golden selector")?;
+    let mut message = acyclic_harness_core::wire::ConversationMessage::decode(payload)?;
+    let mut fresh = selector.to_vec();
+    message.encode(&mut fresh)?;
+    assert!(equivalent("protobuf", &fresh, &saved)?);
+    // A real writer change must still fail even if extension-map order differs.
+    message.sequence = message
+        .sequence
+        .checked_add(1)
+        .ok_or("golden sequence overflow")?;
+    let mut changed = selector.to_vec();
+    message.encode(&mut changed)?;
+    assert!(!equivalent("protobuf", &changed, &saved)?);
+    fresh[0] ^= 1;
+    assert!(!equivalent("protobuf", &fresh, &saved)?);
+
+    let saved = acyclic_proto_build::golden::frame(&format!("corpus/protobuf_json/{name}"))?;
+    let (selector, payload) = saved
+        .split_first_chunk::<8>()
+        .ok_or("short JSON selector")?;
+    let mut fresh = selector.to_vec();
+    fresh.push(b' ');
+    fresh.extend_from_slice(payload);
+    fresh.push(b'\n');
+    assert!(equivalent("protobuf_json", &fresh, &saved)?);
+    assert!(!equivalent("filesystem_codecs", &fresh, &saved)?);
+    Ok(())
+}
+
 fn save(
     target: &str,
     name: &str,
@@ -26,33 +96,41 @@ fn save(
     producer: &str,
     manifest: &mut String,
 ) -> Result<(), Box<dyn Error>> {
-    if !std::env::args().any(|arg| arg == "--accept-goldens") {
-        let name = format!("corpus/{target}/{name}");
-        let golden = acyclic_proto_build::golden::frame(&name)
-            .map_err(|error| format!("golden {name}: {error}"))?;
-        if golden != bytes {
-            return Err(format!("encoder changed golden {name}; recovery after reviewing the format change: cargo run --example capture -- --accept-goldens").into());
+    let golden = if std::env::args().any(|arg| arg == "--accept-goldens") {
+        None
+    } else {
+        let frame = format!("corpus/{target}/{name}");
+        let golden = acyclic_proto_build::golden::frame(&frame)
+            .map_err(|error| format!("golden {frame}: {error}"))?;
+        if !equivalent(target, bytes, &golden)? {
+            return Err(format!("encoder changed golden {frame}; recovery after reviewing the format change: cargo run --example capture -- --accept-goldens").into());
         }
-    }
-    let directory = Path::new("corpus").join(target);
-    std::fs::create_dir_all(&directory)?;
-    std::fs::write(directory.join(name), bytes)?;
+        if bytes != golden {
+            println!("fresh {frame}: equal protobuf value with different wire order/spelling");
+        }
+        Some(golden)
+    };
     match std::panic::catch_unwind(|| acyclic_codec_fuzz::exercise(target, bytes)) {
         Ok(result) => result?,
         Err(_) => return Err(format!(
             "decoder oracle {target}/{name} panicked; recovery: cargo +nightly fuzz run --fuzz-dir . {target} corpus/{target}/{name}"
         ).into()),
     }
+    let captured = golden.as_deref().unwrap_or(bytes);
+    let directory = Path::new("corpus").join(target);
+    std::fs::create_dir_all(&directory)?;
+    std::fs::write(directory.join(name), captured)?;
     manifest.push_str(&format!(
         "{target}/{name}\t{}\t{}\t{producer}\n",
-        bytes.len(),
-        hex::encode(Sha256::digest(bytes))
+        captured.len(),
+        hex::encode(Sha256::digest(captured))
     ));
     Ok(())
 }
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    golden_controls()?;
     capture_identity_vectors()?;
     let mut manifest =
         String::from("# Captured SDK encoder output\n# path\tbytes\tsha256\tproducer\n");

@@ -28,7 +28,12 @@ cargo run --locked --example replay
 ```
 
 Capture exercises each emitted input and compares it with the single
-`compatibility/frames/golden.hex` baseline. After reviewing an intentional
+`compatibility/frames/golden.hex` baseline. Protobuf messages and their JSON
+projections compare values through the original descriptor codecs, since map
+and object member order is unspecified. Every other format compares exact bytes.
+Ordinary comparison retains the original captured packet and its provenance;
+it never replaces them with an equivalent ordering. Controls require a changed
+message value or selector to fail. After reviewing an intentional
 format change, run `cargo run --locked --example capture -- --accept-goldens`.
 The producer records each path, byte count, SHA-256 and actual producing call in
 `corpus/SOURCES.tsv`. Regenerate the complete protobuf corpus when descriptors
