@@ -90,8 +90,8 @@ pub fn prepare<T>(
     // discovery hints. Ambient credentials and startup hooks stay host-owned,
     // even when another native process caller requested inheritance.
     invocation.inherit_environment = false;
-    invocation.schedule = input.timeout_ms()?.map_or_else(
-        acyclic_native_runtime::CaptureSchedule::unbounded,
+    invocation.schedule = input.timeout_ms()?.map_or(
+        acyclic_native_runtime::CaptureSchedule::Unbounded,
         |timeout| {
             acyclic_native_runtime::CaptureSchedule::new(std::time::Duration::from_millis(
                 u64::from(timeout),

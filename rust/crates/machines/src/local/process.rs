@@ -134,7 +134,7 @@ impl LocalMachine {
                 match started {
                     Ok((tree, input)) => Ok(tree.stream_capture(
                         &spawner,
-                        deadline.map_or_else(CaptureSchedule::unbounded, CaptureSchedule::until),
+                        deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until),
                         maximum,
                         input,
                         handler,
