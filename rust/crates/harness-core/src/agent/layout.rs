@@ -344,7 +344,8 @@ mod tests {
             root.parent().expect("root").target("pc")?
         );
         assert_ne!(foreign.target("pc")?, root.target("pc")?);
-        for depth in [1, 8, MAX_DEPTH] {
+        // Cross the former implicit depth of 64 with the same allocation oracle.
+        for depth in [1, 8, 65] {
             let mut descendant = root.clone();
             for _ in root.depth()..depth {
                 descendant = descendant.child(&AgentId::from_bytes([3; 16]))?;
