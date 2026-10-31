@@ -193,10 +193,11 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
         records(&sockets.shared.store, &ledger).await,
         Err(Error::Stream(StreamError::NotFound))
     ));
-    assert!(matches!(
-        client.actor_socket(open.encode(), 0).await,
-        Err(StreamError::AccessDenied)
-    ));
+    let refused = match client.actor_socket(open.encode(), 0).await {
+        Err(error) => Some(error),
+        Ok(mut socket) => socket.next().await.err(),
+    };
+    assert_eq!(refused, Some(StreamError::AccessDenied));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next);
     assert!(sockets.shared.lock().sockets.is_empty());
     assert!(sockets.shared.lock().actors.is_empty());
@@ -209,7 +210,6 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     // existence is subsequently decided by the original Open publication.
     open.actor = ActorReference::new(b"account", b"sockets", b"target")?;
     let mut admitted = client.actor_socket(open.encode(), 0).await?;
-    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next + 1);
     assert!(matches!(
         admitted
             .next()
@@ -217,12 +217,14 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
             .map(|frame| SocketFrame::decode(&frame)),
         Some(Ok(SocketFrame::Rejected { .. }))
     ));
+    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next + 1);
 
     open.actor = ActorReference::new(b"account", b"ungranted", b"target")?;
-    assert!(matches!(
-        client.actor_socket(open.encode(), 0).await,
-        Err(StreamError::AccessDenied)
-    ));
+    let refused = match client.actor_socket(open.encode(), 0).await {
+        Err(error) => Some(error),
+        Ok(mut socket) => socket.next().await.err(),
+    };
+    assert_eq!(refused, Some(StreamError::AccessDenied));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next + 1);
     Ok(())
 }
