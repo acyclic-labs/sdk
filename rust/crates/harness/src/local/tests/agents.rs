@@ -176,8 +176,14 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let client = Conversation::open(connection.clone())?;
         let mut events = client.observe(0).await?;
         let inbox = client.send("lost-producer", "hello").await?;
-        entering.await.map_err(agent)?;
         let hosted = harness.agents.get().unwrap();
+        tokio::select! {
+            entered = entering => entered.map_err(agent)?,
+            stopped = hosted.runtime.completion() => {
+                stopped?;
+                return Err(Error::Storage("runtime stopped before model dispatch".into()));
+            }
+        }
         let retained = hosted.runtime.session().agent(&hosted.root().id())?;
         retained.preparation()?;
         let waiting = async {
