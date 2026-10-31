@@ -390,6 +390,17 @@ impl LocalStream {
                 {
                     return Err(stream.cut_crash(cut.as_ref(), fail_cut_truncation));
                 }
+                let initial = if written {
+                    None
+                } else {
+                    Some(
+                        stream
+                            .inner
+                            .journal
+                            .lock()
+                            .map_err(|_| stream.inner.poison())?,
+                    )
+                };
                 if frame.deadline.is_some_and(|deadline| {
                     stream.inner.commit_clock.source.now_unix_millis() >= deadline
                 }) {
@@ -404,24 +415,17 @@ impl LocalStream {
                         StreamError::DeadlineElapsed
                     });
                 }
-                let offset = if written {
-                    // The original completion already owns the next offset;
-                    // the publication fence excludes replacement and append.
-                    *cursor
-                } else {
-                    stream
-                        .inner
-                        .journal
-                        .lock()
-                        .map_err(|_| stream.inner.poison())?
-                        .begin_append(required)
-                        .map_err(|error| {
-                            stream.inner.fail(LocalStreamFailure::local(
-                                "begin_append",
-                                &error,
-                                stream.work.as_deref(),
-                            ))
-                        })?
+                let offset = match initial {
+                    Some(mut journal) => journal.begin_append(required).map_err(|error| {
+                        stream.inner.fail(LocalStreamFailure::local(
+                            "begin_append",
+                            &error,
+                            stream.work.as_deref(),
+                        ))
+                    })?,
+                    // The original completion owns the next offset under the
+                    // publication fence; the initial guard ends before I/O.
+                    None => *cursor,
                 };
                 // Publication owns this offset through completion. Journal
                 // metadata and earlier flush cuts remain available during I/O.
