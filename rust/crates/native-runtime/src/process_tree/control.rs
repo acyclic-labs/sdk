@@ -151,7 +151,7 @@ mod tests {
         let source =
             Source::Exit(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw()) });
         // Only the actual expiry producer can complete this wait.
-        events::arm(&[source], None)?.block()?;
+        events::arm(&[source], None)?.block().into_result()?;
         assert_eq!(
             control.check().unwrap_err().kind(),
             io::ErrorKind::Interrupted

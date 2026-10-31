@@ -5,6 +5,18 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { chromeExecutable, spawnDriver, connectBrowser, navigateChrome } from "./browser-driver.mjs";
 
+test("endpoint source closure settles while the original driver remains alive", { skip: process.platform === "win32" }, async () => {
+  // This is the actual child input program, with no invented tool output.
+  const program = `
+    const { closeSync } = require('node:fs');
+    const { createServer } = require('node:net');
+    createServer().listen(0, '127.0.0.1', () => { closeSync(1); closeSync(2); });
+  `;
+  await assert.rejects(spawnDriver(process.execPath, ['-e', program], /endpoint: (\S+)/,
+    'node --test typescript/packages/sdk/test/browser-driver.test.mjs'),
+    /all endpoint output sources closed before publishing the endpoint/);
+});
+
 test("real browser results settle on publication, script failure and producer retirement", async () => {
   const recovery = "node --test typescript/packages/sdk/test/browser-driver.test.mjs";
   const profile = mkdtempSync(join(tmpdir(), "acyclic-browser-events-"));

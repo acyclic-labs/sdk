@@ -28,12 +28,19 @@ export async function spawnDriver(command, args, ready, recovery) {
   try {
     const endpoint = await new Promise((resolve, reject) => {
       const fail = error => reject(new Error(`browser startup: ${error}; recovery: ${recovery}`));
+      let remaining = readers.length;
       child.once("error", fail);
       child.once("close", (code, signal) => fail(`process closed (${code ?? signal}) before publishing its endpoint`));
-      for (const reader of readers) reader.on("line", line => {
-        const match = ready.exec(line);
-        if (match) resolve(match[1]);
-      });
+      for (const reader of readers) {
+        reader.on("error", fail);
+        reader.once("close", () => {
+          if (--remaining === 0) fail("all endpoint output sources closed before publishing the endpoint");
+        });
+        reader.on("line", line => {
+          const match = ready.exec(line);
+          if (match) resolve(match[1]);
+        });
+      }
     });
     return { child, exited, endpoint };
   } catch (error) {

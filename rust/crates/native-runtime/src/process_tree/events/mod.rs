@@ -56,39 +56,16 @@ pub(super) enum Source<'a> {
     Pipe(&'a Arc<PipeOperation>),
 }
 
-/// The one-shot state shared by an armed wait and the hub that fires it.
-#[derive(Default)]
-struct Signal {
-    state: Mutex<SignalState>,
-}
-
-#[derive(Default)]
-struct SignalState {
-    result: Option<Result<(), Arc<io::Error>>>,
-    waker: Option<Waker>,
-}
+mod outcome;
+mod signal;
+pub use outcome::ProcessWaitOutcome;
+use signal::Signal;
 
 fn copy_error(error: &io::Error) -> io::Error {
     error.raw_os_error().map_or_else(
         || io::Error::new(error.kind(), error.to_string()),
         io::Error::from_raw_os_error,
     )
-}
-
-impl Signal {
-    fn settle(&self, result: Result<(), Arc<io::Error>>) {
-        let waker = {
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if state.result.is_some() {
-                return;
-            }
-            state.result = Some(result);
-            state.waker.take()
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
-    }
 }
 
 struct Armed {
@@ -189,7 +166,12 @@ impl Hub {
             registry.timers.clear();
             (error, std::mem::take(&mut registry.armed))
         };
-        deliver(armed.into_iter().map(|(_, armed)| armed.signal), Err(error));
+        deliver(armed.into_iter().map(|(_, armed)| {
+            (
+                armed.signal,
+                ProcessWaitOutcome::ServiceFailed(Arc::clone(&error)),
+            )
+        }));
     }
 
     fn run(&self) {
@@ -203,6 +185,9 @@ impl Hub {
                 .map(|(at, _)| at.saturating_duration_since(Instant::now()));
             ready.clear();
             if let Err(error) = self.poller.wait(timeout, &mut ready) {
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
                 self.fail(error);
                 return;
             }
@@ -212,7 +197,7 @@ impl Hub {
                 let mut registry = self.registry();
                 for token in ready.drain(..) {
                     if let Some(armed) = registry.remove(token) {
-                        fired.push(armed.signal);
+                        fired.push((armed.signal, ProcessWaitOutcome::Ready));
                     }
                 }
                 while let Some(&(at, token)) = registry.timers.first() {
@@ -220,44 +205,34 @@ impl Hub {
                         break;
                     }
                     if let Some(armed) = registry.remove(token) {
-                        fired.push(armed.signal);
+                        fired.push((armed.signal, ProcessWaitOutcome::Deadline));
                     } else {
                         registry.timers.remove(&(at, token));
                     }
                 }
             }
-            deliver(fired.into_iter(), Ok(()));
+            deliver(fired.into_iter());
         }
     }
 }
 
-// Signals removed from the registry belong to this delivery until settled.
-struct Delivery<I: Iterator<Item = Arc<Signal>>> {
+// Removed signals retain their terminal outcomes until delivered.
+struct Delivery<I: Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>> {
     signals: I,
-    result: Result<(), Arc<io::Error>>,
 }
 
-impl<I: Iterator<Item = Arc<Signal>>> Drop for Delivery<I> {
+impl<I: Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>> Drop for Delivery<I> {
     fn drop(&mut self) {
-        if let Some(signal) = self.signals.next() {
-            let error = self
-                .result
-                .as_ref()
-                .err()
-                .cloned()
-                .unwrap_or_else(|| Arc::new(io::ErrorKind::BrokenPipe.into()));
-            signal.settle(Err(Arc::clone(&error)));
-            for signal in self.signals.by_ref() {
-                signal.settle(Err(Arc::clone(&error)));
-            }
+        for (signal, outcome) in self.signals.by_ref() {
+            signal.settle(outcome);
         }
     }
 }
 
-fn deliver(signals: impl Iterator<Item = Arc<Signal>>, result: Result<(), Arc<io::Error>>) {
-    let mut delivery = Delivery { signals, result };
-    for signal in delivery.signals.by_ref() {
-        signal.settle(delivery.result.clone());
+fn deliver(signals: impl Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>) {
+    let mut delivery = Delivery { signals };
+    for (signal, outcome) in delivery.signals.by_ref() {
+        signal.settle(outcome);
     }
 }
 
@@ -343,7 +318,7 @@ fn arm_on<'a>(
     };
     // A wake may re-enter registration, so deliver outside the lifecycle lock.
     if ready {
-        wait.signal.settle(Ok(()));
+        wait.signal.settle(ProcessWaitOutcome::Ready);
     }
     Ok(wait)
 }
@@ -353,15 +328,12 @@ impl Wait<'_> {
     #[cfg(test)]
     pub(super) fn fired(&self) -> bool {
         self.signal
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .result
-            .is_some()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
     }
 
     /// Parks the calling thread until readiness or its producer's failure.
-    pub(super) fn block(mut self) -> io::Result<()> {
+    pub(super) fn block(mut self) -> ProcessWaitOutcome {
         struct Unpark(std::thread::Thread);
         impl Wake for Unpark {
             fn wake(self: Arc<Self>) {
@@ -380,32 +352,10 @@ impl Wait<'_> {
 }
 
 impl Future for Wait<'_> {
-    type Output = io::Result<()>;
+    type Output = ProcessWaitOutcome;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut state = self
-            .signal
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        match &state.result {
-            Some(result) => Poll::Ready(
-                result
-                    .as_ref()
-                    .map(|()| ())
-                    .map_err(|error| copy_error(error)),
-            ),
-            None => {
-                if state
-                    .waker
-                    .as_ref()
-                    .is_none_or(|waker| !waker.will_wake(context.waker()))
-                {
-                    state.waker = Some(context.waker().clone());
-                }
-                Poll::Pending
-            }
-        }
+        self.signal.poll(context)
     }
 }
 

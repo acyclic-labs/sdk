@@ -75,6 +75,12 @@ export async function browserTest(module, args) {
           if (message.error) result?.reject(new Error(JSON.stringify(message.error)));
           else result?.resolve(message.result);
         } else {
+          if (message.method === "Target.detachedFromTarget" || message.method === "Inspector.targetCrashed"
+            || message.method === "Inspector.detached") {
+            const reason = message.method === "Inspector.targetCrashed" ? "page crashed" : "page detached";
+            fail(new BrowserSourceEnded("page", new Error(reason)));
+            return;
+          }
           const key = `${message.sessionId ?? ""}:${message.method}`;
           events.get(key)?.resolve(message.params); events.delete(key);
         }
@@ -90,6 +96,7 @@ export async function browserTest(module, args) {
   try {
     const { targetId } = await send("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
+    await send("Inspector.enable", {}, sessionId);
     await send("Page.enable", {}, sessionId);
     const loaded = new Promise((resolve, reject) => {
       if (failure) reject(failure);

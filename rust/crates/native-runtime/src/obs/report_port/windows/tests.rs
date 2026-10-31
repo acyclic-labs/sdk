@@ -59,7 +59,7 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
                 biased;
                 result = pipe.connect() => result.unwrap(),
                 result = exited => {
-                    result.expect("original native producer event succeeded");
+                    result.into_result().expect("original native producer event succeeded");
                     panic!("selected report producer exited before connecting");
                 },
             }
