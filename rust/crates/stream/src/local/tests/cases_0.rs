@@ -775,9 +775,22 @@ async fn barrier_policy_uses_full_flush_and_preserves_exact_replay()
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"barrier-fallback"))?,
     };
     let original = provider.append(request.clone()).await?;
+    assert_eq!(provider.append(request.clone()).await?, original);
     drop(provider);
     let reopened = LocalStream::open(directory.path(), limits).await?;
-    assert_eq!(reopened.append(request.clone()).await?, original);
+    let recovered = reopened.append(request.clone()).await?;
+    let mut expected = original;
+    if let (AppendOutcome::Committed(original), AppendOutcome::Committed(replayed)) =
+        (&mut expected, &recovered)
+    {
+        // Barrier policy rotates the revision authority on reopen even when
+        // this platform implements the barrier with a stronger full flush.
+        assert_eq!(original.revision.scope, replayed.revision.scope);
+        assert_eq!(original.revision.index, replayed.revision.index);
+        assert_ne!(original.revision.incarnation, replayed.revision.incarnation);
+        original.revision.clone_from(&replayed.revision);
+    }
+    assert_eq!(recovered, expected);
     assert_eq!(reopened.tail(request.path).await?, 1);
     Ok(())
 }
