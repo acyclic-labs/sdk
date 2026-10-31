@@ -1429,28 +1429,34 @@ mod tests {
         let mut cache = RecordCache::new(4096, 4);
         cache.observe_origin(
             &path("child"),
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: path("old"),
-                forked_at: 1,
-                commit_id: CommitId::from_bytes([1; 32]),
+                inherited: ForkCut {
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([1; 32]),
+                },
             }),
         );
         cache.observe_origin(
             &path("child"),
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: path("new"),
-                forked_at: 1,
-                commit_id: CommitId::from_bytes([1; 32]),
+                inherited: ForkCut {
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([1; 32]),
+                },
             }),
         );
         cache.remove_stream(&path("old"), false);
         assert!(cache.fork(&path("child")).is_some());
         cache.observe_origin(
             &path("new"),
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: path("child"),
-                forked_at: 1,
-                commit_id: CommitId::from_bytes([1; 32]),
+                inherited: ForkCut {
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([1; 32]),
+                },
             }),
         );
         assert_eq!(
@@ -1467,10 +1473,12 @@ mod tests {
         cache.insert_record(&path("old"), 0, OwnedBytes::from(vec![7; 64]), None);
         cache.observe_origin(
             &path("child"),
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: path("old"),
-                forked_at: 1,
-                commit_id: CommitId::from_bytes([2; 32]),
+                inherited: ForkCut {
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([2; 32]),
+                },
             }),
         );
         let old_view = cache.record(&path("child"), 0).unwrap().clone();
@@ -1497,10 +1505,12 @@ mod tests {
         for index in 1..130 {
             cache.observe_origin(
                 &path(index),
-                Some(ForkOrigin {
+                Some(Provenance {
                     source: path(index - 1),
-                    forked_at: 1,
-                    commit_id: CommitId::from_bytes([1; 32]),
+                    inherited: ForkCut {
+                        forked_at: 1,
+                        commit_id: CommitId::from_bytes([1; 32]),
+                    },
                 }),
             );
             cache.insert_record(&path(index), 1, OwnedBytes::from_static(b"own"), None);
