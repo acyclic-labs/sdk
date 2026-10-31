@@ -377,6 +377,11 @@ struct Demand {
     ticket: u64,
 }
 
+struct FollowIntent {
+    from: u64,
+    selected: bool,
+}
+
 /// Exact listing continuations at strided page indexes, so any page is
 /// reachable from a bounded walk even after its predecessor was evicted.
 struct Anchors {
@@ -432,7 +437,10 @@ pub struct Reader {
     refused: BTreeSet<OpKey>,
     issues: BTreeMap<StreamPath, ReadIssue>,
     anchors: BTreeMap<StreamPath, Anchors>,
-    follows: BTreeMap<StreamPath, u64>,
+    follows: BTreeMap<StreamPath, FollowIntent>,
+    follow_mark: bool,
+    #[cfg(test)]
+    follow_insertions: usize,
     follow_changes: BTreeSet<StreamPath>,
     delivered: usize,
     next_id: u64,
@@ -473,6 +481,9 @@ impl Reader {
             issues: BTreeMap::new(),
             anchors: BTreeMap::new(),
             follows: BTreeMap::new(),
+            follow_mark: false,
+            #[cfg(test)]
+            follow_insertions: 0,
             follow_changes: BTreeSet::new(),
             delivered: 0,
             next_id: 1,
@@ -1302,7 +1313,8 @@ impl Reader {
     /// whose stream tail ran more than `lag` ahead jumps to the last records;
     /// nothing is dropped, earlier records remain readable on demand.
     pub fn set_follows(&mut self, streams: impl IntoIterator<Item = StreamPath>) {
-        let mut next = BTreeMap::new();
+        use std::collections::btree_map::Entry;
+        self.follow_mark = !self.follow_mark;
         for stream in streams {
             if self.issues.get(&stream) == Some(&ReadIssue::AccessDenied) {
                 continue;
@@ -1310,32 +1322,51 @@ impl Reader {
             let Some(tail) = self.cache.tail(&stream) else {
                 continue;
             };
-            let from = self.cache.resume_from(&stream).unwrap_or_else(|| {
-                match self.follows.get(&stream) {
-                    Some(position) if tail.saturating_sub(*position) <= self.policy.lag => {
-                        *position
+            let resume = self.cache.resume_from(&stream);
+            match self.follows.entry(stream) {
+                Entry::Occupied(mut entry) => {
+                    let intent = entry.get_mut();
+                    let from = resume.unwrap_or_else(|| {
+                        if tail.saturating_sub(intent.from) <= self.policy.lag {
+                            intent.from
+                        } else {
+                            tail
+                        }
+                    });
+                    intent.selected = self.follow_mark;
+                    if intent.from != from {
+                        intent.from = from;
+                        self.follow_changes.insert(entry.key().clone());
                     }
-                    _ => tail,
                 }
-            });
-            next.insert(stream, from);
-        }
-        for (path, from) in &next {
-            if self.follows.get(path) != Some(from) {
-                self.follow_changes.insert(path.clone());
+                Entry::Vacant(entry) => {
+                    #[cfg(test)]
+                    {
+                        self.follow_insertions += 1;
+                    }
+                    self.follow_changes.insert(entry.key().clone());
+                    entry.insert(FollowIntent {
+                        from: resume.unwrap_or(tail),
+                        selected: self.follow_mark,
+                    });
+                }
             }
         }
-        for path in self.follows.keys() {
-            if !next.contains_key(path) {
+        self.follows.retain(|path, intent| {
+            if intent.selected == self.follow_mark {
+                true
+            } else {
                 self.follow_changes.insert(path.clone());
+                false
             }
-        }
-        self.follows = next;
+        });
     }
 
     /// Wanted follows and their current start positions.
     pub fn follows(&self) -> impl Iterator<Item = (&StreamPath, u64)> {
-        self.follows.iter().map(|(path, from)| (path, *from))
+        self.follows
+            .iter()
+            .map(|(path, intent)| (path, intent.from))
     }
 
     /// Whether this frame still folds follow deliveries. When false the
@@ -1356,8 +1387,8 @@ impl Reader {
         self.follow_backoff = false;
         self.recovered();
         self.cache.observe_tail(stream, accepted);
-        if let Some(position) = self.follows.get_mut(stream) {
-            *position = (*position).max(record.sequence + 1);
+        if let Some(intent) = self.follows.get_mut(stream) {
+            intent.from = intent.from.max(record.sequence + 1);
             self.keep(stream, record, Some(self.frame_mark));
         }
     }
@@ -1765,7 +1796,18 @@ mod reader_tests {
                 )
             })
             .collect();
-        reader.plan(wants.iter().chain(&dormant).cloned());
+        reader.plan(
+            wants
+                .iter()
+                .cloned()
+                .rev()
+                .chain(
+                    wants
+                        .iter()
+                        .map(|(want, _)| (want.clone(), Priority::Prefetch)),
+                )
+                .chain(dormant.iter().cloned()),
+        );
         assert_eq!(reader.residency().demand, 8194);
         let mut completed = BTreeSet::new();
         for now in 1..=4097 {

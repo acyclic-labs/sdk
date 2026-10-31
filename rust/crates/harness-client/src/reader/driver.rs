@@ -186,7 +186,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             };
             self.pending.remove(&stream);
             completed_open = true;
-            if reader.follows.get(&stream) != Some(&from) {
+            if reader.follows.get(&stream).map(|intent| intent.from) != Some(from) {
                 continue;
             }
             match opened {
@@ -298,7 +298,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
     }
 
     fn queue(&mut self, path: &StreamPath, reader: &Reader) {
-        let Some(from) = reader.follows.get(path).copied() else {
+        let Some(from) = reader.follows.get(path).map(|intent| intent.from) else {
             let _ = self.unqueue(path);
             return;
         };
@@ -335,7 +335,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             {
                 self.reconciled += 1;
             }
-            let from = reader.follows.get(&path).copied();
+            let from = reader.follows.get(&path).map(|intent| intent.from);
             if let Some(id) = self.follows.get(&path).copied()
                 && !from.is_some_and(|from| {
                     self.ready
@@ -551,7 +551,13 @@ mod tests {
                         .follow(acyclic_stream::FollowRequest::new(path.clone(), 0))
                         .await
                         .unwrap();
-                    reader.follows.insert(path.clone(), 0);
+                    reader.follows.insert(
+                        path.clone(),
+                        super::super::FollowIntent {
+                            from: 0,
+                            selected: false,
+                        },
+                    );
                     driver
                         .opened(path, 0, 4, acyclic_stream::records_only(records))
                         .unwrap();
@@ -631,7 +637,13 @@ mod tests {
                     .unwrap();
                 let polls = Arc::new(AtomicUsize::new(0));
                 counters.push(polls.clone());
-                reader.follows.insert(path.clone(), 1);
+                reader.follows.insert(
+                    path.clone(),
+                    super::super::FollowIntent {
+                        from: 1,
+                        selected: false,
+                    },
+                );
                 driver
                     .opened(
                         path,
@@ -664,7 +676,7 @@ mod tests {
                 .await
                 .unwrap();
             driver.step(&mut reader, 0, &mut cx);
-            assert_eq!(reader.follows.get(&path), Some(&2));
+            assert_eq!(reader.follows.get(&path).map(|intent| intent.from), Some(2));
             assert_eq!(driver.reconciled, 0);
             assert_eq!(counters[512].load(Ordering::SeqCst), 1);
             let dormant_polls: usize = counters[..512]
@@ -723,6 +735,13 @@ mod tests {
             }
             reader.set_follows(paths.clone());
             assert_eq!(reader.follows().count(), 5);
+            let inserted = reader.follow_insertions;
+            reader.set_follows(paths.iter().rev().chain(&paths).cloned());
+            assert_eq!(
+                reader.follow_insertions, inserted,
+                "unchanged selection rebuilt retained follow entries"
+            );
+            eprintln!("follow membership: selected=5 duplicate_inputs=10 new_entries=0");
             let woken = Arc::new(Woken(AtomicBool::new(true)));
             let waker = Waker::from(woken.clone());
             let mut cx = Context::from_waker(&waker);
@@ -749,6 +768,7 @@ mod tests {
                     reader.observed_head(&path, provider.head(path.clone()).await.unwrap(), None);
                     paths.push(path);
                     reader.set_follows(paths.clone());
+                    assert_eq!(reader.follow_insertions, paths.len());
                 }
             }
             assert_eq!(driver.waiting.len(), 4);
@@ -776,7 +796,10 @@ mod tests {
             assert!(woken.0.swap(false, Ordering::SeqCst));
             driver.step(&mut reader, 0, &mut cx);
             assert_eq!(driver.reconciled, 9);
-            assert_eq!(reader.follows.get(&paths[8]), Some(&2));
+            assert_eq!(
+                reader.follows.get(&paths[8]).map(|intent| intent.from),
+                Some(2)
+            );
             eprintln!("follow reconciliation: unchanged=9 changed_intents=0 record_deliveries=1");
             reader.set_follows([]);
             driver.step(&mut reader, 0, &mut cx);
