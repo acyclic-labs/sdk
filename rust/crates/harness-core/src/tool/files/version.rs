@@ -126,6 +126,15 @@ fn encode_token<T: Serialize>(
         return Ok((text, Some(custody)));
     }
     serde_json::to_string(file)
-        .map(|text| (format!("{prefix}{text}"), None))
+        .map(|text| {
+            (
+                if prefix.is_empty() {
+                    text
+                } else {
+                    format!("{prefix}{text}")
+                },
+                None,
+            )
+        })
         .map_err(|error| Error::Invalid(error.to_string()))
 }
