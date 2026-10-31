@@ -79,6 +79,7 @@ async fn check(mode: u8) -> Result<()> {
         1 => {
             assert!(matches!(result, Err(Error::NativeWork { .. })));
             assert_eq!(phase, CommitPhase::Unknown);
+            drop(result);
         }
         _ => {
             assert!(matches!(
@@ -89,12 +90,13 @@ async fn check(mode: u8) -> Result<()> {
                 })
             ));
             assert_eq!(phase, CommitPhase::Unknown);
+            drop(result);
         }
     }
     drop(quota);
     drop(io);
     drop(provider);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes(), baseline, "mode {mode}");
     assert_eq!(foreign.live_allocation_bytes(), 0);
     Ok(())
 }
