@@ -13,7 +13,7 @@ pub(super) async fn seal<G: AuthorityGuard>(
     Ok(())
 }
 
-mod group;
+pub(in crate::distributed) mod group;
 mod preparation;
 mod quotation;
 mod recovery;
@@ -65,7 +65,7 @@ impl AppendPurpose for Publication {
     }
 }
 
-struct AppendReceipt<'a> {
+pub(in crate::distributed) struct AppendReceipt<'a> {
     authority_id: AuthorityId,
     epoch: Epoch,
     commit: &'a ProposedCommit,
