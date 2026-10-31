@@ -34,12 +34,12 @@ impl<K: Copy + Send + Sync + 'static> Identity for Admitted<K> {
 pub struct Binding(Arc<dyn Identity>);
 
 impl Binding {
-    /// Attach once to the original span before starting its children. A nested
+    /// Attach once to the original observed operation before starting children. A nested
     /// admission can replace inherited provenance on its own new root. The key
     /// is fixed-size and cannot own a producer. One allocation is funded by the
     /// caller's permit; all copies share it through final diagnostic retirement.
-    /// Operation roots reuse their existing collector storage. A non-operation
-    /// root also needs the registry's ordinary extension storage for its token.
+    /// Roots reuse their existing collector storage. A non-operation bridge can
+    /// replace an inherited token; an unobserved root returns `UnobservedSpan`.
     pub fn attach<K: Copy + Send + Sync + 'static>(
         span: &Span,
         key: K,
@@ -92,6 +92,9 @@ pub enum BindingError {
     SpanUnavailable,
     /// The subscriber has no shared tracing registry.
     RegistryUnavailable,
+    /// The span has no original collector record: it is filtered, unobserved,
+    /// or neither an operation nor an already-bound descendant.
+    UnobservedSpan,
     /// This span already has its own explicit admission binding.
     AlreadyBound,
     /// The operation has already published its terminal sample.
@@ -103,6 +106,7 @@ impl fmt::Display for BindingError {
         formatter.write_str(match self {
             Self::SpanUnavailable => "binding requires the original live enabled span",
             Self::RegistryUnavailable => "binding requires the shared tracing registry",
+            Self::UnobservedSpan => "bind the original operation observed by Operations",
             Self::AlreadyBound => "the original span already has an admission binding",
             Self::Completed => "bind the original operation before terminal completion",
         })

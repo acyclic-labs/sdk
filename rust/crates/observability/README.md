@@ -73,7 +73,8 @@ These scalars retain no span or physical work. They are registry-local
 diagnostic joins, rather than metric labels or globally unique identities.
 
 For a join to an admitted operation, the original owner can use
-`Binding::attach(&original_span, original_ids, caller_owned_permit)` before
+`Binding::attach(&original_span, original_ids, caller_owned_permit)` on its
+existing observed operation before
 creating children. The key is a fixed-size `Copy + Send + Sync + 'static` value
 containing that owner's exact opaque authority, operation, generation and
 physical-owner IDs. The adapter does not discover or authorize those IDs.
@@ -82,13 +83,13 @@ edge, including non-operation worker spans, without searching ancestors.
 `Binding::matches(&sample)` compares the original token; `Binding::key::<K>()`
 recovers its typed IDs. Equal scalar IDs from another admission do not match.
 Missing or filtered parents leave provenance unknown. Attach after terminal
-completion, duplicate attachment to the same root, and a disabled or unavailable
-registry return typed errors. Counters-only sinks propagate no token.
+completion, duplicate attachment to the same root, and a disabled, filtered or
+unobserved operation return typed errors. Counters-only sinks propagate no token.
 
 One shared identity allocation at explicit binding admission holds the fixed
 key and its caller-supplied credit. Operation spans reuse their existing
-collector record for the token; a non-operation root or bridge also needs the
-registry's ordinary extension storage. Clones share the identity through diagnostic
+collector record for the token; a non-operation bridge also needs the registry's
+ordinary extension storage when it inherits a token. Clones share the identity through diagnostic
 retirement, retaining neither a span nor physical work. Each admitted export
 record still owns its separate output credit through processing. Neither token
 nor record retirement completes the operation or certifies a provider range,

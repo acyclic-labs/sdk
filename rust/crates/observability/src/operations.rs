@@ -703,29 +703,21 @@ pub(crate) fn attach_binding(
             .ok_or(BindingError::RegistryUnavailable)?;
         let span = registry.span(id).ok_or(BindingError::SpanUnavailable)?;
         let mut extensions = span.extensions_mut();
-        if extensions
+        let state = extensions
             .get_mut::<SpanState>()
-            .and_then(|state| state.operation.as_ref())
-            .is_some_and(|op| op.completed)
-        {
+            .ok_or(BindingError::UnobservedSpan)?;
+        if state.operation.as_ref().is_some_and(|op| op.completed) {
             return Err(BindingError::Completed);
         }
-        if extensions
-            .get_mut::<SpanState>()
-            .and_then(|state| state.binding.as_ref())
+        if state
+            .binding
+            .as_ref()
             .is_some_and(|binding| binding.root_id() == id)
         {
             return Err(BindingError::AlreadyBound);
         }
         let binding = make(id.clone());
-        if let Some(state) = extensions.get_mut::<SpanState>() {
-            state.binding = Some(binding.clone());
-        } else {
-            extensions.insert(SpanState {
-                operation: None,
-                binding: Some(binding.clone()),
-            });
-        }
+        state.binding = Some(binding.clone());
         Ok(binding)
     })
     .unwrap_or(Err(BindingError::SpanUnavailable))

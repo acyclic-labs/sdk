@@ -69,7 +69,7 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export.clone())));
     let (binding, work, bridge_id) = tracing::dispatcher::with_default(&dispatch, || {
-        let root = tracing::info_span!(parent: None, "admitted.owner");
+        let root = tracing::info_span!(parent: None, "acyclic.test.admitted_owner", outcome = tracing::field::Empty);
         let binding = Binding::attach(&root, key, admission.clone().try_acquire_owned()?)?;
         assert_eq!(
             Binding::attach(&root, key, admission.clone().try_acquire_owned()?).unwrap_err(),
@@ -112,6 +112,9 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
     assert!(unbound.sample().binding.is_none());
     assert!(!binding.matches(&unbound.sample()));
     let terminal = ready(output.recv())?.ok_or("worker terminal absent")?;
+    let owner = ready(output.recv())?.ok_or("original owner terminal absent")?;
+    assert_eq!(owner.sample().outcome, Outcome::Incomplete);
+    assert!(binding.matches(&owner.sample()));
     assert_eq!(terminal.sample().outcome, Outcome::Err);
     assert_eq!(terminal.sample().error_kind, Some("not_found"));
     assert_eq!(terminal.sample().parent_id, bridge_id.as_ref());
@@ -131,9 +134,9 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
 
     // Equal user IDs in another registry are not the original admission.
     let unrelated = tracing::dispatcher::with_default(
-        &tracing::Dispatch::new(tracing_subscriber::registry()),
+        &tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(Metrics::new()))),
         || {
-            let root = tracing::info_span!(parent: None, "admitted.owner");
+            let root = tracing::info_span!(parent: None, "acyclic.test.admitted_owner", outcome = tracing::field::Empty);
             Ok::<_, Box<dyn std::error::Error>>(Binding::attach(
                 &root,
                 key,
@@ -150,6 +153,7 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
         "retained evidence still owns identity credit"
     );
     drop(terminal);
+    drop(owner);
     drop(unbound);
     assert_eq!(admission.available_permits(), 2);
     assert_eq!(records.available_permits(), 8);
@@ -268,7 +272,7 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
             .with(Keep),
     );
     tracing::dispatcher::with_default(&dispatch, || {
-        let root = tracing::info_span!(parent: None, "bound.owner");
+        let root = tracing::info_span!(parent: None, "acyclic.test.filtered_owner", outcome = tracing::field::Empty);
         let binding = Binding::attach(&root, 17_u64, credit.clone().try_acquire_owned()?)?;
         let hidden = tracing::info_span!(parent: &root, "hidden.parent");
         drop(tracing::info_span!(parent: &hidden, "acyclic.test.filtered_bound", outcome = "ok"));
@@ -277,6 +281,17 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
         assert!(!binding.matches(&record.sample()));
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
+    drop(ready(output.recv())?.ok_or("filtered owner's terminal absent")?);
+    let unobserved = tracing::Dispatch::new(tracing_subscriber::registry());
+    tracing::dispatcher::with_default(&unobserved, || {
+        let span = tracing::info_span!("acyclic.test.unobserved", outcome = tracing::field::Empty);
+        assert_eq!(
+            Binding::attach(&span, 17_u64, credit.clone().try_acquire_owned()?).unwrap_err(),
+            BindingError::UnobservedSpan
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    assert_eq!(credit.available_permits(), 1);
     Ok(())
 }
 
