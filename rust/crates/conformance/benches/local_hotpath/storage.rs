@@ -91,7 +91,13 @@ pub(super) async fn run(
     recovery: &str,
     operations: &[Operation],
 ) -> Result<(bool, acyclic_test_support::scale::Point)> {
-    let mut rows = Measurements::new(agents, fixture.requests.clone(), recovery, operations);
+    let mut rows = Measurements::new(
+        agents,
+        fixture.requests.clone(),
+        fixture.durability.clone(),
+        recovery,
+        operations,
+    );
     let any = |family: &[Operation]| {
         operations
             .iter()

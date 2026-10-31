@@ -1,5 +1,5 @@
 //! Observe the original handler boundary without replacing its implementation.
-use super::report::{Counters, Result, emit};
+use super::report::{Counters, DurabilityQuery, Result, emit};
 use acyclic_actors::{
     addressing::ActorReference,
     guest::{
@@ -49,6 +49,7 @@ pub(super) struct Entries {
     pending: Mutex<Option<Pending>>,
     calls: AtomicU64,
     requests: RequestLedger,
+    durability: DurabilityQuery,
 }
 
 /// The delivery scope owns the producer. Completion, failure and cancellation
@@ -65,11 +66,12 @@ impl Drop for Scope {
 }
 
 impl Entries {
-    pub(super) fn new(requests: RequestLedger) -> Self {
+    pub(super) fn new(requests: RequestLedger, durability: DurabilityQuery) -> Self {
         Self {
             pending: Mutex::new(None),
             calls: AtomicU64::new(0),
             requests,
+            durability,
         }
     }
 
@@ -158,7 +160,7 @@ impl Handler for Observed {
         cancellation: CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         let entered = Instant::now();
-        let counters = Counters::capture(&self.entries.requests);
+        let counters = Counters::capture(&self.entries.requests, &self.entries.durability);
         self.entries.calls.fetch_add(1, Ordering::Relaxed);
         if let Some(pending) = self
             .entries
