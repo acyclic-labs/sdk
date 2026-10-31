@@ -1,6 +1,5 @@
 use super::*;
 use crate::local::host_owner::SessionAction;
-use std::time::Duration;
 
 fn rejected_requests_end_without_owner_exit() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
@@ -179,19 +178,20 @@ async fn projection_event(
     events: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
     owner: &mut tokio::task::JoinHandle<Result<()>>,
 ) -> Result<()> {
-    let failed = |cause| {
-        Error::Storage(format!(
-            "step=observe workspace conformance: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state -- --exact"
-        ))
-    };
     tokio::select! {
         event = events.recv() => match event {
             Some(Ok(_)) => Ok(()),
-            Some(Err(error)) => Err(failed(error.to_string())),
-            None => Err(failed("notification producer closed".into())),
+            Some(Err(error)) => Err(projection_failure(error)),
+            None => Err(projection_failure("notification producer closed")),
         },
-        result = owner => Err(failed(format!("workspace owner ended: {result:?}"))),
+        result = owner => Err(projection_failure(format!("workspace owner ended: {result:?}"))),
     }
+}
+
+fn projection_failure(cause: impl std::fmt::Display) -> Error {
+    Error::Storage(format!(
+        "step=observe workspace conformance: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state -- --exact"
+    ))
 }
 
 #[test]
@@ -256,7 +256,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // Endpoint publication and request-watch registration precede its first
     // suspension, just as in the native child-process fixture.
     assert!(futures::poll!(serving.as_mut()).is_pending());
-    let owner = tokio::spawn(serving);
+    let mut owner = tokio::spawn(serving);
     let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
     assert!(descriptor.is_file());
     // Follow only coordination files once published, before any native view
@@ -592,18 +592,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .as_ref()
     );
     assert!(result.get("task").is_some_and(Value::is_string));
-    projection_settled(&requests, RecursiveMode::NonRecursive, || {
-        assert!(!owner.is_finished(), "invalid request stopped the owner");
+    projection_settled(&mut changes, &mut owner, || {
         Ok(std::fs::read_dir(&requests)
             .map_err(storage)?
             .next()
             .is_none())
     })
     .await?;
-    assert!(
-        !owner.is_finished(),
-        "invalid writable projections must not stop the owner"
-    );
     #[cfg(unix)]
     assert_eq!(
         std::fs::read(outside.path()).map_err(storage)?,
@@ -617,11 +612,9 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     // Every consumed operation's reply is retired, without touching debris.
     let statuses = checkout.path().join(DIRECTORY).join("status");
-    projection_settled(&statuses, RecursiveMode::NonRecursive, || {
-        assert!(
-            !owner.is_finished(),
-            "owner stopped before reply withdrawal"
-        );
+    // The original watcher has followed every status since before the
+    // requests were submitted; early withdrawals cannot lose their wake.
+    projection_settled(&mut changes, &mut owner, || {
         for entry in std::fs::read_dir(&statuses).map_err(storage)? {
             if entry.map_err(storage)?.path() != debris {
                 return Ok(false);
@@ -704,7 +697,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     assert!(lock(&bridge.shared.waiters).waiting.is_empty());
     assert!(!lock(&bridge.watching).watched);
     assert!(
-        !owner.is_finished(),
+        futures::poll!(&mut owner).is_pending(),
         "client failure must not kill the workspace owner"
     );
     // The owner is still alive: failure of its native exit observation must
@@ -742,7 +735,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let (producer, mut ended) = tokio::sync::mpsc::unbounded_channel();
     drop(producer);
     assert!(matches!(
-        projection_event(&mut ended, &mut owner).await,
+        projection_settled(&mut ended, &mut owner, || Ok(false)).await,
         Err(Error::Storage(ref error)) if error.contains("notification producer closed")
     ));
     assert!(local.agent.is_none());
@@ -790,31 +783,24 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     Ok(())
 }
 
-/// Observes the real projection notifications, arming before the first
-/// read and retaining an early notification while that read is in progress.
+/// Reuses the original watcher armed before publication and observes its
+/// producer and workspace-owner terminal events while waiting for settlement.
 async fn projection_settled(
-    directory: &Path,
-    recursive: RecursiveMode,
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
+    owner: &mut tokio::task::JoinHandle<Result<()>>,
     mut settled: impl FnMut() -> Result<bool>,
 ) -> Result<()> {
-    let notices = Arc::new(Notices::new(directory.to_path_buf()));
-    let notified = Arc::clone(&notices);
-    let mut watcher =
-        notify::recommended_watcher(move |event| notified.note(&event)).map_err(storage)?;
-    watcher.watch(directory, recursive).map_err(storage)?;
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            // Drain the names with the same adapter as the owner; one Notify
-            // permit retains any event racing the state observation.
-            notices.take();
-            if settled()? {
-                return Ok(());
-            }
-            notices.changed.notified().await;
+    loop {
+        if let std::task::Poll::Ready(result) = futures::poll!(&mut *owner) {
+            return Err(projection_failure(format!(
+                "workspace owner ended: {result:?}"
+            )));
         }
-    })
-    .await
-    .map_err(storage)?
+        if settled()? {
+            return Ok(());
+        }
+        projection_event(events, owner).await?;
+    }
 }
 
 #[test]
