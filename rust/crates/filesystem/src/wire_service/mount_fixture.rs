@@ -29,6 +29,10 @@ pub(crate) struct Mounts {
 
 impl Mounts {
     pub(crate) fn new() -> Self {
+        Self::with_expiry(now() + 3_540)
+    }
+
+    pub(crate) fn with_expiry(expires: u64) -> Self {
         // Certified a minute back, so a service clock read before this
         // fixture never precedes its validity.
         let now = now() - 60;
@@ -51,7 +55,7 @@ impl Mounts {
                     public_key: leaf.verifying_key(),
                     validity: Validity {
                         not_before_unix_seconds: now,
-                        expires_at_unix_seconds: now + 3_600,
+                        expires_at_unix_seconds: expires,
                     },
                     grants: GrantSet {
                         grants: vec![Grant {

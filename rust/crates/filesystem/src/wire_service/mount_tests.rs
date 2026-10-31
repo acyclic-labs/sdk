@@ -90,6 +90,28 @@ fn a_minted_mount_capability_admits_exactly_its_request() {
         admit(&mounts.mint(&request(false, 2)), &read),
         Err(MountRefusal::Wider)
     );
+    // Working now and refusing at the requested end does not establish that
+    // the entire advertised interval is admitted. The original certificate
+    // and a workload caveat can each impose an earlier end.
+    let short = Mounts::with_expiry(now() + 30);
+    assert_eq!(
+        admit(&short.mint(&read), &read),
+        Err(MountRefusal::Narrower)
+    );
+    let audience = mount_audience(read.workspace_id);
+    let resource = mount_resource(read.workspace_id, read.generation_id);
+    assert_eq!(
+        admit(
+            &custom(
+                &mounts,
+                filesystem(&resource, &["fs/read", "fs/list"]),
+                &audience,
+                now() + 30,
+            ),
+            &read,
+        ),
+        Err(MountRefusal::Narrower)
+    );
 }
 
 #[test]

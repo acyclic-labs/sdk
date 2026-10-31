@@ -224,10 +224,16 @@ pub fn admit_mount(
         )
         .is_ok()
     };
-    if !permits("fs/read", &resource, &audience, now)
-        || !permits("fs/list", &resource, &audience, now)
-        || request.writable && !permits("fs/write", &resource, &audience, now)
-    {
+    let last = expires
+        .checked_sub(1)
+        .filter(|last| *last >= now)
+        .ok_or(MountRefusal::Narrower)?;
+    // The same evaluator intersects every certificate, allowance and time
+    // caveat. Admission must cover the advertised half-open interval, not
+    // merely work now and fail at its end because an ancestor expires first.
+    if allowed.iter().any(|action| {
+        !permits(action, &resource, &audience, now) || !permits(action, &resource, &audience, last)
+    }) {
         return Err(MountRefusal::Narrower);
     }
     // The volume without a generation is refused only when the grant pins
