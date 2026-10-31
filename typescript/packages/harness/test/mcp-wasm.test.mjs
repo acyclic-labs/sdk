@@ -77,17 +77,22 @@ test("MCP WASM pins an explicit projection contract independently of remote resu
 });
 
 test("MCP WASM rejects lossy unsigned catalog and search allowances", () => {
-  for (const invalid of [-1, 0.5, 1.5, 2 ** 32, 2 ** 32 + 1, NaN, Infinity, -Infinity, "3", undefined, null, true]) {
+  for (const invalid of [-1, 0.5, 1.5, 2 ** 32, 2 ** 32 + 1, NaN, Infinity, -Infinity, "3", true]) {
     for (const run of [
       () => validateMcpCatalog(catalog, invalid, 8192),
       () => validateMcpCatalog(catalog, 3, invalid),
       () => mcpModelDefinitions(catalog, invalid, 8192),
       () => mcpModelDefinitions(catalog, 3, invalid),
-      () => searchMcpCatalog(catalog, "", undefined, invalid, 3, 8192),
       () => searchMcpCatalog(catalog, "", undefined, 3, invalid, 8192),
       () => searchMcpCatalog(catalog, "", undefined, 3, 3, invalid),
     ]) assert.throws(run, `accepted ${String(invalid)}`);
   }
+  for (const invalid of [undefined, null, -1, 0, 0.5, 2 ** 32, NaN, Infinity, "3", true]) {
+    assert.throws(() => searchMcpCatalog(catalog, "", undefined, invalid, undefined, undefined));
+  }
+  validateMcpCatalog(catalog, undefined, undefined);
+  assert.equal(mcpModelDefinitions(catalog, null, null).length, 3);
+  assert.equal(searchMcpCatalog(catalog, "", undefined, 1, undefined, null).length, 1);
   const maximum = 2 ** 32 - 1;
   validateMcpCatalog(catalog, maximum, maximum);
   assert.equal(mcpModelDefinitions(catalog, maximum, maximum).length, 3);
