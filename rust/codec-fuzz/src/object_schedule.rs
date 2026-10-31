@@ -39,6 +39,7 @@ struct Case<'a> {
     mutation: Mutation,
     flush: bool,
     compaction: bool,
+    obsolete_bytes: usize,
     fault: DurableFault,
     ordinal: u64,
     payload: &'a [u8],
@@ -54,6 +55,22 @@ impl<'a> Case<'a> {
         if compaction && (config[0] % 3 == 0 || config[1] & 1 != 0) {
             return None;
         }
+        // Prepare more obsolete bytes than both new values together. The
+        // original chunk also covers their bounded full-identity frame headers.
+        // Refuse an unrepresentable allocation before any original IO.
+        let obsolete_bytes = if compaction {
+            let bytes = payload
+                .len()
+                .checked_add(1)?
+                .checked_mul(2)?
+                .checked_add(acyclic_objects::codec_fuzz::compaction_chunk_bytes())?;
+            if bytes > isize::MAX as usize {
+                return None;
+            }
+            bytes
+        } else {
+            0
+        };
         Some(Self {
             generation: GenerationId::from_bytes(identity)?,
             mutation: match config[0] % 3 {
@@ -63,6 +80,7 @@ impl<'a> Case<'a> {
             },
             flush: config[1] & 1 != 0,
             compaction,
+            obsolete_bytes,
             fault: match config[2] % 5 {
                 0 => DurableFault::Before,
                 1 => DurableFault::After,
@@ -78,7 +96,7 @@ impl<'a> Case<'a> {
     fn value(&self, tag: u8) -> OwnedBytes {
         let length = self.payload.len() + 1;
         let length = if self.compaction && tag == 0 {
-            length.max(acyclic_objects::codec_fuzz::compaction_chunk_bytes())
+            self.obsolete_bytes
         } else {
             length
         };
@@ -410,4 +428,33 @@ pub fn seeds() -> Vec<(String, Vec<u8>)> {
         .collect();
     seeds.extend(compacting);
     seeds
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn large_payload_compaction_reaches_original_maintenance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_, mut bytes) = super::seeds()
+            .into_iter()
+            .find(|(name, _)| name == "compact-medium-true-1-0-1")
+            .expect("original sealed replace producer");
+        // An opaque Medium value may exceed the original maintenance chunk.
+        // Padding only to max(payload, chunk) leaves too many live bytes and
+        // falsely rejects this baseline before reaching any physical fault.
+        let prefix = 20 + usize::from(bytes[3]);
+        bytes.resize(
+            prefix + acyclic_objects::codec_fuzz::compaction_chunk_bytes() + 1,
+            0,
+        );
+        let mut reached_rename = false;
+        assert!(super::check_each_site(&bytes, |report| {
+            reached_rename |= report.fault.operation == "namespace:rename";
+        })?);
+        assert!(
+            reached_rename,
+            "large input missed original compaction rename"
+        );
+        Ok(())
+    }
 }
