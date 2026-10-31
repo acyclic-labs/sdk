@@ -91,7 +91,6 @@ pub struct UsageReceipt {
     pub start_unix_ms: u64,
     pub end_unix_ms: u64,
     pub elastic_cpu_ns: u64,
-    pub dedicated_cpu_ns: u64,
     pub private_resident_byte_seconds: u64,
     pub durable_private_bytes: u64,
     /// Commitment to the separately signed account-lineage storage receipt.

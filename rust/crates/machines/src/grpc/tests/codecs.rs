@@ -73,7 +73,6 @@ fn managed_usage_rejects_missing_lineage_authority() {
         start_unix_ms: 1,
         end_unix_ms: 2,
         elastic_cpu_ns: 0,
-        dedicated_cpu_ns: 0,
         private_resident_byte_seconds: 0,
         durable_private_bytes: 0,
         lineage_receipt_sha256,

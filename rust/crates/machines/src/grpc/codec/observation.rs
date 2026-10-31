@@ -296,7 +296,6 @@ pub(in super::super) fn decode_usage_receipt(
         start_unix_ms,
         end_unix_ms,
         elastic_cpu_ns: value.elastic_cpu_ns,
-        dedicated_cpu_ns: value.dedicated_cpu_ns,
         private_resident_byte_seconds: value.private_resident_byte_seconds,
         durable_private_bytes: value.durable_private_bytes,
         lineage_receipt_sha256,
