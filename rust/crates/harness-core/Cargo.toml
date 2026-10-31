@@ -32,6 +32,11 @@ path = "tests/machine_workspace.rs"
 required-features = ["filesystem-local", "native-execution", "machines"]
 
 [[test]]
+name = "target-lifecycle"
+path = "tests/target_lifecycle.rs"
+required-features = ["machines"]
+
+[[test]]
 name = "git_executor"
 path = "tests/git_executor.rs"
 required-features = ["filesystem-local", "native-execution"]
