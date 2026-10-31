@@ -487,16 +487,19 @@ fn request_with(registry: &Mutex<Registry>, cwd: &Path, action: HostAction) -> R
         .join("requests")
         .join(format!("{operation}.json"));
     immutable(&request_path, &bytes)?;
-    let result = match delivery.recv() {
-        Ok(Delivery::Reply(reply)) => reply,
-        Ok(Delivery::Gone) | Err(_) => {
-            drop(waiting);
-            // Withdrawn, so no later owner serves a request nobody awaits.
-            // Whatever the exited owner committed stays keyed by `operation`.
-            remove_projection(&request_path)?;
-            return Err(Error::Indeterminate(operation));
-        }
-    };
+    let result =
+        match acyclic_native_runtime::obs::waiting_sync("native-workspace-reply", operation, || {
+            delivery.recv()
+        }) {
+            Ok(Delivery::Reply(reply)) => reply,
+            Ok(Delivery::Gone) | Err(_) => {
+                drop(waiting);
+                // Withdrawn, so no later owner serves a request nobody awaits.
+                // Whatever the exited owner committed stays keyed by `operation`.
+                remove_projection(&request_path)?;
+                return Err(Error::Indeterminate(operation));
+            }
+        };
     drop(waiting);
     // Withdrawing the request retires its reply and any saved result. Every
     // effect is an agent commit keyed by this operation.

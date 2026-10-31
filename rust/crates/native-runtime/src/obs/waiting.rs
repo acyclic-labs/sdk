@@ -25,6 +25,21 @@ pin_project_lite::pin_project! {
 }
 
 impl<F> Waiting<F> {
+    fn new(primitive: &'static str, key: impl Display, inner: F) -> Self {
+        Self {
+            inner: Some(inner),
+            context: OperationSpan::new(tracing::info_span!(
+                target: "acyclic.wait",
+                "waiting",
+                primitive,
+                key = %key,
+                stage = 0_u64,
+                predecessor = 0_u64,
+                finished = tracing::field::Empty,
+            )),
+        }
+    }
+
     pub(crate) fn context(&self) -> &OperationSpan {
         &self.context
     }
@@ -54,16 +69,19 @@ impl<F: Future> Future for Waiting<F> {
 /// only the producer determines readiness.
 /// Keys must identify operations, never contain prompts or credentials.
 pub fn waiting<F: Future>(primitive: &'static str, key: impl Display, future: F) -> Waiting<F> {
-    Waiting {
-        inner: Some(future),
-        context: OperationSpan::new(tracing::info_span!(
-            target: "acyclic.wait",
-            "waiting",
-            primitive,
-            key = %key,
-            stage = 0_u64,
-            predecessor = 0_u64,
-            finished = tracing::field::Empty,
-        )),
-    }
+    Waiting::new(primitive, key, future)
+}
+
+/// Names an existing synchronous wait while its closure runs.
+///
+/// Like [`waiting`], this only observes the original producer's wait. It adds
+/// no readiness check, thread or completion signal. The report retires on
+/// return or unwind, even when a descendant retains the tracing span.
+/// Keys must identify operations, never contain prompts or credentials.
+pub fn waiting_sync<T>(primitive: &'static str, key: impl Display, work: impl FnOnce() -> T) -> T {
+    let mut wait = Waiting::new(primitive, key, ());
+    let result = wait.context.in_scope(work);
+    wait.inner = None;
+    wait.context.record("finished", true);
+    result
 }
