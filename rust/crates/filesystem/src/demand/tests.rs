@@ -935,3 +935,106 @@ async fn negative_control_binding_by_path_attaches_the_replacement() {
     let replaced = !bound_across_replacement(true).await.unwrap();
     assert!(replaced || cfg!(windows));
 }
+
+/// The actual shared native worker may remain blocked after reply cancellation.
+/// Both the original callback and standalone accounting must release their wait;
+/// only the native terminal may return standalone admission to its caller.
+#[tokio::test]
+async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
+-> Result<(), Box<dyn Error>> {
+    struct CallbackRetired(std::sync::mpsc::Sender<Option<std::thread::ThreadId>>);
+    impl Drop for CallbackRetired {
+        fn drop(&mut self) {
+            let _ = self.0.send(None);
+        }
+    }
+    for native in [false, true] {
+        for outcome in ["complete", "cancel", "lost"] {
+            let temporary = tempfile::tempdir()?;
+            std::fs::write(temporary.path().join("file"), b"remote")?;
+            let source = native_source(temporary.path()).await?.remote();
+            let stop = CancellationToken::new();
+            let reference = source.reference();
+            let name = path("/file")?;
+            let node = lookup_node(&source, reference, &name, &stop).await?;
+            let file = source
+                .open_file(reference, &name, node.version, WorkBudget::UNBOUNDED, &stop)
+                .await?
+                .value;
+            let (entered, started) = std::sync::mpsc::channel();
+            let (release, held) = std::sync::mpsc::channel();
+            let (retired, ended) = std::sync::mpsc::channel();
+            let retired_callback = CallbackRetired(entered.clone());
+            source.hold_next_read(native::ReadGate {
+                entered,
+                release: held,
+                retired,
+            });
+            let (finished, result) = std::sync::mpsc::channel();
+            let caller_stop = stop.clone();
+            let caller = std::thread::spawn(move || {
+                let _retired = retired_callback;
+                let original = native.then(|| {
+                    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &caller_stop)
+                        .map_err(|(error, _)| error)
+                        .unwrap()
+                });
+                let mut accounting = match &original {
+                    Some(original) => {
+                        crate::kernel::KernelAccounting::native(original, &caller_stop)
+                    }
+                    None => crate::kernel::KernelAccounting::standalone(
+                        WorkBudget::UNBOUNDED,
+                        &caller_stop,
+                    ),
+                };
+                // The callback normally permits local inline operations. A
+                // remote held read must still enter the original shared worker.
+                let _inline = acyclic_native_runtime::InlineBlocking::enter();
+                let answer = file.read_range(0, 6, &mut accounting);
+                let fenced = matches!(
+                    accounting.remaining(),
+                    Err(crate::FsError::AccountingHandoffActive)
+                );
+                let _ = finished.send((answer, fenced, std::thread::current().id()));
+            });
+            let worker = started
+                .recv()?
+                .ok_or("original callback retired before its read submission")?;
+            let mut release = Some(release);
+            if outcome == "cancel" {
+                stop.cancel();
+            } else if outcome == "lost" {
+                drop(release.take());
+            } else {
+                release
+                    .as_ref()
+                    .ok_or("missing native release owner")?
+                    .send(())?;
+            }
+            let (answer, fenced, callback) = result.recv()?;
+            assert_ne!(worker, callback, "remote I/O ran on the callback thread");
+            match outcome {
+                "cancel" => {
+                    assert!(matches!(answer, Err(DemandError::Cancelled)));
+                    assert_eq!(
+                        fenced, !native,
+                        "cancellation returned standalone admission before the producer"
+                    );
+                    release
+                        .take()
+                        .ok_or("native producer lost its release")?
+                        .send(())?;
+                }
+                "lost" => assert!(matches!(answer, Err(DemandError::WorkerUnavailable))),
+                _ => {
+                    assert_eq!(answer?.bytes.as_ref(), b"remote");
+                    assert!(!fenced);
+                }
+            }
+            ended.recv()?;
+            caller.join().map_err(|_| "remote callback panicked")?;
+        }
+    }
+    Ok(())
+}
