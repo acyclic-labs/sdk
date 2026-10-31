@@ -357,16 +357,7 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                if value.checkpoint != Some(encode_checkpoint(checkpoint))
-                    || value.children.len()
-                        != usize::try_from(count.get())
-                            .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
-                {
-                    return Err(ProviderError::Indeterminate(key));
-                }
-                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
-                let outcome = wait(self, key, operation).await?;
-                settled_fork(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
+                settle_fork(self, key, ForkSource::Checkpoint(checkpoint), count, &value).await
             }
             .await,
         )
@@ -398,16 +389,7 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
-                if value.source != Some(encode_machine(machine))
-                    || value.children.len()
-                        != usize::try_from(count.get())
-                            .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
-                {
-                    return Err(ProviderError::Indeterminate(key));
-                }
-                let outcome = wait(self, key, operation).await?;
-                settled_live_fork(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
+                settle_fork(self, key, ForkSource::Machine(machine), count, &value).await
             }
             .await,
         )

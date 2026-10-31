@@ -116,7 +116,10 @@ async fn lifecycle_and_recovery_require_the_original_terminal_receipt()
             None,
             Some(wire::MutationOutcome { result: None }),
             Some(wire::MutationOutcome {
-                result: Some(Outcome::Forked(wire::ForkedMachines { machines: vec![] })),
+                result: Some(Outcome::Forked(wire::ForkedMachines {
+                    machines: vec![],
+                    provenance: None,
+                })),
             }),
             Some(wire::MutationOutcome {
                 result: Some(substituted),
@@ -272,37 +275,57 @@ async fn snapshot_recovery_uses_retained_results_without_resource_reads()
                     }),
                 )
             }
-            1 => (
-                Admission::Fork(wire::ForkAdmission {
-                    checkpoint: Some(encode_checkpoint(checkpoint)),
-                    children: vec![encode_machine(child)],
-                    operation,
-                    contract: Some(contract.clone()),
-                }),
-                Outcome::Forked(wire::ForkedMachines {
-                    machines: vec![machine.clone()],
-                }),
-                MutationOutcome::Forked(vec![decode_machine_observation(machine.clone(), child)?]),
-            ),
-            _ => (
-                Admission::ForkMachine(wire::ForkMachineAdmission {
-                    source: Some(encode_machine(source)),
-                    children: vec![encode_machine(child)],
-                    operation,
-                    contract: Some(contract.clone()),
+            _ => {
+                // Both fork kinds reply with created-machine admissions; only
+                // the provenance and the inherited contract differ.
+                let (origin, contract) = if kind == 1 {
+                    let mut resumed = contract.clone();
+                    resumed.image = Some(encode_image(&Image::Checkpoint(checkpoint))?);
+                    (
+                        wire::provenance::Source::CheckpointId(encode_checkpoint(checkpoint)),
+                        resumed,
+                    )
+                } else {
+                    (
+                        wire::provenance::Source::MachineId(encode_machine(source)),
+                        contract.clone(),
+                    )
+                };
+                let provenance = wire::Provenance {
+                    source: Some(origin),
                     fidelity: wire::ForkFidelity::MemoryAndDisk as i32,
-                }),
-                Outcome::MachineForked(wire::ForkedLiveMachines {
-                    source: Some(encode_machine(source)),
-                    fidelity: wire::ForkFidelity::MemoryAndDisk as i32,
-                    children: vec![machine.clone()],
-                }),
-                MutationOutcome::MachineForked {
-                    source,
-                    fidelity: ForkFidelity::MemoryAndDisk,
-                    children: vec![decode_machine_observation(machine.clone(), child)?],
-                },
-            ),
+                };
+                let machine = wire::MachineState {
+                    contract: Some(contract.clone()),
+                    ..machine.clone()
+                };
+                (
+                    Admission::Forked(wire::MachineAdmissions {
+                        operation: operation.clone(),
+                        machines: vec![wire::MachineAdmission {
+                            machine: Some(encode_machine(child)),
+                            operation,
+                            contract: Some(contract),
+                            provenance: Some(provenance.clone()),
+                        }],
+                    }),
+                    Outcome::Forked(wire::ForkedMachines {
+                        machines: vec![machine.clone()],
+                        provenance: Some(provenance.clone()),
+                    }),
+                    MutationOutcome::Forked {
+                        provenance: Provenance {
+                            source: if kind == 1 {
+                                ForkSource::Checkpoint(checkpoint)
+                            } else {
+                                ForkSource::Machine(source)
+                            },
+                            fidelity: ForkFidelity::MemoryAndDisk,
+                        },
+                        machines: vec![decode_machine_observation(machine, child)?],
+                    },
+                )
+            }
         };
         service.recovered.result = Some(admission.clone());
         let mut terminal =
@@ -338,12 +361,11 @@ async fn snapshot_recovery_uses_retained_results_without_resource_reads()
                             .expect("contract")
                             .network_policy_digest = vec![2; 32]
                     }
-                    _ => states.machines.clear(),
-                },
-                Outcome::MachineForked(states) => match altered {
-                    0 => states.source = Some(encode_machine(child)),
-                    1 => states.fidelity = wire::ForkFidelity::DiskOnly as i32,
-                    _ => states.children.clear(),
+                    _ if kind == 1 => states.machines.clear(),
+                    _ => {
+                        states.provenance.as_mut().expect("provenance").fidelity =
+                            wire::ForkFidelity::DiskOnly as i32
+                    }
                 },
                 _ => unreachable!(),
             }
@@ -376,13 +398,11 @@ async fn snapshot_recovery_uses_retained_results_without_resource_reads()
         );
         let _ = shutdown.send(());
         server.await??;
-        if let Admission::Fork(mut value) = admission {
-            for children in [
-                Vec::new(),
-                vec![encode_machine(child), encode_machine(child)],
-            ] {
-                value.children = children;
-                assert!(settled_fork(value.clone(), terminal.outcome.clone()).is_err());
+        if let Admission::Forked(mut value) = admission {
+            let entry = value.machines[0].clone();
+            for machines in [Vec::new(), vec![entry.clone(), entry]] {
+                value.machines = machines;
+                assert!(decode_fork_admissions(&value).is_err());
             }
         }
     }

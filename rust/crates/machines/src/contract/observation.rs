@@ -115,6 +115,24 @@ pub enum ProviderAssurance {
     ManagedService,
 }
 
+/// What a fork copied from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ForkSource {
+    /// Live fork of a running machine.
+    Machine(MachineId),
+    /// Fork of an immutable checkpoint; children's `contract.image` is this checkpoint.
+    Checkpoint(CheckpointId),
+}
+
+/// Where a forked machine came from. A created machine has none.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Provenance {
+    pub source: ForkSource,
+    /// What the children inherited. A checkpoint fork resumes the checkpoint's
+    /// captured memory and disk: [`ForkFidelity::MemoryAndDisk`].
+    pub fidelity: ForkFidelity,
+}
+
 /// Terminal customer mutation outcome.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MutationOutcome {
@@ -122,12 +140,11 @@ pub enum MutationOutcome {
     /// Settled original Machine contract with its exact selected volume.
     VolumeAttached(MachineObservation),
     Checkpointed(CheckpointObservation),
-    Forked(Vec<MachineObservation>),
-    /// Outcome of [`MachinesProvider::fork_machine`]: the running source, the fidelity the children were forked at, and the children in index order.
-    MachineForked {
-        source: MachineId,
-        fidelity: ForkFidelity,
-        children: Vec<MachineObservation>,
+    /// Outcome of [`MachinesProvider::fork`] and [`MachinesProvider::fork_machine`]:
+    /// the children in index order, each the same resource a create yields.
+    Forked {
+        provenance: Provenance,
+        machines: Vec<MachineObservation>,
     },
     Suspended(MachineId),
     Woken(MachineId),

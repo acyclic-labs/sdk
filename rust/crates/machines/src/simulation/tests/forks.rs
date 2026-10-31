@@ -21,7 +21,10 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
     };
     let fork_key = IdempotencyKey::parse("00000000-0000-0000-0000-00000000000a")
         .unwrap_or_else(|_| unreachable!());
-    let Ok(MutationOutcome::Forked(children)) = provider
+    let Ok(MutationOutcome::Forked {
+        provenance,
+        machines: children,
+    }) = provider
         .fork(
             checkpoint.id,
             NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
@@ -31,9 +34,26 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
     else {
         unreachable!();
     };
+    assert_eq!(
+        provenance,
+        Provenance {
+            source: ForkSource::Checkpoint(checkpoint.id),
+            fidelity: ForkFidelity::MemoryAndDisk,
+        }
+    );
     assert_eq!(children.len(), 2);
     assert_ne!(children[0].id, children[1].id);
     assert_ne!(children[0].id, machine.id);
+    // The stored contract names the checkpoint, so every read agrees with the reply.
+    let listed = provider
+        .list_machines(None, 16)
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    for child in &children {
+        assert_eq!(child.contract.image, Image::Checkpoint(checkpoint.id));
+        assert_eq!(provider.inspect_machine(child.id).await.as_ref(), Ok(child));
+        assert!(listed.machines.contains(child));
+    }
     provider
         .destroy_checkpoint(
             checkpoint.id,
@@ -57,16 +77,20 @@ async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
         .await
         .unwrap_or_else(|_| unreachable!());
     let first = provider.fork_machine(parent.id, two(), key(2)).await;
-    let Ok(MutationOutcome::MachineForked {
-        source,
-        fidelity,
-        children,
+    let Ok(MutationOutcome::Forked {
+        provenance,
+        machines: children,
     }) = first.clone()
     else {
         unreachable!("live fork must succeed: {first:?}")
     };
-    assert_eq!(source, parent.id);
-    assert_eq!(fidelity, ForkFidelity::MemoryAndDisk);
+    assert_eq!(
+        provenance,
+        Provenance {
+            source: ForkSource::Machine(parent.id),
+            fidelity: ForkFidelity::MemoryAndDisk,
+        }
+    );
     assert_eq!(children.len(), 2);
     let ids = children
         .iter()
@@ -100,15 +124,14 @@ async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
         .inspect_machine(child)
         .await
         .unwrap_or_else(|_| unreachable!());
-    let Ok(MutationOutcome::MachineForked {
-        fidelity,
-        children: grandchildren,
-        ..
+    let Ok(MutationOutcome::Forked {
+        provenance,
+        machines: grandchildren,
     }) = provider.fork_machine(child, NonZeroU32::MIN, key(3)).await
     else {
         unreachable!();
     };
-    assert_eq!(fidelity, ForkFidelity::MemoryAndDisk);
+    assert_eq!(provenance.fidelity, ForkFidelity::MemoryAndDisk);
     assert_eq!(grandchildren.len(), 1);
 }
 
@@ -118,8 +141,9 @@ async fn live_fork_sources_are_joined_after_their_children() {
     let Ok(MutationOutcome::Created(parent)) = provider.create(request(key(0x10))).await else {
         unreachable!()
     };
-    let Ok(MutationOutcome::MachineForked { children, .. }) =
-        provider.fork_machine(parent.id, two(), key(0x11)).await
+    let Ok(MutationOutcome::Forked {
+        machines: children, ..
+    }) = provider.fork_machine(parent.id, two(), key(0x11)).await
     else {
         unreachable!()
     };
@@ -178,8 +202,11 @@ async fn live_fork_fidelity_follows_the_declared_capability() {
     );
     assert!(matches!(
         disk_only.fork_machine(parent.id, two(), key(0x31)).await,
-        Ok(MutationOutcome::MachineForked {
-            fidelity: ForkFidelity::DiskOnly,
+        Ok(MutationOutcome::Forked {
+            provenance: Provenance {
+                fidelity: ForkFidelity::DiskOnly,
+                ..
+            },
             ..
         })
     ));

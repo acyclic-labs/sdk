@@ -2,6 +2,8 @@
 
 ## 0.2.0 - Unreleased
 
+- Breaking: `create`, `fork` and `forkMachine` all return the `created` outcome with `machines[]` and `provenance` (`null` for create; the fork source and `ForkFidelity` otherwise). The `forked` and `machine-forked` outcome kinds are removed. A checkpoint fork child's `contract.image` is the checkpoint on every read.
+
 - Restore the approved shape-free Machines protocol 1.1. Create and checkpoint fork no longer select Elastic/Dedicated performance; the retired wire fields remain reserved.
 
 - Align the unified SDK candidate with the breaking Objects v2 public package transition.

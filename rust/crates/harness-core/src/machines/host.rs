@@ -206,10 +206,13 @@ impl MachinesHost {
             .await
             .map_err(|error| map_error(error, Some(operation_id)))?
         {
-            MutationOutcome::MachineForked {
-                source,
-                fidelity,
-                children,
+            MutationOutcome::Forked {
+                provenance:
+                    Provenance {
+                        source: ForkSource::Machine(source),
+                        fidelity,
+                    },
+                machines: children,
             } if source == machine && children.len() == count.get() as usize => Ok((
                 fidelity,
                 children
@@ -284,17 +287,21 @@ impl MachinesHost {
         checkpoint: &CheckpointRef,
         count: NonZeroU32,
     ) -> Result<Vec<SandboxRef>> {
+        let checkpoint_id = self.checkpoint_id(checkpoint)?;
         match self
             .provider
-            .fork(
-                self.checkpoint_id(checkpoint)?,
-                count,
-                machines_key(idempotency_key)?,
-            )
+            .fork(checkpoint_id, count, machines_key(idempotency_key)?)
             .await
             .map_err(|error| map_error(error, Some(operation_id)))?
         {
-            MutationOutcome::Forked(values) => values
+            MutationOutcome::Forked {
+                provenance:
+                    Provenance {
+                        source: ForkSource::Checkpoint(source),
+                        ..
+                    },
+                machines: values,
+            } if source == checkpoint_id => values
                 .into_iter()
                 .map(|value| {
                     SandboxRef::new(self.provider_ref.clone(), value.id.as_bytes().into(), None)

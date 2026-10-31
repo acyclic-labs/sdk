@@ -84,14 +84,14 @@ describe("Machines simulation", () => {
     await expect(provider.setSuspensionPolicy(machineId("missing"), { kind: "manual" }, idempotencyKey("policy-clock-missing"))).rejects.toThrow();
     const second = await provider.create(request("policy-clock-second"));
     if (second.kind !== "created") throw new Error("wrong create outcome");
-    expect(second.machine.createdAtUnixMs).toBe(first.machine.createdAtUnixMs + 1);
+    expect(second.machines[0]!.createdAtUnixMs).toBe(first.machines[0]!.createdAtUnixMs + 1);
   });
 
   test("routes every lifecycle operation through the Rust simulator", async () => {
     const provider = new SimulatedMachines();
     const created = await provider.create(request("full-lifecycle"));
     if (created.kind !== "created") throw new Error("wrong create outcome");
-    const id = created.machine.id;
+    const id = created.machines[0]!.id;
     const suspended = await provider.suspend(id, idempotencyKey("suspend-full"));
     expect(suspended).toEqual({ kind: "suspended", machineId: id });
     expect((await provider.inspectMachine(id)).state).toBe("suspended");
@@ -113,7 +113,7 @@ describe("Machines simulation", () => {
     if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
     expect(await provider.inspectCheckpoint(captured.checkpoint.id)).toEqual(captured.checkpoint);
     const forked = await provider.fork(captured.checkpoint.id, 2, idempotencyKey("fork-full"));
-    if (forked.kind !== "forked") throw new Error("wrong fork outcome");
+    if (forked.kind !== "created") throw new Error("wrong fork outcome");
     expect((await provider.listMachines(null, 256)).machines).toHaveLength(3);
     expect(await provider.recover(idempotencyKey("fork-full"))).toEqual(forked);
     const usage = await provider.usage(id, 1, 2);
@@ -185,7 +185,7 @@ describe("Machines simulation", () => {
     (authored.budgets as { concurrency: number }).concurrency = 99;
     const created = await pending;
     if (created.kind !== "created") throw new Error("wrong create outcome");
-    expect((await provider.inspectMachine(created.machine.id)).contract.budgets.concurrency).toBe(0);
+    expect((await provider.inspectMachine(created.machines[0]!.id)).contract.budgets.concurrency).toBe(0);
   });
 
   test("recovers and pulls terminal mutation observations", async () => {
@@ -222,7 +222,7 @@ describe("Machines simulation", () => {
     const provider = new SimulatedMachines();
     const created = await provider.create(request("usage-1"));
     if (created.kind !== "created") throw new Error("wrong create outcome");
-    const usage = await provider.usage(created.machine.id, 1, 2);
+    const usage = await provider.usage(created.machines[0]!.id, 1, 2);
     expect(usage.lineageReceiptSha256).toEqual(new Uint8Array(32));
     expect("lineageSharedBytes" in usage).toBe(false);
   });
@@ -231,12 +231,12 @@ describe("Machines simulation", () => {
     const provider = new SimulatedMachines();
     const created = await provider.create(request("usage-owned-by-result"));
     if (created.kind !== "created") throw new Error("wrong create outcome");
-    const first = await provider.usage(created.machine.id, 1, 2);
+    const first = await provider.usage(created.machines[0]!.id, 1, 2);
     const expectedLineage = first.lineageReceiptSha256.slice();
     const expectedReceipt = first.receipt.slice();
     first.lineageReceiptSha256[0] ^= 0xff;
     if (first.receipt.length > 0) first.receipt[0] ^= 0xff;
-    const second = await provider.usage(created.machine.id, 1, 2);
+    const second = await provider.usage(created.machines[0]!.id, 1, 2);
     expect(second.lineageReceiptSha256).toEqual(expectedLineage);
     expect(second.receipt).toEqual(expectedReceipt);
   });
@@ -260,13 +260,21 @@ describe("Machines simulation", () => {
     const provider = new SimulatedMachines();
     const created = await provider.create(request("create-2"));
     if (created.kind !== "created") throw new Error("wrong create outcome");
-    const captured = await provider.checkpoint(created.machine.id, "checkpoint-1");
+    const captured = await provider.checkpoint(created.machines[0]!.id, "checkpoint-1");
     if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
     const forked = await provider.fork(captured.checkpoint.id, 2, idempotencyKey("fork-1"));
-    if (forked.kind !== "forked") throw new Error("wrong fork outcome");
+    if (forked.kind !== "created") throw new Error("wrong fork outcome");
+    expect(forked.provenance).toEqual({ source: { kind: "checkpoint", checkpointId: captured.checkpoint.id }, fidelity: "memory-and-disk" });
     expect(new Set(forked.machines.map((machine) => machine.id)).size).toBe(2);
+    // A fork child is an ordinary machine: every read names its checkpoint image.
+    const listed = (await provider.listMachines(null, 256)).machines;
+    for (const child of forked.machines) {
+      expect(child.contract.image).toEqual({ kind: "checkpoint", checkpointId: captured.checkpoint.id });
+      expect(await provider.inspectMachine(child.id)).toEqual(child);
+      expect(listed).toContainEqual(child);
+    }
     await provider.destroyCheckpoint(captured.checkpoint.id, "checkpoint-destroy-1");
-    expect((await provider.inspectMachine(created.machine.id)).state).toBe("running");
+    expect((await provider.inspectMachine(created.machines[0]!.id)).state).toBe("running");
     expect((await provider.inspectMachine(forked.machines[0]!.id)).state).toBe("running");
   });
 
@@ -296,12 +304,12 @@ describe("Machines simulation", () => {
     const provider = new SimulatedMachines();
     const created = await provider.create(request("no-op"));
     if (created.kind !== "created") throw new Error("wrong create outcome");
-    await provider.destroyMachine(created.machine.id, "destroy-first");
-    const first = await provider.inspectMachine(created.machine.id);
-    const firstEvents = await provider.events(created.machine.id, null, 16);
-    await provider.destroyMachine(created.machine.id, "destroy-again");
-    expect(await provider.inspectMachine(created.machine.id)).toEqual(first);
-    expect(await provider.events(created.machine.id, null, 16)).toEqual(firstEvents);
+    await provider.destroyMachine(created.machines[0]!.id, "destroy-first");
+    const first = await provider.inspectMachine(created.machines[0]!.id);
+    const firstEvents = await provider.events(created.machines[0]!.id, null, 16);
+    await provider.destroyMachine(created.machines[0]!.id, "destroy-again");
+    expect(await provider.inspectMachine(created.machines[0]!.id)).toEqual(first);
+    expect(await provider.events(created.machines[0]!.id, null, 16)).toEqual(firstEvents);
   });
 
   test("Rust page validation rejects coerced JavaScript values", () => {

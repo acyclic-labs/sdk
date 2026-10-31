@@ -458,7 +458,124 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     alarms(target, run).await?;
     paused(target, run).await?;
     interrupted(target, run).await?;
+    bounded_case(target, "forked", BUDGET_MS, forked(target, run)).await?;
     restarted(target, run).await
+}
+
+/// A fork starts from the parent's exact committed cut, then each actor's
+/// state diverges independently: neither one's input changes the other.
+async fn forked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    let store = target.store();
+    let mut parent = Fixture::create(target, run, "forked").await?;
+    parent.send("emit").await?;
+    parent.expect(&["r0"]).await?;
+    let cut = store.load(&parent.actor).await?;
+    let inherited = cut.state().cloned();
+    let child_actor = ActorReference::new(
+        b"conformance",
+        b"actors",
+        format!("{run}-forked-child").as_bytes(),
+    )
+    .map_err(|_| Error::Invalid("conformance fork id"))?;
+    let child_inbox =
+        StreamPath::new(format!("conformance/{run}/forked-child/inbox")).map_err(Error::from)?;
+    let bindings = |path: &StreamPath| {
+        BTreeMap::from([(
+            "inbox".to_owned(),
+            Subscription {
+                path: path.clone(),
+                cursor: 0,
+            },
+        )])
+    };
+    let mut fork = PreparedPublish::foreign(idempotency(&format!("{run}/forked/fork"))?);
+    for effect in store.fork(&cut, &child_actor, bindings(&child_inbox))? {
+        fork.join(effect)?;
+    }
+    store.submit(fork).await?;
+    let forked = store.load(&child_actor).await?;
+    let (Some(parent_state), Some(child_state)) = (inherited.as_ref(), forked.state()) else {
+        return parent.violation("fork lost the parent's or the child's state".into());
+    };
+    if child_state.checkpoint() != parent_state.checkpoint()
+        || child_state.alarm() != parent_state.alarm()
+        || child_state.cursor("inbox") != Some(0)
+    {
+        return parent.violation("fork did not start from the parent's exact cut".into());
+    }
+    // The same child, or a fork of a cut the parent has left, is refused.
+    let mut again = PreparedPublish::foreign(idempotency(&format!("{run}/forked/again"))?);
+    for effect in store.fork(&cut, &child_actor, bindings(&child_inbox))? {
+        again.join(effect)?;
+    }
+    if !matches!(store.submit(again).await, Err(Error::Conflict)) {
+        return parent.violation("fork replaced an existing actor".into());
+    }
+    let mut child = Fixture {
+        target,
+        case: "forked-child",
+        actor: child_actor,
+        inbox: child_inbox,
+        outbox: parent.outbox.clone(),
+        creation: None,
+        sent: 0,
+    };
+    // Each actor changes its own state: the child arms an alarm, the parent emits.
+    child.send("set 600000").await?;
+    parent.send("emit").await?;
+    parent.expect(&["r0", "r1"]).await?;
+    let input = store
+        .provider()
+        .read(acyclic_stream::ReadRequest {
+            key: None,
+            path: child.inbox.clone(),
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(Error::from)?
+        .next()
+        .await
+        .ok_or(Error::Invalid("fork child input is missing"))?
+        .map_err(Error::from)?;
+    let applied = store
+        .wait_applied(
+            &child.actor,
+            AppliedCut::through("inbox".into(), child.inbox.clone(), &input)?,
+        )
+        .await?;
+    let child_state = applied
+        .snapshot()
+        .state()
+        .ok_or(Error::Invalid("fork child state is missing"))?;
+    let parent_now = store.load(&parent.actor).await?;
+    let parent_now = parent_now
+        .state()
+        .ok_or(Error::Invalid("fork parent state is missing"))?;
+    if child_state.alarm().pending().is_none()
+        || parent_now.alarm().pending().is_some()
+        || child_state.cursor("inbox") != Some(1)
+        || parent_now.cursor("inbox") != Some(2)
+        || child_state.checkpoint() != parent_state.checkpoint()
+        || parent_now.checkpoint() == parent_state.checkpoint()
+    {
+        return child.violation("forked and parent state did not diverge independently".into());
+    }
+    let mut stale = PreparedPublish::foreign(idempotency(&format!("{run}/forked/stale"))?);
+    let other = ActorReference::new(
+        b"conformance",
+        b"actors",
+        format!("{run}-forked-stale").as_bytes(),
+    )
+    .map_err(|_| Error::Invalid("conformance fork id"))?;
+    for effect in store.fork(&cut, &other, bindings(&child.inbox))? {
+        stale.join(effect)?;
+    }
+    if !matches!(store.submit(stale).await, Err(Error::Conflict)) {
+        return parent.violation("fork accepted a cut the parent had left".into());
+    }
+    Ok(())
 }
 
 /// A backend that never publishes a response must fail the verifier, rather

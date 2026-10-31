@@ -283,7 +283,13 @@ impl MachinesProvider for SimulatedMachines {
                     event(state, id, EventFact::State(MachineState::Running), now)?;
                     children.push(value);
                 }
-                Ok(MutationOutcome::Forked(children))
+                Ok(MutationOutcome::Forked {
+                    provenance: Provenance {
+                        source: ForkSource::Checkpoint(checkpoint),
+                        fidelity: ForkFidelity::MemoryAndDisk,
+                    },
+                    machines: children,
+                })
             },
         )
         .await
@@ -342,10 +348,12 @@ impl MachinesProvider for SimulatedMachines {
                     event(state, id, EventFact::State(MachineState::Running), now)?;
                     children.push(value);
                 }
-                Ok(MutationOutcome::MachineForked {
-                    source: machine,
-                    fidelity,
-                    children,
+                Ok(MutationOutcome::Forked {
+                    provenance: Provenance {
+                        source: ForkSource::Machine(machine),
+                        fidelity,
+                    },
+                    machines: children,
                 })
             },
         )
@@ -426,8 +434,10 @@ impl MachinesProvider for SimulatedMachines {
                 return Ok(MutationOutcome::MachineDestroyed(machine));
             }
             let live_children = state.replays.values().any(|replay| {
-                matches!(&replay.outcome, MutationOutcome::MachineForked { source, children, .. }
-                    if *source == machine && children.iter().any(|child| state.machines.get(&child.id)
+                matches!(&replay.outcome, MutationOutcome::Forked {
+                    provenance: Provenance { source: ForkSource::Machine(source), .. },
+                    machines: children,
+                } if *source == machine && children.iter().any(|child| state.machines.get(&child.id)
                         .is_some_and(|value| value.state != MachineState::Destroyed)))
             });
             if live_children {

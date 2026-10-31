@@ -8,10 +8,10 @@
 use acyclic_machines::{
     Architecture, Budgets, Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy,
     CreateMachine, DeviceKind, Endpoint, EventFact, EventPage, ExpirationPolicy, ForkFidelity,
-    Image, ImageQualification, LifecycleClass, MachineContract, MachineEvent, MachineId,
-    MachineObservation, MachinePage, MachineState, MachinesProvider, MutationOutcome,
+    ForkSource, Image, ImageQualification, LifecycleClass, MachineContract, MachineEvent,
+    MachineId, MachineObservation, MachinePage, MachineState, MachinesProvider, MutationOutcome,
     OperatingSystem, OperationId, OperationObservation, OperationPhase, PathStyle, Platform,
-    Pressure, ProviderError, Shell, SuspensionPolicy, UsageReceipt,
+    Pressure, Provenance, ProviderError, Shell, SuspensionPolicy, UsageReceipt,
 };
 use hex::{decode, encode};
 use serde::{
@@ -774,6 +774,41 @@ pub enum ForkFidelityOut {
     MemoryAndDisk,
     DiskOnly,
 }
+#[derive(Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ForkSourceOut {
+    Machine {
+        #[serde(rename = "machineId")]
+        machine_id: String,
+    },
+    Checkpoint {
+        #[serde(rename = "checkpointId")]
+        checkpoint_id: String,
+    },
+}
+/// Where forked machines came from; `null` on a created machine.
+#[derive(Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceOut {
+    source: ForkSourceOut,
+    fidelity: ForkFidelityOut,
+}
+fn provenance_out(value: Provenance) -> ProvenanceOut {
+    ProvenanceOut {
+        source: match value.source {
+            ForkSource::Machine(id) => ForkSourceOut::Machine {
+                machine_id: id.to_string(),
+            },
+            ForkSource::Checkpoint(id) => ForkSourceOut::Checkpoint {
+                checkpoint_id: id.to_string(),
+            },
+        },
+        fidelity: match value.fidelity {
+            ForkFidelity::MemoryAndDisk => ForkFidelityOut::MemoryAndDisk,
+            ForkFidelity::DiskOnly => ForkFidelityOut::DiskOnly,
+        },
+    }
+}
 pub(crate) fn operation_out(value: OperationObservation) -> OperationOut {
     OperationOut {
         id: value.id.to_string(),
@@ -789,24 +824,18 @@ pub(crate) fn operation_out(value: OperationObservation) -> OperationOut {
 #[derive(Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum MutationOut {
+    /// Create, fork and machine fork: the admitted machines in index order.
     Created {
-        machine: ObservationOut,
+        #[tsify(type = "readonly ObservationOut[]")]
+        machines: Vec<ObservationOut>,
+        #[tsify(type = "ProvenanceOut | null")]
+        provenance: Option<ProvenanceOut>,
     },
     VolumeAttached {
         machine: ObservationOut,
     },
     Checkpointed {
         checkpoint: CheckpointOut,
-    },
-    Forked {
-        #[tsify(type = "readonly ObservationOut[]")]
-        machines: Vec<ObservationOut>,
-    },
-    MachineForked {
-        source: String,
-        fidelity: ForkFidelityOut,
-        #[tsify(type = "readonly ObservationOut[]")]
-        children: Vec<ObservationOut>,
     },
     Suspended {
         #[serde(rename = "machineId")]
@@ -836,7 +865,8 @@ pub enum MutationOut {
 fn mutation_out(value: MutationOutcome) -> MutationOut {
     match value {
         MutationOutcome::Created(v) => MutationOut::Created {
-            machine: observation_out(v),
+            machines: vec![observation_out(v)],
+            provenance: None,
         },
         MutationOutcome::VolumeAttached(v) => MutationOut::VolumeAttached {
             machine: observation_out(v),
@@ -844,20 +874,12 @@ fn mutation_out(value: MutationOutcome) -> MutationOut {
         MutationOutcome::Checkpointed(v) => MutationOut::Checkpointed {
             checkpoint: checkpoint_out(v),
         },
-        MutationOutcome::Forked(v) => MutationOut::Forked {
-            machines: v.into_iter().map(observation_out).collect(),
-        },
-        MutationOutcome::MachineForked {
-            source,
-            fidelity,
-            children,
-        } => MutationOut::MachineForked {
-            source: source.to_string(),
-            fidelity: match fidelity {
-                ForkFidelity::MemoryAndDisk => ForkFidelityOut::MemoryAndDisk,
-                ForkFidelity::DiskOnly => ForkFidelityOut::DiskOnly,
-            },
-            children: children.into_iter().map(observation_out).collect(),
+        MutationOutcome::Forked {
+            provenance,
+            machines,
+        } => MutationOut::Created {
+            machines: machines.into_iter().map(observation_out).collect(),
+            provenance: Some(provenance_out(provenance)),
         },
         MutationOutcome::Suspended(v) => MutationOut::Suspended {
             machine_id: v.to_string(),

@@ -27,11 +27,11 @@
     };
     const created = await provider.create(request);
     if (created.kind !== "created") throw new Error("create outcome");
-    if ((await provider.inspectMachine(created.machine.id)).state !== "running") throw new Error("inspect state");
-    const checkpoint = await provider.checkpoint(created.machine.id, idempotencyKey("browser-checkpoint"));
+    if ((await provider.inspectMachine(created.machines[0].id)).state !== "running") throw new Error("inspect state");
+    const checkpoint = await provider.checkpoint(created.machines[0].id, idempotencyKey("browser-checkpoint"));
     if (checkpoint.kind !== "checkpointed") throw new Error("checkpoint outcome");
     const fork = await provider.fork(checkpoint.checkpoint.id, 2, idempotencyKey("browser-fork"));
-    if (fork.kind !== "forked" || fork.machines.length !== 2) throw new Error("fork outcome");
+    if (fork.kind !== "created" || fork.machines.length !== 2) throw new Error("fork outcome");
     document.body.dataset.result = "passed";
   } catch (error) {
     document.body.dataset.result = "failed";

@@ -497,14 +497,39 @@ async fn verify_provider(
         )
         .await
         .map_err(|error| error.to_string())?;
-    let MutationOutcome::Forked(children) = forked else {
+    let MutationOutcome::Forked {
+        provenance,
+        machines: children,
+    } = forked
+    else {
         return Err("fork returned the wrong outcome".into());
     };
+    if provenance
+        != (crate::Provenance {
+            source: crate::ForkSource::Checkpoint(checkpoint.id),
+            fidelity: crate::ForkFidelity::MemoryAndDisk,
+        })
+    {
+        return Err("fork substituted its checkpoint provenance".into());
+    }
     let [first_child, second_child] = children.as_slice() else {
         return Err("fork identities are not an exact fresh set".into());
     };
     if first_child.id == second_child.id || children.contains(&machine) {
         return Err("fork identities are not an exact fresh set".into());
+    }
+    // A fork child is an ordinary machine: every read shows the same contract,
+    // whose image is the checkpoint it resumed.
+    for child in &children {
+        let read = provider
+            .inspect_machine(child.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if child.contract.image != Image::Checkpoint(checkpoint.id)
+            || read.contract != child.contract
+        {
+            return Err("fork child contract does not name its checkpoint image".into());
+        }
     }
     provider
         .suspend(machine.id, key(4)?)
@@ -605,15 +630,16 @@ async fn live_fork(
         };
     };
     let outcome = admission.map_err(|error| error.to_string())?;
-    let MutationOutcome::MachineForked {
-        source,
-        fidelity,
-        children,
+    let MutationOutcome::Forked {
+        provenance,
+        machines: children,
     } = &outcome
     else {
         return Err("live fork returned the wrong outcome".into());
     };
-    if *source != machine.id || *fidelity != expected {
+    if provenance.source != crate::ForkSource::Machine(machine.id)
+        || provenance.fidelity != expected
+    {
         return Err("live fork substituted its source or declared fidelity".into());
     }
     let [first, second] = children.as_slice() else {

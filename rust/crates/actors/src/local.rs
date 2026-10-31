@@ -435,6 +435,60 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         ])
     }
 
+    /// The companion effects that fork `parent`'s exact state cut into a new
+    /// unplaced (epoch 0) `child` inside a caller-built commit, exactly as
+    /// [`Self::create`] makes one: a Streams fork of the parent's state
+    /// subtree, so its checkpoint, metadata, journal, alarm and pause state are
+    /// shared rather than copied, plus the child's activation-log entry.
+    /// `subscriptions` binds the child's own inputs under the parent's exact
+    /// subscription ids, as create binds a new actor's. The commit conflicts
+    /// if the parent moved past `parent`'s cut or `child` already exists.
+    pub fn fork(
+        &self,
+        parent: &Snapshot,
+        child: &ActorReference,
+        subscriptions: BTreeMap<String, Subscription>,
+    ) -> Result<[Effect; 2], Error> {
+        let (Some(state), Some(commit_id)) = (&parent.state, parent.anchor) else {
+            return Err(Error::Invalid("actor state was never created"));
+        };
+        let path = self.path(child)?;
+        if path == parent.path {
+            return Err(Error::Invalid("actor cannot fork into itself"));
+        }
+        if !subscriptions.keys().eq(state.subscriptions.keys()) {
+            return Err(Error::Invalid("fork changes the actor's subscriptions"));
+        }
+        if subscriptions.values().any(|value| value.path == path) {
+            return Err(Error::Invalid("actor subscribes to its own state"));
+        }
+        let forked = State {
+            epoch: 0,
+            subscriptions,
+            ..state.clone()
+        };
+        Ok([
+            Effect {
+                conditions: vec![
+                    CommitCondition::Head {
+                        path: parent.path.clone(),
+                        expected: parent.tail,
+                        commit_id,
+                    },
+                    CommitCondition::Absent { path: path.clone() },
+                ],
+                mutation: CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source: parent.path.clone(),
+                    destination: path,
+                    at_tail: parent.tail,
+                    records: vec![forked.encode().into()],
+                },
+            },
+            self.activation(child),
+        ])
+    }
+
     /// Read only the final state record; recovery work is independent of history length.
     pub async fn load(&self, actor: &ActorReference) -> Result<Snapshot, Error> {
         self.load_path(self.path(actor)?).await

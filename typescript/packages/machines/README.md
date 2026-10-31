@@ -32,9 +32,9 @@ const client = createMachinesGrpcClient({ endpoint, token });
 try {
   const admission = await client.machines.create(request);
   for await (const state of client.machines.watchOperation({
-    protocol: { major: 1, minor: 4 }, operation: admission.operation,
+    protocol: { major: 1, minor: 5 }, operation: admission.operation,
   }, { timeoutMs: 0 })) console.log(state);
-  const protocol = { major: 1, minor: 4 };
+  const protocol = { major: 1, minor: 5 };
   for await (const frame of client.machines.exec({
     protocol, machine: admission.machine, argv: ["/bin/echo", "hello"], timeoutMs: 1000n,
   })) console.log(frame.output);
@@ -47,7 +47,7 @@ try {
 }
 ```
 
-`forkMachine` forks a running machine directly when its contract declares `live-fork` (memory and disk) or `disk-fork` (disk only). The returned fidelity is explicit; open network connections are never inherited. Children have fresh identities and must be destroyed before their source. Providers without either capability require a checkpoint fork or restart instead. The Rust-backed simulator lets callers test both fidelity paths with `SimulatedMachines({ capabilities: [...] })`.
+`forkMachine` forks a running machine directly when its contract declares `live-fork` (memory and disk) or `disk-fork` (disk only). Like `fork`, it returns the same `created` outcome as `create`, whose `provenance` names the source and the explicit fidelity; open network connections are never inherited. Children have fresh identities and must be destroyed before their source. Providers without either capability require a checkpoint fork or restart instead. The Rust-backed simulator lets callers test both fidelity paths with `SimulatedMachines({ capabilities: [...] })`.
 
 The gRPC transport retains the shared Auth credential request through unary admission and both duplex bodies. Authenticated rejection applies to that exact lease; policy denial and cancellation preserve it. Source events cancel the original HTTP request, and every body pull and delivered frame checks current source validity and absolute expiry. Raw callbacks have no fabricated validity or renewal identity. A refusal never replays a mutation.
 

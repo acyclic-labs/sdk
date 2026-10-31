@@ -13,7 +13,7 @@ pub(super) async fn settle_machine<E: RpcEndpoint>(
         .map_err(|_| ProviderError::Indeterminate(key))?;
     let contract = decode_contract(admission.contract.as_ref())
         .map_err(|_| ProviderError::Indeterminate(key))?;
-    if !accepts(machine, &contract) {
+    if admission.provenance.is_some() || !accepts(machine, &contract) {
         return Err(ProviderError::Indeterminate(key));
     }
     let outcome = wait(provider, key, operation).await?;
@@ -115,6 +115,13 @@ pub(super) fn decode_recovered(
         .result
         .ok_or_else(|| ProviderError::Rejected("recovery result is missing".into()))?
     {
+        ResultKind::Create(value) | ResultKind::AttachVolume(value)
+            if value.provenance.is_some() =>
+        {
+            Err(ProviderError::Rejected(
+                "created machine admission carries fork provenance".into(),
+            ))
+        }
         ResultKind::Create(value) => settled_machine(
             decode_machine(value.machine.as_ref())?,
             decode_contract(value.contract.as_ref())?,
@@ -130,8 +137,7 @@ pub(super) fn decode_recovered(
         )
         .map(MutationOutcome::VolumeAttached),
         ResultKind::Checkpoint(value) => settled_checkpoint(value, outcome),
-        ResultKind::Fork(value) => settled_fork(value, outcome),
-        ResultKind::ForkMachine(value) => settled_live_fork(value, outcome),
+        ResultKind::Forked(value) => settled_fork(&decode_fork_admissions(&value)?, outcome),
         ResultKind::Suspend(value) => settled_change(
             outcome,
             MutationOutcome::Suspended(decode_machine(value.machine.as_ref())?),
@@ -215,80 +221,82 @@ pub(super) fn settled_checkpoint(
     Ok(MutationOutcome::Checkpointed(result))
 }
 
-pub(super) fn settled_fork(
-    admission: wire::ForkAdmission,
-    outcome: Option<wire::MutationOutcome>,
-) -> Result<MutationOutcome, ProviderError> {
-    let Some(wire::mutation_outcome::Result::Forked(value)) =
-        outcome.and_then(|value| value.result)
-    else {
-        return Err(ProviderError::Rejected(
-            "original fork result is missing".into(),
-        ));
-    };
-    decode_checkpoint(admission.checkpoint.as_ref())?;
-    settled_children(
-        value.machines,
-        fork_children(&admission.children, None)?,
-        decode_contract(admission.contract.as_ref())?,
-    )
-    .map(MutationOutcome::Forked)
+/// One checked Fork or ForkMachine admission: every child is an ordinary
+/// machine admission under the shared operation and one provenance.
+pub(super) struct ForkAdmitted {
+    pub(super) operation: OperationId,
+    pub(super) provenance: Provenance,
+    pub(super) children: Vec<(MachineId, MachineContract)>,
 }
 
-pub(super) fn settled_live_fork(
-    admission: wire::ForkMachineAdmission,
-    outcome: Option<wire::MutationOutcome>,
-) -> Result<MutationOutcome, ProviderError> {
-    let (source, fidelity, children, contract) = decode_fork_machine_admission(&admission)?;
-    let Some(wire::mutation_outcome::Result::MachineForked(value)) =
-        outcome.and_then(|value| value.result)
-    else {
+pub(super) fn decode_fork_admissions(
+    value: &wire::MachineAdmissions,
+) -> Result<ForkAdmitted, ProviderError> {
+    let operation = decode_operation(value.operation.as_ref())?;
+    let Some(first) = value.machines.first().filter(|_| {
+        u32::try_from(value.machines.len()).is_ok_and(|count| count <= MAX_FORK_CHILDREN)
+    }) else {
         return Err(ProviderError::Rejected(
-            "original live fork result is missing".into(),
+            "fork child set is outside the public bound".into(),
         ));
     };
-    if decode_machine(value.source.as_ref())? != source || value.fidelity != admission.fidelity {
-        return Err(ProviderError::Rejected(
-            "live fork result was substituted".into(),
-        ));
+    let provenance = decode_provenance(first.provenance.as_ref())?;
+    let mut seen = BTreeSet::new();
+    let mut children = Vec::with_capacity(value.machines.len());
+    for admission in &value.machines {
+        if decode_operation(admission.operation.as_ref())? != operation
+            || decode_provenance(admission.provenance.as_ref())? != provenance
+        {
+            return Err(ProviderError::Rejected(
+                "fork children do not share one operation and provenance".into(),
+            ));
+        }
+        let child = decode_machine(admission.machine.as_ref())?;
+        let contract = decode_contract(admission.contract.as_ref())?;
+        let inherited = match provenance.source {
+            ForkSource::Machine(source) => {
+                child != source && contract.fork_fidelity() == Some(provenance.fidelity)
+            }
+            ForkSource::Checkpoint(checkpoint) => {
+                provenance.fidelity == ForkFidelity::MemoryAndDisk
+                    && contract.image == Image::Checkpoint(checkpoint)
+            }
+        };
+        if !inherited {
+            return Err(ProviderError::Rejected(
+                "fork child contradicts its provenance".into(),
+            ));
+        }
+        if !seen.insert(child) {
+            return Err(ProviderError::Rejected(
+                "fork returned duplicate children".into(),
+            ));
+        }
+        children.push((child, contract));
     }
-    Ok(MutationOutcome::MachineForked {
-        source,
-        fidelity,
-        children: settled_children(value.children, children, contract)?,
+    Ok(ForkAdmitted {
+        operation,
+        provenance,
+        children,
     })
 }
 
-fn settled_children(
-    values: Vec<wire::MachineState>,
-    expected: Vec<MachineId>,
-    contract: MachineContract,
-) -> Result<Vec<MachineObservation>, ProviderError> {
-    if values.len() != expected.len() {
-        return Err(ProviderError::Rejected(
-            "fork child count was substituted".into(),
-        ));
-    }
-    values
-        .into_iter()
-        .zip(expected)
-        .map(|(value, expected)| {
-            let value = decode_machine_observation(value, expected)?;
-            if value.contract != contract {
-                return Err(ProviderError::Rejected(
-                    "fork child contract was substituted".into(),
-                ));
-            }
-            Ok(value)
-        })
-        .collect()
-}
-
-pub(super) fn decode_fork_machine_admission(
-    value: &wire::ForkMachineAdmission,
-) -> Result<(MachineId, ForkFidelity, Vec<MachineId>, MachineContract), ProviderError> {
-    let source = decode_machine(value.source.as_ref())?;
-    let contract = decode_contract(value.contract.as_ref())?;
+fn decode_provenance(value: Option<&wire::Provenance>) -> Result<Provenance, ProviderError> {
+    let value =
+        value.ok_or_else(|| ProviderError::Rejected("fork provenance is missing".into()))?;
+    let source = match value.source.as_ref() {
+        Some(wire::provenance::Source::MachineId(machine)) => {
+            ForkSource::Machine(decode_machine(Some(machine))?)
+        }
+        Some(wire::provenance::Source::CheckpointId(checkpoint)) => {
+            ForkSource::Checkpoint(decode_checkpoint(Some(checkpoint))?)
+        }
+        None => {
+            return Err(ProviderError::Rejected(
+                "fork provenance source is missing".into(),
+            ));
+        }
+    };
     let fidelity = match wire::ForkFidelity::try_from(value.fidelity)
         .map_err(|_| ProviderError::Rejected("fork fidelity is invalid".into()))?
     {
@@ -300,44 +308,65 @@ pub(super) fn decode_fork_machine_admission(
             ));
         }
     };
-    if contract.fork_fidelity() != Some(fidelity) {
-        return Err(ProviderError::Rejected(
-            "fork fidelity contradicts the source contract".into(),
-        ));
-    }
-    Ok((
-        source,
-        fidelity,
-        fork_children(&value.children, Some(source))?,
-        contract,
-    ))
+    Ok(Provenance { source, fidelity })
 }
 
-pub(super) fn fork_children(
-    values: &[wire::MachineId],
-    source: Option<MachineId>,
-) -> Result<Vec<MachineId>, ProviderError> {
-    if values.is_empty()
-        || values.len()
-            > usize::try_from(MAX_FORK_CHILDREN)
-                .map_err(|_| ProviderError::Invalid("invalid fork bound".into()))?
+/// Checks a Fork or ForkMachine reply against its request, then settles it on
+/// the shared operation's original terminal outcome.
+pub(super) async fn settle_fork<E: RpcEndpoint>(
+    provider: &Provider<E>,
+    key: IdempotencyKey,
+    source: ForkSource,
+    count: NonZeroU32,
+    reply: &wire::MachineAdmissions,
+) -> Result<MutationOutcome, ProviderError> {
+    let admitted = decode_fork_admissions(reply).map_err(|_| ProviderError::Indeterminate(key))?;
+    if admitted.provenance.source != source
+        || u32::try_from(admitted.children.len()).ok() != Some(count.get())
+    {
+        return Err(ProviderError::Indeterminate(key));
+    }
+    let outcome = wait(provider, key, admitted.operation).await?;
+    settled_fork(&admitted, outcome).map_err(|_| ProviderError::Indeterminate(key))
+}
+
+/// Settles a checked fork admission against its original terminal outcome.
+pub(super) fn settled_fork(
+    admitted: &ForkAdmitted,
+    outcome: Option<wire::MutationOutcome>,
+) -> Result<MutationOutcome, ProviderError> {
+    let Some(wire::mutation_outcome::Result::Forked(value)) =
+        outcome.and_then(|value| value.result)
+    else {
+        return Err(ProviderError::Rejected(
+            "original fork result is missing".into(),
+        ));
+    };
+    if decode_provenance(value.provenance.as_ref())? != admitted.provenance
+        || value.machines.len() != admitted.children.len()
     {
         return Err(ProviderError::Rejected(
-            "fork child set is outside the public bound".into(),
+            "fork result was substituted".into(),
         ));
     }
-    let mut seen = BTreeSet::new();
-    let mut children = Vec::with_capacity(values.len());
-    for item in values {
-        let child = decode_machine(Some(item))?;
-        if Some(child) == source || !seen.insert(child) {
-            return Err(ProviderError::Rejected(
-                "fork returned duplicate children".into(),
-            ));
-        }
-        children.push(child);
-    }
-    Ok(children)
+    let machines = value
+        .machines
+        .into_iter()
+        .zip(&admitted.children)
+        .map(|(value, (expected, contract))| {
+            let value = decode_machine_observation(value, *expected)?;
+            if value.contract != *contract {
+                return Err(ProviderError::Rejected(
+                    "fork child contract was substituted".into(),
+                ));
+            }
+            Ok(value)
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(MutationOutcome::Forked {
+        provenance: admitted.provenance,
+        machines,
+    })
 }
 
 pub(super) fn validate_recovered_admission(
@@ -352,8 +381,7 @@ pub(super) fn validate_recovered_admission(
     {
         ResultKind::Create(value) | ResultKind::AttachVolume(value) => value.operation.as_ref(),
         ResultKind::Checkpoint(value) => value.operation.as_ref(),
-        ResultKind::Fork(value) => value.operation.as_ref(),
-        ResultKind::ForkMachine(value) => value.operation.as_ref(),
+        ResultKind::Forked(value) => value.operation.as_ref(),
         ResultKind::Suspend(value)
         | ResultKind::Wake(value)
         | ResultKind::DestroyMachine(value)

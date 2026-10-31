@@ -17,6 +17,7 @@ import type {
   ObservationOut as RustObservationOut,
   OperationOut as RustOperationOut,
   PageOut as RustPageOut,
+  ProvenanceOut as RustProvenanceOut,
   QualificationOut as RustQualificationOut,
   UsageOut as RustUsageOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
@@ -77,9 +78,15 @@ export type MachineContract = Omit<PublicContract, "image" | "capabilities" | "c
   readonly budgets: Budgets;
 };
 /** Fork fidelity is emitted by the Rust WASM DTO and follows its generated union. */
-export type ForkFidelity = Extract<MutationOutcome, { readonly kind: "machine-forked" }> extends infer Fork
-  ? Fork extends { readonly fidelity: infer Fidelity } ? Fidelity : never
+export type ForkFidelity = RustProvenanceOut["fidelity"];
+type PublicForkSource<Value> = Value extends unknown
+  ? { readonly [Key in keyof Value]: Key extends "machineId" ? MachineId : Key extends "checkpointId" ? CheckpointId : Value[Key] }
   : never;
+/** Where forked machines came from; a created machine has `null`. */
+export type Provenance = {
+  readonly source: PublicForkSource<ReadonlyGenerated<RustProvenanceOut["source"]>>;
+  readonly fidelity: ForkFidelity;
+};
 export type ImageQualification = Omit<ReadonlyGenerated<RustQualificationOut>, "image" | "capabilities"> & {
   readonly image: Image;
   readonly capabilities: readonly Capability[];
@@ -114,10 +121,9 @@ type PublicMutation<Value> = Value extends unknown
   ? { readonly [Key in keyof Value]: Key extends "machine" ? MachineObservation
       : Key extends "checkpoint" ? CheckpointObservation
       : Key extends "machines" ? readonly MachineObservation[]
-      : Key extends "children" ? readonly MachineObservation[]
+      : Key extends "provenance" ? Provenance | null
       : Key extends "machineId" ? MachineId
       : Key extends "checkpointId" ? CheckpointId
-      : Key extends "source" ? MachineId
       : Key extends "policy" ? SuspensionPolicy
       : Value[Key] }
   : never;
