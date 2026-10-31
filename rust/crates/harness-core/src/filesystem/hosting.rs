@@ -548,7 +548,13 @@ where
             }
             let mut request = acyclic_stream::FollowRequest::new(agent.inbox()?, input);
             request.when_absent = acyclic_stream::WhenAbsent::Wait;
-            Some(self.usage_record(request).await?)
+            loop {
+                let (_, actor_cut) = self.agents.input_progress(agent, input).await?;
+                tokio::select! {
+                    record = self.usage_record(request.clone()) => break Some(record?),
+                    changed = self.usage_record(actor_cut) => { changed?; }
+                }
+            }
         } else {
             let mut records = provider
                 .read(acyclic_stream::ReadRequest {

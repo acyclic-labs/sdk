@@ -260,7 +260,7 @@ pub enum AgentCommand {
         input: u64,
         /// Original exclusive journal continuation, initially zero.
         after: u64,
-        /// Wait for original source progress or committed input consumption
+        /// Wait for original source progress or committed input settlement
         /// when the selected page is quiet. False takes a bounded snapshot.
         wait: bool,
     },

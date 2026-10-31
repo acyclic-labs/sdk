@@ -211,17 +211,19 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .get(INBOX)
             .filter(|subscription| subscription.path == inbox)
             .ok_or(Error::Record("agent inbox subscription differs"))?;
-        let settled = if subscription.cursor <= input {
-            false
-        } else {
-            let checkpoint = state
-                .checkpoint()
-                .ok_or(Error::Record("consumed input has no agent checkpoint"))?;
+        let settled = if let Some(checkpoint) = state.checkpoint() {
             let observed = super::checkpoint_state(checkpoint)?;
             if &observed.path != agent || observed.parent != agent.parent() {
                 return Err(Error::Record("agent state binding differs"));
             }
+            if observed.closed && input >= subscription.cursor {
+                return Err(Error::Record("usage input source is closed"));
+            }
             input < observed.settled_before(subscription.cursor)
+        } else if subscription.cursor > input {
+            return Err(Error::Record("consumed input has no agent checkpoint"));
+        } else {
+            false
         };
         Ok((settled, snapshot.follow_request()))
     }
