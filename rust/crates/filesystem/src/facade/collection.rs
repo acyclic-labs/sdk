@@ -326,6 +326,8 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 };
                 collecting.sweeping(digest);
                 let deleted = provider.delete(object).await.map_err(object_error);
+                // Retire cached copies and the original fill epoch after this
+                // delete attempt, including an uncertain provider result.
                 self.inner.objects.inner().clear()?;
                 match deleted?.outcome {
                     acyclic_objects::Delete::Deleted => {
