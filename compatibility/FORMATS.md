@@ -11,7 +11,7 @@ campaign or proof. Captured corpus provenance is `rust/codec-fuzz/corpus/SOURCES
 descriptor baselines live in `compatibility/descriptors/`. Golden payloads belong
 in `compatibility/frames/`, alongside their producing encoder and refusal cases.
 
-The current SDK corpus contains 1,588 registered writer outputs. Each was
+The current SDK corpus contains 1,594 registered writer outputs. Each was
 captured and readmitted through its owning decoder oracle, including the
 ordinary/funded and typed reader-loss controls. This completes the SDK seed
 capture work noted below for registered producers; it does not qualify the
@@ -20,7 +20,8 @@ replay checked all 1,608 SDK/external inputs against provenance and shared
 goldens, including positive admission for the twenty external MCP captures.
 Fresh production writers also passed comparison without baseline acceptance at
 their recorded revision. The merged state-record writer subsequently added its
-original publication path; its v2 successor and new capture need qualification.
+original publication path; its v2 successor passed a fresh capture/readmission run.
+All six original v1 state captures remain byte-identical typed refusal inputs.
 Protobuf and its JSON projection compare descriptor-decoded values, retaining the
 original packet when map order changes; all other formats compare exact bytes.
 Changed-value and selector controls refuse rather than replace a baseline.
@@ -75,7 +76,7 @@ Changed-value and selector controls refuse rather than replace a baseline.
 | Actor reservations | `actors::reservation` | Invocation v1 and `acyclic.actors.reservations` checkpoint codec version 1 | `actor_codecs` calls canonical Request/Decision/Book codecs and semantic admission | Current Request/Decision/Book writers captured/readmitted |
 | Actor timer records | `actors::timers` | Timer stream v2; JSON payload admission audit pending retirement | `actor_codecs` | Original timer writer captured/readmitted; keep its codec and corpus attached to retained source when retirement lands |
 | Filesystem authority/durable records | `filesystem::streams_record` | Version 1 domains and u16; typed unsupported version | `filesystem_codecs` | Current writers captured/readmitted; owning refusal controls remain |
-| Filesystem state and companion records | `filesystem::{distributed,workspace_context,lazy_workspace,git_compat,lineage}` | State v2 identifies the payload carrying the original publication path; v1/unknown refusal precedes fields. Companion admission audit pending | `filesystem_codecs` | Original v1 plain/sealed state and companion captures remain refusal fixtures. Distinct v2 writer seeds and header controls need capture/qualification; remaining companion version-admission seams are open |
+| Filesystem state and companion records | `filesystem::{distributed,workspace_context,lazy_workspace,git_compat,lineage}` | State v2 identifies the payload carrying the original publication path; v1/unknown refusal precedes fields. Companion admission audit pending | `filesystem_codecs` | Original v1 plain/sealed state and companion captures remain refusal fixtures. Six distinct v2 writer seeds passed capture/readmission and original key/path controls; all six original v1 state captures passed typed refusal. Remaining companion version-admission seams are open |
 | Filesystem core journal and snapshots | `filesystem::core_state` | Family names are versioned; payload framing and strict admission still need completion | `filesystem_codecs`, actual funded recovery visitor and checksum parser; ordinary/funded admission and canonical-value agreement, allocation retirement and finite broken-reader controls | Current checkpoint/log writers and funded differential controls passed capture readmission. First non-interruption reader failure is retained without another producer read, under the unchanged call bound. Strict framing/hash integration and refusal before fallback/promotion/repair remain |
 | Filesystem join/control projections | `filesystem::{compat_wire,workspace_context_wire}` | Versioned control schema; semantic validation | `filesystem_codecs` | Current writers captured/readmitted; service admission and owning refusal controls remain |
 | Filesystem immutable volume, retention, deletion and export facts | `filesystem::kernel::{volume,retention,export}` | Domain and u16 version 1; typed unknown-version refusal | `filesystem_pages` checks old/unknown headers without a body and actual decode/encode identity for all four fact classes; volume copy admission must stop at the original refusal | Registered canonical fact writers captured/readmitted with header and copy-refusal controls. The separate export-count allocation guard and canonical prefix integration retain their original ownership |
