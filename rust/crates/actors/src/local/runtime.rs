@@ -298,23 +298,30 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Run every currently ready or due actor to quiescence, then return the
-    /// failures. Deterministic hosts and tests drive the runtime with this.
+    /// failures. Independent actors share the same active admission as `run`
+    /// and event delivery; no task is created for a dormant actor.
     pub async fn drain(&self) -> Vec<(ActorReference, Error)> {
         let now = self.clock.now_unix_ms();
         while self.ready.wake_due(now, self.limits.work) == self.limits.work {
             limits::yield_now().await;
         }
         let mut failures = Vec::new();
+        let mut running = FuturesUnordered::new();
         let mut steps = 0;
         loop {
-            let Some(work) = self.ready.take() else { break };
-            if let Err(failure) = self.execute(work).await {
-                failures.push(failure);
+            while running.len() < self.limits.active {
+                let Some(work) = self.ready.take() else { break };
+                running.push(self.execute(work));
+                steps += 1;
+                if steps == self.limits.work {
+                    limits::yield_now().await;
+                    steps = 0;
+                }
             }
-            steps += 1;
-            if steps == self.limits.work {
-                limits::yield_now().await;
-                steps = 0;
+            match running.next().await {
+                Some(Err(failure)) => failures.push(failure),
+                Some(Ok(())) => {}
+                None => break,
             }
         }
         failures

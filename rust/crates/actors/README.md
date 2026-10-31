@@ -104,6 +104,14 @@ time plus data/control request counts. A downstream service can instrument
 physical dispatch with the same ledger; counts at an API wrapper boundary alone
 do not establish physical network traffic. No benchmark is scheduled by CI.
 
+### Finite delivery
+
+`local::Runtime::drain` drives ready actors concurrently through the same
+delivery and active-admission mechanism as continuous and event hosting. It
+retains at most `RuntimeLimits::active` executions; dormant actors own no task.
+Dropping the drain cancels its owned executions and releases their admission.
+Unconsumed inputs remain durable for the caller's next explicit wake.
+
 ### Invocation failures
 
 `local::Store::invoke` and `wait_invocation` return `Error::InvocationFailed`
