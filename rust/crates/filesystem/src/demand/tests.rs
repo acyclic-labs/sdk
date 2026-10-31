@@ -64,14 +64,24 @@ async fn native_source(
 
 #[derive(Default)]
 struct RecordedChanges {
-    changes: Mutex<Vec<SourceChange>>,
+    state: Mutex<RecordedState>,
     changed: Condvar,
-    lost: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Default)]
+struct RecordedState {
+    changes: Vec<SourceChange>,
+    lost: bool,
 }
 
 impl SourceChangeSink for RecordedChanges {
     fn delivery_lost(&self) {
-        self.lost.store(true, std::sync::atomic::Ordering::Release);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.lost = true;
+        drop(state);
         self.changed.notify_all();
     }
 
@@ -81,27 +91,18 @@ impl SourceChangeSink for RecordedChanges {
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), DemandError> {
         accounting.check().map_err(DemandError::from)?;
-        let mut recorded = self
-            .changes
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| DemandError::SourceUnavailable)?;
-        recorded.extend_from_slice(changes);
-        drop(recorded);
+        state.changes.extend_from_slice(changes);
+        drop(state);
         self.changed.notify_all();
         Ok(())
     }
 }
 
 impl RecordedChanges {
-    fn take(&self) -> Result<Vec<SourceChange>, Box<dyn Error>> {
-        if self.lost.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(DemandError::SourceUnavailable.into());
-        }
-        Ok(std::mem::take(
-            &mut *self.changes.lock().map_err(|_| "recording poisoned")?,
-        ))
-    }
-
     fn until(
         &self,
         watch: &dyn SourceWatch,
@@ -111,17 +112,15 @@ impl RecordedChanges {
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         ))?;
-        let changes = self.changes.lock().map_err(|_| "recording poisoned")?;
-        let (mut changes, _) = self
+        let state = self.state.lock().map_err(|_| "recording poisoned")?;
+        let mut state = self
             .changed
-            .wait_timeout_while(changes, std::time::Duration::from_secs(10), |changes| {
-                !reported(changes)
-            })
+            .wait_while(state, |state| !state.lost && !reported(&state.changes))
             .map_err(|_| "recording poisoned")?;
-        if !reported(&changes) {
-            return Err("native source did not deliver the required changes".into());
+        if state.lost {
+            return Err(DemandError::SourceUnavailable.into());
         }
-        Ok(std::mem::take(&mut *changes))
+        Ok(std::mem::take(&mut state.changes))
     }
 }
 
