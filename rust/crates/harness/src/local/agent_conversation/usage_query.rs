@@ -101,44 +101,46 @@ impl UsageQuery {
         };
         let synchronized = self.synchronized || (!settled && page.next.is_none());
         let changed = !page.items.is_empty() || synchronized != self.synchronized;
-        // One fixed-size aggregate copy makes page admission atomic. All row
-        // validation and checked arithmetic precede installation; no row or
-        // original pending contribution is cloned for rollback.
-        let mut totals = self.totals.clone();
-        let mut pending = Pending::Existing;
-        for (index, row) in page.items.iter().enumerate() {
-            let projection = row.estimate(None).map_err(failed)?;
-            if row.completed {
-                match pending {
-                    Pending::Existing => totals.replace(
-                        self.pending.as_ref().ok_or_else(missing_admission)?,
-                        &projection,
-                    ),
-                    Pending::Row(previous) => totals.replace(
-                        &page.items[previous].estimate(None).map_err(failed)?,
-                        &projection,
-                    ),
-                    Pending::None => return Err(missing_admission()),
+        if !page.items.is_empty() {
+            // One fixed-size copy makes contribution admission atomic. Empty
+            // pages advance only their frontier, without copying any totals.
+            let mut totals = self.totals.clone();
+            let mut pending = Pending::Existing;
+            for (index, row) in page.items.iter().enumerate() {
+                let projection = row.estimate(None).map_err(failed)?;
+                if row.completed {
+                    match pending {
+                        Pending::Existing => totals.replace(
+                            self.pending.as_ref().ok_or_else(missing_admission)?,
+                            &projection,
+                        ),
+                        Pending::Row(previous) => totals.replace(
+                            &page.items[previous].estimate(None).map_err(failed)?,
+                            &projection,
+                        ),
+                        Pending::None => return Err(missing_admission()),
+                    }
+                    .map_err(failed)?;
+                    pending = Pending::None;
+                } else {
+                    totals.push(&projection).map_err(failed)?;
+                    pending = Pending::Row(index);
                 }
-                .map_err(failed)?;
-                pending = Pending::None;
-            } else {
-                totals.push(&projection).map_err(failed)?;
-                pending = Pending::Row(index);
             }
+            if !finished {
+                match pending {
+                    Pending::Existing => {}
+                    Pending::None => self.pending = None,
+                    Pending::Row(index) => {
+                        self.pending = Some(unpriced(page.items.swap_remove(index))?);
+                    }
+                }
+            }
+            self.totals = totals;
         }
         if finished {
             self.pending = None;
-        } else {
-            match pending {
-                Pending::Existing => {}
-                Pending::None => self.pending = None,
-                Pending::Row(index) => {
-                    self.pending = Some(unpriced(page.items.swap_remove(index))?);
-                }
-            }
         }
-        self.totals = totals;
         self.input = next_input;
         self.end = if finished { 0 } else { page.end };
         self.synchronized = synchronized;
