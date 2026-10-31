@@ -222,11 +222,13 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
     // Resource parking remains inside that same control fence. A concurrent
     // resume cannot overtake the original owner's pending completion.
     let actor = ActorReference::new(b"account", b"agents", first.id().as_str().as_bytes())?;
-    let parking = Semaphore::new(0);
-    let parked = Semaphore::new(0);
-    let pause = host.runtime().pause_with(&actor, true, async {
-        parked.add_permits(1);
-        parking.acquire().await.map(|permit| permit.forget())
+    let parking = Arc::new(Semaphore::new(0));
+    let parked = Arc::new(Semaphore::new(0));
+    let parking_owner = Arc::clone(&parking);
+    let parked_owner = Arc::clone(&parked);
+    let pause = host.runtime().pause_with(&actor, true, async move {
+        parked_owner.add_permits(1);
+        parking_owner.acquire().await.map(|permit| permit.forget())
     });
     futures::pin_mut!(pause);
     assert!(futures::poll!(&mut pause).is_pending());

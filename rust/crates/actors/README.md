@@ -121,6 +121,17 @@ retains at most `RuntimeLimits::active` executions; dormant actors own no task.
 Dropping the drain cancels its owned executions and releases their admission.
 Unconsumed inputs remain durable for the caller's next explicit wake.
 
+`Runtime::pause_with` owns its admitted placement, cancellation, delivery cleanup,
+conditional pause decision and resource transition independently of its waiter.
+Queued controls use the same fence, so resume cannot overtake pending resource
+parking. A precommit failure invalidates the resident cut and withdraws only the
+tentative gate; delivery follows the durable state without requiring resume.
+An abandoned runtime error stays with that placement until a later control observes it,
+including the exact `PreparedPublish` when acknowledgement is unknown. Replaying
+that publication establishes its original decision; it does not certify resource
+parking. A replacement epoch refuses the old control. These local cleanup and
+publication guarantees do not establish distributed physical-start fencing.
+
 ### Invocation failures
 
 `local::Store::invoke` and `wait_invocation` return `Error::InvocationFailed`

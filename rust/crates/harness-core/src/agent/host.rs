@@ -371,10 +371,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// use after resuming wakes them.
     pub async fn pause(&self, agent: &AgentPath, paused: bool) -> Result<(), Error> {
         let actor = self.actor(agent)?;
+        let lifecycle = self.lifecycle.clone();
+        let agent = agent.clone();
         self.runtime
-            .pause_with(&actor, paused, async {
-                match &self.lifecycle {
-                    Some(lifecycle) if paused => lifecycle.pause(agent).await,
+            .pause_with(&actor, paused, async move {
+                match lifecycle {
+                    Some(lifecycle) if paused => lifecycle.pause(&agent).await,
                     _ => Ok(()),
                 }
             })
