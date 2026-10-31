@@ -37,6 +37,15 @@ caller-supplied private CA; that CA is then the whole trust.
 nine operations using canonical Protobuf JSON. Invocation carries request and
 response headers. HTTP mutations are not automatically retried.
 
+Local runtime pause/resume and dispatcher checkpointing each submit at most one
+conditional publication. A competing owner returns `local::Error::Conflict`;
+the call does not reload state and propose again. Dispatcher startup also
+returns that original result. Restoration advances through one hierarchy
+version in pages; `HierarchyChanged` ends that traversal. The caller can
+explicitly restart after observing either refusal. The running dispatcher
+returns these failures to its owner, and unknown acknowledgements retain the
+original publication and participant custody.
+
 ## Guest streaming fetch
 
 `GuestStreamingResponse` carries `GuestBody`, an HTTP body that preserves data

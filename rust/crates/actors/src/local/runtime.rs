@@ -261,6 +261,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Durably pause or resume. Pause fences in-flight publication; resume wakes.
+    /// A changed state cut returns [`Error::Conflict`] without another attempt.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.pause",
@@ -268,26 +269,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
                 let _refresh = RefreshOnDrop(self.slot(actor), true);
-                loop {
-                    let snapshot = self.store.load(actor).await?;
-                    let state = snapshot
-                        .state()
-                        .ok_or(Error::Invalid("actor state was never created"))?;
-                    if state.paused() == paused {
-                        break;
-                    }
+                let snapshot = self.store.load(actor).await?;
+                let state = snapshot
+                    .state()
+                    .ok_or(Error::Invalid("actor state was never created"))?;
+                if state.paused() != paused {
                     let operation = if paused { "pause" } else { "resume" };
-                    match self
-                        .store
+                    self.store
                         .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
-                        .await
-                    {
-                        Err(Error::Conflict) => {}
-                        result => {
-                            result?;
-                            break;
-                        }
-                    }
+                        .await?;
                 }
                 if !paused {
                     self.wake(actor);

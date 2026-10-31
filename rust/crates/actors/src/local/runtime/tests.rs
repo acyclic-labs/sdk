@@ -16,6 +16,8 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod drain;
 mod invocation_failure;
 
+mod conditional;
+
 fn root() -> Result<StreamPath, StreamError> {
     StreamPath::new("harness/actors")
 }
@@ -28,10 +30,10 @@ fn actor(id: &str) -> Result<ActorReference, Box<dyn std::error::Error>> {
     Ok(ActorReference::new(b"account", b"agents", id.as_bytes())?)
 }
 
-/// Retain only confirmed cursor progress; a competing writer still forces an
-/// authoritative reload. The former success reload fails the zero-control cut.
+/// Retain only confirmed cursor progress. A competing writer returns the
+/// original conflict without reloading or advancing the losing cursor.
 #[tokio::test]
-async fn dispatcher_uses_receipts_and_reloads_only_after_conflict() -> TestResult {
+async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() -> TestResult {
     let provider = Arc::new(Counted::new(MemoryStream::default()));
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
@@ -68,12 +70,35 @@ async fn dispatcher_uses_receipts_and_reloads_only_after_conflict() -> TestResul
     assert_eq!(first.anchor, stale.anchor);
     let replaced = runtime.advance_dispatcher(&store, first, 5).await?;
     let before = provider.requests();
-    let reconciled = runtime.advance_dispatcher(&store, stale, 7).await?;
+    assert!(matches!(
+        runtime.advance_dispatcher(&store, stale, 7).await,
+        Err(Error::Conflict)
+    ));
+    let lost = provider.requests().since(before);
+    assert_eq!(
+        lost.control(),
+        0,
+        "a lost publication must not reload state"
+    );
+    assert_eq!(lost.data(), 1, "a lost publication must not submit again");
+    let observed = store.load(&actor).await?;
+    assert_eq!(observed.tail, replaced.tail);
+    assert_eq!(observed.anchor, replaced.anchor);
+    assert_eq!(
+        observed
+            .state()
+            .and_then(|state| state.cursor("activation")),
+        Some(5)
+    );
+    // Only a new invocation may propose a cursor against this observed cut.
+    let before = provider.requests();
+    let reconciled = runtime.advance_dispatcher(&store, observed, 7).await?;
     assert_eq!(
         provider.requests().since(before).control(),
-        1,
-        "a real competing commit requires its original fresh state observation"
+        0,
+        "explicit publication uses its supplied state cut"
     );
+    assert_eq!(provider.requests().since(before).data(), 1);
     assert_eq!(reconciled.tail, replaced.tail + 1);
     assert_eq!(
         reconciled
