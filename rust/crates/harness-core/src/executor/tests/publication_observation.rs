@@ -23,6 +23,10 @@ impl Sink for Publications {
         }
     }
 
+    fn publication_details(&self) -> bool {
+        true
+    }
+
     fn record_owned(&self, sample: OwnedSample) {
         if sample.metadata.name() == OPERATION {
             self.0.record_owned(sample);
@@ -95,7 +99,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
     use acyclic_observability::Outcome;
 
     for rejected in [false, true] {
-        for mode in 0..3 {
+        for mode in 0..4 {
             let (journal, _issuer) = journal().await?;
             let model = Arc::new(ScriptedModelProvider::new([
                 tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
@@ -127,7 +131,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
             let metrics = Metrics::default();
             let queries = SELECTIONS.map(|rpc| metrics.query_rpc(OPERATION, rpc));
             let credit = Arc::new(tokio::sync::Semaphore::new(8));
-            let (export, mut receiver) = Export::channel(credit.clone(), false);
+            let (export, mut receiver) = Export::channel(credit.clone(), mode == 3);
             let dispatch = match mode {
                 0 => tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()),
                 1 => tracing::Dispatch::new(
@@ -198,9 +202,47 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
                 assert_eq!(record.sample().outcome, Outcome::Ok);
                 assert!(record.sample().parent_id.is_some());
                 assert!(record.sample().durability.is_none());
+                let sample = record.sample();
+                if mode == 3 {
+                    use acyclic_observability::{
+                        PublicationControl, PublicationData, PublicationPurpose,
+                    };
+                    let (purpose, data) = match sample.rpc {
+                        Some("model-dispatch") => (
+                            PublicationPurpose::ModelDispatch,
+                            PublicationData::PreparedRequest,
+                        ),
+                        Some("tool-intent") => (
+                            PublicationPurpose::ToolIntent,
+                            PublicationData::RecordedInvocation,
+                        ),
+                        Some("tool-settlement") => (
+                            PublicationPurpose::ToolSettlement,
+                            PublicationData::ResultAndProjection,
+                        ),
+                        Some("tool-failure-record") => (
+                            PublicationPurpose::ToolFailureRecord,
+                            PublicationData::InlineFailure,
+                        ),
+                        other => panic!("unexpected original publication: {other:?}"),
+                    };
+                    assert_eq!(
+                        sample.publication,
+                        Some(acyclic_observability::Publication {
+                            purpose: Some(purpose),
+                            data: Some(data),
+                            control: Some(PublicationControl::ConditionalJournalAppend),
+                        })
+                    );
+                } else {
+                    assert!(
+                        sample.publication.is_none(),
+                        "detail opt-out retained publication"
+                    );
+                }
                 exported.push(record);
             }
-            assert_eq!(exported.len(), if mode == 2 { 4 } else { 0 });
+            assert_eq!(exported.len(), if mode >= 2 { 4 } else { 0 });
             assert_eq!(credit.available_permits() + exported.len(), 8);
             drop(exported);
             assert_eq!(credit.available_permits(), 8);
@@ -267,6 +309,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
             }
         }
     }
+    publication_field_controls().await;
     let _guard = tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
     futures::executor::block_on(async {});
     let mut result = None;
@@ -282,4 +325,98 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
     result.expect("measured publication ran")?;
     assert_eq!(observed.count_total, 0, "disabled observation allocated");
     Ok(())
+}
+
+// Controls exercise the same collector/credited output as the real journal
+// cohort above. No synthetic value is accepted as a physical durability count.
+async fn publication_field_controls() {
+    use acyclic_observability::{
+        Publication as Evidence, PublicationControl, PublicationData, PublicationPurpose,
+    };
+    let credit = Arc::new(tokio::sync::Semaphore::new(5));
+    let (export, mut receiver) = Export::channel(credit.clone(), true);
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
+    let guard = tracing::dispatcher::set_default(&dispatch);
+    let expected = Evidence {
+        purpose: Some(PublicationPurpose::ModelDispatch),
+        data: Some(PublicationData::PreparedRequest),
+        control: Some(PublicationControl::ConditionalJournalAppend),
+    };
+    let deferred = tracing::info_span!(
+        "acyclic.harness.executor.publication",
+        rpc = tracing::field::Empty,
+        data = tracing::field::Empty,
+        control = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    );
+    deferred.record("rpc", "model-dispatch");
+    deferred.record("data", "prepared-request");
+    deferred.record("control", "conditional-journal-append");
+    deferred.record("outcome", "ok");
+    deferred.record("data", "inline-failure");
+    deferred.record("outcome", "err");
+    drop(deferred);
+    let unknown = tracing::info_span!(
+        "acyclic.harness.executor.publication",
+        rpc = "model-dispatch",
+        data = "unknown-data",
+        control = tracing::field::Empty,
+        outcome = "ok",
+    );
+    drop(unknown);
+    let abandoned = tracing::info_span!(
+        "acyclic.harness.executor.publication",
+        rpc = "model-dispatch",
+        data = "prepared-request",
+        control = "conditional-journal-append",
+        outcome = tracing::field::Empty,
+    );
+    drop(acyclic_observability::Completion::new(&abandoned));
+    drop(abandoned);
+    let foreign = tracing::info_span!(
+        "acyclic.harness.executor.other",
+        rpc = "model-dispatch",
+        data = "prepared-request",
+        control = "conditional-journal-append",
+        outcome = "ok",
+    );
+    drop(foreign);
+    let immediate = tracing::info_span!(
+        "acyclic.harness.executor.publication",
+        rpc = "model-dispatch",
+        data = "prepared-request",
+        control = "conditional-journal-append",
+        outcome = "ok",
+    );
+    drop(immediate);
+    drop(guard);
+    drop(dispatch);
+    let mut records = Vec::new();
+    while let Some(record) = receiver.recv().await {
+        records.push(record);
+    }
+    assert_eq!(records.len(), 5);
+    assert_eq!(records[0].sample().publication, Some(expected));
+    assert_eq!(
+        records[0].sample().outcome,
+        acyclic_observability::Outcome::Ok
+    );
+    assert_eq!(
+        records[1].sample().publication,
+        Some(Evidence {
+            purpose: expected.purpose,
+            data: None,
+            control: None,
+        })
+    );
+    assert_eq!(records[2].sample().publication, Some(expected));
+    assert_eq!(
+        records[2].sample().outcome,
+        acyclic_observability::Outcome::Incomplete
+    );
+    assert!(records[3].sample().publication.is_none());
+    assert_eq!(records[4].sample().publication, Some(expected));
+    assert_eq!(credit.available_permits(), 0);
+    drop(records);
+    assert_eq!(credit.available_permits(), 5);
 }

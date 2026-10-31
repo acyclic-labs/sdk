@@ -188,6 +188,8 @@ pub struct Sample<'a> {
     pub durability: Option<crate::DurabilityAttempt>,
     /// Optional producer-declared semantic work, retained only when requested.
     pub work: Option<crate::WorkSummary>,
+    /// Fixed original executor publication semantics, when requested.
+    pub publication: Option<crate::Publication>,
     /// Caller-funded original admission, when explicitly supplied and requested.
     pub binding: Option<&'a crate::Binding>,
     /// Original static span metadata. Exporters must use bounded static labels.
@@ -214,6 +216,8 @@ pub struct OwnedSample {
     pub durability: Option<crate::DurabilityAttempt>,
     /// Original producer's optional work totals, without reconstructing work.
     pub work: Option<crate::WorkSummary>,
+    /// Fixed original executor publication semantics, when requested.
+    pub publication: Option<crate::Publication>,
     /// Original admission token; it owns diagnostic credit, never physical work.
     pub binding: Option<crate::Binding>,
     /// Original static operation metadata.
@@ -236,6 +240,7 @@ impl OwnedSample {
             parent_id: self.parent_id.as_ref(),
             durability: self.durability,
             work: self.work,
+            publication: self.publication,
             binding: self.binding.as_ref(),
             metadata: self.metadata,
             rpc: self.rpc.as_deref(),
@@ -272,6 +277,11 @@ pub trait Sink: Clone + Send + Sync + 'static {
     fn binding_details(&self) -> bool {
         false
     }
+    /// Opt into fixed original executor publication semantics. Counters alone
+    /// do not parse or retain these fields.
+    fn publication_details(&self) -> bool {
+        false
+    }
 }
 
 impl<A: Sink, B: Sink> Sink for (A, B) {
@@ -287,6 +297,9 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
     }
     fn binding_details(&self) -> bool {
         self.0.binding_details() || self.1.binding_details()
+    }
+    fn publication_details(&self) -> bool {
+        self.0.publication_details() || self.1.publication_details()
     }
     fn record_owned(&self, sample: OwnedSample) {
         self.0.record(&sample.sample());
@@ -681,6 +694,7 @@ struct Operation {
     parent_id: Option<Id>,
     durability: Option<crate::DurabilityAttempt>,
     work: Option<crate::WorkSummary>,
+    publication: Option<crate::Publication>,
     rpc: Option<String>,
     started: Instant,
     completed: bool,
@@ -729,6 +743,7 @@ struct Terminal {
     has_error_kind: bool,
     has_durability_fields: bool,
     has_work: bool,
+    has_publication: bool,
 }
 
 struct FirstCause<'a>(&'a mut Option<Box<str>>);
@@ -745,6 +760,7 @@ struct Fields {
     rpc: Option<String>,
     durability: Option<crate::DurabilityAttempt>,
     work: Option<crate::WorkSummary>,
+    publication: Option<crate::Publication>,
 }
 impl Visit for Fields {
     fn record_str(&mut self, field: &Field, value: &str) {
@@ -752,6 +768,9 @@ impl Visit for Fields {
             self.rpc = Some(value.to_owned());
         } else if let Some(attempt) = self.durability.as_mut() {
             attempt.record_str(field, value);
+        }
+        if let Some(publication) = self.publication.as_mut() {
+            publication.record_str(field, value);
         }
     }
     fn record_u64(&mut self, field: &Field, value: u64) {
@@ -789,6 +808,8 @@ impl Visit for Terminal {
                 "incomplete" => Some(Outcome::Incomplete),
                 _ => None,
             };
+        } else if matches!(field.name(), "rpc" | "data" | "control") {
+            self.has_publication = true;
         } else if field.name() == "error.kind" {
             self.has_error_kind = true;
         } else if matches!(field.name(), "requested" | "syscall") {
@@ -836,6 +857,9 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let Some(span) = context.span(id) else { return };
         let mut fields = Fields {
             rpc: None,
+            publication: (self.0.publication_details()
+                && metadata.name() == "acyclic.harness.executor.publication")
+                .then(crate::Publication::default),
             durability: (metadata.name() == "acyclic.runtime.durability")
                 .then(crate::DurabilityAttempt::default),
             work: (self.0.work_details()
@@ -856,6 +880,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             },
             durability: fields.durability,
             work: fields.work,
+            publication: fields.publication,
             rpc: fields.rpc,
             started: Instant::now(),
             completed: false,
@@ -872,6 +897,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 parent_id: operation.parent_id.take(),
                 durability: operation.durability.take(),
                 work: operation.work.take(),
+                publication: operation.publication.take(),
                 binding: binding.clone(),
                 metadata,
                 rpc: operation.rpc.take(),
@@ -894,6 +920,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             && !(terminal.has_error_kind && self.0.error_details())
             && !terminal.has_durability_fields
             && !(terminal.has_work && self.0.work_details())
+            && !(terminal.has_publication && self.0.publication_details())
         {
             return;
         }
@@ -916,6 +943,9 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         if let Some(attempt) = operation.durability.as_mut() {
             values.record(attempt);
         }
+        if let Some(publication) = operation.publication.as_mut() {
+            values.record(publication);
+        }
         if let Some(work) = operation.work.as_mut() {
             values.record(work);
         }
@@ -930,6 +960,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let parent_id = operation.parent_id.take();
         let durability = operation.durability.take();
         let work = operation.work.take();
+        let publication = operation.publication.take();
         let rpc = operation.rpc.take();
         let started = operation.started;
         let error_kind = operation.error_kind.take();
@@ -941,6 +972,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             parent_id,
             durability,
             work,
+            publication,
             binding,
             metadata,
             rpc,
@@ -966,6 +998,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 parent_id: operation.parent_id,
                 durability: operation.durability,
                 work: operation.work,
+                publication: operation.publication,
                 binding: self.0.binding_details().then_some(binding).flatten(),
                 metadata: operation.metadata,
                 rpc: operation.rpc,
