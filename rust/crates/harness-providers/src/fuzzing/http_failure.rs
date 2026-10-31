@@ -117,4 +117,63 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
     ] {
         assert_http_failure_invariants(input);
     }
+
+    // This is the same captured context refusal, with only its JSON spelling
+    // changed. Native parsing must fund scratch, retire it, and retain refusal
+    // of an exhausted or cancelled original invocation.
+    let captured = include_bytes!("../../fuzz/corpus/http_failure/llamacpp-context");
+    let value: serde_json::Value = serde_json::from_slice(&captured[2..]).unwrap();
+    let canonical = serde_json::to_vec(&value).unwrap();
+    let escaped = escaped_strings(&canonical);
+    // Move the captured refusal through the supported envelopes; a selected
+    // non-object error still takes precedence over the root's discriminants.
+    for (mutation, expected) in [
+        (
+            serde_json::json!({"response": {"error": value["error"]}}),
+            true,
+        ),
+        (
+            serde_json::json!({"error": null, "response": {"error": value["error"]}}),
+            true,
+        ),
+        (
+            serde_json::json!({"error": false, "response": {"error": value["error"]}}),
+            false,
+        ),
+        (
+            serde_json::json!({"error": false, "code": value["error"]["code"]}),
+            false,
+        ),
+    ] {
+        let bytes = serde_json::to_vec(&mutation).unwrap();
+        for spelling in [&bytes, &escaped_strings(&bytes)] {
+            assert_eq!(
+                crate::stream::context_overflow_bytes(spelling, None).unwrap(),
+                expected
+            );
+        }
+    }
+    for bytes in [&canonical, &escaped] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            &cancellation,
+        )
+        .unwrap();
+        let baseline = work.live_allocation_bytes();
+        assert!(crate::stream::context_overflow_bytes(bytes, Some(&work)).unwrap());
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        cancellation.cancel();
+        assert!(crate::stream::context_overflow_bytes(bytes, Some(&work)).is_err());
+        assert_eq!(work.live_allocation_bytes(), baseline);
+
+        let denied = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(100_000, 1),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap();
+        let baseline = denied.live_allocation_bytes();
+        assert!(crate::stream::context_overflow_bytes(bytes, Some(&denied)).is_err());
+        assert_eq!(denied.live_allocation_bytes(), baseline);
+    }
 }
