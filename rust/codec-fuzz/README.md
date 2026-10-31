@@ -127,10 +127,13 @@ and requested bytes. It establishes coverage only for the supplied inputs.
 `--seed` selects original writer inputs without a saved capture. `--all-sites`
 visits each physical site from one successful baseline, streaming each report
 without retaining a history or repeating that baseline for every cut.
-No campaign, compaction/rename coverage, power-loss simulation or complexity
-bound follows from adding the target. Larger remove inputs can enter the
-adapter's original compaction path; its policy is never copied into the
-generator. All execution remains on demand.
+At source `f3cc43deeb`, all twenty compaction configurations passed 110 cuts
+across every physical site in their successful traces, covering 55 distinct
+fault outcomes. Post-append write, sync-data, rename and sync-parent faults
+preserved successful mutations and whole live/reopened values. Measured maxima
+were six physical calls, four owned boundaries and 932 requested bytes.
+These controls do not establish power-loss behavior or an asymptotic complexity
+bound. The adapter owns compaction policy; all execution remains on demand.
 
 Existing session/follow state-machine targets remain in `../crates/stream/fuzz`,
 accounting/cancellation targets in `../crates/filesystem/fuzz`, Harness transport
