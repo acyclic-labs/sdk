@@ -31,6 +31,12 @@ pub enum AppendGroupOutcome {
 contract! {
 /// Nonblocking authority-store contract.
 pub trait AsyncAuthorityStore: ProviderPlatform {
+    /// The backend's original atomic publication owner. Query before staging
+    /// a composition; absence is an explicit unsupported operation.
+    #[cfg(any(test, feature = "distributed"))]
+    fn composition(&self) -> Option<impl super::AuthorityComposition + '_> {
+        None::<std::convert::Infallible>
+    }
     /// Transfers a group to its actual owner. An absent task means its terminal
     /// reply has already been delivered, including unsupported dispatch.
     fn own_group<G: OwnedAuthorityGuard>(&self, group: OwnedAuthorityGroup<G>) -> Option<OwnedAuthorityTask> {

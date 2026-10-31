@@ -3,6 +3,10 @@ use super::*;
 impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     for StreamAuthorityStore<P>
 {
+    fn composition(&self) -> Option<impl crate::async_storage::AuthorityComposition + '_> {
+        Some(self)
+    }
+
     fn own_group<G: crate::OwnedAuthorityGuard>(
         &self,
         group: crate::OwnedAuthorityGroup<G>,

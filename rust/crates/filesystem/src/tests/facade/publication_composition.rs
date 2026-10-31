@@ -22,6 +22,107 @@ fn companion() -> TestResult<crate::FilesystemCommit> {
 }
 
 #[tokio::test]
+async fn unsupported_composition_refuses_before_checkpoint_or_backend_work() -> TestResult {
+    let control = Arc::new(FaultControl::disabled());
+    let fs = Fs::new(
+        crate::MemoryAuthorityStore::default(),
+        FaultObjectStore {
+            inner: crate::MemoryObjectStore::default(),
+            control: control.clone(),
+        },
+        EmbeddedCapabilities::MEMORY,
+    );
+    let cancel = CancellationToken::new();
+    let volume = fs.create_volume(config(), B, &cancel).await?.value;
+    let mut authored = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    authored
+        .create(
+            AuthoredMutation::CreateFile {
+                path: path("schedule")?,
+                bytes: OwnedBytes::from_static(b"unpublished"),
+                metadata: FileMetadata::default(),
+            },
+            B,
+            &cancel,
+        )
+        .await?;
+    control.arm(1);
+    let result = authored
+        .contribute_publication(
+            OperationId::from_bytes([0x42; 16]),
+            crate::kernel::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
+            companion()?,
+            B,
+            &cancel,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(OperationFailure {
+            error: FsError::Authority(AuthorityStoreError::RejectedStatic(
+                "authority backend does not support atomic composition"
+            )),
+            ..
+        })
+    ));
+    assert_eq!(control.operation.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn shared_authority_forwards_the_original_composition_owner() -> TestResult {
+    let fs = Fs::new(
+        Arc::new(crate::StreamAuthorityStore::new(Arc::new(
+            acyclic_stream::MemoryStream::default(),
+        ))),
+        crate::MemoryObjectStore::default(),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let cancel = CancellationToken::new();
+    let volume = fs.create_volume(config(), B, &cancel).await?.value;
+    let mut authored = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    authored
+        .create(
+            AuthoredMutation::CreateFile {
+                path: path("schedule")?,
+                bytes: OwnedBytes::from_static(b"shared"),
+                metadata: FileMetadata::default(),
+            },
+            B,
+            &cancel,
+        )
+        .await?;
+    let crate::PublicationContribution::Prepared { mut commit, .. } = authored
+        .contribute_publication(
+            OperationId::from_bytes([0x43; 16]),
+            crate::kernel::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
+            companion()?,
+            B,
+            &cancel,
+        )
+        .await?
+        .value
+    else {
+        return Err("shared authority refused its original composition".into());
+    };
+    fs.seal_commit(&mut commit, B, &cancel)?;
+    assert!(matches!(
+        fs.submit_commit(commit, B, &cancel).await?.value,
+        crate::FilesystemCommitOutcome::Committed(_)
+    ));
+    let mut visible = open_checkout(&volume, pinned(), &cancel).await?;
+    assert!(
+        visible
+            .lookup_no_follow(&path("schedule")?, B, &cancel)
+            .await?
+            .value
+            .record
+            .is_some()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn authored_generation_and_companion_share_both_conditional_fences() -> TestResult {
     for conflict in [None, Some("caller"), Some("generation")] {
         let cancel = CancellationToken::new();

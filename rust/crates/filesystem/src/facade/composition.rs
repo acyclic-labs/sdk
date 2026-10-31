@@ -35,9 +35,9 @@ impl PreparedCheckoutPublication {
     }
 }
 
-impl<P, O> Checkout<StreamAuthorityStore<P>, O>
+impl<A, O> Checkout<A, O>
 where
-    P: crate::distributed::AuthorityProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Consumes an authored checkout into a caller's all-or-none commit.
@@ -67,6 +67,12 @@ where
             {
                 return Err(FsError::MutationNotAllowed);
             }
+            use crate::async_storage::AuthorityComposition as _;
+            let composition = self.volume.fs.inner.authority.composition().ok_or(
+                crate::AuthorityStoreError::RejectedStatic(
+                    "authority backend does not support atomic composition",
+                ),
+            )?;
             let expected = self
                 .authority_head
                 .ok_or(FsError::WritableCheckoutRequiresHead)?;
@@ -89,12 +95,8 @@ where
             let mut authority = authority_work(&accounting, cancellation)?;
             let contributed = async {
                 commit.reserve_publication(&mut authority)?;
-                let contribution = self
-                    .volume
-                    .fs
-                    .inner
-                    .authority
-                    .contribute_append_group(
+                let contribution = composition
+                    .contribute(
                         &mut commit,
                         std::slice::from_ref(prepared.append()),
                         &[],
@@ -390,6 +392,14 @@ where
         .await;
         measured(result, &accounting)
     }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Fs<A, O> {
+    /// Whether the backend can compose publications with caller-owned records.
+    /// Query before staging files; unsupported backends never publish separately.
+    pub fn supports_composition(&self) -> bool {
+        self.inner.authority.composition().is_some()
+    }
 
     /// Fences the active policy cut and freezes a caller-submitted commit.
     /// Call this before sending its request through an external provider.
@@ -403,7 +413,13 @@ where
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = (|| {
             let mut authority = authority_work(&accounting, cancellation)?;
-            let result = self.inner.authority.seal(commit, &mut authority);
+            use crate::async_storage::AuthorityComposition as _;
+            let composition = self.inner.authority.composition().ok_or(
+                crate::AuthorityStoreError::RejectedStatic(
+                    "authority backend does not support atomic composition",
+                ),
+            )?;
+            let result = composition.seal(commit, &mut authority);
             record_authority_work(&mut accounting, &authority)?;
             result.map_err(FsError::from)
         })();
@@ -429,7 +445,16 @@ where
                     });
                 }
             };
-            let result = self.inner.authority.submit(commit, &mut authority).await;
+            use crate::async_storage::AuthorityComposition as _;
+            let Some(composition) = self.inner.authority.composition() else {
+                return Ok(FilesystemCommitOutcome::Unknown {
+                    commit,
+                    error: crate::AuthorityStoreError::RejectedStatic(
+                        "authority backend does not support atomic composition",
+                    ),
+                });
+            };
+            let result = composition.submit(commit, &mut authority).await;
             // Completion accounting cannot discard an unresolved owner or
             // replace a decided result after the provider has returned it.
             drop(record_authority_work(&mut accounting, &authority));
@@ -448,13 +473,26 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FilesystemCommitOutcome> {
-        let accounting = KernelAccounting::standalone(budget, cancellation);
-        let result = self
-            .inner
-            .authority
-            .settle_recorded(commit, outcome, |commit, commit_id| {
-                self.inner.authority.refresh_committed(commit, commit_id);
-            });
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        use crate::async_storage::AuthorityComposition as _;
+        let Some(composition) = self.inner.authority.composition() else {
+            return measured(
+                Ok(FilesystemCommitOutcome::Unknown {
+                    commit,
+                    error: crate::AuthorityStoreError::RejectedStatic(
+                        "authority backend does not support atomic composition",
+                    ),
+                }),
+                &accounting,
+            );
+        };
+        let mut authority = authority_work(&accounting, cancellation).ok();
+        let result = composition
+            .settle(commit, outcome, authority.as_mut())
+            .await;
+        if let Some(authority) = authority {
+            drop(record_authority_work(&mut accounting, &authority));
+        }
         measured(result.map_err(FsError::from), &accounting)
     }
 }

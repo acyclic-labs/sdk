@@ -9,6 +9,7 @@
 use super::*;
 
 mod append;
+mod capability;
 pub use append::{FilesystemAppendPreparation, PreparedFilesystemAppend};
 mod result;
 pub use result::{FilesystemCommitResult, PreparedFilesystemCommit};

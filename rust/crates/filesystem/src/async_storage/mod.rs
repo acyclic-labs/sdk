@@ -35,6 +35,10 @@ pub use work::NativeAuthorityGuard;
 pub(crate) use work::authority_error;
 pub(crate) use work::authority_parts;
 pub use work::{AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork};
+#[cfg(any(test, feature = "distributed"))]
+mod composition;
+#[cfg(any(test, feature = "distributed"))]
+pub use composition::AuthorityComposition;
 mod authority;
 mod generation;
 pub(crate) use generation::generation_fact;

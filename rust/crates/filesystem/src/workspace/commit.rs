@@ -1,9 +1,9 @@
 use super::*;
 
 #[cfg(any(test, feature = "distributed"))]
-impl<P, O> Transaction<crate::StreamAuthorityStore<P>, O>
+impl<A, O> Transaction<A, O>
 where
-    P: crate::distributed::AuthorityProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Transfers this authored transaction to the caller's atomic publication.

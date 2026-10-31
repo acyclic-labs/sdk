@@ -9,6 +9,7 @@ macro_rules! contract {
         (&$borrow:lifetime $receiver:ident $(, $arg:ident: $ty:ty)* $(,)?)
         -> Result<impl Future<Output = $out:ty> + ProviderTask + use<$capture:lifetime, Self>, $error:ty>
         $body:block $($rest:tt)*) => {
+        $(#[$doc])*
         fn $name<$life>(&$borrow $receiver $(, $arg: $ty)*)
             -> Result<impl Future<Output = $out> + ProviderTask + use<$capture, T>, $error> {
             (**$receiver).$name($($arg),*)
@@ -17,6 +18,7 @@ macro_rules! contract {
     };
     (@methods $(#[$doc:meta])* fn $name:ident
         (&$receiver:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $out:ty; $($rest:tt)*) => {
+        $(#[$doc])*
         fn $name(&$receiver $(, $arg: $ty)*) -> $out {
             (**$receiver).$name($($arg),*)
         }
@@ -25,6 +27,7 @@ macro_rules! contract {
     (@methods $(#[$doc:meta])* fn $name:ident $(<$g:ident: $bound:path>)?
         (&$receiver:ident $(, $arg:ident: $ty:ty)* $(,)?)
         -> impl Future<Output = $out:ty $(,)?> + ProviderTask $end:tt $($rest:tt)*) => {
+        $(#[$doc])*
         fn $name $(<$g: $bound>)? (&$receiver $(, $arg: $ty)*)
             -> impl Future<Output = $out> + ProviderTask {
             // Forward the provider's actual future: shared ownership must not
@@ -35,6 +38,7 @@ macro_rules! contract {
     };
     (@methods $(#[$doc:meta])* fn $name:ident
         (&$receiver:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $out:ty $body:block $($rest:tt)*) => {
+        $(#[$doc])*
         fn $name(&$receiver $(, $arg: $ty)*) -> $out {
             (**$receiver).$name($($arg),*)
         }
@@ -42,6 +46,7 @@ macro_rules! contract {
     };
     (@methods $(#[$doc:meta])* fn $name:ident <$g:ident: $bound:path>
         (&$receiver:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $out:ty $body:block $($rest:tt)*) => {
+        $(#[$doc])*
         fn $name<$g: $bound>(&$receiver $(, $arg: $ty)*) -> $out {
             (**$receiver).$name($($arg),*)
         }
