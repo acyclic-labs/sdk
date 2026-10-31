@@ -161,6 +161,24 @@ impl ModelContent {
             Self::Parts(parts) => parts,
         }
     }
+    /// One original event block and its typed immutable file attachments.
+    /// Attachments remain ordinary file parts, so event metadata cannot
+    /// manufacture file authority by naming a reference in its JSON body.
+    #[must_use]
+    pub fn notice_parts(
+        &self,
+    ) -> Option<(&[crate::conversation::wire::Notice], &[ModelContentPart])> {
+        match self.parts().split_first()? {
+            (ModelContentPart::Notices { notices }, files)
+                if files
+                    .iter()
+                    .all(|part| matches!(part, ModelContentPart::File { .. })) =>
+            {
+                Some((notices, files))
+            }
+            _ => None,
+        }
+    }
     /// Validates direct input and projected history against the same limits.
     pub fn validate_limits(
         &self,
@@ -238,16 +256,21 @@ impl ModelContent {
         }
         Ok(())
     }
-    /// Agent turns also admit one standalone frozen event block. Human command
+    /// Agent turns also admit one frozen event block with original files. Human command
     /// inputs keep their narrower validation at the public command boundary.
     pub(crate) fn validate_turn_input(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-        if let Self::Part(ModelContentPart::Notices { notices }) = self {
+        if let Some((notices, files)) = self.notice_parts() {
             history_step(work, 1)?;
-            return if notices.is_empty() {
-                Err(invalid(work, "turn notice block is empty"))
-            } else {
-                Ok(())
-            };
+            if notices.is_empty() {
+                return Err(invalid(work, "turn notice block is empty"));
+            }
+            for file in files {
+                history_step(work, 1)?;
+                if let ModelContentPart::File { file, .. } = file {
+                    file.validate(work)?;
+                }
+            }
+            return Ok(());
         }
         self.validate_user_input(work)
     }

@@ -404,12 +404,21 @@ pub fn turn_notices(agent: &AgentState) -> Result<Option<super::NoticeSelection>
 
 /// Model-visible content of a turn input: a message or event file as a file
 /// part, followed by a message's attachment manifest by its exact version
-/// (which [`expand_attachments`] replaces with the files it lists), every
-/// other input as its canonical record text.
+/// (which [`expand_attachments`] replaces with the files it lists). Primitive
+/// events use the common Notice block and retain their original typed files.
 pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
     let body = |file: &FileRef| ModelContentPart::File {
         file: file.clone(),
         policy: FileProjectionPolicy::BoundedFull,
+    };
+    let notice = |source: String, kind: &str, body| ModelContentPart::Notices {
+        notices: vec![crate::conversation::wire::Notice {
+            source,
+            kind: kind.to_owned(),
+            body,
+            wake: true,
+            coalesce_key: None,
+        }],
     };
     Ok(match input {
         TurnInput::Notice { notice, .. } => ModelContent::Part(ModelContentPart::Notices {
@@ -426,9 +435,34 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
                 policy: FileProjectionPolicy::Reference,
             },
         ]),
-        TurnInput::Brief { brief: file }
-        | TurnInput::Message { body: file, .. }
-        | TurnInput::Hook { event: file, .. } => ModelContent::Part(body(file)),
+        TurnInput::Brief { brief: file } | TurnInput::Message { body: file, .. } => {
+            ModelContent::Part(body(file))
+        }
+        TurnInput::ChildDone { done } => {
+            let metadata = serde_json::to_value(done)
+                .map_err(|_| Error::Record("child completion does not encode"))?;
+            let event = notice(done.child.as_str().to_owned(), "child.finished", metadata);
+            match &done.outcome {
+                AgentOutcome::Succeeded { result: Some(file) } => {
+                    ModelContent::Parts(vec![event, body(file)])
+                }
+                _ => ModelContent::Part(event),
+            }
+        }
+        TurnInput::ApprovalRequested { child, id } => ModelContent::Part(notice(
+            child.as_str().to_owned(),
+            "approval.requested",
+            serde_json::json!({"id": id}),
+        )),
+        TurnInput::Approval { id } => ModelContent::Part(notice(
+            "approval".to_owned(),
+            "approval.resolved",
+            serde_json::json!({"id": id}),
+        )),
+        TurnInput::Hook { host, id, event } => ModelContent::Parts(vec![
+            notice(host.clone(), "host.event", serde_json::json!({"id": id})),
+            body(event),
+        ]),
         TurnInput::Context {
             action: ContextAction::Compact { instructions },
             ..
@@ -444,24 +478,7 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
         other => {
             let text = String::from_utf8(encode(other)?)
                 .map_err(|_| Error::Record("turn input is not text"))?;
-            // A child's result file follows its report, so the parent's turn
-            // is granted and reads exactly that file.
-            match other {
-                TurnInput::ChildDone {
-                    done:
-                        super::ChildDone {
-                            outcome: AgentOutcome::Succeeded { result: Some(file) },
-                            ..
-                        },
-                } => ModelContent::Parts(vec![
-                    ModelContentPart::Text { text },
-                    ModelContentPart::File {
-                        file: FileRef::clone(file),
-                        policy: FileProjectionPolicy::BoundedFull,
-                    },
-                ]),
-                _ => ModelContent::Text(text),
-            }
+            ModelContent::Text(text)
         }
     })
 }

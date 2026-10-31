@@ -121,6 +121,89 @@ fn with_parts(
     )
 }
 
+#[tokio::test]
+async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> Result<()> {
+    for (adapter, _) in fixtures() {
+        let (provider, _) = provider(adapter, 200);
+        let original = file(b"child result", "text/plain")?;
+        let notice = ModelContentPart::Notices {
+            notices: vec![acyclic_harness_core::conversation::wire::Notice {
+                source: "child".into(),
+                kind: "child.finished".into(),
+                body: json!({"result": original}),
+                wake: true,
+                coalesce_key: None,
+            }],
+        };
+        let attachment = ModelContentPart::File {
+            file: original.clone(),
+            policy: FileProjectionPolicy::BoundedFull,
+        };
+        let prepared = with_parts(&provider, vec![notice.clone(), attachment.clone()])?;
+        assert_eq!(
+            prepared.request().messages[0]
+                .content
+                .file_refs()
+                .collect::<Vec<_>>(),
+            vec![&original]
+        );
+        let mut split = prepared.request().clone();
+        split.messages = vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(notice.clone()),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(attachment),
+            },
+        ];
+        let split = PreparedModelRequest::prepare(split, Limits::default(), None)?;
+        let reader = Arc::new(Reader {
+            data: b"child result".to_vec(),
+            reads: AtomicUsize::new(0),
+        });
+        let bound = provider.bind_content(reader.clone(), 4096)?;
+        let mut files = crate::files::resolve(&bound.files, prepared.request(), None).await?;
+        let actual = projection::body_with_files(&bound, prepared.request(), &mut files)?;
+        assert!(
+            files.0.next().is_none(),
+            "the original file is consumed once"
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+        let mut expected_files =
+            crate::files::FileText(vec![String::from("child result").into()].into_iter());
+        assert_eq!(
+            actual,
+            projection::body_with_files(&bound, split.request(), &mut expected_files)?
+        );
+        // Event metadata cannot turn arbitrary text into an admitted event
+        // attachment. JSON references alone retain no file read authority.
+        assert!(
+            with_parts(
+                &bound,
+                vec![
+                    notice.clone(),
+                    ModelContentPart::Text {
+                        text: "synthetic user message".into(),
+                    }
+                ]
+            )
+            .is_err()
+        );
+        let metadata_only = with_parts(&bound, vec![notice])?;
+        assert_eq!(
+            metadata_only.request().messages[0]
+                .content
+                .file_refs()
+                .count(),
+            0
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
