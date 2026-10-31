@@ -205,6 +205,32 @@ test('quoted host programs and native wait deadlines require exact review', () =
  assert.ok(newPollingSites(file, '', source.replace('handle', 'otherHandle'), accepted).length);
 });
 
+test('escaped host identifiers and embedded child programs cannot conceal readiness waits', () => {
+ // Policy mutations exercise the original source checker, not a fake OS result.
+ for (const [file, source, kind] of [
+  ['scripts/control.cs', String.raw`class Control { void Run() { Thread.\u0053le\u0065p(1); } }`, 'timer-or-readiness'],
+  ['scripts/control.cs', String.raw`class Control { void Run() { var pause = Thread.\U00000053leep; pause(1); } }`, 'timer-or-readiness'],
+  ['scripts/control.cs', String.raw`class Control { void Run() { ready.Wait\u004Fne(25); } }`, 'timer-or-readiness'],
+  ['scripts/control.ps1', String.raw`Add-Type 'class Control { void Run() { Thread.\u0053leep(1); } }'`, 'embedded-timer-or-retry'],
+  ['scripts/control.py', String.raw`compile('Thread.\u0053leep(1)', '<child>', 'exec')`, 'embedded-timer-or-retry'],
+  [script, String.raw`runHost("Thread.\\u0053leep(1)");`, 'embedded-timer-or-retry'],
+  [rust, String.raw`fn child() { command.arg(r#"Thread.\u0053leep(1)"#); }`, 'embedded-timer-or-retry'],
+ ]) {
+  assert.ok(newPollingSites(file, '', source).some(site => site.kind === kind), file + ': ' + source);
+ }
+ const file = 'scripts/control.cs';
+ const source = String.raw`class Control { void Join() { WaitForSingle\u004Fbject(handle, INFINITE); } }`;
+ const sites = pollingSites(file, source);
+ assert.ok(sites.length);
+ const accepted = sites.map(site => disposition(site, 'event-wait', 'original process exit',
+  'original native WAIT_FAILED result', 'close the original owned wait handle'));
+ assert.deepEqual(newPollingSites(file, '', source, accepted), []);
+ assert.ok(newPollingSites(file, '', source.replace('INFINITE', '25'), accepted).length);
+ assert.ok(newPollingSites(file, '', source.replace('handle', 'otherHandle'), accepted).length);
+ assert.deepEqual(pollingSites(file, String.raw`// Thread.\u0053leep(1)
+ class Control { void \u004Aoin() { completed.\u0043omplete(); } }`), []);
+});
+
 test('unchanged baseline sites do not authorize another occurrence', () => {
  const source = 'async function operation() { await Bun.sleep(1); }\n';
  assert.deepEqual(newPollingSites(script, source, source), []);

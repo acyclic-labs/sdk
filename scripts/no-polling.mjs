@@ -21,6 +21,17 @@ const classes = new Set([
 
 export const temporalModule = name => /^(?:node:)?timers(?:\/promises)?$/.test(name);
 
+// Host identifiers and quoted child programs can spell the same operation with
+// Unicode escapes. Conservatively decode escapes across wrapper quoting: a
+// wrapper must not turn a readiness timer into an approved ordinary identifier.
+function escapedSpelling(source) {
+ return source.replace(/\\+(?:u\{([0-9a-fA-F_]+)\}|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2}))/g,
+  (escape, braced, short, long, byte) => {
+   const point = Number.parseInt((braced ?? short ?? long ?? byte).replaceAll('_', ''), 16);
+   return point <= 0x10ffff ? String.fromCodePoint(point) : escape;
+  });
+}
+
 export function sourceInScope(file) {
  // This declarative file is validated as exact dispositions, never executed.
  if (file === 'scripts/no-polling-dispositions.json') return false;
@@ -94,12 +105,16 @@ function scriptTokens(file, source) {
 function nativeTokens(source, file) {
  const rust = file.endsWith('.rs');
  const slashComments = /\.(?:rs|[ch]|cc|cpp|cs|proto)$/.test(file);
+ const escapedIdentifiers = /\.(?:[ch]|cc|cpp|cs)$/.test(file);
+ const wordPattern = escapedIdentifiers
+  ? /^(?:[A-Za-z_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})(?:[A-Za-z0-9_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/
+  : /^[A-Za-z_$][A-Za-z0-9_$]*/;
  const out = [];
  let at = 0;
  let line = 1;
- const emit = (end, kind) => {
+ const emit = (end, kind, spelling) => {
   const value = source.slice(at, end);
-  if (kind) out.push({value, kind, line, start: at});
+  if (kind) out.push({value: spelling ?? value, kind, line, start: at});
   line += (value.match(/\n/g) ?? []).length;
   at = end;
  };
@@ -134,8 +149,9 @@ function nativeTokens(source, file) {
    if (end >= source.length) throw new Error('unterminated quoted string');
    emit(end + 1, 'literal'); continue;
   }
-  const word = tail.match(/^[A-Za-z_$][A-Za-z0-9_$]*/);
-  emit(at + (word ? word[0].length : 1), word ? 'word' : 'punctuation');
+  const word = tail.match(wordPattern);
+  emit(at + (word ? word[0].length : 1), word ? 'word' : 'punctuation',
+   word && escapedIdentifiers ? escapedSpelling(word[0]) : undefined);
  }
  return out;
 }
@@ -183,10 +199,11 @@ export function pollingUnit(file, source) {
  const sites = [];
  for (let i = 0; i < stream.length; i++) {
   const t = stream[i];
+  const spelling = t.kind === 'literal' ? escapedSpelling(t.value) : t.value;
   const kind = t.kind === 'indirection' ? 'indirect-timer-or-call'
    : t.kind === 'word' && loop.has(t.value) ? 'loop'
    : t.kind === 'word' && forbidden.has(t.value) ? 'timer-or-readiness'
-   : t.kind === 'literal' && (embeddedTemporal.test(t.value) || policyName.test(t.value)) ? 'embedded-timer-or-retry'
+   : t.kind === 'literal' && (embeddedTemporal.test(spelling) || policyName.test(spelling)) ? 'embedded-timer-or-retry'
    : undefined;
   if (!kind) continue;
   const fingerprint = createHash('sha256').update(JSON.stringify([kind, i, unit])).digest('hex');
