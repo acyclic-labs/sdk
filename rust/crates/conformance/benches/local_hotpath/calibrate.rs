@@ -16,9 +16,14 @@ pub(super) struct Floors {
     copy_per_byte: f64,
     hash_per_byte: f64,
     read: f64,
+    timer: Quantiles,
 }
 
 impl Floors {
+    pub(super) fn timer(&self) -> Quantiles {
+        self.timer
+    }
+
     pub(super) fn compose(&self, terms: Terms) -> f64 {
         self.flush * f64::from(terms.flushes)
             + self.wake * f64::from(terms.wakes)
@@ -59,8 +64,14 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
     let mut copy = Vec::with_capacity(samples);
     let mut hash = Vec::with_capacity(samples);
     let mut calls = Vec::with_capacity(samples);
+    let mut timer = Vec::with_capacity(samples);
     let mut destination = vec![0; source.len()];
     for _ in 0..samples {
+        // The same pair of timestamps without product work gives a lower
+        // bound on observation cost. Never subtract quantiles or charge it
+        // to the semantic floor. Async polling adds further sampler work.
+        let start = black_box(Instant::now());
+        timer.push(ns(black_box(start.elapsed())));
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&source)?;
         let start = Instant::now();
@@ -109,7 +120,15 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
         creation.push(ns(start.elapsed()));
     }
     measured("F_create_write_flush_directory", creation, Some(1024))?;
+    let timer_quantiles = Quantiles::new(&mut timer.clone())?;
+    measured("C_timer", timer, None)?;
+    emit(serde_json::json!({
+        "schema": 1, "kind": "negative_control",
+        "control": "timer-only observation without product work",
+        "result": "retained as resolution bound; no floor inflation or quantile subtraction",
+    }))?;
     Ok(Floors {
+        timer: timer_quantiles,
         flush: measured("F_flush", flush, None)?,
         wake: measured("W_wake", wake, None)?,
         call: measured("C_call", calls, None)?,

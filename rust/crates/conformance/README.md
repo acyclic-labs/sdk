@@ -103,3 +103,8 @@ The default selects all 17 rows. Selection uses the same drivers, floor
 calibration and population setup; unrelated operation families are skipped.
 Dependent fixture operations remain outside the selected intervals. Reports
 name the requested operation set, and a subset never claims full core coverage.
+
+The native floor report also retains a timer-only observation control. Ratios
+include sampler cost; rows flag targets below the measured timestamp resolution.
+The control never inflates the semantic floor or subtracts quantiles, and its
+timestamp pair excludes the additional cost of async polling and observers.

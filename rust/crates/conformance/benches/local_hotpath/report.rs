@@ -213,6 +213,7 @@ impl Measurements {
             } = row;
             let quantiles = Quantiles::new(&mut raw_ns.clone())?;
             let floor_ns = floors.compose(terms);
+            let timer = floors.timer();
             emit(serde_json::json!({
                 "schema": 1, "kind": "operation", "operation": operation.name(),
                 "measurement_label": if operation == Operation::ActorWake { "event-drain-to-handler-entry" } else { operation.name() },
@@ -222,6 +223,10 @@ impl Measurements {
                 "p99_ratio": quantiles.p99_ns / floor_ns,
                 "p50_pass": quantiles.p50_ns <= floor_ns * 1.5,
                 "p99_pass": quantiles.p99_ns <= floor_ns * 3.0,
+                "timer_only_quantiles": timer,
+                "p50_resolution_limited": floor_ns * 1.5 < timer.p50_ns,
+                "p99_resolution_limited": floor_ns * 3.0 < timer.p99_ns,
+                "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
                 "raw_ns": raw_ns,
                 "work_observations": work.observations,
                 "work": acyclic_test_support::scale::METRICS.iter().zip(&work.work).map(|(metric, counter)| {
