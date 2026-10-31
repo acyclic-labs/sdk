@@ -181,6 +181,26 @@ impl Snapshot {
         self.outcome.as_ref()
     }
 
+    /// Advances the fence from this snapshot's single record in the original
+    /// confirmed conditional publication. The publication owner must first
+    /// validate that member's path, bytes and receipt; this is not admission.
+    /// Exact receipt replay is idempotent. No record is reread or reencoded.
+    pub fn confirm(&mut self, sequence: u64, commit_id: CommitId) -> Result<(), SnapshotError> {
+        if self.anchor == Some((sequence, commit_id)) {
+            return Ok(());
+        }
+        let expected = match self.anchor {
+            None => Some(0),
+            Some((previous, original)) if original != commit_id => previous.checked_add(1),
+            Some(_) => None,
+        };
+        if expected != Some(sequence) {
+            return Err(Refusal::Stale.into());
+        }
+        self.anchor = Some((sequence, commit_id));
+        Ok(())
+    }
+
     /// Pins exactly the content address of this source range. The common
     /// ancestor's conditional publication arbitrates shared producer ownership.
     pub fn prepare(&mut self, through: u64, head: u64) -> Result<[u8; 32], SnapshotError> {

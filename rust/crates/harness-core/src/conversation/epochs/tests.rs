@@ -601,10 +601,18 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     };
     let initial = Snapshot::genesis(genesis).unwrap();
     let request = snapshot_request(&initial, path.clone(), &io);
-    assert!(matches!(
-        request.commit(&provider).await.unwrap(),
-        CommitOutcome::Committed(_)
-    ));
+    let CommitOutcome::Committed(receipt) = request.commit(&provider).await.unwrap() else {
+        panic!("genesis snapshot publication conflicted");
+    };
+    let mut hot = initial.clone();
+    hot.confirm(receipt.appends[1].start, receipt.commit_id)
+        .unwrap();
+    hot.confirm(receipt.appends[1].start, receipt.commit_id)
+        .unwrap();
+    let confirmed = hot.clone();
+    // A receipt for the same publication cannot invent another snapshot record.
+    assert!(hot.confirm(1, receipt.commit_id).is_err());
+    assert_eq!(hot, confirmed);
     // A caller cannot attach an old genesis to a newer observed head.
     assert!(matches!(
         snapshot_request(&initial, path.clone(), &io)
@@ -616,7 +624,8 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
 
     let record = last_snapshot(&provider, &path).await;
     assert_eq!(provider.tail(marker.clone()).await.unwrap(), 1);
-    let mut first = Snapshot::decode(&record, &source, 12).unwrap();
+    assert_eq!(hot, Snapshot::decode(&record, &source, 12).unwrap());
+    let mut first = hot;
     let mut competing = first.clone();
     let summary = first.prepare(10, 12).unwrap();
     competing.prepare(11, 12).unwrap();
@@ -628,10 +637,19 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
             .state(),
         State::default()
     );
-    assert!(matches!(
-        request.commit(&provider).await.unwrap(),
-        CommitOutcome::Committed(_)
-    ));
+    let CommitOutcome::Committed(receipt) = request.commit(&provider).await.unwrap() else {
+        panic!("prepared snapshot publication conflicted");
+    };
+    let unchanged = first.clone();
+    assert!(
+        first
+            .confirm(receipt.appends[1].start + 1, receipt.commit_id)
+            .is_err()
+    );
+    assert_eq!(first, unchanged);
+    first
+        .confirm(receipt.appends[1].start, receipt.commit_id)
+        .unwrap();
     assert!(matches!(
         snapshot_request(&competing, path.clone(), &io)
             .commit(&provider)
@@ -643,6 +661,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     let prepared_record = last_snapshot(&provider, &path).await;
     assert_eq!(provider.tail(marker.clone()).await.unwrap(), 2);
     let mut reopened = Snapshot::decode(&prepared_record, &source, 12).unwrap();
+    assert_eq!(first, reopened);
     assert_eq!(reopened.state().demand(), Demand::Await(summary));
     assert!(matches!(
         reopened.prepare(11, 12),
