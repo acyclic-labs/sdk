@@ -11,6 +11,7 @@ readme = "README.md"
 
 [features]
 local-hotpath = ["acyclic-harness/filesystem-local", "acyclic-fs/local", "acyclic-objects/local", "acyclic-stream/local"]
+local-hotpath-proofs = ["local-hotpath", "acyclic-stream/test-support"]
 inference = ["dep:acyclic-harness-providers"]
 client-session = ["acyclic-harness-client/grpc", "acyclic-stream/grpc"]
 actors-hosting = ["client-session", "acyclic-harness/serve", "acyclic-harness/conformance", "dep:acyclic-auth"]
