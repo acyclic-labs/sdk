@@ -91,7 +91,7 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
 #[test]
 fn resolution_rejects_mutated_model_identity() -> Result<()> {
     let (_, script) = provider(Adapter::Responses, 200);
-    let registry = Registry::with_transport(
+    let mut registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([
             ("openai".into(), "fixture".into()),
             ("anthropic".into(), "fixture".into()),
@@ -113,6 +113,17 @@ fn resolution_rejects_mutated_model_identity() -> Result<()> {
         let mut old = serde_json::to_value(provider.model()).unwrap();
         old["options"] = json!({"tools":[{"type":"forged-native-tool"}]});
         assert!(serde_json::from_value::<Model>(old).is_err());
+        let (provider_id, name) = selection.split_once('/').unwrap();
+        let mut config = registry.catalog()[provider_id].as_ref().clone();
+        let selected = config.models[name];
+        config.models.insert("unrelated-model".into(), selected);
+        registry.register(provider_id.into(), config.clone())?;
+        assert_eq!(registry.resolve(selection)?.model(), provider.model());
+        config.base_url.push_str("/another-route");
+        registry.register(provider_id.into(), config)?;
+        let rotated = registry.resolve(selection)?;
+        assert_ne!(rotated.model(), provider.model());
+        assert!(rotated.context_capacity(provider.model()).is_err());
     }
     Ok(())
 }
