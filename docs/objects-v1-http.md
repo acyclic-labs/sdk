@@ -56,11 +56,13 @@ durability wait for the whole batch; if that wait fails, every member it
 covered reports the failure and repeating the batch is safe. The response
 revision covers every committed member. A reply answering any member with
 another digest or length, or answering another number of members, fails the
-whole call as UNAVAILABLE. The HTTP client also splits a batch so that each
-call's largest possible acknowledgement fits its configured reply budget,
-computed from the canonical JSON encoding. Calls go in request order, so
-`n` members cost `ceil(n / k)` calls, where `k` is the most members whose
-acknowledgement the budget can always hold.
+whole call as UNAVAILABLE. The HTTP client's one wire budget bounds both
+directions: it splits a batch so that each call's request and its largest
+possible acknowledgement fit the budget, both computed from the canonical JSON
+encoding. A member too large to share a call goes alone, exactly as its single
+put would. Calls go in request order, so `n` members cost at most
+`ceil(n / k)` calls, where `k` is the most members whose acknowledgement the
+budget can always hold, and more only when their request bytes need it.
 
 ## Errors
 
