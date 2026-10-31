@@ -48,23 +48,14 @@ async fn a_lagging_read_parks_until_its_minimum_applies() -> Result {
         index: first.index + 1,
         ..first.clone()
     };
-    let parked = tokio::spawn({
-        let provider = Arc::clone(&provider);
-        async move {
-            read(&provider, crate::RevisionCut::of(next))
-                .await
-                .map_err(|e| e.to_string())
-        }
-    });
-    for _ in 0..8 {
-        tokio::task::yield_now().await;
-    }
+    let parked = read(&provider, crate::RevisionCut::of(next));
+    tokio::pin!(parked);
     assert!(
-        !parked.is_finished(),
+        futures::poll!(parked.as_mut()).is_pending(),
         "a read above the applied cut must park"
     );
     append(&provider, crate::IdempotencyKey::unique()).await?;
-    assert_eq!(parked.await??, 2);
+    assert_eq!(parked.await?, 2);
     Ok(())
 }
 
