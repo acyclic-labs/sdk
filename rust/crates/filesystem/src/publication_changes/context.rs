@@ -3,7 +3,7 @@ use bytes::BufMut;
 
 const VERSION: u8 = 1;
 const PREFIX_BYTES: usize = 1 + 16;
-const MAXIMUM_BYTES: usize = PREFIX_BYTES + 10 + crate::ObjectId::ENCODED_LEN + 8;
+const MAXIMUM_BYTES: usize = PREFIX_BYTES + 10 + crate::ObjectId::ENCODED_LEN + 16;
 
 /// Complete generation association carried by one filesystem change record.
 ///
@@ -17,6 +17,10 @@ pub struct PublicationContext {
     pub generation: GenerationId,
     /// Original authority publication sequence, distinct from the change stream sequence.
     pub authority_sequence: Sequence,
+    /// Number of subsequent change records in this same filesystem publication.
+    /// This comes from the original atomic producer, even when several filesystem
+    /// publications share one Streams commit. It excludes other publications.
+    pub records_after: u64,
 }
 
 impl PublicationContext {
@@ -42,16 +46,35 @@ impl PublicationContext {
             return Err(invalid());
         }
         let length = usize::try_from(length).map_err(|_| invalid())?;
-        let (reference, sequence) = input.split_at_checked(length).ok_or_else(invalid)?;
+        let (reference, suffix) = input.split_at_checked(length).ok_or_else(invalid)?;
+        let (sequence, remaining) = suffix.split_at_checked(8).ok_or_else(invalid)?;
         let generation = GenerationId::from_bytes(reference).ok_or_else(invalid)?;
         let authority_sequence = Sequence::new(u64::from_le_bytes(
             sequence.try_into().map_err(|_| invalid())?,
         ));
+        let records_after = u64::from_le_bytes(remaining.try_into().map_err(|_| invalid())?);
         Ok(Self {
             volume,
             generation,
             authority_sequence,
+            records_after,
         })
+    }
+
+    /// Exclusive end of this filesystem publication in the original change stream.
+    ///
+    /// Pass the original record's sequence. An authorized ordered follow has
+    /// completed this member when its record/progress cursor reaches this end.
+    /// Skipped records advance that same cursor without disclosing their facts.
+    /// A shared commit identity or a temporarily pending follow is not completion.
+    ///
+    /// # Errors
+    /// Returns `OutOfRange` if the producer's end cannot fit a stream sequence.
+    pub fn exclusive_end(self, original_sequence: u64) -> Result<u64, acyclic_stream::StreamError> {
+        original_sequence
+            .checked_add(1)
+            .and_then(|next| next.checked_add(self.records_after))
+            .ok_or(acyclic_stream::StreamError::OutOfRange)
     }
 
     pub(crate) fn encode(self) -> EncodedContext {
@@ -63,6 +86,7 @@ impl PublicationContext {
         prost::encoding::encode_varint(reference.len() as u64, &mut output);
         output.put_slice(reference.as_slice());
         output.put_u64_le(self.authority_sequence.get());
+        output.put_u64_le(self.records_after);
         let length = MAXIMUM_BYTES - output.len();
         EncodedContext { bytes, length }
     }
@@ -71,6 +95,12 @@ impl PublicationContext {
 pub(crate) struct EncodedContext {
     bytes: [u8; MAXIMUM_BYTES],
     length: usize,
+}
+
+impl EncodedContext {
+    pub(crate) fn set_records_after(&mut self, count: u64) {
+        self.bytes[self.length - 8..self.length].copy_from_slice(&count.to_le_bytes());
+    }
 }
 
 impl AsRef<[u8]> for EncodedContext {
@@ -102,10 +132,16 @@ mod tests {
                     storage,
                 }),
                 authority_sequence: Sequence::new(7),
+                records_after: 2,
             };
             let encoded = context.encode();
             let bytes = encoded.as_ref();
             assert_eq!(PublicationContext::from_bytes(bytes), Ok(context));
+            assert_eq!(context.exclusive_end(11), Ok(14));
+            assert_eq!(
+                context.exclusive_end(u64::MAX - 1),
+                Err(acyclic_stream::StreamError::OutOfRange)
+            );
             for end in 0..bytes.len() {
                 assert!(PublicationContext::from_bytes(&bytes[..end]).is_err());
             }

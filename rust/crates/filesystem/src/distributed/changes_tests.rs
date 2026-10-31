@@ -212,6 +212,7 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
             volume: workspace.id().volume_id(),
             generation: GenerationId::from_root(initial_root),
             authority_sequence: initial_head.sequence,
+            records_after: 0,
         }
     );
     let authority_path = stream_path(authority, "/records")?;
@@ -268,6 +269,7 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
             volume: workspace.id().volume_id(),
             generation: GenerationId::from_root(published_root),
             authority_sequence: published_head.sequence,
+            records_after: 0,
         }
     );
     assert_eq!(decoded.entries.len(), 1);
@@ -462,10 +464,16 @@ fn bounded_index_prefix_never_authorizes_an_extension_outside_a_range() -> TestR
     Ok(())
 }
 
-#[test]
-fn change_chunks_preserve_every_entry_and_obey_both_wire_bounds() -> TestResult {
+#[tokio::test]
+async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_one_commit()
+-> TestResult {
     let cancellation = CancellationToken::new();
-    let context = [7; 56];
+    let context = crate::PublicationContext {
+        volume: crate::VolumeId::from_bytes([7; 16]),
+        generation: GenerationId::new(Digest::from_bytes([8; 32])),
+        authority_sequence: Sequence::new(3),
+        records_after: 0,
+    };
     for native in [false, true] {
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
@@ -481,17 +489,110 @@ fn change_chunks_preserve_every_entry_and_obey_both_wire_bounds() -> TestResult 
                 metadata: vec![index],
             })
             .collect();
-        let encoded = encode_chunks(&context, &entries, &mut work)?;
+        let encoded = encode_chunks(context, &entries, &mut work)?;
         assert_eq!(encoded.len(), 3, "one entry per record adds write fan-out");
+        let mut combined = encoded.clone();
+        combined.extend(encode_chunks(
+            crate::PublicationContext {
+                authority_sequence: Sequence::new(4),
+                ..context
+            },
+            &entries[..1],
+            &mut work,
+        )?);
+        let streams = MemoryStream::default();
+        let path = StreamPath::new("publication-members")?;
+        let receipt = streams
+            .append(acyclic_stream::AppendRequest {
+                path: path.clone(),
+                records: combined,
+                if_tail: Some(0),
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+            })
+            .await?;
+        let filter = FollowFilter::new(acyclic_stream::wire::SessionFilter {
+            all_of: vec![],
+            keys: vec![acyclic_stream::wire::KeyRange {
+                start: Bytes::from_static(b"key-000"),
+                end: Bytes::from_static(b"key-001"),
+            }],
+        })?;
+        let mut followed = streams
+            .follow(acyclic_stream::FollowRequest {
+                when_absent: Default::default(),
+                path,
+                from: 0,
+                preceding: None,
+                filter,
+                progress: true,
+                at_least: Default::default(),
+            })
+            .await?;
+        let acyclic_stream::FollowUpdate::Record(first) =
+            followed.next().await.ok_or("first member missing")??
+        else {
+            panic!("first member must disclose its selected entry");
+        };
+        let first_context = crate::PublicationContext::from_bytes(
+            &acyclic_stream::decode_changes(first.value.as_ref())?.context,
+        )?;
+        let end = first_context.exclusive_end(first.sequence)?;
+        assert_eq!(end, 3);
+        assert_ne!(
+            end, receipt.end,
+            "a shared append tail conflated its members"
+        );
+        assert_ne!(
+            crate::PublicationContext {
+                records_after: 0,
+                ..first_context
+            }
+            .exclusive_end(first.sequence)?,
+            end,
+            "discarding the producer count closes before the hidden suffix"
+        );
+        let acyclic_stream::FollowUpdate::Progress { next, preceding } =
+            followed
+                .next()
+                .await
+                .ok_or("hidden suffix progress missing")??
+        else {
+            panic!("hidden suffix must advance the original cursor before the next member");
+        };
+        assert_eq!(next, end);
+        assert_eq!(preceding, first.commit_id);
+        let acyclic_stream::FollowUpdate::Record(last) =
+            followed.next().await.ok_or("last member missing")??
+        else {
+            panic!("last member must retain its own context");
+        };
+        assert_eq!(last.commit_id, first.commit_id);
+        let last_context = crate::PublicationContext::from_bytes(
+            &acyclic_stream::decode_changes(last.value.as_ref())?.context,
+        )?;
+        assert_eq!(last_context.authority_sequence, Sequence::new(4));
+        assert_eq!(last_context.exclusive_end(last.sequence)?, receipt.end);
+        assert!(
+            futures::poll!(followed.next()).is_pending(),
+            "quiet completion must not need a later record"
+        );
         let mut decoded = Vec::new();
-        for record in encoded {
+        for (index, record) in encoded.into_iter().enumerate() {
             assert!(
                 record.value.len() + record.headers.payload_bytes()
                     <= acyclic_stream::MAX_RECORD_BYTES
             );
             assert!(record.headers.keys().len() <= acyclic_stream::MAX_RECORD_KEYS);
             let chunk = acyclic_stream::decode_changes(record.value.as_ref())?;
-            assert_eq!(chunk.context.as_ref(), context);
+            let actual = crate::PublicationContext::from_bytes(chunk.context.as_ref())?;
+            assert_eq!(
+                actual,
+                crate::PublicationContext {
+                    records_after: 2 - index as u64,
+                    ..context
+                }
+            );
+            assert_eq!(actual.exclusive_end(index as u64)?, 3);
             decoded.extend(chunk.entries);
         }
         assert_eq!(decoded.len(), entries.len());
@@ -512,7 +613,7 @@ fn change_chunks_preserve_every_entry_and_obey_both_wire_bounds() -> TestResult 
                 metadata: vec![1; 33_000],
             },
         ];
-        assert_eq!(encode_chunks(&context, &large, &mut work)?.len(), 2);
+        assert_eq!(encode_chunks(context, &large, &mut work)?.len(), 2);
         let duplicate = [
             PreparedEntry {
                 key: Bytes::from_static(b"clipped"),
@@ -525,13 +626,13 @@ fn change_chunks_preserve_every_entry_and_obey_both_wire_bounds() -> TestResult 
                 metadata: vec![1],
             },
         ];
-        assert_eq!(encode_chunks(&context, &duplicate, &mut work)?.len(), 2);
+        assert_eq!(encode_chunks(context, &duplicate, &mut work)?.len(), 2);
         let oversized = [PreparedEntry {
             key: Bytes::new(),
             operation: "update",
             metadata: vec![0; acyclic_stream::MAX_RECORD_BYTES],
         }];
-        assert!(encode_chunks(&context, &oversized, &mut work).is_err());
+        assert!(encode_chunks(context, &oversized, &mut work).is_err());
     }
     Ok(())
 }
