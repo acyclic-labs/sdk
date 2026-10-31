@@ -112,14 +112,16 @@ enum FlightState {
 
 struct Flight {
     state: Mutex<FlightState>,
+    epoch: u64,
     maximum_waiters: u32,
     #[cfg(not(target_arch = "wasm32"))]
     _allocation: Option<NativeAllocation>,
 }
 
 impl Flight {
-    fn new(maximum_waiters: u32) -> Self {
+    fn new(maximum_waiters: u32, epoch: u64) -> Self {
         Self {
+            epoch,
             state: Mutex::new(FlightState::Running(Owned::new(
                 Vec::new(),
                 KernelOwnedAllocation::Standalone,
@@ -321,6 +323,7 @@ impl<S> CachedObjectStore<S> {
             inner,
             shared: Arc::new(Namespace {
                 id: 0,
+                epoch: crate::sync::atomic::AtomicU64::new(0),
                 pool: Arc::new(Shared {
                     options,
                     state: Mutex::new(CacheState::default()),
@@ -348,6 +351,7 @@ impl<S> CachedObjectStore<S> {
             inner,
             shared: Arc::new(Namespace {
                 id,
+                epoch: crate::sync::atomic::AtomicU64::new(0),
                 pool: Arc::clone(&self.shared.pool),
             }),
         })
@@ -381,7 +385,8 @@ impl<S> CachedObjectStore<S> {
         })
     }
 
-    /// Discards this namespace's resident bytes. In-flight reads remain valid.
+    /// Discards this namespace's resident bytes. In-flight reads remain valid,
+    /// but fills started before this clear cannot restore canonical residency.
     pub fn clear(&self) -> Result<(), ObjectStoreError> {
         let detached = {
             let mut state = self.lock_state()?;
@@ -442,7 +447,10 @@ impl<S> CachedObjectStore<S> {
                 )
             })
             .transpose()?;
-        let flight = Flight::new(self.shared.pool.options.maximum_waiters_per_object);
+        let flight = Flight::new(
+            self.shared.pool.options.maximum_waiters_per_object,
+            self.shared.fill_epoch(),
+        );
         #[cfg(not(target_arch = "wasm32"))]
         let flight = Flight {
             _allocation: allocation,
@@ -473,7 +481,12 @@ impl<S> CachedObjectStore<S> {
         Ok(true)
     }
 
-    fn insert(&self, object_id: ObjectId, bytes: OwnedBytes) -> Result<bool, ObjectStoreError> {
+    fn insert(
+        &self,
+        object_id: ObjectId,
+        bytes: OwnedBytes,
+        epoch: u64,
+    ) -> Result<bool, ObjectStoreError> {
         let object_id = self.shared.key(object_id);
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if length > self.shared.pool.options.maximum_bytes {
@@ -482,6 +495,9 @@ impl<S> CachedObjectStore<S> {
         let mut state = self.lock_state()?;
         let cutoff = state.clock;
         loop {
+            if epoch != self.shared.fill_epoch() {
+                return Ok(false);
+            }
             if let Some(existing) = state.entries.get(&object_id) {
                 if existing.bytes != bytes {
                     return Err(ObjectStoreError::Corrupt);

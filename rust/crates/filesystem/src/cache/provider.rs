@@ -97,8 +97,9 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
             .check()
             .map_err(crate::async_storage::object_error)?;
         let retained = bytes.clone();
+        let epoch = self.shared.fill_epoch();
         self.inner.put(object_id, bytes, context).await?;
-        self.insert(object_id, retained)?;
+        self.insert(object_id, retained, epoch)?;
         Ok(())
     }
 
@@ -113,8 +114,9 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
             .map_err(crate::async_storage::object_error)?;
         let object_id = object.object_id();
         let retained = object.bytes().clone();
+        let epoch = self.shared.fill_epoch();
         self.inner.put_hashed(object, context).await?;
-        self.insert(object_id, retained)?;
+        self.insert(object_id, retained, epoch)?;
         Ok(())
     }
 
@@ -131,9 +133,10 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         objects: &[crate::HashedObject],
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
+        let epoch = self.shared.fill_epoch();
         self.inner.put_many_hashed(objects, context).await?;
         for object in objects {
-            self.insert(object.object_id(), object.bytes().clone())?;
+            self.insert(object.object_id(), object.bytes().clone(), epoch)?;
         }
         Ok(())
     }
@@ -146,9 +149,10 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
             .accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
+        let epoch = self.shared.fill_epoch();
         self.inner.put_many(writes, context).await?;
         for write in writes {
-            self.insert(write.object_id, write.bytes.clone())?;
+            self.insert(write.object_id, write.bytes.clone(), epoch)?;
         }
         Ok(())
     }

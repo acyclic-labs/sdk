@@ -1,6 +1,7 @@
 //! One bounded residency and fill pool, keyed by provider-owned namespaces.
 
 use super::*;
+use crate::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct CacheEntry {
     pub(super) bytes: OwnedBytes,
@@ -139,6 +140,7 @@ pub(super) struct Shared {
 pub(super) struct Namespace {
     pub(super) id: u64,
     pub(super) pool: Arc<Shared>,
+    pub(super) epoch: AtomicU64,
 }
 
 impl Drop for Namespace {
@@ -156,6 +158,10 @@ impl Drop for Namespace {
 }
 
 impl Namespace {
+    pub(super) fn fill_epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Relaxed)
+    }
+
     pub(super) fn key<T>(&self, key: T) -> (u64, T) {
         (self.id, key)
     }
@@ -164,6 +170,7 @@ impl Namespace {
         &self,
         state: &mut CacheState,
     ) -> Result<DetachedEntries, ObjectStoreError> {
+        let next_epoch = increment(self.fill_epoch())?;
         let canonical = state
             .entries
             .partition(self.id)
@@ -210,6 +217,9 @@ impl Namespace {
         state.resident_canonical_bytes = canonical_remaining;
         state.resident_decoded_bytes = decoded_remaining;
         state.resident_bytes = remaining;
+        // Admission checks this exact namespace under the same pool lock.
+        // A fill that started before clear may finish, but cannot repopulate it.
+        self.epoch.store(next_epoch, Ordering::Relaxed);
         Ok(detached)
     }
 }

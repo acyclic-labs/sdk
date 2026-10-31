@@ -37,7 +37,11 @@ fn isolated(alias: bool) {
         Arc::get_mut(&mut second.shared).unwrap().id = first.shared.id;
     }
     first
-        .insert(object(1), OwnedBytes::from_static(b"one"))
+        .insert(
+            object(1),
+            OwnedBytes::from_static(b"one"),
+            first.shared.fill_epoch(),
+        )
         .unwrap();
     let key = DecodedCacheKey::new::<u64>(object(1), Default::default());
     first.decoded_admit(key, decoded()).unwrap();
@@ -48,7 +52,11 @@ fn isolated(alias: bool) {
     );
     assert!(second.decoded_get(key).unwrap().is_none(), "decoded alias");
     second
-        .insert(object(2), OwnedBytes::from_static(b"two"))
+        .insert(
+            object(2),
+            OwnedBytes::from_static(b"two"),
+            second.shared.fill_epoch(),
+        )
         .unwrap();
     first.clear().unwrap();
     assert!(!first.cached_contains(object(1)).unwrap());
@@ -81,7 +89,11 @@ fn pooled_eviction_preserves_an_active_payload() {
     let first = store(1, 1);
     let second = first.share_cache_with(()).unwrap();
     first
-        .insert(object(1), OwnedBytes::from_static(b"one"))
+        .insert(
+            object(1),
+            OwnedBytes::from_static(b"one"),
+            first.shared.fill_epoch(),
+        )
         .unwrap();
     let ReadPlan::Hit(held) = first
         .read_plan(
@@ -94,7 +106,11 @@ fn pooled_eviction_preserves_an_active_payload() {
         panic!("missing resident object")
     };
     second
-        .insert(object(2), OwnedBytes::from_static(b"two"))
+        .insert(
+            object(2),
+            OwnedBytes::from_static(b"two"),
+            second.shared.fill_epoch(),
+        )
         .unwrap();
     assert!(!first.cached_contains(object(1)).unwrap());
     assert_eq!(held.as_ref(), b"one");
@@ -195,7 +211,11 @@ fn drops_after_unlock(retirement: Retirement) -> bool {
         Retirement::Clear => cache.clear().unwrap(),
         Retirement::Eviction => {
             cache
-                .insert(object(2), OwnedBytes::from_static(b"two"))
+                .insert(
+                    object(2),
+                    OwnedBytes::from_static(b"two"),
+                    cache.shared.fill_epoch(),
+                )
                 .unwrap();
         }
     }
@@ -215,7 +235,11 @@ fn reentrant_eviction_preserves_new_admission() {
             };
             assert!(
                 store
-                    .insert(self.target, OwnedBytes::from_static(b"new"))
+                    .insert(
+                        self.target,
+                        OwnedBytes::from_static(b"new"),
+                        store.shared.fill_epoch()
+                    )
                     .unwrap()
             );
         }
@@ -242,7 +266,11 @@ fn reentrant_eviction_preserves_new_admission() {
         );
         assert_eq!(
             cache
-                .insert(requested, OwnedBytes::from_static(b"new"))
+                .insert(
+                    requested,
+                    OwnedBytes::from_static(b"new"),
+                    cache.shared.fill_epoch()
+                )
                 .unwrap(),
             same_key
         );
@@ -265,10 +293,18 @@ fn namespace_retirement_preserves_peers_leases_and_unlocked_destruction() {
     let first = store(4, 2);
     let second = first.share_cache_with(()).unwrap();
     first
-        .insert(object(1), OwnedBytes::from_static(b"one"))
+        .insert(
+            object(1),
+            OwnedBytes::from_static(b"one"),
+            first.shared.fill_epoch(),
+        )
         .unwrap();
     second
-        .insert(object(2), OwnedBytes::from_static(b"two"))
+        .insert(
+            object(2),
+            OwnedBytes::from_static(b"two"),
+            second.shared.fill_epoch(),
+        )
         .unwrap();
     let key = DecodedCacheKey::new::<u64>(object(1), Default::default());
     drop(first.decoded_admit(key, decoded()).unwrap());
