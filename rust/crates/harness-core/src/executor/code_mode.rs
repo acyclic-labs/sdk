@@ -241,6 +241,21 @@ impl StockExecution<'_> {
                     return Err(error);
                 }
             }
+            let callback_bytes =
+                acyclic_native_runtime::arc_allocation_bytes::<OriginalCodeHost<'_, '_>>()
+                    .checked_add(acyclic_native_runtime::arc_allocation_bytes::<
+                        NativeCodeControl,
+                    >())
+                    .ok_or_else(|| Error::tool_rejected("code callback storage overflow"))?;
+            // Both concrete Arc allocations belong to this invocation. They
+            // retire after the run and all nested host calls, without moving
+            // their custody onto the shared interpreter's session owner.
+            let _callback_custody = work.claim(
+                callback_bytes as u64,
+                2,
+                acyclic_fs::WorkCounters::UNCHARGED,
+            )?;
+            let cancelled = work.cancellation_wait()?;
             let progress = Mutex::new(None);
             let host = Arc::new(OriginalCodeHost {
                 execution: self,
@@ -255,7 +270,10 @@ impl StockExecution<'_> {
                     invocation.arguments.get("input").unwrap_or(&Value::Null),
                     &tools,
                     host,
-                    Arc::new(NativeCodeControl { work: work.clone() }),
+                    Arc::new(NativeCodeControl {
+                        work: work.clone(),
+                        cancelled: Mutex::new(cancelled),
+                    }),
                 )
                 .await;
             if let Some(progress) = progress
@@ -533,6 +551,7 @@ impl StockExecution<'_> {
 #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
 struct NativeCodeControl {
     work: acyclic_fs::NativeMaterializationWork,
+    cancelled: Mutex<acyclic_fs::Cancelled<'static>>,
 }
 
 #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
@@ -544,16 +563,18 @@ impl crate::code_mode::CodeControl for NativeCodeControl {
         })?;
         Ok(())
     }
-    fn interrupted(&self) -> BoxFuture<'_, Error> {
-        Box::pin(async move {
-            match self.work.cancellation_wait() {
-                Ok(cancelled) => {
-                    cancelled.await;
-                    Error::InteractionRejected(crate::InteractionRejection::Cancelled)
-                }
-                Err(error) => error.into(),
-            }
-        })
+    fn poll_interrupted(&self, context: &mut std::task::Context<'_>) -> std::task::Poll<Error> {
+        use std::{future::Future, pin::Pin, task::Poll};
+        let mut cancelled = self
+            .cancelled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match Pin::new(&mut *cancelled).poll(context) {
+            Poll::Ready(()) => Poll::Ready(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            )),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -590,12 +611,12 @@ impl crate::code_mode::CodeHost for OriginalCodeHost<'_, '_> {
     fn dispatch(
         &self,
         invocation: ToolInvocation,
-    ) -> BoxFuture<'_, Result<crate::code_mode::CodeHostResult>> {
-        Box::pin(async move {
-            let work = self
-                .execution
-                .native_work()
-                .ok_or_else(|| Error::tool_rejected("code host lost original native custody"))?;
+    ) -> Result<crate::NativeFutureBundle<'_, crate::code_mode::CodeHostResult>> {
+        let work = self
+            .execution
+            .native_work()
+            .ok_or_else(|| Error::tool_rejected("code host lost original native custody"))?;
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let mut execution = StockExecution::ordinary(self.execution.stock);
             execution.context = self.execution.context;

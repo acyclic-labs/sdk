@@ -16,14 +16,14 @@ pub use ordered::{NativeOrdered, OrderedFutureKey};
 #[must_use = "native futures must be awaited or dropped"]
 pub struct NativeFutureBundle<'a, T> {
     future: BoxProviderFuture<'a, Result<T>>,
-    custody: NativeAllocation,
+    custody: Option<NativeAllocation>,
 }
 
 impl<'a, T> NativeFutureBundle<'a, T> {
     /// Borrows the future's original ledger.
     #[must_use]
-    pub const fn work(&self) -> &NativeMaterializationWork {
-        self.custody.work()
+    pub fn work(&self) -> Option<&NativeMaterializationWork> {
+        self.custody.as_ref().map(NativeAllocation::work)
     }
 
     /// Admits the concrete allocation before invoking its builder.
@@ -31,13 +31,29 @@ impl<'a, T> NativeFutureBundle<'a, T> {
     where
         F: Future<Output = Result<T>> + Send + 'a,
     {
-        work.remaining()?;
-        let bytes = std::mem::size_of::<F>() as u64;
-        let custody = work.claim(
-            bytes,
-            u64::from(bytes != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )?;
+        Self::new_optional(Some(work), build)
+    }
+
+    /// Uses the same allocation path for callers without native accounting.
+    /// Custody remains outside the boxed future until its allocation is freed.
+    pub fn new_optional<F>(
+        work: Option<&NativeMaterializationWork>,
+        build: impl FnOnce() -> F,
+    ) -> Result<Self>
+    where
+        F: Future<Output = Result<T>> + Send + 'a,
+    {
+        let custody = work
+            .map(|work| {
+                work.remaining()?;
+                let bytes = std::mem::size_of::<F>() as u64;
+                work.claim(
+                    bytes,
+                    u64::from(bytes != 0),
+                    acyclic_fs::WorkCounters::UNCHARGED,
+                )
+            })
+            .transpose()?;
         Ok(Self {
             future: Box::pin(build()),
             custody,
@@ -150,7 +166,7 @@ mod tests {
             dropped: &dropped,
             baseline,
         })?;
-        assert!(future.work().shares_ledger(&work));
+        assert!(future.work().expect("original ledger").shares_ledger(&work));
         drop(future);
         assert!(dropped.load(Ordering::SeqCst));
         assert_eq!(work.remaining()?.peak_allocation_bytes, baseline);
