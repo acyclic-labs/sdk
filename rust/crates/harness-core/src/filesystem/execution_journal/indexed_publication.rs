@@ -138,6 +138,7 @@ where
             head_tail,
             base,
             digest,
+            contributions: &[],
         };
         let committed = cut
             .publish(

@@ -1,6 +1,110 @@
 use super::*;
 
 #[tokio::test]
+async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positions() -> Result<()> {
+    let execution = StreamPath::new("contributed/execution")?;
+    let head = StreamPath::new("contributed/head")?;
+    let pages = StreamPath::new("contributed/pages")?;
+    let context = StreamPath::new("contributed/context")?;
+    let epoch = StreamPath::new("contributed/epoch")?;
+    let observation = OwnedBytes::from_static(b"observation");
+    let checkpoint = OwnedBytes::from_static(b"checkpoint");
+    let records = [OwnedBytes::from_static(b"index page")];
+    let envelope = OwnedBytes::from_static(b"original context envelope");
+    let snapshot = OwnedBytes::from_static(b"original epoch checkpoint");
+    for omitted in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let seed = provider
+            .append(acyclic_stream::AppendRequest {
+                path: context.clone(),
+                records: vec![OwnedBytes::from_static(b"prior context").into()],
+                if_tail: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+            })
+            .await?;
+        let acyclic_stream::AppendOutcome::Committed(seed) = seed else {
+            unreachable!("unconditional initial append refused")
+        };
+        let contributions = [
+            Contribution {
+                condition: CommitCondition::Head {
+                    path: context.clone(),
+                    expected: 1,
+                    commit_id: seed.commit_id,
+                },
+                record: &envelope,
+            },
+            Contribution {
+                condition: CommitCondition::Absent {
+                    path: epoch.clone(),
+                },
+                record: &snapshot,
+            },
+        ];
+        let cut = Cut {
+            operation: OperationId::from_bytes([11; 16]),
+            execution: &execution,
+            head: &head,
+            pages: &pages,
+            execution_condition: CommitCondition::Absent {
+                path: execution.clone(),
+            },
+            head_condition: CommitCondition::Absent { path: head.clone() },
+            execution_tail: 0,
+            head_tail: 0,
+            base: 0,
+            digest: [11; 32],
+            contributions: &contributions,
+        };
+        let mut work = None;
+        let mut request = cut.request(
+            CommitCondition::Absent {
+                path: pages.clone(),
+            },
+            &records,
+            Some((&observation, &checkpoint)),
+            &mut work,
+        )?;
+        assert_eq!(request.0.conditions.len(), 5);
+        assert_eq!(request.0.mutations.len(), 5);
+        if let Some(index) = omitted {
+            request.0.mutations.remove(index);
+        }
+        let original = request.0.clone();
+        let outcome = provider.commit(request.0).await?;
+        let confirmed = cut.confirm(&outcome, 0, &records, &observation, &checkpoint);
+        if omitted.is_some() {
+            assert!(
+                matches!(confirmed, Err(Error::Indeterminate(operation)) if operation == cut.operation)
+            );
+        } else {
+            assert!(confirmed?);
+            let CommitOutcome::Committed(mut receipt) = outcome else {
+                unreachable!()
+            };
+            receipt.appends.swap(3, 4);
+            assert!(matches!(
+                cut.confirm(
+                    &CommitOutcome::Committed(receipt),
+                    0,
+                    &records,
+                    &observation,
+                    &checkpoint
+                ),
+                Err(Error::Indeterminate(_))
+            ));
+            let mut racing = original;
+            racing.idempotency_key = acyclic_stream::IdempotencyKey::unique();
+            let refused = provider.commit(racing).await?;
+            assert!(matches!(refused, CommitOutcome::Conflict(_)));
+            assert!(!cut.confirm(&refused, 0, &records, &observation, &checkpoint)?);
+        }
+        drop(request.1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() -> Result<()> {
     let execution = StreamPath::new("atomic/execution")?;
     let head = StreamPath::new("atomic/head")?;
@@ -24,6 +128,7 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
         head_tail: 0,
         base: 0,
         digest: [9; 32],
+        contributions: &[],
     };
     // Each control submits the original request through the real provider.
     // Omitting one member still produces a valid Stream commit, but cannot
@@ -122,6 +227,7 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
         head_tail: 0,
         base: 0,
         digest: [7; 32],
+        contributions: &[],
     };
     let mut old_work = None;
     let old = cut.request(
