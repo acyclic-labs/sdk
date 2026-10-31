@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "owner": "del-tooling",
+  "owner": "SDK tooling",
   "decision": "Remove only orphan on-demand qualifier filters for merged product retirements. No test body is deleted by this routing correction.",
   "retirements": [
     {
