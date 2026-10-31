@@ -15,6 +15,25 @@ pub(super) struct Cut<'a> {
     pub(super) head_tail: u64,
     pub(super) base: u64,
     pub(super) digest: [u8; 32],
+    pub(super) contributions: &'a [Contribution<'a>],
+}
+
+/// One already-encoded record and its original optimistic publication fence.
+/// This adds no submission, index or authority; its producer owns the payload.
+pub(super) struct Contribution<'a> {
+    pub(super) condition: CommitCondition,
+    pub(super) record: &'a OwnedBytes,
+}
+
+impl Contribution<'_> {
+    fn target(&self) -> Result<(&StreamPath, u64)> {
+        match &self.condition {
+            CommitCondition::Head { path, expected, .. }
+            | CommitCondition::Tail { path, expected } => Ok((path, *expected)),
+            CommitCondition::Absent { path } => Ok((path, 0)),
+            CommitCondition::Present { .. } => Err(invalid(None)),
+        }
+    }
 }
 
 impl Cut<'_> {
@@ -59,6 +78,17 @@ impl Cut<'_> {
             add_records(&mut request, self.head, std::slice::from_ref(checkpoint))?;
         }
         add_records(&mut request, self.pages, records)?;
+        if publication.is_some() {
+            for contribution in self.contributions {
+                let (path, _) = contribution.target()?;
+                crate::distributed::add_condition(&mut request, contribution.condition.clone())?;
+                add_records(
+                    &mut request,
+                    path,
+                    std::slice::from_ref(contribution.record),
+                )?;
+            }
+        }
         Ok(request)
     }
 
@@ -177,7 +207,10 @@ impl Cut<'_> {
         match outcome {
             CommitOutcome::Conflict(_) => Ok(false),
             CommitOutcome::Committed(receipt) => {
-                let valid = match receipt.appends.as_slice() {
+                if receipt.appends.len() != 3 + self.contributions.len() {
+                    return Err(Error::Indeterminate(self.operation));
+                }
+                let valid = match &receipt.appends[..3] {
                     [execution, head, pages] => {
                         confirms(
                             execution,
@@ -195,6 +228,17 @@ impl Cut<'_> {
                 };
                 if !valid || !receipt.forks.is_empty() {
                     return Err(Error::Indeterminate(self.operation));
+                }
+                for (append, contribution) in receipt.appends[3..].iter().zip(self.contributions) {
+                    let (path, start) = contribution.target()?;
+                    if !confirms(
+                        append,
+                        path,
+                        start,
+                        std::slice::from_ref(contribution.record),
+                    ) {
+                        return Err(Error::Indeterminate(self.operation));
+                    }
                 }
                 Ok(true)
             }
