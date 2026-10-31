@@ -9,7 +9,7 @@ mod error {
 }
 use acyclic_stream::wire;
 pub use error::StreamError;
-#[path = "../src/session/sync.rs"]
+#[path = "../src/runtime/sync.rs"]
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};
 
@@ -29,7 +29,7 @@ mod gate {
     include!("gate.rs");
 }
 mod signal {
-    include!("../src/session/signal.rs");
+    include!("../src/runtime/signal.rs");
     include!("signal.rs");
 }
 type ReleaseSender = Arc<signal::Signal<credit::Released>>;
