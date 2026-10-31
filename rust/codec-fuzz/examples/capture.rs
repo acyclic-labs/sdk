@@ -195,7 +195,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "harness_codecs",
             name,
             &bytes,
-            "Filesystem execution observation, fixed checkpoint metadata, immutable index node and model cell writers; metadata parsing does not authenticate the proof or node digest",
+            "Filesystem execution observation, checkpoint, index node, model/summary cell and step-link writers; metadata parsing does not authenticate proofs, node digests or selected-step authority",
             &mut manifest,
         )?;
     }
