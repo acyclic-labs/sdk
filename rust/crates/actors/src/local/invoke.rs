@@ -6,9 +6,8 @@ use crate::{
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommittedMutation, FollowRequest,
-    IdempotencyKey, ReadRequest, Record, Revision, RevisionCut, StreamError, StreamPath,
-    StreamProvider,
+    CommitCondition, CommitId, CommitMutation, CommittedMutation, FollowRequest, IdempotencyKey,
+    ReadRequest, Record, Revision, RevisionCut, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -175,12 +174,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 let binding = acyclic_stream::request::commit_binding_with(&mut request, |_| {
                     Ok::<(), StreamError>(())
                 })??;
-                let CommitOutcome::Committed(receipt) = self.provider.commit(request).await? else {
+                let acyclic_stream::AcceptedCommitOutcome::Committed { receipt, envelope } =
+                    self.provider.commit_accepted(request).await?
+                else {
                     return Err(Error::Conflict);
                 };
-                // Compact receipts carry no authenticated bodies. Recover the original
-                // immutable fact and join it to the canonical request, never caller bytes.
-                let envelope = self.provider.read_commit(receipt.commit_id).await?;
+                // Both views come from the original acceptance or exact-key replay.
+                // Join that fact to the request, never reconstructing caller bodies.
                 if envelope.commit_id != receipt.commit_id
                     || envelope.committed_at_micros != receipt.committed_at_micros
                     || !binding.matches_with(&envelope, |_| Ok::<(), StreamError>(()))??

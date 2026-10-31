@@ -14,6 +14,13 @@ Code and bindings are updated by a full configuration CAS. Checkpoint schema
 compatibility or migration is checked before activation; a failed update keeps
 the previous version active, and paused subscriptions remain paused.
 
+Local `Store::enqueue_invoke` requires the provider's accepted Commit
+projection. It retains the original inbox record and activation from that one
+publication, including on exact replay. Enqueue performs one state view and one
+write, with no following commit read. Completion still validates the original
+co-committed state and reply through the existing receipt path. An unsupported
+provider refuses before enqueue effects.
+
 Deployment and update requests can carry `EntrySource`: an exact selected
 immutable Objects digest, descriptor length, environment and entry. Its entry
 must match the deployment namespace or Worker name. It identifies the complete

@@ -238,6 +238,9 @@ impl LocalStream {
                     result.as_ref().map(|execution| &execution.outcome),
                     Ok(crate::WriteOutcome::Append(AppendOutcome::Committed(_))
                         | crate::WriteOutcome::Commit(CommitOutcome::Committed(_))
+                        | crate::WriteOutcome::CommitAccepted(
+                            crate::AcceptedCommitOutcome::Committed { .. }
+                        )
                         | crate::WriteOutcome::Fork(_))
                 )
             {

@@ -125,6 +125,7 @@ impl StreamProvider for Remote {
         request: crate::WriteRequest,
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
+        let accepted = matches!(&request, crate::WriteRequest::CommitAccepted(_));
         match request {
             crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
@@ -175,20 +176,22 @@ impl StreamProvider for Remote {
                 },
                 crate::WriteOutcome::Fork,
             )),
-            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
-                async move {
-                    let body = wire_codec::commit_to_wire(&request);
+            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
+                Box::pin(async move {
+                    let mut body = wire_codec::commit_to_wire(&request);
+                    body.include_envelope = accepted;
                     let response = self
                         .call(body, |mut service, request| async move {
                             service.commit(request).await
                         })
                         .await?;
-                    let outcome = wire_codec::commit_outcome_from_wire(response)?;
-                    self.sessions.revisions().committed(&outcome);
+                    let outcome = wire_codec::commit_write_outcome_from_wire(response, accepted)?;
+                    if let Some(receipt) = outcome.commit_receipt() {
+                        self.sessions.revisions().observe(&receipt.revision);
+                    }
                     Ok(outcome)
-                },
-                crate::WriteOutcome::Commit,
-            )),
+                })
+            }
         }
     }
 

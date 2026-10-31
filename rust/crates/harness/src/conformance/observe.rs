@@ -118,7 +118,15 @@ impl Observed {
         result
     }
 
-    async fn commit_inner(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+    async fn commit_inner(
+        &self,
+        command: acyclic_stream::WriteRequest,
+    ) -> Result<acyclic_stream::WriteOutcome, StreamError> {
+        let request = match &command {
+            acyclic_stream::WriteRequest::Commit(request)
+            | acyclic_stream::WriteRequest::CommitAccepted(request) => request,
+            _ => return Err(StreamError::InvalidArgument),
+        };
         let index = if let Some(capture) = &self.capture {
             let mut capture = capture.lock().unwrap_or_else(|error| error.into_inner());
             // Keep captured order and fault ordinals at the same boundary even
@@ -142,10 +150,10 @@ impl Observed {
             Some(Fault::Before) => Err(StreamError::Unavailable),
             Some(Fault::Refuse) => Err(StreamError::AccessDenied),
             Some(Fault::After) => {
-                self.inner.commit(request).await?;
+                self.inner.write(command).await?;
                 Err(StreamError::Unavailable)
             }
-            None => self.inner.commit(request).await,
+            None => self.inner.write(command).await,
         }
     }
 }
@@ -201,15 +209,11 @@ impl StreamProvider for Observed {
                 },
                 acyclic_stream::WriteOutcome::Fork,
             )),
-            acyclic_stream::WriteRequest::Commit(request) => {
-                Box::pin(futures::TryFutureExt::map_ok(
-                    async move {
-                        self.requests.record(RequestClass::Data);
-                        self.io(self.commit_inner(request)).await
-                    },
-                    acyclic_stream::WriteOutcome::Commit,
-                ))
-            }
+            command @ (acyclic_stream::WriteRequest::Commit(_)
+            | acyclic_stream::WriteRequest::CommitAccepted(_)) => Box::pin(async move {
+                self.requests.record(RequestClass::Data);
+                self.io(self.commit_inner(command)).await
+            }),
         }
     }
 

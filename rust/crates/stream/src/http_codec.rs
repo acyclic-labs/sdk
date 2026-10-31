@@ -106,6 +106,9 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
 
 fn request_json_commit(input: &[u8]) -> Result<Value> {
     let request = wire::CommitRequest::decode(input).map_err(|_| "invalid_argument")?;
+    if request.include_envelope {
+        return Err("unsupported");
+    }
     let deadline = request.deadline_unix_millis;
     let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
     crate::request::normalize_commit(&mut request).map_err(|error| error.code())?;

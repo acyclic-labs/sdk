@@ -369,6 +369,7 @@ impl StreamProvider for MemoryStream {
         request: crate::WriteRequest,
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
+        let accepted = matches!(&request, crate::WriteRequest::CommitAccepted(_));
         match request {
             crate::WriteRequest::Append(request) => {
                 Box::pin(acyclic_observability::operation_future!(
@@ -396,15 +397,19 @@ impl StreamProvider for MemoryStream {
                     }
                 ))
             }
-            crate::WriteRequest::Commit(request) => {
+            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
                 Box::pin(acyclic_observability::operation_future!(
                     "acyclic.stream.commit",
                     StreamError::code,
                     acyclic_native_runtime::obs::OperationSpan::new,
                     async move {
-                        self.commit_inner(request, None)
-                            .await
-                            .map(|(outcome, _)| crate::WriteOutcome::Commit(outcome))
+                        let mut request = request;
+                        let digest = self.commit_request_digest(&mut request)?;
+                        let _publication = self.publication.lock().await;
+                        let mut state = self.state.write().await;
+                        self.plan_commit_locked(&mut state, &request, digest, None, accepted)?
+                            .install(self, &mut state, false)
+                            .map(|(outcome, _)| outcome)
                     }
                 ))
             }
@@ -500,7 +505,14 @@ impl crate::NativeStreamProvider for MemoryStream {
         F: FnMut() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
     {
-        self.guarded_commit(request, deadline, meter, before, std::convert::identity)
+        self.guarded_commit(
+            request,
+            deadline,
+            meter,
+            before,
+            false,
+            crate::WriteOutcome::into_commit,
+        )
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_prepare_commit(
@@ -560,6 +572,7 @@ impl crate::NativeStreamProvider for MemoryStream {
         request: crate::WriteRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::WriteOutcome> {
+        let accepted = matches!(&request, crate::WriteRequest::CommitAccepted(_));
         match request {
             crate::WriteRequest::Append(request) => Work::start(
                 meter,
@@ -594,13 +607,16 @@ impl crate::NativeStreamProvider for MemoryStream {
                     )
                 },
             ),
-            crate::WriteRequest::Commit(request) => self.guarded_commit(
-                request,
-                None,
-                meter,
-                || futures::future::ready(Ok(())),
-                crate::WriteOutcome::Commit,
-            ),
+            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
+                self.guarded_commit(
+                    request,
+                    None,
+                    meter,
+                    || futures::future::ready(Ok(())),
+                    accepted,
+                    Ok,
+                )
+            }
             crate::WriteRequest::Fork(_) => crate::NativeProviderFuture::ready_observed(
                 crate::native::span!("acyclic.stream.fork"),
                 Ok(Err(StreamError::Unsupported)),
@@ -618,11 +634,12 @@ impl MemoryStream {
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
+        accepted: bool,
         convert: C,
     ) -> crate::NativeProviderFuture<'_, T, E>
     where
         T: Send + 'static,
-        C: FnOnce(CommitOutcome) -> T + Send + 'static,
+        C: FnOnce(crate::WriteOutcome) -> Result<T, StreamError> + Send + 'static,
         E: From<StreamError> + Send + 'static,
         F: FnMut() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
@@ -649,12 +666,18 @@ impl MemoryStream {
                                     let IdempotencyOutcome::Commit(value) = &replay.result else {
                                         return Err(E::from(StreamError::IdempotencyMismatch));
                                     };
-                                    return provider
+                                    let (receipt, mut claim) = provider
                                         .receipt(value, provider.revisions.at(replay.index))
-                                        .map(|(receipt, claim)| {
-                                            (CommitOutcome::Committed(receipt), claim)
-                                        })
-                                        .map_err(E::from);
+                                        .map_err(E::from)?;
+                                    let envelope = provider
+                                        .selected_envelope(value, accepted, &mut claim)
+                                        .map_err(E::from)?;
+                                    return commit_projection(
+                                        CommitOutcome::Committed(receipt),
+                                        envelope,
+                                    )
+                                    .map(|outcome| (outcome, claim))
+                                    .map_err(E::from);
                                 }
                                 state.decision
                             };
@@ -677,13 +700,16 @@ impl MemoryStream {
                                 .sum();
                             work.reserve_write(bytes).map_err(E::from)?;
                             provider
-                                .commit_locked(&mut state, request, digest, deadline)
+                                .plan_commit_locked(
+                                    &mut state, &request, digest, deadline, accepted,
+                                )
+                                .and_then(|plan| plan.install(&provider, &mut state, false))
                                 .map_err(E::from)
                         }
                         .await;
-                        work.finish(
-                            result.map(|(outcome, allocation)| (convert(outcome), allocation)),
-                        )
+                        work.finish(result.and_then(|(outcome, allocation)| {
+                            Ok((convert(outcome).map_err(E::from)?, allocation))
+                        }))
                     },
                     |result| crate::native::outcome(result, |_| "guarded"),
                 )

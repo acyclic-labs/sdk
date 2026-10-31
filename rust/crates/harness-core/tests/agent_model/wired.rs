@@ -954,6 +954,9 @@ impl StreamProvider for Refusing {
         std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         match request {
+            acyclic_stream::WriteRequest::CommitAccepted(_) => {
+                Box::pin(async { Err(acyclic_stream::StreamError::Unsupported) })
+            }
             acyclic_stream::WriteRequest::Append(_) => Box::pin(futures::TryFutureExt::map_ok(
                 async move { self.refuse() },
                 acyclic_stream::WriteOutcome::Append,

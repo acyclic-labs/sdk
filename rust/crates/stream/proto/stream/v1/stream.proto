@@ -372,6 +372,9 @@ message CommitRequest {
   repeated CommitMutation mutations = 2;
   bytes idempotency_key = 3;
   optional uint64 deadline_unix_millis = 4;
+  // Select the original accepted envelope in this acknowledgement. This is a
+  // response projection, excluded from the canonical command/retry digest.
+  bool include_envelope = 5;
 }
 
 message CommittedAppend {
@@ -445,6 +448,8 @@ message CommitResponse {
     CommitReceipt committed = 1;
     CommitConflicts conflict = 2;
   }
+  // Present only for a successful request selecting the accepted envelope.
+  CommittedEnvelope envelope = 3;
 }
 
 message AppendRange {

@@ -267,6 +267,7 @@ impl StreamProvider for InjectedStream {
         request: crate::WriteRequest,
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
+        let accepted = matches!(&request, crate::WriteRequest::CommitAccepted(_));
         match request {
             crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
@@ -306,13 +307,16 @@ impl StreamProvider for InjectedStream {
                 },
                 crate::WriteOutcome::Fork,
             )),
-            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
-                async move {
-                    let input = wire_codec::commit_to_wire(&request);
-                    wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
-                },
-                crate::WriteOutcome::Commit,
-            )),
+            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
+                Box::pin(async move {
+                    let mut input = wire_codec::commit_to_wire(&request);
+                    input.include_envelope = accepted;
+                    wire_codec::commit_write_outcome_from_wire(
+                        self.call("commit", input).await?,
+                        accepted,
+                    )
+                })
+            }
         }
     }
 

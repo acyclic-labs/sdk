@@ -413,6 +413,9 @@ impl StreamProvider for HttpStream {
                 },
                 crate::WriteOutcome::Fork,
             )),
+            crate::WriteRequest::CommitAccepted(_) => {
+                Box::pin(async { Err(StreamError::Unsupported) })
+            }
             crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
                     let wire = wire_codec::commit_to_wire(&request);

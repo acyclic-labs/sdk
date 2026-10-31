@@ -456,31 +456,21 @@ impl MemoryStream {
         })
     }
 
-    fn commit_locked(
-        &self,
-        state: &mut State,
-        request: CommitRequest,
-        digest: [u8; 32],
-        deadline: Option<u64>,
-    ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        self.plan_commit_locked(state, &request, digest, deadline)?
-            .install(self, state, false)
-    }
-
     fn plan_commit_locked<'a>(
         &'a self,
         state: &mut State,
         request: &'a CommitRequest,
         digest: [u8; 32],
         deadline: Option<u64>,
+        accepted: bool,
     ) -> Result<
         Decision<
-            (CommitOutcome, Allocation),
+            (crate::WriteOutcome, Allocation),
             impl FnOnce(
                 &mut State,
                 bool,
                 Option<u64>,
-            ) -> Result<(CommitOutcome, Allocation), StreamError>
+            ) -> Result<(crate::WriteOutcome, Allocation), StreamError>
             + use<'a>,
         >,
         StreamError,
@@ -492,9 +482,12 @@ impl MemoryStream {
             let IdempotencyOutcome::Commit(result) = &replay.result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            return self.receipt(result, self.revisions.at(replay.index)).map(
-                |(receipt, claim)| Decision::Returned((CommitOutcome::Committed(receipt), claim)),
-            );
+            let (receipt, mut claim) = self.receipt(result, self.revisions.at(replay.index))?;
+            let envelope = self.selected_envelope(result, accepted, &mut claim)?;
+            return Ok(Decision::Returned((
+                commit_projection(CommitOutcome::Committed(receipt), envelope)?,
+                claim,
+            )));
         }
         let deadline = deadline
             .into_iter()
@@ -535,6 +528,16 @@ impl MemoryStream {
                     (Default::default(), RetainedFact::reserved(None)),
                 );
             }
+            let result = if accepted {
+                let CommitOutcome::Conflict(conflicts) = result else {
+                    return Err(StreamError::InvalidResponse);
+                };
+                crate::WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Conflict(
+                    conflicts,
+                ))
+            } else {
+                crate::WriteOutcome::Commit(result)
+            };
             return Ok(Decision::Returned((result, output_claim)));
         }
         drop((conflicts, output_claim));
@@ -561,6 +564,10 @@ impl MemoryStream {
         );
         let mut plan = self.plan_commit(state, &request, commit_id, time)?;
         plan.bind(commit_id, time, &self.revisions.at(decision))?;
+        // Fund and copy only the requested result before the durable decision.
+        // Acceptance subsequently binds both views to that same decision.
+        let mut envelope =
+            self.selected_envelope(&plan.envelope, accepted, &mut plan.output_claim)?;
         let bytes = envelope_payload_bytes(&plan.envelope);
         let mut publication = plan.stage(
             state,
@@ -573,17 +580,50 @@ impl MemoryStream {
                     check_deadline()?;
                 }
                 let time = publication.bind_acceptance(state, at_millis)?;
+                if let Some(envelope) = &mut envelope {
+                    bind_envelope(envelope, commit_id, time);
+                }
                 let retained = self.install_retained(state, retained)?;
-                publication.publish(
+                let (outcome, allocation) = publication.publish(
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     request.idempotency_key.clone(),
                     digest,
                     time,
                     retained,
-                )
+                )?;
+                Ok((commit_projection(outcome, envelope)?, allocation))
             },
         })
+    }
+
+    fn selected_envelope(
+        &self,
+        envelope: &CommittedEnvelope,
+        selected: bool,
+        allocation: &mut Allocation,
+    ) -> Result<Option<CommittedEnvelope>, StreamError> {
+        if !selected {
+            return Ok(None);
+        }
+        let (envelope, claim) = self.copy_envelope(envelope)?;
+        self.absorb(allocation, claim)?;
+        Ok(Some(envelope))
+    }
+}
+
+fn commit_projection(
+    outcome: CommitOutcome,
+    envelope: Option<CommittedEnvelope>,
+) -> Result<crate::WriteOutcome, StreamError> {
+    match (outcome, envelope) {
+        (CommitOutcome::Committed(receipt), Some(envelope)) => {
+            Ok(crate::WriteOutcome::CommitAccepted(
+                crate::AcceptedCommitOutcome::Committed { receipt, envelope },
+            ))
+        }
+        (outcome, None) => Ok(crate::WriteOutcome::Commit(outcome)),
+        _ => Err(StreamError::InvalidResponse),
     }
 }
 

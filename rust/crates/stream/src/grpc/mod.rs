@@ -19,9 +19,8 @@ use crate::StreamProviderExt as _;
 use crate::obs;
 use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
-    commit_id, commit_outcome_from_wire, commit_outcome_to_wire, commit_to_wire,
-    envelope_from_wire, envelope_to_wire, fork_receipt_to_wire, observation_from_wire,
-    observation_wire, path, read_response_wire, record_wire,
+    commit_id, commit_to_wire, envelope_from_wire, envelope_to_wire, fork_receipt_to_wire,
+    observation_from_wire, observation_wire, path, read_response_wire, record_wire,
 };
 use crate::{
     AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,

@@ -186,6 +186,9 @@ pub fn append_outcome_from_wire(value: wire::AppendResponse) -> Result<AppendOut
 
 /// Validate a conditional commit outcome, including every conflicting cut.
 pub fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOutcome, StreamError> {
+    if value.envelope.is_some() {
+        return Err(StreamError::InvalidResponse);
+    }
     match value.outcome.ok_or(StreamError::Unavailable)? {
         wire::commit_response::Outcome::Committed(receipt) => {
             Ok(CommitOutcome::Committed(receipt_from_wire(receipt)?))
@@ -428,6 +431,7 @@ pub fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitRequest {
         mutations: value.mutations.iter().cloned().map(mutation_wire).collect(),
         idempotency_key: bytes::Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
         deadline_unix_millis: value.deadline_unix_millis,
+        include_envelope: false,
     }
 }
 
@@ -493,6 +497,61 @@ pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitRespon
     };
     wire::CommitResponse {
         outcome: Some(outcome),
+        envelope: None,
+    }
+}
+
+/// Admits the selected original acceptance, including exact receipt membership.
+/// A compact acknowledgement cannot substitute for the requested envelope.
+pub fn commit_write_outcome_from_wire(
+    mut value: wire::CommitResponse,
+    accepted: bool,
+) -> Result<crate::WriteOutcome, StreamError> {
+    if !accepted {
+        return commit_outcome_from_wire(value).map(crate::WriteOutcome::Commit);
+    }
+    let envelope = value.envelope.take();
+    let outcome = match commit_outcome_from_wire(value)? {
+        CommitOutcome::Committed(receipt) => {
+            let envelope = envelope_from_wire(envelope.ok_or(StreamError::InvalidResponse)?)?;
+            crate::persistence::validate_envelope(&envelope)
+                .map_err(|_| StreamError::InvalidResponse)?;
+            if !receipt.matches_envelope(&envelope) {
+                return Err(StreamError::InvalidResponse);
+            }
+            crate::AcceptedCommitOutcome::Committed { receipt, envelope }
+        }
+        CommitOutcome::Conflict(conflicts) => {
+            if envelope.is_some() {
+                return Err(StreamError::InvalidResponse);
+            }
+            crate::AcceptedCommitOutcome::Conflict(conflicts)
+        }
+    };
+    Ok(crate::WriteOutcome::CommitAccepted(outcome))
+}
+
+/// Encodes both projections from the same original provider result.
+pub fn commit_write_outcome_to_wire(
+    outcome: crate::WriteOutcome,
+) -> Result<wire::CommitResponse, StreamError> {
+    match outcome {
+        crate::WriteOutcome::Commit(outcome) => Ok(commit_outcome_to_wire(outcome)),
+        crate::WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Committed {
+            receipt,
+            envelope,
+        }) => {
+            if !receipt.matches_envelope(&envelope) {
+                return Err(StreamError::InvalidResponse);
+            }
+            let mut response = commit_outcome_to_wire(CommitOutcome::Committed(receipt));
+            response.envelope = Some(envelope_to_wire(envelope));
+            Ok(response)
+        }
+        crate::WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Conflict(conflicts)) => {
+            Ok(commit_outcome_to_wire(CommitOutcome::Conflict(conflicts)))
+        }
+        _ => Err(StreamError::InvalidResponse),
     }
 }
 

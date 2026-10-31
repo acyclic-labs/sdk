@@ -56,6 +56,22 @@ pub trait StreamProviderExt: StreamProvider {
         path: StreamPath,
     ) -> impl std::future::Future<Output = Result<StreamWatermarks, StreamError>> + ProviderTask;
 
+    /// Publishes the same canonical commit and selects its original accepted
+    /// envelope. An unsupported adapter refuses before effects; this operation
+    /// never emulates acceptance with a post-write read or caller request bytes.
+    fn commit_accepted(
+        &self,
+        request: CommitRequest,
+    ) -> impl std::future::Future<Output = Result<AcceptedCommitOutcome, StreamError>> + ProviderTask
+    {
+        async move {
+            match self.write(WriteRequest::CommitAccepted(request)).await? {
+                WriteOutcome::CommitAccepted(outcome) => Ok(outcome),
+                _ => Err(StreamError::InvalidResponse),
+            }
+        }
+    }
+
     /// Confirms an irreversible prefix at one captured view. A retained memory
     /// prefix is valid without asserting crash persistence.
     fn durable_receipt(

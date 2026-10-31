@@ -50,17 +50,17 @@ macro_rules! delegate {
             }
             fn write(&self, request: acyclic_stream::WriteRequest)
                 -> acyclic_stream::BoxProviderFuture<'_, std::result::Result<acyclic_stream::WriteOutcome, StreamError>> {
-                let acyclic_stream::WriteRequest::Commit(request) = request else {
+                let (acyclic_stream::WriteRequest::Commit(_) | acyclic_stream::WriteRequest::CommitAccepted(_)) = &request else {
                     return self.inner.write(request);
                 };
                 Box::pin(async move {
                     let call = self.calls.fetch_add(1, Ordering::SeqCst);
                     match self.plan.get(call).cloned().unwrap_or(Fault::None) {
-                        Fault::None => self.inner.write(acyclic_stream::WriteRequest::Commit(request)).await,
+                        Fault::None => self.inner.write(request).await,
                         Fault::Drop => Err(StreamError::Unavailable),
                         Fault::Refuse(error) => Err(error),
                         Fault::LoseAck => {
-                            self.inner.write(acyclic_stream::WriteRequest::Commit(request)).await?;
+                            self.inner.write(request).await?;
                             Err(StreamError::Unavailable)
                         }
                     }

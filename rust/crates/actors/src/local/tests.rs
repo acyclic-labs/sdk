@@ -133,7 +133,8 @@ async fn forked_prepared_publication_retains_original_provenance() -> TestResult
 #[tokio::test]
 async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reopen() -> TestResult {
     use crate::invocation::Invocation;
-    let provider = Arc::new(MemoryStream::default());
+    use acyclic_stream::testing::Counted;
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
     let store = Store::new(Arc::clone(&provider), state_root()?);
     let address = actor("invoked")?;
     place(&store, &address).await?;
@@ -143,8 +144,21 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
         Bytes::from_static(b"op"),
         Bytes::from_static(b"request"),
     )?;
-    let ticket = store.enqueue_invoke(&invocation).await?;
-    assert_eq!(store.enqueue_invoke(&invocation).await?, ticket);
+    let ticket = acyclic_stream::assert_requests!(
+        provider,
+        store.enqueue_invoke(&invocation).await,
+        data = 1,
+        control = 1
+    )?;
+    assert_eq!(
+        acyclic_stream::assert_requests!(
+            provider,
+            store.enqueue_invoke(&invocation).await,
+            data = 1,
+            control = 1
+        )?,
+        ticket
+    );
     let before = store.load(&address).await?;
     assert!(matches!(
         store.prepare_publish(

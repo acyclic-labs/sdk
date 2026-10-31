@@ -97,7 +97,7 @@ impl Before {
         let destinations = match command {
             WriteRequest::Append(request) => vec![(request.path.clone(), false)],
             WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
-            WriteRequest::Commit(request) => request
+            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => request
                 .mutations
                 .iter()
                 .map(|mutation| match mutation {

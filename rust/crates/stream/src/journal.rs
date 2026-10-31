@@ -15,16 +15,18 @@ pub(crate) async fn replay(
     provider: &MemoryStream,
     mut command: WriteRequest,
 ) -> Result<(), StreamError> {
-    if let WriteRequest::Commit(request) = &mut command {
+    if let WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) = &mut command {
         // Recovery installs an accepted decision rather than admitting a new deadline.
         request.deadline_unix_millis = None;
     }
     match provider.write(command).await? {
         WriteOutcome::Append(crate::AppendOutcome::Committed(_))
         | WriteOutcome::Fork(_)
-        | WriteOutcome::Commit(crate::CommitOutcome::Committed(_)) => Ok(()),
+        | WriteOutcome::Commit(crate::CommitOutcome::Committed(_))
+        | WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Committed { .. }) => Ok(()),
         WriteOutcome::Append(crate::AppendOutcome::TailConflict { .. })
-        | WriteOutcome::Commit(crate::CommitOutcome::Conflict(_)) => {
+        | WriteOutcome::Commit(crate::CommitOutcome::Conflict(_))
+        | WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Conflict(_)) => {
             Err(StreamError::InvalidResponse)
         }
     }
@@ -38,7 +40,7 @@ impl WriteRequest {
                 crate::request::validate_append_size(request)?;
             }
             Self::Fork(request) => crate::request::validate_fork_size(request)?,
-            Self::Commit(request) => {
+            Self::Commit(request) | Self::CommitAccepted(request) => {
                 crate::request::normalize_commit(request)?;
                 crate::request::validate_commit_shape(request)?;
             }
@@ -54,7 +56,7 @@ impl WriteRequest {
         block_len(match self {
             Self::Append(request) => append_len(request),
             Self::Fork(request) => fork_len(request),
-            Self::Commit(request) => commit_len(request),
+            Self::Commit(request) | Self::CommitAccepted(request) => commit_len(request),
         })
     }
     pub(crate) fn encode(&self, output: &mut Vec<u8>) {
@@ -68,7 +70,7 @@ impl WriteRequest {
                 header(output, 2, fork_len(request));
                 fork(output, request);
             }
-            Self::Commit(request) => {
+            Self::Commit(request) | Self::CommitAccepted(request) => {
                 header(output, 5, commit_len(request));
                 commit(output, request);
             }
