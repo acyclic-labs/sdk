@@ -45,7 +45,7 @@ impl AsyncObjectStore for PausedStore {
 
     async fn put_many(
         &self,
-        writes: &[crate::ObjectWrite],
+        writes: &[crate::storage::ObjectWrite],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         self.inner.put_many(writes, work).await?;
@@ -180,13 +180,12 @@ async fn original_fill_epoch_survives_clear_reply_loss_and_reentrant_destruction
                             .await?;
                     }
                     Fill::PutMany => {
-                        let writes =
-                            objects
-                                .each_ref()
-                                .map(|(object_id, bytes)| crate::ObjectWrite {
-                                    object_id: *object_id,
-                                    bytes: bytes.clone(),
-                                });
+                        let writes = objects.each_ref().map(|(object_id, bytes)| {
+                            crate::storage::ObjectWrite {
+                                object_id: *object_id,
+                                bytes: bytes.clone(),
+                            }
+                        });
                         cache.put_many(&writes, &mut work).await?;
                     }
                     Fill::PutManyHashed => {
