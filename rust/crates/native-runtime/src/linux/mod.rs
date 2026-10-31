@@ -7,7 +7,6 @@
 
 use std::fs::File;
 use std::io;
-use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -107,11 +106,6 @@ pub(super) fn read_at_validated(
         }
         Ok(count)
     }
-}
-
-pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
-    validate_io_range(offset, bytes.len())?;
-    file.write_all_at(bytes, offset)
 }
 
 fn chunk_owned_writes(writes: Vec<OwnedWrite>) -> impl Iterator<Item = io::Result<OwnedWrite>> {

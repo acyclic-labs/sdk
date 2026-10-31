@@ -1,5 +1,9 @@
 use crate::*;
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) use operations::write_all_in_place;
 pub(crate) use operations::write_bounded_in_place;
+#[cfg(all(test, target_os = "linux", target_pointer_width = "64"))]
+pub(crate) use range::read_bounded_slice;
 #[cfg(test)]
 pub(crate) use range::read_bounded_spare;
 pub(crate) use range::validate_prepared_read_range;

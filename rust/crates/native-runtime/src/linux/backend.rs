@@ -247,7 +247,7 @@ impl Owner {
             skip -= covered;
             let rest = bytes.get(covered..).ok_or(io::ErrorKind::InvalidData)?;
             if !rest.is_empty() {
-                file.write_all_at(rest, offset)?;
+                crate::file::write_all_in_place(file, offset, rest, None)?;
                 offset += rest.len() as u64;
             }
         }
