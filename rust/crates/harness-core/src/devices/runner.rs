@@ -49,11 +49,13 @@ impl DeviceLink for acyclic_stream::session::ActorSocket {
 /// Runs one `shell` command on the device: the same native process runner a
 /// local `shell` call uses.
 pub trait DeviceShell: ProviderPlatform {
+    /// The exact selected volume retained by the original Machine admission.
+    fn selected_volume(&self) -> &crate::conversation::VolumeRef;
+
     /// Opens the original Machine output stream. Polling follows output credit;
     /// dropping it retains the Machine provider's cancellation and cleanup owner.
     fn start(
         &self,
-        op: OperationId,
         input: ShellInput,
         deadline_epoch_ms: Option<u64>,
     ) -> BoxProviderFuture<'_, Result<acyclic_machines::ExecStream>>;
@@ -61,9 +63,12 @@ pub trait DeviceShell: ProviderPlatform {
 
 #[cfg(feature = "machines")]
 impl DeviceShell for crate::machines::MachinesWorkspace {
+    fn selected_volume(&self) -> &crate::conversation::VolumeRef {
+        Self::selected_volume(self)
+    }
+
     fn start(
         &self,
-        _op: OperationId,
         input: ShellInput,
         deadline_epoch_ms: Option<u64>,
     ) -> BoxProviderFuture<'_, Result<acyclic_machines::ExecStream>> {
@@ -360,7 +365,7 @@ impl DeviceRunner {
             }));
         }
         started.store(true, Ordering::Release);
-        let mut stream = match self.shell.start(op, input, Some(deadline)).await {
+        let mut stream = match self.shell.start(input, Some(deadline)).await {
             Ok(stream) => stream,
             Err(error) => {
                 return Ok(Some(DeviceMessage::Lost {
@@ -425,6 +430,9 @@ impl DeviceRunner {
     /// owner's policy. A refusal's reason is what the model reads.
     fn admit(&self, session: &str, run: &Run) -> std::result::Result<ShellInput, String> {
         let command = &run.command;
+        if &command.volume != self.shell.selected_volume() {
+            return Err("the device has not admitted this agent's exact project volume".into());
+        }
         if command.target != self.target.name
             || command.session != session
             || command.actor

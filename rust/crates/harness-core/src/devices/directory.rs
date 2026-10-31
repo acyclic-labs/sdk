@@ -79,7 +79,8 @@ impl Drop for Presence<'_> {
 /// device under one root, as their presence records list them.
 ///
 /// [`Self::follow`] keeps the roster current from the shared presence
-/// stream; one follow serves every agent of the host.
+/// stream. The directory retains one agent's original authority; share its
+/// resolved executors within that agent's turns.
 pub struct TargetDirectory<P: StreamProvider + ?Sized + 'static> {
     provider: Arc<P>,
     store: acyclic_actors::local::Store<P>,
@@ -380,9 +381,17 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         let Some((session, generation)) = connection else {
             return Err(self.refusal(Refused::Offline));
         };
-        let (agent, _) = context.agent().ok_or_else(|| {
+        let (agent, volumes) = context.agent().ok_or_else(|| {
             Error::Unauthorized("device dispatch has no original agent binding".into())
         })?;
+        let volume = volumes
+            .iter()
+            .find(|binding| binding.name == "project")
+            .ok_or_else(|| {
+                Error::Unauthorized("device dispatch has no original project volume".into())
+            })?
+            .volume
+            .clone();
         if self.grant.scope.agent().map(|id| id.into_bytes()) != Some(agent.id().to_bytes()) {
             return Err(Error::Unauthorized(
                 "device grant belongs to another agent".into(),
@@ -392,6 +401,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             op: invocation.operation_id,
             call_id: invocation.call_id.clone(),
             agent: agent.clone(),
+            volume,
             actor: *blake3::hash(&self.paths.actor(&self.name)?.encode()).as_bytes(),
             target: self.name.clone(),
             session,
