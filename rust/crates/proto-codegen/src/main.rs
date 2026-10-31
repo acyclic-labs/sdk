@@ -26,15 +26,29 @@ fn main() -> io::Result<()> {
     }
     if generator.as_deref() == Some("descriptors") {
         let args = std::env::args().skip(2).collect::<Vec<_>>();
-        let [root, output] = args.as_slice() else {
+        let [root, output, selected @ ..] = args.as_slice() else {
             return Err(io::Error::other(
-                "descriptors expects source root and output directory",
+                "descriptors expects source root, output directory and optional family; recovery: cargo run -p sdk-proto-codegen -- descriptors . target/descriptors actors",
             ));
         };
+        if selected.len() > 1
+            || selected.first().is_some_and(|selected| {
+                !acyclic_proto_build::FAMILIES
+                    .iter()
+                    .any(|(family, _, _)| family == selected)
+            })
+        {
+            return Err(io::Error::other(
+                "unknown descriptor family; recovery: cargo run -p sdk-proto-codegen -- descriptors . target/descriptors actors",
+            ));
+        }
         let root = std::path::Path::new(root);
         let output = std::path::Path::new(output);
         std::fs::create_dir_all(output)?;
         for (family, baseline, protos) in acyclic_proto_build::FAMILIES {
+            if selected.first().is_some_and(|selected| family != selected) {
+                continue;
+            }
             acyclic_proto_build::descriptor(
                 &root.join("rust/crates").join(family),
                 protos,
