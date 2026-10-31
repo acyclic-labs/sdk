@@ -24,6 +24,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
     let goal = [Line::from("finish rewrite")];
     let plans = [Line::from("implement layout")];
     let notices = [Line::from("task completed")];
+    let usage = Line::from("estimated token charge: ? · in ? · out ?");
     let screen = Screen {
         header: Line::from("parent / ● current"),
         transcript: &transcript,
@@ -33,7 +34,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
         goal: &goal,
         plans: &plans,
         notifications: &notices,
-        usage: Some(Line::from("estimated token charge: ? · in ? · out ?")),
+        usage: Some(&usage),
         status: Line::from("approval requested"),
         ..Screen::default()
     };
@@ -153,7 +154,8 @@ proptest! {
     fn layout_is_bounded_at_every_size(width in 0u16..160, height in 0u16..80, x in 0u16..10, y in 0u16..10, count in 0usize..100, tools in 0usize..100, usage in any::<bool>()) {
         let rows = vec![Line::from("row"); count];
         let tools = vec![Line::from("tool"); tools];
-        let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, usage: usage.then(|| Line::from("committed usage")), ..Screen::default() };
+        let summary = usage.then(|| Line::from("committed usage"));
+        let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, usage: summary.as_ref(), ..Screen::default() };
         let mut input = PromptInput::new(Editor::new(&format!("{}@row", "line\n".repeat(count))));
         input.completion.set_file("workspace/row", Some(b"source")).unwrap();
         input.refresh_completions();

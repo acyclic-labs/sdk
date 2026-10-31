@@ -68,8 +68,9 @@ mod tests {
             unknown: 1,
         };
         let mut terminal = Terminal::new(TestBackend::new(96, 12)).unwrap();
+        let usage = usage_summary(&totals);
         let screen = Screen {
-            usage: Some(usage_summary(&totals)),
+            usage: Some(&usage),
             status: Line::raw("approval requested"),
             ..Screen::default()
         };

@@ -43,8 +43,9 @@ pub struct Screen<'a> {
     /// reserves the track column even while the short document fits the view.
     pub scrollbar: Option<(std::ops::Range<usize>, usize)>,
     /// Committed usage and estimated token charge, formatted by the query
-    /// consumer from the shared projection. None reserves no footer space.
-    pub usage: Option<Line<'a>>,
+    /// consumer from the shared projection and borrowed from its cache.
+    /// None reserves no footer space.
+    pub usage: Option<&'a Line<'a>>,
     /// Status hints and attention, independent of the usage summary.
     pub status: Line<'a>,
 }
@@ -396,7 +397,7 @@ impl Screen<'_> {
         }
         rows(frame, self.terminal, areas.terminal, 0);
         rows(frame, self.notifications, areas.notifications, 0);
-        if let Some(usage) = &self.usage {
+        if let Some(usage) = self.usage {
             frame.render_widget(usage, areas.usage);
         }
         frame.render_widget(&self.status, areas.status);
