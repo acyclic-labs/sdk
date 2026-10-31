@@ -44,7 +44,7 @@ pub struct ModelPriceRecord {
     pub input_nano_units_per_million: Option<u64>,
     /// Output rate in the same units, before separately priced reasoning.
     pub output_nano_units_per_million: Option<u64>,
-    /// Cache read and write subsets must be disjoint when both are inclusive.
+    /// Present included/subset cache-read and cache-write counts are disjoint.
     pub cached: TokenPrice,
     /// Cache creation relative to the original input count.
     pub cache_write: TokenPrice,
@@ -117,14 +117,20 @@ fn family_cost(
     children: &[(Option<u64>, TokenPrice)],
 ) -> Option<u128> {
     let mut parent = parent?;
+    let mut inclusive = parent;
     let mut extra = 0u128;
     for &(tokens, price) in children {
         match price {
-            TokenPrice::Included => {}
+            TokenPrice::Included => {
+                if let Some(tokens) = tokens {
+                    inclusive = inclusive.checked_sub(tokens)?;
+                }
+            }
             TokenPrice::Subset {
                 nano_units_per_million,
             } => {
                 let tokens = tokens?;
+                inclusive = inclusive.checked_sub(tokens)?;
                 parent = parent.checked_sub(tokens)?;
                 extra = extra.checked_add(charge(tokens, nano_units_per_million)?)?;
             }
@@ -530,6 +536,19 @@ mod tests {
             let mut no_reasoning = row.clone();
             no_reasoning.tokens.reasoning = None;
             prop_assert_eq!(no_reasoning.estimate(Some(&inclusive)).unwrap().estimated_cost.token_nano_units, Some(expected));
+            let mut contradictory = row.clone();
+            contradictory.tokens.reasoning = Some(output + reasoning + 1);
+            prop_assert_eq!(contradictory.estimate(Some(&inclusive)).unwrap().estimated_cost.token_nano_units, None);
+            let mut included_cache = inclusive.clone();
+            included_cache.cached = TokenPrice::Included;
+            contradictory = row.clone();
+            // Each count fits independently; together these disjoint subsets do not.
+            contradictory.tokens.cached = Some(input + cached + 1);
+            prop_assert_eq!(contradictory.estimate(Some(&included_cache)).unwrap().estimated_cost.token_nano_units, None);
+            included_cache.cache_write = TokenPrice::Included;
+            prop_assert_eq!(contradictory.estimate(Some(&included_cache)).unwrap().estimated_cost.token_nano_units, None);
+            contradictory.tokens.cached = None;
+            prop_assert!(contradictory.estimate(Some(&included_cache)).unwrap().estimated_cost.token_nano_units.is_some());
             let zero = record(ModelTokenUsage { input: Some(0), output: Some(0), ..Default::default() });
             let mut zero_price = inclusive.clone();
             zero_price.input_nano_units_per_million = None;
