@@ -5,6 +5,42 @@ use std::os::fd::{AsRawFd as _, BorrowedFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle as _, BorrowedHandle};
 
+/// Observe the actual attempt through the caller's existing operation collector.
+/// Neither helper nesting nor a barrier without an OS call reaches this seam.
+/// The descriptor is opaque and meaningful only while the borrowed handle lives.
+pub(crate) fn observe_sync(
+    requested: crate::Durability,
+    syscall: &'static str,
+    descriptor: u64,
+    call: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    crate::task::with_persistence_context(|| {
+        let span = tracing::info_span!(
+            "acyclic.runtime.durability",
+            syscall,
+            requested = match requested {
+                crate::Durability::Full => "full",
+                crate::Durability::Barrier => "barrier",
+            },
+            descriptor,
+            outcome = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+            error.os = tracing::field::Empty,
+        );
+        let completion = acyclic_observability::Completion::new(&span);
+        span.in_scope(|| {
+            // Capture last_os_error in `call` before recording or closing spans.
+            let result = call();
+            if let Err(error) = &result
+                && let Some(code) = error.raw_os_error()
+            {
+                span.record("error.os", code);
+            }
+            completion.finish(result, crate::obs::kind)
+        })
+    })
+}
+
 /// Makes `descriptor` durable with one native full flush attempt: `fsync` on
 /// Linux and `FlushFileBuffers` on Windows. On Apple, where a bare `fsync`
 /// stops at the drive cache, it stages the file with `fsync` and then waits
@@ -29,20 +65,29 @@ pub fn sync_descriptor_once(
     #[cfg(not(target_vendor = "apple"))]
     {
         #[cfg(target_os = "linux")]
-        // SAFETY: the borrowed descriptor stays open for this one flush.
-        let result = unsafe { libc::fsync(descriptor.as_raw_fd()) };
-        #[cfg(unix)]
-        let failed = result == -1;
+        let (syscall, identity) = ("fsync", descriptor.as_raw_fd() as u64);
         #[cfg(windows)]
-        // SAFETY: the borrowed handle stays open for this one flush.
-        let failed = unsafe {
-            windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(descriptor.as_raw_handle())
-        } == 0;
-        if failed {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
+        let (syscall, identity) = (
+            "FlushFileBuffers",
+            descriptor.as_raw_handle() as usize as u64,
+        );
+        observe_sync(crate::Durability::Full, syscall, identity, || {
+            #[cfg(target_os = "linux")]
+            // SAFETY: the borrowed descriptor stays open for this one flush.
+            let failed = unsafe { libc::fsync(descriptor.as_raw_fd()) } == -1;
+            #[cfg(windows)]
+            // SAFETY: the borrowed handle stays open for this one flush.
+            let failed = unsafe {
+                windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(
+                    descriptor.as_raw_handle(),
+                )
+            } == 0;
+            if failed {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })
     }
 }
 
@@ -62,6 +107,32 @@ pub fn order_descriptor_once(
     #[cfg(not(target_vendor = "apple"))]
     sync_descriptor_once(descriptor)
 }
+
+/// One data-only Linux attempt; its caller owns Interrupted retry.
+#[cfg(target_os = "linux")]
+#[allow(
+    unsafe_code,
+    reason = "one data flush on the caller's borrowed descriptor"
+)]
+pub(crate) fn sync_data_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
+    observe_sync(
+        crate::Durability::Full,
+        "fdatasync",
+        descriptor.as_raw_fd() as u64,
+        || {
+            // SAFETY: the borrowed descriptor stays open for this one flush.
+            if unsafe { libc::fdatasync(descriptor.as_raw_fd()) } == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        },
+    )
+}
+
+#[cfg(test)]
+#[path = "held_sync_observation_tests.rs"]
+mod observation_tests;
 
 #[cfg(test)]
 #[path = "held_sync_sources_tests.rs"]

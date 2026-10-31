@@ -152,9 +152,19 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
                 return apple::sync_once(file, durability, || Ok(()));
                 #[cfg(windows)]
                 return sync_file_unsequenced(file, durability);
-                #[cfg(not(any(windows, target_vendor = "apple")))]
+                #[cfg(target_os = "linux")]
                 {
-                    // Every durability is the full flush here; see `Durability::Barrier`.
+                    use std::os::fd::AsFd as _;
+                    let _ = durability;
+                    loop {
+                        match crate::held_sync::sync_data_descriptor_once(file.as_fd()) {
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                            result => return result,
+                        }
+                    }
+                }
+                #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+                {
                     let _ = durability;
                     file.sync_data()
                 }
@@ -178,13 +188,15 @@ fn sync_filesystem_impl(path: &Path) -> io::Result<()> {
     {
         use std::os::fd::AsRawFd as _;
         let file = File::open(path)?;
-        // SAFETY: syncfs acts only on this live descriptor.
-        #[allow(unsafe_code, reason = "syncfs acts only on the held descriptor")]
-        if unsafe { libc::syncfs(file.as_raw_fd()) } == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+        crate::held_sync::observe_sync(Durability::Full, "syncfs", file.as_raw_fd() as u64, || {
+            // SAFETY: syncfs acts only on this live descriptor.
+            #[allow(unsafe_code, reason = "syncfs acts only on the held descriptor")]
+            if unsafe { libc::syncfs(file.as_raw_fd()) } == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        })
     }
     #[cfg(not(target_os = "linux"))]
     {
