@@ -1,4 +1,73 @@
 {
+  "authored_range_read": {
+    "canonical": {
+      "file": {
+        "authored": {
+          "byte_length": 18,
+          "generation": {
+            "key": [
+              103,
+              101,
+              110,
+              101,
+              114,
+              97,
+              116,
+              105,
+              111,
+              110,
+              45,
+              49
+            ],
+            "kind": "generation",
+            "provider": {
+              "family": "filesystem",
+              "namespace": "file-contract",
+              "version": "1"
+            },
+            "version": null
+          },
+          "path": "source.txt",
+          "volume": {
+            "class": "agent_private",
+            "id": "private",
+            "owner": {
+              "id": "33333333-3333-3333-3333-333333333333",
+              "kind": "agent"
+            },
+            "provider": {
+              "family": "filesystem",
+              "namespace": "file-contract",
+              "version": "1"
+            }
+          }
+        }
+      },
+      "text": "🦀"
+    },
+    "full": {
+      "kind": "json",
+      "value": {
+        "path": "source.txt",
+        "text": "🦀",
+        "version": "authored-file-v1:{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"generation\":{\"kind\":\"generation\",\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"key\":[103,101,110,101,114,97,116,105,111,110,45,49],\"version\":null},\"byte_length\":18}"
+      }
+    },
+    "input": {
+      "path": "source.txt",
+      "range": {
+        "end": 9,
+        "start": 5
+      }
+    },
+    "reference": {
+      "kind": "json",
+      "value": {
+        "path": "source.txt",
+        "version": "authored-file-v1:{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"generation\":{\"kind\":\"generation\",\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"key\":[103,101,110,101,114,97,116,105,111,110,45,49],\"version\":null},\"byte_length\":18}"
+      }
+    }
+  },
   "exact_read": {
     "canonical": {
       "file": {
