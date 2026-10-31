@@ -38,6 +38,11 @@ test('new direct and indirect readiness mutations are rejected', () => {
   'async fn wait() { tokio::task::yield_now().await; }',
   'fn wait() { child.try_wait(); }',
   'fn wait() { changed.wait_timeout(state, duration); }',
+  'fn wait() { changed.wait_timeout_while(state, duration, |_| !ready()); }',
+  'fn wait() { receiver.recv_deadline(deadline); }',
+  'fn wait() { let receive = Receiver::recv_deadline; receive(receiver, deadline); }',
+  'fn wait() { changed.wait_timeout_ms(state, 25); }',
+  'fn wait() { std::thread::park_timeout_ms(25); }',
   'fn wait() { unsafe { libc::pthread_cond_timedwait(condition, mutex, deadline); } }',
   'const FLUSH_INTERVAL: u64 = 10;',
  ]) assert.ok(newPollingSites(rust, '', source).length, source);
@@ -265,6 +270,14 @@ test('legitimate deadline and transport sites require exact typed dispositions',
   assert.ok(newPollingSites(script, source, source.repeat(4), accepted).length);
   assert.ok(newPollingSites(script, '', source.replace('deadline', 'otherDeadline').replace('failure', 'otherFailure'), accepted).length);
  }
+ const source = 'fn receive() { receiver.recv_deadline(caller_deadline)?; }';
+ const sites = pollingSites(rust, source);
+ assert.ok(sites.length);
+ const accepted = sites.map(site => disposition(site, 'caller-deadline',
+  'original caller chooses caller_deadline', 'RecvTimeoutError::Disconnected or caller deadline',
+  'drop the original sender before receive and require Disconnected'));
+ assert.deepEqual(newPollingSites(rust, '', source, accepted), []);
+ assert.ok(newPollingSites(rust, '', source.replace('caller_deadline', 'readiness_deadline'), accepted).length);
 });
 
 test('event and finite-work loops have no file or helper exemption', () => {

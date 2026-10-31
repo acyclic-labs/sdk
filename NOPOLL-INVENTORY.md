@@ -2080,7 +2080,7 @@ Candidates include event-driven loops and retry identity references; these requi
 | `rust/crates/objects/benches/objects.rs:92` | Loop (inspect progress source) | Finite lazy paging consumes the returned page and advances its exclusive key/digest cursor; terminal page ends the operation. No readiness recheck or retry delay | Actioned |
 | `rust/crates/objects/examples/bench-objects.rs:35` | Loop (inspect progress source) | Finite lazy paging consumes the returned page and advances its exclusive key/digest cursor; terminal page ends the operation. No readiness recheck or retry delay | Actioned |
 | `rust/crates/objects/proto/objects/v1/objects.proto:192` | Additional timer / implicit deadline candidate | Existing deadline error vocabulary only; no timer, default policy, wait or retry implementation | Actioned |
-| `rust/crates/objects/src/availability/client.rs:56` | Timer / delay / interval | Exact authenticated credential-expiry event; revocation competes through the original credential watch | Event primitive |
+| `rust/crates/objects/src/availability/client.rs:56` | Timer / delay / interval | CredentialWatch currently lacks its owner's absolute-expiry event; the consumer's derived relative Tokio timer still needs conversion. | Pending |
 | `rust/crates/objects/src/availability/client.rs:116` | Timed wait / readiness | Opening future with only the original caller Context budget | Actioned |
 | `rust/crates/objects/src/batch.rs:88` | Loop (inspect progress source) | One in-flight dependency completion marks its bounded slot done and notifies waiters. The notified future is created before inspecting dependency state; dropping the batch drops all member futures, with no readiness timer | Actioned |
 | `rust/crates/objects/src/conformance.rs:403` | Loop (inspect progress source) | Finite lazy paging consumes the returned page and advances its exclusive key/digest cursor; terminal page ends the operation. No readiness recheck or retry delay | Actioned |
@@ -3643,7 +3643,7 @@ agent implementation remains separate from this expanded test audit.
 | Source site | Kind | Producer/event or required repair | Status |
 | --- | --- | --- | --- |
 | `rust/crates/conformance/cloudflare/fixture-authority.mjs:15` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
-| `typescript/packages/objects/src/v1.ts:90` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `typescript/packages/objects/src/v1.ts:90` | Caller-selected opening deadline | The caller explicitly supplies optional `timeoutMs`; the original request abort controller receives `DEADLINE_ELAPSED`. An omitted value creates no timer. | Caller deadline |
 | `rust/crates/conformance/tests/graphcoder_backends.rs:212` | Original watch or output event | Wait on the existing watch sender or retained process output stream. Preserve source closure/error propagation; no periodic recheck is introduced. | Event |
 | `rust/crates/conformance/tests/graphcoder_backends.rs:407` | Original watch or output event | Wait on the existing watch sender or retained process output stream. Preserve source closure/error propagation; no periodic recheck is introduced. | Event |
 | `rust/crates/conformance/tests/graphcoder_backends.rs:494` | Original watch or output event | Wait on the existing watch sender or retained process output stream. Preserve source closure/error propagation; no periodic recheck is introduced. | Event |
@@ -3651,11 +3651,11 @@ agent implementation remains separate from this expanded test audit.
 | `rust/crates/conformance/tests/graphcoder_backends.rs:542` | Original watch or output event | Wait on the existing watch sender or retained process output stream. Preserve source closure/error propagation; no periodic recheck is introduced. | Event |
 | `rust/crates/conformance/tests/graphcoder_backends.rs:665` | Original watch or output event | Wait on the existing watch sender or retained process output stream. Preserve source closure/error propagation; no periodic recheck is introduced. | Event |
 | `typescript/packages/stream/test/session-deadline-model-driver.ts:78` | Explicitly advanced model clock | The retained deterministic model clock registers callbacks without a physical timer; its controller advances the same clock explicitly. | Non-wait |
-| `typescript/packages/stream/test/remote-history.browser.ts:31` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `typescript/packages/stream/test/remote-history.browser.ts:31` | Explicitly advanced timer-model negative control | The original test replaces setTimeout with an in-memory callback map and advances it while consuming real server bytes. This restores the defective implicit deadline without physical sleeping or timer scheduling. | Non-wait |
 | `rust/crates/conformance/src/bin/qualify.rs:63` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `scripts/windows-rust-setup.ps1:55` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `scripts/windows-rust-setup.ps1:84` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
-| `rust/crates/auth/src/channel.rs:275` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `rust/crates/auth/src/channel.rs:275` | Original caller deadline | Budget::Deadline retains the caller-selected absolute deadline across admission and response; expiry returns deadline_exceeded. Unbounded creates no timer; a bound Context uses its original stop event. | Caller deadline |
 | `rust/crates/stream/src/wasm/session_authority.rs:84` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/actors/src/namespace.rs:276` | Original watch or output event | Wait on the existing watch sender or retained process output stream. Preserve source closure/error propagation; no periodic recheck is introduced. | Event |
 | `scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs:621` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
@@ -3784,7 +3784,7 @@ agent implementation remains separate from this expanded test audit.
 | `rust/crates/filesystem/src/access/projection.rs:342` | Model interleaving point | The original Loom scheduler explores an interleaving; this call does not wait for readiness or physical time. Keep the real concurrency proof. | Non-wait |
 | `rust/crates/filesystem/tests/linux_ext4_perf.rs:1056` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/stream/publication-models/change.rs:18` | Model interleaving point | The original Loom scheduler explores an interleaving; this call does not wait for readiness or physical time. Keep the real concurrency proof. | Non-wait |
-| `rust/crates/objects/src/tests.rs:3057` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `rust/crates/objects/src/tests.rs:3057` | Finite modeled round-trip interleaving | Latent::trip yields once per modeled medium operation to retain the original concurrency and peak-in-flight oracle. It never rechecks readiness or physical time. | Non-wait |
 | `rust/crates/filesystem/tests/cases/session_fs.rs:300` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/tests/cases/session_fs.rs:334` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/core_state/tests/crash_matrix.rs:169` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
@@ -3803,7 +3803,7 @@ agent implementation remains separate from this expanded test audit.
 | `rust/crates/filesystem/src/obs.rs:553` | Detached worker start event | The original worker closure owns started_tx and sends at entry. Receive the original event; dropping the closure ends the wait with RecvError. | Actioned |
 | `rust/crates/filesystem/src/obs.rs:562` | Original span close event | The same originating subscriber sends closed when the final owned worker span drops. Check absence at the worker-start/release cut, then consume the original destructor event without a timer. | Actioned |
 | `rust/crates/filesystem/src/facade/generation_cache.rs:80` | Model interleaving point | The original Loom scheduler explores an interleaving; this call does not wait for readiness or physical time. Keep the real concurrency proof. | Non-wait |
-| `rust/crates/objects/src/grpc.rs:650` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `rust/crates/objects/src/grpc.rs:650` | Remote caller deadline | The original request grpc-timeout metadata chooses this external deadline. It competes with revisions.wait and returns DeadlineElapsed; missing metadata creates no timer. | Caller deadline |
 | `rust/crates/filesystem/src/native_mount/fence/models.rs:58` | Model interleaving point | The original Loom scheduler explores an interleaving; this call does not wait for readiness or physical time. Keep the real concurrency proof. | Non-wait |
 | `rust/crates/filesystem/src/native_mount/fence/models.rs:102` | Model interleaving point | The original Loom scheduler explores an interleaving; this call does not wait for readiness or physical time. Keep the real concurrency proof. | Non-wait |
 | `rust/crates/filesystem/src/native_mount/fence/models.rs:280` | Model interleaving point | The original Loom scheduler explores an interleaving; this call does not wait for readiness or physical time. Keep the real concurrency proof. | Non-wait |
@@ -3814,7 +3814,7 @@ agent implementation remains separate from this expanded test audit.
 | `rust/crates/filesystem/src/fsevents/hub/tests.rs:243` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/fsevents/hub/tests.rs:255` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/fsevents/hub/tests.rs:314` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
-| `rust/crates/objects/src/availability/client.rs:56` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `rust/crates/objects/src/availability/client.rs:56` | Consumer projects credential expiry into a relative clock | CredentialWatch publishes source change/loss but explicitly lacks expiry. Replace this derived Tokio deadline with the original credential owner's retained absolute-expiry event; preserve source-loss and silent-stream refusal controls. | Pending |
 | `rust/crates/filesystem/src/native_mount/recovery.rs:623` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/native_mount/recovery.rs:645` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/native_capture/sparse_scan_loom.rs:52` | Model interleaving point | The original Loom scheduler explores an interleaving; this call does not wait for readiness or physical time. Keep the real concurrency proof. | Non-wait |
@@ -3839,11 +3839,11 @@ agent implementation remains separate from this expanded test audit.
 | `rust/crates/filesystem/src/source_watch/tests.rs:592` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/source_watch/tests.rs:632` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/source_watch/tests.rs:663` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
-| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:437` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:437` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Actioned |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:494` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:594` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:604` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
-| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:744` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:744` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Actioned |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:1054` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:1057` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:500` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
@@ -3928,7 +3928,7 @@ agent implementation remains separate from this expanded test audit.
 | `rust/crates/machines/src/provider/journal.rs:424` | Original watch or output event | Wait on the existing watch sender or retained process output stream. Preserve source closure/error propagation; no periodic recheck is introduced. | Event |
 | `rust/crates/filesystem/src/native_mount/projfs/tests/crash_recovery.rs:83` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/native_mount/fuse/tests/native.rs:683` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
-| `rust/crates/machines/src/provider/deadline.rs:61` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `rust/crates/machines/src/provider/deadline.rs:61` | Original command deadline | GuestDeadline retains the caller's original command timeout through admission, dispatch and streamed completion. The authenticated wall expiry has its own WallAlarm event; no readiness check renews this timeout. | Caller deadline |
 | `rust/crates/filesystem/src/native_mount/fuse/tests/mount.rs:47` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/native_mount/fuse/tests/mount.rs:373` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/native_mount/fuse/tests/mount.rs:576` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
@@ -4103,3 +4103,27 @@ The extended direct census below includes conditional-variable helper spellings 
 | Site | Kind | Producer / terminal disposition | Status |
 | --- | --- | --- | --- |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:616` | Timed conditional-variable readiness | Await the original stopped-reader/continuity terminal under the same producer lock; retain the real inotify failure and watch-stop control. | Pending |
+
+## Temporal checker helper coverage
+
+Before editing the checker: `scripts/no-polling.mjs:7` omits Rust's `recv_deadline` and deprecated `wait_timeout_ms` / `park_timeout_ms` helper names. Recognize these alongside `wait_timeout_while`, including aliases and embedded programs. Extend the existing direct/indirect rejection mutation control, retaining exact caller-deadline dispositions. These are parsed bad source edits, not fabricated OS/tool output; they create no physical timer. Source conversion: actioned; execution remains unqualified because the previous installed checker invocation lacked its declared parser package.
+
+## Reviewed surviving external deadlines
+
+- `rust/crates/objects/src/grpc.rs:650`: the remote caller explicitly selected `grpc-timeout`; absent metadata creates no timer.
+- `typescript/packages/objects/src/v1.ts:90`: the caller explicitly selected optional `timeoutMs` for opening; an omitted timeout creates no timer.
+- `rust/crates/auth/src/channel.rs:275`: the caller explicitly selected `Budget::Deadline`; unbounded calls create no timer and operation-bound calls retain their original event.
+- `rust/crates/machines/src/provider/deadline.rs:61`: the caller selected the original command timeout; it covers admission through completion without renewal.
+
+This survivor list is partial until every pending inventory row has been resolved. Deterministic callback maps and finite model interleaving points are non-waits, not physical sleep exceptions.
+## Original inotify cleanup joins
+
+Source: `f1f31218e5e4cc73c41772e95738ca62101d794c`. The original `stop_accepted_cleanup` already accepts the retained cleanup credits and joins the same read cursor through its mutex and physical retirement. The final positive cleanup in these controls must call it once, preserving the original cancellable/nonblocking refusal controls before that join. No second cleanup owner or readiness event is needed.
+
+| Site | Kind | Producer / terminal disposition | Status |
+| --- | --- | --- | --- |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:433` | Bounded cleanup re-entry loop | Call the original admitted cleanup join once; cursor release is the original mutex event, and physical failure returns the original DemandError. | Actioned |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:434` | Cleanup readiness deadline branch | Delete the five-second re-entry deadline together with its loop; preserve precancel, cursor-contention and missing-credit refusals. | Actioned |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:741` | Bounded cleanup re-entry loop | Call the original admitted cleanup join once after the original cancellation and preserved receipt assertions. | Actioned |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:742` | Cleanup readiness deadline branch | Delete the five-second re-entry deadline together with its loop; preserve late callback cancellation and exact physical cleanup evidence. | Actioned |
+The two inotify positive joins now call the original `stop_accepted_cleanup` once. Every existing precancel, held-cursor, withheld-credit, late cancellation, receipt, physical-descriptor, worker-retirement and single-delivery assertion remains. Bounded re-entry windows change from two to zero; repeated nonblocking stop attempts and yield rechecks change to one existing admitted cleanup join per control. Added timers, threads, channels, allocations, payload copies, syscalls or barriers: zero. The original read-cursor unlock and cleanup result own progress, including typed cleanup failure. Formatting/diff checks pass; these changed real-OS controls have not been compiled or executed.

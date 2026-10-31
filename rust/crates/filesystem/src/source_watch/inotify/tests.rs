@@ -361,7 +361,7 @@ fn removal_admits_the_native_write_before_forgetting_the_live_registration()
 
 #[cfg(feature = "native-mount")]
 #[test]
-fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
+fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let host =
@@ -408,7 +408,8 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
         assert!(descriptor.load(Ordering::Acquire) >= 0);
     }
     drop(paused);
-    // Withhold the already-owned join cursor, then restore that exact cursor. Neither denial nor retry creates additional native credit.
+    // Withhold the already-owned join cursor, then restore that exact cursor.
+    // Neither refusal nor the explicit cleanup join creates native credit.
     let reads = {
         let mut cleanup = watch
             .shared
@@ -430,18 +431,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     assert!(!watch.is_stopped());
 
     let wait = CancellationToken::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match watch.stop_with_cleanup_wait(&wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
     assert!(
@@ -736,19 +726,7 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
         Ok(()) | Err(DemandError::Cancelled)
     ));
     assert_eq!(original.lock().receipt(), prefix);
-    let wait = CancellationToken::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match watch.stop_with_cleanup_wait(&wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
 
     assert_eq!(original.lock().receipt().items_returned, 1);

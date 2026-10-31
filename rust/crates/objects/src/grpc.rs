@@ -647,6 +647,7 @@ async fn deadline(metadata: &MetadataMap) {
         .and_then(|value| value.to_str().ok())
         .and_then(grpc_timeout)
     {
+        // The remote caller explicitly chose this request's grpc-timeout deadline.
         Some(timeout) => tokio::time::sleep(timeout).await,
         None => std::future::pending().await,
     }
