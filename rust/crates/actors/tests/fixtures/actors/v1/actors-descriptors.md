@@ -77,3 +77,16 @@ cargo run --locked -p sdk-proto-codegen -- canonicalize actors rust/crates/actor
 
 The Buf image remains independently generated, including its unknown file
 metadata. Earlier capture receipts qualify only their original schemas.
+
+The capture at `3ac4ee18fd6a` combines the canonical shared `SecretRef`
+import, fork admission fields and removal of the subscription retry counter.
+The Rust pipeline above selected only the `actors` family:
+
+```
+cargo run --locked -p sdk-proto-codegen -- descriptors . target/actor-reference-descriptors actors
+```
+
+Its descriptor was copied to both Rust paths. The independent Buf build and
+canonicalization used the commands above on that same source. These captures
+replace the predecessor schema outputs; no descriptor bytes were combined by
+hand. Manifest digests were written by `scripts/check-compatibility-digests.mjs`.
