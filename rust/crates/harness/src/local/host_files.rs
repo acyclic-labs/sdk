@@ -452,9 +452,17 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
 }
 
 fn request_with(registry: &Mutex<Registry>, cwd: &Path, action: HostAction) -> Result<Value> {
+    request_operation(registry, cwd, OperationId::new(), action)
+}
+
+fn request_operation(
+    registry: &Mutex<Registry>,
+    cwd: &Path,
+    operation: OperationId,
+    action: HostAction,
+) -> Result<Value> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
     let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
-    let operation = OperationId::new();
     let key = status_key(&action);
     let request = Request {
         session: bridge.session,
@@ -478,6 +486,9 @@ fn request_with(registry: &Mutex<Registry>, cwd: &Path, action: HostAction) -> R
         .join("requests")
         .join(format!("{operation}.json"));
     immutable(&request_path, &bytes)?;
+    // A writable reply may predate registration. Watching before this read
+    // covers both that case and publication concurrent with the read.
+    bridge.shared.deliver(&key, operation);
     let result =
         match acyclic_native_runtime::obs::waiting_sync("native-workspace-reply", operation, || {
             delivery.recv()
@@ -876,8 +887,15 @@ impl Served {
             .map_err(native_file_error)?
             .create_directories(&Path::new("status").join(&key))
             .map_err(native_file_error)?;
-        root.publish_immutable(Path::new(&format!("{operation}.json")), &bytes)
-            .map_err(native_file_error)?;
+        match root.publish_immutable(Path::new(&format!("{operation}.json")), &bytes) {
+            Ok(()) => {}
+            // The immutable publisher observed different existing bytes.
+            // This operation's reader observes that same writable projection;
+            // a caller cannot terminate unrelated dispatches by occupying it.
+            Err(acyclic_fs::demand::DemandError::Io(error))
+                if error.kind() == std::io::ErrorKind::InvalidData => {}
+            Err(error) => return Err(native_file_error(error)),
+        }
         self.known.insert(operation, (key, Tracked::Answered));
         Ok(())
     }

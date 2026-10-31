@@ -221,6 +221,34 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     ));
     let requests_registry = Arc::clone(&registry);
     let result = tokio::task::spawn_blocking(move || {
+        // A caller can occupy its exact writable reply name before watching.
+        // The publisher must isolate that conflict and the caller must finish
+        // without requiring a new notification for the pre-existing bytes.
+        let operation = OperationId::new();
+        let directory = cwd.join(DIRECTORY);
+        let path = reply_path(&directory.join("status"), WORKSPACE, operation);
+        std::fs::write(&path, b"{conflicting reply").map_err(storage)?;
+        let mut served = Served::default();
+        served.known.insert(
+            operation,
+            (WORKSPACE.into(), Tracked::Running { withdrawn: false }),
+        );
+        served.answer(&directory, operation, Ok(serde_json::json!({"ok": null})))?;
+        assert_eq!(std::fs::read(&path).map_err(storage)?, b"{conflicting reply");
+        assert!(matches!(
+            request_operation(
+                &requests_registry,
+                &cwd,
+                operation,
+                HostAction::Open {
+                    host: "codex".into(),
+                    session: "conflicting-reply".into(),
+                },
+            ),
+            Err(Error::Storage(_))
+        ));
+        served.withdraw(&directory.join("requests"), operation)?;
+        // The actual shared owner must still complete an unrelated request.
         let request = |cwd: &Path, action| request_with(&requests_registry, cwd, action);
         let result = request(
             &cwd,
