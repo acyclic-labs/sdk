@@ -11,8 +11,8 @@
 mod operations;
 #[cfg(not(target_arch = "wasm32"))]
 pub use operations::{
-    Completion, Metrics, Operations, Outcome, Query, QueryError, Sample, Sink, Snapshot, finish,
-    observe, observe_output, record_outcome,
+    Completion, Metrics, Operations, Outcome, OwnedSample, Query, QueryError, Sample, Sink,
+    Snapshot, finish, observe, observe_output, record_outcome,
 };
 #[cfg(not(target_arch = "wasm32"))]
 mod export;

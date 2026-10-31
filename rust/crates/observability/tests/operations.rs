@@ -45,15 +45,27 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Export, Outcome, Sink};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
     use tokio::sync::{Semaphore, oneshot};
+    #[derive(Clone, Default)]
+    struct OriginalCause(Arc<AtomicUsize>);
+    impl Sink for OriginalCause {
+        fn record(&self, sample: &acyclic_observability::Sample<'_>) {
+            if let Some(kind) = sample.error_kind {
+                self.0.store(kind.as_ptr() as usize, Ordering::Relaxed);
+            }
+        }
+    }
+    let original_cause = OriginalCause::default();
     let credit = Arc::new(Semaphore::new(1));
     let (export, mut output) = Export::channel(credit.clone(), true);
     let metrics = Metrics::default();
     let query = metrics.query("acyclic.test.export");
-    let dispatch = tracing::Dispatch::new(
-        tracing_subscriber::registry().with(Operations((metrics, export.clone()))),
-    );
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Operations((
+        metrics,
+        (original_cause.clone(), export.clone()),
+    ))));
     let baseline = export.stats();
     let (send, receive) = mpsc::channel::<()>();
     drop(send);
@@ -87,6 +99,21 @@ fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
     let held = ready(output.recv())?.ok_or("terminal output absent")?;
     assert_eq!(held.sample().outcome, Outcome::Err);
     assert_eq!(held.sample().error_kind, Some(nested_kind));
+    let kind = held
+        .sample()
+        .error_kind
+        .ok_or("original failure category absent")?;
+    assert_eq!(
+        kind.as_ptr() as usize,
+        original_cause.0.load(Ordering::Relaxed),
+        "export copied the collector's original category"
+    );
+    let copied = kind.to_owned();
+    assert_ne!(
+        kind.as_ptr(),
+        copied.as_ptr(),
+        "negative control failed to detect a copied field"
+    );
     let refused = acyclic_test_support::measure(|| export.record(&held.sample()));
     assert_eq!(
         refused.count_total, 0,

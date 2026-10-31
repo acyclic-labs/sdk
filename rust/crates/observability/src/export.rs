@@ -1,11 +1,8 @@
 //! Credited delivery of the collector's original terminal samples.
-use crate::{Outcome, Sample, Sink};
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-    },
-    time::Duration,
+use crate::{OwnedSample, Sample, Sink};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError, mpsc};
 
@@ -85,12 +82,8 @@ impl Export {
     }
 }
 
-impl Sink for Export {
-    fn error_details(&self) -> bool {
-        self.details
-    }
-
-    fn record(&self, sample: &Sample<'_>) {
+impl Export {
+    fn publish(&self, make_sample: impl FnOnce() -> OwnedSample) {
         if self.sender.is_closed() {
             increment(&self.counters.closed);
             return;
@@ -116,16 +109,12 @@ impl Sink for Export {
             _permit: permit,
             counters: Arc::clone(&self.counters),
         };
+        let mut sample = make_sample();
+        if !self.details {
+            sample.error_kind = None;
+        }
         let record = ExportRecord {
-            metadata: sample.metadata,
-            rpc: sample.rpc.map(Into::into),
-            error_kind: if self.details {
-                sample.error_kind.map(Into::into)
-            } else {
-                None
-            },
-            elapsed: sample.elapsed,
-            outcome: sample.outcome,
+            sample,
             _admission: admission,
         };
         if self.sender.send(record).is_err() {
@@ -134,28 +123,42 @@ impl Sink for Export {
     }
 }
 
+impl Sink for Export {
+    fn error_details(&self) -> bool {
+        self.details
+    }
+
+    fn record(&self, sample: &Sample<'_>) {
+        self.publish(|| OwnedSample {
+            metadata: sample.metadata,
+            rpc: sample.rpc.map(str::to_owned),
+            error_kind: if self.details {
+                sample.error_kind.map(Into::into)
+            } else {
+                None
+            },
+            elapsed: sample.elapsed,
+            outcome: sample.outcome,
+        });
+    }
+
+    fn record_owned(&self, sample: OwnedSample) {
+        self.publish(|| sample);
+    }
+}
+
 /// One original terminal sample, with its output credit retained through drop.
 /// It cannot be cloned into uncredited retained output.
 pub struct ExportRecord {
-    metadata: &'static tracing::Metadata<'static>,
-    rpc: Option<Box<str>>,
-    error_kind: Option<Box<str>>,
-    elapsed: Duration,
-    outcome: Outcome,
-    // Fields drop in declaration order: copied evidence precedes its credit.
+    sample: OwnedSample,
+    // Fields drop in declaration order: owned evidence precedes its credit.
     _admission: Admission,
 }
 
 impl ExportRecord {
     /// Borrows the original evidence while retaining its credit.
     pub fn sample(&self) -> Sample<'_> {
-        Sample {
-            metadata: self.metadata,
-            rpc: self.rpc.as_deref(),
-            error_kind: self.error_kind.as_deref(),
-            elapsed: self.elapsed,
-            outcome: self.outcome,
-        }
+        self.sample.sample()
     }
 }
 

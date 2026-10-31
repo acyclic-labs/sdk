@@ -66,8 +66,11 @@ An exporter can opt into the first recorded static `error.kind`. Later generic
 failures cannot replace it. It remains diagnostic evidence, never a metric
 label, and does not change uncertainty or an operation's original result.
 Metrics alone retain no failure string. Detail retains one failure category per
-active operation, with one owned copy when first recorded; delivery copies the
-category and declared RPC method only after acquiring record credit. No
+active operation, with one owned copy when first recorded. The collector calls
+`Sink::record_owned` to transfer its original recorded fields into output;
+compose `(metrics, export)` to borrow for metrics then transfer to export.
+Generic sink tuples borrow for their first sink and transfer to their last.
+Direct borrowed `Sink::record` calls copy only after acquiring record credit. No
 payload, resource path, credential or formatted error belongs in those fields.
 The host must retain `ExportRecord` until its own output completes, then drop it
 to release credit. Dropping the receiver refuses later output immediately;

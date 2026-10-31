@@ -191,12 +191,45 @@ pub struct Sample<'a> {
     pub error_kind: Option<&'a str>,
 }
 
+/// The same terminal evidence with ownership of its recorded fields. The
+/// collector transfers these fields into asynchronous output without copying.
+pub struct OwnedSample {
+    /// Original static operation metadata.
+    pub metadata: &'static tracing::Metadata<'static>,
+    /// Declared method, retained from span creation.
+    pub rpc: Option<String>,
+    /// First static failure category, when detail was requested.
+    pub error_kind: Option<Box<str>>,
+    /// Original elapsed operation time.
+    pub elapsed: Duration,
+    /// Original terminal disposition.
+    pub outcome: Outcome,
+}
+
+impl OwnedSample {
+    /// Borrows evidence without cloning its owned fields.
+    pub fn sample(&self) -> Sample<'_> {
+        Sample {
+            metadata: self.metadata,
+            rpc: self.rpc.as_deref(),
+            error_kind: self.error_kind.as_deref(),
+            elapsed: self.elapsed,
+            outcome: self.outcome,
+        }
+    }
+}
+
 /// Receives terminal samples from the one operation lifecycle implementation.
 /// An OpenTelemetry adapter implements this contract; it does not reconstruct
 /// span completion or time operations again. A sink must not wait for I/O.
 pub trait Sink: Clone + Send + Sync + 'static {
     /// Records the one latency histogram observation and outcome counter update.
     fn record(&self, sample: &Sample<'_>);
+    /// Accepts the collector's original owned fields. Synchronous sinks borrow
+    /// by default; output adapters can transfer ownership instead of copying.
+    fn record_owned(&self, sample: OwnedSample) {
+        self.record(&sample.sample());
+    }
     /// Opt into retaining one original static failure category per operation.
     /// Metrics alone require no failure-string allocation.
     fn error_details(&self) -> bool {
@@ -211,6 +244,10 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
     }
     fn error_details(&self) -> bool {
         self.0.error_details() || self.1.error_details()
+    }
+    fn record_owned(&self, sample: OwnedSample) {
+        self.0.record(&sample.sample());
+        self.1.record_owned(sample);
     }
 }
 
@@ -670,12 +707,12 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             attributes.record(&mut FirstCause(&mut operation.error_kind));
         }
         if let Some(outcome) = terminal.outcome {
-            self.0.record(&Sample {
+            self.0.record_owned(OwnedSample {
                 metadata,
-                rpc: operation.rpc.as_deref(),
+                rpc: operation.rpc.take(),
                 elapsed: operation.started.elapsed(),
                 outcome,
-                error_kind: operation.error_kind.as_deref(),
+                error_kind: operation.error_kind.take(),
             });
             operation.completed = true;
         }
@@ -710,12 +747,12 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         drop(extensions);
         // Notification may run arbitrary wakers. Never call them while holding
         // the registry's extension lock.
-        self.0.record(&Sample {
+        self.0.record_owned(OwnedSample {
             metadata,
-            rpc: rpc.as_deref(),
+            rpc,
             elapsed: started.elapsed(),
             outcome,
-            error_kind: error_kind.as_deref(),
+            error_kind,
         });
     }
 
@@ -727,12 +764,12 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         if let Some(operation) = operation
             && !operation.completed
         {
-            self.0.record(&Sample {
+            self.0.record_owned(OwnedSample {
                 metadata: operation.metadata,
-                rpc: operation.rpc.as_deref(),
+                rpc: operation.rpc,
                 elapsed: operation.started.elapsed(),
                 outcome: Outcome::Incomplete,
-                error_kind: operation.error_kind.as_deref(),
+                error_kind: operation.error_kind,
             });
         }
     }
