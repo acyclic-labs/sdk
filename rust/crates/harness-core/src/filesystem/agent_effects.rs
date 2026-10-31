@@ -470,7 +470,7 @@ mod tests {
             const EMPTY: &str = "---\nversion: 1\n---\n";
             let profiles = Arc::new(Profiles::new(
                 [ModelProfile::parse(
-                    "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\ncache: automatic\nwatermark_tokens: 700\n---\n",
+                    "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\ncache: automatic\n---\n",
                     "---\nversion: 1\nkey: test/worker\n---\n",
                     crate::context::ModelContextCapacity {
                         context_tokens: 1000,

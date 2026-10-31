@@ -78,11 +78,8 @@ impl StockExecutor {
                 .min()
                 .map(|output| output.min(capacity.context_tokens));
             let output = capacity.output_reservation(self.max_output_tokens)?;
-            let mut policy = crate::context::ThresholdCompaction::for_watermark(
-                capacity,
-                resolved.prefix().capacity.watermark_tokens,
-                output,
-            )?;
+            let mut policy =
+                crate::context::ThresholdCompaction::for_reservation(capacity, 0, output)?;
             if let Some(crate::context::CompactionPolicy::Threshold(selected)) = &self.compaction {
                 policy.recent_tokens = policy.recent_tokens.min(selected.recent_tokens);
             }

@@ -8,7 +8,6 @@ tools:
   - {capability: edit, variant: apply_patch, revision: v1}
 reasoning: {mode: effort, effort: medium}
 cache: automatic
-watermark_tokens: 700
 ---
 Model family instruction.
 ";
@@ -29,7 +28,7 @@ fn executable_bindings_borrow_original_revisions_without_allocation() -> Result<
         tool.definition.revision = "v1".into();
         registry.register((tool, None), &mut None, None)?;
     }
-    let family = "---\nversion: 1\ntools:\n  - {capability: read, variant: second, revision: v1}\n  - {capability: edit, variant: first, revision: v1}\nreasoning: {mode: disabled}\ncache: automatic\nwatermark_tokens: 700\n---\n";
+    let family = "---\nversion: 1\ntools:\n  - {capability: read, variant: second, revision: v1}\n  - {capability: edit, variant: first, revision: v1}\nreasoning: {mode: disabled}\ncache: automatic\n---\n";
     let model = profile(family, Some(200))?;
     let project = ProjectLayer::parse(EMPTY)?;
     let approvals = crate::approvals::ApprovalPolicy::default().bind()?;
@@ -193,13 +192,11 @@ fn role_changes_append_policy_without_rewriting_the_model_prefix() -> Result<()>
         other_policy.digest, base.digest,
         "pin the actual owner's approval policy"
     );
-    // The default watermark belongs to the shared model prefix. A role's
-    // smaller output reservation must not invalidate the inherited cache.
-    let default_watermark = profile(&FAMILY.replace("watermark_tokens: 700\n", ""), Some(200))?;
+    // A role's smaller output reservation must not invalidate the shared prefix.
     let smaller_output =
         RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 100", 1))?;
-    let original = resolve(&default_watermark, &worker, &project, &agent)?;
-    let smaller = resolve(&default_watermark, &smaller_output, &project, &agent)?;
+    let original = resolve(&model, &worker, &project, &agent)?;
+    let smaller = resolve(&model, &smaller_output, &project, &agent)?;
     assert_eq!(original.prefix_digest(), smaller.prefix_digest());
     assert_ne!(original.digest(), smaller.digest());
     Ok(())
@@ -209,10 +206,9 @@ proptest! {
     #[test]
     fn profile_capacity_is_bounded_by_the_original_advertisement(context in 8u32..2_000_000, seed in any::<u32>()) {
         let budget = context / 2 + 2;
-        let watermark = budget / 2;
         let output = 1 + seed % (budget / 4);
-        let family = format!("---\nversion: 1\ntools: []\nreasoning: {{mode: adaptive, effort: medium}}\ncache: automatic\nwatermark_tokens: {watermark}\n---\n");
-        let model = ModelProfile::parse(&family, MODEL,
+        let family = "---\nversion: 1\ntools: []\nreasoning: {mode: adaptive, effort: medium}\ncache: automatic\n---\n";
+        let model = ModelProfile::parse(family, MODEL,
             ModelContextCapacity { context_tokens: context, output_tokens: Some(output) }, "renderer-v1").unwrap();
         let project = ProjectLayer::parse(EMPTY).unwrap();
         let role = RoleFile::parse(WORKER).unwrap();
@@ -221,12 +217,20 @@ proptest! {
         let agent = AgentOverride::parse(&override_source, &approvals).unwrap();
         let selected = resolve(&model, &role, &project, &agent).unwrap();
         prop_assert_eq!(selected.prefix.capacity.budget_tokens, budget);
-        prop_assert_eq!(selected.prefix.capacity.watermark_tokens, watermark);
         prop_assert_eq!(selected.overlay.max_output_tokens, None);
+        prop_assert_eq!(selected.bind_model(&crate::model::Model::new("test".into(), "model".into(), "1".into()).unwrap(), model.capacity).unwrap().capacity().output_reservation(None).unwrap(), output);
+        let unknown_output = ModelProfile::parse(family, MODEL,
+            ModelContextCapacity { context_tokens: context, output_tokens: None }, "renderer-v1").unwrap();
+        let explicit_role = RoleFile::parse(&WORKER.replacen("version: 1", &format!("version: 1\nmax_output_tokens: {output}"), 1)).unwrap();
+        prop_assert_eq!(resolve(&unknown_output, &explicit_role, &project, &agent).unwrap().overlay.max_output_tokens, Some(output));
+        prop_assert!(resolve(&unknown_output, &role, &project, &agent).is_err());
         let overflow = AgentOverride::parse(&format!("---\nversion: 1\nbudget_tokens: {}\n---\n", u64::from(context)+1), &approvals);
         prop_assert!(overflow.is_err() || resolve(&model, &role, &project, &overflow.unwrap()).is_err());
-        let no_watermark = AgentOverride::parse("---\nversion: 1\nwatermark_tokens: 0\n---\n", &approvals).unwrap();
-        prop_assert!(resolve(&model, &role, &project, &no_watermark).is_err());
+        let retired = "---\nversion: 1\nwatermark_tokens: 1\n---\n";
+        prop_assert!(AgentOverride::parse(retired, &approvals).is_err());
+        prop_assert!(ProjectLayer::parse(retired).is_err());
+        prop_assert!(ModelFiles::parse(retired, MODEL).is_err());
+        prop_assert!(ModelFiles::parse(family, &format!("---\nversion: 1\nkey: test/model\nwatermark_tokens: {budget}\n---\n")).is_err());
         let oversized_role = RoleFile::parse(&WORKER.replacen("version: 1", &format!("version: 1\nmax_output_tokens: {}", output+1), 1)).unwrap();
         prop_assert!(resolve(&model, &oversized_role, &project, &agent).is_err());
     }
@@ -251,14 +255,14 @@ fn unverified_output_and_untyped_override_paths_refuse() -> Result<()> {
         resolve(&unknown, &role, &project, &agent).is_err(),
         "no guessed output reserve"
     );
-    let exhausted = profile(FAMILY, Some(500))?;
+    let exhausted = profile(FAMILY, Some(1_000))?;
     assert!(
         resolve(&exhausted, &role, &project, &agent).is_err(),
         "prepare before the output reservation exhausts input capacity"
     );
     let exhausted_role =
-        RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 400", 1))?;
-    let larger = profile(FAMILY, Some(500))?;
+        RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 1000", 1))?;
+    let larger = profile(FAMILY, Some(1_000))?;
     assert!(resolve(&larger, &exhausted_role, &project, &agent).is_err());
     assert!(
         AgentOverride::parse("---\nversion: 1\noptions: {tools: []}\n---\n", &approvals).is_err()

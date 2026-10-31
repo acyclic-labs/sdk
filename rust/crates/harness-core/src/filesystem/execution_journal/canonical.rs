@@ -150,11 +150,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn profile_compaction_honors_watermark_and_shared_provider_capacity() -> Result<()> {
+    async fn profile_compaction_honors_shared_provider_capacity() -> Result<()> {
         use crate::profile::{ModelProfile, Profiles, ProjectLayer, RoleFile};
         let profiles = Arc::new(Profiles::new(
             [ModelProfile::parse(
-                "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\ncache: automatic\nwatermark_tokens: 12000\n---\n",
+                "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\ncache: automatic\n---\n",
                 "---\nversion: 1\nkey: synthetic/counter\n---\n",
                 ModelContextCapacity {
                     context_tokens: 32_768,

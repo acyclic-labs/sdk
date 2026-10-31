@@ -51,8 +51,6 @@ struct ModelLayer {
     cache: Option<Cache>,
     #[serde(default)]
     budget_tokens: Option<u32>,
-    #[serde(default)]
-    watermark_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -78,8 +76,6 @@ struct Override {
     version: u32,
     #[serde(default)]
     budget_tokens: Option<u32>,
-    #[serde(default)]
-    watermark_tokens: Option<u32>,
 }
 
 struct File<T> {
@@ -267,15 +263,13 @@ impl<'a> AgentOverride<'a> {
     }
 }
 
-/// Total context admission and summary-preparation boundary, in tokens.
+/// Total context admission, in tokens. Compaction pressure is harness policy.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Capacity {
     /// Hard capacities from the original selected provider.
     pub model: ModelContextCapacity,
     /// User-admitted total input plus output reservation.
     pub budget_tokens: u32,
-    /// Input boundary for summary preparation, within the output-reserved budget.
-    pub watermark_tokens: u32,
 }
 
 /// Frozen model-facing values. Role directives/availability are excluded.
@@ -351,31 +345,12 @@ fn capacity(model: &ModelProfile, project: &Override, agent: &Override) -> Resul
         .or(selected.budget_tokens)
         .or(family.budget_tokens)
         .unwrap_or(model.capacity.context_tokens);
-    let watermark = agent
-        .watermark_tokens
-        .or(project.watermark_tokens)
-        .or(selected.watermark_tokens)
-        .or(family.watermark_tokens)
-        .or_else(|| {
-            model
-                .capacity
-                .output_tokens
-                .map(|output| budget.saturating_sub(output))
-        })
-        .ok_or_else(|| invalid("unknown output capacity requires an explicit watermark"))?;
-    if budget == 0
-        || budget > model.capacity.context_tokens
-        || watermark == 0
-        || watermark >= budget
-    {
-        return Err(invalid(
-            "profile budget, watermark or output reservation exceeds capacity",
-        ));
+    if budget == 0 || budget > model.capacity.context_tokens {
+        return Err(invalid("profile budget exceeds capacity"));
     }
     Ok(Capacity {
         model: model.capacity,
         budget_tokens: budget,
-        watermark_tokens: watermark,
     })
 }
 
@@ -417,10 +392,7 @@ fn resolve_cached<'a>(
         .or(model.capacity.output_tokens)
         .ok_or_else(|| invalid("unknown output capacity requires a role output reservation"))?;
     let capacity = capacity(model, &project.0.metadata, &agent.metadata)?;
-    if output >= capacity.budget_tokens
-        || capacity.watermark_tokens > capacity.budget_tokens - output
-        || !model.capacity.permits_output(output)
-    {
+    if output >= capacity.budget_tokens || !model.capacity.permits_output(output) {
         return Err(invalid("role output reservation exceeds capacity"));
     }
     let prefix = PrefixProfile {

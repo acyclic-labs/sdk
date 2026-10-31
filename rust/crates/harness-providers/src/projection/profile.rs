@@ -135,7 +135,7 @@ mod tests {
             let (provider, _) = crate::tests::provider(adapter, 200);
             let original = provider.model().clone();
             let family = format!(
-                "---\nversion: 1\ntools: []\nreasoning: {{mode: {reasoning}, effort: high}}\ncache: automatic\nbudget_tokens: 4096\nwatermark_tokens: 2000\n---\n"
+                "---\nversion: 1\ntools: []\nreasoning: {{mode: {reasoning}, effort: high}}\ncache: automatic\nbudget_tokens: 4096\n---\n"
             );
             let model = ModelProfile::parse(
                 &family,

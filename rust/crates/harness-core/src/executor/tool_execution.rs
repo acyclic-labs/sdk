@@ -847,7 +847,7 @@ mod refusal_admission_tests {
             crate::executor::json::canonical_json_digest(&volume, u64::MAX, &mut None)?,
             &mut None,
         )?;
-        let family = "---\nversion: 1\ntools:\n  - {capability: call, variant: call, revision: skill-call-1}\nreasoning: {mode: disabled}\ncache: automatic\nwatermark_tokens: 700\n---\n";
+        let family = "---\nversion: 1\ntools:\n  - {capability: call, variant: call, revision: skill-call-1}\nreasoning: {mode: disabled}\ncache: automatic\n---\n";
         let empty = "---\nversion: 1\n---\n";
         for role_allows in [false, true] {
             let role = if role_allows {
