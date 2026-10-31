@@ -2,7 +2,7 @@
 use super::*;
 use std::{fmt, io};
 
-/// The operation whose acknowledgement is interrupted by a simulated crash.
+/// A fault at an original physical operation boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DurableFault {
     /// Stop before the operation touches the file.
@@ -15,6 +15,9 @@ pub enum DurableFault {
     Failed,
     /// Report the platform-independent disk-full category.
     DiskFull,
+    /// Refuse this call before dispatch with Interrupted. Unlike a crash, this
+    /// fault does not reject a later, separately invoked operation.
+    Interrupted,
 }
 
 /// Original I/O cause retained inside the returned `io::Error`.
@@ -45,6 +48,7 @@ impl InjectedStorageFault {
             match self.fault {
                 DurableFault::DiskFull => io::ErrorKind::StorageFull,
                 DurableFault::Failed => io::ErrorKind::Other,
+                DurableFault::Interrupted => io::ErrorKind::Interrupted,
                 _ => io::ErrorKind::ConnectionAborted,
             },
             self.clone(),
@@ -153,7 +157,10 @@ fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::R
                 operation,
                 fault,
             });
-        writes.failed = fault.clone();
+        writes.failed = fault
+            .as_ref()
+            .filter(|fault| fault.fault != DurableFault::Interrupted)
+            .cloned();
         #[cfg(test)]
         if writes.forget_crash {
             writes.failed = None;
