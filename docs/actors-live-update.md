@@ -12,8 +12,8 @@ Upload `Publication` through `DeploymentRequest::with_publication`. Its
 currently selected. Cloud atomically admits the predecessor and immutable
 publication identity. An omitted request account uses the authenticated account;
 Cloud binds that account to the publication scope. The SDK refuses an explicit
-account that differs from the publication. Each namespace artifact binds code, full configuration
-and public schema digests. `CompatibilityManifest` declares RPC request/reply
+account that differs from the publication. Each namespace artifact binds code,
+full configuration and public schema digests. `CompatibilityManifest` declares RPC request/reply
 schemas, message schemas, deployment-scoped peer ranges, readable state and
 original-journal codecs, durable await support, and explicit application adapter
 artifacts. An absent upper peer bound is unbounded. SDK validation checks the

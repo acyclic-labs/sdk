@@ -91,14 +91,18 @@ canonicalization used the commands above on that same source. These captures
 replace the predecessor schema outputs; no descriptor bytes were combined by
 hand. Manifest digests were written by `scripts/check-compatibility-digests.mjs`.
 
-The 2026-10-31 captures at source b52985ed1e combine the canonical shared
-SecretRef import with the current Actor fork and selected-entry fields.
-The Rust and independent Buf pipelines above were run on that source; the
-Rust capture was copied to both Rust descriptor paths. No descriptor bytes
-were combined by hand.
+The 2026-10-31 publication capture at source `38dc7c95c22c` composes the v1
+publication upload and deployment envelope fields with the subscription retry
+counter removal. These commands captured the Rust and independent Buf outputs:
 
-The 2026-10-31 live-update capture, based on main `909744ee57`, adds the v1
-publication upload and deployment envelope fields. The Rust metadata exporter
-and its maintained-proto comparison passed. The independent pinned Buf build
-and canonicalizer above also passed. Rust bytes were copied only to
-the two Rust paths; Buf bytes were copied only to `actors-buf-v1.bin`.
+```
+cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actor-publication-contract/actors-service.ts --proto-out target/actor-publication-contract/proto
+cmp target/actor-publication-contract/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
+node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o target/actor-publication-contract/actors-buf.bin
+cargo run --locked -p sdk-proto-codegen -- canonicalize actors target/actor-publication-contract/actors-buf.bin target/actor-publication-contract/actors-buf-v1.bin
+```
+
+`Actors.service.bin` was copied only to the two Rust descriptor paths;
+`actors-buf-v1.bin` was copied only to the Buf fixture path. The independent
+descriptor comparison passed. `node scripts/check-compatibility-digests.mjs write`
+recorded the emitted descriptor and maintained schema digests in the manifest.
