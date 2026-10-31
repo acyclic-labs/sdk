@@ -411,11 +411,24 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
         }
         return Ok(());
     }
+    changes_context(bytes, headers).map(|_| ())
+}
+
+/// Borrows publication context after the canonical change reader validates the
+/// complete value and its indexed keys. No entry vector or context copy is made.
+/// Ordinary records and unknown change formats are rejected.
+pub fn changes_context<'a>(
+    bytes: &'a [u8],
+    headers: &RecordHeaders,
+) -> Result<&'a [u8], StreamError> {
+    if !marked(headers) {
+        return Err(StreamError::InvalidArgument);
+    }
     if bytes.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
         return Err(StreamError::LimitExceeded);
     }
     let mut expected = headers.keys().iter();
-    parse_record(bytes, headers, |key, _, _| {
+    let context = parse_record(bytes, headers, |key, _, _| {
         if expected
             .next()
             .is_none_or(|expected| expected.as_ref() != key)
@@ -427,7 +440,7 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
     if expected.next().is_some() {
         return Err(StreamError::InvalidArgument);
     }
-    Ok(())
+    Ok(context)
 }
 
 /// Headers for a record arriving from any wire or persisted form. A change

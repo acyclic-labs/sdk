@@ -139,6 +139,7 @@ mod bindings;
 mod changes;
 mod head_payload;
 mod policy;
+mod publication_snapshot;
 #[cfg(test)]
 #[cfg(all(loom, not(loom)))]
 compile_error!("head-payload models require RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh");

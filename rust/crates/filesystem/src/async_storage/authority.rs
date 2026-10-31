@@ -48,6 +48,17 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     /// Separates actor registries of distinct stores sharing one owner, such
     /// as two Streams placements on one provider. Forwarding adapters forward it.
     fn actor_scope(&self) -> [u8; 16];
+    /// Observes a generation and its actual producer change boundary together.
+    /// Unsupported stores refuse; a later mutable tail cannot stand in for it.
+    fn publication_snapshot(
+        &self,
+        _volume: crate::VolumeId,
+        _work: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<crate::PublicationSnapshot, crate::AuthorityStoreError>> + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::RejectedStatic(
+            "authority backend does not support publication snapshots",
+        )))
+    }
     /// Backend guarantee used to keep authorization and publication on one cut.
     fn policy_owner(&self) -> PolicyOwner {
         PolicyOwner::Unsupported

@@ -64,6 +64,7 @@ mod reads;
 mod restore;
 mod reverse_paths;
 mod reverse_traversal;
+mod snapshot;
 mod transaction;
 mod transaction_create;
 mod transaction_ranges;
@@ -107,6 +108,7 @@ pub(crate) use paths::{
     workspace_vec_bytes,
 };
 use read_core::{list, matches_content, plan, read_link, read_range, read_selected, stat};
+pub use snapshot::WorkspaceSnapshot;
 pub use transaction::Transaction;
 
 #[cfg(test)]

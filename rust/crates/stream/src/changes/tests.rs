@@ -86,6 +86,10 @@ fn forged() -> AppendRecord {
 fn malformed_typed_lists_never_disagree_with_the_immutable_index() {
     let body = forged();
     assert_eq!(
+        changes_context(&body.value, &body.headers),
+        Err(StreamError::InvalidArgument)
+    );
+    assert_eq!(
         validate(&body.value, &body.headers),
         Err(StreamError::InvalidArgument)
     );

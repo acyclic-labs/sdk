@@ -14,6 +14,8 @@ use std::sync::Arc;
 
 mod context;
 pub use context::PublicationContext;
+mod snapshot;
+pub use snapshot::PublicationSnapshot;
 
 struct ChangeData {
     volume: VolumeId,

@@ -65,6 +65,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         self.placement.actor_scope()
     }
 
+    async fn publication_snapshot(
+        &self,
+        volume: crate::VolumeId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<crate::PublicationSnapshot, AuthorityStoreError> {
+        StreamAuthorityStore::publication_snapshot(self, volume, work).await
+    }
+
     fn supports_deferred_durability(&self) -> bool {
         self.provider.context().deferred_durability()
     }

@@ -42,6 +42,129 @@ fn record(bytes: &'static [u8]) -> AppendRecord {
     AppendRecord::from(OwnedBytes::from_static(bytes))
 }
 
+#[tokio::test]
+async fn immutable_snapshot_and_follow_share_the_original_publication_cut()
+-> Result<(), Box<dyn Error>> {
+    use futures::TryStreamExt as _;
+    let stream = Arc::new(MemoryStream::default());
+    let fs = placed(&stream)?;
+    let workspace = unbounded!(fs, create_workspace("snapshot-cut"))?;
+    workspace.write_text("state", "before").await?;
+    let first = unbounded!(workspace, snapshot())?;
+    let volume = workspace.id().volume_id();
+    assert_eq!(first.publication.volume, volume);
+    assert_eq!(first.publication.context.volume, volume);
+    assert_eq!(first.generation.id(), first.publication.context.generation);
+    // Fixed original reads do not grow with source history. Query the same
+    // backend capability through Arc so forwarding cannot substitute a default.
+    let shared = Arc::new(fs.authority().clone());
+    let cancel = CancellationToken::new();
+    let mut before = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+    let cut = shared.publication_snapshot(volume, &mut before).await?;
+    assert_eq!(before.spent().backend_read_operations, 2);
+    assert_eq!(before.spent().authority_records_read, 1);
+    assert_eq!(cut, first.publication);
+    workspace.write_text("state", "after").await?;
+    let next = unbounded!(workspace, snapshot())?;
+    assert_ne!(next.generation.id(), first.generation.id());
+    assert_eq!(
+        unbounded!(first.generation, read("state", 6))?.as_ref(),
+        b"before"
+    );
+    assert_eq!(
+        unbounded!(next.generation, read("state", 5))?.as_ref(),
+        b"after"
+    );
+    let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
+    let path = StreamPath::new(
+        crate::publication_changes::changes_path_text(
+            fs.authority_actor_scope(),
+            volume,
+            &mut text,
+        )
+        .ok_or("invalid original changes path")?
+        .to_owned(),
+    )?;
+    let mut follow = stream
+        .follow(acyclic_stream::FollowRequest {
+            path: path.clone(),
+            from: first.publication.next,
+            preceding: Some(first.publication.preceding),
+            when_absent: Default::default(),
+            filter: Default::default(),
+            progress: true,
+            at_least: Default::default(),
+        })
+        .await?;
+    let Some(acyclic_stream::FollowUpdate::Record(observed)) = follow.try_next().await? else {
+        return Err("original publication did not produce a follow record".into());
+    };
+    let context = crate::PublicationContext::from_bytes(acyclic_stream::changes_context(
+        &observed.value,
+        &observed.headers,
+    )?)?;
+    assert_eq!(context.generation, next.generation.id());
+    assert_eq!(observed.sequence, first.publication.next);
+    assert_ne!(
+        first.publication.context.generation, context.generation,
+        "a later mutable tail cannot describe the earlier snapshot"
+    );
+    for index in 0..8 {
+        workspace.write_text("state", &index.to_string()).await?;
+    }
+    let mut after = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+    shared.publication_snapshot(volume, &mut after).await?;
+    assert_eq!(
+        after.spent().backend_read_operations,
+        before.spent().backend_read_operations
+    );
+    assert_eq!(
+        after.spent().authority_records_read,
+        before.spent().authority_records_read
+    );
+    let fork = fork_workspace(
+        &workspace,
+        "snapshot-fork",
+        ForkOptions::from_generation(first.generation.clone(), IdempotencyKey::new()),
+    )
+    .await?;
+    let inherited = unbounded!(fork, snapshot())?;
+    assert_eq!(inherited.publication.volume, fork.id().volume_id());
+    assert_eq!(inherited.publication.context.volume, fork.id().volume_id());
+    assert_eq!(
+        inherited.generation.id(),
+        inherited.publication.context.generation
+    );
+    assert_eq!(
+        unbounded!(inherited.generation, read("state", 6))?.as_ref(),
+        b"before"
+    );
+    // A producer disappearing or ceasing to emit canonical publication records
+    // is a finite error, never an empty snapshot or a readiness wait.
+    let mut missing = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+    assert!(
+        shared
+            .publication_snapshot(crate::VolumeId::from_bytes([0xff; 16]), &mut missing)
+            .await
+            .is_err()
+    );
+    stream
+        .append(acyclic_stream::AppendRequest {
+            path,
+            records: vec![record(b"not a publication")],
+            if_tail: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::new("invalid-snapshot-suffix")?,
+        })
+        .await?;
+    assert!(
+        workspace
+            .snapshot(WorkBudget::UNBOUNDED, &cancel)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
 /// The spawn shape: the caller's agent state append, a Streams fork of the
 /// parent's log into the child's subtree, and two volume forks, under one key.
 fn spawn_request(stream_fork_at: u64, state_absent: bool) -> Result<CommitRequest, Box<dyn Error>> {
