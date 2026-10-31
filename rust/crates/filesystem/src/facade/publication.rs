@@ -83,7 +83,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             Mutex::new(PublicationCustody::empty()),
             &mut custody_accounting,
         )
-        .map_err(|error| OperationFailure::new(E::from(error), work))?;
+        .map_err(|error| {
+            OperationFailure::new(
+                E::from(error),
+                work.with_backend(custody_accounting.spent(), 0)
+                    .unwrap_or(work),
+            )
+        })?;
         let custody_work = custody_accounting.spent();
         let custody_bytes = custody_work.peak_allocation_bytes;
         work = merge_simultaneous_work(work, custody_work, 0, budget)

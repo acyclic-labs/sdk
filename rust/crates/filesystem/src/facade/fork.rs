@@ -284,9 +284,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let (path_allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
             let paths = Owned::new(paths, path_allocation, path_bytes);
             admitted?;
-            if !self.same_deployment(&source.workspace.volume.fs) {
-                return Err(WorkspaceError::ForeignGeneration.into());
-            }
             let destination_id =
                 self.workspace_id_for_name(&destination, accounting, cancellation)?;
             let volume_id = destination_id.volume_id();

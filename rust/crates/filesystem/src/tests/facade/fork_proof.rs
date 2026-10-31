@@ -46,7 +46,8 @@ async fn fork_proof_work(
             bytes,
             allocation,
             original.runtime_meter(),
-        )?;
+        )
+        .map_err(|failure| format!("{:?}", failure.into_error()))?;
         transaction
             .write("/retained", bytes, original, &cancel)
             .await?;
