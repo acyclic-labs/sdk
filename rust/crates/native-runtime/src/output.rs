@@ -37,7 +37,7 @@ impl InheritedOutput {
     /// Transfers a descriptor without changing shared open-file-description flags.
     ///
     /// Already nonblocking Unix pipes, sockets and terminals are admitted.
-    /// Linux can reopen a blocking pipe or terminal through its original procfs
+    /// Linux can reopen a blocking pipe through its original procfs
     /// descriptor with independent nonblocking flags. Other blocking descriptors
     /// and regular files return [`io::ErrorKind::Unsupported`]. Windows inherited
     /// synchronous handles are unsupported; they are never submitted as IOCP

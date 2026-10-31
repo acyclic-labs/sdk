@@ -3,7 +3,7 @@ use bytes::Bytes;
 use std::{
     future::{Future as _, poll_fn},
     io::Read as _,
-    os::fd::{AsFd as _, AsRawFd},
+    os::fd::{AsFd as _, AsRawFd, FromRawFd as _},
     sync::Arc,
 };
 use tokio::{io::AsyncWriteExt as _, sync::Semaphore};
@@ -143,6 +143,22 @@ fn full_output_preserves_credit_flags_and_independent_progress() -> io::Result<(
         assert!(matches!(refused, Err(error) if error.kind() == io::ErrorKind::Unsupported));
         assert_eq!(flags(&file)?, original_flags);
         assert_eq!(file.metadata()?.len(), 0);
+
+        // A fresh open of a PTY master creates another endpoint. A blocking
+        // terminal must refuse instead of redirecting to that new endpoint.
+        // SAFETY: posix_openpt returns an unaliased descriptor or -1.
+        #[expect(unsafe_code, reason = "opens a real terminal admission control")]
+        let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+        if master < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the successful descriptor is transferred exactly once.
+        #[expect(unsafe_code, reason = "owns the original terminal control descriptor")]
+        let terminal = unsafe { File::from_raw_fd(master) };
+        let original_flags = flags(&terminal)?;
+        let refused = InheritedOutput::from_file(terminal.try_clone()?);
+        assert!(matches!(refused, Err(error) if error.kind() == io::ErrorKind::Unsupported));
+        assert_eq!(flags(&terminal)?, original_flags);
         Ok(())
     })
 }

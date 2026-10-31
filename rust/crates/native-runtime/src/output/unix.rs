@@ -26,11 +26,13 @@ pub(super) fn admit(file: File) -> io::Result<File> {
         return Ok(file);
     }
     #[cfg(target_os = "linux")]
-    if kind.is_fifo() || terminal {
+    if kind.is_fifo() {
         use std::os::unix::fs::OpenOptionsExt as _;
         // Opening the original procfs descriptor creates a different open file
         // description. A dup followed by F_SETFL would change the launcher's
-        // flags too. Keep the original alive until its replacement is open.
+        // flags too. Only pipes are reopened: opening a terminal device can
+        // create a different endpoint. Keep the original pipe alive until its
+        // replacement is open.
         return std::fs::OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY)
