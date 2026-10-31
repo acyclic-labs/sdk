@@ -183,7 +183,7 @@ async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> 
         root,
         io: None,
     }
-    .skill_prefix(path, &generation, declaration.limits.header_bytes)
+    .skill_prefix(path, &generation, declaration.limits.header_bytes)?
     .await?;
     let retained = reader.prefix.lock().unwrap();
     let retained = retained.as_ref().expect("real prefix read completed");

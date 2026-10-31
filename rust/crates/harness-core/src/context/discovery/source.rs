@@ -72,7 +72,12 @@ pub trait SkillReader: DiscoverySource {
         path: &'a str,
         revision: &'a Self::Revision,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>>;
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (acyclic_stream::OwnedBytes, PinnedContextPath),
+        >,
+    >;
 }
 
 impl DiscoveryWork {
@@ -330,7 +335,7 @@ async fn read_skill_metadata_parsed<S: SkillReader>(
 ) -> Result<Result<SkillMetadata>> {
     limits.validate()?;
     let (prefix, pinned) = source
-        .skill_prefix(path, revision, limits.header_bytes)
+        .skill_prefix(path, revision, limits.header_bytes)?
         .await?;
     if prefix.len() > limits.header_bytes as usize {
         return Err(Error::Storage("prefix reader exceeded bound".into()));
@@ -499,8 +504,17 @@ impl SkillReader for VolumeDiscovery<'_> {
         path: &'a str,
         revision: &'a GenerationRef,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
-        Box::pin(async move {
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (acyclic_stream::OwnedBytes, PinnedContextPath),
+        >,
+    > {
+        #[cfg(feature = "filesystem")]
+        let content_io = self.io;
+        #[cfg(not(feature = "filesystem"))]
+        let content_io = None;
+        crate::conversation::BoundedContentFuture::new(content_io, || async move {
             let pinned = crate::executor::with_history_io(self.io, |work| {
                 crate::wire_codec::CodecQuota::produce(work, |quota| {
                     #[cfg(feature = "filesystem")]
@@ -523,10 +537,6 @@ impl SkillReader for VolumeDiscovery<'_> {
                 })
                 .map(|(pinned, _)| pinned)
             })?;
-            #[cfg(feature = "filesystem")]
-            let content_io = self.io;
-            #[cfg(not(feature = "filesystem"))]
-            let content_io = None;
             let prefix = self
                 .reader
                 .read_private_prefix(
