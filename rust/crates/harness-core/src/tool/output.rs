@@ -8,7 +8,9 @@ pub(crate) const VIEW_BYTES: u64 = 30_000;
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SpillRef<'a> {
+    #[schemars(length(min = 1))]
     path: &'a str,
+    #[schemars(length(min = 1))]
     version: &'a str,
 }
 
@@ -55,6 +57,95 @@ pub(crate) fn is_spill(value: &Value) -> bool {
             .and_then(|part| part.get("text"))
             .and_then(Value::as_str)
             .is_some_and(|text| text.starts_with("{\"output_spill\":"))
+}
+
+/// Multipart previews contain the same spill record as JSON results, encoded
+/// once more as a text part. Borrow its scalar tokens: validation needs neither
+/// a second value graph nor copies of the preview or opaque file version.
+#[derive(Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct SpillPreview<'a> {
+    #[serde(borrow)]
+    output_spill: SpillIdentity<'a>,
+    #[serde(borrow)]
+    text: &'a serde_json::value::RawValue,
+    #[serde(rename = "omitted_bytes")]
+    _omitted_bytes: u64,
+}
+
+#[derive(Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct SpillIdentity<'a> {
+    #[serde(borrow)]
+    path: &'a serde_json::value::RawValue,
+    #[serde(borrow)]
+    version: &'a serde_json::value::RawValue,
+}
+
+fn valid_preview(preview: &SpillPreview<'_>) -> bool {
+    let identity = &preview.output_spill;
+    let string = |value: &serde_json::value::RawValue| value.get().starts_with('"');
+    // The original codec has already validated JSON syntax. A nonempty JSON
+    // string always has more than its two framing quotes, including escapes.
+    string(identity.path)
+        && identity.path.get().len() > 2
+        && string(identity.version)
+        && identity.version.get().len() > 2
+        && string(preview.text)
+}
+
+pub(super) fn check_preview(
+    value: &Value,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    let Some(text) = value
+        .get("parts")
+        .and_then(Value::as_array)
+        .and_then(|parts| parts.first())
+        .and_then(|part| part.get("text"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    let seed = std::marker::PhantomData::<SpillPreview<'_>>;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let decoded = io.decode_seed(
+            seed,
+            text.as_bytes(),
+            crate::executor::json::JsonValueSchema::None,
+            super::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES,
+            crate::wire::ErrorCode::Invalid,
+        )?;
+        if valid_preview(&decoded.0) {
+            return Ok(());
+        }
+        return Err(crate::executor::with_history_io(Some(io), |work| {
+            crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "invalid retained output preview",
+            )
+        }));
+    }
+    let _ = io;
+    let decoded = crate::executor::json::json_from_slice_bounded(
+        seed,
+        text.as_bytes(),
+        crate::executor::json::JsonBounds {
+            maximum_bytes: text.len() as u64,
+            maximum_items: u64::MAX,
+            maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+        },
+        None,
+        Some(crate::executor::json::JsonValueSchema::None),
+        &mut |_| Ok(()),
+    )?;
+    if valid_preview(&decoded) {
+        Ok(())
+    } else {
+        Err(Error::tool_rejected("invalid retained output preview"))
+    }
 }
 
 /// Serialize existing file parts by borrowing them. Only text is replaced;
@@ -273,7 +364,7 @@ mod checks {
                 {"kind":"file", "file":file, "policy":"reference"}
             ]});
             let bytes = serde_json::to_vec(&projection).unwrap();
-            let (bounded, _hold) = render(&projection, &bytes, SpillRef {path:"output.json",version:"pinned"}, maximum, None, None).unwrap();
+            let (bounded, _hold) = render(&projection, &bytes, SpillRef {path:"output λ\".json",version:r#"{"source":"λ\\value"}"#}, maximum, None, None).unwrap();
             prop_assert!(serde_json::to_vec(&bounded).unwrap().len() as u64 <= maximum);
             let mut definition = crate::tool::files::read().unwrap().definition;
             definition.projection_schema = crate::tool::json_projection_schema(serde_json::json!({"type":"null"}));
@@ -287,6 +378,49 @@ mod checks {
             let mut broken = bounded;
             broken["parts"][0]["text"] = Value::String("missing retained-output identity".into());
             prop_assert!(definition.check_projection(&broken, crate::conversation::Limits::default(), None).unwrap().is_err());
+            for invalid in [
+                r#"{"output_spill":"#,
+                r#"{"output_spill":null}"#,
+                r#"{"output_spill":{"path":"p","version":"v"},"text":[],"omitted_bytes":0}"#,
+                r#"{"output_spill":{"path":"","version":"v"},"text":"","omitted_bytes":0}"#,
+                r#"{"output_spill":{"path":"p","version":null},"text":"","omitted_bytes":0}"#,
+                r#"{"output_spill":{"path":"p","version":"v"},"text":"","omitted_bytes":-1}"#,
+                r#"{"output_spill":{"path":"p","version":"v"},"text":"","text":"other","omitted_bytes":0}"#,
+                r#"{"output_spill":{"path":"p","version":"v","extra":0},"text":"","omitted_bytes":0}"#,
+            ] {
+                broken["parts"][0]["text"] = Value::String(invalid.into());
+                // The former prefix-only check accepts every one of these.
+                prop_assert!(is_spill(&broken));
+                prop_assert!(definition.validate_projection(&broken, crate::conversation::Limits::default(), None).is_err());
+            }
         }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn spill_preview_keeps_original_credit_and_cancellation() -> Result<()> {
+        let value = serde_json::json!({"kind":"parts","parts":[{
+            "kind":"text",
+            "text":r#"{"output_spill":{"path":"p","version":"v"},"text":"\u03bb\\text","omitted_bytes":2}"#
+        }]});
+        for native in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = work.live_allocation_bytes();
+            let io = if native {
+                crate::executor::PreparationIo::from_native_work(&work)?
+            } else {
+                crate::executor::PreparationIo::from_budget(budget, &cancellation)?
+            };
+            check_preview(&value, Some(&io))?;
+            assert_eq!(io.owned_bytes()?, 0);
+            cancellation.cancel();
+            assert!(check_preview(&value, Some(&io)).is_err());
+            drop(io);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+        Ok(())
     }
 }

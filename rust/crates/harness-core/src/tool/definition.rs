@@ -236,9 +236,13 @@ impl ToolDefinition {
             return Ok(authored);
         }
         let schema = super::output::schema()?;
-        crate::executor::with_history_io(io, |work| {
+        let checked = crate::executor::with_history_io(io, |work| {
             crate::executor::check_json_schema_value(&schema, value, "tool output spill", work)
-        })
+        })?;
+        if checked.is_ok() {
+            super::output::check_preview(value, io)?;
+        }
+        Ok(checked)
     }
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {
