@@ -176,6 +176,7 @@ impl LocalHarness {
                     )
                     .await?;
                     if let Some(compatibility) = compatibility {
+                        use acyclic_fs::facade::FsWork as _;
                         let cancellation = acyclic_fs::CancellationToken::new();
                         let snapshot = view
                             .snapshot(

@@ -922,8 +922,7 @@ async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()>
                 "write-seed".into(),
                 "write".into(),
                 serde_json::json!({
-                    "path": "seed.txt", "text": text,
-                    "media_type": "text/plain", "display_name": "seed.txt",
+                    "path": "seed.txt", "content": text,
                 }),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
@@ -1040,7 +1039,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
     // The child's brief turn, then the parent's own.
     let turns = ["child", "parent"].map(|text| super::ScriptedTurn::Text(text.into()));
-    let (_directory, harness, _provider) = checkout_scripted(&[], super::scripted(turns)).await?;
+    let (_directory, harness, provider) = checkout_scripted(&[], super::scripted(turns)).await?;
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
@@ -1056,6 +1055,50 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
         return Err(Error::Invalid("spawn was not delivered".into()));
     };
     let entries = settled(&agents, &child).await?;
+    let request = provider
+        .request(0)
+        .ok_or_else(|| Error::NotFound("child request".into()))?;
+    let context = serde_json::to_string(&request).map_err(agent)?;
+    assert!(context.contains(&format!("working for parent {root}")));
+    assert!(context.contains("final message is your report"));
+    assert!(context.contains(&format!("Use send with agent {root}")));
+    let child_state = agents.state(&child).await.map_err(agent)?;
+    let child_project = &child_state
+        .volumes
+        .iter()
+        .find(|binding| binding.name == "project")
+        .ok_or_else(|| Error::NotFound("child project".into()))?
+        .volume;
+    let root_workspace = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("root workspace".into()))?;
+    let fork = root_workspace.spawned_project_view(child_project).await?;
+    let scratch = child_state
+        .volumes
+        .iter()
+        .find(|binding| binding.name == "scratch")
+        .ok_or_else(|| Error::NotFound("child scratch".into()))?
+        .volume
+        .clone();
+    let authority = crate::filesystem::NativeMountAuthority::admitted(
+        harness.verifier.clone(),
+        harness.signed.copy(&mut None)?,
+    );
+    let (fork, _) = root_workspace
+        .bound_task_view(
+            fork,
+            child_project,
+            scratch,
+            &super::super::workspace::owner::AgentOwner(child.clone()),
+            &authority,
+        )
+        .await?;
+    // The request records the child's admitted mount, not the parent's cwd.
+    let cwd = serde_json::to_string(&fork.path.to_string_lossy()).map_err(agent)?;
+    assert!(context.contains(cwd.trim_matches('"')));
+    assert_ne!(fork.path, root_workspace.path);
+    assert!(context.contains("git_status"));
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Brief { brief: file } = entry.input else {
         return Err(Error::Invalid(

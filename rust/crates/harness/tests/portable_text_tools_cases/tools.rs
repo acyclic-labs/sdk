@@ -169,8 +169,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         operation_id: write_operation,
         call_id: "write".into(),
         name: write_tool.definition.name.clone(),
-        arguments: json!({"path":"second.txt","text":"exact \u{e9}\r\n",
-            "media_type":"text/plain","display_name":"second.txt"}),
+        arguments: json!({"path":"second.txt","content":"exact \u{e9}\r\n"}),
     };
     let write_context = ToolContext::new(task.clone(), write_operation, "write")?;
     let written = write_tool
