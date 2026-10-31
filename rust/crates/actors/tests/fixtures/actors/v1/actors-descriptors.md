@@ -4,7 +4,7 @@
 by the pinned Rust/protoc pipeline:
 
 ```
-cargo run --locked -p sdk-proto-codegen -- descriptors . OUTPUT
+cargo run --locked -p sdk-proto-codegen -- descriptors . OUTPUT actors
 ```
 
 `actors-buf-v1.bin` is independently captured from the pinned `@bufbuild/buf`
@@ -42,3 +42,10 @@ above and the same maintained protobuf input.
 
 `actors-pre-secrets.bin` retains the unmodified actual
 predecessor descriptor; its separate provenance file identifies that capture.
+
+The 2026-10-31 captures at source b52985ed1e combine the canonical shared
+SecretRef import with the current Actor fork and selected-entry fields.
+The Rust and independent Buf pipelines above were run on that source; the
+Rust capture was copied to both Rust descriptor paths. No descriptor bytes
+were combined by hand.
+
