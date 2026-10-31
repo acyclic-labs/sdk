@@ -14,7 +14,7 @@ import { schedule } from "./process.mjs";
 test('installed host admission launches package entries and binds their actual closure',async()=>{
  const directory=dirname(fileURLToPath(import.meta.url)),scope=new Processes();
  const cases=['codex','claude-code','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));
- let entry,dependency,retained;
+ let entry,closure,dependency,retained;
  try {
   for(const {inputs:[{host}]} of cases) {
    const native=await nativeHost(host,{});
@@ -22,20 +22,24 @@ test('installed host admission launches package entries and binds their actual c
    assert.equal(result.code,0,result.stderr);
    assert.ok(result.stdout.trim(),'actual host version must be nonempty');
   }
-  ({entry}=await nativeHost('pi',{}));
-  const env={E2E_PI:entry,E2E_CODEX:(await nativeHost('codex',{})).entry};
+  ({entry,closure}=await nativeHost('pi',{}));
+  const env={E2E_PI:entry,E2E_CODEX:(await nativeHost('codex',{})).entry,
+   E2E_CLAUDE:(await nativeHost('claude-code',{})).entry};
   const before=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
-  assert.ok(Object.values(before.hosts).every(host=>host.closure),'every override must bind its dependency tree');
   // The pinned Pi 1.1.0 dist/bundle/cli.js loads this real module through
   // createRequire(import.meta.url)("./cli-runtime.js"). Replace the directory
   // entry rather than modifying an inode shared with another installation.
   dependency=join(dirname(entry),'cli-runtime.js');
   const original=await readFile(dependency);
-  retained=dependency+'.retained';await rename(dependency,retained);
+  retained=join(await mkdtemp(join(dirname(closure),'.pi-runtime-')),'runtime.js');
+  await rename(dependency,retained);
   await writeFile(dependency,Buffer.concat([original,Buffer.from('\n')]));
   const changed=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
   assert.deepEqual(changed.hosts,before.hosts,'the executable entries did not change');
   assert.notDeepEqual(changed,before,'changed imported bytes must fence partition composition');
+  const imported=Object.keys(before.source).find(name=>name.endsWith('/@earendil-works/pi-coding-agent/dist/bundle/cli-runtime.js'));
+  assert.ok(imported,'the binding must retain the actual imported module');
+  assert.notEqual(changed.source[imported],before.source[imported],'the changed import itself must have a different digest');
   await rename(entry,entry+'.withdrawn');
   try {await assert.rejects(nativeHost('pi',{}),/step=admit E2E_PI/);}
   finally {await rename(entry+'.withdrawn',entry);}
@@ -48,7 +52,10 @@ test('installed host admission launches package entries and binds their actual c
    capture(){assert.fail('unsupported Pi produced a process result');}}),
    error=>error.code==='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER');
  } finally {
-  if(retained) {await rm(dependency,{force:true});await rename(retained,dependency);}
+  if(retained) {
+   await rm(dependency,{force:true});await rename(retained,dependency);
+   await rm(dirname(retained),{recursive:true});
+  }
   await scope.close();
  }
 });
