@@ -132,5 +132,15 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         1,
         "sibling skill loads must decode their shared bundle only once"
     );
+    let handoffs = sources.records.io_handoffs();
+    assert!(handoffs > 0, "cold sibling loads must use the I/O service");
+    let (first, second) = tokio::join!(read(&skills[0]), read(&skills[1]));
+    assert!(first?.is_some());
+    assert!(second?.is_some());
+    assert_eq!(
+        sources.records.io_handoffs(),
+        handoffs,
+        "cached sibling reads must not submit more I/O work"
+    );
     Ok(())
 }

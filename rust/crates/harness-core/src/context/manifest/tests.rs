@@ -43,19 +43,77 @@ fn definition(name: String, description: String) -> ToolDefinition {
 // Property: canonical encoding is idempotent, preserves array order and round-trips
 // arbitrary descriptions; byte admission rejects before accepting an oversized manifest.
 proptest! {
-    // Property: order never changes uniqueness or membership; duplicate source
-    // metadata, selected invocations and tool names are all rejected.
+    // Both catalog discovery and restored manifests reject partial callables.
+    // Opaque runtime data and the original pinned source survive publication;
+    // executable/schema admission remains the registry's responsibility.
     #[test]
-    fn catalog_uniqueness_is_independent_of_order(names in prop::collection::vec("[a-z]{1,8}", 0..16)) {
+    fn callable_metadata_preserves_source_and_refuses_partial_declarations(
+        text in ".{0,80}", boolean_schema in any::<bool>(),
+    ) {
+        let original = skill("skills/inspect/SKILL.md".into())?;
+        // Keep the minimized raw-JSON/YAML failure in every generated header.
+        let text = format!("\u{7f}{text}");
+        let schema = if boolean_schema { json!(false) } else { json!({"description": text}) };
+        let runtime = json!({"opaque": text});
+        let header = json!({
+            "name": original.name, "description": original.description,
+            "input_schema": schema, "runtime": runtime,
+        });
+        let prefix = format!("---\n{}\n---\nBODY", serde_saphyr::to_string(&header)?);
+        let declared = parse_skill_metadata(prefix.as_bytes(), original.source.clone())?;
+        let fields = declared.call_fields(&mut None)?.ok_or_else(|| TestCaseError::fail("missing callable fields"))?;
+        prop_assert_eq!(fields.input_schema, &schema);
+        prop_assert_eq!(fields.runtime, &runtime);
+        let manifest = ContextManifest {
+            discovery: DiscoveredContext { instructions: Vec::new(), skills: vec![declared] },
+            ..Default::default()
+        };
+        let limits = Limits { render_bytes: 32_768, ..Default::default() };
+        let encoded = manifest.encode(limits)?;
+        let restored = ContextManifest::decode(&encoded, limits)?;
+        prop_assert_eq!(&restored, &manifest);
+        prop_assert_eq!(&restored.discovery.skills[0].source, &original.source);
+        for missing in ["input_schema", "runtime"] {
+            let mut incomplete = header.clone();
+            incomplete.as_object_mut().ok_or_else(|| TestCaseError::fail("header is not an object"))?.remove(missing);
+            let prefix = format!("---\n{}\n---\nBODY", serde_saphyr::to_string(&incomplete)?);
+            prop_assert!(parse_skill_metadata(prefix.as_bytes(), original.source.clone()).is_err());
+            let mut restored = serde_json::to_value(&manifest)?;
+            restored["discovery"]["skills"][0]["fields"].as_object_mut()
+                .ok_or_else(|| TestCaseError::fail("fields are not an object"))?.remove(missing);
+            prop_assert!(ContextManifest::decode(&serde_json::to_vec(&restored)?, limits).is_err());
+        }
+    }
+
+    // Property: display names do not identify sources; explicit name-only
+    // invocations must be unambiguous, and tool names remain unique.
+    #[test]
+    fn source_names_and_invocations_have_distinct_identity_rules(names in prop::collection::vec("[a-z]{1,8}", 0..16)) {
         let unique = names.iter().collect::<std::collections::BTreeSet<_>>().len() == names.len();
         let mut skills = Vec::new();
-        for name in &names {
-            let mut skill = skill("skills/x/SKILL.md".into())?;
+        for (index, name) in names.iter().enumerate() {
+            let mut skill = skill(format!("skills/x{index}/SKILL.md"))?;
             skill.name = name.clone();
             skills.push(skill);
         }
         let discovery = DiscoveredContext { instructions: Vec::new(), skills };
-        prop_assert_eq!(discovery.validate(&mut None).is_ok(), unique);
+        prop_assert!(discovery.validate(&mut None).is_ok());
+        let mut selected = names.clone();
+        selected.sort_unstable();
+        selected.dedup();
+        let manifest = ContextManifest { discovery: discovery.clone(), selected_skills: selected, ..Default::default() };
+        prop_assert_eq!(manifest.validate(Limits::default()).is_ok(), unique);
+        if let Some(first) = discovery.skills.first() {
+            let mut other = first.clone();
+            other.source.path = "skills/other/SKILL.md".into();
+            let manifest = ContextManifest {
+                discovery: DiscoveredContext { instructions: Vec::new(), skills: vec![first.clone(), other] },
+                selected_skills: vec![first.name.clone(), "missing-selection".into()],
+                ..Default::default()
+            };
+            prop_assert!(matches!(manifest.validate(Limits::default()), Err(Error::Conflict(_))),
+                         "duplicate matches cannot conceal a missing selected skill");
+        }
         let manifest = ContextManifest {
             tools: names.iter().map(|name| definition(name.clone(), "test".into())).collect(),
             ..Default::default()

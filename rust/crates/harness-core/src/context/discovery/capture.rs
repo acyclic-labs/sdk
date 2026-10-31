@@ -9,7 +9,7 @@ pub struct DiscoveredContext {
     /// Root-to-leaf instructions in declared root/filename order.
     #[cfg_attr(feature = "wasm", tsify(type = "ProjectInstruction[]"))]
     pub instructions: Vec<crate::model::ProjectInstruction>,
-    /// Skills in declared root and lexical directory order; duplicate names reject discovery.
+    /// Skills in declared root and lexical directory order, identified by their pinned paths.
     pub skills: Vec<SkillMetadata>,
 }
 
@@ -191,7 +191,7 @@ impl ContextSource for DiscoveredContext {
     }
 }
 
-/// The single duplicate-name and metadata validator, for capture and restored catalogs.
+/// The shared metadata validator for capture and restored catalogs.
 #[doc(hidden)]
 pub fn validate_skill_catalog(
     skills: &[SkillMetadata],
@@ -199,31 +199,6 @@ pub fn validate_skill_catalog(
 ) -> Result<()> {
     for skill in skills {
         skill.validate(work)?;
-    }
-    if work.is_none() {
-        let mut names = std::collections::HashSet::with_capacity(skills.len());
-        if skills
-            .iter()
-            .any(|skill| !names.insert(skill.name.as_str()))
-        {
-            return Err(discovery_error(
-                work,
-                ErrorCode::Conflict,
-                "discovered skill names are repeated",
-            ));
-        }
-        return Ok(());
-    }
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let mut names = crate::core::reserve_copy_vector::<&str>(skills.len(), &mut quota)?;
-    names.extend(skills.iter().map(|skill| skill.name.as_str()));
-    names.sort_unstable();
-    if names.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(discovery_error(
-            quota.work(),
-            ErrorCode::Conflict,
-            "discovered skill names are repeated",
-        ));
     }
     Ok(())
 }

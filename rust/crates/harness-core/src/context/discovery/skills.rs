@@ -1,5 +1,38 @@
 use super::*;
 
+/// Initial assets for the ordinary writable skill volume. Installation is one
+/// stable filesystem operation; changing these bytes must not replace user edits.
+pub const BUILTIN_SKILLS: &[(&str, &[u8])] = &[
+    (
+        "context-checkpoint",
+        include_bytes!("../../skills/context-checkpoint/SKILL.md"),
+    ),
+    (
+        "candidate-search",
+        include_bytes!("../../skills/candidate-search/SKILL.md"),
+    ),
+    (
+        "advisor-consultation",
+        include_bytes!("../../skills/advisor-consultation/SKILL.md"),
+    ),
+    (
+        "verify-before-done",
+        include_bytes!("../../skills/verify-before-done/SKILL.md"),
+    ),
+    (
+        "fresh-context-review",
+        include_bytes!("../../skills/fresh-context-review/SKILL.md"),
+    ),
+    (
+        "debugging",
+        include_bytes!("../../skills/debugging/SKILL.md"),
+    ),
+    (
+        "writing-skills",
+        include_bytes!("../../skills/writing-skills/SKILL.md"),
+    ),
+];
+
 /// Frontmatter only; the body is not fetched or injected by discovery.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -16,7 +49,44 @@ pub struct SkillMetadata {
     pub source: PinnedContextPath,
 }
 
+/// A callable declaration borrowed from the same pinned skill metadata.
+/// Registry admission validates the schema and interprets the runtime; this
+/// projection neither loads a body nor grants execution authority.
+pub struct SkillCallFields<'a> {
+    /// Original JSON Schema, compiled once by tool registration.
+    pub input_schema: &'a serde_json::Value,
+    /// Original descriptor, interpreted by the shared runtime constructor.
+    pub runtime: &'a serde_json::Value,
+}
+
 impl SkillMetadata {
+    /// Projects paired callable fields without copying or reading the skill body.
+    /// Skills with neither field remain ordinary instruction skills.
+    pub fn call_fields(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<SkillCallFields<'_>>> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+        }
+        match (self.fields.get("input_schema"), self.fields.get("runtime")) {
+            (None, None) => Ok(None),
+            (Some(input_schema), Some(runtime))
+                if input_schema.is_object() || input_schema.is_boolean() =>
+            {
+                Ok(Some(SkillCallFields {
+                    input_schema,
+                    runtime,
+                }))
+            }
+            _ => Err(discovery_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "callable skill requires input_schema (an object or boolean) and runtime",
+            )),
+        }
+    }
+
     /// Loads the selected skill at its discovered generation under a finite body limit.
     pub async fn invoke(
         &self,
@@ -127,6 +197,7 @@ impl SkillMetadata {
                 "skill metadata is invalid",
             ));
         }
+        self.call_fields(work)?;
         Ok(())
     }
 }

@@ -27,10 +27,3 @@ test = false
 doc = false
 bench = false
 
-[[bin]]
-name = "file_guidance"
-path = "fuzz_targets/file_guidance.rs"
-test = false
-doc = false
-bench = false
-

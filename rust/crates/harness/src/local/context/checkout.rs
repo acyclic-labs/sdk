@@ -9,11 +9,12 @@ impl LocalHarness {
         &self,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
         io: &crate::filesystem::PreparationIo,
+        authority: (&AuthorityVerifier, &Scope),
     ) -> Result<()> {
         crate::filesystem::require_unrestricted_workspace_read(
             workspace,
-            &self.verifier,
-            &self.signed,
+            authority.0,
+            authority.1,
             io,
             "checkout context",
         )
@@ -35,8 +36,14 @@ impl LocalHarness {
             },
             ..Default::default()
         };
-        self.checkout_instructions_with_work(workspace, names, publisher, &mut bounds)
-            .await
+        self.checkout_instructions_with_work(
+            workspace,
+            names,
+            publisher,
+            &mut bounds,
+            (&self.verifier, &self.signed),
+        )
+        .await
     }
 
     pub(super) async fn checkout_instructions_with_work(
@@ -45,6 +52,7 @@ impl LocalHarness {
         names: &[String],
         publisher: &dyn ContentPublisher,
         bounds: &mut crate::context::DiscoveryWork,
+        authority: (&AuthorityVerifier, &Scope),
     ) -> Result<DiscoveredContext> {
         // Bound archive paths before asking the source for instruction bodies.
         if names
@@ -73,7 +81,7 @@ impl LocalHarness {
             cancellation: &cancellation,
         };
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        self.authorize_checkout_context(view.workspace(), &io)
+        self.authorize_checkout_context(view.workspace(), &io, authority)
             .await?;
         let cut = view.snapshot(&mut accounting).await?;
         let mut source = CheckoutInstructions {
@@ -94,7 +102,7 @@ impl LocalHarness {
             Some(&cut),
         )
         .await?;
-        self.authorize_checkout_context(view.workspace(), &io)
+        self.authorize_checkout_context(view.workspace(), &io, authority)
             .await?;
         let discovery = DiscoveredContext {
             instructions,
@@ -129,7 +137,7 @@ impl LocalHarness {
             cancellation: &cancellation,
         };
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        self.authorize_checkout_context(view.workspace(), &io)
+        self.authorize_checkout_context(view.workspace(), &io, (&self.verifier, &self.signed))
             .await?;
         let cut = view.snapshot(&mut accounting).await?;
         let mut found = Vec::new();
@@ -144,7 +152,7 @@ impl LocalHarness {
             }
         }
         // The bytes disclose only what the authority still admits.
-        self.authorize_checkout_context(view.workspace(), &io)
+        self.authorize_checkout_context(view.workspace(), &io, (&self.verifier, &self.signed))
             .await?;
         Ok(found)
     }
@@ -180,7 +188,7 @@ impl LocalHarness {
             cancellation: &cancellation,
         };
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        self.authorize_checkout_context(view.workspace(), &io)
+        self.authorize_checkout_context(view.workspace(), &io, (&self.verifier, &self.signed))
             .await?;
         let cut = view.snapshot(&mut accounting).await?;
         let mut remaining = self.limits.file_bytes;
@@ -199,7 +207,7 @@ impl LocalHarness {
         }
         let directory = self.publish_mention_copies(base, copies).await?;
         // The copies disclose only what the authority still admits.
-        self.authorize_checkout_context(view.workspace(), &io)
+        self.authorize_checkout_context(view.workspace(), &io, (&self.verifier, &self.signed))
             .await?;
         Ok(directory)
     }

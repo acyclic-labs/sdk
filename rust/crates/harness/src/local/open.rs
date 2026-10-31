@@ -353,6 +353,7 @@ impl Opening {
             workspace,
         } = opened;
         let verifier = issuer.verifier(&mut None)?;
+        context::skills::seed(&files, &scratch).await?;
         let volumes = (&owner.project, &scratch, &journal);
         let (scope, signed) = scopes(&self, &issuer, owner.agent, volumes)?;
         let reader = crate::filesystem::FilesystemContentVerifier::new(

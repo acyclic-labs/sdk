@@ -10,8 +10,23 @@ mod checkout;
 mod commands;
 #[cfg(any(test, feature = "native-execution"))]
 mod environment;
-mod guidance;
 pub(super) mod skills;
+
+/// The executing agent's retained volumes and read authority. The workspace is
+/// the same bound view used by its tools, including for a spawned agent.
+pub(super) struct Binding<'a> {
+    pub(super) project: &'a VolumeRef,
+    pub(super) scratch: &'a VolumeRef,
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) journal: &'a VolumeRef,
+    pub(super) reader: &'a dyn ContentResidencyVerifier,
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) verifier: AuthorityVerifier,
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) scope: &'a Scope,
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) workspace: Option<Arc<LocalWorkspace>>,
+}
 
 pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
@@ -79,7 +94,7 @@ impl LocalHarness {
     pub(super) fn stage_context_manifest_with<'a>(
         &'a self,
         operation: OperationId,
-        prompt: Option<&'a str>,
+        binding: &'a Binding<'a>,
         publisher: &'a dyn ContentPublisher,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
@@ -113,11 +128,9 @@ impl LocalHarness {
                 ..Default::default()
             };
             let discovery = self
-                .instructions(&policy.instruction_names, publisher, &mut work)
+                .instructions(binding, &policy.instruction_names, publisher, &mut work)
                 .await?;
-            let (goal, plans) = self.file_guidance(prompt.unwrap_or_default())?.await?;
-            let mut manifest =
-                ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
+            let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
             // The agent tools bind per turn, outside the registry; the model
             // sees them through the manifest like every other tool. A turn
             // binds each over any registered tool of its name, so the manifest
@@ -128,7 +141,7 @@ impl LocalHarness {
                 .retain(|tool| agent_tools.iter().all(|agent| agent.name != tool.name));
             manifest.tools.extend(agent_tools);
             #[cfg(any(test, feature = "native-execution"))]
-            if let Some(workspace) = &self.workspace {
+            if let Some(workspace) = &binding.workspace {
                 manifest
                     .conventions
                     .push(workspace.context_line().to_owned());
@@ -186,44 +199,51 @@ impl LocalHarness {
 
     async fn instructions(
         &self,
+        binding: &Binding<'_>,
         names: &[String],
         publisher: &dyn ContentPublisher,
         work: &mut crate::context::DiscoveryWork,
     ) -> Result<DiscoveredContext> {
         #[cfg(any(test, feature = "native-execution"))]
         if self.checkout_context
-            && let Some(workspace) = &self.workspace
+            && let Some(workspace) = &binding.workspace
         {
             let mut discovery = self
-                .checkout_instructions_with_work(workspace, names, publisher, work)
+                .checkout_instructions_with_work(
+                    workspace,
+                    names,
+                    publisher,
+                    work,
+                    (&binding.verifier, binding.scope),
+                )
                 .await?;
-            discovery.skills = self.skills_with_work(None, work).await?;
+            discovery.skills = self.bound_skills(binding, None, work)?.await?;
             return Ok(discovery);
         }
         let _ = publisher;
-        self.volume_instructions_with_work(names, self.context_reader()?.as_ref(), work)
+        self.volume_instructions_with_work(binding, names, work)
             .await
     }
 
     async fn volume_instructions_with_work(
         &self,
+        binding: &Binding<'_>,
         names: &[String],
-        reader: &dyn ContentResidencyVerifier,
         work: &mut crate::context::DiscoveryWork,
     ) -> Result<DiscoveredContext> {
         let workspace = crate::filesystem::workspace_ref(
-            self.project.provider().clone(),
-            &self.project.storage_name(&mut None)?,
+            binding.project.provider().clone(),
+            &binding.project.storage_name(&mut None)?,
         )?;
         let generation = self.files.resolve(&workspace, None).await?.generation;
         let root = crate::context::ContextRoot {
-            volume: self.project.clone(),
+            volume: binding.project.clone(),
             directory: String::new(),
         };
         let mut source = VolumeInstructions {
             harness: self,
             source: crate::context::VolumeDiscovery {
-                reader,
+                reader: binding.reader,
                 root: &root,
             },
         };
@@ -240,7 +260,7 @@ impl LocalHarness {
             instructions,
             skills: Vec::new(),
         };
-        discovery.skills = self.skills_with_work(Some(&generation), work).await?;
+        discovery.skills = self.bound_skills(binding, Some(&generation), work)?.await?;
         Ok(discovery)
     }
 }
@@ -555,22 +575,26 @@ mod tests {
                 local.observe_context_manifest(OperationId::from_bytes([1; 16]), publisher)
             },
         );
-        let guidance =
-            retained_operation_bytes(|local: &'static LocalHarness| local.file_guidance(""));
-        eprintln!("manifest child retained bytes: [{observation}, {guidance}]");
+        eprintln!("manifest observation retained bytes: {observation}");
         assert!(
-            [observation, guidance]
-                .into_iter()
-                .all(|bytes| bytes <= 512),
-            "manifest embeds concrete observation or guidance futures"
+            observation <= 512,
+            "manifest embeds a concrete observation future"
         );
     }
 
     #[test]
     fn context_boundaries_retain_only_owned_polling_handles() {
         let manifest = retained_operation_bytes(
-            |(local, publisher): (&'static LocalHarness, &'static dyn ContentPublisher)| {
-                local.stage_context_manifest_with(OperationId::from_bytes([1; 16]), None, publisher)
+            |(local, binding, publisher): (
+                &'static LocalHarness,
+                &'static Binding<'static>,
+                &'static dyn ContentPublisher,
+            )| {
+                local.stage_context_manifest_with(
+                    OperationId::from_bytes([1; 16]),
+                    binding,
+                    publisher,
+                )
             },
         );
         #[cfg(feature = "native-execution")]

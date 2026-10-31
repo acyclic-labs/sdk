@@ -3,11 +3,13 @@
 use super::*;
 use std::{collections::HashMap, io::Write as _};
 
-/// Scoped to the catalog owner. A first load decodes all sibling metadata once;
-/// subsequent body loads share the decoded records, including concurrent loads.
-#[derive(Default)]
+/// Shared by owner bindings; each immutable record retains its own owner check.
+/// A first load decodes all siblings once, including concurrent body loads.
+#[derive(Clone, Default)]
 pub(super) struct RecordCache {
     records: Arc<std::sync::Mutex<HashMap<String, Arc<RetainedSource>>>>,
+    #[cfg(test)]
+    io_handoffs: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl RecordCache {
@@ -25,11 +27,20 @@ impl RecordCache {
         digest: String,
         decoded: impl FnOnce() + Send + 'static,
     ) -> Result<Option<Arc<RetainedSource>>> {
+        match self.records.try_lock() {
+            Ok(records) => {
+                if let Some(record) = records.get(&digest) {
+                    return Ok(Some(Arc::clone(record)));
+                }
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
+            Err(std::sync::TryLockError::Poisoned(error)) => return Err(storage(error)),
+        }
         let records = Arc::clone(&self.records);
-        acyclic_native_runtime::run_blocking_io(
+        let completion = acyclic_native_runtime::run_blocking_io(
             move || {
-                // Only I/O workers take this lock. Holding it through decoding
-                // makes concurrent first loads of siblings share one result.
+                // Only I/O workers wait for this lock. Rechecking it through
+                // decoding makes concurrent first sibling loads share a result.
                 let mut records = records.lock().map_err(storage)?;
                 if let Some(record) = records.get(&digest) {
                     return Ok(Some(Arc::clone(record)));
@@ -59,9 +70,16 @@ impl RecordCache {
             },
             None,
         )
-        .map_err(Error::process_io)?
-        .await
-        .map_err(Error::process_io)?
+        .map_err(Error::process_io)?;
+        #[cfg(test)]
+        self.io_handoffs
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        completion.await.map_err(Error::process_io)?
+    }
+
+    #[cfg(test)]
+    pub(super) fn io_handoffs(&self) -> usize {
+        self.io_handoffs.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

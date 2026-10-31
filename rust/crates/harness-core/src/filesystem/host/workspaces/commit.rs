@@ -141,9 +141,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     async fn commit_publication(
+        transaction: acyclic_fs::Transaction<A, O>,
+        io: &PreparationIo,
+        publication: FilePublication<'_>,
+    ) -> Result<Generation<A, O>> {
+        Self::commit_contextual_publication(transaction, io, publication, None).await
+    }
+
+    pub(in crate::filesystem::host) async fn commit_contextual_publication(
         mut transaction: acyclic_fs::Transaction<A, O>,
         io: &PreparationIo,
         publication: FilePublication<'_>,
+        context: Option<(
+            acyclic_fs::Digest,
+            acyclic_stream::OwnedBytes,
+            acyclic_fs::PublicationPermit,
+        )>,
     ) -> Result<Generation<A, O>> {
         let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
             let commit = 'commit: {
@@ -186,7 +199,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     };
                     break 'commit transaction
                         .commit_with_native_work(
-                            None,
+                            context,
                             acyclic_fs::PublicationPermit::Unrestricted,
                             work,
                             io.cancellation(),
@@ -197,7 +210,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 break 'commit io.receive(
                     transaction
                         .commit(
-                            None,
+                            context,
                             acyclic_fs::PublicationPermit::Unrestricted,
                             io.remaining()?,
                             io.cancellation(),

@@ -22,7 +22,7 @@ pub struct ContextManifest {
     pub environment: Option<EnvironmentFacts>,
     /// Instructions are ordered from broad to specific scope; later entries take precedence.
     pub discovery: DiscoveredContext,
-    /// Names in invocation order, resolving only through this manifest's pinned skill catalog.
+    /// Unambiguous names in invocation order, resolved through this pinned skill catalog.
     pub selected_skills: Vec<String>,
     /// Pinned configuration inputs (such as hooks and MCP settings), never prompt text.
     #[serde(default)]
@@ -32,7 +32,7 @@ pub struct ContextManifest {
     pub tools: Vec<ToolDefinition>,
 }
 
-/// The default GOAL.md and plans/ conventions, as their JSON source text.
+/// The shared plans/ and goal-loop conventions, as their JSON source text.
 #[doc(hidden)]
 pub const DEFAULT_CONVENTIONS_JSON: &str = include_str!("instructions.json");
 
@@ -43,26 +43,10 @@ impl ContextManifest {
         selected_skills: Vec<String>,
         tools: &ToolRegistry,
     ) -> Result<Self> {
-        Self::for_files(discovery, selected_skills, tools, true, true)
-    }
-
-    #[doc(hidden)]
-    pub fn for_files(
-        discovery: DiscoveredContext,
-        selected_skills: Vec<String>,
-        tools: &ToolRegistry,
-        goal: bool,
-        plans: bool,
-    ) -> Result<Self> {
         let defaults: [&str; 2] = serde_json::from_str(DEFAULT_CONVENTIONS_JSON)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(Self {
-            conventions: defaults
-                .into_iter()
-                .zip([goal, plans])
-                .filter(|(_, enabled)| *enabled)
-                .map(|(text, _)| text.to_owned())
-                .collect(),
+            conventions: defaults.into_iter().map(str::to_owned).collect(),
             environment: None,
             discovery,
             selected_skills,
@@ -95,13 +79,17 @@ impl ContextManifest {
                 tool.validate(work)?;
             }
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let mut names = crate::core::reserve_copy_vector::<&str>(
-                self.selected_skills.len().max(self.tools.len()),
+            let mut selected = crate::core::reserve_copy_vector::<(&str, bool)>(
+                self.selected_skills.len(),
                 &mut quota,
             )?;
-            names.extend(self.selected_skills.iter().map(String::as_str));
-            names.sort_unstable();
-            if names.windows(2).any(|pair| pair[0] == pair[1]) {
+            selected.extend(
+                self.selected_skills
+                    .iter()
+                    .map(|name| (name.as_str(), false)),
+            );
+            selected.sort_unstable_by_key(|(name, _)| *name);
+            if selected.windows(2).any(|pair| pair[0].0 == pair[1].0) {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::Conflict,
@@ -117,16 +105,30 @@ impl ContextManifest {
                         "manifest skill path exceeds path bound",
                     ));
                 }
-                matched += usize::from(names.binary_search(&skill.name.as_str()).is_ok());
+                if let Ok(index) =
+                    selected.binary_search_by_key(&skill.name.as_str(), |(name, _)| *name)
+                {
+                    let (_, seen) = &mut selected[index];
+                    if std::mem::replace(seen, true) {
+                        return Err(stock_boundary(
+                            io,
+                            ErrorCode::Conflict,
+                            "manifest selected skill name is ambiguous",
+                        ));
+                    }
+                    matched += 1;
+                }
             }
-            if matched != names.len() {
+            if matched != selected.len() {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::NotFound,
                     "manifest selected skill is not in its catalog",
                 ));
             }
-            names.clear();
+            drop(selected);
+            quota.replace(0)?;
+            let mut names = crate::core::reserve_copy_vector::<&str>(self.tools.len(), &mut quota)?;
             names.extend(self.tools.iter().map(|tool| tool.name.as_str()));
             names.sort_unstable();
             if names.windows(2).any(|pair| pair[0] == pair[1]) {
