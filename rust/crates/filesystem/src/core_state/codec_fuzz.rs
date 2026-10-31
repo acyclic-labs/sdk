@@ -108,17 +108,17 @@ pub fn check(bytes: &[u8]) -> bool {
             reads: &reads,
         };
         let result = measured_decode_reader::<LogFrame<Change>>(reader, bytes.len() as u64, &work);
-        assert!(
-            matches!(&result, Err(LocalCoreStateStoreError::Json(_))),
-            "reader refusal at {length} bytes: {:?}; recovery: cargo run --example capture",
-            result.as_ref().err(),
-        );
-        let Err(LocalCoreStateStoreError::Json(error)) = result else {
-            unreachable!()
+        let error_kind = match result {
+            Err(LocalCoreStateStoreError::Io(error)) => Some(error.kind()),
+            Err(LocalCoreStateStoreError::Json(error)) => error.io_error_kind(),
+            result => panic!(
+                "reader refusal at {length} bytes: {:?}; recovery: cargo run --example capture",
+                result.as_ref().err(),
+            ),
         };
         assert!(
-            length != 0 || error.io_error_kind() == Some(std::io::ErrorKind::BrokenPipe),
-            "reader error category at {length} bytes: {error}; recovery: cargo run --example capture",
+            length != 0 || error_kind == Some(std::io::ErrorKind::BrokenPipe),
+            "reader error category at {length} bytes: {error_kind:?}; recovery: cargo run --example capture",
         );
         assert!(
             reads.get() > 0 && reads.get() <= length + 1,
