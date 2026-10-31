@@ -12,6 +12,7 @@
 //! batches. Interrupted collections can leave any number of epochs between
 //! the two unreleased, so a switch releases all of them.
 
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -20,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub struct Epoch {
     current: AtomicU64,
     /// The oldest epoch that may still hold batches.
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     unreleased: AtomicU64,
     /// Where the current epoch survives a restart, for a store that collects.
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
@@ -29,6 +31,7 @@ pub struct Epoch {
 }
 
 const ROOT: &[u8] = b"fs-epoch/";
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 const FORMAT: &[u8; 8] = b"FSEPOCH\x01";
 
 impl Epoch {

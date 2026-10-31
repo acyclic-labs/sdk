@@ -333,6 +333,7 @@ pub(crate) use epoch::{CollectionEpoch, Epochs};
 pub(crate) use holds::Hold;
 use holds::{Holds, Slot};
 pub(crate) use roots::CheckoutRoots;
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(crate) use sweep::Worklist;
 #[cfg(test)]
 mod tests;
