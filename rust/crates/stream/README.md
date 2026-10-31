@@ -97,6 +97,12 @@ Submission transfers custody to the executor immediately. Cloned handles share
 one result; cancelling or dropping a waiter never withdraws or retries the write.
 The handle retains the exact keyed request for recovery of an ambiguous outcome.
 Staged publication uses the same `Pending::submit` once its Commit is ready.
+`Pending::result` borrows the retained terminal result without copying it.
+`NativePending::prepare_native` retains the original request custody and returns
+its one funded producer future for the caller's execution owner. Producer loss,
+including before its first poll, ends observers with `Unavailable`. Native
+receipts and original IO errors retain their own allocation and identity; no
+portable dispatch or replacement work root is introduced.
 
 `session::Client::deliveries` supplies application-owned ALL/LATEST decisions on
 the existing pool. Persist a delivery's proposed v1 checkpoint atomically with
