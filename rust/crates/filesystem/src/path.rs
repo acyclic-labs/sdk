@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
+pub(crate) mod prefix;
+
 /// Canonical absolute path with `/` separators and no relative components.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -109,6 +111,12 @@ impl PortablePath {
             .unwrap_or_default()
             .split('/')
             .filter(|component| !component.is_empty())
+    }
+}
+
+impl std::borrow::Borrow<str> for PortablePath {
+    fn borrow(&self) -> &str {
+        self.as_str()
     }
 }
 

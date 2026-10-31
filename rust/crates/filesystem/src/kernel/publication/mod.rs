@@ -214,6 +214,7 @@ pub(crate) use construction::contextual_publication_fingerprint;
 use construction::*;
 mod authenticate;
 mod engine;
+mod preparation;
 mod projection;
 use engine::*;
 mod api;

@@ -5,15 +5,17 @@ use crate::model::{CheckoutMode, GenerationSelector, Lifecycle, MutationMode, Vo
 use crate::performance::WorkBudget;
 
 async fn checkout() -> Result<crate::facade::MemoryCheckout, Box<dyn std::error::Error>> {
+    checkout_with_config(VolumeConfig::portable(Lifecycle::Ephemeral)).await
+}
+
+async fn checkout_with_config(
+    config: VolumeConfig,
+) -> Result<crate::facade::MemoryCheckout, Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::default();
-    let volume = (fs.create_volume(
-        VolumeConfig::portable(Lifecycle::Ephemeral),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume = (fs.create_volume(config, WorkBudget::UNBOUNDED, &cancellation))
+        .await?
+        .value;
     Ok((volume.checkout(
         GenerationSelector::Head,
         CheckoutMode {
@@ -101,6 +103,57 @@ async fn routing_owns_checkouts_and_translates_relative_paths()
 }
 
 #[tokio::test]
+async fn borrowed_routes_enforce_selected_profile_and_limits_without_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
+    config.profile = crate::model::FilesystemProfile::Windows;
+    config.limits.maximum_path_bytes = 16;
+    config.limits.maximum_component_bytes = 8;
+    config.limits.maximum_path_depth = 2;
+    let mut view = MountedView::builder()
+        .mount("/", checkout().await?)?
+        .mount("/w", checkout_with_config(config).await?)?
+        .build()?;
+    let before = view.snapshot();
+    let limits = crate::model::VolumeLimits::default();
+    let unicode = PortablePath::parse("/w/é/𝄞", limits)?;
+    let routed = view.route_mut(&unicode)?;
+    assert_eq!(
+        routed
+            .path
+            .components()
+            .iter()
+            .map(crate::kernel::LogicalName::as_bytes)
+            .collect::<Vec<_>>(),
+        vec![&[0xe9, 0x00][..], &[0x34, 0xd8, 0x1e, 0xdd][..]]
+    );
+    assert!(matches!(
+        view.route_mut(&PortablePath::parse("/w/abcde", limits)?),
+        Err(MountError::InvalidNamespacePath(NamespacePathError::Name(
+            _
+        )))
+    ));
+    assert!(matches!(
+        view.route_mut(&PortablePath::parse("/w/aabb/ccdd", limits)?),
+        Err(MountError::InvalidNamespacePath(
+            NamespacePathError::PathTooLong
+        ))
+    ));
+    assert!(matches!(
+        view.route_mut(&PortablePath::parse("/w/123456789", limits)?),
+        Err(MountError::InvalidPath(PathError::ComponentTooLong))
+    ));
+    assert!(matches!(
+        view.route_mut(&PortablePath::parse("/w/a/b/c", limits)?),
+        Err(MountError::InvalidPath(PathError::TooDeep))
+    ));
+    let sibling = PortablePath::parse("/wide/abcde", limits)?;
+    assert_eq!(view.route_mut(&sibling)?.path.depth(), 2);
+    assert_eq!(view.snapshot(), before);
+    Ok(())
+}
+
+#[tokio::test]
 async fn duplicate_and_missing_root_paths_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let duplicate = MountedView::builder()
         .mount("/", checkout().await?)?
@@ -140,10 +193,7 @@ async fn mounted_checkout_accessors_and_snapshot_are_exact()
     let _ = routed.checkout;
     let binding = view
         .bindings
-        .get_mut(&PortablePath::parse(
-            "/",
-            crate::model::VolumeLimits::default(),
-        )?)
+        .first_mut()
         .ok_or("root binding disappeared")?;
     assert_eq!(binding.checkout_mut().generation_id(), expected_generation);
 
@@ -167,7 +217,8 @@ async fn mount_routing_failures_are_typed_and_non_mutating()
     let path = PortablePath::parse("/unmapped", crate::model::VolumeLimits::default())?;
     let mut empty: MountedView<crate::MemoryAuthorityStore, crate::MemoryObjectStore> =
         MountedView {
-            bindings: BTreeMap::new(),
+            bindings: Vec::new(),
+            by_path: PathPrefixIndex::default(),
         };
     assert!(matches!(
         empty.route_mut(&path),
@@ -181,7 +232,13 @@ async fn mount_routing_failures_are_typed_and_non_mutating()
         relative_path(
             &path,
             &PortablePath::parse("/other", crate::model::VolumeLimits::default())?,
-            crate::model::VolumeLimits::default(),
+        ),
+        Err(MountError::UnmappedPath)
+    );
+    assert_eq!(
+        relative_path(
+            &path,
+            &PortablePath::parse("/un", crate::model::VolumeLimits::default())?,
         ),
         Err(MountError::UnmappedPath)
     );
@@ -203,15 +260,16 @@ async fn mount_routing_failures_are_typed_and_non_mutating()
 #[tokio::test]
 async fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mount_paths = ["/", "/a", "/a/b", "/a/b/c", "/z"];
+    let mount_paths = ["/", "/a", "/a/b", "/a/b/c", "/a/é", "/z"];
     let checkouts = same_volume_checkouts(mount_paths.len()).await?;
     let expected_volume = checkouts.first().ok_or("missing checkout")?.volume_id();
     let mut builder = MountedView::builder();
-    for (path, checkout) in mount_paths.iter().zip(checkouts) {
+    for (path, checkout) in mount_paths.iter().rev().zip(checkouts) {
         builder = builder.mount(path, checkout)?;
     }
-    let view = builder.build()?;
+    let mut view = builder.build()?;
     let routed_cases = [
+        ("/", "/"),
         ("/root", "/"),
         ("/a", "/a"),
         ("/a/file", "/a"),
@@ -220,6 +278,10 @@ async fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume
         ("/a/b/c", "/a/b/c"),
         ("/a/b/c/deep", "/a/b/c"),
         ("/a/bb", "/a"),
+        ("/a/b/cousin", "/a/b"),
+        ("/aa/b/c", "/"),
+        ("/a/é/漢", "/a/é"),
+        ("/a/éclair", "/a"),
         ("/z/file", "/z"),
     ];
     let limits = crate::model::VolumeLimits::default();
@@ -228,6 +290,31 @@ async fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume
         let binding = view.resolve(&path).ok_or("path was not routed")?;
         assert_eq!(binding.path().as_str(), expected_mount);
         assert_eq!(binding.volume_id(), expected_volume);
+        let expected_mount_id = binding.mount_id();
+        let routed = view.route_mut(&path)?;
+        assert_eq!(routed.mount_id, expected_mount_id);
+        assert_eq!(routed.checkout.volume_id(), expected_volume);
+        let relative = if expected_mount == "/" {
+            path.as_str()
+        } else {
+            path.as_str()
+                .strip_prefix(expected_mount)
+                .ok_or("mount prefix mismatch")?
+        };
+        let expected_components = relative
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .map(str::as_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            routed
+                .path
+                .components()
+                .iter()
+                .map(crate::kernel::LogicalName::as_bytes)
+                .collect::<Vec<_>>(),
+            expected_components
+        );
     }
 
     let representatives = ["/root", "/a/file", "/a/b/file", "/a/b/c/deep", "/z/file"]

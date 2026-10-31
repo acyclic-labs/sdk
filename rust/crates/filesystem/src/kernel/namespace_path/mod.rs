@@ -47,17 +47,20 @@ impl NamespacePath {
         profile: FilesystemProfile,
         limits: VolumeLimits,
     ) -> Result<Self, NamespacePathError> {
+        Self::from_text_in_profile(path.as_str(), profile, limits)
+    }
+
+    /// Parses borrowed Unicode text directly into the destination profile.
+    pub(crate) fn from_text_in_profile(
+        path: &str,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+    ) -> Result<Self, NamespacePathError> {
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        Self::parse_in_profile(
-            path.as_str(),
-            profile,
-            limits,
-            &mut accounting,
-            &cancellation,
-        )
-        .map(|(path, _)| path)
-        .map_err(operations::path_error)
+        Self::parse_in_profile(path, profile, limits, &mut accounting, &cancellation)
+            .map(|(path, _)| path)
+            .map_err(operations::path_error)
     }
 
     /// Exact backing capacity retained by this path.

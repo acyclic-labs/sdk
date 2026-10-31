@@ -295,7 +295,7 @@ async function run() {
   } catch (error) {
     assert(error instanceof CrossVolumeError && error.code === "EXDEV", "cross-volume transaction did not fail as EXDEV");
   }
-  const snapshot = await mounted.checkpointSnapshot();
+  const snapshot = await mounted.checkpointSnapshot(2);
   assert(snapshot.mounts.length === 2, "mounted snapshot did not capture every volume");
   assert(snapshot.mounts.every((mount) => isObjectReference(mount.generationId, 6)), "mounted snapshot identity was malformed");
   assert(snapshot.mounts.every((mount) => mount.volumeId.byteLength === 16), "mounted volume identity was malformed");

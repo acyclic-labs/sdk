@@ -10,7 +10,7 @@ use super::*;
 
 /// One prepared actor transition, sealed only by the composed commit receipt.
 struct Contribution {
-    actor: Arc<crate::kernel::AuthorityActor>,
+    actor: crate::kernel::allocation::retained::RetainedArc<crate::kernel::AuthorityActor>,
     revision: super::actor::Revision,
     projection: super::actor::PreparedProjection,
 }
@@ -28,8 +28,6 @@ pub struct FilesystemCommit {
     /// Set once the request was fenced: retries resend these exact
     /// bytes and key, never a request re-fenced under a newer policy cut.
     sealed: bool,
-    /// Frozen provider-evaluated expiry, retained through an Unknown retry.
-    deadline: Option<u64>,
     /// Every contribution and retry belongs to the same provider scope.
     owner: Option<[u8; 16]>,
     // Last: request vectors and held publication guards retire before funding.
@@ -55,9 +53,12 @@ pub enum FilesystemCommitOutcome {
 }
 
 impl FilesystemCommit {
-    pub(super) fn seal_request(&mut self, request: CommitRequest, deadline: Option<u64>) {
+    pub(super) fn seal_request(&mut self, request: CommitRequest) {
         self.request = request;
-        self.deadline = deadline;
+        self.seal_current_request();
+    }
+
+    pub(super) fn seal_current_request(&mut self) {
         self.sealed = true;
     }
     /// Starts from the caller's own conditions, mutations and idempotency key.
@@ -68,7 +69,6 @@ impl FilesystemCommit {
             contributions: Vec::new(),
             holds: Vec::new(),
             sealed: false,
-            deadline: None,
             owner: None,
             allocation: None,
         }
@@ -81,11 +81,11 @@ impl FilesystemCommit {
         &self.request
     }
 
-    /// Frozen exclusive expiry. External submitters must use `commit_before`
-    /// with this value when present, preserving it through an Unknown retry.
+    /// Frozen exclusive expiry carried by the canonical request itself.
+    /// External submitters send that same request, including its deadline.
     #[must_use]
     pub fn deadline(&self) -> Option<u64> {
-        self.deadline
+        self.request.deadline_unix_millis
     }
 
     /// Adds caller conditions or mutations. Filesystem contributions own their
@@ -132,6 +132,41 @@ impl FilesystemCommit {
         {
             self.allocation = work.request_allocation.take();
         }
+    }
+
+    pub(super) fn record_holds(
+        &self,
+        prepared: &Self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Vec<crate::PublicationHold>, AuthorityStoreError> {
+        work.vec(
+            self.holds
+                .len()
+                .checked_add(prepared.holds.len())
+                .ok_or(crate::WorkError::Overflow)?,
+        )
+    }
+
+    pub(super) fn install_records(
+        &mut self,
+        prepared: Self,
+        mut combined: Vec<crate::PublicationHold>,
+    ) {
+        let Self {
+            request,
+            mut holds,
+            sealed,
+            owner,
+            allocation,
+            ..
+        } = prepared;
+        combined.append(&mut self.holds);
+        combined.append(&mut holds);
+        self.request = request;
+        self.holds = combined;
+        self.sealed = sealed;
+        self.owner = owner;
+        self.allocation = allocation;
     }
 
     fn ensure_unclaimed(&self, authority: AuthorityId) -> Result<(), AuthorityStoreError> {
@@ -387,7 +422,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         commit.check_owner(owner)?;
         if !commit.sealed {
             let copied = work.copy_commit(&commit.request)?;
-            let request = self.with_policy_cuts(copied, &[], work)?;
+            let mut request = self.with_policy_cuts(copied, &[], work)?;
+            acyclic_stream::request::validate_commit(&mut request).map_err(map_stream_error)?;
             commit.request = request;
             commit.sealed = true;
             commit.bind_owner(owner);
@@ -412,7 +448,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             Err(error) => return Ok(FilesystemCommitOutcome::Unknown { commit, error }),
         };
         let result = self
-            .commit(request, commit.deadline, work, None::<&mut ()>)
+            .commit(request, commit.deadline(), work, None::<&mut ()>)
             .await;
         if !work.is_native()
             && let Err(error) = work.release_request()
@@ -436,6 +472,21 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         outcome: CommitOutcome,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
+        self.settle_recorded(commit, outcome, async |commit, commit_id| {
+            self.refresh_committed(commit, commit_id, work).await;
+        })
+        .await
+    }
+
+    // A recorded decision needs no new admission. Only its best-effort cache
+    // refresh needs work. Admit that work only after owner and seal checks,
+    // and only for an accepted result.
+    pub(crate) async fn settle_recorded(
+        &self,
+        commit: FilesystemCommit,
+        outcome: CommitOutcome,
+        refresh: impl AsyncFnOnce(FilesystemCommit, acyclic_stream::CommitId),
+    ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
         if let Err(error) = commit
             .check_owner(self.operation_claims().owner_identity())
             .and_then(|()| commit.ensure_sealed())
@@ -444,8 +495,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         Ok(match outcome {
             CommitOutcome::Committed(envelope) => {
-                self.refresh_committed(commit, envelope.commit_id, work)
-                    .await;
+                refresh(commit, envelope.commit_id).await;
                 FilesystemCommitOutcome::Committed(envelope)
             }
             CommitOutcome::Conflict(conflicts) => FilesystemCommitOutcome::Rejected(conflicts),

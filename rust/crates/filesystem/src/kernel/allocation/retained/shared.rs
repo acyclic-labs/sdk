@@ -68,6 +68,15 @@ impl<T> Default for RetainedWeak<T> {
 }
 
 impl<T> RetainedWeak<T> {
+    #[cfg(test)]
+    pub(crate) fn strong_count(&self) -> usize {
+        self.value.strong_count()
+    }
+
+    pub(crate) fn as_ptr(&self) -> *const T {
+        self.value.as_ptr()
+    }
+
     pub(crate) fn upgrade(&self) -> Option<RetainedArc<T>> {
         Some(RetainedArc {
             value: self.value.upgrade()?,

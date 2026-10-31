@@ -293,9 +293,19 @@ where
     ) -> FsResult<FilesystemCommitOutcome> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
-            let mut authority = authority_work(&accounting, cancellation)?;
+            let mut authority = match authority_work(&accounting, cancellation) {
+                Ok(authority) => authority,
+                Err(error) => {
+                    return Ok(FilesystemCommitOutcome::Unknown {
+                        commit,
+                        error: crate::async_storage::authority_error(error),
+                    });
+                }
+            };
             let result = self.inner.authority.submit(commit, &mut authority).await;
-            record_authority_work(&mut accounting, &authority)?;
+            // Completion accounting cannot discard an unresolved owner or
+            // replace a decided result after the provider has returned it.
+            drop(record_authority_work(&mut accounting, &authority));
             result.map_err(FsError::from)
         }
         .await;
@@ -312,27 +322,19 @@ where
         cancellation: &CancellationToken,
     ) -> FsResult<FilesystemCommitOutcome> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        if let Err(error) = commit.ensure_sealed() {
-            return measured(Err(FsError::from(error)), &accounting);
-        }
-        let settled = match outcome {
-            // The outcome is decided before any check this call makes: a
-            // committed request keeps its receipt even when cancellation or
-            // the budget stops the best-effort cache refresh.
-            acyclic_stream::CommitOutcome::Committed(envelope) => {
+        let result = self
+            .inner
+            .authority
+            .settle_recorded(commit, outcome, async |commit, commit_id| {
                 if let Ok(mut authority) = authority_work(&accounting, cancellation) {
                     self.inner
                         .authority
-                        .refresh_committed(commit, envelope.commit_id, &mut authority)
+                        .refresh_committed(commit, commit_id, &mut authority)
                         .await;
                     drop(record_authority_work(&mut accounting, &authority));
                 }
-                FilesystemCommitOutcome::Committed(envelope)
-            }
-            acyclic_stream::CommitOutcome::Conflict(conflicts) => {
-                FilesystemCommitOutcome::Rejected(conflicts)
-            }
-        };
-        measured(Ok(settled), &accounting)
+            })
+            .await;
+        measured(result.map_err(FsError::from), &accounting)
     }
 }

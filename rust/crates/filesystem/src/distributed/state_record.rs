@@ -11,6 +11,9 @@ const DOMAIN: &[u8] = b"acyclic-fs-state-v1\0";
 pub struct RecordedState {
     /// Original caller key; its lifetime follows record retention.
     pub operation: acyclic_stream::IdempotencyKey,
+    /// Original append destination, retained unchanged when a subtree inherits
+    /// this record. This is publication provenance, not immutable tree identity.
+    pub published_at: Bytes,
     /// Published state or permanent semantic outcome.
     pub state: StateRecord,
 }
@@ -22,6 +25,16 @@ pub struct PortableRoot {
     pub root_file_id: FileId,
     /// Authenticated immutable file table.
     pub file_table: ObjectId,
+}
+
+impl PortableRoot {
+    fn is_valid(self) -> bool {
+        self.file_table.kind == ObjectKind::FileTablePage
+            && self
+                .file_table
+                .storage
+                .is_none_or(|storage| storage.root_file_id == self.root_file_id)
+    }
 }
 
 impl From<&crate::kernel::GenerationRoot> for PortableRoot {
@@ -73,9 +86,9 @@ impl StateRecord {
     ) -> Result<(u8, Option<PortableRoot>, &[u8]), crate::AuthorityStoreError> {
         match self {
             Self::Volume { root, companion } => {
-                if root.file_table.kind != ObjectKind::FileTablePage {
+                if !root.is_valid() {
                     return Err(crate::AuthorityStoreError::RejectedStatic(
-                        "volume root requires a file table",
+                        "volume root requires a file table in its root lineage",
                     ));
                 }
                 Ok((0, Some(*root), companion))
@@ -109,10 +122,23 @@ impl StateRecord {
                 .try_into()
                 .map_err(|_| corrupt())?,
         ) as usize;
-        let tag_index = key_start.checked_add(key_length).ok_or_else(corrupt)?;
+        let key_end = key_start.checked_add(key_length).ok_or_else(corrupt)?;
+        let path_start = key_end.checked_add(2).ok_or_else(corrupt)?;
+        let path_length = u16::from_le_bytes(
+            bytes
+                .get(key_end..path_start)
+                .ok_or_else(corrupt)?
+                .try_into()
+                .map_err(|_| corrupt())?,
+        ) as usize;
+        if path_length == 0 || path_length > acyclic_stream::MAX_PATH_BYTES {
+            return Err(corrupt());
+        }
+        let tag_index = path_start.checked_add(path_length).ok_or_else(corrupt)?;
         let tag = *bytes.get(tag_index).ok_or_else(corrupt)?;
-        let operation = acyclic_stream::IdempotencyKey::new(bytes.slice(key_start..tag_index))
+        let operation = acyclic_stream::IdempotencyKey::new(bytes.slice(key_start..key_end))
             .map_err(|_| corrupt())?;
+        let published_at = bytes.slice(path_start..tag_index);
         let start = tag_index + 1;
         let state = if tag == 0 {
             let root_file_id = FileId::from_bytes(
@@ -131,18 +157,15 @@ impl StateRecord {
             let end = reference + length;
             let file_table = ObjectId::try_from(bytes.get(reference..end).ok_or_else(corrupt)?)
                 .map_err(|_| corrupt())?;
-            if file_table.kind != ObjectKind::FileTablePage
-                || file_table
-                    .storage
-                    .is_some_and(|storage| storage.root_file_id != root_file_id)
-            {
+            let root = PortableRoot {
+                root_file_id,
+                file_table,
+            };
+            if !root.is_valid() {
                 return Err(corrupt());
             }
             Self::Volume {
-                root: PortableRoot {
-                    root_file_id,
-                    file_table,
-                },
+                root,
                 companion: bytes.slice(end..),
             }
         } else {
@@ -158,7 +181,11 @@ impl StateRecord {
                 payload: bytes.slice(start..),
             }
         };
-        Ok(RecordedState { operation, state })
+        Ok(RecordedState {
+            operation,
+            published_at,
+            state,
+        })
     }
 }
 
@@ -167,12 +194,14 @@ impl crate::AuthorityWork<'_> {
         &mut self,
         record: &StateRecord,
         operation: &acyclic_stream::IdempotencyKey,
+        path: &acyclic_stream::StreamPath,
     ) -> Result<acyclic_stream::OwnedBytes, crate::AuthorityStoreError> {
         let (tag, root, payload) = record.fields()?;
         let length = DOMAIN
             .len()
             .checked_add(
-                3 + operation.as_bytes().len()
+                5 + operation.as_bytes().len()
+                    + path.as_str().len()
                     + root.map_or(0, |root| 16 + root.file_table.encoded_len()),
             )
             .and_then(|n| n.checked_add(payload.len()))
@@ -184,19 +213,34 @@ impl crate::AuthorityWork<'_> {
         let key_length = u16::try_from(operation.as_bytes().len())
             .map_err(|_| crate::WorkError::Overflow)?
             .to_le_bytes();
+        let path_length = u16::try_from(path.as_str().len())
+            .map_err(|_| crate::WorkError::Overflow)?
+            .to_le_bytes();
         match root {
             Some(root) => self.stream_bytes(
                 DOMAIN,
                 &[
                     &key_length,
                     operation.as_bytes(),
+                    &path_length,
+                    path.as_str().as_bytes(),
                     &tag,
                     &root.root_file_id.into_bytes(),
                     &root.file_table.to_bytes(),
                     payload,
                 ],
             ),
-            None => self.stream_bytes(DOMAIN, &[&key_length, operation.as_bytes(), &tag, payload]),
+            None => self.stream_bytes(
+                DOMAIN,
+                &[
+                    &key_length,
+                    operation.as_bytes(),
+                    &path_length,
+                    path.as_str().as_bytes(),
+                    &tag,
+                    payload,
+                ],
+            ),
         }
     }
 }

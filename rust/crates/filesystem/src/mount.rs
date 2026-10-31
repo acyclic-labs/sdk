@@ -5,6 +5,7 @@ use crate::facade::Checkout;
 use crate::foundation::{GenerationId, MountId, VolumeId};
 use crate::kernel::{NamespacePath, NamespacePathError};
 use crate::model::{AccessMode, ConsistencyMode};
+use crate::path::prefix::PathPrefixIndex;
 use crate::path::{PathError, PortablePath};
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -60,7 +61,8 @@ pub struct RoutedCheckout<'a, A: 'static, O: 'static> {
 
 /// Deterministic longest-prefix router that owns independently configured checkouts.
 pub struct MountedView<A: 'static, O: 'static> {
-    bindings: BTreeMap<PortablePath, MountedCheckout<A, O>>,
+    bindings: Vec<MountedCheckout<A, O>>,
+    by_path: PathPrefixIndex<usize>,
 }
 
 impl<A: 'static, O: 'static> MountedView<A, O> {
@@ -73,10 +75,13 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
     /// Resolves one path by longest component-prefix match.
     #[must_use]
     pub fn resolve(&self, path: &PortablePath) -> Option<&MountedCheckout<A, O>> {
-        self.bindings
-            .values()
-            .filter(|binding| path.is_within(&binding.path))
-            .max_by_key(|binding| binding.path.depth())
+        self.bindings.get(self.selected_index(path)?)
+    }
+
+    // The shared index consumes each path byte once, independently of unrelated
+    // mounts. Mutable routing and lookup both borrow the same dense owner slot.
+    fn selected_index(&self, path: &PortablePath) -> Option<usize> {
+        self.by_path.longest_prefix(path).copied()
     }
 
     /// Resolves and mutably borrows one checkout with a volume-relative path.
@@ -89,26 +94,25 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
         &mut self,
         path: &PortablePath,
     ) -> Result<RoutedCheckout<'_, A, O>, MountError> {
-        let selected = self
-            .bindings
-            .keys()
-            .filter(|candidate| path.is_within(candidate))
-            .max_by_key(|candidate| candidate.depth())
-            .cloned()
-            .ok_or(MountError::UnmappedPath)?;
+        let selected = self.selected_index(path).ok_or(MountError::UnmappedPath)?;
         let binding = self
             .bindings
-            .get_mut(&selected)
+            .get_mut(selected)
             .ok_or(MountError::UnmappedPath)?;
-        let relative = relative_path(path, &selected, binding.checkout.volume_config().limits)?;
+        let relative = relative_path(path, &binding.path)?;
         Ok(RoutedCheckout {
             mount_id: binding.mount_id,
-            path: NamespacePath::from_portable_in_profile(
-                &relative,
+            path: NamespacePath::from_text_in_profile(
+                relative,
                 binding.checkout.volume_config().profile,
                 binding.checkout.volume_config().limits,
             )
-            .map_err(MountError::InvalidNamespacePath)?,
+            .map_err(|error| match error {
+                NamespacePathError::Path(error) if binding.path.as_str() != PortablePath::ROOT => {
+                    MountError::InvalidPath(error)
+                }
+                error => MountError::InvalidNamespacePath(error),
+            })?,
             checkout: &mut binding.checkout,
         })
     }
@@ -119,7 +123,7 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
         MountedViewSnapshot {
             bindings: self
                 .bindings
-                .values()
+                .iter()
                 .map(|binding| MountedGeneration {
                     mount_id: binding.mount_id,
                     path: binding.path.clone(),
@@ -195,35 +199,34 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MountedVie
     ///
     /// A mounted filesystem view must route every absolute path through `/`.
     pub fn build(self) -> Result<MountedView<A, O>, MountError> {
-        if !self
-            .bindings
-            .keys()
-            .any(|path| path.as_str() == PortablePath::ROOT)
-        {
+        if !self.bindings.contains_key(PortablePath::ROOT) {
             return Err(MountError::MissingRoot);
         }
-        Ok(MountedView {
-            bindings: self.bindings,
-        })
+        let mut bindings = Vec::with_capacity(self.bindings.len());
+        let mut by_path = PathPrefixIndex::default();
+        // Consume the builder's sorted entries. Each checkout has one dense
+        // position and the existing path owner moves into its lookup slot.
+        for (path, binding) in self.bindings {
+            by_path.insert(path, bindings.len());
+            bindings.push(binding);
+        }
+        Ok(MountedView { bindings, by_path })
     }
 }
 
-fn relative_path(
-    path: &PortablePath,
-    mount: &PortablePath,
-    limits: crate::model::VolumeLimits,
-) -> Result<PortablePath, MountError> {
+fn relative_path<'a>(path: &'a PortablePath, mount: &PortablePath) -> Result<&'a str, MountError> {
     if mount.as_str() == PortablePath::ROOT {
-        return Ok(path.clone());
+        return Ok(path.as_str());
     }
     if path == mount {
-        return PortablePath::parse(PortablePath::ROOT, limits).map_err(MountError::InvalidPath);
+        return Ok(PortablePath::ROOT);
     }
     let relative = path
         .as_str()
         .strip_prefix(mount.as_str())
+        .filter(|suffix| suffix.starts_with('/'))
         .ok_or(MountError::UnmappedPath)?;
-    PortablePath::parse(relative, limits).map_err(MountError::InvalidPath)
+    Ok(relative)
 }
 
 /// Reproducible selection of one generation for each mounted volume.

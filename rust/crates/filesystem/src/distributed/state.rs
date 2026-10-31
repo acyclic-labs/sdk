@@ -84,23 +84,56 @@ pub struct ObservedRecord {
 }
 
 impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
-    /// Reads current state using existing Streams operations. Until G01 lands,
-    /// present paths require tail plus one exact record read; no cache is a proof
-    /// of absence and no coherent multi-path snapshot is claimed.
+    /// Reads state and its exact publication fence on the caller's work owner.
+    /// Portable dispatch uses one coherent head; native dispatch retains its
+    /// original-funded tail/read until its provider supports funded heads.
+    /// This does not establish a coherent multi-path snapshot.
     pub async fn observe_record(
         &self,
         path: StreamPath,
         work: &mut AuthorityWork<'_>,
     ) -> Result<ObservedRecord, AuthorityStoreError> {
-        let tail = self.tail(path.clone(), work).await;
-        let (record, condition, allocation) = match tail {
+        work.check()?;
+        let observed = async {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_native() {
+                let tail = self.tail(path.clone(), work).await?;
+                if tail == 0 {
+                    return Err(authority_corrupt("filesystem state stream is empty", work));
+                }
+                let (record, allocation) = self.record(path.clone(), tail - 1, work).await?;
+                return Ok((tail, record, allocation));
+            }
+            work.admit(WorkCounters {
+                backend_read_operations: 1,
+                authority_records_read: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            work.record(WorkCounters {
+                backend_read_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let head = self.provider.head(path.clone()).await;
+            work.check()?;
+            let head = head.map_err(map_stream_error)?;
+            let record = head
+                .last
+                .ok_or_else(|| authority_corrupt("filesystem state stream is empty", work))?;
+            work.charge(WorkCounters {
+                authority_records_read: 1,
+                authority_bytes_read: record.value.len() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            work.hold_opaque(record.value.len() as u64)?;
+            Ok((head.tail, record, None))
+        }
+        .await;
+        let (record, condition, allocation) = match observed {
             Err(error) if authority_missing(&error) => {
                 (None, CommitCondition::Absent { path }, None)
             }
             Err(error) => return Err(error),
-            Ok(0) => return Err(authority_corrupt("filesystem state stream is empty", work)),
-            Ok(tail) => {
-                let (record, allocation) = self.record(path.clone(), tail - 1, work).await?;
+            Ok((tail, record, allocation)) => {
                 let condition = CommitCondition::Head {
                     path,
                     expected: tail,
@@ -159,7 +192,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
         work: &mut AuthorityWork<'_>,
     ) -> Result<RecordReceipt, AuthorityStoreError> {
         let held = self.record(path.clone(), sequence, work).await?;
-        let encoded = work.encode_state(expected, operation)?;
+        let encoded = work.encode_state(expected, operation, &path)?;
         let comparison = WorkCounters {
             items_examined: encoded.len() as u64 + 1,
             ..WorkCounters::UNCHARGED
@@ -237,7 +270,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
                 "duplicate filesystem state contribution",
             ));
         }
-        let encoded = work.encode_state(record, &commit.request().idempotency_key)?;
+        let encoded = work.encode_state(record, &commit.request().idempotency_key, path)?;
         let mut records = work.vec(1)?;
         records.push(encoded.into());
         let condition = clone_condition(&observed.condition, work)?;
@@ -277,9 +310,27 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             ));
         }
         let mut request = work.copy_commit(commit.request())?;
+        self.fence_observed(&mut request, observations, deadline, work)?;
+        commit.seal_request(request);
+        commit.bind_owner(owner);
+        commit.retain_request_custody(work);
+        Ok(())
+    }
+
+    // Only caller-owned scratch is changed here. Public sealing copies first;
+    // batch preparation already owns a disposable draft of the complete request.
+    pub(super) fn fence_observed(
+        &self,
+        request: &mut CommitRequest,
+        observations: &[AuthorizedObservation],
+        deadline: Option<u64>,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        work.check()?;
+        let owner = self.operation_claims().owner_identity();
         super::composition::grow(&mut request.conditions, observations.len(), work)?;
         for observed in observations {
-            if observed.owner != self.operation_claims().owner_identity() {
+            if observed.owner != owner {
                 return Err(AuthorityStoreError::RejectedStatic(
                     "observation and publication use different Streams owners",
                 ));
@@ -287,12 +338,16 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             let condition = clone_condition(&observed.condition, work)?;
             super::policy::merge_condition(&mut request.conditions, condition, work)?;
         }
+        // Every fence is part of the canonical command before size admission.
+        // Neither an explicit lease nor the caller's existing deadline may be
+        // extended by composition or omitted by an external submitter.
+        request.deadline_unix_millis = request
+            .deadline_unix_millis
+            .into_iter()
+            .chain(deadline)
+            .min();
         // Use the primitive's one canonical shape/encoded-total admission.
-        acyclic_stream::request::validate_commit(&mut request).map_err(map_stream_error)?;
-        commit.seal_request(request, deadline);
-        commit.bind_owner(owner);
-        commit.retain_request_custody(work);
-        Ok(())
+        acyclic_stream::request::validate_commit(request).map_err(map_stream_error)
     }
 }
 

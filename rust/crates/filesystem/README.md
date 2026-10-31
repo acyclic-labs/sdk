@@ -14,7 +14,7 @@ Choose the backend for your deployment: embedded storage for local durability, h
 
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.
 
-The [publication migration inventory](publication-migration.md) describes the
+The [publication migration inventory](#filesystem-publication-migration) describes the
 portable Streams record contribution API, compatibility boundaries and pending
 caller migrations.
 
@@ -49,7 +49,11 @@ FS hash chain or locator. `From<&GenerationRoot>` is the compatibility
 construction path; legacy root codecs and volume checks still serve callers
 that have not migrated.
 
-V1 framing is `domain || key_length:u16-le || original_key || kind:u8 || body`.
+V1 framing is `domain || key_length:u16-le || original_key || path_length:u16-le
+|| original_destination || kind:u8 || body`. The original destination belongs
+to publication provenance; it does not change when a subtree inherits the record.
+Recovery compares it with the intended destination, so an inherited source record
+cannot establish a new destination's append outcome.
 A volume body begins with `root_file_id:16 || file_table_digest:32`, then the
 companion codec bytes. Companion tags select existing context, sparse-workspace,
 Git-state or permanent-outcome codecs. Framing does not validate their semantic
@@ -68,6 +72,8 @@ Stage and verify the immutable closure before `contribute_record`, retaining
 its `PublicationHold` through submission. `PublicationHold::none()` alone proves
 no remote retention. `seal_observed` freezes explicit facts and the optional
 exclusive Unix-millis deadline without reading the legacy poll-local policy cut.
+The earliest caller/lease deadline is stored in the canonical request before
+encoded-total admission; it cannot be extended by composition.
 It reuses Streams' canonical request validation and full protobuf encoded-total
 admission. Oversize requests are not chunked. Conflicts publish no mutations.
 Cross-provider observations and mixed-owner contributions are refused. Prepared
@@ -83,14 +89,49 @@ lookup. Missing/mismatched history never authorizes execution at a later positio
 Application retention must preserve permanent semantic outcomes; this API does
 not pin all records forever or create another receipt service.
 
+M2's portable batch preparation uses `prepare_records` to stage roots, companion
+snapshots and refs against explicit observations, then seal one command. A local
+refusal preserves the caller's original conditions and held closures. Preparation
+validates and seals the disposable draft without copying its request containers
+again; public sealing still stages a copy before changing caller-owned state.
+Submission uses the existing Streams commit path. `reconcile_states` reads each original
+predicted position once, requiring every destination-bound state and header to
+match under one commit identity before releasing the original owner. Callers use
+unique operation keys. Missing records, separate commits, inherited source
+records, retention loss and local refusal preserve Unknown; none authorizes a
+new append. This portable source does not yet replace the shipping multi-root
+coordinator, companion database or legacy authority consumers.
+
 Unknown retains the original request/key, deadline, holds and native request
 custody, including when local retry preparation, cancellation, budget admission,
 owner validation or cleanup refuses. Such refusal cannot settle an earlier
-uncertain publication. Resubmit that commit unchanged. External submitters must honor
-`deadline()` with `commit_before` and settle their actual provider outcome.
-Current head reads still use tail plus exact read pending G01. Multiple
+uncertain publication. Resubmit that commit unchanged. External submitters send
+the sealed canonical request, including its deadline, and settle their actual
+provider outcome. Current head reads still use tail plus exact read pending
+original-work native head dispatch. Multiple
 observations are optimistic facts, not a coherent G05 snapshot. Legacy `seal`
 retains its policy bridge until callers migrate.
+
+The live Streams operation-window adapter reads its state and exact record
+identity through `head`, and carries that `Head` fence into the state/lease CAS.
+Missing state uses `Absent`; empty, corrupt, foreign-workspace or mismatched
+revision records refuse. The replacement is encoded once for both its retry
+identity and record. This adapter's caller-context migration remains G49 work.
+
+Generation facts retain two bounded windows. Once a window is forgotten, a
+missing fact is Unknown and uses the existing durable lookup; it cannot establish
+absence. The shared actor registry keeps exact weak registrations for live
+actors and at most 256 strong idle references per owner. Cache collisions may
+discard idle state, but never replace a live actor. Final actor destruction
+retires its exact registration and index nodes; reopening reconstructs forgotten
+state from Streams. These bounds describe source structure, not measured RSS or
+latency at 100k volumes.
+
+Mounted checkouts keep an ordered snapshot vector and a direct path index.
+Routing probes only component ancestors and borrows their spellings; snapshots
+retain canonical order independently of hash-table iteration. Index lookup has
+the standard hash table's expected constant cost; no worst-case hash-table or
+runtime performance qualification is claimed.
 
 ### Caller and deletion inventory
 
@@ -125,8 +166,10 @@ artifact location. Keep cold, reopened-warm and newly-created-warm paths separat
 | --- | --- | --- |
 | History 10²–10⁷; 100k dormant volumes and fixed active set | Paths, charged bytes/RSS, recovery reads, flushes, calls and p99 | Same tail/different history; evicted present fact; rejected preparations cannot grow resident history without bound |
 | N=1/8/64 roots, exact conditions+mutations+record bytes | Preparation reads, encoded total, all commits/companion IO, flushes and p99 | Advance one root, metadata, policy or actor cut: nothing moves; oversize refuses without a submitted prefix |
+| Mounted routing/checkpoints, 1–100k mounts and caller in-flight credit 1/8/64 | Component lookup probes, started checkpoints, retained futures/results, RSS and completion latency | Nested/Unicode/partial-component paths and same-volume distinct mounts retain routing/EXDEV; one failure stops scheduling and drains started work without publishing or consuming edits |
 | Full subtree fork across file count/history/depth | Root PUTs, activation/fork commits, lineage writes and retained paths | Source advances; lost reply; child cannot read unrelated roots. Filtered fork tree work is counted separately |
 | Tool lifecycle and long tools with renewals | Baseline 10 control calls plus 5 per renewal, retained paths, alarms/probes and physical starts | Exact expiry/superseded actor state despite delayed alarm; queued stale write; crash during final reconcile |
+| Operation-window reads on absent/active/renewed state | Counted provider head/data calls and transport bytes against the former tail+read path | Empty/corrupt/foreign/revision-mismatched state refuses; a stale CAS cannot replace a renewed lease |
 | Lost reply/expired idempotency lookup | Original outcome identity, data/control recovery calls, duplicate effects | Permanent record is authoritative; missing/retention-lost history stays error/Unknown, never replay permission |
 
 New unit cases cover stale-root/policy atomicity, cross-provider refusal,

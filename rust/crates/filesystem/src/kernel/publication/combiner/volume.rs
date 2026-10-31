@@ -9,7 +9,7 @@ pub(crate) struct Volume {
     #[cfg(any(test, feature = "distributed"))]
     pub(crate) revision: std::sync::atomic::AtomicU64,
     state: Mutex<VolumeState>,
-    _allocation: RetainedAllocation,
+    pub(super) registration: std::sync::OnceLock<registry::Registration>,
 }
 
 struct VolumeState {
@@ -74,29 +74,31 @@ impl Volume {
         }
     }
 
-    pub(super) fn new(accounting: &mut KernelAccounting<'_>) -> Result<Arc<Self>, crate::FsError> {
-        let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>())
-            .map_err(|_| WorkError::Overflow)? as u64;
-        let allocation = RetainedAllocation::claim(bytes, 1, accounting)?;
-        Ok(Arc::new(Self {
-            #[cfg(any(test, feature = "distributed"))]
-            journal: tokio::sync::Mutex::new(crate::distributed::actor::Journal::Vacant),
-            #[cfg(any(test, feature = "distributed"))]
-            revision: std::sync::atomic::AtomicU64::new(0),
-            state: Mutex::new(VolumeState {
-                active: RetainedWeak::default(),
-                appending: RetainedWeak::default(),
-                recent: None,
-            }),
-            _allocation: allocation,
-        }))
+    pub(super) fn new(
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<RetainedArc<Self>, crate::FsError> {
+        RetainedArc::new(
+            Self {
+                #[cfg(any(test, feature = "distributed"))]
+                journal: tokio::sync::Mutex::new(crate::distributed::actor::Journal::Vacant),
+                #[cfg(any(test, feature = "distributed"))]
+                revision: std::sync::atomic::AtomicU64::new(0),
+                state: Mutex::new(VolumeState {
+                    active: RetainedWeak::default(),
+                    appending: RetainedWeak::default(),
+                    recent: None,
+                }),
+                registration: std::sync::OnceLock::new(),
+            },
+            accounting,
+        )
     }
 
     pub(super) fn group(
-        self: &Arc<Self>,
+        volume: &RetainedArc<Self>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<RetainedArc<Group>, crate::FsError> {
-        let mut state = self
+        let mut state = volume
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -122,7 +124,7 @@ impl Volume {
                 // One in-flight append and one bounded collecting successor.
                 // Metadata may prepare against this immutable predecessor;
                 // only its exact receipt can admit the successor to sealing.
-                let next = new_group(Arc::clone(self), accounting)?;
+                let next = new_group(volume.clone(), accounting)?;
                 *next
                     .predecessor
                     .lock()
@@ -132,7 +134,7 @@ impl Volume {
             }
             return Ok(group);
         }
-        let group = new_group(Arc::clone(self), accounting)?;
+        let group = new_group(volume.clone(), accounting)?;
         state.active = group.downgrade();
         Ok(group)
     }
@@ -240,6 +242,14 @@ impl PendingBatch {
             });
             drop(state);
             drop(retired);
+        }
+    }
+}
+
+impl Drop for Volume {
+    fn drop(&mut self) {
+        if let Some(registration) = self.registration.get() {
+            registration.retire(self);
         }
     }
 }

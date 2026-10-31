@@ -146,6 +146,8 @@ mod composition;
 pub use composition::{FilesystemCommit, FilesystemCommitOutcome};
 mod state;
 pub use state::{AuthorizedObservation, ObservedRecord, RecordAllocation, RecordReceipt};
+mod state_publication;
+pub use state_publication::StatePublicationOutcome;
 mod placement;
 pub mod state_record;
 #[cfg(test)]

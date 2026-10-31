@@ -105,18 +105,22 @@ where
         Ok(())
     };
     let result = publish_generation_async_inner(
-        &owner,
-        request,
-        intent,
-        closure_limits,
-        cache,
-        cancellation,
+        preparation::Preparation {
+            owner: &owner,
+            request,
+            intent,
+            limits: closure_limits,
+            cache,
+            cancellation,
+            resolved,
+        },
         &mut accounting,
-        &mut seal,
-        &mut dispatch,
-        resolved,
-        &mut roots,
-        None,
+        PublicationCallbacks {
+            before_publication: &mut seal,
+            dispatch: &mut dispatch,
+            prepare_roots: &mut roots,
+            batch_seal: None,
+        },
     )
     .await;
     result
@@ -250,18 +254,22 @@ where
         Ok(())
     };
     let mut output = publish_generation_async_inner(
-        &owner,
-        request,
-        intent,
-        closure_limits,
-        cache,
-        cancellation,
+        preparation::Preparation {
+            owner: &owner,
+            request,
+            intent,
+            limits: closure_limits,
+            cache,
+            cancellation,
+            resolved,
+        },
         &mut accounting,
-        &mut seal,
-        &mut dispatch,
-        resolved,
-        &mut roots,
-        shared_seal.map(|seal| seal.seal),
+        PublicationCallbacks {
+            before_publication: &mut seal,
+            dispatch: &mut dispatch,
+            prepare_roots: &mut roots,
+            batch_seal: shared_seal.map(|seal| seal.seal),
+        },
     )
     .await
     .map_err(|error| {

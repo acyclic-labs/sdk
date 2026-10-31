@@ -8,6 +8,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         flight: Arc<Flight>,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
+        let epoch = flight.epoch;
         let guard = ActiveFlightGuard {
             store: self,
             object_id,
@@ -21,7 +22,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             }
         };
         let bytes = read.bytes.clone();
-        if self.insert(object_id, bytes.clone())? {
+        if self.insert(object_id, bytes.clone(), epoch)? {
             guard.finish(Some(bytes.clone()))?;
             return shared_read(bytes, maximum);
         }
@@ -143,7 +144,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         }
         for (leader, read) in prepared.leaders.value.iter().zip(&mut reads.0) {
             let bytes = read.bytes.clone();
-            let retained = self.insert(leader.object_id, bytes.clone())?;
+            let retained = self.insert(leader.object_id, bytes.clone(), leader.flight.epoch)?;
             if retained {
                 read.retention = ObjectReadRetention::Shared;
             }

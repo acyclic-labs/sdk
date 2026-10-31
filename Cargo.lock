@@ -223,6 +223,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-collections"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
@@ -246,6 +253,7 @@ name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-fs-base",
  "acyclic-fs-wire",
  "acyclic-grpc-observability",

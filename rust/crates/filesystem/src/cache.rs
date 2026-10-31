@@ -112,14 +112,16 @@ enum FlightState {
 
 struct Flight {
     state: Mutex<FlightState>,
+    epoch: u64,
     maximum_waiters: u32,
     #[cfg(not(target_arch = "wasm32"))]
     _allocation: Option<NativeAllocation>,
 }
 
 impl Flight {
-    fn new(maximum_waiters: u32) -> Self {
+    fn new(maximum_waiters: u32, epoch: u64) -> Self {
         Self {
+            epoch,
             state: Mutex::new(FlightState::Running(Owned::new(
                 Vec::new(),
                 KernelOwnedAllocation::Standalone,
@@ -276,7 +278,7 @@ struct BatchLeader {
 struct PreparedBatch {
     slots: Owned<Vec<BatchSlot>>,
     leaders: Owned<Vec<BatchLeader>>,
-    shared: Namespace,
+    shared: Arc<Namespace>,
 }
 
 impl Drop for PreparedBatch {
@@ -298,7 +300,7 @@ impl Drop for PreparedBatch {
 /// Async immutable-object accelerator over any conforming backend.
 pub struct CachedObjectStore<S> {
     inner: S,
-    shared: Namespace,
+    shared: Arc<Namespace>,
 }
 
 impl<S: Clone> Clone for CachedObjectStore<S> {
@@ -319,13 +321,14 @@ impl<S> CachedObjectStore<S> {
     fn with_options(inner: S, options: ObjectCacheOptions) -> Self {
         Self {
             inner,
-            shared: Namespace {
+            shared: Arc::new(Namespace {
                 id: 0,
+                epoch: crate::sync::atomic::AtomicU64::new(0),
                 pool: Arc::new(Shared {
                     options,
                     state: Mutex::new(CacheState::default()),
                 }),
-            },
+            }),
         }
     }
 
@@ -346,10 +349,11 @@ impl<S> CachedObjectStore<S> {
         };
         Ok(CachedObjectStore {
             inner,
-            shared: Namespace {
+            shared: Arc::new(Namespace {
                 id,
+                epoch: crate::sync::atomic::AtomicU64::new(0),
                 pool: Arc::clone(&self.shared.pool),
-            },
+            }),
         })
     }
 
@@ -381,10 +385,14 @@ impl<S> CachedObjectStore<S> {
         })
     }
 
-    /// Discards this namespace's resident bytes. In-flight reads remain valid.
+    /// Discards this namespace's resident bytes. In-flight reads remain valid,
+    /// but fills started before this clear cannot restore canonical residency.
     pub fn clear(&self) -> Result<(), ObjectStoreError> {
-        let mut state = self.lock_state()?;
-        self.shared.clear(&mut state)?;
+        let detached = {
+            let mut state = self.lock_state()?;
+            self.shared.clear(&mut state)?
+        };
+        drop(detached);
         Ok(())
     }
 
@@ -439,7 +447,10 @@ impl<S> CachedObjectStore<S> {
                 )
             })
             .transpose()?;
-        let flight = Flight::new(self.shared.pool.options.maximum_waiters_per_object);
+        let flight = Flight::new(
+            self.shared.pool.options.maximum_waiters_per_object,
+            self.shared.fill_epoch(),
+        );
         #[cfg(not(target_arch = "wasm32"))]
         let flight = Flight {
             _allocation: allocation,
@@ -470,27 +481,36 @@ impl<S> CachedObjectStore<S> {
         Ok(true)
     }
 
-    fn insert(&self, object_id: ObjectId, bytes: OwnedBytes) -> Result<bool, ObjectStoreError> {
+    fn insert(
+        &self,
+        object_id: ObjectId,
+        bytes: OwnedBytes,
+        epoch: u64,
+    ) -> Result<bool, ObjectStoreError> {
         let object_id = self.shared.key(object_id);
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if length > self.shared.pool.options.maximum_bytes {
             return Ok(false);
         }
         let mut state = self.lock_state()?;
-        if let Some(existing) = state.entries.get(&object_id) {
-            if existing.bytes != bytes {
-                return Err(ObjectStoreError::Corrupt);
+        let cutoff = state.clock;
+        loop {
+            if epoch != self.shared.fill_epoch() {
+                return Ok(false);
             }
-            return Ok(true);
-        }
-        while state.entries.len().saturating_add(state.decoded.len())
-            >= usize::try_from(self.shared.pool.options.maximum_entries).unwrap_or(usize::MAX)
-            || state
-                .resident_bytes
-                .checked_add(length)
-                .is_none_or(|total| total > self.shared.pool.options.maximum_bytes)
-        {
-            evict_oldest(&mut state)?;
+            if let Some(existing) = state.entries.get(&object_id) {
+                if existing.bytes != bytes {
+                    return Err(ObjectStoreError::Corrupt);
+                }
+                return Ok(true);
+            }
+            if !self.needs_eviction(&state, length) {
+                break;
+            }
+            let Some(next) = self.evict_and_unlock(state, cutoff)? else {
+                return Ok(false);
+            };
+            state = next;
         }
         let tick = next_tick(&mut state)?;
         state.resident_bytes = state
@@ -531,7 +551,7 @@ impl<S> CachedObjectStore<S> {
         let selected = if MATCH_IDENTITY {
             Some(key)
         } else {
-            state.decoded.keys().next().copied()
+            state.decoded.first_key()
         };
         let Some((key, entry)) =
             selected.and_then(|key| state.decoded.get_mut(&key).map(|entry| (key, entry)))
@@ -566,18 +586,18 @@ impl<S> CachedObjectStore<S> {
             return Ok(DecodedCacheAdmission::Uncached(value));
         }
         let mut state = self.lock_state()?;
-        if let Some(existing) = state.decoded.get(&key) {
-            return Ok(DecodedCacheAdmission::Shared(existing.value.clone()));
-        }
-        while ENFORCE
-            && (state.entries.len().saturating_add(state.decoded.len())
-                >= usize::try_from(self.shared.pool.options.maximum_entries).unwrap_or(usize::MAX)
-                || state
-                    .resident_bytes
-                    .checked_add(value.logical_bytes)
-                    .is_none_or(|total| total > self.shared.pool.options.maximum_bytes))
-        {
-            evict_oldest(&mut state)?;
+        let cutoff = state.clock;
+        loop {
+            if let Some(existing) = state.decoded.get(&key) {
+                return Ok(DecodedCacheAdmission::Shared(existing.value.clone()));
+            }
+            if !ENFORCE || !self.needs_eviction(&state, value.logical_bytes) {
+                break;
+            }
+            let Some(next) = self.evict_and_unlock(state, cutoff)? else {
+                return Ok(DecodedCacheAdmission::Uncached(value));
+            };
+            state = next;
         }
         let tick = next_tick(&mut state)?;
         state.resident_bytes = state
@@ -597,6 +617,37 @@ impl<S> CachedObjectStore<S> {
         );
         state.recency.insert((tick, RecencyKey::Decoded(key)));
         Ok(DecodedCacheAdmission::Shared(value))
+    }
+
+    fn needs_eviction(&self, state: &CacheState, bytes: u64) -> bool {
+        state.entries.len().saturating_add(state.decoded.len())
+            >= usize::try_from(self.shared.pool.options.maximum_entries).unwrap_or(usize::MAX)
+            || state
+                .resident_bytes
+                .checked_add(bytes)
+                .is_none_or(|total| total > self.shared.pool.options.maximum_bytes)
+    }
+
+    fn evict_and_unlock<'a>(
+        &'a self,
+        mut state: MutexGuard<'a, CacheState>,
+        cutoff: u64,
+    ) -> Result<Option<MutexGuard<'a, CacheState>>, ObjectStoreError> {
+        // Only retire the finite cohort present at admission. New or touched
+        // entries cannot extend this attempt when destructors re-enter.
+        if state
+            .recency
+            .first()
+            .is_some_and(|(touched, _)| *touched >= cutoff)
+        {
+            return Ok(None);
+        }
+        let retired = evict_oldest(&mut state)?;
+        drop(state);
+        retired.retire();
+        // A payload destructor may re-enter the pool, so callers recheck the
+        // original key and residency before admitting their pending value.
+        self.lock_state().map(Some)
     }
 
     fn remove_flight(
@@ -635,41 +686,85 @@ fn next_tick(state: &mut CacheState) -> Result<u64, ObjectStoreError> {
     Ok(tick)
 }
 
-fn evict_oldest(state: &mut CacheState) -> Result<(), ObjectStoreError> {
+enum EvictedEntry {
+    Canonical(CacheEntry),
+    Decoded(DecodedCacheEntry),
+}
+
+impl EvictedEntry {
+    fn retire(self) {
+        match self {
+            Self::Canonical(entry) => drop(entry),
+            Self::Decoded(entry) => drop(entry),
+        }
+    }
+}
+
+fn evict_oldest(state: &mut CacheState) -> Result<EvictedEntry, ObjectStoreError> {
     let &(touched, key) = state.recency.first().ok_or(ObjectStoreError::Corrupt)?;
-    state.recency.remove(&(touched, key));
-    let removed_bytes = match key {
+    let (bytes, canonical_remaining, decoded_remaining) = match key {
         RecencyKey::Canonical(object_id) => {
-            let bytes = state
+            let entry = state
                 .entries
-                .remove(&object_id)
-                .map(|entry| u64::try_from(entry.bytes.len()).unwrap_or(u64::MAX))
+                .get(&object_id)
                 .ok_or(ObjectStoreError::Corrupt)?;
-            state.resident_canonical_bytes = state
-                .resident_canonical_bytes
-                .checked_sub(bytes)
-                .ok_or(ObjectStoreError::Corrupt)?;
-            bytes
+            if entry.touched != touched {
+                return Err(ObjectStoreError::Corrupt);
+            }
+            let bytes = u64::try_from(entry.bytes.len()).map_err(|_| ObjectStoreError::Corrupt)?;
+            (
+                bytes,
+                state
+                    .resident_canonical_bytes
+                    .checked_sub(bytes)
+                    .ok_or(ObjectStoreError::Corrupt)?,
+                state.resident_decoded_bytes,
+            )
         }
         RecencyKey::Decoded(decoded) => {
-            let bytes = state
+            let entry = state
                 .decoded
-                .remove(&decoded)
-                .map(|entry| entry.value.logical_bytes)
+                .get(&decoded)
                 .ok_or(ObjectStoreError::Corrupt)?;
-            state.resident_decoded_bytes = state
-                .resident_decoded_bytes
-                .checked_sub(bytes)
-                .ok_or(ObjectStoreError::Corrupt)?;
-            bytes
+            if entry.touched != touched {
+                return Err(ObjectStoreError::Corrupt);
+            }
+            let bytes = entry.value.logical_bytes;
+            (
+                bytes,
+                state.resident_canonical_bytes,
+                state
+                    .resident_decoded_bytes
+                    .checked_sub(bytes)
+                    .ok_or(ObjectStoreError::Corrupt)?,
+            )
         }
     };
-    state.resident_bytes = state
+    let remaining = state
         .resident_bytes
-        .checked_sub(removed_bytes)
+        .checked_sub(bytes)
         .ok_or(ObjectStoreError::Corrupt)?;
-    state.evictions = increment(state.evictions)?;
-    Ok(())
+    let evictions = increment(state.evictions)?;
+    let retired = match key {
+        RecencyKey::Canonical(object_id) => EvictedEntry::Canonical(
+            state
+                .entries
+                .remove(&object_id)
+                .ok_or(ObjectStoreError::Corrupt)?,
+        ),
+        RecencyKey::Decoded(decoded) => EvictedEntry::Decoded(
+            state
+                .decoded
+                .remove(&decoded)
+                .ok_or(ObjectStoreError::Corrupt)?,
+        ),
+    };
+    state.recency.remove(&(touched, key));
+    state.resident_canonical_bytes = canonical_remaining;
+    state.resident_decoded_bytes = decoded_remaining;
+    state.resident_bytes = remaining;
+    state.evictions = evictions;
+    Ok(retired)
 }
 
 fn cache_probe_work() -> WorkCounters {

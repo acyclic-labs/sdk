@@ -25,7 +25,7 @@ fn value(id: u8) -> DecodedCacheValue {
 fn publish(cache: &CachedObjectStore<()>, id: u8, split: bool) {
     if split {
         let mut state = cache.lock_state().unwrap();
-        if !state.decoded.is_empty() {
+        if state.decoded.len() != 0 {
             evict_oldest(&mut state).unwrap();
         }
         drop(state);

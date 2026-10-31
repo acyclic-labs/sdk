@@ -11,7 +11,9 @@ use crate::kernel::allocation::fixed_index::FixedIndex;
 mod composition;
 mod pipeline;
 mod preparation;
+mod registry;
 mod volume;
+pub(crate) use registry::authority_actor;
 use state::{Phase, Plan, State};
 use volume::PendingBatch;
 pub(crate) use volume::Volume;
@@ -130,29 +132,12 @@ impl BatchAnchor {
 }
 
 struct Group {
-    volume: Arc<Volume>,
+    volume: RetainedArc<Volume>,
     state: Mutex<State<Arc<Proposal>, ObjectId>>,
     sealed: Mutex<BatchAnchor>,
     signal: tokio::sync::Notify,
     predecessor: Mutex<Option<RetainedArc<Group>>>,
     _members_allocation: RetainedAllocation,
-}
-
-struct Registry {
-    entries: Mutex<FixedIndex<Arc<Volume>, 32>>,
-    _allocation: RetainedAllocation,
-}
-
-impl Registry {
-    fn new(accounting: &mut KernelAccounting<'_>) -> Result<Arc<Self>, crate::FsError> {
-        let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>())
-            .map_err(|_| WorkError::Overflow)? as u64;
-        let allocation = RetainedAllocation::claim(bytes, 1, accounting)?;
-        Ok(Arc::new(Self {
-            entries: Mutex::new(FixedIndex::default()),
-            _allocation: allocation,
-        }))
-    }
 }
 
 pub(super) struct Ticket {
@@ -232,7 +217,7 @@ impl Ticket {
         // Enqueue immutable metadata before waiting for durability or asking
         // the provider for a quote. The bounded successor fills while the
         // previous append is in flight; no caller resamples that pending head.
-        let group = volume.group(accounting)?;
+        let group = Volume::group(&volume, accounting)?;
         let proposal = Proposal::new(Arc::clone(&core), accounting)?;
         let index = group
             .state
@@ -441,36 +426,8 @@ impl Drop for Ticket {
     }
 }
 
-pub(crate) fn authority_actor(
-    owner: &acyclic_stream::OperationClaims,
-    scope: [u8; 16],
-    key: AuthorityId,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<Arc<Volume>, crate::FsError> {
-    // Stores sharing one owner keep separate actors per scope: distinct
-    // placements never share cached heads or publication groups.
-    let mut slot_key = [0; 32];
-    slot_key[..16].copy_from_slice(&scope);
-    slot_key[16..].copy_from_slice(&key.into_bytes());
-    let owned = owner.shared_resource(
-        accounting,
-        |accounting| accounting.charge_items(1),
-        |bytes, accounting| RetainedAllocation::claim(bytes, 1, accounting),
-        Registry::new,
-    )?;
-    let mut registry = owned
-        .entries
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(volume) = registry.get(slot_key, accounting)? {
-        return Ok(Arc::clone(volume));
-    }
-    let slot = registry.get_or_try_insert_with(slot_key, accounting, Volume::new)?;
-    Ok(Arc::clone(slot))
-}
-
 fn new_group(
-    volume: Arc<Volume>,
+    volume: RetainedArc<Volume>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<RetainedArc<Group>, crate::FsError> {
     let maximum = (crate::async_storage::MAX_AUTHORITY_GROUP_MEMBERS)

@@ -224,10 +224,14 @@ async fn decoded_eviction_and_conflicting_immutable_bytes_fail_closed()
     assert_eq!(stats.resident_decoded_pages, 1);
 
     cached.clear()?;
-    assert!(cached.insert(first_id, first_bytes.clone())?);
-    assert!(cached.insert(first_id, first_bytes.clone())?);
+    assert!(cached.insert(first_id, first_bytes.clone(), cached.shared.fill_epoch())?);
+    assert!(cached.insert(first_id, first_bytes.clone(), cached.shared.fill_epoch())?);
     let conflicting = cached
-        .insert(first_id, OwnedBytes::from_static(b"different"))
+        .insert(
+            first_id,
+            OwnedBytes::from_static(b"different"),
+            cached.shared.fill_epoch(),
+        )
         .err()
         .ok_or("conflicting immutable cache bytes were accepted")?;
     assert!(matches!(conflicting, ObjectStoreError::Corrupt));

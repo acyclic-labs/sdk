@@ -1,6 +1,69 @@
 use super::*;
 
 #[tokio::test]
+async fn flush_vector_and_visit_denial_precede_provider_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    for budget in [
+        WorkBudget {
+            allocation_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        WorkBudget {
+            peak_allocation_bytes: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        WorkBudget {
+            items_examined: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+    ] {
+        let directory = tempfile::tempdir()?;
+        let store = StagedObjects::open(
+            crate::MemoryObjectStore::default(),
+            directory.path().to_owned(),
+        );
+        let token = CancellationToken::new();
+        let (id, bytes) = blob(OwnedBytes::from_static(b"fund the real staged publication"));
+        store
+            .put(
+                id,
+                bytes.clone(),
+                &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+            )
+            .await?;
+        let scope = PublicationScope::Closure {
+            objects: &[id],
+            proven_at: store.collection.sweeps(),
+        };
+        let mut denied = AuthorityWork::new(budget, &token);
+        assert!(matches!(
+            store.flush_before_publish(scope, &mut denied).await,
+            Err(ObjectStoreError::Work(
+                crate::WorkError::BudgetExceeded { .. }
+            ))
+        ));
+        assert_eq!(denied.spent().object_probes, 0);
+        assert_eq!(denied.spent().bytes_hashed, 0);
+        assert_eq!(denied.spent().backend_write_operations, 0);
+        assert!(store.index().objects.contains_key(&id));
+        let mut retry = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+        assert!(!store.inner().contains(id, &mut retry).await?);
+        drop(store.flush_before_publish(scope, &mut retry).await?);
+        assert!(store.index().objects.is_empty());
+        assert_eq!(retry.spent().items_examined, 3);
+        assert_eq!(
+            store
+                .inner()
+                .read(id, bytes.len() as u64, &mut retry)
+                .await?
+                .bytes,
+            bytes
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::future::Future;
