@@ -6,7 +6,7 @@
     reason = "Seatbelt FFI owns and applies a compiled native sandbox profile"
 )]
 
-use super::{ExecutionAccess, ExecutionNetwork, Grant, refused};
+use super::{ExecutionAccess, ExecutionNetwork, Grant, refused, unavailable};
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     io,
@@ -35,7 +35,10 @@ unsafe extern "C" {
     fn sandbox_free_error(error: *mut c_char);
 }
 
-pub(super) struct Prepared(NonNull<Profile>);
+pub(super) struct Prepared {
+    profile: NonNull<Profile>,
+    _roots: Vec<std::fs::File>,
+}
 
 // SAFETY: the compiled profile has no thread affinity. Exclusive ownership
 // moves it to the spawn thread; application only reads its immutable bytes.
@@ -45,10 +48,7 @@ unsafe impl Send for Prepared {}
 unsafe impl Sync for Prepared {}
 
 impl Prepared {
-    pub(super) fn new(grant: &Grant) -> io::Result<Self> {
-        for root in std::iter::once(&grant.workspace).chain(&grant.read) {
-            root.verify(&std::fs::File::open(root).map_err(super::failure)?)?;
-        }
+    pub(super) fn new(grant: &Grant, roots: Vec<std::fs::File>) -> io::Result<Self> {
         let source = profile(grant)?;
         let source = CString::new(source).map_err(|_| refused("invalid Seatbelt profile"))?;
         let mut error = std::ptr::null_mut();
@@ -67,13 +67,18 @@ impl Prepared {
             unsafe { sandbox_free_error(error) };
             Some(message)
         };
-        NonNull::new(compiled).map(Self).ok_or_else(|| {
-            refused(
-                reason
-                    .as_deref()
-                    .unwrap_or("Seatbelt policy compilation failed"),
-            )
-        })
+        NonNull::new(compiled)
+            .map(|profile| Self {
+                profile,
+                _roots: roots,
+            })
+            .ok_or_else(|| {
+                refused(
+                    reason
+                        .as_deref()
+                        .unwrap_or("Seatbelt policy compilation failed"),
+                )
+            })
     }
 
     pub(super) fn install(self, command: &mut Command) {
@@ -92,14 +97,14 @@ impl Prepared {
     }
 
     fn profile(&self) -> *mut Profile {
-        self.0.as_ptr()
+        self.profile.as_ptr()
     }
 }
 
 impl Drop for Prepared {
     fn drop(&mut self) {
         // SAFETY: unique library-owned profile; the child's copy exits at exec.
-        unsafe { sandbox_free_profile(self.0.as_ptr()) };
+        unsafe { sandbox_free_profile(self.profile.as_ptr()) };
     }
 }
 
@@ -143,7 +148,7 @@ fn profile(grant: &Grant) -> io::Result<String> {
 fn quote(path: &Path) -> io::Result<String> {
     let path = path
         .to_str()
-        .ok_or_else(|| refused("Seatbelt grant path must be UTF-8"))?;
+        .ok_or_else(|| unavailable("Seatbelt grant path must be UTF-8"))?;
     let mut quoted = String::from("\"");
     for character in path.chars() {
         match character {

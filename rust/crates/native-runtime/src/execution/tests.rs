@@ -16,14 +16,19 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
         ExecutionNetwork::TcpPorts(ports),
     )
     .unwrap();
-    let child = parent
-        .attenuate(
-            &nested,
-            ExecutionAccess::ReadOnly,
-            [external.clone()],
-            ExecutionNetwork::TcpPorts(BTreeSet::from([443])),
-        )
-        .unwrap();
+    let child = match parent.attenuate(
+        &nested,
+        ExecutionAccess::ReadOnly,
+        [external.clone()],
+        ExecutionNetwork::TcpPorts(BTreeSet::from([443])),
+    ) {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+            return;
+        }
+        Err(error) => panic!("grant attenuation failed: {error}"),
+    };
     for (workspace, access, read, network) in [
         (
             &nested,
@@ -96,7 +101,18 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
         command.args(["-c", "(printf changed > escape) 2>/dev/null; (printf created > new) 2>/dev/null; cat escape 2>/dev/null; true"])
             .current_dir(&workspace).env_clear().stdin(Stdio::null())
             .stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut tree = ProcessTree::spawn_granted(command, &grant, None).unwrap();
+        let mut tree = match ProcessTree::spawn_granted(command, &grant, None) {
+            Ok(tree) => tree,
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+                // An unavailable boundary must return a concrete refusal and
+                // must not run even the workspace-authorized part of the guest.
+                assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+                assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
+                assert!(!workspace.join("new").exists());
+                continue;
+            }
+            Err(error) => panic!("confined launch failed: {error}"),
+        };
         let output = tree.wait_with_output(
             std::time::Duration::from_secs(5),
             65536,
@@ -139,15 +155,48 @@ fn replaced_grant_root_refuses_before_guest_execution() {
         ExecutionNetwork::Off,
     )
     .unwrap();
-    // Keep the old root alive, so this proves replacement rather than depending
-    // on the operating system's inode/file-id reuse behavior.
-    std::fs::rename(&workspace, root.path().join("previous")).unwrap();
+    // The grant itself must pin the deleted object. A numeric identity alone
+    // could otherwise be reused by the replacement directory.
+    std::fs::remove_dir(&workspace).unwrap();
     std::fs::create_dir(&workspace).unwrap();
     let error = match grant.prepare() {
         Ok(_) => panic!("replaced workspace acquired the previous grant"),
         Err(error) => error,
     };
     assert!(error.to_string().contains("root was replaced"), "{error}");
+    // A lexical prefix alone used to refresh the replaced root's identity and
+    // mint a new child grant. The original object's authority must survive.
+    let nested = workspace.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let error = grant
+        .attenuate(
+            &nested,
+            ExecutionAccess::ReadOnly,
+            [],
+            ExecutionNetwork::Off,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("root was replaced"), "{error}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_attenuation_resolution_cannot_follow_a_replaced_ancestor() {
+    let original = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let nested = original.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(external.path().join("secret"), "outside").unwrap();
+    let parent = BoundPath::new(original.path()).unwrap().bind().unwrap();
+    std::fs::rename(&nested, original.path().join("previous")).unwrap();
+    std::os::unix::fs::symlink(external.path(), &nested).unwrap();
+    let error = linux::open_beneath(&parent, Path::new("nested/secret")).unwrap_err();
+    assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+    // Negative control: ordinary path resolution follows the same link.
+    assert_eq!(
+        std::fs::read_to_string(nested.join("secret")).unwrap(),
+        "outside"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -157,6 +206,7 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
     use std::process::{Command, Stdio};
     let root = tempfile::tempdir().unwrap();
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
     let destination = listener.local_addr().unwrap();
     let other = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let other_port = other.local_addr().unwrap().port();
@@ -202,7 +252,18 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut tree = ProcessTree::spawn_granted(command, &grant, None).unwrap();
+        let mut tree = match ProcessTree::spawn_granted(command, &grant, None) {
+            Ok(tree) => tree,
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+                assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+                continue;
+            }
+            Err(error) => panic!("confined launch failed: {error}"),
+        };
         let output = tree
             .wait_with_output(
                 std::time::Duration::from_secs(5),

@@ -446,7 +446,11 @@ impl Error {
         if let Some(refusal) = error.get_ref().and_then(|cause| {
             cause.downcast_ref::<acyclic_native_runtime::execution::ExecutionRefusal>()
         }) {
-            return Self::Unauthorized(refusal.reason().to_owned());
+            return if error.kind() == std::io::ErrorKind::Unsupported {
+                Self::Unsupported(refusal.reason().to_owned())
+            } else {
+                Self::Unauthorized(refusal.reason().to_owned())
+            };
         }
         let message = error.to_string();
         Self::Process(match error.kind() {

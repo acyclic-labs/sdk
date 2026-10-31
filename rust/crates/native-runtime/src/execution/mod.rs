@@ -3,9 +3,10 @@
 //! This module does not decide approvals. A model's command line, environment,
 //! current directory or tool arguments cannot grant authority. Preparation is
 //! per active execution; sharing a grant holds no process, thread or watcher.
+//! Native root handles pin object identity for the grant's lifetime.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -84,42 +85,85 @@ struct Grant {
     network: ExecutionNetwork,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 struct BoundPath {
     path: PathBuf,
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     identity: crate::FileIdentity,
+    // A numeric identity alone can be reused after unlink. This shared handle
+    // pins the original object, preventing an ABA replacement while idle.
+    _object: std::fs::File,
 }
 
 impl BoundPath {
     fn new(path: &Path) -> io::Result<Self> {
         let path = canonical(path)?;
+        let object = Self::open_path(&path)?;
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        let identity = {
-            let mut options = std::fs::OpenOptions::new();
-            options.read(true);
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::OpenOptionsExt;
-                options.custom_flags(
-                    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
-                );
-            }
-            crate::file_identity(&options.open(&path).map_err(failure)?).map_err(failure)?
-        };
+        let identity = crate::file_identity(&object).map_err(failure)?;
         Ok(Self {
             path,
             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
             identity,
+            _object: object,
         })
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn open_path(path: &Path) -> io::Result<std::fs::File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_PATH | libc::O_CLOEXEC);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options
+                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS);
+        }
+        options.open(path).map_err(failure)
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn bind(&self) -> io::Result<std::fs::File> {
+        let file = Self::open_path(self)?;
+        self.verify(&file)?;
+        Ok(file)
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn verify(&self, file: &std::fs::File) -> io::Result<()> {
         if crate::file_identity(file).map_err(failure)? != self.identity {
             return Err(refused("execution grant root was replaced"));
         }
         Ok(())
+    }
+
+    fn contains(&self, requested: &Self) -> io::Result<bool> {
+        let Ok(relative) = requested.path.strip_prefix(&self.path) else {
+            return Ok(false);
+        };
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        {
+            let root = self.bind()?;
+            if relative.as_os_str().is_empty() {
+                requested.verify(&root)?;
+                return Ok(true);
+            }
+            #[cfg(target_os = "linux")]
+            let child = linux::open_beneath(&root, relative)?;
+            #[cfg(target_os = "linux")]
+            {
+                requested.verify(&child)?;
+                return Ok(true);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(unavailable(
+            "native grant attenuation is unavailable on this platform",
+        ))
     }
 }
 
@@ -153,8 +197,9 @@ impl ExecutionGrant {
         let read = read
             .into_iter()
             .map(|path| BoundPath::new(&path))
-            .collect::<io::Result<BTreeSet<_>>>()?
-            .into_iter()
+            .map(|root| root.map(|root| (root.path.clone(), root)))
+            .collect::<io::Result<BTreeMap<_, _>>>()?
+            .into_values()
             .collect();
         if matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.contains(&0)) {
             return Err(refused("TCP port zero is not a destination grant"));
@@ -178,16 +223,27 @@ impl ExecutionGrant {
         network: ExecutionNetwork,
     ) -> io::Result<Self> {
         let requested = Self::new(workspace, access, read, network)?;
-        if !requested.0.workspace.starts_with(&self.0.workspace)
-            || (self.0.access == ExecutionAccess::ReadOnly
-                && requested.0.access == ExecutionAccess::WorkspaceWrite)
+        if (self.0.access == ExecutionAccess::ReadOnly
+            && requested.0.access == ExecutionAccess::WorkspaceWrite)
             || !self.0.network.permits(&requested.0.network)
-            || requested.0.read.iter().any(|path| {
-                !path.starts_with(&self.0.workspace)
-                    && !self.0.read.iter().any(|root| path.starts_with(root))
-            })
+            || !self.0.workspace.contains(&requested.0.workspace)?
         {
             return Err(refused("execution grant exceeds its authority ceiling"));
+        }
+        for path in &requested.0.read {
+            if self.0.workspace.contains(path)? {
+                continue;
+            }
+            let mut permitted = false;
+            for root in &self.0.read {
+                if root.contains(path)? {
+                    permitted = true;
+                    break;
+                }
+            }
+            if !permitted {
+                return Err(refused("execution grant exceeds its authority ceiling"));
+            }
         }
         Ok(requested)
     }
@@ -201,12 +257,17 @@ impl ExecutionGrant {
     /// Prepares OS objects without starting untrusted code. A failure is a
     /// refusal, never an instruction to retry without confinement.
     pub fn prepare(&self) -> io::Result<PreparedExecution> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let roots = std::iter::once(&self.0.workspace)
+            .chain(&self.0.read)
+            .map(BoundPath::bind)
+            .collect::<io::Result<Vec<_>>>()?;
         #[cfg(target_os = "linux")]
-        let platform = linux::Prepared::new(&self.0)?;
+        let platform = linux::Prepared::new(&self.0, roots)?;
         #[cfg(target_os = "macos")]
-        let platform = macos::Prepared::new(&self.0)?;
+        let platform = macos::Prepared::new(&self.0, roots)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        return Err(refused(
+        return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -243,7 +304,7 @@ impl PreparedExecution {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.platform.install(command);
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        return Err(refused(
+        return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -271,6 +332,13 @@ pub(crate) fn failure(error: io::Error) -> io::Error {
 fn refused(reason: impl std::fmt::Display) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
+        ExecutionRefusal(reason.to_string()),
+    )
+}
+
+fn unavailable(reason: impl std::fmt::Display) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
         ExecutionRefusal(reason.to_string()),
     )
 }

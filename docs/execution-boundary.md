@@ -1,6 +1,6 @@
 # Native execution capabilities
 
-G02 is being implemented at the native process launch owner, alongside G01.
+Execution capabilities are being implemented at the native process launch owner.
 This document describes the draft contract, including work still required
 before it can be advertised as the stock harness execution boundary.
 
@@ -9,10 +9,14 @@ approval chain. A grant binds one workspace, read-only roots, workspace write
 or read-only access, and network authority. It is not a model tool parameter,
 environment override, additional configuration hierarchy or sandbox service.
 The existing approval/decision files remain authoritative. No separate system
-event path is introduced; lifecycle consumers use the sessions lane's Notice.
+event path is introduced; lifecycle consumers use the shared session Notice.
 
 `ExecutionGrant::attenuate` permits narrower workspace/read roots, removal of
-writes, and narrower networking. It refuses an increase of authority.
+writes, and narrower networking. It refuses an increase of authority. Linux
+resolves narrower roots with `openat2` beneath the verified parent object,
+refusing symlink substitution and resolution races. Other platforms currently
+refuse subtree attenuation until an equivalent native operation is available;
+retaining the same verified roots can still remove writes or network authority.
 `ProcessTree::spawn_granted` prepares active enforcement and enters the same
 process creation, custody, capture, cancellation and retirement implementation.
 Enforcement is inherited by descendants. A preparation or launch refusal is
@@ -20,7 +24,7 @@ Enforcement is inherited by descendants. A preparation or launch refusal is
 Refusals have a concrete native error type. The shared capture completion
 returns the refusal alongside its original custody; only a genuinely interrupted
 control check has no process result. The ordinary tool renderer owns its single
-failure prefix and preserves the unauthorized classification.
+failure prefix and preserves unauthorized or unsupported classifications.
 Native host plugins continue to run their host's own loop and sandbox.
 
 Network `Off` denies new sockets. `On` admits Internet networking subject to
@@ -41,7 +45,9 @@ filesystem root are never implicitly added. `/dev/null` and `/dev/urandom`
 provide null I/O and entropy. Only pipes and null may cross as stdio;
 nonstdio descriptors become close-on-exec. Landlock rule roots are held during
 active launch, with object identities checked against the original grant.
-Missing native facilities refuse execution.
+Missing native facilities return a typed unsupported refusal before execution.
+Conformance checks verify that refusal and the absence of guest effects on
+unsupported kernels; kernel enforcement requires a supported kernel.
 
 macOS compiles a deny-by-default Seatbelt profile before fork, then applies
 the compiled policy after the original custody hook in the final child.
@@ -50,7 +56,7 @@ port selectors preserve the shared grant meaning. Mach services, external
 process signaling and arbitrary local IPC are not granted. The Seatbelt SPI
 must be validated against the supported macOS runtime before publication.
 
-Outstanding acceptance work: Windows AppContainer integration at G01's native
+Outstanding acceptance work: Windows AppContainer integration at the native
 launch seam; macOS/Windows inherited-handle and root-identity race fencing;
 authenticated approval/role grants at all shell, executable-tool and process
 entry points; the shared OS-backed conformance suite; remote compilation of
@@ -58,7 +64,9 @@ all affected targets. The current Windows adapter refuses confined execution.
 The stock shell is not yet wired to this draft API. No cross-platform
 confinement or performance qualification is claimed by this draft.
 
-Idle grants share immutable policy only. Enforcement objects exist for active
+Idle grants share immutable policy and one native handle per declared root.
+The handles pin object identities across deletion and numeric identity reuse;
+cloning a grant adds no handles. Enforcement objects exist for active
 executions, with no per-agent process, mount, timer, watcher, thread or daemon.
 Landlock rule construction and seccomp installation buy filesystem, network
 and escape enforcement. Seatbelt compilation/application buys the equivalent

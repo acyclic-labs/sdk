@@ -7,7 +7,7 @@
     reason = "checked Landlock and seccomp FFI in the native execution adapter"
 )]
 
-use super::{BoundPath, ExecutionAccess, ExecutionNetwork, Grant, failure, refused};
+use super::{BoundPath, ExecutionAccess, ExecutionNetwork, Grant, failure, refused, unavailable};
 use std::{
     ffi::CString,
     fs::File,
@@ -33,6 +33,46 @@ const WRITE: u64 = (1 << 1)
     | (1 << 14);
 const FILE: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14);
 const CONNECT_TCP: u64 = 1 << 1;
+
+pub(super) fn open_beneath(root: &File, relative: &Path) -> io::Result<File> {
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+    let path = CString::new(relative.as_os_str().as_bytes())
+        .map_err(|_| refused("invalid relative grant path"))?;
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_CLOEXEC) as u64,
+        mode: 0,
+        // BENEATH | NO_SYMLINKS: resolution stays under this native object,
+        // even when an ancestor is renamed or replaced during the syscall.
+        resolve: 0x08 | 0x04,
+    };
+    // SAFETY: the borrowed root, terminated path and complete zero-reserved
+    // open_how remain live for the kernel's checked relative resolution.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            root.as_raw_fd(),
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        let error = io::Error::last_os_error();
+        return Err(if error.raw_os_error() == Some(libc::ENOSYS) {
+            unavailable("native grant attenuation requires openat2")
+        } else {
+            failure(error)
+        });
+    }
+    let descriptor = i32::try_from(descriptor).map_err(|_| refused("invalid grant root handle"))?;
+    // SAFETY: successful openat2 transfers this unique descriptor to File.
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
 
 #[repr(C)]
 struct CapabilityHeader {
@@ -69,27 +109,33 @@ struct PortRule {
 
 pub(super) struct Prepared {
     ruleset: OwnedFd,
-    // Keeping these objects open through spawn prevents inode reuse between
-    // rule construction and enforcement. Nothing is retained for idle agents.
-    _roots: Vec<File>,
+    // These verified bindings remain open through spawn. The immutable grant
+    // separately pins the original objects to prevent identity reuse.
+    roots: Vec<File>,
     filter: Vec<libc::sock_filter>,
 }
 
 impl Prepared {
-    pub(super) fn new(grant: &Grant) -> io::Result<Self> {
+    pub(super) fn new(grant: &Grant, roots: Vec<File>) -> io::Result<Self> {
         // ABI 6 supplies signal and abstract-UNIX scoping; earlier ABIs cannot
         // prove this contract. Never silently discard an unsupported right.
         // SAFETY: VERSION accepts a null attribute and zero attribute length.
-        let abi = syscall(|| unsafe {
+        let abi = unsafe {
             libc::syscall(
                 libc::SYS_landlock_create_ruleset,
                 std::ptr::null::<()>(),
                 0,
                 1,
             )
-        })?;
+        };
+        if abi < 0 {
+            return Err(unavailable(format!(
+                "Landlock unavailable: {}",
+                io::Error::last_os_error()
+            )));
+        }
         if abi < 6 {
-            return Err(refused("Landlock ABI 6 or later is required"));
+            return Err(unavailable("Landlock ABI 6 or later is required"));
         }
         let rules = Ruleset {
             // All ABI 5 filesystem rights are handled, including device ioctl.
@@ -114,9 +160,9 @@ impl Prepared {
             i32::try_from(descriptor).map_err(|_| refused("invalid Landlock handle"))?;
         // SAFETY: landlock_create_ruleset returned this uniquely owned fd.
         let ruleset = unsafe { OwnedFd::from_raw_fd(descriptor) };
-        let mut prepared = Self {
+        let prepared = Self {
             ruleset,
-            _roots: Vec::new(),
+            roots,
             filter: filter(&grant.network)?,
         };
         let workspace = READ
@@ -125,17 +171,16 @@ impl Prepared {
             } else {
                 0
             };
-        prepared.path(&grant.workspace, workspace)?;
-        for path in &grant.read {
-            prepared.path(path, READ)?;
+        for (index, root) in prepared.roots.iter().enumerate() {
+            prepared.path(root, if index == 0 { workspace } else { READ })?;
         }
         // Null output and entropy are capabilities of computation. No arbitrary
         // device, host home, procfs or temporary tree is exposed.
         prepared.path(
-            &BoundPath::new(Path::new("/dev/null"))?,
+            &BoundPath::open_path(Path::new("/dev/null"))?,
             (1 << 1) | (1 << 2),
         )?;
-        prepared.path(&BoundPath::new(Path::new("/dev/urandom"))?, 1 << 2)?;
+        prepared.path(&BoundPath::open_path(Path::new("/dev/urandom"))?, 1 << 2)?;
         if let ExecutionNetwork::TcpPorts(ports) = &grant.network {
             for port in ports {
                 let rule = PortRule {
@@ -157,19 +202,9 @@ impl Prepared {
         Ok(prepared)
     }
 
-    fn path(&mut self, path: &BoundPath, access: u64) -> io::Result<()> {
-        let name =
-            CString::new(path.as_os_str().as_bytes()).map_err(|_| refused("invalid grant path"))?;
-        // SAFETY: terminated path; O_PATH holds the object without reading it.
-        let fd = unsafe { libc::open(name.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-        if fd < 0 {
-            return Err(failure(io::Error::last_os_error()));
-        }
-        // SAFETY: successful open transferred ownership of fd.
-        let file = unsafe { File::from_raw_fd(fd) };
-        path.verify(&file)?;
+    fn path(&self, file: &File, access: u64) -> io::Result<()> {
         let rule = PathRule {
-            access: if file.metadata()?.is_dir() {
+            access: if file.metadata().map_err(failure)?.is_dir() {
                 access
             } else {
                 access & FILE
@@ -187,7 +222,6 @@ impl Prepared {
                 0,
             )
         })?;
-        self._roots.push(file);
         Ok(())
     }
 
@@ -295,7 +329,7 @@ fn filter(network: &ExecutionNetwork) -> io::Result<Vec<libc::sock_filter>> {
     #[cfg(target_arch = "aarch64")]
     let arch = 0xc000_00b7;
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    return Err(refused(
+    return Err(unavailable(
         "seccomp execution boundary requires x86_64 or aarch64",
     ));
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
