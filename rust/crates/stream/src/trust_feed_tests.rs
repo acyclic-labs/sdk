@@ -270,10 +270,22 @@ fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() 
     for record in historical {
         fake.push(&account_path("test", "foreign"), record);
     }
+    // Even a valid environment publication has no authority on an account
+    // follow. Without the path binding it could revive the historical signer.
+    fake.push(
+        &account_path("test", "foreign"),
+        current
+            .environment_keyring(&mut frontier, &anchor.anchor(), NOW)
+            .unwrap(),
+    );
     world.accounts.follow("foreign");
     assert!(step(&mut run).is_none());
     assert!(!served(&follower, "foreign"));
     assert!(served(&follower, "late"));
+    assert_eq!(
+        &*follower.environment_keys("test").unwrap(),
+        current.anchor().as_slice()
+    );
 }
 
 #[test]
