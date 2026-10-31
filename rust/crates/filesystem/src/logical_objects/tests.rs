@@ -423,13 +423,14 @@ async fn a_publication_retains_inside_the_callers_work() -> Result<(), Box<dyn s
     assert!(survives_collections(&store, id).await?);
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let native_id = stored(&store, b"native retention").await?;
         let original =
             crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
         let hold = store
             .flush_before_publish(
                 crate::PublicationScope {
-                    objects: &[id],
+                    objects: &[native_id],
                     proven_at: 0,
                 },
                 &mut AuthorityWork::native(&original, &cancel),
@@ -437,7 +438,7 @@ async fn a_publication_retains_inside_the_callers_work() -> Result<(), Box<dyn s
             .await?;
         drop(hold);
         assert_eq!(original.live_allocation_bytes(), baseline);
-        assert!(survives_collections(&store, id).await?);
+        assert!(survives_collections(&store, native_id).await?);
     }
     Ok(())
 }
