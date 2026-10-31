@@ -1,5 +1,5 @@
 //! Observe the original handler boundary without replacing its implementation.
-use super::report::{Result, emit};
+use super::report::{Counters, Result, emit};
 use acyclic_actors::{
     addressing::ActorReference,
     guest::{
@@ -7,6 +7,7 @@ use acyclic_actors::{
         Trigger,
     },
 };
+use acyclic_stream::testing::RequestLedger;
 use std::{
     fmt,
     sync::{
@@ -35,13 +36,19 @@ struct Pending {
     actor: ActorReference,
     epoch: u64,
     trigger: Trigger,
-    sender: Option<oneshot::Sender<std::result::Result<Instant, EntryError>>>,
+    sender: Option<oneshot::Sender<std::result::Result<Entered, EntryError>>>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct Entered {
+    pub(super) at: Instant,
+    pub(super) counters: Counters,
+}
+
 pub(super) struct Entries {
     pending: Mutex<Option<Pending>>,
     calls: AtomicU64,
+    requests: RequestLedger,
 }
 
 /// The delivery scope owns the producer. Completion, failure and cancellation
@@ -58,6 +65,14 @@ impl Drop for Scope {
 }
 
 impl Entries {
+    pub(super) fn new(requests: RequestLedger) -> Self {
+        Self {
+            pending: Mutex::new(None),
+            calls: AtomicU64::new(0),
+            requests,
+        }
+    }
+
     pub(super) fn arm(
         self: &Arc<Self>,
         actor: ActorReference,
@@ -65,7 +80,7 @@ impl Entries {
         trigger: Trigger,
     ) -> Result<(
         Scope,
-        oneshot::Receiver<std::result::Result<Instant, EntryError>>,
+        oneshot::Receiver<std::result::Result<Entered, EntryError>>,
     )> {
         let mut pending = self.pending.lock().map_err(|_| EntryError::Poisoned)?;
         if pending.is_some() {
@@ -82,8 +97,8 @@ impl Entries {
     }
 
     pub(super) async fn receive(
-        receiver: oneshot::Receiver<std::result::Result<Instant, EntryError>>,
-    ) -> std::result::Result<Instant, EntryError> {
+        receiver: oneshot::Receiver<std::result::Result<Entered, EntryError>>,
+    ) -> std::result::Result<Entered, EntryError> {
         receiver.await.map_err(|_| EntryError::ProducerDropped)?
     }
 
@@ -143,6 +158,7 @@ impl Handler for Observed {
         cancellation: CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         let entered = Instant::now();
+        let counters = Counters::capture(&self.entries.requests);
         self.entries.calls.fetch_add(1, Ordering::Relaxed);
         if let Some(pending) = self
             .entries
@@ -156,7 +172,10 @@ impl Handler for Observed {
                 && pending.epoch == delivery.epoch
                 && pending.trigger == delivery.trigger;
             let _ = sender.send(if expected {
-                Ok(entered)
+                Ok(Entered {
+                    at: entered,
+                    counters,
+                })
             } else {
                 Err(EntryError::UnexpectedDelivery)
             });
