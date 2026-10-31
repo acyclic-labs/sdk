@@ -167,10 +167,20 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 assert!(recovery::validate_recovered_admission(&value).is_err());
             }
         }
-        "acyclic.machines.v1.ForkMachineAdmission" => {
-            let _ = project::<wire::ForkMachineAdmission, _>(bytes, |value| {
-                recovery::decode_fork_machine_admission(&value)
-            });
+        "acyclic.machines.v1.MachineAdmissions" => {
+            if let Some((operation, _, _)) = project::<wire::MachineAdmissions, _>(bytes, |value| {
+                recovery::decode_fork_admissions(&value)
+                    .map(|value| (value.operation, value.provenance, value.children))
+            }) {
+                let mut value = wire::MachineAdmissions::decode(bytes).unwrap();
+                let foreign = if operation == OperationId::from_digest([9; 32]) {
+                    OperationId::from_digest([8; 32])
+                } else {
+                    OperationId::from_digest([9; 32])
+                };
+                value.operation = operation_request(foreign).operation;
+                assert!(recovery::decode_fork_admissions(&value).is_err());
+            }
         }
         _ => {}
     }
