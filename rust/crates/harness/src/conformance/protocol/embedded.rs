@@ -136,7 +136,7 @@ pub async fn open<B: Backend + ?Sized>(
         tools,
         (
             Limits {
-                model_steps: 4,
+                model_steps: std::num::NonZeroUsize::new(4),
                 ..Limits::default()
             },
             CompactionPolicy::Disabled,
