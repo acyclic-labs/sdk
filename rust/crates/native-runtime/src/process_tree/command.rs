@@ -80,7 +80,6 @@ pub(super) struct EnvKey {
 impl EnvKey {
     pub(super) fn new(name: &OsStr) -> Self {
         Self {
-            boundary: None,
             #[cfg(windows)]
             wide: std::os::windows::ffi::OsStrExt::encode_wide(name).collect(),
             name: name.to_owned(),
@@ -181,6 +180,7 @@ impl ProcessCommand {
     /// working directory, and inherited standard streams.
     pub fn new(program: impl AsRef<OsStr>) -> Self {
         Self {
+            boundary: None,
             program: program.as_ref().to_owned(),
             args: Vec::new(),
             env: Environment::default(),

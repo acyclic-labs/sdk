@@ -39,6 +39,10 @@ identity and standard-stream setup. Custodied enforcement runs only after the
 warden has forked and admitted the final guest; the warden retains its original
 custody authority. The child borrows filter bytes from the original request
 mapping, with no extra policy allocation or copy.
+The immutable grant owns its compiled seccomp filter. Reusing that grant for
+another launch rebuilds no filter and allocates no filter storage. The direct
+child hook retains the same grant owner until launch completes; the custodied
+child continues to borrow its bytes from the original launch request.
 Enforcement is inherited by descendants. A preparation or launch refusal is
 `tool execution failed: <reason>`; it never retries without confinement.
 Refusals have a concrete native error type. The shared capture completion

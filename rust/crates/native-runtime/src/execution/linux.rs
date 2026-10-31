@@ -7,7 +7,10 @@
     reason = "checked Landlock and seccomp FFI in the native execution adapter"
 )]
 
-use super::{BoundPath, ExecutionAccess, ExecutionNetwork, Grant, failure, refused, unavailable};
+use super::{
+    BoundPath, ExecutionAccess, ExecutionGrant, ExecutionNetwork, Grant, failure, refused,
+    unavailable,
+};
 use std::{
     ffi::CString,
     fs::File,
@@ -22,7 +25,7 @@ use std::{
 
 mod entry;
 mod sys;
-use entry::Instruction;
+pub(super) use entry::Instruction;
 
 const READ: u64 = (1 << 0) | (1 << 2) | (1 << 3);
 const WRITE: u64 = (1 << 1)
@@ -102,20 +105,23 @@ pub(super) struct Prepared {
     // These verified bindings remain open through spawn. The immutable grant
     // separately pins the original objects to prevent identity reuse.
     roots: Vec<File>,
-    filter: Vec<Instruction>,
 }
 
 impl Prepared {
-    pub(super) fn encode(&self, body: &mut Vec<u8>) -> io::Result<std::os::fd::RawFd> {
+    pub(super) fn encode(
+        &self,
+        filter: &[Instruction],
+        body: &mut Vec<u8>,
+    ) -> io::Result<std::os::fd::RawFd> {
         // The original request carries one extra descriptor and its native
         // BPF bytes. Both images share Instruction; the child borrows these
         // bytes after decoding, with no policy allocation or translation.
         body.extend_from_slice(
-            &u32::try_from(self.filter.len())
+            &u32::try_from(filter.len())
                 .map_err(|_| refused("invalid execution filter length"))?
                 .to_ne_bytes(),
         );
-        for instruction in &self.filter {
+        for instruction in filter {
             body.extend_from_slice(&instruction.code.to_ne_bytes());
             body.extend_from_slice(&[instruction.jt, instruction.jf]);
             body.extend_from_slice(&instruction.k.to_ne_bytes());
@@ -167,11 +173,7 @@ impl Prepared {
             i32::try_from(descriptor).map_err(|_| refused("invalid Landlock handle"))?;
         // SAFETY: landlock_create_ruleset returned this uniquely owned fd.
         let ruleset = unsafe { OwnedFd::from_raw_fd(descriptor) };
-        let prepared = Self {
-            ruleset,
-            roots,
-            filter: filter(&grant.network)?,
-        };
+        let prepared = Self { ruleset, roots };
         let workspace = READ
             | if grant.access == ExecutionAccess::WorkspaceWrite {
                 WRITE
@@ -232,16 +234,17 @@ impl Prepared {
         Ok(())
     }
 
-    pub(super) fn install(self, command: &mut Command) {
+    pub(super) fn install(self, command: &mut Command, grant: ExecutionGrant) {
         // SAFETY: only syscalls and owned preallocated storage in the child.
         // This hook is appended after the original custody/warden hook.
         unsafe {
-            command.pre_exec(move || self.enter());
+            command.pre_exec(move || self.enter(&grant));
         }
     }
 
-    fn enter(&self) -> io::Result<()> {
-        entry::enter(self.ruleset.as_raw_fd(), &self.filter).map_err(io::Error::from_raw_os_error)
+    fn enter(&self, grant: &ExecutionGrant) -> io::Result<()> {
+        entry::enter(self.ruleset.as_raw_fd(), &grant.0.filter)
+            .map_err(io::Error::from_raw_os_error)
     }
 }
 
@@ -267,7 +270,7 @@ const fn instruction(code: u16, jt: u8, jf: u8, k: u32) -> Instruction {
     Instruction { code, jt, jf, k }
 }
 
-fn filter(network: &ExecutionNetwork) -> io::Result<Vec<Instruction>> {
+pub(super) fn filter(network: &ExecutionNetwork) -> io::Result<Vec<Instruction>> {
     #[cfg(target_arch = "x86_64")]
     let arch = 0xc000_003e;
     #[cfg(target_arch = "aarch64")]

@@ -21,8 +21,8 @@ pub(super) struct Capabilities {
 /// Native classic-BPF instruction. Preparation and application borrow the
 /// same buffer; entering a child never translates or copies its policy.
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub(super) struct Instruction {
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Instruction {
     pub(super) code: u16,
     pub(super) jt: u8,
     pub(super) jf: u8,

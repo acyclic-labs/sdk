@@ -81,6 +81,8 @@ struct Grant {
     access: ExecutionAccess,
     read: Vec<BoundPath>,
     network: ExecutionNetwork,
+    #[cfg(target_os = "linux")]
+    filter: Vec<linux::Instruction>,
 }
 
 #[derive(Debug)]
@@ -201,11 +203,15 @@ impl ExecutionGrant {
         if matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.contains(&0)) {
             return Err(refused("TCP port zero is not a destination grant"));
         }
+        #[cfg(target_os = "linux")]
+        let filter = linux::filter(&network)?;
         Ok(Self(Arc::new(Grant {
             workspace,
             access,
             read,
             network,
+            #[cfg(target_os = "linux")]
+            filter,
         })))
     }
 
@@ -315,7 +321,7 @@ impl PreparedExecution {
     /// has already been admitted once and is consumed by the launch owner.
     pub(crate) fn install(self, _command: &mut std::process::Command) -> io::Result<()> {
         #[cfg(target_os = "linux")]
-        self.platform.install(_command);
+        self.platform.install(_command, self.grant);
         #[cfg(not(target_os = "linux"))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
@@ -326,7 +332,7 @@ impl PreparedExecution {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn encode_linux(&self, body: &mut Vec<u8>) -> io::Result<std::os::fd::RawFd> {
-        self.platform.encode(body)
+        self.platform.encode(&self.grant.0.filter, body)
     }
 }
 
