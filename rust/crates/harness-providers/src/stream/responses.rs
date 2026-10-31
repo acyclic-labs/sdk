@@ -61,18 +61,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                 )?;
             }
             if matches!(kind, Output::Function | Output::Freeform) {
-                let (call, budget) = state.call(index(value, "output_index")?)?;
-                if !call.name.is_empty() && call.freeform != (kind == Output::Freeform) {
-                    return Err(invalid("Responses tool kind changed"));
-                }
-                call.freeform = kind == Output::Freeform;
-                budget.string(&mut call.id, string(&item["call_id"])?)?;
-                budget.string(&mut call.name, string(&item["name"])?)?;
-                if let Some(arguments) =
-                    item[if call.freeform { "input" } else { "arguments" }].as_str()
-                {
-                    budget.string(&mut call.arguments, arguments)?;
-                }
+                admit_call(state, index(value, "output_index")?, item, kind)?;
             }
         }
         Some("response.custom_tool_call_input.delta" | "response.custom_tool_call_input.done") => {
@@ -80,11 +69,17 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             if !state.calls.get(&index).is_some_and(|call| call.freeform) {
                 return Err(invalid("freeform tool input without custom item"));
             }
+            validate_item_id(&state.calls[&index], value.get("item_id"))?;
             let (call, budget) = state.call(index)?;
             if value["type"] == "response.custom_tool_call_input.delta" {
                 budget.append(&mut call.arguments, value.get("delta"))?;
             } else {
-                budget.string(&mut call.arguments, string(&value["input"])?)?;
+                budget.string(
+                    &mut call.arguments,
+                    value["input"]
+                        .as_str()
+                        .ok_or_else(|| invalid("freeform tool input must be a string"))?,
+                )?;
             }
         }
         Some("response.function_call_arguments.delta") => {
@@ -92,6 +87,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             if !state.calls.get(&index).is_some_and(|call| !call.freeform) {
                 return Err(invalid("tool delta without item"));
             }
+            validate_item_id(&state.calls[&index], value.get("item_id"))?;
             let (call, budget) = state.call(index)?;
             budget.append(&mut call.arguments, value.get("delta"))?;
         }
@@ -100,6 +96,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             if !state.calls.get(&index).is_some_and(|call| !call.freeform) {
                 return Err(invalid("tool done without item"));
             }
+            validate_item_id(&state.calls[&index], value.get("item_id"))?;
             let (call, budget) = state.call(index)?;
             budget.string(
                 &mut call.arguments,
@@ -124,14 +121,22 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                     state.budget.string(text, "")?;
                 }
                 state.completed_message = Some((0, String::new()));
+                let mut calls = 0usize;
                 for (position, item) in output.iter().enumerate() {
-                    if Output::admit(item)? == Output::Message {
-                        state.complete_message(
-                            u64::try_from(position)
-                                .map_err(|_| invalid("response output index overflow"))?,
-                            item,
-                        )?;
+                    let kind = Output::admit(item)?;
+                    let position = u64::try_from(position)
+                        .map_err(|_| invalid("response output index overflow"))?;
+                    match kind {
+                        Output::Message => state.complete_message(position, item)?,
+                        Output::Function | Output::Freeform => {
+                            admit_call(state, position, item, kind)?;
+                            calls += 1;
+                        }
+                        Output::Reasoning => {}
                     }
+                }
+                if calls != state.calls.len() {
+                    return Err(invalid("Responses terminal output omitted a staged call"));
                 }
             }
             state.identity(response)?;
@@ -147,6 +152,62 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         _ => {}
     }
     Ok(events)
+}
+
+fn validate_item_id(call: &super::Call, value: Option<&Value>) -> Result<()> {
+    if let Some(value) = crate::protocol::present(value) {
+        let id = string(value)?;
+        if call.item_id != id {
+            return Err(invalid("Responses tool item identity changed"));
+        }
+    }
+    Ok(())
+}
+
+/// Added, done and authoritative terminal items share one identity admission.
+/// A later frame may complete input, but cannot replace the original callable.
+fn admit_call(state: &mut State, index: u64, item: &Value, kind: Output) -> Result<()> {
+    let id = string(&item["call_id"])?;
+    let name = string(&item["name"])?;
+    if id.trim().is_empty() || name.trim().is_empty() {
+        return Err(invalid("incomplete Responses tool identity"));
+    }
+    let arguments = item
+        .get(if kind == Output::Freeform {
+            "input"
+        } else {
+            "arguments"
+        })
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| invalid("Responses tool input must be a string"))
+        })
+        .transpose()?;
+    if let Some(call) = state.calls.get(&index) {
+        if call.freeform != (kind == Output::Freeform) {
+            return Err(invalid("Responses tool kind changed"));
+        }
+        if call.id != id || call.name != name {
+            return Err(invalid("Responses tool identity changed"));
+        }
+        validate_item_id(call, item.get("id"))?;
+    } else if let Some(id) = crate::protocol::present(item.get("id")) {
+        if string(id)?.is_empty() {
+            return Err(invalid("incomplete Responses tool item identity"));
+        }
+    }
+    let (call, budget) = state.call(index)?;
+    call.freeform = kind == Output::Freeform;
+    budget.string(&mut call.id, id)?;
+    budget.string(&mut call.name, name)?;
+    if let Some(id) = crate::protocol::present(item.get("id")) {
+        budget.string(&mut call.item_id, string(id)?)?;
+    }
+    if let Some(arguments) = arguments {
+        budget.string(&mut call.arguments, arguments)?;
+    }
+    Ok(())
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

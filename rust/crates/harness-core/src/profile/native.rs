@@ -1,18 +1,7 @@
 //! The lab-trained tool layers. Selection belongs to the model catalog.
 use super::{File, ModelLayer, ToolRevision};
 use crate::Result;
-
-/// One immutable family layer, using the same capability/variant/revision
-/// bindings as a user-authored model profile. This is not user configuration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeToolProfile {
-    /// Claude Code's public tool contracts.
-    Anthropic,
-    /// Codex CLI's command-array and patch contracts.
-    Openai,
-    /// The public Gemini CLI tool contracts.
-    Google,
-}
+pub use crate::model::NativeToolProfile;
 
 impl NativeToolProfile {
     /// Versioned family file consumed by the existing profile resolver.

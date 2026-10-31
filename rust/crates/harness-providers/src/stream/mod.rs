@@ -30,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Default)]
 pub(crate) struct Call {
     id: String,
+    item_id: String,
     name: String,
     arguments: String,
     metadata: Value,
@@ -258,7 +259,12 @@ impl<'work> State<'work> {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn arguments(&self) -> impl Iterator<Item = &str> {
-        self.calls.values().map(|call| call.arguments.as_str())
+        // Freeform input moves its already-admitted String into one object
+        // member at finish; it never allocates a decoded JSON argument graph.
+        self.calls
+            .values()
+            .filter(|call| !call.freeform)
+            .map(|call| call.arguments.as_str())
     }
 
     pub(crate) fn new(maximum: usize) -> Self {

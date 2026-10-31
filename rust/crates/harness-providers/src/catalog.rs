@@ -242,6 +242,18 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     (
                         name.into(),
                         crate::ModelSpec {
+                            tool_profile: match id {
+                                "anthropic" => {
+                                    Some(acyclic_harness_core::model::NativeToolProfile::Anthropic)
+                                }
+                                "openai" => {
+                                    Some(acyclic_harness_core::model::NativeToolProfile::Openai)
+                                }
+                                "gemini" => {
+                                    Some(acyclic_harness_core::model::NativeToolProfile::Google)
+                                }
+                                _ => None,
+                            },
                             max_context_tokens: None,
                             capacity: ModelContextCapacity {
                                 context_tokens,

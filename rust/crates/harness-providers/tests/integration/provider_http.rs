@@ -204,6 +204,7 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
             models: BTreeMap::from([(
                 "model".into(),
                 ModelSpec {
+                    tool_profile: None,
                     max_context_tokens: None,
                     capacity: ModelContextCapacity {
                         context_tokens: 8192,

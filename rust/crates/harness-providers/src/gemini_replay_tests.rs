@@ -221,6 +221,96 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
     round_trip(&provider, request, &answer, &signed);
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn mock_wire_preserves_signed_parallel_calls_usage_and_prompt_prefix(
+        signature in "[a-zA-Z0-9+/]{1,48}={0,2}", width in 1usize..48,
+        cached in 0u64..=4096, thoughts in 0u64..4096,
+    ) {
+        use harness_mock_model::{Gemini, Step, events_with_usage};
+        // Generated protocol data, not a captured provider fixture. The shared
+        // mock server emits the wire; production ingress and projection own the
+        // round trip, including exact native-part bytes.
+        let (provider, _) = provider(Adapter::Gemini, 200);
+        let (prepared, dispatch) = request(&provider).unwrap();
+        let mut request = prepared.request().clone();
+        request.tools.push(acyclic_harness_core::tool::ToolDefinition {
+            name: "read_file".into(), revision: "1".into(), description: "read".into(),
+            input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}),
+            output_schema: json!({}), projection_schema: json!({}),
+        });
+        let encode = |request: &ModelRequest| {
+            serde_json::to_vec(&projection::body_named(
+                &provider, request, &crate::tool_names::Names::new(request),
+                &provider.reasoning_origin(provider.key.as_deref(), None),
+                &mut crate::files::FileText::default(),
+            ).unwrap()).unwrap()
+        };
+        let prefix = encode(&request);
+        let parts = vec![
+            json!({"thoughtSignature":signature,"functionCall":{"name":"read_file","args":{"file_path":"a"}}}),
+            json!({"functionCall":{"id":"second","name":"read_file","args":{"file_path":"b"}}}),
+        ];
+        let signed = vec![parts[0].to_string()];
+        let mut step = Step {
+            gemini: Some(Gemini {parts, cached_tokens:cached, thought_tokens:thoughts}),
+            ..Default::default()
+        };
+        let path = "models/tiny:streamGenerateContent";
+        let wire = events_with_usage(path, &step, 4096).unwrap().concat();
+        let parsed = futures::executor::block_on(stream::events_named(
+            Adapter::Gemini, chunks(&wire, width), 32768, dispatch, None,
+            Some(provider.reasoning_origin(provider.key.as_deref(), None)),
+        ).try_collect::<Vec<_>>()).unwrap();
+        let calls: Vec<_> = parsed.iter().filter_map(|event| match event {
+            ModelEvent::ToolCall(call) => Some(call), _ => None,
+        }).collect();
+        prop_assert_eq!(calls.len(), 2);
+        prop_assert_eq!(&calls[0].call_id, &dispatch.tool_call_id(0));
+        prop_assert_eq!(&calls[1].call_id, &dispatch.tool_call_id(1));
+        prop_assert_ne!(&calls[0].call_id, &calls[1].call_id);
+        let metadata = parsed.iter().find_map(|event| match event {
+            ModelEvent::Completed {metadata} => Some(metadata), _ => None,
+        }).unwrap();
+        prop_assert_eq!(&metadata["usage"], &json!({
+            "promptTokenCount":4096,"cachedContentTokenCount":cached,
+            "candidatesTokenCount":2,"thoughtsTokenCount":thoughts,
+            "totalTokenCount":4098+thoughts,
+        }));
+        let mut answer = String::new();
+        append(parsed, &mut request, &mut answer);
+        finish(&mut request, &answer);
+        let continued = encode(&request);
+        // The closing contents array and object are the only bytes replaced by
+        // an append. Static tools, system instruction and prior contents retain
+        // their positions and bytes, so implicit caching sees the same prefix.
+        prop_assert!(continued.starts_with(&prefix[..prefix.len()-2]));
+        let mut changed = request.clone();
+        changed.tools[0].description.push('!');
+        prop_assert!(!encode(&changed).starts_with(&prefix[..prefix.len()-2]));
+        round_trip(&provider, request, &answer, &signed);
+
+        // Removing the original terminal producer must end the stream with a
+        // typed interruption, without admitting either tool in a partial batch.
+        step.hold = true;
+        let unfinished = events_with_usage(path, &step, 4096).unwrap().concat();
+        let parsed = futures::executor::block_on(stream::events_named(
+            Adapter::Gemini, chunks(&unfinished, width), 32768, dispatch, None,
+            Some(provider.reasoning_origin(provider.key.as_deref(), None)),
+        ).collect::<Vec<_>>());
+        prop_assert_eq!(parsed.len(), 1);
+        prop_assert!(matches!(&parsed[0], Err(Error::ModelUnavailable {
+            failure: acyclic_harness_core::ModelTransportFailure::Interrupted, ..
+        })), "producer loss must terminate the batch with its typed error");
+        for wrong in ["responses", "messages", "chat/completions"] {
+            prop_assert!(events_with_usage(wrong, &step, 4096).is_none());
+        }
+        step.gemini.as_mut().unwrap().cached_tokens = 4097;
+        prop_assert!(events_with_usage(path, &step, 4096).is_none());
+    }
+}
+
 #[test]
 fn shrunk_split_answer_fixture_preserves_text_for_every_target() {
     let request: ModelRequest =

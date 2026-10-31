@@ -23,6 +23,10 @@ impl ModelFeatures {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct ModelSpec {
+    /// Lab-native tool contracts for this exact model. Custom entries without
+    /// a declared profile do not acquire one from their name or endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_profile: Option<acyclic_harness_core::model::NativeToolProfile>,
     /// Maximum context accepted by an explicit context override, when advertised.
     #[serde(default)]
     pub max_context_tokens: Option<u32>,

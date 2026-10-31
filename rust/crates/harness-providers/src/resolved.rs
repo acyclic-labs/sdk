@@ -29,6 +29,14 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    /// The original selected catalog member's tool family, including under
+    /// alloy. Profile admission consumes this value without a naming heuristic.
+    pub fn native_tool_profile(&self) -> Option<acyclic_harness_core::model::NativeToolProfile> {
+        self.config
+            .models
+            .get(&self.model.name)
+            .and_then(|entry| entry.tool_profile)
+    }
     /// Joins the original registry selection to its admitted epoch profile.
     /// Credentials, endpoint and token counting retain their original owners.
     #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]

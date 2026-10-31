@@ -212,3 +212,128 @@ fn function_and_freeform_events_cannot_share_an_item() {
         }
     }
 }
+
+#[test]
+fn responses_call_identity_is_fixed_before_any_input_mutation() {
+    for kind in ["function_call", "custom_tool_call"] {
+        let original = json!({"type":kind,"id":"item","call_id":"call","name":"tool"});
+        for field in ["type", "id", "call_id", "name"] {
+            let mut state = State::new(16384);
+            let added =
+                json!({"type":"response.output_item.added","output_index":0,"item":original});
+            super::super::parse(&mut state, crate::Adapter::Responses, &added.to_string()).unwrap();
+            let mut changed = original.clone();
+            changed[field] = json!(if field == "type" {
+                if kind == "function_call" {
+                    "custom_tool_call"
+                } else {
+                    "function_call"
+                }
+            } else {
+                "replacement"
+            });
+            let done = json!({"type":"response.output_item.done","output_index":0,"item":changed});
+            let used = state.budget.used();
+            assert!(
+                super::super::parse(&mut state, crate::Adapter::Responses, &done.to_string())
+                    .is_err()
+            );
+            assert_eq!(state.budget.used(), used);
+            assert_eq!(state.calls[&0].id, "call");
+            assert_eq!(state.calls[&0].item_id, "item");
+            assert_eq!(state.calls[&0].name, "tool");
+        }
+        for event_kind in if kind == "function_call" {
+            [
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+            ]
+        } else {
+            [
+                "response.custom_tool_call_input.delta",
+                "response.custom_tool_call_input.done",
+            ]
+        } {
+            let mut state = State::new(16384);
+            super::admit_call(
+                &mut state,
+                0,
+                &original,
+                super::Output::admit(&original).unwrap(),
+            )
+            .unwrap();
+            let event = json!({"type":event_kind,"output_index":0,"item_id":"other",
+                "delta":"changed","input":"changed","arguments":"{}"});
+            let used = state.budget.used();
+            assert!(
+                super::super::parse(&mut state, crate::Adapter::Responses, &event.to_string())
+                    .is_err()
+            );
+            assert_eq!(state.budget.used(), used);
+            assert!(state.calls[&0].arguments.is_empty());
+        }
+        // Negative control: the same admitted item completes normally, including
+        // an empty freeform input and terminal-only delivery of the same call.
+        let mut final_item = original.clone();
+        final_item[if kind == "function_call" {
+            "arguments"
+        } else {
+            "input"
+        }] = json!(if kind == "function_call" { "{}" } else { "" });
+        let mut state = State::new(16384);
+        let terminal = json!({"type":"response.completed","response":{
+            "status":"completed","output":[final_item]
+        }});
+        super::super::parse(&mut state, crate::Adapter::Responses, &terminal.to_string()).unwrap();
+        let events = super::super::finish(
+            state,
+            crate::Adapter::Responses,
+            crate::tests::parser_dispatch(),
+        )
+        .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ModelEvent::ToolCall(_)))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn malformed_or_omitted_custom_input_cannot_publish_a_partial_batch() {
+    let call = json!({"type":"custom_tool_call","id":"item","call_id":"patch",
+        "name":"apply_patch","input":""});
+    for input in [Value::Null, json!(0), json!({}), json!([]), json!(false)] {
+        let mut malformed = call.clone();
+        malformed["input"] = input;
+        for event in frames(malformed) {
+            let mut state = State::new(16384);
+            let used = state.budget.used();
+            assert!(
+                super::super::parse(&mut state, crate::Adapter::Responses, &event.to_string())
+                    .is_err()
+            );
+            assert_eq!(state.budget.used(), used);
+            assert!(state.calls.is_empty());
+        }
+    }
+    for output in [json!([]), json!([{"type":"reasoning","id":"replacement"}])] {
+        let added = json!({"type":"response.output_item.added","output_index":0,"item":call});
+        let terminal =
+            json!({"type":"response.completed","response":{"status":"completed","output":output}});
+        let wire = format!("data: {added}\n\ndata: {terminal}\n\n");
+        let events = futures::executor::block_on(
+            super::super::events(
+                crate::Adapter::Responses,
+                crate::tests::chunks(&wire, 1),
+                16384,
+                crate::tests::parser_dispatch(),
+            )
+            .collect::<Vec<_>>(),
+        );
+        assert_eq!(events.len(), 1);
+        assert!(events[0].is_err());
+    }
+}

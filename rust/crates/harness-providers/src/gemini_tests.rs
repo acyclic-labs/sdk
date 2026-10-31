@@ -65,7 +65,7 @@ fn parallel_batches_and_signatures_survive_prepared_request_replay() -> Result<(
                     kind: ReasoningKind::Signature,
                     text: None,
                     origin: provider.reasoning_origin(provider.key.as_deref(), None),
-                    continuity: serde_json::to_vec(&json!({"functionCall":{"name":"echo","args":{}},"thoughtSignature":format!("signature-{step}")})).expect("native Gemini part"),
+                    continuity: serde_json::to_vec(&json!({"functionCall":{"id":format!("{step}-{index}"),"name":"echo","args":{}},"thoughtSignature":format!("signature-{step}")})).expect("native Gemini part"),
                     outcome: ReasoningOutcome::PreservedOpaque,
                 }});
             }
