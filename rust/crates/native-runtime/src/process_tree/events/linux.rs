@@ -27,6 +27,16 @@ fn check(result: libc::c_int) -> io::Result<libc::c_int> {
 }
 
 impl Poller {
+    /// Capture a real native refusal using a live pipe in place of a queue.
+    #[cfg(test)]
+    pub(super) fn refused_wait() -> io::Result<Self> {
+        let (reader, writer) = std::io::pipe()?;
+        Ok(Self {
+            epoll: reader.into(),
+            wake: writer.into(),
+        })
+    }
+
     pub(super) fn new() -> io::Result<Self> {
         // SAFETY: epoll_create1 takes only flags and returns a new fd.
         let epoll =
@@ -138,11 +148,7 @@ impl Poller {
                 milliseconds,
             )
         };
-        let count = match check(count) {
-            Ok(count) => usize::try_from(count).unwrap_or(0),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => 0,
-            Err(error) => return Err(error),
-        };
+        let count = usize::try_from(check(count)?).map_err(io::Error::other)?;
         for event in events.iter().take(count) {
             let token = event.u64;
             if token == WAKE {

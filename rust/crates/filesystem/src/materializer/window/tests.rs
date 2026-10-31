@@ -69,7 +69,7 @@ async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io:
         if queued {
             process.io(&meter)?.queue_stdin(prompt.to_vec())?;
             while !process.io(&meter)?.pump_stdin()? {
-                process.io(&meter)?.stdin_readiness()?.await;
+                process.io(&meter)?.stdin_readiness()?.await?;
             }
             process.require_stdin_complete()?;
         }

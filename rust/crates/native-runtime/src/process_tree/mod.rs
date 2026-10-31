@@ -126,16 +126,17 @@ pub struct ProcessTree {
 
 /// One armed wait on a process tree's retained pipes and direct child, served
 /// by the shared process-event hub: epoll, kqueue or an I/O completion port.
-/// It holds no thread and fires once.
-pub struct ProcessReadiness(events::Wait);
+/// It holds no thread and settles once, returning the original OS wait error
+/// if its shared event producer fails.
+pub struct ProcessReadiness(events::Wait<'static>);
 
 impl std::future::Future for ProcessReadiness {
-    type Output = ();
+    type Output = io::Result<()>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
+    ) -> std::task::Poll<Self::Output> {
         std::pin::Pin::new(&mut self.0).poll(context)
     }
 }
@@ -525,6 +526,9 @@ impl ProcessTree {
     }
 
     fn readiness_for(&mut self, output: bool) -> io::Result<ProcessReadiness> {
+        if self.child.is_none() {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
         let writing = self
             .queued_stdin
             .as_ref()
@@ -553,9 +557,7 @@ impl ProcessTree {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsHandle as _;
-            let Some(child) = &self.child else {
-                return events::arm(&[], None).map(ProcessReadiness);
-            };
+            let child = self.child.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
             let [stdout, stderr] = &mut self.readers;
             if output
                 && stdout.is_none()
@@ -873,7 +875,11 @@ impl ProcessTree {
                 match pump.turn(self, &mut check, &mut observe, meter) {
                     pump::Turn::Done(result) => break result,
                     pump::Turn::Wait => match pump.arm_with_wake(self, wake) {
-                        Ok(wait) => wait.block(),
+                        Ok(wait) => {
+                            if let Err(error) = wait.block() {
+                                break Err(error);
+                            }
+                        }
                         Err(error) => break Err(error),
                     },
                 }
@@ -935,7 +941,11 @@ impl ProcessTree {
                         pump::Turn::Done(result) => break result,
                         pump::Turn::Wait => {
                             match pump.arm_with_wake(&mut tree, Some(wakes.as_slice())) {
-                                Ok(wait) => wait.block(),
+                                Ok(wait) => {
+                                    if let Err(error) = wait.block() {
+                                        break Err(error);
+                                    }
+                                }
                                 Err(error) => break Err(error),
                             }
                         }

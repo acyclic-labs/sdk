@@ -321,6 +321,16 @@ impl PipeOperation {
 }
 
 impl Poller {
+    /// Capture a real native refusal using a live pipe in place of a queue.
+    #[cfg(test)]
+    pub(super) fn refused_wait() -> io::Result<Self> {
+        let (reader, writer) = std::io::pipe()?;
+        drop(writer);
+        Ok(Self {
+            port: reader.into(),
+        })
+    }
+
     pub(super) fn new() -> io::Result<Self> {
         // SAFETY: a new port with no file and the default concurrency.
         let port =
