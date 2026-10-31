@@ -392,38 +392,6 @@ impl LocalHarnessConfig {
         Ok(())
     }
 
-    #[cfg(feature = "search-http")]
-    pub(super) fn validate_web_binding(
-        &self,
-        registry: &ToolRegistry,
-        verifier: &AuthorityVerifier,
-        signed: &Scope,
-    ) -> Result<()> {
-        if !self.web_tools {
-            return Ok(());
-        }
-        verifier.verify(signed, &mut None)?;
-        for definition in crate::search::web::definitions(self.search_provider.is_some())? {
-            if !signed
-                .capabilities()
-                .contains(&format!("tool:call:{}", definition.name))
-            {
-                return Err(Error::Unauthorized(
-                    "requested web tools require prebound signed call grants".into(),
-                ));
-            }
-            if registry
-                .get(&definition.name, None, None)?
-                .is_none_or(|tool| tool.definition != definition)
-            {
-                return Err(Error::Unsupported(
-                    "prebind requested web tools before opening the task runtime".into(),
-                ));
-            }
-        }
-        Ok(())
-    }
-
     /// Selects content, projection and model-loop bounds.
     #[must_use]
     pub fn limits(mut self, limits: Limits) -> Self {
