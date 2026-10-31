@@ -27,7 +27,7 @@ test('installed host admission launches package entries and binds their actual c
   const before=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
   assert.ok(Object.values(before.hosts).every(host=>host.closure),'every override must bind its dependency tree');
   // This is Pi's real imported module, not an invented external transcript.
-  const imported=(await readFile(entry,'utf8')).match(/from ["'](\.[^"']+\.js)["']/);
+  const imported=(await readFile(entry,'utf8')).match(/(?:from\s*|import\s*\(\s*)["'](\.[^"']+\.[cm]?js)["']/);
   assert.ok(imported,'actual Pi entry must retain its relative module import');
   dependency=join(dirname(entry),imported[1]);original=await readFile(dependency);
   await writeFile(dependency,Buffer.concat([original,Buffer.from('\n')]));
