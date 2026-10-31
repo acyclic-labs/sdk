@@ -1,6 +1,15 @@
 use super::call::Call;
+use acyclic_model_render::ToolDeclarations;
 use serde::{Serialize, ser::SerializeMap};
 use serde_json::{Map, Value, value::RawValue};
+
+/// Borrow the one shared schema view until the final request serialization.
+pub(super) struct Parameters<'a>(pub &'a Value);
+impl Serialize for Parameters<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        acyclic_harness_core::tool::schema::model_input(self.0).serialize(serializer)
+    }
+}
 
 /// Native payloads borrow transcript bytes until HTTP serialization completes.
 #[derive(Serialize)]
@@ -38,6 +47,7 @@ pub(super) struct Chat<'a> {
 
 pub(crate) struct Body<'a> {
     pub(crate) fields: Map<String, Value>,
+    pub(super) tools: Option<ToolDeclarations<'a, Parameters<'a>>>,
     pub(super) messages_field: &'static str,
     pub(super) messages: Vec<Message<'a>>,
 }
@@ -65,6 +75,11 @@ impl Body<'_> {
         if let Some(model) = model {
             map.serialize_entry("model", model)?;
         }
+        if let Some(tools) = &self.tools
+            && include.is_none_or(|fields| fields.contains(&"tools"))
+        {
+            map.serialize_entry("tools", tools)?;
+        }
         map.serialize_entry(self.messages_field, &self.messages)?;
         map.end()
     }
@@ -84,6 +99,7 @@ impl<'a> Body<'a> {
             .collect();
         Self {
             fields,
+            tools: None,
             messages_field: field,
             messages,
         }
