@@ -191,9 +191,11 @@ impl SkillPublicationCut {
                 self.executing_volume.into_bytes(),
                 member,
             ),
-            io.remaining()?
-                .bytes_encoded
-                .min(acyclic_stream::MAX_RECORD_BYTES as u64),
+            Some(
+                io.remaining()?
+                    .bytes_encoded
+                    .min(acyclic_stream::MAX_RECORD_BYTES as u64),
+            ),
             true,
         )
     }
@@ -589,7 +591,7 @@ fn content_path(
             crate::executor::stock_string_push(
                 &mut result,
                 part,
-                u64::MAX,
+                None,
                 "context path size overflow",
                 Some(io),
             )?;
