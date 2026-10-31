@@ -211,6 +211,55 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         panic!("one original skill expected")
     };
     assert_eq!(metadata.description, "Original header");
+    // A real pinned prefix succeeds above. Native funding must refuse before
+    // reading it while the YAML parser has no allocation-admission interface.
+    let native_work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(4_000_000, 4_000_000),
+        &cancel,
+    )
+    .map_err(|(cause, _)| cause)?;
+    let native_io = PreparationIo::from_native_work(&native_work)?;
+    let before_native = native_io.receipt();
+    assert!(matches!(
+        metadata
+            .source
+            .root
+            .skill_metadata_parsed_at(
+                reader.as_ref(),
+                &metadata.source.path,
+                &metadata.source.generation,
+                "SKILL.md",
+                ContextDiscoveryLimits::default(),
+                Some(&native_io),
+            )
+            .await,
+        Err(crate::Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            ..
+        })
+    ));
+    assert_eq!(
+        native_io.receipt().object_bytes_read,
+        before_native.object_bytes_read
+    );
+    assert!(
+        metadata
+            .source
+            .root
+            .skill_metadata_parsed_at(
+                reader.as_ref(),
+                "skills/check/notes.md",
+                &metadata.source.generation,
+                "SKILL.md",
+                ContextDiscoveryLimits::default(),
+                Some(&native_io),
+            )
+            .await?
+            .is_none(),
+        "unrelated paths must remain filtered without YAML admission"
+    );
+    drop(native_io);
+    drop(native_work);
     // A selected prefix must use the same supplied finite owner. The original
     // reader and pinned generation succeed above; only allocation credit differs.
     let blocked = PreparationIo::from_budget(

@@ -394,6 +394,18 @@ impl ContextRoot {
         if !self.is_skill_path(path, name) {
             return Ok(None);
         }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io
+            .and_then(crate::executor::PreparationIo::original_native_work)
+            .is_some()
+        {
+            // The YAML dependency allocates before invoking its Serde visitor.
+            // A funded prefix does not admit those parser allocations.
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "skill discovery requires native YAML allocation admission",
+            });
+        }
         let metadata = read_skill_metadata_parsed(
             &mut VolumeDiscovery {
                 reader,
