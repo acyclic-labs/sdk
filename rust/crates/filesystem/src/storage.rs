@@ -346,6 +346,36 @@ impl ObjectId {
         if self.storage.is_some() { 113 } else { 33 }
     }
 
+    /// Parses one complete canonical reference, leaving subsequent fields unread.
+    ///
+    /// The returned suffix borrows the original input. Parsing performs no
+    /// allocation and preserves the complete sealed storage association.
+    pub fn from_prefix(bytes: &[u8]) -> Result<(Self, &[u8]), ObjectIdError> {
+        let mut reader = ObjectPrefixReader { bytes };
+        let object = Self::read_from(&mut reader)?;
+        Ok((object, reader.bytes))
+    }
+
+    pub(crate) fn read_from<R: ObjectIdRead>(reader: &mut R) -> Result<Self, R::Error> {
+        let tag = reader.tag()?;
+        let digest = Digest::from_bytes(reader.fixed::<32>()?);
+        let kind = ObjectKind::from_canonical_tag(tag & 127).map_err(|_| R::unknown_kind(tag))?;
+        let storage = if tag & 128 == 0 {
+            None
+        } else {
+            Some(ObjectStorage {
+                locator: Digest::from_bytes(reader.fixed::<32>()?),
+                root_file_id: crate::FileId::from_bytes(reader.fixed::<16>()?),
+                origin_generation: Digest::from_bytes(reader.fixed::<32>()?),
+            })
+        };
+        Ok(Self {
+            kind,
+            digest,
+            storage,
+        })
+    }
+
     /// Returns the canonical typed reference, including its sealed association.
     #[must_use]
     pub fn to_bytes(self) -> ObjectIdBytes {
@@ -396,41 +426,44 @@ impl TryFrom<&[u8]> for ObjectId {
 
     /// Parses a canonical typed reference and its optional sealed association.
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let Some((&tag, _)) = bytes.split_first() else {
-            return Err(ObjectIdError::Length);
-        };
-        let sealed = tag & 128 != 0;
-        if bytes.len() != if sealed { 113 } else { 33 } {
+        let (object, remaining) = Self::from_prefix(bytes)?;
+        if !remaining.is_empty() {
             return Err(ObjectIdError::Length);
         }
-        let fixed = |range: std::ops::Range<usize>| bytes.get(range).ok_or(ObjectIdError::Length);
-        let digest = <[u8; 32]>::try_from(fixed(1..33)?).map_err(|_| ObjectIdError::Length)?;
-        let storage = if sealed {
-            Some(ObjectStorage {
-                locator: Digest::from_bytes(
-                    fixed(33..65)?
-                        .try_into()
-                        .map_err(|_| ObjectIdError::Length)?,
-                ),
-                root_file_id: crate::FileId::from_bytes(
-                    fixed(65..81)?
-                        .try_into()
-                        .map_err(|_| ObjectIdError::Length)?,
-                ),
-                origin_generation: Digest::from_bytes(
-                    fixed(81..113)?
-                        .try_into()
-                        .map_err(|_| ObjectIdError::Length)?,
-                ),
-            })
-        } else {
-            None
-        };
-        Ok(Self {
-            kind: ObjectKind::from_canonical_tag(tag & 127)?,
-            digest: Digest::from_bytes(digest),
-            storage,
-        })
+        Ok(object)
+    }
+}
+
+/// Fixed-field admission belongs to the reader; identity framing belongs here.
+pub(crate) trait ObjectIdRead {
+    type Error;
+
+    fn tag(&mut self) -> Result<u8, Self::Error> {
+        self.fixed::<1>().map(|[tag]| tag)
+    }
+    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], Self::Error>;
+    fn unknown_kind(tag: u8) -> Self::Error;
+}
+
+struct ObjectPrefixReader<'a> {
+    bytes: &'a [u8],
+}
+
+impl ObjectIdRead for ObjectPrefixReader<'_> {
+    type Error = ObjectIdError;
+
+    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], Self::Error> {
+        let (field, remaining) = self
+            .bytes
+            .split_at_checked(N)
+            .ok_or(ObjectIdError::Length)?;
+        let value = field.try_into().map_err(|_| ObjectIdError::Length)?;
+        self.bytes = remaining;
+        Ok(value)
+    }
+
+    fn unknown_kind(tag: u8) -> Self::Error {
+        ObjectKindError::Unknown(tag & 127).into()
     }
 }
 
@@ -779,25 +812,86 @@ mod object_id_codec_tests {
     use super::*;
 
     #[test]
-    fn object_id_bytes_round_trip_and_reject_malformed_input() {
-        let id = ObjectId {
-            storage: None,
-            kind: ObjectKind::TreePage,
-            digest: Digest::from_bytes([7; 32]),
-        };
-        let bytes = id.to_bytes();
-        assert_eq!(bytes[0], 3);
-        assert_eq!(&bytes[1..], &[7; 32]);
-        assert_eq!(ObjectId::try_from(&bytes[..]), Ok(id));
-        for length in [0, 1, 32, 34] {
-            assert_eq!(
-                ObjectId::try_from(&vec![1; length][..]),
-                Err(ObjectIdError::Length)
-            );
+    fn canonical_object_prefix_keeps_every_kind_seal_and_following_field()
+    -> Result<(), ObjectIdError> {
+        for (kind, tag) in [
+            (ObjectKind::Blob, 1),
+            (ObjectKind::BlobChunk, 2),
+            (ObjectKind::TreePage, 3),
+            (ObjectKind::ExtentPage, 4),
+            (ObjectKind::FileTablePage, 5),
+            (ObjectKind::GenerationRoot, 6),
+            (ObjectKind::Metadata, 7),
+            (ObjectKind::AttributePage, 8),
+        ] {
+            for storage in [
+                None,
+                Some(ObjectStorage {
+                    locator: Digest::from_bytes([11; 32]),
+                    root_file_id: crate::FileId::from_bytes([13; 16]),
+                    origin_generation: Digest::from_bytes([17; 32]),
+                }),
+            ] {
+                let id = ObjectId {
+                    kind,
+                    digest: Digest::from_bytes([7; 32]),
+                    storage,
+                };
+                let bytes = id.to_bytes();
+                // Fixed wire expectations catch encoder and decoder drifting together.
+                let mut expected = [7; 113];
+                expected[0] = tag;
+                let length = if storage.is_some() {
+                    expected[0] |= 128;
+                    expected[33..65].fill(11);
+                    expected[65..81].fill(13);
+                    expected[81..113].fill(17);
+                    113
+                } else {
+                    33
+                };
+                let expected = &expected[..length];
+                assert_eq!(bytes.as_slice(), expected);
+                assert_eq!(ObjectId::from_prefix(expected), Ok((id, &[][..])));
+                assert_eq!(ObjectId::try_from(bytes.as_slice()), Ok(id));
+                for length in 0..bytes.len() {
+                    assert_eq!(
+                        ObjectId::from_prefix(&bytes[..length]),
+                        Err(ObjectIdError::Length)
+                    );
+                }
+                let following = id.to_bytes();
+                let record = [bytes.as_slice(), following.as_slice()].concat();
+                let (decoded, remaining) = ObjectId::from_prefix(&record)?;
+                assert_eq!(decoded, id);
+                assert_eq!(remaining, following.as_slice());
+                assert_eq!(
+                    ObjectId::try_from(record.as_slice()),
+                    Err(ObjectIdError::Length)
+                );
+
+                let mut unknown = bytes.to_vec();
+                unknown[0] &= 128;
+                assert_eq!(
+                    ObjectId::from_prefix(&unknown),
+                    Err(ObjectIdError::Kind(ObjectKindError::Unknown(0)))
+                );
+                if let Some(mut resealed) = storage {
+                    // A plain digest cannot stand in for its authenticated association.
+                    let plain = ObjectId {
+                        storage: None,
+                        ..id
+                    };
+                    assert_ne!(ObjectId::from_prefix(plain.to_bytes().as_slice())?.0, id);
+                    resealed.locator = Digest::from_bytes([19; 32]);
+                    let other = ObjectId {
+                        storage: Some(resealed),
+                        ..id
+                    };
+                    assert_ne!(ObjectId::try_from(other.to_bytes().as_slice())?, id);
+                }
+            }
         }
-        let mut unknown = bytes.to_vec();
-        unknown[0] = 0;
-        let error = ObjectId::try_from(&unknown[..]);
-        assert_eq!(error, Err(ObjectIdError::Kind(ObjectKindError::Unknown(0))));
+        Ok(())
     }
 }

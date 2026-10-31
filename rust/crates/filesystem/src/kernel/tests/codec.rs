@@ -1,6 +1,62 @@
 use super::{CanonicalDecodeError, Decoder, EncodeAllocationStep, Encoder};
 
 #[test]
+fn canonical_object_prefix_preserves_original_copy_admission_and_stops_at_denial() {
+    use super::ReadAllocationStep;
+    use crate::storage::{ObjectId, ObjectKind, ObjectStorage};
+
+    for storage in [
+        None,
+        Some(ObjectStorage {
+            locator: crate::Digest::from_bytes([2; 32]),
+            root_file_id: crate::FileId::from_bytes([3; 16]),
+            origin_generation: crate::Digest::from_bytes([4; 32]),
+        }),
+    ] {
+        let object = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: crate::Digest::from_bytes([1; 32]),
+            storage,
+        };
+        let fields: &[u64] = if storage.is_some() {
+            &[1, 32, 32, 16, 32]
+        } else {
+            &[1, 32]
+        };
+        let bytes = [object.to_bytes().as_slice(), b"following field"].concat();
+        for denied in 0..=fields.len() {
+            let mut decoder = Decoder {
+                bytes: &bytes,
+                cursor: 0,
+            };
+            let mut admitted = Vec::new();
+            let mut completed = Vec::new();
+            let result = decoder.any_object(&mut |step| {
+                match step {
+                    ReadAllocationStep::BeforeCopy(length) => {
+                        if admitted.len() == denied {
+                            return Err(CanonicalDecodeError::AllocationFailed);
+                        }
+                        admitted.push(length);
+                    }
+                    ReadAllocationStep::Copied(length) => completed.push(length),
+                    _ => return Err(CanonicalDecodeError::WrongDomain),
+                }
+                Ok(())
+            });
+            assert_eq!(admitted, fields[..denied]);
+            assert_eq!(completed, fields[..denied]);
+            if denied == fields.len() {
+                assert_eq!(result, Ok(object));
+                assert_eq!(&bytes[decoder.cursor..], b"following field");
+            } else {
+                assert_eq!(result, Err(CanonicalDecodeError::AllocationFailed));
+            }
+        }
+    }
+}
+
+#[test]
 fn exact_capacity_accepts_only_the_complete_header_boundary() {
     let domain = b"domain";
     let minimum = domain.len() + 2;

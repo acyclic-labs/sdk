@@ -235,6 +235,33 @@ pub(crate) struct Decoder<'a> {
     cursor: usize,
 }
 
+struct ObjectReader<'a, 'input, O> {
+    decoder: &'a mut Decoder<'input>,
+    observe: &'a mut O,
+}
+
+impl<E: From<CanonicalDecodeError>, O: FnMut(ReadAllocationStep) -> Result<(), E>>
+    crate::storage::ObjectIdRead for ObjectReader<'_, '_, O>
+{
+    type Error = E;
+
+    fn tag(&mut self) -> Result<u8, E> {
+        self.decoder.u8(self.observe)
+    }
+
+    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], E> {
+        self.decoder.fixed(self.observe)
+    }
+
+    fn unknown_kind(tag: u8) -> E {
+        CanonicalDecodeError::UnknownTag {
+            field: "object kind",
+            tag,
+        }
+        .into()
+    }
+}
+
 impl<'a> Decoder<'a> {
     pub(crate) fn new<E: From<CanonicalDecodeError>>(
         bytes: &'a [u8],
@@ -388,27 +415,9 @@ impl<'a> Decoder<'a> {
         &mut self,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<crate::ObjectId, E> {
-        let tag = self.u8(observe)?;
-        let digest = crate::Digest::from_bytes(self.fixed::<32, E>(observe)?);
-        let kind = crate::ObjectKind::from_canonical_tag(tag & 127).map_err(|_| {
-            CanonicalDecodeError::UnknownTag {
-                field: "object kind",
-                tag,
-            }
-        })?;
-        let storage = if tag & 128 == 0 {
-            None
-        } else {
-            Some(crate::storage::ObjectStorage {
-                locator: crate::Digest::from_bytes(self.fixed::<32, E>(observe)?),
-                root_file_id: crate::FileId::from_bytes(self.fixed::<16, E>(observe)?),
-                origin_generation: crate::Digest::from_bytes(self.fixed::<32, E>(observe)?),
-            })
-        };
-        Ok(crate::ObjectId {
-            kind,
-            digest,
-            storage,
+        crate::ObjectId::read_from(&mut ObjectReader {
+            decoder: self,
+            observe,
         })
     }
 
