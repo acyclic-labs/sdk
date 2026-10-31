@@ -385,8 +385,9 @@ fn encode(operation: u8, key: &str, value: &[u8]) -> std::io::Result<Vec<u8>> {
 fn decode(body: &[u8]) -> Option<(u8, &str, Range<usize>)> {
     let (&operation, rest) = body.split_first()?;
     let length = usize::try_from(u32::from_le_bytes(*rest.first_chunk::<4>()?)).ok()?;
-    let key = std::str::from_utf8(rest.get(4..4 + length)?).ok()?;
-    let value = 1 + 4 + length..body.len();
+    let (key, value) = rest.get(4..)?.split_at_checked(length)?;
+    let key = std::str::from_utf8(key).ok()?;
+    let value = body.len() - value.len()..body.len();
     match operation {
         PUT => Some((operation, key, value)),
         REMOVE if value.is_empty() => Some((operation, key, value)),
