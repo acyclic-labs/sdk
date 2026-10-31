@@ -1,0 +1,292 @@
+//! Inbox selections frozen by the executor's existing ContextPrepared record.
+//! ModelStarted is admission evidence; selection alone consumes none.
+
+use super::{
+    FilesystemContentVerifier, FilesystemHost,
+    agent_internal::AgentInternalFiles,
+    agent_turns::{AdmittedAgent, TurnAdmission},
+};
+use crate::{
+    Error, OperationId, Result,
+    agent::{AgentState, BoundaryCut, ModelBoundary, SteeringTranscript, TurnOutputs},
+    conversation::{ContentAccess, ContentPublisher, ContentResidencyVerifier},
+    core::RuntimeAuthority,
+    model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
+};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_stream::{BoxProviderFuture, StreamProvider};
+use std::sync::{Arc, Mutex};
+
+struct Selected {
+    operation: OperationId,
+    step: u32,
+    cut: BoundaryCut,
+    messages: Vec<ModelMessage>,
+}
+
+#[derive(Default)]
+struct Admitted {
+    through: Option<u64>,
+    step: Option<u32>,
+    selected: Option<Selected>,
+    messages: Vec<ModelMessage>,
+}
+
+pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
+    pub stream: Arc<P>,
+    pub host: Arc<FilesystemHost<A, O>>,
+    pub issuer: RuntimeAuthority,
+    pub admission: TurnAdmission,
+    pub agent: AgentState,
+    pub inbox: u64,
+    pub files: Arc<AgentInternalFiles<A, O>>,
+    pub writer: Arc<dyn ContentPublisher>,
+    admitted: Mutex<Admitted>,
+}
+
+fn identity(operation: OperationId, step: u32, item: u64) -> OperationId {
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.steering.v1");
+    hash.update(&operation.into_bytes());
+    hash.update(&step.to_le_bytes());
+    hash.update(&item.to_le_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
+}
+
+impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
+    pub(super) fn new(
+        stream: Arc<P>,
+        host: Arc<FilesystemHost<A, O>>,
+        issuer: RuntimeAuthority,
+        admission: TurnAdmission,
+        agent: AgentState,
+        inbox: u64,
+        files: Arc<AgentInternalFiles<A, O>>,
+        writer: Arc<dyn ContentPublisher>,
+    ) -> Self {
+        Self {
+            stream,
+            host,
+            issuer,
+            admission,
+            agent,
+            inbox,
+            files,
+            writer,
+            admitted: Mutex::default(),
+        }
+    }
+}
+
+impl<P, A, O> FilesystemBoundary<P, A, O>
+where
+    P: StreamProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    async fn select(
+        &self,
+        operation: OperationId,
+        step: u32,
+        frozen: Option<BoundaryCut>,
+    ) -> Result<Selected> {
+        let from = frozen.map(|cut| cut.from).unwrap_or({
+            let admitted = self
+                .admitted
+                .lock()
+                .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?;
+            admitted.through.unwrap_or_else(|| {
+                self.agent
+                    .pending_notices
+                    .as_ref()
+                    .map_or(self.inbox.saturating_add(1), |range| range.start)
+                    .max(self.agent.steered_through)
+            })
+        });
+        let selection = crate::agent::select_boundary(
+            &*self.stream,
+            &self.agent.path,
+            from,
+            self.inbox,
+            frozen.map(|cut| cut.through),
+        )
+        .await
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        let inputs = selection.inputs.into_iter().filter(|input| input.inbox > self.inbox
+            || (input.inbox < self.inbox && matches!(&input.input, crate::agent::TurnInput::Notice { notice, .. } if !notice.wake)));
+        let mut messages = Vec::new();
+        let mut item = 0_u64;
+        for input in inputs {
+            let content = crate::agent::model_input(&input.input)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let external = content.file_refs().cloned().collect::<Vec<_>>();
+            let authority = AdmittedAgent::verify(
+                &self.issuer,
+                &self.admission,
+                &self.agent.path,
+                &self.agent.volumes,
+            )?
+            .authority(&external)
+            .await?;
+            let reader = FilesystemContentVerifier::new(
+                Arc::clone(&self.host),
+                &authority.verifier,
+                &authority.scope,
+                crate::conversation::MAX_EXACT_JS_INTEGER,
+                None,
+            )?;
+            let content = crate::agent::expand_attachments(content, &*reader).await?;
+            let mut parts = match content {
+                ModelContent::Text(text) => vec![ModelContentPart::Text { text }],
+                ModelContent::Part(part) => vec![part],
+                ModelContent::Parts(parts) => parts,
+            };
+            // Pin newly authorized content into the private volume. The running
+            // executor keeps its original scope; no live grant is widened.
+            for part in &mut parts {
+                if let ModelContentPart::File { file, .. } = part {
+                    let bytes = reader
+                        .read(file, file.descriptor().byte_length(), None, None)?
+                        .await?;
+                    let id = identity(operation, step, item);
+                    let destination =
+                        format!("messages/.steering/{operation}/{step:010}/{item:020}");
+                    let (published, _) = self
+                        .writer
+                        .stage_once(
+                            id,
+                            &destination,
+                            &bytes,
+                            file.descriptor().media_type(),
+                            "steering",
+                            ContentAccess::default(),
+                        )?
+                        .await?;
+                    *file = published;
+                    item = item
+                        .checked_add(1)
+                        .ok_or_else(|| Error::Invalid("steering item overflow".into()))?;
+                }
+            }
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Parts(parts),
+            });
+        }
+        Ok(Selected {
+            operation,
+            step,
+            cut: BoundaryCut {
+                from,
+                through: selection.through,
+            },
+            messages,
+        })
+    }
+}
+
+impl<P, A, O> ModelBoundary for FilesystemBoundary<P, A, O>
+where
+    P: StreamProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn messages(
+        &self,
+        operation: OperationId,
+        step: u32,
+        frozen: Option<BoundaryCut>,
+    ) -> BoxProviderFuture<'_, Result<Vec<ModelMessage>>> {
+        Box::pin(async move {
+            let selected = self.select(operation, step, frozen).await?;
+            let messages = selected.messages.clone();
+            self.admitted
+                .lock()
+                .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?
+                .selected = Some(selected);
+            Ok(messages)
+        })
+    }
+
+    fn selection(&self, operation: OperationId, step: u32) -> Result<BoundaryCut> {
+        let admitted = self
+            .admitted
+            .lock()
+            .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?;
+        admitted
+            .selected
+            .as_ref()
+            .filter(|selected| selected.operation == operation && selected.step == step)
+            .map(|selected| selected.cut)
+            .ok_or_else(|| Error::Storage("request has no selected steering range".into()))
+    }
+
+    fn visible_through(&self) -> Option<u64> {
+        self.admitted
+            .lock()
+            .ok()
+            .and_then(|admitted| admitted.through)
+    }
+
+    fn admitted(&self, operation: OperationId, step: u32) -> BoxProviderFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let mut admitted = self
+                .admitted
+                .lock()
+                .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?;
+            if admitted.step.is_some_and(|previous| previous >= step) {
+                return Ok(());
+            }
+            let selected = admitted
+                .selected
+                .as_mut()
+                .filter(|selected| selected.operation == operation && selected.step == step)
+                .ok_or_else(|| {
+                    Error::Storage("admitted request has no selected steering range".into())
+                })?;
+            let through = selected.cut.through;
+            let messages = std::mem::take(&mut selected.messages);
+            admitted.through = Some(
+                admitted
+                    .through
+                    .map_or(through, |previous| previous.max(through)),
+            );
+            admitted.step = Some(admitted.step.map_or(step, |previous| previous.max(step)));
+            admitted.messages.extend(messages);
+            Ok(())
+        })
+    }
+
+    fn transcript(
+        &self,
+        operation: OperationId,
+    ) -> BoxProviderFuture<'_, Result<Option<SteeringTranscript>>> {
+        Box::pin(async move {
+            let Some((through, bytes)) = ({
+                let admitted = self
+                    .admitted
+                    .lock()
+                    .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?;
+                if admitted.messages.is_empty() {
+                    None
+                } else {
+                    admitted
+                        .through
+                        .map(|through| {
+                            crate::contract::canonical_json_bytes(&admitted.messages)
+                                .map(|bytes| (through, bytes))
+                        })
+                        .transpose()?
+                }
+            }) else {
+                return Ok(None);
+            };
+            let file = self
+                .files
+                .stage(identity(operation, u32::MAX, 0), &bytes)
+                .await?;
+            Ok(Some(SteeringTranscript { through, file }))
+        })
+    }
+}

@@ -446,6 +446,7 @@ impl HostDriver {
             goal: None,
             targets: None,
             tool_results: None,
+            steering: None,
         };
         outs.push(Out::Conversation(entry.encode().map_err(storage)?));
         Ok(TurnStep {

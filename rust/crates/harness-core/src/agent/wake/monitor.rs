@@ -11,13 +11,33 @@ use serde_json::json;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MonitorFilter {
+    /// Provider-indexed half-open key ranges; empty accepts every key.
+    pub keys: Vec<MonitorKeyRange>,
     /// Indexed attribute names and admitted values. All attributes must match.
     pub attributes: std::collections::BTreeMap<String, Vec<Vec<u8>>>,
+}
+
+/// One half-open source key range, interpreted by Streams.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MonitorKeyRange {
+    /// Inclusive key bytes.
+    pub start: Vec<u8>,
+    /// Exclusive key bytes; empty is the primitive's unbounded end.
+    pub end: Vec<u8>,
 }
 
 impl MonitorFilter {
     fn compile(&self) -> Result<FollowFilter, Error> {
         FollowFilter::new(acyclic_stream::wire::SessionFilter {
+            keys: self
+                .keys
+                .iter()
+                .map(|range| acyclic_stream::wire::KeyRange {
+                    start: range.start.clone().into(),
+                    end: range.end.clone().into(),
+                })
+                .collect(),
             attributes: self
                 .attributes
                 .iter()

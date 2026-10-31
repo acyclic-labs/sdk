@@ -98,9 +98,14 @@ impl ExecutionEvent {
                 envelope: file(envelope)?,
                 publication: *publication,
             },
-            ContextPrepared { step, projection } => ContextPrepared {
+            ContextPrepared {
+                step,
+                projection,
+                steering,
+            } => ContextPrepared {
                 step: *step,
                 projection: file(projection)?,
+                steering: *steering,
             },
             ContextCompacted {
                 step,

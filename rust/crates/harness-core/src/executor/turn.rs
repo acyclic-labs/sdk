@@ -36,6 +36,33 @@ impl StockExecution<'_> {
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let mut stop_active = false;
         for step in 0..input.max_steps {
+            if let Some(boundary) = journal.model_boundary() {
+                let (_, records) = self
+                    .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+                    .await?;
+                let frozen = records.iter().find_map(|record| match record.event {
+                    ExecutionEvent::ContextPrepared {
+                        step: recorded,
+                        steering,
+                        ..
+                    } if recorded == step => Some(steering),
+                    _ => None,
+                });
+                if matches!(frozen, Some(None)) {
+                    return Err(Error::Storage(
+                        "agent request has no frozen inbox range".into(),
+                    ));
+                }
+                for message in boundary
+                    .messages(input.operation_id, step, frozen.flatten())
+                    .await?
+                {
+                    with_history_io(self.io, |work| {
+                        message.content.validate_limits(self.stock.limits, work)
+                    })?;
+                    stock_vec_push(&mut prior_messages, message, self.io)?;
+                }
+            }
             let model_events = self
                 .run_model_step(
                     journal,

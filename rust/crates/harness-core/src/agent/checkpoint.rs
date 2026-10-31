@@ -439,6 +439,10 @@ mod tests {
                 outcome: crate::agent::TurnOutcome::Cancelled,
                 goal: Some(crate::OperationId::from_bytes([255; 16])),
                 targets: Some(file()),
+                steering: Some(crate::agent::SteeringTranscript {
+                    through: u64::MAX,
+                    file: file(),
+                }),
                 tool_results: Some(format!(
                     "tools/.results/{}",
                     crate::OperationId::from_bytes([255; 16])
@@ -470,6 +474,7 @@ mod tests {
                     brief: Some([u8::MAX; 32]),
                     conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
+                    steered_through: u64::MAX,
                     pending_notices: Some(0..u64::MAX),
                     dropped_before: u64::MAX,
                     checkpoint: Some(u64::MAX),
@@ -606,7 +611,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
+                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);

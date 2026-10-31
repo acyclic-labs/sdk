@@ -166,6 +166,7 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
         &'a self,
         agent: &'a AgentState,
         turn: OperationId,
+        inbox: u64,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>>;
@@ -176,10 +177,11 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
         &'a self,
         agent: &'a AgentState,
         turn: OperationId,
+        inbox: u64,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>> {
-        (**self).open(agent, turn, input, stop)
+        (**self).open(agent, turn, inbox, input, stop)
     }
 }
 
@@ -216,6 +218,9 @@ impl TurnOutcome {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct ConversationEntry {
+    /// Inputs admitted at model boundaries during this turn, in source order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steering: Option<super::SteeringTranscript>,
     /// Inbox sequence of the record that started the turn (see [`Queued`]).
     /// An agent appends its own entries in strictly increasing inbox order.
     pub inbox: u64,
@@ -509,6 +514,7 @@ async fn settle_selection(
         goal: None,
         targets: None,
         tool_results: None,
+        steering: None,
     };
     Ok(TurnStep {
         reserved_children: 0,
@@ -522,6 +528,9 @@ async fn settle_selection(
 /// An entry's append, recording the roster it announced.
 fn appended(entry: &ConversationEntry, open: &OpenTurn) -> Result<Vec<Out>, Error> {
     let mut outs = vec![Out::Conversation(entry.encode()?)];
+    if let Some(steering) = &entry.steering {
+        outs.push(Out::Steered(steering.through));
+    }
     if let (Some(_), Some((_, digest))) = (&entry.targets, &open.roster) {
         outs.push(Out::Roster(*digest));
     }
@@ -576,7 +585,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let stop = cancellation;
             let open = self
                 .host
-                .open(agent, turn, &content, stop.clone())
+                .open(agent, turn, inbox, &content, stop.clone())
                 .await
                 .map_err(host_error)?;
             if matches!(
@@ -611,6 +620,10 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     goal,
                     targets: announced(&open),
                     tool_results: open.outputs.tool_results(turn),
+                    steering: match open.journal.model_boundary() {
+                        Some(boundary) => boundary.transcript(turn).await.map_err(host_error)?,
+                        None => None,
+                    },
                 };
                 return Ok(TurnStep {
                     reserved_children: 0,
@@ -687,6 +700,12 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         goal: run,
                         targets: announced(&open),
                         tool_results: open.outputs.tool_results(turn),
+                        steering: match open.journal.model_boundary() {
+                            Some(boundary) => {
+                                boundary.transcript(turn).await.map_err(host_error)?
+                            }
+                            None => None,
+                        },
                     };
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = if goal.is_some() {

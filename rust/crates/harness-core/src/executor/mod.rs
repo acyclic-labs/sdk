@@ -292,6 +292,8 @@ pub enum ExecutionEvent {
         /// Exact context; model/tools/options are pinned by the Started composition.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         projection: FileRef,
+        /// Inbox range included in this exact response request, if bound to an agent.
+        steering: Option<crate::agent::BoundaryCut>,
     },
     /// Pins a verified compacted projection before response admission.
     ContextCompacted {

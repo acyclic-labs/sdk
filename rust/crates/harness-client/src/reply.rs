@@ -934,6 +934,7 @@ mod tests {
             goal: Some(run),
             targets: None,
             tool_results: None,
+            steering: None,
         };
         let terminal = ConversationEntry {
             inbox: 3,

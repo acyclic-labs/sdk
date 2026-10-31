@@ -23,6 +23,8 @@ mod reply;
 mod runtime;
 #[path = "agent_model/slot_schedules.rs"]
 mod slot_schedules;
+#[path = "agent_model/wake.rs"]
+mod wake;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "agent_model/wired.rs"]
 mod wired;

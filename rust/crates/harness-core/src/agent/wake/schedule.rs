@@ -28,9 +28,15 @@ pub enum Missed {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Recurrence {
     /// Fixed cadence anchored to the preceding due time.
-    Every { milliseconds: u64 },
+    Every {
+        /// Positive elapsed duration, independent of wall-clock adjustments.
+        milliseconds: u64,
+    },
     /// Five-field calendar recurrence in the schedule's timezone.
-    Cron { expression: String },
+    Cron {
+        /// Minute, hour, day of month, month and day of week.
+        expression: String,
+    },
 }
 
 /// `schedules/<next_due:020>-<id>.json`, ordered by the volume's directory index.

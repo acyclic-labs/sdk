@@ -125,12 +125,14 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
         InboxRecord::Notice { id, notice } => {
             notice.wake.then_some(TurnInput::Notice { id, notice })
         }
-        InboxRecord::Message(message) => Some(TurnInput::Message {
-            from: message.from,
-            id: message.id,
-            body: message.body,
-            attachments: message.attachments,
-        }),
+        InboxRecord::Message(message) | InboxRecord::FollowUp(message) => {
+            Some(TurnInput::Message {
+                from: message.from,
+                id: message.id,
+                body: message.body,
+                attachments: message.attachments,
+            })
+        }
         // An archived child settles an archive its parent (or an ancestor's
         // cascade) asked for; it reports nothing the parent did not already
         // decide, so it starts no turn. A `wait` observes it on the child's status.

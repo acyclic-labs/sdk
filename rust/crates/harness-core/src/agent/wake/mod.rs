@@ -9,7 +9,9 @@ mod monitor;
 mod schedule;
 
 pub use cron::Cron;
-pub use monitor::{Monitor, MonitorCursor, MonitorEvent, MonitorFilter, MonitorFollow};
+pub use monitor::{
+    Monitor, MonitorCursor, MonitorEvent, MonitorFilter, MonitorFollow, MonitorKeyRange,
+};
 pub use schedule::{Lifetime, Missed, Recurrence, Schedule, ScheduleFire};
 
 use super::{Error, IntentId};

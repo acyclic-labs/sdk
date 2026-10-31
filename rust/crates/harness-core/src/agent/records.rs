@@ -26,8 +26,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// code. The headerless format before it is version 1; version 2 carries a
 /// spawn brief by file reference. Version 3 binds goal runs to their committed
 /// terminal conversation entry. Version 4 lets a conversation entry name the
-/// execution-target roster its turn announced.
-pub const RECORD_VERSION: u32 = 4;
+/// execution-target roster its turn announced. Version 5 retains admitted
+/// boundary steering and distinguishes next-turn messages.
+pub const RECORD_VERSION: u32 = 5;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -393,6 +394,8 @@ pub enum InboxRecord {
     ForkAdopted(Box<ForkAdopted>),
     /// `send`.
     Message(Message),
+    /// A message reserved for a new turn, never injected into the active one.
+    FollowUp(Message),
     /// One primitive event; the payload independently decides whether to run.
     Notice {
         /// Original producer event identity, retained across delivery replay.
@@ -598,6 +601,7 @@ impl AgentRecord for InboxRecord {
                 .validate()
                 .map_err(|_| Error::Record("invalid primitive event notice")),
             Self::Message(Message { from, .. })
+            | Self::FollowUp(Message { from, .. })
             | Self::Cancel(Control { by: from, .. })
             | Self::Archive(Control { by: from, .. })
             | Self::Context(ContextRequest { by: from, .. }) => check_sender(from),

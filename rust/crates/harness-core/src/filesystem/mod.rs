@@ -43,6 +43,7 @@ mod agent_effects;
 mod agent_goal;
 pub use agent_goal::GOAL_VOLUME;
 mod agent_internal;
+mod agent_steering;
 pub mod attestation;
 pub mod hosting;
 mod spawn_volumes;

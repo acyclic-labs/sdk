@@ -59,6 +59,12 @@ pub struct ExecutionJournalCacheId(OperationId);
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// The agent's durable inbox at the next model boundary. This binding is
+    /// independent of cancellation and never observes tools while they run.
+    fn model_boundary(&self) -> Option<&dyn crate::agent::ModelBoundary> {
+        None
+    }
+
     /// Authenticates private working cuts issued by this journal binding.
     /// Without this capability the original journal's content and compaction
     /// proof validation still bind its working cut; no signature is claimed.
