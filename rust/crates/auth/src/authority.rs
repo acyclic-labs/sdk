@@ -189,7 +189,9 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
             GrantKind::Resource(g) => g,
             GrantKind::Execution(g)
                 if g.cpu_millis.is_none_or(|n| r.cpu_millis <= n)
-                    && g.memory_bytes.is_none_or(|n| r.memory_bytes <= n) =>
+                    && g.memory_bytes.is_none_or(|n| r.memory_bytes <= n)
+                    && g.max_concurrency
+                        .is_none_or(|n| r.usage.concurrency.unwrap_or(0) <= n) =>
             {
                 &g.grant
             }

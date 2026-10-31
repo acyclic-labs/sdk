@@ -26,6 +26,12 @@
 // Sealing appends no block and consumes no depth. Limits share the chain root:
 // rates/concurrency at admission, cumulative lifetime totals globally at the
 // metering owner/billing ledger. Delegation and renewal never reset counters.
+// ExecutionGrant policy_generation, usage_owner and reserved_capacity_units are
+// signed owner-admission facts, not facts inferred by the offline verifier. The
+// execution owner checks every applicable certificate and caveat grant set
+// against its current policy and shared reservation/usage ledger before launch.
+// max_concurrency intersects with the request's shared-ledger concurrency facts;
+// absent optional execution fields impose no additional constraint.
 // Label is advisory, scoped to its block revocation id, and grants no authority.
 // CallerContext is host-admitted invocation metadata, never a bearer or proof.
 // Its caller remains the original customer across accounts; audience is the exact
@@ -212,6 +218,10 @@ message ExecutionGrant {
   ResourceGrant grant = 1;
   optional uint64 cpu_millis = 2;
   optional uint64 memory_bytes = 3;
+  optional uint64 policy_generation = 4;
+  optional string usage_owner = 5;
+  optional uint64 max_concurrency = 6;
+  optional uint64 reserved_capacity_units = 7;
 }
 
 message Filter {

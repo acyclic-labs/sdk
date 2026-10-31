@@ -63,6 +63,20 @@ pub struct ExecutionGrant {
     /// Maximum memory bytes.
     #[wire(tag = 3, uint64)]
     pub memory_bytes: Option<u64>,
+    /// Policy generation admitted by the execution owner. The owner must
+    /// require this exact generation before admitting work.
+    #[wire(tag = 4, uint64)]
+    pub policy_generation: Option<u64>,
+    /// Account or principal charged for execution. The execution owner must
+    /// preserve this signed identity when reserving and recording usage.
+    #[wire(tag = 5, string)]
+    pub usage_owner: Option<String>,
+    /// Maximum concurrent executions against the owner's shared usage ledger.
+    #[wire(tag = 6, uint64)]
+    pub max_concurrency: Option<u64>,
+    /// Reserved capacity units admitted and accounted by the execution owner.
+    #[wire(tag = 7, uint64)]
+    pub reserved_capacity_units: Option<u64>,
 }
 
 /// Billing authority with a typed spend ceiling.
