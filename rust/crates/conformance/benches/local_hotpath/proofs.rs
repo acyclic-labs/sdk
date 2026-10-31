@@ -108,11 +108,14 @@ pub(super) fn run(options: &Options) -> Result {
         .enable_all()
         .build()?
         .block_on(async {
+            super::proofs_resources::native_timers(&options.recovery()).await?;
             for (stage, name) in ["before-append", "before-flush", "before-ack"]
                 .into_iter()
                 .enumerate()
             {
-                cut_root(&options.root.join(name), stage, name, false).await?;
+                cut_root(&options.root.join(name), stage, name, false)
+                    .await
+                    .map_err(|error| format!("native root cut {name}: {error}"))?;
             }
             cut_root(
                 &options.root.join("failed-truncation"),
@@ -124,6 +127,7 @@ pub(super) fn run(options: &Options) -> Result {
         })?;
     emit(serde_json::json!({
         "schema": 1, "kind": "proof_end", "native_root_cuts_complete": true,
+        "native_timer_injection_control_complete": true,
         "composed_proof_complete": false, "population_cost_proven": false,
         "same_owner_resubmission_proven": false,
         "open": ["same-owner resubmission after producer loss", "physical release of retained publication holds", "population-independent original work"],
