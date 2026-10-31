@@ -9,7 +9,6 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         trust_revision: 0,
         deadline: Some(1000),
         provider: Arc::new(MemoryStream::default()),
-        executor: Arc::new(crate::runtime::PlatformExecutor),
         resources: None,
         calls: None,
         limits: Limits::default(),

@@ -60,14 +60,15 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
             vec![resource, subscribe(1, "healthy", 0, false)],
         )))?;
         sender.unbounded_send(Ok(window(1)))?;
-        let mut output = serve_on_with_resources(
+        let mut output = serve_on_with_products(
             provider,
             testing::authority(),
             resources,
+            None,
             "node".into(),
             Limits::default(),
             receiver.boxed(),
-            Arc::new(crate::runtime::PlatformExecutor),
+            None,
         )?;
         let (mut refused, mut applied, mut delivered) = (false, false, false);
         while !(refused && applied && delivered) {

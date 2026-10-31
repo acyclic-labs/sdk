@@ -138,7 +138,6 @@ struct Session<P: ?Sized> {
     provider: Arc<P>,
     resources: Option<Arc<dyn ResourceProvider>>,
     calls: Option<Arc<dyn CallProvider>>,
-    executor: Arc<dyn crate::runtime::Executor>,
     limits: Limits,
     node: String,
     hello: bool,
@@ -202,24 +201,9 @@ pub fn serve<P: StreamProvider + ?Sized>(
     limits: Limits,
     incoming: transport::WireResponses,
 ) -> Result<transport::Responses, StreamError> {
-    serve_on(
-        provider,
-        authority,
-        node,
-        limits,
-        incoming,
-        Arc::new(crate::runtime::PlatformExecutor),
+    serve_on_with_products(
+        provider, authority, None, None, node, limits, incoming, None,
     )
-}
-fn serve_on<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
-    authority: Arc<Authority>,
-    node: String,
-    limits: Limits,
-    incoming: transport::WireResponses,
-    executor: Arc<dyn crate::runtime::Executor>,
-) -> Result<transport::Responses, StreamError> {
-    serve_on_with_resources(provider, authority, None, node, limits, incoming, executor)
 }
 
 /// Opens a session whose product follows are resolved by their owning provider.
@@ -231,28 +215,15 @@ pub fn serve_with_resources<P: StreamProvider + ?Sized>(
     limits: Limits,
     incoming: transport::WireResponses,
 ) -> Result<transport::Responses, StreamError> {
-    serve_on_with_resources(
+    serve_on_with_products(
         provider,
         authority,
         Some(resources),
+        None,
         node,
         limits,
         incoming,
-        Arc::new(crate::runtime::PlatformExecutor),
-    )
-}
-
-fn serve_on_with_resources<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
-    authority: Arc<Authority>,
-    resources: Option<Arc<dyn ResourceProvider>>,
-    node: String,
-    limits: Limits,
-    incoming: transport::WireResponses,
-    executor: Arc<dyn crate::runtime::Executor>,
-) -> Result<transport::Responses, StreamError> {
-    serve_on_with_products(
-        provider, authority, resources, None, node, limits, incoming, executor, None,
+        None,
     )
 }
 
@@ -277,7 +248,6 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
         node,
         limits,
         incoming,
-        Arc::new(crate::runtime::PlatformExecutor),
         shutdown,
     )
 }
@@ -290,7 +260,6 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
     node: String,
     limits: Limits,
     incoming: transport::WireResponses,
-    executor: Arc<dyn crate::runtime::Executor>,
     shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
 ) -> Result<transport::Responses, StreamError> {
     if node.is_empty()
@@ -312,7 +281,6 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
         provider,
         resources,
         calls,
-        executor,
         node,
         limits,
         hello: false,

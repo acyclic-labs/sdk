@@ -377,7 +377,6 @@ async fn host_shutdown_closes_all_channels_without_data_credit() -> TestResult {
         "node".into(),
         Limits::default(),
         receiver.boxed(),
-        Arc::new(crate::runtime::PlatformExecutor),
         Some(Box::pin(async {
             let _ = stopped.await;
         })),

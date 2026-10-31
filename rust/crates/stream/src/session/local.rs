@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 struct Local<P: ?Sized> {
     provider: Arc<P>,
-    executor: Arc<dyn Executor>,
     authority: Arc<super::Authority>,
     resources: Option<Arc<dyn ResourceProvider>>,
     calls: Option<Arc<dyn CallProvider>>,
@@ -27,7 +26,6 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
                 "local".into(),
                 Limits::default(),
                 Box::pin(source.map(Ok)),
-                self.executor.clone(),
                 self.lifetime.clone().map(|mut lifetime| {
                     Box::pin(async move {
                         let _ = lifetime.changed().await;
@@ -91,7 +89,6 @@ impl Client {
     ) -> Self {
         let endpoint: transport::Endpoint = Arc::new(Local {
             provider,
-            executor: executor.clone(),
             authority,
             resources,
             calls,
