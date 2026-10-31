@@ -40,14 +40,7 @@ impl Transport for FetchTransport {
         Box::pin(async move {
             let init = web_sys::RequestInit::new();
             let owner = FetchOwner(web_sys::AbortController::new().map_err(|_| Error::Transport)?);
-            let budget = acyclic_auth::credential::HTTP_REQUEST_TIMEOUT;
-            let timeout_ms = u32::try_from(budget.as_millis()).map_err(|_| Error::Transport)?;
-            let deadline = web_sys::AbortSignal::timeout_with_u32(timeout_ms);
-            let signals = js_sys::Array::new();
-            signals.push(owner.0.signal().as_ref());
-            signals.push(deadline.as_ref());
-            let signal = web_sys::AbortSignal::any(signals.as_ref());
-            init.set_signal(Some(&signal));
+            init.set_signal(Some(&owner.0.signal()));
             init.set_method("POST");
             init.set_redirect(web_sys::RequestRedirect::Error);
             init.set_credentials(web_sys::RequestCredentials::Omit);

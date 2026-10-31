@@ -227,8 +227,8 @@ pub type ResolveFuture<'a> =
 pub type ResolveFuture<'a> = Pin<Box<dyn Future<Output = Result<SecretValue, ResolveError>> + 'a>>;
 
 /// The host's one secrets source. It is never reachable from the API: the
-/// public surface has no read action, and only hosts that start processes
-/// hold a resolver.
+/// public surface has no read action. Only host credential adapters hold a
+/// resolver; resolved values never enter guest execution.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait Resolver: Send + Sync {
     /// Resolves exactly `reference`, or fails typed.
@@ -290,13 +290,30 @@ impl<T: Transport> Client<T> {
         body: &impl Serialize,
     ) -> Result<R, Error> {
         let body = Zeroizing::new(serde_json::to_vec(body).map_err(|_| Error::InvalidRequest)?);
+        let changed = self
+            .credentials
+            .watch()
+            .await
+            .map_err(|_| Error::Credential)?;
         let bearer = self
             .credentials
             .resolve()
             .await
             .map_err(|_| Error::Credential)?;
         bearer.check().await.map_err(|_| Error::Credential)?;
-        let response = self.transport.post(path, &bearer, &body).await?;
+        let request = self.transport.post(path, &bearer, &body);
+        let response = if let Some(changed) = changed {
+            use futures::FutureExt;
+            let changed = changed.fuse();
+            let request = request.fuse();
+            futures::pin_mut!(changed, request);
+            futures::select_biased! {
+                _ = changed => return Err(Error::Credential),
+                response = request => response?,
+            }
+        } else {
+            request.await?
+        };
         match response.status {
             200..=299 => {
                 bearer.check().await.map_err(|_| Error::Credential)?;
@@ -423,7 +440,6 @@ impl HttpTransport {
         Ok(Self {
             endpoint: crate::credential::endpoint(origin).map_err(|_| Error::InvalidRequest)?,
             client: reqwest::Client::builder()
-                .timeout(crate::credential::HTTP_REQUEST_TIMEOUT)
                 .redirect(reqwest::redirect::Policy::none())
                 .retry(reqwest::retry::never())
                 .build()
