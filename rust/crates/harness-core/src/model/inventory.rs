@@ -53,6 +53,7 @@ impl FileProjectionPolicy {
 impl ModelContentPart {
     fn payload_bytes(&self) -> Result<u64> {
         match self {
+            Self::Configuration { .. } => Ok(0),
             Self::Text { text } => Ok(text.capacity() as u64),
             Self::File { file, policy } => {
                 add(file.logical_owned_bytes()?, policy.payload_bytes()?)

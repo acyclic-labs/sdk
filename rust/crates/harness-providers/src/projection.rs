@@ -156,7 +156,39 @@ pub(crate) fn body_named<'a>(
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
     let mut gemini = gemini::Replay::default();
+    let mut effective_effort = provider
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.baseline_effort());
     for message in &request.messages {
+        if let ModelContent::Part(ModelContentPart::Configuration { prefix, effort }) =
+            &message.content
+        {
+            let profile = provider.profile.as_ref().ok_or_else(|| {
+                invalid("configuration update requires an admitted model profile")
+            })?;
+            if prefix != &profile.prefix_digest() {
+                continue;
+            }
+            if adapter != Adapter::Responses
+                || profile.reasoning() == acyclic_model_render::Reasoning::Disabled
+                || *effort == acyclic_model_render::Effort::Adaptive
+                || message.role != ModelRole::User
+            {
+                return Err(invalid(
+                    "configuration update is not admitted by this protocol and profile",
+                ));
+            }
+            sequence::push(
+                adapter,
+                &mut messages,
+                Message::Item(Item::Json(json!({
+                    "type":"configuration_update", "reasoning":{"effort":effort},
+                }))),
+            )?;
+            effective_effort = Some(*effort);
+            continue;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if provider.codex_login.is_some() && message.role == ModelRole::System {
             system.push(text_content(&message.content, files)?);
@@ -178,6 +210,14 @@ pub(crate) fn body_named<'a>(
             )? {
                 sequence::push(adapter, &mut messages, projected)?;
             }
+        }
+    }
+    if let Some(profile) = &provider.profile {
+        let desired = profile.fixed_effort().or(profile.baseline_effort());
+        if effective_effort != desired {
+            return Err(invalid(
+                "request is missing its original-position role effort update",
+            ));
         }
     }
     sequence::finish(adapter, &mut messages)?;
@@ -284,6 +324,9 @@ fn project_message<'a>(
     }
     for part in message.content.parts() {
         match part {
+            ModelContentPart::Configuration { .. } => {
+                return Err(invalid("configuration update must occupy one message"));
+            }
             ModelContentPart::Text { text } => {
                 project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
             }

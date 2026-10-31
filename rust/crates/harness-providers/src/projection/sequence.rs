@@ -23,6 +23,12 @@ pub(super) fn push_with_successor<'a>(
     allows: impl Fn(ResponseItem, ResponseItem) -> bool,
 ) -> Result<()> {
     if adapter == Adapter::Responses
+        && matches!(&next, Message::Item(Item::Json(value)) if value["type"] == "configuration_update")
+        && messages.last().is_some_and(|last| matches!(last, Message::Item(Item::Json(value)) if value["type"] == "configuration_update"))
+    {
+        return Err(crate::invalid("adjacent configuration updates are not admitted"));
+    }
+    if adapter == Adapter::Responses
         && messages
             .last()
             .is_some_and(|last| !allows(response_item(last), response_item(&next)))
