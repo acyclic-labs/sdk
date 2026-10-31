@@ -295,38 +295,40 @@ impl<T: Transport> Client<T> {
             .watch()
             .await
             .map_err(|_| Error::Credential)?;
-        let bearer = self
-            .credentials
-            .resolve()
-            .await
-            .map_err(|_| Error::Credential)?;
-        bearer.check().await.map_err(|_| Error::Credential)?;
-        let request = self.transport.post(path, &bearer, &body);
-        let response = if let Some(changed) = changed {
+        let operation = async {
+            let bearer = self
+                .credentials
+                .resolve()
+                .await
+                .map_err(|_| Error::Credential)?;
+            bearer.check().await.map_err(|_| Error::Credential)?;
+            let response = self.transport.post(path, &bearer, &body).await?;
+            match response.status {
+                200..=299 => {
+                    bearer.check().await.map_err(|_| Error::Credential)?;
+                    serde_json::from_slice(&response.body).map_err(|_| Error::InvalidResponse)
+                }
+                401 => {
+                    // Only an authenticated rejection retires the exact credential.
+                    let _ = bearer.reject().await;
+                    Err(Error::PermissionDenied)
+                }
+                403 => Err(Error::PermissionDenied),
+                409 => Err(Error::Conflict),
+                status => Err(Error::Http(status)),
+            }
+        };
+        if let Some(changed) = changed {
             use futures::FutureExt;
             let changed = changed.fuse();
-            let request = request.fuse();
-            futures::pin_mut!(changed, request);
+            let operation = operation.fuse();
+            futures::pin_mut!(changed, operation);
             futures::select_biased! {
-                _ = changed => return Err(Error::Credential),
-                response = request => response?,
+                _ = changed => Err(Error::Credential),
+                result = operation => result,
             }
         } else {
-            request.await?
-        };
-        match response.status {
-            200..=299 => {
-                bearer.check().await.map_err(|_| Error::Credential)?;
-                serde_json::from_slice(&response.body).map_err(|_| Error::InvalidResponse)
-            }
-            401 => {
-                // Only an authenticated rejection retires the exact credential.
-                let _ = bearer.reject().await;
-                Err(Error::PermissionDenied)
-            }
-            403 => Err(Error::PermissionDenied),
-            409 => Err(Error::Conflict),
-            status => Err(Error::Http(status)),
+            operation.await
         }
     }
 

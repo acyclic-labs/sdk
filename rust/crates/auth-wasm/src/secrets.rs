@@ -1,7 +1,6 @@
 //! Browser/Node fetch adapter. Authority, JSON and redaction live in acyclic-auth.
 use acyclic_auth::{
     contract::*,
-    credential::{CredentialError, CredentialProvider},
     secrets::{Client, Error, Response, Transport, TransportFuture},
 };
 use js_sys::{Function, Promise, Reflect, Uint8Array};
@@ -103,19 +102,7 @@ impl SecretsClient {
     pub fn new(endpoint: &str, credential: Function) -> Result<Self, JsValue> {
         let endpoint = acyclic_auth::credential::endpoint(endpoint)
             .map_err(|_| error(Error::InvalidRequest))?;
-        let credentials = CredentialProvider::new(move || {
-            let credential = credential.clone();
-            async move {
-                let result = credential
-                    .call0(&JsValue::UNDEFINED)
-                    .map_err(|_| CredentialError::Invalid)?;
-                JsFuture::from(Promise::resolve(&result))
-                    .await
-                    .map_err(|_| CredentialError::Invalid)?
-                    .as_string()
-                    .ok_or(CredentialError::Invalid)
-            }
-        });
+        let credentials = acyclic_auth::credential::javascript::provider(credential);
         Ok(Self(Client::new(FetchTransport { endpoint }, credentials)))
     }
 
