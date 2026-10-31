@@ -46,6 +46,10 @@ mod prompt_files;
 #[cfg(feature = "tui")]
 mod prompt_input;
 #[cfg(feature = "tui")]
+mod query_page;
+#[cfg(feature = "tui")]
+pub use query_page::QueryPage;
+#[cfg(feature = "tui")]
 mod screen;
 #[cfg(feature = "tui")]
 mod scrollbar;
