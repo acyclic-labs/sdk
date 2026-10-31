@@ -117,16 +117,20 @@ fn swap_precedes_wake_and_lost_follow_fences() {
     );
 
     let (other, _) = credential(&world, &trust, 1);
-    let closed = trust.changed();
-    trust.fence();
-    assert_eq!(closed.now_or_never(), Some(Err(SourceClosed)));
+    let fenced = trust.changed();
+    trust.fence(FenceCause::LostFollow);
+    // A fence wakes waiters to recheck; only a close is an error.
+    assert_eq!(fenced.now_or_never(), Some(Ok(())));
     assert_eq!(trust.check_open(), Err(SourceClosed));
-    assert_eq!(trust.changed().now_or_never(), Some(Err(SourceClosed)));
+    let mut waiting = trust.changed();
+    assert!((&mut waiting).now_or_never().is_none());
     assert_eq!(
         verify::verify(&other, &trust, NOW).err(),
         Some(VerifyError::Unavailable)
     );
     trust.resume();
+    // A waiter registered while fenced is woken by the resume.
+    assert_eq!(waiting.now_or_never(), Some(Ok(())));
     // Still fenced until the account's Stream is caught up again.
     assert_eq!(
         verify::verify(&other, &trust, NOW).err(),
@@ -560,7 +564,7 @@ fn simulate(seed: u64, eager: bool) -> Result<(), String> {
             }
             3 if connected => {
                 connected = false;
-                trust.fence();
+                trust.fence(FenceCause::LostFollow);
             }
             4 if !connected => {
                 connected = true;
@@ -600,7 +604,7 @@ fn simulate(seed: u64, eager: bool) -> Result<(), String> {
         }
     }
     // Nothing is lost: reconnect and drain; every record changed trust once.
-    trust.fence();
+    trust.fence(FenceCause::LostFollow);
     for record in &stream[next..] {
         if trust.apply(record, NOW) == Ok(Applied::Changed) {
             changed += 1;
@@ -643,5 +647,87 @@ fn simulated_lossy_follow_never_admits_stale_trust_and_loses_nothing() {
     assert!(
         (0..512).any(|seed| simulate(seed, true).is_err()),
         "the checker must catch a follower that serves before catching up"
+    );
+}
+
+#[test]
+fn a_close_resolves_every_wait_with_its_cause_and_is_final() {
+    let world = world();
+    let trust = follower(&world);
+    let mut state = trust.state();
+    assert_eq!(*state.borrow_and_update(), FollowerState::Serving);
+    trust.fence(FenceCause::LostFollow);
+    let mut fenced = trust.changed();
+    assert!((&mut fenced).now_or_never().is_none());
+    trust.close(FenceCause::Shutdown);
+    assert_eq!(fenced.now_or_never(), Some(Err(SourceClosed)));
+    assert!(state.has_changed().unwrap());
+    assert_eq!(
+        *state.borrow_and_update(),
+        FollowerState::Closed(FenceCause::Shutdown)
+    );
+    assert_eq!(trust.changed().now_or_never(), Some(Err(SourceClosed)));
+    // Closed is final: a resume neither reopens trust nor changes the state.
+    trust.resume();
+    assert_eq!(trust.check_open(), Err(SourceClosed));
+    assert_eq!(
+        *trust.state().borrow(),
+        FollowerState::Closed(FenceCause::Shutdown)
+    );
+}
+
+/// Waiters registered in any state, interleaved with every transition: each
+/// resolves on the next transition, `Ok` unless closed. `late` is the negative
+/// control: a waiter that subscribes when first polled, after the transition.
+fn interleave(seed: u64, late: bool) -> Result<(), String> {
+    let world = world();
+    let trust = Arc::new(follower(&world));
+    trust.connect();
+    let mut schedule = Schedule(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let mut waits: Vec<Changed> = Vec::new();
+    let mut closed = false;
+    for step in 0..300 {
+        match schedule.next(7) {
+            0 | 1 => waits.push(if late {
+                let trust = Arc::clone(&trust);
+                Box::pin(async move { trust.changed().await })
+            } else {
+                trust.changed()
+            }),
+            choice => {
+                match choice {
+                    2 => trust.fence(FenceCause::LostFollow),
+                    3 => trust.connect(),
+                    4 => trust.resume(),
+                    5 => trust.serve("account"),
+                    _ if schedule.next(40) == 0 => {
+                        trust.close(FenceCause::Shutdown);
+                        closed = true;
+                    }
+                    _ => continue,
+                }
+                for wait in waits.drain(..) {
+                    match (wait.now_or_never(), closed) {
+                        (Some(Ok(())), false) | (Some(Err(SourceClosed)), true) => {}
+                        (outcome, _) => {
+                            return Err(format!("step {step}: waiter resolved {outcome:?}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn simulated_waits_in_every_state_wake_on_the_next_transition() {
+    for seed in 0..256 {
+        interleave(seed, false).unwrap_or_else(|error| panic!("seed {seed}: {error}"));
+    }
+    // Negative control: subscribing after the transition loses the wake.
+    assert!(
+        (0..256).any(|seed| interleave(seed, true).is_err()),
+        "the checker must catch a waiter that registers after the transition"
     );
 }

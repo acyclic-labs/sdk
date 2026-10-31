@@ -34,12 +34,11 @@ use crate::{
     revocation::RevocationState,
     verify::{AccountState, Keys, RevocationCheck, Trust, VerifyError},
 };
-use futures::channel::oneshot;
 use prost::Message;
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        Arc, Mutex, RwLock,
+        Arc, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -252,13 +251,38 @@ pub(super) fn publication_account(signed: &SignedRevocation) -> &str {
     }
 }
 
+/// Why a follower refuses trust.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FenceCause {
+    /// A follow was lost; the driver reconnects and catches up.
+    LostFollow,
+    /// An environment record was refused; everything stays fenced.
+    Refused,
+    /// The driver stopped for good.
+    Shutdown,
+}
+
+/// A follower's serving state. Every trust publication also notifies its
+/// watch, so one channel carries both state and change events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FollowerState {
+    /// Catching up to the tails observed at (re)connect; refusing trust.
+    Connecting,
+    /// Serving the environment's trust.
+    Serving,
+    /// Refusing trust until the driver reconnects.
+    Fenced(FenceCause),
+    /// Refusing trust for good: every change wait resolves [`SourceClosed`].
+    Closed(FenceCause),
+}
+
 /// Follows signed trust records for any number of accounts of one environment.
 pub struct Follower {
     environment: RwLock<EnvironmentFrontier>,
     accounts: RwLock<HashMap<String, Account>>,
     open: AtomicBool,
     floor: AtomicU64,
-    waiters: Mutex<Vec<oneshot::Sender<Result<(), SourceClosed>>>>,
+    state: tokio::sync::watch::Sender<FollowerState>,
 }
 
 impl Follower {
@@ -272,8 +296,16 @@ impl Follower {
             accounts: RwLock::default(),
             open: AtomicBool::new(false),
             floor: AtomicU64::new(0),
-            waiters: Mutex::default(),
+            state: tokio::sync::watch::Sender::new(FollowerState::Connecting),
         }
+    }
+
+    /// The serving state, updated on every apply, fence, resume and serve.
+    /// Await it rather than probing: a receiver wakes on every transition
+    /// and every trust publication.
+    #[must_use]
+    pub fn state(&self) -> tokio::sync::watch::Receiver<FollowerState> {
+        self.state.subscribe()
     }
 
     /// The followed environment.
@@ -302,7 +334,7 @@ impl Follower {
                     .map_err(|_| VerifyError::Unavailable)
                     .and_then(|mut environment| environment.apply(signed, now));
                 if result.is_err() {
-                    self.fence();
+                    self.fence(FenceCause::Refused);
                     return result.map(|(applied, _)| applied);
                 }
                 result
@@ -320,10 +352,10 @@ impl Follower {
                 self.floor.fetch_max(issued_at, Ordering::SeqCst);
                 // Wake only after the write lock is released: woken
                 // consumers read the swapped trust.
-                self.notify(Ok(()));
+                self.notify(None);
             }
             // The account is fenced; its consumers recheck and refuse.
-            Err(_) => self.notify(Ok(())),
+            Err(_) => self.notify(None),
         }
         result.map(|(applied, _)| applied)
     }
@@ -354,25 +386,44 @@ impl Follower {
         result
     }
 
-    /// A lost follow: refuse all trust and resolve every change wait with
-    /// [`SourceClosed`], so consumers fence live authority. Every account
-    /// stays fenced until its Stream is caught up again ([`Self::serve`]).
-    pub fn fence(&self) {
+    /// Refuse all trust and wake every change wait, so consumers recheck and
+    /// fence live authority. Every account stays fenced until its Stream is
+    /// caught up again ([`Self::serve`]). Waits registered while fenced wake
+    /// on the next transition.
+    pub fn fence(&self, cause: FenceCause) {
+        self.withdraw(FollowerState::Fenced(cause));
+    }
+
+    /// The driver is (re)connecting: refuse trust until it catches up.
+    pub fn connect(&self) {
+        self.withdraw(FollowerState::Connecting);
+    }
+
+    /// Refuse trust for good; every change wait, current or later, resolves
+    /// [`SourceClosed`].
+    pub fn close(&self, cause: FenceCause) {
+        self.withdraw(FollowerState::Closed(cause));
+    }
+
+    fn withdraw(&self, state: FollowerState) {
         self.open.store(false, Ordering::SeqCst);
         if let Ok(mut accounts) = self.accounts.write() {
             for account in accounts.values_mut() {
                 account.serving = false;
             }
         }
-        self.notify(Err(SourceClosed));
+        self.notify(Some(state));
     }
 
     /// The driver applied the environment Stream through the tail it observed
     /// when it (re)connected. Redelivered records are duplicates; a gap is
-    /// refused, so nothing is skipped.
+    /// refused, so nothing is skipped. A closed follower stays closed.
     pub fn resume(&self) {
+        if self.closed() {
+            return;
+        }
         self.open.store(true, Ordering::SeqCst);
-        self.notify(Ok(()));
+        self.notify(Some(FollowerState::Serving));
     }
 
     /// The driver applied `account`'s Stream through the tail it observed
@@ -381,7 +432,7 @@ impl Follower {
         if let Ok(mut accounts) = self.accounts.write() {
             accounts.entry(account.to_owned()).or_default().serving = true;
         }
-        self.notify(Ok(()));
+        self.notify(None);
     }
 
     /// Monotone protected time: never earlier than any time this follower has
@@ -393,14 +444,20 @@ impl Follower {
             .max(observed_unix_seconds)
     }
 
-    fn notify(&self, event: Result<(), SourceClosed>) {
-        let waiters = match self.waiters.lock() {
-            Ok(mut waiters) => std::mem::take(&mut *waiters),
-            Err(_) => return,
-        };
-        for waiter in waiters {
-            let _ = waiter.send(event);
-        }
+    // One notifier: a transition or publication bumps the watch, waking
+    // every receiver whether or not the state value changed. Closed is final.
+    fn notify(&self, next: Option<FollowerState>) {
+        self.state.send_modify(|state| {
+            if let Some(next) = next
+                && !matches!(state, FollowerState::Closed(_))
+            {
+                *state = next;
+            }
+        });
+    }
+
+    fn closed(&self) -> bool {
+        matches!(*self.state.borrow(), FollowerState::Closed(_))
     }
 
     fn check(&self) -> Result<(), VerifyError> {
@@ -637,24 +694,20 @@ impl ChangeSource for Follower {
     }
 
     fn changed(&self) -> Changed {
-        let (sender, receiver) = oneshot::channel();
-        // Registered before the caller checks authority; `fence` stores the
-        // flag before draining, so a registration either sees it or is drained.
-        let registered = self.waiters.lock().is_ok_and(|mut waiters| {
-            if !self.open.load(Ordering::SeqCst) {
-                return false;
-            }
-            if waiters.len() == waiters.capacity() {
-                waiters.retain(|waiter| !waiter.is_canceled());
-            }
-            waiters.push(sender);
-            true
-        });
+        // Subscribed synchronously, before the caller checks authority: the
+        // receiver has seen the current version, so the next transition or
+        // publication wakes it, in any state, even before the first poll
+        // (`borrow` leaves the version unseen). Only a close is an error.
+        let mut state = self.state.subscribe();
         Box::pin(async move {
-            if !registered {
-                return Err(SourceClosed);
+            if !matches!(*state.borrow(), FollowerState::Closed(_))
+                && state.changed().await.is_ok()
+                && !matches!(*state.borrow(), FollowerState::Closed(_))
+            {
+                Ok(())
+            } else {
+                Err(SourceClosed)
             }
-            receiver.await.unwrap_or(Err(SourceClosed))
         })
     }
 }

@@ -3,7 +3,7 @@
 //! with no task or timer per account. Freshness is follow lag: a record is
 //! served as soon as its Stream delivers it, never on a refresh interval.
 use crate::{FollowFilter, Record, Stream, StreamError, StreamProvider, UnixMillisClock};
-use acyclic_auth::trust::{Follower, account_path, environment_path};
+use acyclic_auth::trust::{FenceCause, Follower, FollowerState, account_path, environment_path};
 use futures::{
     StreamExt as _,
     channel::mpsc,
@@ -105,10 +105,25 @@ impl<S: Source> TrustFeed<S> {
     /// The lost Stream's error, or `AccessDenied` for a refused environment
     /// record, which keeps everything fenced.
     pub async fn run(&mut self) -> Result<(), StreamError> {
-        self.follower.fence();
+        self.follower.connect();
         let result = self.follow().await;
-        self.follower.fence();
+        self.follower.fence(match result {
+            Err(StreamError::AccessDenied) => FenceCause::Refused,
+            _ => FenceCause::LostFollow,
+        });
         result
+    }
+
+    /// The follower's serving state: await it to learn when trust is served.
+    #[must_use]
+    pub fn state(&self) -> tokio::sync::watch::Receiver<FollowerState> {
+        self.follower.state()
+    }
+
+    /// Stops the feed for good: the follower refuses trust and every change
+    /// wait resolves closed.
+    pub fn close(self) {
+        self.follower.close(FenceCause::Shutdown);
     }
 
     async fn follow(&mut self) -> Result<(), StreamError> {
