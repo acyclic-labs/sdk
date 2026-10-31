@@ -429,8 +429,7 @@ impl Capabilities {
     pub fn intersect(&self, other: &Self) -> Self {
         let mut intersection = Self(
             self.0
-                .iter()
-                .chain(&other.0)
+                .union(&other.0)
                 .filter(|value| self.includes(value) && other.includes(value))
                 .cloned()
                 .collect(),
@@ -760,6 +759,18 @@ mod tests {
                 ),
                 denies: Capabilities::new(["shell"]),
             };
+            let (_, [duplicated, unique]) = acyclic_test_support::differential(
+                || Capabilities::new(policy.grants.iter().chain(policy.grants.iter())),
+                || policy.grants.intersect(&policy.grants),
+            );
+            assert!(
+                unique.count_total < duplicated.count_total
+                    && unique.bytes_total < duplicated.bytes_total,
+                "common grants were copied twice at {count} grants"
+            );
+            eprintln!(
+                "intersection allocation counts grants={count}: duplicated={duplicated:?}, unique={unique:?}"
+            );
             let layers = [
                 PolicyLayer {
                     level: AuthorityLevel::Runtime,
