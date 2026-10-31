@@ -400,6 +400,70 @@ async fn admitted_mcp_tools_preserve_context_and_reject_identity_or_scope_change
 }
 #[tokio::test]
 async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Result<()> {
+    let mut page_bytes = None;
+    for count in [64, 256] {
+        let names: Vec<_> = (0..count)
+            .rev()
+            .map(|index| format!("tool{index:06}"))
+            .collect();
+        let names: Vec<_> = names.iter().map(String::as_str).collect();
+        let catalog = catalog("1", &names);
+        catalog.validate(None, None)?;
+        let mut matched = None;
+        let matching = acyclic_test_support::measure(|| {
+            matched = Some(catalog.search("find", None, 3, None, None));
+        });
+        let matched = matched.expect("search completed")?;
+        assert_eq!(
+            matched
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "mcp.fixture.tool000000",
+                "mcp.fixture.tool000001",
+                "mcp.fixture.tool000002"
+            ]
+        );
+        let mut missed = None;
+        let missing = acyclic_test_support::measure(|| {
+            missed = Some(catalog.search("miss", None, 3, None, None));
+        });
+        assert!(missed.expect("search completed")?.is_empty());
+        // Both queries validate and inspect the same catalog, with equal-length
+        // query strings. Only the retained matches and returned page differ.
+        let bytes = matching
+            .bytes_total
+            .checked_sub(missing.bytes_total)
+            .expect("returning a page requires allocation");
+        if let Some(previous) = page_bytes {
+            assert_eq!(
+                bytes, previous,
+                "search retained matches beyond page credit"
+            );
+        }
+        page_bytes = Some(bytes);
+
+        let mut after = None;
+        let mut delivered = 0;
+        loop {
+            let page = catalog.search("find", after.as_deref(), 7, None, None)?;
+            if page.is_empty() {
+                break;
+            }
+            for tool in page {
+                assert_eq!(tool.name, format!("mcp.fixture.tool{delivered:06}"));
+                after = Some(
+                    tool.name
+                        .strip_prefix("mcp.fixture.")
+                        .expect("catalog namespace")
+                        .to_owned(),
+                );
+                delivered += 1;
+            }
+        }
+        assert_eq!(delivered, count);
+    }
     let catalog = catalog("1", &["c", "a", "b"]);
     assert_eq!(
         catalog.search("find", None, 1, Some(8), Some(8192))?[0].name,
