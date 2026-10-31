@@ -233,7 +233,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             operation,
             (WORKSPACE.into(), Tracked::Running { withdrawn: false }),
         );
-        served.answer(&directory, operation, Ok(serde_json::json!({"ok": null})))?;
+        let held = acyclic_fs::hold_root(&directory).map_err(native_file_error)?;
+        served.answer(&held, operation, Ok(serde_json::json!({"ok": null})))?;
         assert_eq!(std::fs::read(&path).map_err(storage)?, b"{conflicting reply");
         assert!(matches!(
             request_operation(
