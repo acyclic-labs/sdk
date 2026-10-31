@@ -8,7 +8,32 @@
 use crate::conformance::Result;
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_harness_core::agent::*;
-use std::sync::Arc;
+use acyclic_stream::UnixMillisClock as _;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+/// The original issuance and verification clock, advanced at an exact cut.
+pub(super) struct AuthorityClock(AtomicU64);
+
+impl AuthorityClock {
+    pub(super) fn new() -> Self {
+        Self(AtomicU64::new(
+            acyclic_stream::SystemUnixMillisClock.now_unix_millis(),
+        ))
+    }
+
+    pub(super) fn advance_to(&self, millis: u64) {
+        self.0.store(millis, Ordering::SeqCst);
+    }
+}
+
+impl acyclic_stream::UnixMillisClock for AuthorityClock {
+    fn now_unix_millis(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 
 /// Save a real spawn without activating its child. Endpoint hosts can then
 /// adopt that child through their public placement API, including after reopen.
