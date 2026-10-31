@@ -35,23 +35,16 @@ fn read_link_buffer<W: NativeHostWork>(
         let result = (|| -> Result<Option<std::ops::Range<usize>>, W::Error> {
             work.started_io(copy_work(bytes.capacity() as u64))?;
             bytes.resize(bytes.capacity(), 0);
-            let count = loop {
-                work.admit(reading)?;
-                work.started_io(READ)?;
-                #[cfg(unix)]
-                let read = read_unix_link(
-                    parent,
-                    name,
-                    bytes.get_mut(..size).ok_or_else(W::invalid_request)?,
-                )
-                .map_err(W::Error::from);
-                #[cfg(windows)]
-                let read = read_windows_link(&file, &mut bytes, size, work);
-                match read {
-                    Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {}
-                    result => break result?,
-                }
-            };
+            work.admit(reading)?;
+            work.started_io(READ)?;
+            #[cfg(unix)]
+            let count = read_unix_link(
+                parent,
+                name,
+                bytes.get_mut(..size).ok_or_else(W::invalid_request)?,
+            )?;
+            #[cfg(windows)]
+            let count = read_windows_link(&file, &mut bytes, size, work)?;
             #[cfg(unix)]
             {
                 work.record(WorkCounters {

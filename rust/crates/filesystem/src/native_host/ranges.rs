@@ -91,17 +91,13 @@ fn fill_unix_ranges<W: SourceDemandReadWork>(
 ) -> Result<(), DemandError> {
     let seek = |offset: u64, kind: i32, work: &mut W| {
         let offset = libc::off_t::try_from(offset).map_err(|_| DemandError::InvalidRequest)?;
-        loop {
-            work.started_io(READ)?;
-            // SAFETY: the held descriptor is live; lseek changes only its cursor.
-            let position = unsafe { libc::lseek(file.as_raw_fd(), offset, kind) };
-            if position >= 0 {
-                return Ok(position.cast_unsigned());
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(DemandError::Io(error));
-            }
+        work.started_io(READ)?;
+        // SAFETY: the held descriptor is live; lseek changes only its cursor.
+        let position = unsafe { libc::lseek(file.as_raw_fd(), offset, kind) };
+        if position >= 0 {
+            Ok(position.cast_unsigned())
+        } else {
+            Err(DemandError::Io(io::Error::last_os_error()))
         }
     };
     fill_unix_ranges_with(
