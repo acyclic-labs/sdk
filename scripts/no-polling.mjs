@@ -16,7 +16,7 @@ const bindingEnds = new Set([';', ',', ')', ']', '}']);
 const statementStarts = new Set(['let', 'const', 'fn', 'return']);
 const classes = new Set([
  'caller-deadline', 'transient-transport-backoff', 'retryable-tool', 'retryable-model',
- 'idempotent-identity', 'event-wait', 'finite-work', 'injected-child-stall',
+ 'idempotent-identity', 'event-wait', 'finite-work', 'negative-control',
 ]);
 
 export const temporalModule = name => /^(?:node:)?timers(?:\/promises)?$/.test(name);

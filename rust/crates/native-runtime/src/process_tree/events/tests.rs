@@ -2,34 +2,84 @@ use super::*;
 use std::time::Duration;
 
 #[test]
-fn a_wake_time_alone_fires_once_it_passes() -> io::Result<()> {
-    let started = Instant::now();
-    let wait = arm(&[], Some(started + Duration::from_millis(20)))?;
-    assert!(!wait.fired());
-    wait.block().into_result()?;
-    assert!(started.elapsed() >= Duration::from_millis(20));
-    Ok(())
-}
+fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Result<()> {
+    // Dispatch owns deadline admission. Advance that same production cut
+    // explicitly, while the actual native queue retains registration wakes.
+    let hub = Hub {
+        poller: platform::Poller::new()?,
+        registry: Mutex::new(Registry::default()),
+    };
+    let now = Instant::now();
+    let earlier = now + Duration::from_secs(1);
+    let distant = now + Duration::from_secs(2);
+    let mut later = arm_on(&hub, &[], Some(distant))?;
+    let mut ready = Vec::new();
+    hub.poller.wait(None, &mut ready)?;
+    assert!(
+        ready.is_empty(),
+        "the original registration wake carries no source token"
+    );
 
-#[test]
-fn a_dropped_wait_leaves_nothing_armed() -> io::Result<()> {
-    let wait = arm(&[], Some(Instant::now() + Duration::from_secs(3600)))?;
-    let token = wait.token;
-    drop(wait);
-    let registry = hub()?.registry();
-    assert!(!registry.positions.contains_key(&token));
-    assert!(registry.timers.iter().all(|(_, armed)| *armed != token));
-    Ok(())
-}
+    // The earlier deadline must notify even when the queue was previously
+    // waiting for a later one. Its wake remains observable before wait entry.
+    let mut first = arm_on(&hub, &[], Some(earlier))?;
+    hub.poller.wait(None, &mut ready)?;
+    assert!(ready.is_empty());
+    struct Notified(AtomicBool);
+    impl Wake for Notified {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let notified = Arc::new(Notified(AtomicBool::new(false)));
+    let waker = Waker::from(Arc::clone(&notified));
+    let mut context = Context::from_waker(&waker);
+    hub.dispatch(&mut ready, earlier - Duration::from_nanos(1));
+    assert!(!notified.0.load(Ordering::Acquire));
+    assert!(Pin::new(&mut first).poll(&mut context).is_pending());
+    assert!(Pin::new(&mut later).poll(&mut context).is_pending());
 
-#[test]
-fn a_later_earlier_wake_time_is_not_delayed_by_a_distant_one() -> io::Result<()> {
-    let _distant = arm(&[], Some(Instant::now() + Duration::from_secs(3600)))?;
-    let started = Instant::now();
-    arm(&[], Some(started + Duration::from_millis(10)))?
-        .block()
-        .into_result()?;
-    assert!(started.elapsed() < Duration::from_secs(60));
+    hub.dispatch(&mut ready, earlier);
+    assert!(notified.0.load(Ordering::Acquire));
+    assert!(matches!(
+        Pin::new(&mut first).poll(&mut context),
+        Poll::Ready(ProcessWaitOutcome::Deadline)
+    ));
+    assert!(Pin::new(&mut later).poll(&mut context).is_pending());
+    {
+        let registry = hub.registry();
+        assert!(!registry.positions.contains_key(&first.token));
+        assert!(!registry.timers.contains(&(earlier, first.token)));
+        assert!(registry.positions.contains_key(&later.token));
+    }
+    // A duplicated source packet cannot replace the retained deadline result.
+    notified.0.store(false, Ordering::Release);
+    ready.push(first.token);
+    hub.dispatch(&mut ready, earlier);
+    assert!(!notified.0.load(Ordering::Acquire));
+    assert!(matches!(
+        Pin::new(&mut first).poll(&mut context),
+        Poll::Ready(ProcessWaitOutcome::Deadline)
+    ));
+
+    let cancelled = arm_on(&hub, &[], Some(distant))?;
+    let cancelled_token = cancelled.token;
+    drop(cancelled);
+    {
+        let registry = hub.registry();
+        assert!(!registry.positions.contains_key(&cancelled_token));
+        assert!(!registry.timers.contains(&(distant, cancelled_token)));
+    }
+    hub.dispatch(&mut ready, distant);
+    assert!(notified.0.load(Ordering::Acquire));
+    assert!(matches!(
+        Pin::new(&mut later).poll(&mut context),
+        Poll::Ready(ProcessWaitOutcome::Deadline)
+    ));
+    let registry = hub.registry();
+    assert!(registry.armed.is_empty());
+    assert!(registry.positions.is_empty());
+    assert!(registry.timers.is_empty());
     Ok(())
 }
 

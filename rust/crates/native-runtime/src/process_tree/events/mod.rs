@@ -191,28 +191,31 @@ impl Hub {
                 self.fail(error);
                 return;
             }
-            let now = Instant::now();
-            let mut fired = Vec::new();
-            {
-                let mut registry = self.registry();
-                for token in ready.drain(..) {
-                    if let Some(armed) = registry.remove(token) {
-                        fired.push((armed.signal, ProcessWaitOutcome::Ready));
-                    }
-                }
-                while let Some(&(at, token)) = registry.timers.first() {
-                    if at > now {
-                        break;
-                    }
-                    if let Some(armed) = registry.remove(token) {
-                        fired.push((armed.signal, ProcessWaitOutcome::Deadline));
-                    } else {
-                        registry.timers.remove(&(at, token));
-                    }
+            self.dispatch(&mut ready, Instant::now());
+        }
+    }
+
+    fn dispatch(&self, ready: &mut Vec<u64>, now: Instant) {
+        let mut fired = Vec::new();
+        {
+            let mut registry = self.registry();
+            for token in ready.drain(..) {
+                if let Some(armed) = registry.remove(token) {
+                    fired.push((armed.signal, ProcessWaitOutcome::Ready));
                 }
             }
-            deliver(fired.into_iter());
+            while let Some(&(at, token)) = registry.timers.first() {
+                if at > now {
+                    break;
+                }
+                if let Some(armed) = registry.remove(token) {
+                    fired.push((armed.signal, ProcessWaitOutcome::Deadline));
+                } else {
+                    registry.timers.remove(&(at, token));
+                }
+            }
         }
+        deliver(fired.into_iter());
     }
 }
 

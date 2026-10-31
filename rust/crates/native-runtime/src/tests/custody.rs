@@ -223,7 +223,7 @@ fn ownership_release_waits_for_physical_cleanup_and_retained_fences()
         let observer = anchor.release_barrier();
         let deadline_observer = anchor.release_barrier();
         let dropped = std::thread::spawn(move || drop(anchor));
-        cleanup_entered.recv_timeout(std::time::Duration::from_secs(10))?;
+        cleanup_entered.recv()?;
         // The actual final destructor is blocked; zero strong references
         // alone cannot authorize reopening or completion of a release wait.
         let released_before_cleanup = observer.is_released();

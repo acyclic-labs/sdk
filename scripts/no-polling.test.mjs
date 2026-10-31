@@ -344,3 +344,23 @@ test('the entry point compares real Git objects and rejects modified and untrack
   rmSync(root, {recursive: true, force: true});
  }
 });
+
+test('defective fixture controls require an exact negative-control disposition', () => {
+ // These are deliberate source mutations, not captured child output.
+ for (const [file, source] of [
+  [rust, 'fn fixture() { command.arg(r#"sleep 30"#); }'],
+  [script, 'await Bun.sleep(30);'],
+ ]) {
+  const sites = pollingSites(file, source);
+  assert.ok(sites.length);
+  const rejected = sites.map(site => disposition(site, 'injected-child-stall',
+   'the fixture child', 'the fixture child exits', 'the child remains alive'));
+  assert.throws(() => newPollingSites(file, '', source, rejected), /invalid exact/);
+  const controls = sites.map(site => disposition(site, 'negative-control',
+   'deliberately restored readiness timer in the original fixture',
+   'original fixture exit or parent cancellation',
+   'the restored timer must fail the independent producer-event oracle'));
+  assert.deepEqual(newPollingSites(file, '', source, controls), []);
+  assert.ok(newPollingSites(file, '', source.replace('30', '31'), controls).length);
+ }
+});
