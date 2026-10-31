@@ -92,6 +92,35 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
         drop(receipts);
         drop(allocation);
 
+        // A compact receipt must certify EVERY original caller, authority,
+        // locator and policy member before any holds or projections settle.
+        for index in 0..envelope.appends.len() {
+            let mut missing = envelope.clone();
+            missing.appends.remove(index);
+            let FilesystemCommitOutcome::Unknown {
+                commit: retained, ..
+            } = store
+                .settle(publication, CommitOutcome::Committed(missing), &mut work)
+                .await?
+            else {
+                return Err("incomplete receipt settled original publication custody".into());
+            };
+            assert_eq!(retained.request(), &exact_request);
+            publication = retained;
+        }
+        let mut reordered = envelope.clone();
+        reordered.appends.swap(0, 1);
+        let FilesystemCommitOutcome::Unknown {
+            commit: retained, ..
+        } = store
+            .settle(publication, CommitOutcome::Committed(reordered), &mut work)
+            .await?
+        else {
+            return Err("reordered receipt settled original publication custody".into());
+        };
+        assert_eq!(retained.request(), &exact_request);
+        publication = retained;
+
         // A refused continuation keeps the original possibly applied owner.
         let other = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
         let FilesystemCommitOutcome::Unknown {

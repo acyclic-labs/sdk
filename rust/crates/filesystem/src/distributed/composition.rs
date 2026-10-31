@@ -512,6 +512,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         Ok(match outcome {
             CommitOutcome::Committed(envelope) => {
+                if let Err(error) = envelope.validate_request(commit.request()) {
+                    return Ok(FilesystemCommitOutcome::Unknown {
+                        commit,
+                        error: map_stream_error(error),
+                    });
+                }
                 refresh(commit.recorded(), envelope.commit_id).await;
                 FilesystemCommitOutcome::Committed(envelope)
             }
