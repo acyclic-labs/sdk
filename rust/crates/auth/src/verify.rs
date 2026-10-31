@@ -265,23 +265,35 @@ fn allowances(
             Some(keys) => keys,
             None => keys.insert(trust.environment_keys(&birth.environment)?),
         };
-        message.clear();
-        message.extend_from_slice(crate::ALLOWANCE_DOMAIN);
-        AllowanceProto::from(signed.allowance.clone())
-            .encode(&mut message)
-            .map_err(|_| VerifyError::Malformed)?;
-        let signer = keys
-            .iter()
-            .find(|key| {
-                public_key(key.as_slice())
-                    .is_ok_and(|key| verify_signature(&key, &message, &signed.signature).is_ok())
-            })
-            .ok_or(VerifyError::Signature)?;
-        if !signers.contains(signer) {
-            signers.push(*signer);
+        let signer = allowance_signer(signed, birth.account_id.as_str(), keys, &mut message)?;
+        if !signers.contains(&signer) {
+            signers.push(signer);
         }
     }
     Ok(())
+}
+
+fn allowance_signer(
+    signed: &SignedAllowance,
+    account: &str,
+    keys: &[BlockId],
+    message: &mut Vec<u8>,
+) -> Result<BlockId, VerifyError> {
+    if signed.allowance.account_id != account {
+        return Err(VerifyError::Trust);
+    }
+    message.clear();
+    message.extend_from_slice(crate::ALLOWANCE_DOMAIN);
+    AllowanceProto::from(signed.allowance.clone())
+        .encode(&mut *message)
+        .map_err(|_| VerifyError::Malformed)?;
+    keys.iter()
+        .find(|key| {
+            public_key(key.as_slice())
+                .is_ok_and(|key| verify_signature(&key, message, &signed.signature).is_ok())
+        })
+        .copied()
+        .ok_or(VerifyError::Signature)
 }
 
 /// Verify signatures before semantic certificate subset admission. The returned
@@ -445,6 +457,9 @@ impl VerifiedCapability {
 
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;
     /// reusing any ancestor key is rejected, including the account's online leaf.
+    /// An allowance must authenticate under an environment signer already
+    /// retained by this admission. Introducing another signer requires fresh
+    /// verification of the resulting wire capability against its trust owner.
     pub fn attenuate(
         &self,
         caveats: Vec<Caveat>,
@@ -458,6 +473,17 @@ impl VerifiedCapability {
             let public = next.verifying_key().to_bytes();
             if self.signing_keys.contains(&public) {
                 return Err(VerifyError::RepeatedKey);
+            }
+            let mut message = Vec::new();
+            for caveat in &caveats {
+                if let CaveatKind::Allowance(signed) = &caveat.kind {
+                    allowance_signer(
+                        signed,
+                        self.account_id()?,
+                        &self.environment_issuers,
+                        &mut message,
+                    )?;
+                }
             }
             let blocks = authority::attenuate(&self.blocks, caveats, public.to_vec())?;
             let block = blocks.last().ok_or(VerifyError::Malformed)?;

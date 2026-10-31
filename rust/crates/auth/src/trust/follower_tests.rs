@@ -195,10 +195,14 @@ fn rollback_and_gaps_are_refused_and_fence_the_account() {
             Revocation {
                 id: id.to_vec(),
                 expires_at_unix_seconds: NOW + 500,
+                reason: String::new(),
+                label: None,
             },
             Revocation {
                 id: id.to_vec(),
                 expires_at_unix_seconds: NOW + 1,
+                reason: String::new(),
+                label: None,
             },
         ];
     });
@@ -804,6 +808,34 @@ fn a_removed_allowance_signer_refuses_cached_admission() {
     };
     // Born under the first key; its allowance is signed by the second.
     let dependent = mint(&second, 100);
+    let appended = dependent
+        .attenuate(
+            vec![Caveat {
+                kind: CaveatKind::Allowance(
+                    second.allowance("account", 250, NOW + 50, vec![]).unwrap(),
+                ),
+            }],
+            &[102; 32],
+        )
+        .unwrap();
+    assert!(appended.check(&trust, NOW).is_ok());
+    let mut forged = second.allowance("account", 250, NOW + 50, vec![]).unwrap();
+    forged.signature[0] ^= 1;
+    for allowance in [
+        forged,
+        second.allowance("foreign", 250, NOW + 50, vec![]).unwrap(),
+    ] {
+        assert!(
+            dependent
+                .attenuate(
+                    vec![Caveat {
+                        kind: CaveatKind::Allowance(allowance),
+                    }],
+                    &[103; 32],
+                )
+                .is_err()
+        );
+    }
     // Control: the same chain with an allowance by the surviving key.
     let control = mint(&world.issuer, 101);
     assert!(dependent.check(&trust, NOW).is_ok());
@@ -813,6 +845,7 @@ fn a_removed_allowance_signer_refuses_cached_admission() {
         .unwrap();
     assert_eq!(trust.apply(&record, NOW), Ok(Applied::Changed));
     assert_eq!(dependent.check(&trust, NOW).err(), Some(VerifyError::Trust));
+    assert_eq!(appended.check(&trust, NOW).err(), Some(VerifyError::Trust));
     assert_eq!(
         verify::verify(&dependent.encode(), &trust, NOW).err(),
         Some(VerifyError::Signature)
