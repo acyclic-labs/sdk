@@ -8,6 +8,7 @@ pub mod auth_socket;
 pub mod filesystem_pages;
 mod harness_manifest;
 pub mod inference_http;
+pub mod log_frame;
 mod mcp;
 mod objects_json;
 mod semantic;
@@ -87,7 +88,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "protobuf_json" => protobuf_json(bytes),
         "session_frames" => session_frames(bytes),
         "session_protocol" => assert!(acyclic_stream::codec_fuzz::session(bytes)),
-        "stream_persistence" => assert!(acyclic_stream::codec_fuzz::check(bytes)),
+        "stream_persistence" => stream_persistence(bytes),
         "object_persistence" => assert!(acyclic_objects::codec_fuzz::check(bytes)),
         "ids" => ids(bytes),
         "auth" => auth(bytes),
@@ -251,6 +252,11 @@ pub fn session_frames(bytes: &[u8]) {
             assert_eq!(framed(bytes, grpc, chunk), whole);
         }
     }
+}
+
+pub fn stream_persistence(bytes: &[u8]) {
+    log_frame::check(bytes);
+    assert!(acyclic_stream::codec_fuzz::check(bytes));
 }
 
 pub fn ids(bytes: &[u8]) {

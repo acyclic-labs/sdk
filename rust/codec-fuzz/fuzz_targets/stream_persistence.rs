@@ -1,2 +1,2 @@
 #![no_main]
-libfuzzer_sys::fuzz_target!(|bytes: &[u8]| assert!(acyclic_stream::codec_fuzz::check(bytes)));
+libfuzzer_sys::fuzz_target!(|bytes: &[u8]| acyclic_codec_fuzz::stream_persistence(bytes));

@@ -91,6 +91,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-inference",
  "acyclic-machines",
+ "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-proto-build",
  "acyclic-protobuf-json",
