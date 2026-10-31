@@ -53,3 +53,9 @@ mod credential_custodian;
 
 #[cfg(not(loom))]
 mod revocation;
+
+#[path = "secrets.rs"]
+mod secrets;
+
+#[path = "secrets_custody.rs"]
+mod secrets_custody;
