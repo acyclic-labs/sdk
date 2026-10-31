@@ -22,7 +22,9 @@ impl StockExecution<'_> {
         ))
         .await?;
         #[cfg(feature = "filesystem")]
-        let profile = self.profile_dispatch(journal, invocation, tool).await;
+        let profile = self
+            .profile_dispatch(journal, invocation, tool, context.as_ref())
+            .await;
         #[cfg(feature = "filesystem")]
         let handled = match profile {
             Ok(Some(crate::executor::code_mode::ProfileDispatch::Progress(progress))) => {

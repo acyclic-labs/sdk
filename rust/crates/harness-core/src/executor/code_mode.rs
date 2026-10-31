@@ -147,6 +147,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         invocation: &ToolInvocation,
         tool: &Tool,
+        context: Option<&crate::runtime::ToolContext>,
     ) -> Result<Option<ProfileDispatch>> {
         if invocation.name == "call" && tool.definition.revision == "skill-call-1" {
             let target = crate::tools::variants::CallInput::target(&invocation.arguments)?;
@@ -193,7 +194,7 @@ impl StockExecution<'_> {
         }
         if let Some(source) = &tool.skill_source {
             return self
-                .dispatch_skill(journal, invocation, tool, source)
+                .dispatch_skill(journal, invocation, tool, source, context)
                 .await
                 .map(Some);
         }
@@ -270,27 +271,30 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         tool: &Tool,
         source: &SkillSource,
+        context: Option<&crate::runtime::ToolContext>,
     ) -> Result<ProfileDispatch> {
         source.verify(&tool.definition, self.io)?;
-        if matches!(source.runtime(), SkillRuntime::Shell { .. }) {
-            return Err(Error::ToolRejected {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "skill shell requires the target's pinned-script and JSON-input framing port",
-            });
-        }
-        #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             // Refuse before loading a script if its original execution producer
             // is unavailable. No discovery path materializes a body to admit it.
-            if self.stock.code_runtime.is_none() {
+            if matches!(source.runtime(), SkillRuntime::Code { .. }) {
+                self.native_work().ok_or_else(|| {
+                    Error::tool_rejected("skill code requires original accounted execution custody")
+                })?;
+                #[cfg(feature = "code-mode")]
+                if self.stock.code_runtime.is_none() {
+                    return Err(Error::ToolRejected {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "skill code has no admitted shared memory reservation",
+                    });
+                }
+                #[cfg(not(feature = "code-mode"))]
                 return Err(Error::ToolRejected {
                     code: crate::wire::ErrorCode::Unsupported,
-                    reason: "skill code has no admitted shared memory reservation",
+                    reason: "skill code is not enabled in this host",
                 });
             }
-            self.native_work().ok_or_else(|| {
-                Error::tool_rejected("skill code requires original accounted execution custody")
-            })?;
             let pinned = source.source();
             let readable = with_history_io(self.io, |work| {
                 crate::core::directory_read_granted_with_work(
@@ -340,26 +344,54 @@ impl StockExecution<'_> {
                 }
                 file.descriptor().verify(&bytes, work)
             })?;
-            let code = std::str::from_utf8(&bytes)
-                .map_err(|_| Error::tool_rejected("skill script is not UTF-8 TypeScript"))?;
+            let script = std::str::from_utf8(&bytes)
+                .map_err(|_| Error::tool_rejected("skill script is not UTF-8"))?;
             #[derive(serde::Serialize)]
             struct Input<'a> {
                 code: &'a str,
                 input: &'a Value,
             }
-            let (arguments, _input_credit) = crate::tool::value(
-                &Input {
-                    code,
-                    input: &invocation.arguments,
-                },
-                self.stock.limits.file_bytes,
-                self.native_work(),
-            )?;
+            let (name, arguments, _input_credit) = match source.runtime() {
+                SkillRuntime::Shell { .. } => {
+                    let shell = self
+                        .stock
+                        .tools
+                        .get("shell", None, self.io)?
+                        .ok_or_else(|| {
+                            Error::tool_rejected("skill shell target is not admitted")
+                        })?;
+                    // Pure target-specific framing; no executor effect occurs
+                    // until the complete command enters original settlement.
+                    let input = shell.executor.prepare_shell_script(
+                        script,
+                        &invocation.arguments,
+                        context,
+                        self.native_work(),
+                    )?;
+                    let (arguments, credit) = crate::tool::value(
+                        &input,
+                        self.stock.limits.file_bytes,
+                        self.native_work(),
+                    )?;
+                    ("shell", arguments, credit)
+                }
+                SkillRuntime::Code { .. } => {
+                    let (arguments, credit) = crate::tool::value(
+                        &Input {
+                            code: script,
+                            input: &invocation.arguments,
+                        },
+                        self.stock.limits.file_bytes,
+                        self.native_work(),
+                    )?;
+                    ("code", arguments, credit)
+                }
+            };
             let nested = ToolInvocation::for_model_call(
                 invocation.operation_id,
                 0,
-                stock_string_copy("skill-code", self.io)?,
-                stock_string_copy("code", self.io)?,
+                stock_string_copy("skill-runtime", self.io)?,
+                stock_string_copy(name, self.io)?,
                 arguments,
                 self.native_work(),
             )?;
@@ -374,12 +406,12 @@ impl StockExecution<'_> {
             )?;
             self.nested_dispatch(journal, nested, &metadata).await
         }
-        #[cfg(not(all(feature = "code-mode", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         {
-            let _ = (journal, invocation);
+            let _ = (journal, invocation, context);
             Err(Error::ToolRejected {
                 code: crate::wire::ErrorCode::Unsupported,
-                reason: "skill code is not enabled in this host",
+                reason: "skill runtime has no admitted target execution port",
             })
         }
     }
