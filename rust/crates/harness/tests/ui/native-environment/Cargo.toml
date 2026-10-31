@@ -4,6 +4,13 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+# Compile the real seam for the positive/negative compiler checks. Its unit
+# tests belong to harness-core, whose dev-dependencies and crate context they use.
+[lib]
+test = false
+bench = false
+doctest = false
+
 [features]
 negative = []
 filesystem-local = []
