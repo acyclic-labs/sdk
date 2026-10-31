@@ -707,12 +707,12 @@ fn retained_records_do_not_release_an_account_before_its_revocations() {
     let revoked = world.root.revoke(&[(id, NOW + 10_000)], NOW).unwrap();
     assert!(verify::verify(&bytes, &trust, NOW).is_ok());
     trust.refuse("account");
-    trust.apply_queued(&keyring, NOW).unwrap();
+    trust.apply_queued("account", &keyring, NOW).unwrap();
     assert_eq!(
         verify::verify(&bytes, &trust, NOW).err(),
         Some(VerifyError::Trust)
     );
-    trust.apply_queued(&revoked, NOW).unwrap();
+    trust.apply_queued("account", &revoked, NOW).unwrap();
     assert_eq!(
         verify::verify(&bytes, &trust, NOW).err(),
         Some(VerifyError::Trust)

@@ -156,6 +156,74 @@ fn served(follower: &Follower, account: &str) -> bool {
     follower.account(account).is_ok()
 }
 
+/// Fail the original rewind after its revocation checkpoint, before the
+/// duplicate current keyring. Later follows retain the same source history.
+struct InterruptedReplay {
+    source: Src,
+    follows: AtomicUsize,
+}
+
+impl Source for InterruptedReplay {
+    fn tail<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, StreamError>> {
+        self.source.tail(path)
+    }
+
+    fn follow<'a>(
+        &'a self,
+        path: &'a str,
+        from: u64,
+    ) -> BoxFuture<'a, Result<Records, StreamError>> {
+        async move {
+            let records = self.source.follow(path, from).await?;
+            if path == account_path("test", "account")
+                && self.follows.fetch_add(1, Ordering::SeqCst) == 1
+            {
+                Ok(records
+                    .take(2)
+                    .chain(stream::once(future::ready(Err(StreamError::Unavailable))))
+                    .boxed())
+            } else {
+                Ok(records)
+            }
+        }
+        .boxed()
+    }
+}
+
+#[test]
+fn reconnect_completes_an_interrupted_authenticated_replay() {
+    let anchor = Issuer::new("test", key(1));
+    let current = Issuer::new("test", key(9));
+    let mut frontier = EnvironmentFrontier::genesis("test", anchor.anchor());
+    let environment = anchor
+        .environment_keyring(&mut frontier, &current.anchor(), NOW)
+        .unwrap();
+    let (mut root, mut history) = anchor.genesis("account", key(2), NOW).unwrap();
+    history.push(current.keyring(&mut root, NOW).unwrap());
+    let world = world(&anchor, history);
+    world.fake.push(&environment_path("test"), environment);
+    let follower = world.follower;
+    let (mut feed, accounts) = TrustFeed::new(
+        InterruptedReplay {
+            source: Src(world.fake),
+            follows: AtomicUsize::new(0),
+        },
+        Arc::clone(&follower),
+        Arc::new(Clock),
+    );
+    let mut run = Box::pin(feed.run());
+    assert!(step(&mut run).is_none());
+    accounts.follow("account");
+    assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+    drop(run);
+    assert!(follower.initialized("account").unwrap());
+    assert!(!served(&follower, "account"));
+    assert_eq!(feed.next[&Some("account".into())], 0);
+    let mut run = Box::pin(feed.run());
+    assert!(step(&mut run).is_none());
+    assert!(served(&follower, "account"));
+}
+
 #[test]
 fn a_cancelled_run_fences_the_trust_it_served() {
     let issuer = Issuer::new("test", key(1));

@@ -365,15 +365,15 @@ fn open<'a, S: Source>(
         if let Some(account) = account.as_deref()
             && from == 0
             && tail != 0
-            && !follower
-                .initialized(account)
-                .map_err(|_| StreamError::Unavailable)?
         {
             // Cold history may predate the current environment key. A complete
             // keyring signed by a current key authenticates the root; that
             // root's complete revocation checkpoint authenticates its state.
             // Until both exist the account remains fenced. Replay once from
             // zero after finding them, preserving every later delta and gap.
+            // The saved offset, not retained authentication metadata, marks
+            // completion: reconnect must finish and release an interrupted
+            // replay even if both frontiers authenticated before it stopped.
             let mut refused = false;
             let mut replayed = false;
             while position < tail {
