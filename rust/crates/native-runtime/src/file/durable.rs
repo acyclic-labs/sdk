@@ -19,22 +19,15 @@ pub fn write_file_with(
 }
 
 /// Writes all bytes through the same per-call durable boundary.
-pub fn write_file_all(writer: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
-    #[cfg(not(feature = "test-support"))]
-    return writer.write_all(bytes);
-    #[cfg(feature = "test-support")]
-    {
-        let mut bytes = bytes;
-        while !bytes.is_empty() {
-            match write_file(writer, bytes) {
-                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                Ok(count) => bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
-            }
+pub fn write_file_all(writer: &mut impl Write, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let count = write_file(writer, bytes)?;
+        if count == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
         }
-        Ok(())
+        bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
     }
+    Ok(())
 }
 
 /// Retains the caller's original data-only flush policy.
@@ -103,3 +96,7 @@ pub fn truncate_file(file: &File, length: u64) -> io::Result<()> {
     #[cfg(not(feature = "test-support"))]
     super::operations::resize_file(file, length, None)
 }
+
+#[cfg(test)]
+#[path = "durable_tests.rs"]
+mod tests;
