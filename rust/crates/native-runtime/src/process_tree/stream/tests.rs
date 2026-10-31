@@ -149,10 +149,10 @@ async fn capture_progress_preserves_native_exit_and_refuses_admission_as_deliver
                 CaptureSchedule::new(Duration::from_secs(5)),
                 usize::MAX,
                 Some(OwnedCaptureInput::Literal(input.to_vec())),
-                handler,
+                ProcessControl::unbounded()?.bind(handler),
             )
             .await?;
-        let counts = outcome.handler.counts;
+        let counts = outcome.handler.into_inner().counts;
         assert_eq!(counts.accepted, input.len());
         assert!(counts.retired);
         if stop_at_admission {
