@@ -501,6 +501,35 @@ impl<'a> RecordCursor<'a> {
     }
 }
 
+#[cfg(kani)]
+mod multipart_proofs {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn multipart_header_refuses_versions_before_record_fields() {
+        let input: [u8; 2] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= input.len());
+        let mut cursor = RecordCursor::new(&input[..length]);
+        let result = cursor.any_header();
+        if length == 0 || input[0] != MULTIPART_RECORD_VERSION {
+            assert!(matches!(
+                result,
+                Err(MultipartDecodeError::UnsupportedVersion(found))
+                    if found == if length == 0 { 0 } else { input[0] }
+            ));
+            assert_eq!(cursor.offset, 0);
+        } else if length == 1 {
+            assert!(matches!(result, Err(MultipartDecodeError::Malformed)));
+            assert_eq!(cursor.offset, 1);
+        } else {
+            assert_eq!(result.unwrap(), input[1]);
+            assert_eq!(cursor.offset, 2);
+        }
+    }
+}
+
 fn completed_parts(
     upload: Option<&s3s::dto::CompletedMultipartUpload>,
 ) -> S3Result<Vec<(u32, String)>> {
