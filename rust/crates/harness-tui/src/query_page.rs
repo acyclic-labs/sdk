@@ -113,7 +113,7 @@ mod tests {
             .map(ToString::to_string)
             .collect::<String>()
             .replace([' ', '\t'], "");
-        let mut panel = QueryPage {
+        let mut panel = QueryPage::<String> {
             source,
             lines: Vec::new(),
             columns: 0,
