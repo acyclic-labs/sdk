@@ -38,12 +38,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if !self.same_deployment(&source.workspace.volume.fs) {
             return Err(WorkspaceError::ForeignGeneration);
         }
-        let published = source.publication_closure.as_ref().and_then(|slot| {
-            slot.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .published
-                .clone()
-        });
+        let published = source
+            .publication_closure
+            .as_ref()
+            .and_then(GenerationClosure::published);
         let config = source.workspace.volume.config;
         accounting.check()?;
         let proven_at = self.inner.objects.collection_sweeps();

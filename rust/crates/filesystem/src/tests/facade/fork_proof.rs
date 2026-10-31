@@ -11,8 +11,14 @@ enum ForkSource {
     Held,
     Pinned,
     WrongGeneration,
+    ObservedHead,
+    ObservedExact,
+    ObservedForgotten,
+    ObservedLate,
     #[cfg(not(target_arch = "wasm32"))]
     NativePinned,
+    #[cfg(not(target_arch = "wasm32"))]
+    NativeObservedHead,
 }
 
 /// The work to prove a fork of `files` settled files plus one more commit,
@@ -30,10 +36,13 @@ async fn fork_proof_work(
             .await?;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    let original = matches!(source_kind, ForkSource::NativePinned)
-        .then(|| crate::NativeMaterializationWork::new(B, &cancel))
-        .transpose()
-        .map_err(|(error, _)| error)?;
+    let original = matches!(
+        source_kind,
+        ForkSource::NativePinned | ForkSource::NativeObservedHead
+    )
+    .then(|| crate::NativeMaterializationWork::new(B, &cancel))
+    .transpose()
+    .map_err(|(error, _)| error)?;
     #[cfg(not(target_arch = "wasm32"))]
     let baseline = original.as_ref().map(|work| work.live_allocation_bytes());
     #[cfg(not(target_arch = "wasm32"))]
@@ -106,6 +115,17 @@ async fn fork_proof_work(
     let crate::TransactionCommit::Committed(mut older) = committed else {
         return Err("the source must be published".into());
     };
+    let observed = match source_kind {
+        ForkSource::ObservedHead | ForkSource::ObservedForgotten => {
+            Some(workspace.head(B, &cancel).await?.value)
+        }
+        ForkSource::ObservedExact => Some(workspace.generation(older.id, B, &cancel).await?.value),
+        #[cfg(not(target_arch = "wasm32"))]
+        ForkSource::NativeObservedHead => {
+            Some(workspace.head(original.as_ref().unwrap(), &cancel).await?)
+        }
+        _ => None,
+    };
     workspace.write_text("/tip", "tip").await?;
     let source = match source_kind {
         ForkSource::Head => workspace.head(B, &cancel).await?.value,
@@ -116,7 +136,12 @@ async fn fork_proof_work(
         }
         ForkSource::Pinned => {
             older.pin("source-proof-pin", B, &cancel).await?;
-            let custody = older.publication_closure.as_ref().unwrap().lock().unwrap();
+            let Some(crate::facade::GenerationClosure::Publication(custody)) =
+                older.publication_closure.as_ref()
+            else {
+                return Err("committed generation must retain its publication handback".into());
+            };
+            let custody = custody.lock().unwrap();
             assert!(custody.pin.is_none());
             assert!(custody.published.is_some());
             drop(custody);
@@ -131,13 +156,59 @@ async fn fork_proof_work(
             tip
         }
         ForkSource::Held => older,
+        ForkSource::ObservedHead | ForkSource::ObservedExact | ForkSource::ObservedForgotten => {
+            drop(older);
+            let mut observed = observed.unwrap();
+            assert!(
+                observed.publication_closure.is_some(),
+                "observation lost the exact original proof"
+            );
+            if matches!(source_kind, ForkSource::ObservedForgotten) {
+                observed.publication_closure = None;
+            }
+            observed
+        }
+        ForkSource::ObservedLate => {
+            let observed = workspace.generation(older.id, B, &cancel).await?.value;
+            drop(older);
+            assert!(
+                observed.publication_closure.is_none(),
+                "latest proof cannot certify an older generation"
+            );
+            observed
+        }
         #[cfg(not(target_arch = "wasm32"))]
         ForkSource::NativePinned => {
             let original = original.as_ref().unwrap();
             older.pin("source-proof-pin", original, &cancel).await?;
             older
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        ForkSource::NativeObservedHead => {
+            drop(older);
+            observed.unwrap()
+        }
     };
+    if matches!(
+        source_kind,
+        ForkSource::ObservedHead
+            | ForkSource::ObservedExact
+            | ForkSource::ObservedForgotten
+            | ForkSource::ObservedLate
+    ) || {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            matches!(source_kind, ForkSource::NativeObservedHead)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
+    } {
+        // The handle must retain its proof after both replacement and eviction.
+        let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
+        drop(discarded);
+    }
     let name = crate::WorkspaceName::new("fork-proof-child", &B, &cancel)?.value;
     let mut accounting = KernelAccounting::standalone(B, &cancel);
     let destination = fs.workspace_id_for_name(&name, &mut accounting, &cancel)?;
@@ -178,6 +249,32 @@ async fn fork_proof_work(
         items_examined: end.items_examined - start.items_examined,
         ..WorkCounters::UNCHARGED
     })
+}
+
+#[tokio::test]
+async fn observed_generations_keep_exact_proofs_after_replacement_and_eviction()
+-> Result<(), Box<dyn std::error::Error>> {
+    let few = fork_proof_work(4, ForkSource::ObservedHead).await?;
+    let many = fork_proof_work(32, ForkSource::ObservedHead).await?;
+    let exact = fork_proof_work(32, ForkSource::ObservedExact).await?;
+    let forgotten = fork_proof_work(32, ForkSource::ObservedForgotten).await?;
+    let late = fork_proof_work(32, ForkSource::ObservedLate).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(
+        many,
+        fork_proof_work(32, ForkSource::NativeObservedHead).await?
+    );
+    assert_eq!(
+        few, many,
+        "observed proof work grew with the source closure"
+    );
+    assert_eq!(many, exact);
+    assert!(forgotten.object_bytes_read > many.object_bytes_read);
+    assert!(late.object_bytes_read > many.object_bytes_read);
+    eprintln!(
+        "observed4={few:?} observed32={many:?} exact32={exact:?} forgotten32={forgotten:?} late32={late:?}"
+    );
+    Ok(())
 }
 
 #[tokio::test]

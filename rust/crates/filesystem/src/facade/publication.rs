@@ -11,6 +11,46 @@ pub(super) struct LastCommit {
 pub(crate) type PublicationClosure<A, O> =
     crate::kernel::allocation::retained::RetainedArc<Mutex<PublicationCustody<A, O>>>;
 
+/// A generation aliases either its original publication handback or an already
+/// published proof. Observing a proof requires no new custody allocation.
+pub(crate) enum GenerationClosure<A: 'static, O: 'static> {
+    Publication(PublicationClosure<A, O>),
+    Published(crate::kernel::closure::PublishedProof),
+}
+
+impl<A, O> Clone for GenerationClosure<A, O> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Publication(original) => Self::Publication(original.clone()),
+            Self::Published(original) => Self::Published(original.clone()),
+        }
+    }
+}
+
+impl<A, O> GenerationClosure<A, O> {
+    pub(crate) fn published(&self) -> Option<crate::kernel::closure::PublishedProof> {
+        match self {
+            Self::Publication(original) => original
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .published
+                .clone(),
+            Self::Published(original) => Some(original.clone()),
+        }
+    }
+
+    pub(crate) fn take_pin(&self) -> Option<VerifiedPublication<A, O>> {
+        match self {
+            Self::Publication(original) => original
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pin
+                .take(),
+            Self::Published(_) => None,
+        }
+    }
+}
+
 pub(crate) struct PublicationCustody<A: 'static, O: 'static> {
     pub(crate) pin: Option<VerifiedPublication<A, O>>,
     pub(crate) published: Option<crate::kernel::closure::PublishedProof>,
@@ -435,11 +475,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) fn publication_closure(
         &self,
         generation: GenerationId,
-    ) -> Option<PublicationClosure<A, O>> {
+    ) -> Option<GenerationClosure<A, O>> {
         if self.generation_root != generation.object_id() {
             return None;
         }
-        self.publication_closure.clone()
+        self.publication_closure
+            .clone()
+            .map(GenerationClosure::Publication)
     }
 
     pub(super) fn apply_publication(
