@@ -40,19 +40,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         self.inner.read_stored(id, maximum, context).await
     }
 
-    fn decoded_cache_get(
+    fn decoded_cache_lookup(
         &self,
-        key: DecodedCacheKey,
-    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        self.decoded_get(key)
-    }
-
-    fn decoded_cache_admit(
-        &self,
-        key: DecodedCacheKey,
-        value: DecodedCacheValue,
-    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        self.decoded_admit(key, value)
+        key: crate::async_storage::DecodedCacheKey,
+    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
+        self.decoded_lookup(key)
     }
 
     fn collection(&self) -> Option<&Arc<crate::Collection>> {

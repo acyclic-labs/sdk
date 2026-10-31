@@ -84,18 +84,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         self.store.read_stored(id, maximum, context).await
     }
 
-    fn decoded_cache_get(
+    fn decoded_cache_lookup(
         &self,
-        key: async_storage::DecodedCacheKey,
-    ) -> Result<Option<async_storage::DecodedCacheValue>, ObjectStoreError> {
-        self.store.decoded_cache_get(key)
-    }
-    fn decoded_cache_admit(
-        &self,
-        key: async_storage::DecodedCacheKey,
-        value: async_storage::DecodedCacheValue,
-    ) -> Result<async_storage::DecodedCacheAdmission, ObjectStoreError> {
-        self.store.decoded_cache_admit(key, value)
+        key: crate::async_storage::DecodedCacheKey,
+    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
+        self.store.decoded_cache_lookup(key)
     }
     async fn put(
         &self,

@@ -21,7 +21,7 @@ use acyclic_fs::{
     AsyncObjectStore, AuthorityWork, EmbeddedCapabilities, Fs, LogicalObjectStore, ObjectId,
     ObjectRead, ObjectReadRequest, ObjectStoreError, PublicationHold, PublicationScope,
     StreamAuthorityStore,
-    async_storage::{DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue},
+    async_storage::{DecodedCacheKey, DecodedCacheLookup},
     browser::IndexedDbObjectStore,
     storage::ObjectWrite,
 };
@@ -55,19 +55,11 @@ impl AsyncObjectStore for Objects {
         each!(self, store => store.supports_decoded_cache())
     }
 
-    fn decoded_cache_get(
+    fn decoded_cache_lookup(
         &self,
         key: DecodedCacheKey,
-    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        each!(self, store => store.decoded_cache_get(key))
-    }
-
-    fn decoded_cache_admit(
-        &self,
-        key: DecodedCacheKey,
-        value: DecodedCacheValue,
-    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        each!(self, store => store.decoded_cache_admit(key, value))
+    ) -> Result<DecodedCacheLookup<'_>, ObjectStoreError> {
+        each!(self, store => store.decoded_cache_lookup(key))
     }
 
     async fn put(

@@ -1,95 +1,6 @@
 use super::*;
 
-// Pause the actual store result, including its physical byte owner, at the
-// provider boundary. Dropping the sole release producer terminates the wait.
-struct PausedStore {
-    inner: Arc<MemoryObjectStore>,
-    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
-}
-
-impl PausedStore {
-    async fn pause(&self) -> Result<(), ObjectStoreError> {
-        let release = self
-            .release
-            .lock()
-            .map_err(|_| ObjectStoreError::Corrupt)?
-            .take();
-        if let Some(release) = release {
-            release
-                .await
-                .map_err(|_| ObjectStoreError::Rejected("cache fill producer lost".to_owned()))?;
-        }
-        Ok(())
-    }
-}
-
-impl AsyncObjectStore for PausedStore {
-    async fn put(
-        &self,
-        id: ObjectId,
-        bytes: OwnedBytes,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        self.inner.put(id, bytes, work).await?;
-        self.pause().await
-    }
-
-    async fn put_hashed(
-        &self,
-        object: crate::HashedObject,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        self.inner.put_hashed(object, work).await?;
-        self.pause().await
-    }
-
-    async fn put_many(
-        &self,
-        writes: &[crate::storage::ObjectWrite],
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        self.inner.put_many(writes, work).await?;
-        self.pause().await
-    }
-
-    async fn put_many_hashed(
-        &self,
-        objects: &[crate::HashedObject],
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        self.inner.put_many_hashed(objects, work).await?;
-        self.pause().await
-    }
-
-    async fn read(
-        &self,
-        id: ObjectId,
-        maximum: u64,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<ObjectRead, ObjectStoreError> {
-        let read = self.inner.read(id, maximum, work).await?;
-        self.pause().await?;
-        Ok(read)
-    }
-
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        let reads = self.inner.read_many(requests, work).await?;
-        self.pause().await?;
-        Ok(reads)
-    }
-
-    async fn contains(
-        &self,
-        id: ObjectId,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<bool, ObjectStoreError> {
-        self.inner.contains(id, work).await
-    }
-}
+use crate::test_support::PausedStore;
 
 #[derive(Clone, Copy, Debug)]
 enum Fill {
@@ -297,5 +208,54 @@ fn reentrant_clear_refuses_the_original_fill() -> Result<(), ObjectStoreError> {
     // evidence and wrongly allows that same old result to restore residency.
     assert!(cache.insert(id, bytes, cache.shared.fill_epoch())?);
     assert_eq!(cache.stats()?.resident_entries, 1);
+    Ok(())
+}
+
+#[test]
+fn decoded_admission_rechecks_after_reentrant_clear() -> Result<(), ObjectStoreError> {
+    use crate::async_storage::DecodedCacheLookup;
+    struct ClearOnDrop(std::sync::Weak<Namespace>);
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            CachedObjectStore {
+                inner: (),
+                shared: self.0.upgrade().unwrap(),
+            }
+            .clear()
+            .unwrap();
+        }
+    }
+    let cache = CachedObjectStore::new((), options(1, 128)).unwrap();
+    let (id, _) = object(b"evicted decoded origin");
+    let key = DecodedCacheKey::new::<u64>(id, DecodeLimits::default());
+    drop(cache.decoded_admit(
+        DecodedCacheKey::new::<ClearOnDrop>(id, DecodeLimits::default()),
+        DecodedCacheValue {
+            value: Arc::new(ClearOnDrop(Arc::downgrade(&cache.shared))),
+            logical_bytes: 1,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
+        },
+    )?);
+    let DecodedCacheLookup::Miss(miss) = cache.decoded_lookup(key)? else {
+        return Err(ObjectStoreError::Corrupt);
+    };
+    let value = DecodedCacheValue {
+        value: Arc::new(19_u64),
+        logical_bytes: 8,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_custody: None,
+    };
+    let retained = Arc::clone(&value.value);
+    let DecodedCacheAdmission::Uncached(value) = miss.admit(value)? else {
+        return Err(ObjectStoreError::Corrupt);
+    };
+    assert!(Arc::ptr_eq(&value.value, &retained));
+    assert_eq!(cache.stats()?.resident_entries, 0);
+    // The old completion-time epoch lookup incorrectly restores residency.
+    assert!(matches!(
+        cache.decoded_admit(key, value)?,
+        DecodedCacheAdmission::Shared(_)
+    ));
     Ok(())
 }

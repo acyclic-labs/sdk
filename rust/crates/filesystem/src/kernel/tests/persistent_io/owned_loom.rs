@@ -16,7 +16,7 @@ fn handoff_model<const EARLY_RETIREMENT: bool>() {
         let worker_original = original.clone();
         let worker_resource = resource.clone();
         let worker = loom::thread::spawn(move || {
-            let result = admit_decoded_with_accounting(
+            let result = admit_page(
                 &MemoryObjectStore::default(),
                 key(),
                 input,

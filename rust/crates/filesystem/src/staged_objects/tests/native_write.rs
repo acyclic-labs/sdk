@@ -212,7 +212,7 @@ async fn native_spill_denial_precedes_physical_write_and_restores_victims()
     let mut ids = Vec::new();
     for marker in 0..3_u8 {
         let (id, bytes) = blob(OwnedBytes::from(vec![marker; 2 * 1_048_576]));
-        store.index_mut().admit_resident(id, bytes);
+        store.index_mut().admit_resident(id, bytes)?;
         ids.push(id);
     }
     let mut budget = native_write_budget();

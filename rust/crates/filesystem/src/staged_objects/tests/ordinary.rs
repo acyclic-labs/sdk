@@ -802,17 +802,16 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
         logical_bytes: 4,
         native_custody: None,
     };
-    assert!(store.decoded_cache_get(key)?.is_none());
+    assert!(crate::async_storage::cached_value(&store, key)?.is_none());
     assert!(matches!(
-        store.decoded_cache_admit(key, decoded)?,
+        crate::async_storage::publish_decoded(&store, key, decoded)?,
         DecodedCacheAdmission::Shared(_)
     ));
-    let cached = store
-        .decoded_cache_get(key)?
+    let cached = crate::async_storage::cached_value(&store, key)?
         .ok_or("resident page lost its decoding")?;
     assert_eq!(cached.value.downcast_ref::<u32>(), Some(&7));
     let other = DecodedCacheKey::new::<u64>(object.object_id(), DecodeLimits::default());
-    assert!(store.decoded_cache_get(other)?.is_none());
+    assert!(crate::async_storage::cached_value(&store, other)?.is_none());
     {
         let __object_args = (
             PublicationScope {
@@ -828,7 +827,7 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
             .await;
         __object_work.receipt(__object_result)
     }?;
-    assert!(store.decoded_cache_get(key)?.is_none());
+    assert!(crate::async_storage::cached_value(&store, key)?.is_none());
     let (object_id, _) = object.into_parts();
     let forged = {
         let __object_args = (
@@ -1083,5 +1082,100 @@ async fn a_paused_inner_flush_does_not_hold_another_publications_drain()
         "the second publication's drain waited on the first one's inner flush"
     );
     assert_eq!(store.inner().stored.load(Ordering::Relaxed), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn decoded_miss_cannot_adopt_a_replaced_resident_or_another_admission_origin()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::async_storage::DecodedCacheLookup;
+    let inner = crate::CachedObjectStore::new(
+        crate::MemoryObjectStore::default(),
+        crate::ObjectCacheOptions::default(),
+    )?;
+    let store = StagedObjects::open(inner, PathBuf::new());
+    let token = CancellationToken::new();
+    let object = HashedObject::new(
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"same staged body"),
+    );
+    let id = object.object_id();
+    let key = DecodedCacheKey::new::<u32>(id, DecodeLimits::default());
+    let value = || DecodedCacheValue {
+        value: Arc::new(7_u32),
+        logical_bytes: 4,
+        native_custody: None,
+    };
+    // An absent staged observation belongs to the inner namespace even when
+    // the same object becomes resident before decoding finishes.
+    let DecodedCacheLookup::Miss(absent) = store.decoded_cache_lookup(key)? else {
+        return Err("unexpected initial hit".into());
+    };
+    store
+        .put_hashed(
+            object.clone(),
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    store.inner.clear()?;
+    assert!(matches!(
+        absent.admit(value())?,
+        DecodedCacheAdmission::Uncached(_)
+    ));
+    assert!(matches!(
+        store.decoded_cache_lookup(key)?,
+        DecodedCacheLookup::Miss(_)
+    ));
+    let DecodedCacheLookup::Miss(original) = store.decoded_cache_lookup(key)? else {
+        return Err("unexpected resident hit".into());
+    };
+    store.index_mut().remove(id);
+    store
+        .put_hashed(
+            object,
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    let pending = value();
+    let backing = Arc::clone(&pending.value);
+    let DecodedCacheAdmission::Uncached(pending) = original.admit(pending)? else {
+        return Err("retired slot accepted old fill".into());
+    };
+    assert!(Arc::ptr_eq(&pending.value, &backing));
+    assert!(matches!(
+        store.decoded_cache_lookup(key)?,
+        DecodedCacheLookup::Miss(_)
+    ));
+    let DecodedCacheLookup::Miss(fresh) = store.decoded_cache_lookup(key)? else {
+        return Err("unexpected replacement hit".into());
+    };
+    assert!(matches!(
+        fresh.admit(value())?,
+        DecodedCacheAdmission::Shared(_)
+    ));
+    let DecodedCacheLookup::Hit(cached) = store.decoded_cache_lookup(key)? else {
+        return Err("replacement did not cache".into());
+    };
+    assert_eq!(cached.value.downcast_ref::<u32>(), Some(&7));
+    let wrong = DecodedCacheKey::new::<u16>(id, DecodeLimits::default());
+    let DecodedCacheLookup::Miss(wrong) = store.decoded_cache_lookup(wrong)? else {
+        return Err("decoder identity aliased".into());
+    };
+    assert!(matches!(
+        wrong.admit(value()),
+        Err(ObjectStoreError::Corrupt)
+    ));
+    let other = DecodedCacheKey::new::<u64>(id, DecodeLimits::default());
+    let DecodedCacheLookup::Miss(other) = store.decoded_cache_lookup(other)? else {
+        return Err("decoder identity aliased".into());
+    };
+    assert!(matches!(
+        other.admit(DecodedCacheValue {
+            value: Arc::new(9_u64),
+            logical_bytes: 8,
+            native_custody: None
+        })?,
+        DecodedCacheAdmission::Uncached(_)
+    ));
     Ok(())
 }
