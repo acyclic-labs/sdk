@@ -3,6 +3,8 @@
 mod actor_delivery;
 #[path = "local_hotpath/calibrate.rs"]
 mod calibrate;
+#[path = "local_hotpath/durability.rs"]
+mod durability;
 #[path = "local_hotpath/population.rs"]
 mod population;
 #[cfg(feature = "local-hotpath-proofs")]
@@ -214,9 +216,14 @@ fn run() -> Result {
     let durability = options
         .observe_durability
         .then(|| Arc::new(metrics.query("acyclic.runtime.durability")));
-    let dispatch = options
+    let typed_attempts = options
         .observe_durability
-        .then(|| tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(metrics))));
+        .then(durability::Projection::default);
+    let dispatch = typed_attempts.as_ref().map(|projection| {
+        tracing::Dispatch::new(
+            tracing_subscriber::registry().with(Operations((metrics, projection.clone()))),
+        )
+    });
     let _subscriber = dispatch.as_ref().map(tracing::dispatcher::set_default);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -258,6 +265,10 @@ fn run() -> Result {
             "schema": 1, "kind": "native_durability_projection", "snapshot": query.snapshot(),
             "scope": "completed observed native attempts during setup and selected operation families; base-two latency buckets are not operation quantiles; unobserved leaves and original provider/group coverage remain unknown",
             "complete_coverage": false,
+            "typed_attempts": typed_attempts.as_ref().map(durability::Projection::snapshot),
+            "syscall_rows": ["unknown", "fsync", "fdatasync", "F_FULLFSYNC", "F_BARRIERFSYNC", "FlushFileBuffers", "syncfs"],
+            "outcome_columns": ["ok", "err", "incomplete"],
+            "missing_field_columns": ["requested", "syscall", "descriptor", "parent", "os_error_on_failure"],
         }))?;
     }
     for finding in counts.findings(&options.operations, &recovery) {

@@ -108,6 +108,12 @@ deltas in `[ok, err, incomplete]` order. The final bounded projection includes
 setup and selected operation families, with base-two syscall latency buckets;
 these are not per-operation latency quantiles. Counter snapshots occur outside
 the timestamp pair and their cloning is excluded from allocation diagnostics.
+The same collector projects typed syscall/outcome totals and missing-field
+counts into fixed-size arrays. Unknown APIs retain their own row; missing
+descriptor, parent or native error evidence is reported explicitly. Saturated
+counters become `null`. Individual atomic totals do not establish a concurrent
+transactional cut or publication/group coverage. Descriptor and parent IDs
+never become metric labels.
 Native worker context is retained by the original persistence job. Unobserved
 leaves, concurrent work and original provider/group attribution remain unknown,
 so these diagnostics do not qualify `durability_calls` or count device drains.
