@@ -74,7 +74,7 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
                 "local::tests::child".into(),
                 "--nocapture".into(),
             ],
-            5_000,
+            None,
         )
         .unwrap()
         .with_stdin(vec![0, 255, 7, 0])
@@ -87,17 +87,14 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
     };
     // The actual child would publish this file before doing anything else.
     // An expired admission must refuse before creating that real process.
-    let deadline = || std::time::Instant::now() + Duration::from_secs(5);
-    let mut refused = local
-        .exec(command().with_expiry(1), handler(), deadline())
-        .await;
+    let mut refused = local.exec(command().with_expiry(1), handler(), None).await;
     assert!(matches!(
         refused.next().await,
         Some(Err(ProviderError::Rejected(_)))
     ));
     assert!(Arc::ptr_eq(&refused.finish().await?.buffers, &buffers));
     assert!(!marker.exists());
-    let mut execution = local.exec(command(), handler(), deadline()).await;
+    let mut execution = local.exec(command(), handler(), None).await;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut exit = None;
@@ -137,7 +134,7 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
                 wake: ProcessWake::new()?,
                 lose_owner: true,
             },
-            deadline(),
+            None,
         )
         .await;
     assert!(

@@ -47,13 +47,13 @@ export function createMachinesClient(transport: Transport) {
         const { argv, stdin = new Uint8Array(), ...admission } = request;
         const query = create(wire.ExecStartSchema, admission);
         if (!argv.length || !argv[0] || argv.some(value => value.includes("\0"))) throw new RangeError("invalid exec argv");
-        if (typeof request.timeoutMs !== "bigint" || request.timeoutMs < 1n || request.timeoutMs > 0xffffffffffffffffn) throw new RangeError("timeoutMs must be a positive uint64 bigint");
+        if (request.timeoutMs !== undefined && (typeof request.timeoutMs !== "bigint" || request.timeoutMs < 1n || request.timeoutMs > 0xffffffffffffffffn)) throw new RangeError("timeoutMs must be omitted or a positive uint64 bigint");
         if (query.cwd !== undefined && (!query.cwd || query.cwd.includes("\0"))) throw new RangeError("cwd must be nonempty and NUL-free");
         return ownedStream(async function* (signal) {
           let remaining = query.timeoutMs;
           if (query.expiryUnixMs !== undefined) {
             const expiry = query.expiryUnixMs - BigInt(Date.now());
-            if (expiry < remaining) remaining = expiry;
+            if (remaining === undefined || expiry < remaining) remaining = expiry;
           }
           for await (const frame of machines.exec(execInput(query, argv, stdin), { ...deadlineOptions(remaining, callOptions), signal })) {
             checkIdentity(query.machine, frame.machine, "machine");
@@ -139,7 +139,8 @@ function fileOptions(access: wire.FileAccess, options?: CallOptions): CallOption
   return deadlineOptions(access.deadlineUnixMs - BigInt(Date.now()), options);
 }
 
-function deadlineOptions(remaining: bigint, options?: CallOptions): CallOptions {
+function deadlineOptions(remaining: bigint | undefined, options?: CallOptions): CallOptions {
+  if (remaining === undefined) return { ...options };
   if (remaining <= 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError("guest deadline expired or not representable by this transport");
   const caller = options?.timeoutMs;
   return { ...options, timeoutMs: Math.min(Number(remaining), caller === undefined || caller === 0 ? Infinity : caller) };

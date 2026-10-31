@@ -90,8 +90,13 @@ pub fn prepare<T>(
     // discovery hints. Ambient credentials and startup hooks stay host-owned,
     // even when another native process caller requested inheritance.
     invocation.inherit_environment = false;
-    invocation.schedule = acyclic_native_runtime::CaptureSchedule::new(
-        std::time::Duration::from_millis(u64::from(input.timeout_ms()?)),
+    invocation.schedule = input.timeout_ms()?.map_or_else(
+        acyclic_native_runtime::CaptureSchedule::unbounded,
+        |timeout| {
+            acyclic_native_runtime::CaptureSchedule::new(std::time::Duration::from_millis(
+                u64::from(timeout),
+            ))
+        },
     );
     let (arguments, standard_input) = crate::tools::shell::PLATFORM.prepare(input.command);
     invocation.argv = arguments.collect();

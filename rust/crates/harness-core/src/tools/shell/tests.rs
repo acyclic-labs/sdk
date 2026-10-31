@@ -20,8 +20,8 @@ proptest! {
             prop_assert!(!input.command.is_empty());
             prop_assert!(!input.command.contains('\0'));
             let timeout = input.timeout_ms().map_err(|error| TestCaseError::fail(error.to_string()))?;
-            prop_assert!((1..=300_000).contains(&timeout));
-            prop_assert_eq!(u64::from(timeout), u64::from(input.timeout_ms.unwrap_or(300_000)));
+            prop_assert!(timeout.is_none_or(|timeout| timeout > 0));
+            prop_assert_eq!(timeout, input.timeout_ms);
         }
     }
 }
@@ -41,18 +41,16 @@ fn model_cannot_select_a_workspace_or_escape_through_cwd() {
             .is_err()
         );
     }
-    for timeout in [0, 300_001, u32::MAX] {
-        assert!(
-            ShellInput {
-                command: "pwd".into(),
-                cwd: None,
-                timeout_ms: Some(timeout),
-                target: None,
-            }
-            .validate()
-            .is_err()
-        );
-    }
+    assert!(
+        ShellInput {
+            command: "pwd".into(),
+            cwd: None,
+            timeout_ms: Some(0),
+            target: None,
+        }
+        .validate()
+        .is_err()
+    );
 }
 
 proptest! {

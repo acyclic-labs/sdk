@@ -105,9 +105,9 @@ pub struct ShellInput {
     /// Optional directory relative to the task view. Parent traversal is forbidden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// Timeout in milliseconds, from 1 to 300000. Omission uses 300000.
+    /// Optional positive lifetime in milliseconds. Omission is unbounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 300000))]
+    #[schemars(range(min = 1))]
     pub timeout_ms: Option<u32>,
     /// Target from the roster, or user:<owner> for that user's home device.
     /// Omission runs on the agent's home target; there is no fallback.
@@ -135,10 +135,11 @@ impl ShellInput {
         Ok(())
     }
 
-    pub(crate) fn timeout_ms(&self) -> Result<u32> {
-        Some(self.timeout_ms.unwrap_or(300_000))
-            .filter(|timeout| (1..=300_000).contains(timeout))
-            .ok_or_else(|| Error::Invalid("shell timeout_ms must be in 1..=300000; recovery: choose a timeout_ms in that range".into()))
+    pub(crate) fn timeout_ms(&self) -> Result<Option<u32>> {
+        if self.timeout_ms == Some(0) {
+            return Err(Error::Invalid("shell lifetime must be positive; recovery: omit timeout_ms for an unbounded command or supply a positive duration".into()));
+        }
+        Ok(self.timeout_ms)
     }
 }
 

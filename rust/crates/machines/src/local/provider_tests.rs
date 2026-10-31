@@ -46,7 +46,7 @@ fn child() -> ExecCommand {
             "local::tests::child".into(),
             "--nocapture".into(),
         ],
-        5_000,
+        Some(5_000),
     )
     .unwrap()
 }
@@ -113,7 +113,7 @@ async fn admitted_guest_environment_excludes_ambient_host_values()
         std::iter::once(executable.to_str().unwrap().to_owned())
             .chain(argv.into_iter().map(str::to_owned))
             .collect(),
-        5_000,
+        Some(5_000),
     )?;
     let mut output = local.exec(machine, command).await?;
     let mut exited = false;
@@ -328,7 +328,7 @@ async fn failed_spawn_cannot_become_a_positive_destroy_receipt()
     let mut result = local
         .exec(
             machine,
-            ExecCommand::new(vec![missing.to_str().unwrap().into()], 5_000)?,
+            ExecCommand::new(vec![missing.to_str().unwrap().into()], Some(5_000))?,
         )
         .await?;
     assert!(
@@ -487,7 +487,7 @@ async fn deadline_during_implicit_wake_never_strands_the_machine()
         async fn exec(
             &self,
             _: ExecCommand,
-            _: std::time::Instant,
+            _: Option<std::time::Instant>,
         ) -> Result<ExecStream, ProviderError> {
             Ok(Box::pin(futures::stream::iter([Ok(ExecOutput::ExitCode(
                 0,
@@ -530,7 +530,7 @@ async fn deadline_during_implicit_wake_never_strands_the_machine()
     )
     .await?;
     local.suspend(machine, IdempotencyKey::new()).await?;
-    let command = |timeout| ExecCommand::new(vec!["noop".into()], timeout);
+    let command = |timeout| ExecCommand::new(vec!["noop".into()], Some(timeout));
     // The physical wake is held, so this caller's deadline passes mid-wake.
     assert!(matches!(
         local.exec(machine, command(50)?).await,

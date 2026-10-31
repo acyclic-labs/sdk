@@ -171,8 +171,11 @@ fn probe(platform: Platform) -> Result<ExecCommand, String> {
         }
         (Shell::PowerShell, _) => &["pwsh", "-NoProfile", "-Command", "exit 0"],
     };
-    ExecCommand::new(argv.iter().map(|value| (*value).into()).collect(), 60_000)
-        .map_err(|error| error.to_string())
+    ExecCommand::new(
+        argv.iter().map(|value| (*value).into()).collect(),
+        Some(60_000),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Admits one exec and consumes its whole result. A provider without a guest

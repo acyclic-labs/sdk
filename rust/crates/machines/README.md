@@ -20,7 +20,7 @@ The reference carries no capability or guest mapping fence. Settlement and recov
 check that original contract; a substituted selection remains indeterminate under
 the original mutation key. The process-local simulator refuses hosted selection.
 
-`Machine::exec(ExecCommand::new(argv, timeout_ms)?)` dispatches one bounded guest
+`Machine::exec(ExecCommand::new(argv, timeout_ms)?)` dispatches one guest
 command and returns a disposable stream of separate stdout (`Data`) and stderr
 bytes followed by one exit code or a typed stopped capture. A terminal event
 completes the stream without waiting for EOF. Dropping the stream cancels its RPC.
@@ -29,6 +29,11 @@ capture reports whether that cleanup completed. A lost reply or interrupted stre
 returns `ProviderError::CommandIndeterminate(machine)`: the command may have run,
 so never redispatch it automatically. Argument validation does not evaluate a
 shell; shell execution requires an explicit shell program in `argv`.
+
+`timeout_ms` is `Option<u64>`: `None` has no relative deadline, while a positive
+`Some(milliseconds)` covers admission, implicit wake and command lifetime.
+Authenticated authority expiry remains independent. A foreground yield is not a
+process deadline.
 
 Commands can carry binary stdin, a guest cwd, a combined output allowance and an
 absolute authority expiry. Native clients reuse the shared wall-clock alarm so

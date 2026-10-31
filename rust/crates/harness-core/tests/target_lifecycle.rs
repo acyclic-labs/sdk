@@ -103,7 +103,7 @@ impl ToolExecutor for Exec {
         _context: Option<acyclic_harness_core::runtime::ToolContext>,
     ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<ToolResult>> {
         Box::pin(async move {
-            let command = ExecCommand::new(vec!["true".into()], 1_000)
+            let command = ExecCommand::new(vec!["true".into()], Some(1_000))
                 .map_err(acyclic_harness_core::Error::Machines)?;
             // The simulator admits (and wakes) before it reports that it
             // runs no processes; admission is what this suite observes.
