@@ -11,6 +11,8 @@
 //! observer reports as [`super::Event::Turn`] whose input [`checkpoint`] names:
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
+mod history;
+pub use history::HistoryPage;
 mod usage;
 use crate::{
     Error, Result,

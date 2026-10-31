@@ -1,12 +1,11 @@
 //! The interactive terminal: one conversation's settled turns, its pending
 //! prompts, its streaming answer and its phase, over the shared prompt
 //! editor and screen widgets.
-use acyclic_harness::local::{
-    Event,
-    agent_conversation::{Conversation, checkpoint},
-};
+use acyclic_harness::local::{Event, agent_conversation::Conversation};
 use acyclic_harness::{
-    agent::{AgentOutcome, ContextAction, IntentId, Phase, TurnOutcome},
+    agent::{
+        AgentOutcome, ContextAction, HistoryVolume, IntentId, Phase, RestoreMode, TurnOutcome,
+    },
     client::commands::{
         CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
     },
@@ -26,6 +25,7 @@ use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
 mod diff;
+mod query;
 
 /// Settled turns shown when a conversation reopens.
 const HISTORY: u64 = 64;
@@ -62,6 +62,17 @@ enum Prompt {
     Feedback,
     /// A command that runs once its yes arrives.
     Confirm(CommandRequest),
+    /// Choose an action for the exact history turn selected on screen.
+    History { at: u64 },
+    /// An immutable history turn and the original restoration intent.
+    Restore {
+        at: u64,
+        id: String,
+        mode: RestoreMode,
+        expected: Vec<HistoryVolume>,
+    },
+    /// A fork keeps its complete original request across an uncertain result.
+    Fork { at: u64, id: String, brief: String },
 }
 
 #[derive(Default)]
@@ -136,10 +147,25 @@ impl View {
             Event::Turn(entry) => {
                 self.pending_dirty = true;
                 self.checkpoints.retain(|inbox| *inbox != entry.inbox);
-                if let Some(action) = checkpoint(&entry) {
+                if entry.outcome == TurnOutcome::RestoreConflict {
+                    self.notice =
+                        Some("The selected project heads changed; restoration was refused.".into());
+                    return Ok(());
+                }
+                if entry.outcome == TurnOutcome::Completed
+                    && let Some(action) = entry.input.context()
+                {
                     match action {
                         ContextAction::Compact { .. } => self.transcript.push(false, COMPACTED),
                         ContextAction::Rewind => self.transcript.push(false, REWOUND),
+                        ContextAction::Restore { mode, .. } => self.transcript.push(
+                            false,
+                            match mode {
+                                RestoreMode::Files => "Restored selected project files",
+                                RestoreMode::Context => "Restored selected context",
+                                RestoreMode::Both => "Restored selected files and context",
+                            },
+                        ),
                         // A cleared conversation shows nothing before it.
                         ContextAction::Clear => self.transcript = TranscriptRows::default(),
                     }
@@ -366,6 +392,29 @@ impl View {
         if let Some(notice) = self.notice.as_ref().or(self.ended.as_ref()) {
             return notice.clone();
         }
+        if let Some(Prompt::Restore { at, mode, .. }) = &self.prompt {
+            let target = match mode {
+                RestoreMode::Files => "files",
+                RestoreMode::Context => "context",
+                RestoreMode::Both => "files and context",
+            };
+            return format!(
+                "Restore {target} through cut {}? Enter yes or no. Child agents and external effects continue.",
+                at + 1
+            );
+        }
+        if let Some(Prompt::History { at }) = &self.prompt {
+            return format!(
+                "Cut {} selected. Enter files, context, both, or fork followed by the new task brief.",
+                at + 1
+            );
+        }
+        if let Some(Prompt::Fork { at, .. }) = &self.prompt {
+            return format!(
+                "Fork files and context through cut {}? Enter yes or no.",
+                at + 1
+            );
+        }
         match (&self.phase, self.approval()) {
             (_, Some(id)) => format!(
                 "approval {} requested: submit y to approve, n to decline",
@@ -456,11 +505,13 @@ pub async fn run(
     let mut input = PromptInput::default();
     // The open panel's title and rows; Esc closes it.
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
-    let mut diff_open = false;
-    let mut diff_panel: Option<diff::DiffPanel> = None;
-    let diff_loading = [Line::raw("Loading…")];
-    let mut diff_query = std::pin::pin!(None);
-    let mut diff_credit = 0;
+    let mut query_open = false;
+    let mut query_source = query::Source::Diff(None);
+    let mut query_panel: Option<query::Panel> = None;
+    let query_loading = [Line::raw("Loading…")];
+    let mut query_future = std::pin::pin!(None);
+    let mut query_refresh = false;
+    let mut query_credit = 0;
     // The message id and text of the prompt the host last refused.
     let mut unsent: Option<(String, String)> = None;
     input
@@ -480,7 +531,7 @@ pub async fn run(
             terminal.bell();
         }
         let approval_rows = if overlay.is_none()
-            && !diff_open
+            && !query_open
             && view.prompt.is_none()
             && view.approval().is_some()
         {
@@ -489,9 +540,11 @@ pub async fn run(
             Vec::new()
         };
         let feedback = matches!(view.prompt, Some(Prompt::Feedback));
-        if let Some(panel) = diff_panel.as_mut() {
+        if let Some(panel) = query_panel.as_mut() {
             let area = Rect::from((Position::ORIGIN, size));
-            panel.wrap(Screen::default().areas(area, &input).overlay_columns());
+            panel
+                .page
+                .wrap(Screen::default().areas(area, &input).overlay_columns());
         }
         let (areas, page) = {
             let status = Line::raw(view.status());
@@ -502,26 +555,22 @@ pub async fn run(
                 status,
                 overlay: overlay.as_ref().map_or_else(
                     || {
-                        diff_panel.as_ref().map_or_else(
+                        query_panel.as_ref().map_or_else(
                             || {
-                                if diff_open {
-                                    &diff_loading[..]
+                                if query_open {
+                                    &query_loading[..]
                                 } else {
                                     &approval_rows[..]
                                 }
                             },
-                            |panel| &panel.lines[..],
+                            |panel| &panel.page.lines[..],
                         )
                     },
                     |(_, lines)| &lines[..],
                 ),
                 overlay_title: overlay.as_ref().map_or(
-                    if diff_open {
-                        if diff_query.is_some() {
-                            "Diff · loading"
-                        } else {
-                            "Diff"
-                        }
+                    if query_open {
+                        query_source.title()
                     } else if approval_rows.is_empty() {
                         ""
                     } else {
@@ -534,7 +583,7 @@ pub async fn run(
             };
             let area = Rect::from((Position::ORIGIN, size));
             let tail = screen.tail_scroll(area, &input);
-            let scroll = if overlay.is_some() || diff_open {
+            let scroll = if overlay.is_some() || query_open {
                 overlay_top = overlay_top.min(tail);
                 overlay_top
             } else {
@@ -549,28 +598,34 @@ pub async fn run(
         // Only inner content cells can advance the query. Reserve the hint;
         // a collapsed panel waits for the existing resize/input event.
         let credit = u32::from(areas.overlay_rows(1)).min(128);
-        if diff_open && diff_credit != credit {
-            diff_credit = credit;
-            diff_panel = None;
-            diff_query
-                .set((credit != 0).then(|| diff::query(Arc::clone(&conversation), credit, None)));
+        if query_open && query_credit != credit {
+            query_credit = credit;
+            query_panel = None;
+            query_refresh = false;
+            query_future.set(
+                (credit != 0)
+                    .then(|| query::load(Arc::clone(&conversation), credit, query_source.clone())),
+            );
         }
         tokio::select! {
             result = async {
-                match diff_query.as_mut().as_pin_mut() {
+                match query_future.as_mut().as_pin_mut() {
                     Some(query) => query.await,
                     None => std::future::pending().await,
                 }
             } => {
-                diff_query.set(None);
+                query_future.set(None);
                 match result {
                     Ok(panel) => {
-                        diff_panel = Some(panel);
+                        query_panel = Some(panel);
                         overlay_top = 0;
+                        if std::mem::take(&mut query_refresh) && credit != 0 {
+                            query_future.set(Some(query::load(Arc::clone(&conversation), credit, query_source.clone())));
+                        }
                     }
                     Err(error) => {
-                        diff_open = false;
-                        diff_panel = None;
+                        query_open = false;
+                        query_panel = None;
                         view.notice = Some(error.to_string());
                     }
                 }
@@ -586,8 +641,13 @@ pub async fn run(
                 let waited = view.busy();
                 view.apply(&conversation, event, events.seen()).await?;
                 view.ring &= waited;
-                if diff_open && settled && credit != 0 {
-                    diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, None)));
+                if query_open && settled && credit != 0 && query_source.follows_tail() {
+                    query_source = query_source.restart();
+                    if query_future.is_none() {
+                        query_future.set(Some(query::load(Arc::clone(&conversation), credit, query_source.clone())));
+                    } else {
+                        query_refresh = true;
+                    }
                 }
                 // A settled turn clears the output and the streamed answer.
                 if view.reply != events.reply() {
@@ -626,7 +686,71 @@ pub async fn run(
                                         }
                                         continue;
                                     }
+                                    Some(Prompt::Restore { at, id, mode, expected }) => {
+                                        if matches!(text.trim(), "y" | "Y" | "yes") {
+                                            match conversation.restore(&id, at, mode, expected.clone()).await {
+                                                Ok(inbox) => {
+                                                    view.checkpoints.push(inbox);
+                                                    view.pending_dirty = true;
+                                                }
+                                                Err(error) => {
+                                                    view.prompt = Some(Prompt::Restore { at, id, mode, expected });
+                                                    view.notice = Some(format!("Restore not confirmed: {error}. Enter yes to resend the same request."));
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    Some(Prompt::History { at }) => {
+                                        let mode = match text.trim() {
+                                            "files" => Some(RestoreMode::Files),
+                                            "context" => Some(RestoreMode::Context),
+                                            "both" => Some(RestoreMode::Both),
+                                            _ => None,
+                                        };
+                                        if let Some(mode) = mode {
+                                            let heads = if mode.files() { conversation.project_heads().await } else { Ok(Vec::new()) };
+                                            match heads {
+                                                Ok(expected) => view.prompt = Some(Prompt::Restore { at, id: acyclic_harness::OperationId::new().to_string(), mode, expected }),
+                                                Err(error) => {
+                                                    view.prompt = Some(Prompt::History { at });
+                                                    view.notice = Some(format!("Read current project heads failed: {error}. Enter the restore mode to retry."));
+                                                }
+                                            }
+                                        } else if let Some(brief) = text.trim().strip_prefix("fork ").map(str::trim).filter(|brief| !brief.is_empty()) {
+                                            view.prompt = Some(Prompt::Fork { at, id: acyclic_harness::OperationId::new().to_string(), brief: brief.to_owned() });
+                                        } else {
+                                            view.prompt = Some(Prompt::History { at });
+                                            view.notice = Some("Enter files, context, both, or fork followed by the new task brief.".into());
+                                        }
+                                        continue;
+                                    }
+                                    Some(Prompt::Fork { at, id, brief }) => {
+                                        if matches!(text.trim(), "y" | "Y" | "yes") {
+                                            match conversation.fork_at(&id, at, &brief).await {
+                                                Ok(agent) => view.notice = Some(format!("Fork published: {}", agent.as_str())),
+                                                Err(error) => {
+                                                    view.prompt = Some(Prompt::Fork { at, id, brief });
+                                                    view.notice = Some(format!("Fork not confirmed: {error}. Enter yes to resend the same request."));
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
                                     None => {}
+                                }
+                                if query_open && matches!(query_source, query::Source::History(_)) && !text.trim_start().starts_with('/') {
+                                    let selected = text.trim().parse::<u64>().ok()
+                                        .and_then(|cut| query_panel.as_ref().and_then(|panel| panel.history_turn(cut)));
+                                    if let Some(at) = selected {
+                                        view.prompt = Some(Prompt::History { at });
+                                        query_open = false;
+                                        query_panel = None;
+                                        query_future.set(None);
+                                    } else {
+                                        view.notice = Some("Enter an immutable cut displayed on this history page.".into());
+                                    }
+                                    continue;
                                 }
                                 // Commands stay usable while an approval
                                 // waits; only other input answers it.
@@ -649,18 +773,21 @@ pub async fn run(
                                         return Ok(view.outcome.code());
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Shortcuts })) => {
-                                        diff_open = false;
-                                        diff_panel = None;
-                                        diff_query.set(None);
+                                        query_open = false;
+                                        query_panel = None;
+                                        query_future.set(None);
                                         overlay = Some(("Help", View::help(&catalog, &input)));
                                         overlay_top = 0;
                                         continue;
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Diff })) => {
                                         overlay = None;
-                                        diff_open = true;
-                                        diff_credit = credit;
-                                        diff_query.set((credit != 0).then(|| diff::query(Arc::clone(&conversation), credit, None)));
+                                        query_open = true;
+                                        query_source = query::Source::Diff(None);
+                                        query_panel = None;
+                                        query_refresh = false;
+                                        query_credit = credit;
+                                        query_future.set((credit != 0).then(|| query::load(Arc::clone(&conversation), credit, query_source.clone())));
                                         overlay_top = 0;
                                         continue;
                                     }
@@ -670,6 +797,17 @@ pub async fn run(
                                     }
                                     Ok(Some(CommandResolution::Confirm { request })) => {
                                         view.prompt = Some(Prompt::Confirm(request));
+                                        continue;
+                                    }
+                                    Ok(Some(CommandResolution::Submit { request: CommandRequest::Rewind })) => {
+                                        overlay = None;
+                                        query_open = true;
+                                        query_source = query::Source::History(None);
+                                        query_panel = None;
+                                        query_refresh = false;
+                                        query_credit = credit;
+                                        query_future.set((credit != 0).then(|| query::load(Arc::clone(&conversation), credit, query_source.clone())));
+                                        overlay_top = 0;
                                         continue;
                                     }
                                     Ok(Some(CommandResolution::Submit { request })) => {
@@ -717,10 +855,10 @@ pub async fn run(
                             InputEffect::Host(Action::Escape) if overlay.is_some() => {
                                 overlay = None;
                             }
-                            InputEffect::Host(Action::Escape) if diff_open => {
-                                diff_open = false;
-                                diff_panel = None;
-                                diff_query.set(None);
+                            InputEffect::Host(Action::Escape) if query_open => {
+                                query_open = false;
+                                query_panel = None;
+                                query_future.set(None);
                             }
                             InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
                                 view.prompt = None;
@@ -733,24 +871,26 @@ pub async fn run(
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
                             InputEffect::Quit => return Ok(view.outcome.code()),
-                            InputEffect::Scroll(rows) if diff_open && diff_query.is_none() && credit != 0 => {
-                                if let Some(panel) = diff_panel.as_ref()
-                                    && !panel.page_boundary(&mut overlay_top, rows, areas.overlay_rows(0))
+                            InputEffect::Scroll(rows) if query_open && query_future.is_none() && credit != 0 => {
+                                if let Some(panel) = query_panel.as_ref()
+                                    && !panel.page.page_boundary(&mut overlay_top, rows, areas.overlay_rows(0))
                                 {
                                     continue;
                                 }
-                                let cursor = if rows < 0 {
-                                    diff_panel.as_mut().and_then(|panel| panel.next.take())
+                                let source = if rows < 0 {
+                                    query_panel.as_mut().and_then(|panel| panel.page.next.take())
+                                } else if query_panel.as_ref().is_some_and(|panel| panel.page.continued) {
+                                    Some(query_source.restart())
                                 } else {
                                     None
                                 };
-                                if cursor.is_some()
-                                    || rows > 0 && diff_panel.as_ref().is_some_and(|panel| panel.continued)
-                                {
-                                    diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, cursor)));
+                                if let Some(source) = source {
+                                    query_source = source;
+                                    query_refresh = false;
+                                    query_future.set(Some(query::load(Arc::clone(&conversation), credit, query_source.clone())));
                                 }
                             }
-                            InputEffect::Scroll(_) if diff_open => {}
+                            InputEffect::Scroll(_) if query_open => {}
                             InputEffect::Scroll(rows) if overlay.is_some() => {
                                 overlay_top = overlay_top.saturating_add_signed(-rows);
                             }

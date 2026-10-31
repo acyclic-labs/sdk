@@ -6,7 +6,7 @@ use acyclic_harness::{
 };
 use std::sync::Arc;
 
-pub(super) type DiffPanel = acyclic_harness::tui::QueryPage<String>;
+pub(super) type DiffPanel = acyclic_harness::tui::QueryPage<super::query::Source>;
 
 /// Keep only the visible page. The existing session owns the request's wait;
 /// dropping this future on close or replacement cancels that consumer.
@@ -22,7 +22,8 @@ pub(super) async fn query(
         .last()
         .and_then(|fragment| fragment.next.as_ref())
         .map(serde_json::to_string)
-        .transpose()?;
+        .transpose()?
+        .map(|cursor| super::query::Source::Diff(Some(cursor)));
     let mut lines = Vec::new();
     if fragments.is_empty() {
         lines.push(Line::raw("No changes"));
