@@ -1717,7 +1717,9 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     .map_err(medium)?;
                 let fence = match observed.as_deref().map(crate::blob::decode_epoch) {
                     Some(Ok(epoch)) => epoch,
-                    Some(Err(error)) if error.code != ErrorCode::Corrupt || !self.medium.volatile() => {
+                    Some(Err(error))
+                        if error.code != ErrorCode::Corrupt || !self.medium.volatile() =>
+                    {
                         return Err(error);
                     }
                     // Torn by a crash, or never claimed.
