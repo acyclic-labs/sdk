@@ -38,6 +38,18 @@ impl CancellationWaitError {
 }
 
 impl Cancelled<'_> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn retained_storage_bytes(&self) -> u64 {
+        self.waiter
+            .as_ref()
+            .map_or(0, |waiter| match &waiter._allocation {
+                Some(crate::kernel::allocation::retained::RetainedAllocation::Native {
+                    _allocation,
+                }) => _allocation.bytes(),
+                _ => 0,
+            })
+    }
+
     pub(super) fn detach_meter(mut self) -> Cancelled<'static> {
         self.meter.take();
         Cancelled {

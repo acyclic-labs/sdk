@@ -2,6 +2,10 @@ use super::*;
 use crate::{WorkBudget, WorkCounters};
 use std::sync::Arc;
 
+mod retained;
+pub(crate) use retained::RetainedClaims;
+pub use retained::{NativeRetainedClaim, NativeRetainedProducer};
+
 /// Original SDK demand context with its current cancellation and resource scope.
 #[derive(Clone)]
 pub struct NativeMaterializationWork {
@@ -135,32 +139,38 @@ impl NativeMaterializationWork {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.state.with_original_leaf(|state| {
-            state.within_window(self.window.as_deref(), |state| {
-                state.scope(
-                    |work| &mut work.native_invocation,
-                    self.invocation.as_ref().map(Arc::downgrade),
-                    |state| {
-                        state.scope(
-                            |work| &mut work.native_resource,
-                            self.resource.as_ref().map(Arc::downgrade),
-                            |state| {
-                                state.scope(
-                                    |work| &mut work.capture_custody,
-                                    None,
-                                    |state| {
-                                        state.scope(
-                                            |work| &mut work.recheck_items,
-                                            self.recheck_items,
-                                            operation,
-                                        )
-                                    },
-                                )
-                            },
-                        )
-                    },
-                )
-            })
+        self.state
+            .with_original_leaf(|state| self.with_leaf_attribution(state, operation))
+    }
+    fn with_leaf_attribution<T>(
+        &self,
+        state: &mut crate::demand::DemandWork,
+        operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
+    ) -> T {
+        state.within_window(self.window.as_deref(), |state| {
+            state.scope(
+                |work| &mut work.native_invocation,
+                self.invocation.as_ref().map(Arc::downgrade),
+                |state| {
+                    state.scope(
+                        |work| &mut work.native_resource,
+                        self.resource.as_ref().map(Arc::downgrade),
+                        |state| {
+                            state.scope(
+                                |work| &mut work.capture_custody,
+                                None,
+                                |state| {
+                                    state.scope(
+                                        |work| &mut work.recheck_items,
+                                        self.recheck_items,
+                                        operation,
+                                    )
+                                },
+                            )
+                        },
+                    )
+                },
+            )
         })
     }
     pub(crate) fn with_original_leaf<T>(
