@@ -120,6 +120,26 @@ N names the initially settled dormant root population. Creation samples retain
 new durable identities; session samples also add resident roots. The cohort's
 namespace therefore grows across its fixed acquisition-order samples. Population
 labels do not assert constant cardinality throughout creation measurements.
+
+The same fixture and root publisher also drive native crash controls without a
+latency campaign:
+
+```sh
+cargo bench --locked -p acyclic-conformance --features local-hotpath-proofs --bench local_hotpath -- --proofs --operations 'swarm.session_start' --root /path/to/fresh-directory --source "$(git rev-parse HEAD)"
+```
+
+These controls cut the original joined journal frame before append, before
+flush and after flush before acknowledgement. Each original submission must
+return typed `Unknown` retaining its exact child and sealed request; the failed
+provider must terminate a later submission as `Unavailable`. Reopening must
+recover either no participants and no idempotency result, or the complete
+original immutable envelope with its request digest, record bytes, headers,
+origins, sequences and durable participant heads. Controls reject `Unknown` as
+`Created`, an omitted recovered participant and a failed physical truncation.
+The test-support feature is separate from ordinary latency instrumentation.
+Proof rows explicitly leave same-owner resubmission, physical retirement of
+publication holds and population-independent work open. A fresh filesystem
+owner cannot resubmit a commit bound to the original owner.
 `--setup-credit` bounds concurrent original root preparation and submission
 during population setup (default1). Each root retains its own intent, sealed
 request and publication holds; independent lifecycles can share the provider's

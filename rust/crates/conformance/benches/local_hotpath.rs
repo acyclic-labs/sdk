@@ -5,6 +5,9 @@ mod actor_delivery;
 mod calibrate;
 #[path = "local_hotpath/population.rs"]
 mod population;
+#[cfg(feature = "local-hotpath-proofs")]
+#[path = "local_hotpath/proofs.rs"]
+mod proofs;
 #[path = "local_hotpath/report.rs"]
 mod report;
 #[path = "local_hotpath/storage.rs"]
@@ -23,6 +26,7 @@ struct Options {
     operations: Vec<Operation>,
     populations: Vec<u64>,
     setup_credit: usize,
+    proofs: bool,
 }
 
 impl Options {
@@ -36,6 +40,13 @@ impl Options {
         }
         let mut root = self.root.as_os_str().to_owned();
         root.push(".retry");
+        if self.proofs {
+            return format!(
+                "cargo bench --locked -p acyclic-conformance --features local-hotpath-proofs --bench local_hotpath -- --proofs --root {} --source {} --operations 'swarm.session_start'",
+                quoted(&root.to_string_lossy()),
+                quoted(&self.source),
+            );
+        }
         format!(
             "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --setup-credit {} --operations {} --populations {}",
             quoted(&root.to_string_lossy()),
@@ -69,8 +80,10 @@ impl Options {
         let mut operations = CORE_OPERATIONS.to_vec();
         let mut populations = POPULATIONS.to_vec();
         let mut setup_credit = 1;
+        let mut proofs = false;
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
+                "--proofs" => proofs = true,
                 "--root" => root = arguments.next().map(PathBuf::from),
                 "--samples" => samples = arguments.next().ok_or("missing sample count")?.parse()?,
                 "--source" => source = arguments.next(),
@@ -118,7 +131,7 @@ impl Options {
                 _ => return Err(format!("unknown option {argument}").into()),
             }
         }
-        if samples < 100 {
+        if !proofs && samples < 100 {
             return Err("p99 requires at least 100 observations".into());
         }
         Ok(Self {
@@ -128,6 +141,7 @@ impl Options {
             operations,
             populations,
             setup_credit,
+            proofs,
         })
     }
 }
@@ -135,7 +149,7 @@ impl Options {
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations]"
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations]\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
         );
         return;
     }
@@ -153,6 +167,12 @@ fn run() -> Result {
     use sha2::{Digest as _, Sha256};
     let options = Options::parse()?;
     let recovery = options.recovery();
+    if options.proofs {
+        #[cfg(feature = "local-hotpath-proofs")]
+        return proofs::run(&options);
+        #[cfg(not(feature = "local-hotpath-proofs"))]
+        return Err("--proofs requires --features local-hotpath-proofs".into());
+    }
     report::check_quantiles()?;
     std::fs::create_dir(&options.root)?;
     let executable = std::fs::read(std::env::current_exe()?)?;

@@ -77,6 +77,16 @@ pub(super) fn id(value: usize) -> Result<AgentId> {
 }
 
 impl Fixture {
+    pub(super) fn root_request(&self, agent: AgentId) -> Result<RootRequest> {
+        Ok(RootRequest {
+            fresh: vec![self.volume(&agent)?],
+            agent,
+            retained: Vec::new(),
+            brief: None,
+            policy: None,
+        })
+    }
+
     pub(super) fn volume(&self, agent: &AgentId) -> Result<VolumeBinding> {
         Ok(VolumeBinding {
             name: PRIVATE_VOLUME.into(),
@@ -92,6 +102,12 @@ impl Fixture {
 
     pub(super) async fn open(root: &Path, agents: usize, setup_credit: usize) -> Result<Self> {
         let start = Instant::now();
+        let fixture = Self::providers(root).await?;
+        fixture.populate(agents, setup_credit, start).await?;
+        Ok(fixture)
+    }
+
+    pub(super) async fn providers(root: &Path) -> Result<Self> {
         let limits = LocalStreamLimits {
             memory: MemoryLimits {
                 paths: usize::MAX,
@@ -160,7 +176,7 @@ impl Fixture {
             entries: entries.clone(),
         });
         let bound = bound.hosting(handler)?;
-        let fixture = Self {
+        Ok(Self {
             stream,
             requests,
             objects,
@@ -168,14 +184,17 @@ impl Fixture {
             bound,
             provider,
             entries,
-            model_calls: model_calls.clone(),
-        };
+            model_calls,
+        })
+    }
+
+    async fn populate(&self, agents: usize, setup_credit: usize, start: Instant) -> Result {
         // Use the same publication owner as session creation. Concatenating
         // independent root requests duplicates their shared activation stream.
         let mut first_request = None;
         let mut publishing = FuturesUnordered::new();
         for index in 0..agents {
-            publishing.push(fixture.publish_root(index, agents > 1 && index < 2));
+            publishing.push(self.publish_root(index, agents > 1 && index < 2));
             if publishing.len() == setup_credit {
                 let request = publishing
                     .try_next()
@@ -199,7 +218,7 @@ impl Fixture {
             "agents": agents, "elapsed_seconds": start.elapsed().as_secs_f64(),
             "setup_credit": setup_credit,
         }))?;
-        let runtime = fixture.bound.agents().runtime();
+        let runtime = self.bound.agents().runtime();
         // Registration queues initial replay. Prove that the idle oracle
         // refuses this real unsettled population before consuming that work.
         if require_idle(agents, runtime.counts()).is_ok() {
@@ -214,13 +233,13 @@ impl Fixture {
             return Err(format!("initial agent replay {actor:?} failed: {error}").into());
         }
         require_idle(agents, runtime.counts())?;
-        if model_calls.load(Ordering::Relaxed) != 0 {
+        if self.model_calls.load(Ordering::Relaxed) != 0 {
             return Err("dormant population requested model execution".into());
         }
         emit(
             serde_json::json!({"schema": 1, "kind": "setup", "agents": agents, "elapsed_seconds": start.elapsed().as_secs_f64(), "dormant": agents, "ready": runtime.counts().1, "model_calls": 0, "submission_credit": setup_credit, "executor_threads": 1}),
         )?;
-        Ok(fixture)
+        Ok(())
     }
 
     async fn publish_root(
@@ -232,13 +251,7 @@ impl Fixture {
         let expected = AgentPath::root(&agent);
         let prepared = Box::pin(self.bound.prepare_root(
             &IntentId::try_from(format!("population-{index}").as_str())?,
-            RootRequest {
-                fresh: vec![self.volume(&agent)?],
-                agent,
-                retained: Vec::new(),
-                brief: None,
-                policy: None,
-            },
+            self.root_request(agent)?,
         ))
         .await?;
         let request = retain_request.then(|| prepared.request().clone());

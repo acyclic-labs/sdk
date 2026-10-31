@@ -785,19 +785,11 @@ async fn sessions(
     rows: &mut Measurements,
 ) -> Result {
     use acyclic_harness_core::agent::{AgentPath, IntentId};
-    use acyclic_harness_core::filesystem::hosting::RootRequest;
     for index in 0..samples {
         let agent = id(agents + index)?;
         let expected = AgentPath::root(&agent);
-        let volume = fixture.volume(&agent)?;
         let intent = IntentId::try_from(format!("session-{index}").as_str())?;
-        let request = RootRequest {
-            agent,
-            fresh: vec![volume],
-            retained: Vec::new(),
-            brief: None,
-            policy: None,
-        };
+        let request = fixture.root_request(agent)?;
         let created = timed!(
             rows,
             Operation::SessionStart,
