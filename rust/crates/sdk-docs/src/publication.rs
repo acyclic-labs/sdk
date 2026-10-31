@@ -113,7 +113,7 @@ pub(super) fn write_bundle_inner(
 pub(super) fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
     let index_path = output_dir.join("sdk-docs-versions.v1.json");
     reject_reparse_ancestors(&index_path)?;
-    let mut index = if index_path.exists() {
+    let index = if index_path.exists() {
         let metadata = fs::symlink_metadata(&index_path)?;
         if !metadata.is_file() {
             return Err(Error::Invalid(format!(
@@ -137,22 +137,6 @@ pub(super) fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Erro
             "unsupported version index schema: {}",
             index.schema
         )));
-    }
-    let mut verified = Vec::new();
-    for entry in index.releases.drain(..) {
-        if entry.publication_status == PublicationStatus::Candidate {
-            index.release_candidates.push(entry);
-        } else {
-            verified.push(entry);
-        }
-    }
-    index.releases = verified;
-    if index
-        .latest
-        .as_ref()
-        .is_some_and(|entry| entry.publication_status == PublicationStatus::Candidate)
-    {
-        index.latest = None;
     }
     validate_version_index(&index, output_dir)?;
     Ok(index)

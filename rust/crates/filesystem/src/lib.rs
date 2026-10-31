@@ -123,7 +123,7 @@ pub mod model;
 pub mod mount;
 pub mod multi_root;
 mod obs;
-#[cfg(feature = "tooling")]
+#[cfg(all(feature = "tooling", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod tooling_contracts;
 pub use acyclic_fs_base::numeric::exact_u32_from_f64;

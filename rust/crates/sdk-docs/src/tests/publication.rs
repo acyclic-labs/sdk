@@ -132,25 +132,45 @@ fn version_index_rejects_a_conflicting_release_rewrite() {
 fn malformed_prior_version_index_is_rejected_without_mutation() {
     let directory = tempfile::tempdir().expect("fixture directory should be creatable");
     let output = directory.path().join("output");
-    fs::create_dir_all(&output).expect("output directory should be creatable");
+    let candidate = publication_data("1.0.0", 'a');
+    write_bundle(&candidate, &output, false).unwrap();
+    let index_path = output.join("sdk-docs-versions.v1.json");
+    let canonical: VersionIndex = serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    assert_eq!(load_version_index(&output).unwrap(), canonical);
+    for misplaced_release in [true, false] {
+        let mut malformed = canonical.clone();
+        let entry = malformed.release_candidates[0].clone();
+        if misplaced_release {
+            malformed.release_candidates.clear();
+            malformed.releases.push(entry);
+        } else {
+            malformed.latest = Some(entry);
+        }
+        let bytes = serde_json::to_vec_pretty(&malformed).unwrap();
+        fs::write(&index_path, &bytes).unwrap();
+        assert!(matches!(
+            load_version_index(&output),
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(fs::read(&index_path).unwrap(), bytes);
+    }
     let malformed = VersionIndex {
-        release_candidates: Vec::new(),
         historical_prereleases: Vec::new(),
         schema: VERSION_INDEX_SCHEMA_VERSION.into(),
         latest: None,
-        releases: vec![VersionEntry {
+        releases: Vec::new(),
+        release_candidates: vec![VersionEntry {
             captured_source: None,
             publication_status: PublicationStatus::Candidate,
             released_packages: Vec::new(),
-            version: "1.0.0".into(),
+            version: "0.9.0".into(),
             channel: Channel::Release,
             revision: "a".repeat(40),
-            data_file: "release-candidates/1.0.0/sdk-docs-data.v1.json".into(),
+            data_file: "release-candidates/0.9.0/sdk-docs-data.v1.json".into(),
             data_sha256: "0".repeat(64),
         }],
         preview: None,
     };
-    let index_path = output.join("sdk-docs-versions.v1.json");
     fs::write(
         &index_path,
         serde_json::to_vec_pretty(&malformed).expect("malformed index should serialize"),
@@ -167,7 +187,7 @@ fn malformed_prior_version_index_is_rejected_without_mutation() {
     );
     assert!(!output.join("releases").exists());
 
-    let data_path = output.join("release-candidates/1.0.0/sdk-docs-data.v1.json");
+    let data_path = output.join("release-candidates/0.9.0/sdk-docs-data.v1.json");
     fs::create_dir_all(data_path.parent().expect("data file should have a parent"))
         .expect("prior data directory should be creatable");
     fs::write(&data_path, b"prior data").expect("prior data should be writable");
