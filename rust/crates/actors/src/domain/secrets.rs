@@ -1,6 +1,9 @@
 use super::*;
+// The derive names a message field's wire type by appending `Proto`.
+use acyclic_auth::secrets::{SecretRef, SecretRefProto};
 
-/// A selected environment name and credential-store address. Never secret bytes.
+/// One environment property bound to the canonical [`SecretRef`]. Never secret
+/// bytes: the host resolves the reference's exact version when the guest uses it.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SecretSelection::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SecretSelection.ts")]
@@ -8,13 +11,15 @@ use super::*;
 pub struct SecretSelection {
     #[wire(tag = 1)]
     name: String,
-    #[wire(tag = 2)]
-    reference: String,
+    // Tag 2 carried the retired unversioned address; it is never reused.
+    #[wire(tag = 3, message, import = "harness/v2/resources.proto")]
+    #[ts(type = "{ scope: string; name: string; version: string }")]
+    reference: SecretRef,
 }
 
 impl SecretSelection {
-    /// Validates a reference selection without resolving or revealing its value.
-    pub fn new(name: String, reference: String) -> Result<Self, DomainError> {
+    /// Binds `name` to `reference` without resolving or revealing its value.
+    pub fn new(name: String, reference: SecretRef) -> Result<Self, DomainError> {
         let selection = Self { name, reference };
         selection.validate_from_proto()?;
         Ok(selection)
@@ -25,30 +30,22 @@ impl SecretSelection {
         &self.name
     }
 
-    /// The host-resolved address, without versions or unwrap credentials.
-    pub fn reference(&self) -> &str {
+    /// The canonical reference, with its immutable version.
+    pub fn reference(&self) -> &SecretRef {
         &self.reference
     }
 
-    /// Canonical bounded reference grammar shared with manifest admission.
-    pub fn valid_reference(value: &str) -> bool {
-        value.len() <= 256
-            && value.strip_prefix("secrets:/").is_some_and(|path| {
-                path.split('/').all(|segment| {
-                    !segment.is_empty()
-                        && segment.len() <= 63
-                        && segment
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                })
-            })
-    }
-
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        if !valid_environment_name(&self.name) || !Self::valid_reference(&self.reference) {
+        if !valid_environment_name(&self.name) {
             return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
         }
         Ok(())
+    }
+}
+
+impl From<acyclic_auth::secrets::Error> for DomainError {
+    fn from(_: acyclic_auth::secrets::Error) -> Self {
+        Self::Contract(crate::ContractError::InvalidArgument)
     }
 }
 

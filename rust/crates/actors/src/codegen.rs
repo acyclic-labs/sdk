@@ -27,6 +27,7 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
     let protoc_proto = protoc_path(&proto);
     let protoc = protoc_path(&protoc_bin_vendored::protoc_bin_path().map_err(io::Error::other)?);
     let include_path = protoc_path(&protoc_bin_vendored::include_path().map_err(io::Error::other)?);
+    let shared_root = protoc_path(&acyclic_proto_build::shared_protocols());
     let mut prost =
         acyclic_proto_build::config().map_err(|error| io::Error::other(error.to_string()))?;
     prost
@@ -39,11 +40,7 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
         .compile_with_config(
             prost,
             &[protoc_proto],
-            &[
-                protoc_proto_root,
-                protoc_path(&acyclic_proto_build::shared_protocols()),
-                include_path,
-            ],
+            &[protoc_proto_root, shared_root, include_path],
         )
         .map_err(|error| io::Error::other(format!("Actors tonic generation failed: {error}")))?;
     fs::write(

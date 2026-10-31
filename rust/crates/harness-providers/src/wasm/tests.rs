@@ -201,7 +201,7 @@ async fn refusal_body_failures_keep_their_class_without_generation_or_count_retr
             registry.bind_credentials(field(&fixture, "bind")?.dyn_into()?);
             registry.register("fixture".into(), to_js(&json!({
                 "adapter":"chat", "base_url":"https://example.test/v1",
-                "authentication":{"bearer":{"secret_reference":"secrets:/models/primary"}},
+                "authentication":{"bearer":{"secret_reference":{"scope":"models","name":"primary","version":"1"}}},
                 "models":{"model":{"capacity":{"context_tokens":4096,"output_tokens":512}}},
                 "token_counter":{"path":"count_tokens","adapter":"chat","response_field":"input_tokens","framing_tokens":0},
                 "max_event_bytes":4096,

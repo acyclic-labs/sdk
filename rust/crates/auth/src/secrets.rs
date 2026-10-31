@@ -180,6 +180,83 @@ impl SecretRef {
     }
 }
 
+/// Wire form of [`SecretRef`]: the shared `acyclic.harness.v2.SecretRef`
+/// (`harness/v2/resources.proto`) that every contract embeds.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct SecretRefProto {
+    /// Owner-local scope.
+    #[prost(string, tag = "1")]
+    pub scope: String,
+    /// Variable name.
+    #[prost(string, tag = "2")]
+    pub name: String,
+    /// Immutable version identity.
+    #[prost(uint64, tag = "3")]
+    pub version: u64,
+}
+
+impl prost::Name for SecretRefProto {
+    const NAME: &'static str = "SecretRef";
+    const PACKAGE: &'static str = "acyclic.harness.v2";
+}
+
+impl TryFrom<SecretRefProto> for SecretRef {
+    type Error = Error;
+    fn try_from(value: SecretRefProto) -> Result<Self, Error> {
+        Self::new(value.scope, value.name, value.version)
+    }
+}
+
+impl From<SecretRef> for SecretRefProto {
+    fn from(value: SecretRef) -> Self {
+        Self {
+            scope: value.scope,
+            name: value.name,
+            version: value.version,
+        }
+    }
+}
+
+// Protobuf JSON is the one JSON shape: `version` is a decimal string on output
+// and either spelling on input, so serde and descriptor codecs agree.
+impl Serialize for SecretRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        let mut fields = serializer.serialize_struct("SecretRef", 3)?;
+        fields.serialize_field("scope", &self.scope)?;
+        fields.serialize_field("name", &self.name)?;
+        fields.serialize_field("version", &self.version.to_string())?;
+        fields.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SecretRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Version {
+            Number(u64),
+            Text(String),
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            scope: String,
+            name: String,
+            version: Version,
+        }
+        let fields = Fields::deserialize(deserializer)?;
+        let version = match fields.version {
+            Version::Number(version) => version,
+            Version::Text(text) => text
+                .parse()
+                .map_err(|_| serde::de::Error::custom("secret version must be a decimal u64"))?,
+        };
+        Self::new(fields.scope, fields.name, version)
+            .map_err(|_| serde::de::Error::custom("invalid secret reference"))
+    }
+}
+
 /// A resolved value, held only by the host: never printed, zeroed on drop.
 pub struct SecretValue(Zeroizing<Vec<u8>>);
 
@@ -226,17 +303,34 @@ pub type ResolveFuture<'a> =
 #[cfg(target_arch = "wasm32")]
 pub type ResolveFuture<'a> = Pin<Box<dyn Future<Output = Result<SecretValue, ResolveError>> + 'a>>;
 
+/// Host-side future for the current reference of a name.
+#[cfg(not(target_arch = "wasm32"))]
+pub type CurrentFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<SecretRef, ResolveError>> + Send + 'a>>;
+/// Host-side future for the current reference of a name, with JavaScript's
+/// single-threaded ownership.
+#[cfg(target_arch = "wasm32")]
+pub type CurrentFuture<'a> = Pin<Box<dyn Future<Output = Result<SecretRef, ResolveError>> + 'a>>;
+
 /// The host's one secrets source. It is never reachable from the API: the
 /// public surface has no read action. Only host credential adapters hold a
 /// resolver; resolved values never enter guest execution.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait Resolver: Send + Sync {
+    /// The boundary for a caller that holds only a name: the reference to the
+    /// value `name` holds in `scope` now, whose version later resolves to
+    /// exactly that value. [`ResolveError::NotFound`] when the name is unset.
+    fn current<'a>(&'a self, scope: &'a str, name: &'a str) -> CurrentFuture<'a>;
     /// Resolves exactly `reference`, or fails typed.
     fn resolve<'a>(&'a self, reference: &'a SecretRef) -> ResolveFuture<'a>;
 }
 /// The host's one secrets source, with JavaScript's single-threaded ownership.
 #[cfg(target_arch = "wasm32")]
 pub trait Resolver {
+    /// The boundary for a caller that holds only a name: the reference to the
+    /// value `name` holds in `scope` now, whose version later resolves to
+    /// exactly that value. [`ResolveError::NotFound`] when the name is unset.
+    fn current<'a>(&'a self, scope: &'a str, name: &'a str) -> CurrentFuture<'a>;
     /// Resolves exactly `reference`, or fails typed.
     fn resolve<'a>(&'a self, reference: &'a SecretRef) -> ResolveFuture<'a>;
 }

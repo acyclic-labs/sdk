@@ -13,6 +13,7 @@ pub fn typescript() -> Result<String, String> {
         wire::typescript::<Binding>()?,
         wire::typescript::<ActorLimits>()?,
         wire::typescript::<SubscriptionSpec>()?,
+        wire::typescript::<SecretSelection>()?,
         wire::typescript::<ResourceGrant>()?,
         wire::typescript::<Limits>()?,
     ] {
@@ -50,10 +51,7 @@ pub fn typescript() -> Result<String, String> {
         FetchBinding,
         HostFetch,
         HostCredential,
-        CredentialScheme,
         BindingGrant,
-        SecretRef,
-        SecretReference,
         EgressRule,
         CronSpec,
         AssetSpec,

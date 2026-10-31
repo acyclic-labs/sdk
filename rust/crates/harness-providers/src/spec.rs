@@ -1,4 +1,5 @@
 use crate::Adapter;
+use acyclic_auth::secrets::SecretRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -15,18 +16,26 @@ pub enum Authentication {
     Optional,
     /// Resolve a bearer through a host-protected secret binding on each request.
     Bearer {
-        /// Canonical logical reference, resolved outside guest memory.
-        secret_reference: String,
+        /// Canonical versioned reference, resolved outside guest memory.
+        #[cfg_attr(
+            all(target_arch = "wasm32", feature = "browser"),
+            tsify(type = "SecretRef")
+        )]
+        secret_reference: SecretRef,
     },
     /// Resolve the adapter's API-key header through the same protected binding.
     ApiKeySecret {
-        /// Canonical logical reference, resolved outside guest memory.
-        secret_reference: String,
+        /// Canonical versioned reference, resolved outside guest memory.
+        #[cfg_attr(
+            all(target_arch = "wasm32", feature = "browser"),
+            tsify(type = "SecretRef")
+        )]
+        secret_reference: SecretRef,
     },
 }
 
 impl Authentication {
-    pub(crate) fn secret_reference(&self) -> Option<&str> {
+    pub(crate) fn secret_reference(&self) -> Option<&SecretRef> {
         match self {
             Self::Bearer { secret_reference } | Self::ApiKeySecret { secret_reference } => {
                 Some(secret_reference)

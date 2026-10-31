@@ -102,6 +102,7 @@ impl Opening {
                     &root,
                     config.mcp_limits,
                     Arc::new(crate::secrets::EnvSecrets),
+                    crate::secrets::EnvSecrets::SCOPE,
                 )
                 .await?
             }

@@ -69,7 +69,7 @@ fn untrusted_fetch_policy_rejects_destination_widening_and_environment_collision
             .clone()
             .with_secrets(vec![SecretSelection::new(
                 "UPSTREAM".into(),
-                "secrets:/key".into()
+                acyclic_auth::secrets::SecretRef::new("app".into(), "key".into(), 1)?
             )?])
             .is_err()
     );

@@ -664,6 +664,7 @@ name = "acyclic-harness-providers"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-core",

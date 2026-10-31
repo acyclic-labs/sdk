@@ -1,96 +1,14 @@
-//! Host-held secrets. Configuration names a secret by [`SecretRef`]; only the
-//! host resolves it, through its one [`SecretSource`], so no secret enters
-//! guest code, a stream or a volume. A platform implements [`SecretSource`]
-//! over its secrets product; self-hosters use [`EnvSecrets`] or
-//! [`FileSecrets`].
+//! Host-held secrets. Every reference is the canonical
+//! [`acyclic_auth::secrets::SecretRef`]; only the host resolves it, through its
+//! one [`acyclic_auth::secrets::Resolver`], so no secret enters guest code, a
+//! stream or a volume. A platform implements the resolver over its secrets
+//! product; self-hosters use [`EnvSecrets`] or [`FileSecrets`]. A caller that
+//! holds only a name, such as an MCP credential variable, gets its reference
+//! from `Resolver::current` in its host's scope.
 
-use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
-use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
-
-/// Longest secret name.
-pub const MAX_SECRET_NAME_BYTES: usize = 256;
-
-/// The name of a secret, never its value: ASCII letters, digits, `.`, `_`
-/// and `-`, not starting with `.`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct SecretRef(String);
-
-impl SecretRef {
-    /// Validates `name`.
-    ///
-    /// # Errors
-    /// [`crate::Error::Invalid`] for an empty, overlong or ill-formed name.
-    pub fn new(name: impl Into<String>) -> crate::Result<Self> {
-        let name = name.into();
-        let valid = !name.is_empty()
-            && name.len() <= MAX_SECRET_NAME_BYTES
-            && !name.starts_with('.')
-            && name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
-        if valid {
-            Ok(Self(name))
-        } else {
-            Err(crate::Error::Invalid("invalid secret name".into()))
-        }
-    }
-
-    /// The name.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for SecretRef {
-    type Error = crate::Error;
-
-    fn try_from(name: String) -> crate::Result<Self> {
-        Self::new(name)
-    }
-}
-
-impl From<SecretRef> for String {
-    fn from(reference: SecretRef) -> Self {
-        reference.0
-    }
-}
-
-/// A resolved secret, held only by the host: never printed, zeroed on drop.
-pub struct Secret(Zeroizing<String>);
-
-impl Secret {
-    /// Takes ownership of `value`.
-    #[must_use]
-    pub fn new(value: String) -> Self {
-        Self(Zeroizing::new(value))
-    }
-
-    /// The value, for the one host call that presents it.
-    #[must_use]
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Secret(..)")
-    }
-}
-
-/// The host's one source of secrets.
-pub trait SecretSource: ProviderPlatform + 'static {
-    /// Resolves `reference`; `None` when the source holds no such secret.
-    fn secret<'a>(
-        &'a self,
-        reference: &'a SecretRef,
-    ) -> BoxProviderFuture<'a, crate::Result<Option<Secret>>>;
-}
-
-/// Secrets in the host process's environment, one variable per name.
+/// Secrets in the host process's environment, one variable per name, in the
+/// one scope [`EnvSecrets::SCOPE`]. The environment is fixed for the process,
+/// so each value has the single version 1.
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "mcp-stdio", feature = "mcp-http")
@@ -102,25 +20,62 @@ pub struct EnvSecrets;
     not(target_arch = "wasm32"),
     any(feature = "mcp-stdio", feature = "mcp-http")
 ))]
-impl SecretSource for EnvSecrets {
-    fn secret<'a>(
+impl EnvSecrets {
+    /// The scope naming the host environment.
+    pub const SCOPE: &'static str = "env";
+
+    fn variable(scope: &str, name: &str) -> Option<std::ffi::OsString> {
+        // A name the platform cannot look up is simply not held.
+        (scope == Self::SCOPE && !name.is_empty() && !name.contains('='))
+            .then(|| crate::native_environment::variable(name))
+            .flatten()
+    }
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
+impl acyclic_auth::secrets::Resolver for EnvSecrets {
+    fn current<'a>(
         &'a self,
-        reference: &'a SecretRef,
-    ) -> BoxProviderFuture<'a, crate::Result<Option<Secret>>> {
-        let value = crate::native_environment::variable(reference.as_str())
-            .map(|value| {
-                value
-                    .into_string()
-                    .map(Secret::new)
-                    .map_err(|_| crate::Error::Invalid("secret is not UTF-8".into()))
-            })
-            .transpose();
+        scope: &'a str,
+        name: &'a str,
+    ) -> acyclic_auth::secrets::CurrentFuture<'a> {
+        use acyclic_auth::secrets::{ResolveError, SecretRef};
+        let reference = Self::variable(scope, name)
+            .ok_or(ResolveError::NotFound)
+            .and_then(|_| {
+                SecretRef::new(scope.to_owned(), name.to_owned(), 1)
+                    .map_err(|_| ResolveError::NotFound)
+            });
+        Box::pin(std::future::ready(reference))
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        reference: &'a acyclic_auth::secrets::SecretRef,
+    ) -> acyclic_auth::secrets::ResolveFuture<'a> {
+        use acyclic_auth::secrets::{ResolveError, SecretValue};
+        let value = Self::variable(reference.scope(), reference.name())
+            .ok_or(ResolveError::NotFound)
+            .and_then(|value| {
+                if reference.version() == 1 {
+                    Ok(SecretValue::new(value.into_encoded_bytes()))
+                } else {
+                    Err(ResolveError::VersionGone)
+                }
+            });
         Box::pin(std::future::ready(value))
     }
 }
 
 /// Secrets as files in one directory, one file per name (a mounted secrets
-/// volume); a trailing newline is not part of the secret.
+/// volume), in the one scope [`FileSecrets::SCOPE`]. A trailing newline is not
+/// part of the secret. A value's version is the leading 64 bits of the SHA-256
+/// of its bytes, so different content is a different version however and
+/// whenever it was written, and an old reference fails with `VersionGone`
+/// instead of reading the new bytes.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug)]
 pub struct FileSecrets {
@@ -129,6 +84,9 @@ pub struct FileSecrets {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl FileSecrets {
+    /// The scope naming the mounted directory.
+    pub const SCOPE: &'static str = "file";
+
     /// Secrets in `directory`.
     #[must_use]
     pub fn new(directory: impl Into<std::path::PathBuf>) -> Self {
@@ -136,57 +94,146 @@ impl FileSecrets {
             directory: directory.into(),
         }
     }
+
+    /// The file of `name`: exactly one visible path component, so a name
+    /// never leaves the directory.
+    fn path(&self, scope: &str, name: &str) -> Option<std::path::PathBuf> {
+        let mut components = std::path::Path::new(name).components();
+        let single = matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(part)), None) if part == name
+        );
+        (scope == Self::SCOPE && single && !name.starts_with('.'))
+            .then(|| self.directory.join(name))
+    }
+
+    /// Runs one blocking read on a blocking worker, never the caller's thread.
+    async fn blocking<T: Send + 'static>(
+        work: impl FnOnce() -> Result<T, acyclic_auth::secrets::ResolveError> + Send + 'static,
+    ) -> Result<T, acyclic_auth::secrets::ResolveError> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => runtime
+                .spawn_blocking(work)
+                .await
+                .map_err(|_| acyclic_auth::secrets::ResolveError::Unavailable)?,
+            Err(_) => work(),
+        }
+    }
+}
+
+/// One secret file's value, without its trailing newline, and its version.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_file(
+    path: &std::path::Path,
+) -> Result<(acyclic_auth::secrets::SecretValue, u64), acyclic_auth::secrets::ResolveError> {
+    use acyclic_auth::secrets::{ResolveError, SecretValue};
+    use sha2::Digest as _;
+    let mut value = std::fs::read(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => ResolveError::NotFound,
+        _ => ResolveError::Unavailable,
+    })?;
+    let kept = value.len()
+        - value
+            .iter()
+            .rev()
+            .take_while(|byte| matches!(byte, b'\r' | b'\n'))
+            .count();
+    value[kept..].fill(0);
+    value.truncate(kept);
+    let digest = sha2::Sha256::digest(&value);
+    let mut leading = [0; 8];
+    leading.copy_from_slice(&digest[..8]);
+    // Version 0 is never written; its one digest prefix shares version 1.
+    let version = u64::from_be_bytes(leading).max(1);
+    Ok((SecretValue::new(value), version))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl SecretSource for FileSecrets {
-    fn secret<'a>(
+impl acyclic_auth::secrets::Resolver for FileSecrets {
+    fn current<'a>(
         &'a self,
-        reference: &'a SecretRef,
-    ) -> BoxProviderFuture<'a, crate::Result<Option<Secret>>> {
-        // A validated name is one path component, so it never leaves the directory.
-        let path = self.directory.join(reference.as_str());
+        scope: &'a str,
+        name: &'a str,
+    ) -> acyclic_auth::secrets::CurrentFuture<'a> {
+        use acyclic_auth::secrets::{ResolveError, SecretRef};
+        let path = self.path(scope, name);
         Box::pin(async move {
-            // A slow mount blocks a blocking worker, never the caller's thread.
-            match tokio::runtime::Handle::try_current() {
-                Ok(runtime) => runtime
-                    .spawn_blocking(move || read_secret(&path))
-                    .await
-                    .map_err(|_| crate::Error::Storage("secret read did not complete".into()))?,
-                Err(_) => read_secret(&path),
+            let path = path.ok_or(ResolveError::NotFound)?;
+            // The value is dropped, and so zeroed, here; only its version leaves.
+            let (_, version) = Self::blocking(move || read_file(&path)).await?;
+            SecretRef::new(scope.to_owned(), name.to_owned(), version)
+                .map_err(|_| ResolveError::NotFound)
+        })
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        reference: &'a acyclic_auth::secrets::SecretRef,
+    ) -> acyclic_auth::secrets::ResolveFuture<'a> {
+        use acyclic_auth::secrets::ResolveError;
+        let path = self.path(reference.scope(), reference.name());
+        let expected = reference.version();
+        Box::pin(async move {
+            let path = path.ok_or(ResolveError::NotFound)?;
+            let (value, version) = Self::blocking(move || read_file(&path)).await?;
+            // Bytes of any other version are dropped, and so zeroed.
+            if version == expected {
+                Ok(value)
+            } else {
+                Err(ResolveError::VersionGone)
             }
         })
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn read_secret(path: &std::path::Path) -> crate::Result<Option<Secret>> {
-    match std::fs::read_to_string(path) {
-        Ok(mut value) => {
-            let kept = value.trim_end_matches(['\r', '\n']).len();
-            value.truncate(kept);
-            Ok(Some(Secret::new(value)))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(crate::Error::Storage("secret file is unreadable".into())),
-    }
-}
-
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use acyclic_auth::secrets::{ResolveError, Resolver as _};
 
-    #[test]
-    fn names_are_one_path_component() {
-        for name in ["", ".env", "../key", "a/b", "a b"] {
-            assert!(SecretRef::new(name).is_err(), "{name:?}");
-        }
-        assert!(SecretRef::new("openai.api_key-1").is_ok());
-        assert!(SecretRef::new("x".repeat(MAX_SECRET_NAME_BYTES + 1)).is_err());
+    #[tokio::test]
+    async fn file_references_pin_the_version_they_were_issued_for()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(directory.path().join("token"), "first\n")?;
+        let secrets = FileSecrets::new(directory.path());
+        let reference = secrets.current(FileSecrets::SCOPE, "token").await?;
+        assert_eq!(secrets.resolve(&reference).await?.expose(), b"first");
+        // A trailing newline is not part of the value, so not a new version.
+        std::fs::write(directory.path().join("token"), "first")?;
+        assert_eq!(secrets.resolve(&reference).await?.expose(), b"first");
+        // Negative control: other content never resolves under the old version,
+        // even written at the same modification time.
+        let written = std::fs::metadata(directory.path().join("token"))?.modified()?;
+        std::fs::write(directory.path().join("token"), "second")?;
+        std::fs::File::options()
+            .write(true)
+            .open(directory.path().join("token"))?
+            .set_modified(written)?;
+        assert_eq!(
+            secrets.resolve(&reference).await.err(),
+            Some(ResolveError::VersionGone)
+        );
+        let current = secrets.current(FileSecrets::SCOPE, "token").await?;
+        assert_eq!(secrets.resolve(&current).await?.expose(), b"second");
+        Ok(())
     }
 
-    #[test]
-    fn a_secret_is_never_printed() {
-        assert_eq!(format!("{:?}", Secret::new("hunter2".into())), "Secret(..)");
+    #[tokio::test]
+    async fn file_names_never_leave_the_directory_or_scope() {
+        let secrets = FileSecrets::new("secrets");
+        for (scope, name) in [
+            (FileSecrets::SCOPE, ".env"),
+            (FileSecrets::SCOPE, "../key"),
+            (FileSecrets::SCOPE, "a/b"),
+            (FileSecrets::SCOPE, "key/"),
+            ("other", "key"),
+        ] {
+            assert_eq!(
+                secrets.current(scope, name).await.err(),
+                Some(ResolveError::NotFound),
+                "{scope}/{name}"
+            );
+        }
     }
 }

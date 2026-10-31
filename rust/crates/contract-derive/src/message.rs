@@ -58,6 +58,12 @@ impl Field {
                 .clone()
                 .map_or_else(|| options::primitive(&ty), Ok)?
         };
+        if options.import.is_some() && kind != "message" {
+            return Err(syn::Error::new_spanned(
+                &ty,
+                "only a message is imported from a shared protocol file",
+            ));
+        }
         if kind == "enumeration" && (options.from.is_some() || options.into.is_some()) {
             return Err(syn::Error::new_spanned(
                 &ty,
@@ -192,6 +198,10 @@ impl Field {
         let name = if self.kind == "enumeration" {
             let enumeration = &self.ty;
             quote!(#enumeration::PROTO_NAME)
+        } else if self.kind == "message" && self.options.import.is_some() {
+            // A shared identity keeps its own package, resolved from the root.
+            let ty = options::shadow(&self.ty)?;
+            quote!(format!(".{}", <#ty as ::prost::Name>::full_name()))
         } else if self.kind == "message" {
             let ty = options::shadow(&self.ty)?;
             quote!(<#ty as ::prost::Name>::NAME)
@@ -276,8 +286,15 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
         .map(Field::oneof_check)
         .collect::<Result<Vec<_>, _>>()?;
     let mut owner_checks = vec![options::owner_check(&file, &quote!(#wire), true)];
+    let imports = fields
+        .iter()
+        .filter_map(|field| field.options.import.clone())
+        .collect::<Vec<_>>();
     for field in &fields {
-        let ty = if field.kind == "enumeration" {
+        let ty = if field.options.import.is_some() {
+            // Owned by a shared protocol file, never by this contract file.
+            continue;
+        } else if field.kind == "enumeration" {
             let enumeration = &field.ty;
             quote!(#enumeration)
         } else if field.kind == "message" || field.kind == "oneof" {
@@ -315,6 +332,8 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
         impl #wire {
             #[doc = "The unique compiler-linked file owner."]
             pub const FILE: #file = #file;
+            #[doc = "Shared protocol files this declaration imports."]
+            pub const IMPORTS: &'static [&'static str] = &[#(#imports),*];
             #[doc = "Protobuf declaration derived from the semantic fields."]
             pub fn schema() -> String { let mut schema = format!("message {} {{\n", #wire_name); #(#schema)* schema.push_str("}\n"); schema }
         }

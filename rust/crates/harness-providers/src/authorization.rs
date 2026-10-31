@@ -22,8 +22,8 @@ pub enum AuthorizationScheme {
 pub enum CredentialSource<'a> {
     /// The original catalog generation's admitted native key.
     ApiKey(Arc<str>),
-    /// A declared logical reference; its value stays outside guest memory.
-    SecretReference(&'a str),
+    /// The canonical versioned reference; its value stays outside guest memory.
+    SecretReference(&'a acyclic_auth::secrets::SecretRef),
 }
 
 /// Authorization selected without IO. Each physical send on a protected
@@ -87,14 +87,6 @@ impl CredentialResolver for NativeCredentials {
                 "protected model credential binding is unavailable".into(),
             )),
         }
-    }
-}
-
-pub(crate) fn reference(value: &str) -> Result<()> {
-    if acyclic_actors::domain::SecretSelection::valid_reference(value) {
-        Ok(())
-    } else {
-        Err(invalid("invalid model secret reference"))
     }
 }
 

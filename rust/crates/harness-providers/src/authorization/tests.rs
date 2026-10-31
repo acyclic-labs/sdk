@@ -37,6 +37,10 @@ fn unavailable() -> Error {
     }
 }
 
+fn reference(name: &str) -> acyclic_auth::secrets::SecretRef {
+    acyclic_auth::secrets::SecretRef::new("models".into(), name.into(), 1).unwrap()
+}
+
 impl CredentialResolver for Host {
     fn bind(
         &self,
@@ -55,9 +59,9 @@ impl CredentialResolver for Host {
         if origin != self.origin {
             return Err(Error::Unauthorized("origin denied".into()));
         }
-        let scope = match reference {
-            "secrets:/models/primary" => [1; 32],
-            "secrets:/models/other" => [2; 32],
+        let scope = match (reference.scope(), reference.name()) {
+            ("models", "primary") => [1; 32],
+            ("models", "other") => [2; 32],
             _ => return Err(Error::NotFound("model credential".into())),
         };
         if self.leak {
@@ -176,7 +180,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
     let spec = specification(
         &origin,
         Authentication::Bearer {
-            secret_reference: "secrets:/models/primary".into(),
+            secret_reference: reference("primary"),
         },
     );
     let catalog = serde_json::to_string(&spec).unwrap();
@@ -273,7 +277,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
     let mut api_key = specification(
         &origin,
         Authentication::ApiKeySecret {
-            secret_reference: "secrets:/models/primary".into(),
+            secret_reference: reference("primary"),
         },
     );
     api_key.adapter = crate::Adapter::Anthropic;
@@ -302,7 +306,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
         specification(
             &origin,
             Authentication::Bearer {
-                secret_reference: "secrets:/models/other".into(),
+                secret_reference: reference("other"),
             },
         ),
     )?;
@@ -317,7 +321,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
         specification(
             &origin,
             Authentication::Bearer {
-                secret_reference: "secrets:/missing".into(),
+                secret_reference: reference("missing"),
             },
         ),
     )?;

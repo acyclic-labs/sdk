@@ -20,7 +20,7 @@ fuzzing = []
 
 [dependencies]
 acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
-acyclic-actors = { path = "../actors", version = "=0.2.0", default-features = false }
+acyclic-auth = { path = "../auth", version = "=0.2.0" }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-stream = "0.3.6"

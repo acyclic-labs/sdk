@@ -29,7 +29,7 @@ test("the generated manifest selects every descriptor binding and passes Rust ad
   // The platform reads the Machine's selected-volume provider from the manifest, never the bundle.
   expect(declared!.runtime).toMatchObject({ actorMachine: { binding: HARNESS_BINDINGS.workspace, volumeProvider: volumes } });
   expect(declared!.fetch).toEqual({ name: MODEL_FETCH, egress: [{ host: "api.anthropic.com", port: 443 }] });
-  expect(manifest().environments[0]!.secrets).toEqual([{ name: MODEL_SECRET, reference: "secrets:/models/anthropic" }]);
+  expect(manifest().environments[0]!.secrets).toEqual([{ name: MODEL_SECRET, reference: { scope: "models", name: "anthropic", version: "1" } }]);
 });
 
 test("the artifact is exactly the entry and its declared assets", () => {
@@ -76,20 +76,23 @@ test("the Machines and Objects endpoints and their credential stay host-only", (
     { name: OBJECTS_ENDPOINT, origin: cell, credential: ACCOUNT_LEAF }]);
   const exposed = (machines: Parameters<typeof harnessManifest>[0]["machines"]) =>
     () => validate(JSON.stringify(harnessManifest({ ...deployment, machines }, spec, volumes, sha256(entry), [asset])));
-  // Negative controls: the guest's model egress reaches the origin, or its model secret is the bearer.
+  // Negative controls: the guest's model egress reaches the origin, or its model
+  // secret is the bearer's variable at any version.
   expect(exposed({ ...deployment.machines, origin: "https://api.anthropic.com" })).toThrow(": host-fetch-exposed");
-  for (const scheme of ["bearer", "account-leaf"] as const) {
-    expect(exposed({ ...deployment.machines, credential: { scheme, reference: "secrets:/models/anthropic" } }))
-      .toThrow(": host-fetch-exposed");
-  }
+  expect(exposed({ ...deployment.machines,
+    credential: { scheme: "bearer", reference: { scope: "models", name: "anthropic", version: "2" } } }))
+    .toThrow(": host-fetch-exposed");
+  const leaf = { ...spec, authentication: { api_key_secret: { secret_reference: { scope: "account", name: "leaf", version: "3" } } } };
+  expect(() => validate(JSON.stringify(harnessManifest(deployment, leaf, volumes, sha256(entry), [asset]))))
+    .toThrow(": host-fetch-exposed");
   expect(() => harnessManifest({ ...deployment, machines: { ...deployment.machines, origin: "http://machines.example.com" } },
     spec, volumes, sha256(entry), [asset])).toThrow("https-origin");
 });
 
-test("an inline credential is refused by the Rust secret-reference rule", () => {
+test("an inline credential never decodes as a secret reference", () => {
   const inline = { ...spec, authentication: { api_key_secret: { secret_reference: "sk-ant-api03-inline" } } };
-  expect(() => validate(JSON.stringify(harnessManifest(deployment, inline, volumes, sha256(entry), [asset]))))
-    .toThrow(": secret-reference");
+  expect(() => validate(JSON.stringify(harnessManifest(deployment, inline as never, volumes, sha256(entry), [asset]))))
+    .toThrow(": invalid-json-or-contract");
 });
 
 test("the entry is a public guest ABI definition", async () => {

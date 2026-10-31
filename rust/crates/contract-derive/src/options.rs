@@ -14,6 +14,7 @@ pub struct Options {
     pub tag: Option<u32>,
     pub kind: Option<String>,
     pub oneof: Option<LitStr>,
+    pub import: Option<LitStr>,
     pub redacted: bool,
 }
 
@@ -58,6 +59,8 @@ impl Options {
             self.into = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("oneof") {
             self.oneof = Some(meta.value()?.parse()?);
+        } else if meta.path.is_ident("import") {
+            self.import = Some(meta.value()?.parse()?);
         } else if [
             "string",
             "bytes",

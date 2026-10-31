@@ -6,6 +6,11 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test;
 
+fn reference(name: &str, version: u64) -> acyclic_auth::secrets::SecretRef {
+    acyclic_auth::secrets::SecretRef::new("models".into(), name.into(), version)
+        .unwrap_or_else(|_| unreachable!("valid test reference"))
+}
+
 #[wasm_bindgen(inline_js = r#"
 export function credentialOwner(data, mode, unavailable, denied, indeterminate) {
   let ready, rejectHead, body;
@@ -13,7 +18,8 @@ export function credentialOwner(data, mode, unavailable, denied, indeterminate) 
     ready: new Promise(resolve => ready = resolve) };
   state.bind = (origin, reference, scheme) => {
     state.binds++;
-    if (origin !== 'https://example.test' || reference !== 'secrets:/models/primary')
+    if (origin !== 'https://example.test' || reference.scope !== 'models'
+        || reference.name !== 'primary' || reference.version !== '1')
       throw Object.assign(new Error('private diagnostic'), {code:denied});
     return {credentialScope:new Uint8Array(mode === 'malformed' ? 31 : 32).fill(7),
       fetch(url, init) {
@@ -95,7 +101,7 @@ async fn protected_fetch_retains_authority_and_settles_when_its_producer_closes(
         assert_eq!(field(&owner, "binds").as_f64(), Some(0.0));
         let refused = resolver
             .bind(
-                CredentialSource::SecretReference("secrets:/missing"),
+                CredentialSource::SecretReference(&reference("missing", 1)),
                 "https://example.test",
                 AuthorizationScheme::Bearer,
                 transport.clone(),
@@ -106,7 +112,7 @@ async fn protected_fetch_retains_authority_and_settles_when_its_producer_closes(
         assert!(!refused.to_string().contains("private diagnostic"));
         assert_eq!(field(&owner, "calls").as_f64(), Some(0.0));
         let binding = resolver.bind(
-            CredentialSource::SecretReference("secrets:/models/primary"),
+            CredentialSource::SecretReference(&reference("primary", 1)),
             "https://example.test",
             AuthorizationScheme::Bearer,
             transport,

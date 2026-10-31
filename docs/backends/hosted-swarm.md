@@ -225,8 +225,9 @@ artifact only when its files are exactly the entry and those declared assets. Th
 build runs that check, then loads the artifact from only the declared files,
 before writing it. The entry selects
 the bindings named in `src/bindings.ts`; the platform defines each binding's
-resource kind. Its model credential is only a `secrets:/` reference, and the
-validator refuses an inline value with the `secret-reference` rule. A deployment
+resource kind. Its model credential is only a canonical versioned
+`{scope, name, version}` reference; an inline value does not decode, and the
+validator refuses it with the `invalid-json-or-contract` rule. A deployment
 missing any harness binding is refused before deployment, and an environment
 without a bound authority is refused on restore. `eventStorage` and
 `streamJournal` both select the actor's own state transaction binding: host
@@ -247,10 +248,12 @@ spawn command is refused as `spawn_refused` before anything commits.
 and binds the `shell` tool to it. Its grant needs only `machines/exec`. The
 platform creates the Machine through the entry's host-only `hostFetch` endpoint,
 built from the owner's `deployment.machines` (`origin`, `credential`).
-The credential is `{scheme, reference}`. It defaults to `account-leaf` at
-`secrets:/account/leaf`, the platform's one account leaf, which every
-host-only endpoint shares. With `bearer`, the referenced secret is sent as the
-bearer. With `account-leaf`, the referenced secret is the JSON object
+The credential is `{"scheme": "bearer", "reference": {scope, name, version}}`
+or `{"scheme": "account-leaf"}`, the default. The account leaf is the
+platform's one leaf at `secrets:/account/leaf`, shared by every host-only
+endpoint; the host owns its version, so the credential names none. With
+`bearer`, the referenced secret is sent as the bearer. With `account-leaf`,
+the leaf secret is the JSON object
 `{key, certificate, birth}` in the platform's own leaf encoding: the
 leaf's private key, its account-signed certificate, and the account birth.
 Only the host reads it. For each exchange the host mints a short-lived bearer
@@ -261,7 +264,7 @@ the bearer is scoped to this endpoint. The host sends it as
 stored token is ever refreshed. The key never reaches the guest, a stream, a
 volume, a log or a fixture.
 Admission refuses a host-only endpoint whose credential any environment secret
-declares, or whose origin any guest fetch allow-list names, so the guest never
+selects at any version, or whose origin any guest fetch allow-list names, so the guest never
 holds Create authority. The entry's `runtime.actorMachine` names the binding,
 that `endpoint`, and the owner's `options.filesystem_provider` as
 `volumeProvider`. The Machine's selected

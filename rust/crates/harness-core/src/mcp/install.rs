@@ -71,22 +71,28 @@ struct Connected {
 impl McpConfig {
     /// Connects configured servers and adds their tools without replacing caller tools.
     /// `workspace` must be the absolute project root. Required failures reject startup.
-    /// Credential references resolve only through the host's `secrets`.
+    /// Credential variables resolve only through the host's `secrets`: each
+    /// name becomes the canonical reference current in `secret_scope`.
     pub async fn install(
         self,
         tools: ToolRegistry,
         workspace: &Path,
         limits: McpClientLimits,
-        secrets: Arc<dyn crate::secrets::SecretSource>,
+        secrets: Arc<dyn acyclic_auth::secrets::Resolver>,
+        secret_scope: &str,
     ) -> Result<McpInstallation> {
         if !workspace.is_absolute() {
             return Err(Error::Invalid("MCP workspace must be absolute".into()));
         }
         let workspace = Arc::new(workspace.to_owned());
+        let secret_scope: Arc<str> = secret_scope.into();
         self.install_with(tools, limits, move |server| {
             let workspace = Arc::clone(&workspace);
             let secrets = Arc::clone(&secrets);
-            Box::pin(async move { native::connect(server, &workspace, limits, &*secrets).await })
+            let scope = Arc::clone(&secret_scope);
+            Box::pin(
+                async move { native::connect(server, &workspace, limits, &*secrets, &scope).await },
+            )
         })
         .await
     }

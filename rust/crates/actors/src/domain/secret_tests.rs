@@ -1,5 +1,10 @@
 use super::*;
+use acyclic_auth::secrets::SecretRef;
 use prost::Message;
+
+fn reference(scope: &str, name: &str) -> Result<SecretRef, acyclic_auth::secrets::Error> {
+    SecretRef::new(scope.to_owned(), name.to_owned(), 1)
+}
 
 fn deployment() -> Result<DeploymentRequest, DomainError> {
     DeploymentRequest::worker(
@@ -14,8 +19,7 @@ fn deployment() -> Result<DeploymentRequest, DomainError> {
 #[test]
 fn secret_selections_round_trip_and_replace_without_inheritance()
 -> Result<(), Box<dyn std::error::Error>> {
-    let secret =
-        SecretSelection::new("MODEL_KEY".to_owned(), "secrets:/models/primary".to_owned())?;
+    let secret = SecretSelection::new("MODEL_KEY".to_owned(), reference("models", "primary")?)?;
     let request = deployment()?.with_secrets(vec![secret.clone()])?;
     let wire: wire::DeploymentRequest = request.clone().into();
     let decoded = wire::DeploymentRequest::decode(wire.encode_to_vec().as_slice())?;
@@ -46,20 +50,22 @@ fn secret_selections_round_trip_and_replace_without_inheritance()
 #[test]
 fn secret_admission_rejects_values_duplicates_and_binding_collisions()
 -> Result<(), Box<dyn std::error::Error>> {
-    for reference in [
-        "plaintext",
-        "https://vault/key",
-        "secrets:/",
-        "secrets:/key?version=1",
-        "secrets:/key#unwrap",
-        "secrets:/a//b",
-    ] {
-        assert!(
-            SecretSelection::new("KEY".to_owned(), reference.to_owned()).is_err(),
-            "{reference}"
-        );
+    let secret = SecretSelection::new("KEY".to_owned(), reference("app", "key")?)?;
+    // Only the canonical versioned reference decodes: an absent one or version 0 is refused.
+    let edits: [fn(&mut wire::SecretSelection); 2] = [
+        |selection| selection.reference = None,
+        |selection| {
+            if let Some(reference) = selection.reference.as_mut() {
+                reference.version = 0;
+            }
+        },
+    ];
+    for edit in edits {
+        let mut wire: wire::DeploymentRequest =
+            deployment()?.with_secrets(vec![secret.clone()])?.into();
+        wire.secrets.iter_mut().for_each(edit);
+        assert!(DeploymentRequest::try_from(wire).is_err());
     }
-    let secret = SecretSelection::new("KEY".to_owned(), "secrets:/key".to_owned())?;
     assert!(
         deployment()?
             .with_secrets(vec![secret.clone(), secret.clone()])
@@ -111,8 +117,7 @@ fn secret_fields_are_additive_for_the_actual_predecessor_reader()
     let pool = DescriptorPool::decode(
         include_bytes!("../../tests/fixtures/actors/v1/actors-pre-secrets.bin").as_slice(),
     )?;
-    let selected =
-        SecretSelection::new("MODEL_KEY".to_owned(), "secrets:/models/primary".to_owned())?;
+    let selected = SecretSelection::new("MODEL_KEY".to_owned(), reference("models", "primary")?)?;
     let base: wire::DeploymentRequest = deployment()?.into();
     assert!(
         wire::DeploymentRequest::decode(base.encode_to_vec().as_slice())?

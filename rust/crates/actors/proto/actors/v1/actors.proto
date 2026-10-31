@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package acyclic.actors.v1;
 
+import "harness/v2/resources.proto";
 import "validation/v1/options.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/actors/v1;actorsv1";
@@ -248,7 +249,7 @@ message ResumeSubscriptionResponse {
 
 message SecretSelection {
   string name = 1;
-  string reference = 2;
+  .acyclic.harness.v2.SecretRef reference = 3;
 }
 
 message SubscriptionObservation {
