@@ -588,6 +588,7 @@ dependencies = [
  "hex",
  "http",
  "js-sys",
+ "jiff",
  "jsonschema",
  "jsonwebtoken",
  "loom",
