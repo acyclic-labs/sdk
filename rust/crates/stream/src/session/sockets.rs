@@ -10,11 +10,12 @@ use super::*;
 
 /// Frames from the peer of one admitted socket. Dropping it ends the socket.
 pub trait SocketInbound: crate::ProviderPlatform {
-    /// Apply one peer frame. The session awaits it before reading the next
-    /// frame of the same connection, so peer frames are applied in order and
-    /// a slow owner exerts transport backpressure. An error closes only this
-    /// channel.
-    fn receive(&self, frame: Bytes) -> crate::BoxProviderFuture<'static, Result<(), StreamError>>;
+    /// Accept one peer frame, in the order the peer sent it. This MUST NOT
+    /// perform I/O: the session hands it over synchronously, so no socket's
+    /// owner can stall the other channels of the shared session. The owner
+    /// applies accepted frames in order on its own tasks. An error closes
+    /// only this channel.
+    fn receive(&self, frame: Bytes) -> Result<(), StreamError>;
 }
 
 /// One admitted socket: frames to the peer, and the owner's inbound handle.

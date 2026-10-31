@@ -15,9 +15,10 @@ struct EchoInbound {
 }
 
 impl SocketInbound for EchoInbound {
-    fn receive(&self, frame: Bytes) -> crate::BoxProviderFuture<'static, Result<(), StreamError>> {
-        let sent = self.frames.unbounded_send(frame);
-        Box::pin(async move { sent.map_err(|_| StreamError::Unavailable) })
+    fn receive(&self, frame: Bytes) -> Result<(), StreamError> {
+        self.frames
+            .unbounded_send(frame)
+            .map_err(|_| StreamError::Unavailable)
     }
 }
 
