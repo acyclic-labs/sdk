@@ -328,7 +328,7 @@ async fn publication_field_controls() {
     use acyclic_observability::{
         Publication as Evidence, PublicationControl, PublicationData, PublicationPurpose,
     };
-    let credit = Arc::new(tokio::sync::Semaphore::new(5));
+    let credit = Arc::new(tokio::sync::Semaphore::new(7));
     let (export, mut receiver) = Export::channel(credit.clone(), true);
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
     let guard = tracing::dispatcher::set_default(&dispatch);
@@ -348,7 +348,9 @@ async fn publication_field_controls() {
     deferred.record("data", "prepared-request");
     deferred.record("control", "conditional-journal-append");
     deferred.record("outcome", "ok");
+    deferred.record("rpc", "unknown-purpose");
     deferred.record("data", "inline-failure");
+    deferred.record("control", "unknown-control");
     deferred.record("outcome", "err");
     drop(deferred);
     let unknown = tracing::info_span!(
@@ -384,13 +386,32 @@ async fn publication_field_controls() {
         outcome = "ok",
     );
     drop(immediate);
+    for unknown in [true, false] {
+        let changed = tracing::info_span!(
+            "acyclic.harness.executor.publication",
+            rpc = "model-dispatch",
+            data = "prepared-request",
+            control = "conditional-journal-append",
+            outcome = tracing::field::Empty,
+        );
+        if unknown {
+            changed.record("rpc", "unknown-purpose");
+            changed.record("data", "unknown-data");
+            changed.record("control", "unknown-control");
+        } else {
+            changed.record("rpc", "tool-settlement");
+            changed.record("data", "result-and-projection");
+        }
+        changed.record("outcome", "ok");
+        drop(changed);
+    }
     drop(guard);
     drop(dispatch);
     let mut records = Vec::new();
     while let Some(record) = receiver.recv().await {
         records.push(record);
     }
-    assert_eq!(records.len(), 5);
+    assert_eq!(records.len(), 7);
     assert_eq!(records[0].sample().publication, Some(expected));
     assert_eq!(
         records[0].sample().outcome,
@@ -411,7 +432,16 @@ async fn publication_field_controls() {
     );
     assert!(records[3].sample().publication.is_none());
     assert_eq!(records[4].sample().publication, Some(expected));
+    assert_eq!(records[5].sample().publication, Some(Evidence::default()));
+    assert_eq!(
+        records[6].sample().publication,
+        Some(Evidence {
+            purpose: Some(PublicationPurpose::ToolSettlement),
+            data: Some(PublicationData::ResultAndProjection),
+            control: expected.control,
+        })
+    );
     assert_eq!(credit.available_permits(), 0);
     drop(records);
-    assert_eq!(credit.available_permits(), 5);
+    assert_eq!(credit.available_permits(), 7);
 }
