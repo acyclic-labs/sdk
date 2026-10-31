@@ -153,5 +153,6 @@ impl crate::async_storage::DecodedCacheOrigin for OwnedReadObjectStore {
     }
 }
 
+#[path = "support/paused_objects.rs"]
 mod paused_objects;
 pub(crate) use paused_objects::PausedStore;
