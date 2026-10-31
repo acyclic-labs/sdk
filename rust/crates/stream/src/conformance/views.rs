@@ -281,6 +281,10 @@ async fn selected_child_tails<P: StreamProvider + ?Sized>(provider: &P) -> Resul
         return Err(StreamError::Unavailable);
     }
     let wire = crate::wire_codec::heads_to_wire(view.clone())?;
+    let json = crate::http_response::value("heads", &prost::Message::encode_to_vec(&wire))
+        .map_err(|_| StreamError::InvalidResponse)?
+        .ok_or(StreamError::InvalidResponse)?;
+    crate::http_validation::validate("heads", &json).map_err(|_| StreamError::InvalidResponse)?;
     if crate::wire_codec::requests::heads_len(&view) != prost::Message::encoded_len(&wire)
         || crate::wire_codec::heads_from_response(wire)? != view
     {
@@ -305,6 +309,21 @@ async fn selected_child_tails<P: StreamProvider + ?Sized>(provider: &P) -> Resul
             child.tail_record = None;
         }
         if torn.validate_for(&request) != Err(StreamError::InvalidResponse) {
+            return Err(StreamError::Unavailable);
+        }
+        let mut torn_json = json.clone();
+        let child = torn_json["children"]["children"][2]
+            .as_object_mut()
+            .ok_or(StreamError::InvalidResponse)?;
+        if let Some(tail) = tail {
+            child.insert("tail".into(), serde_json::Value::String(tail.to_string()));
+        } else {
+            child.remove("tail");
+        }
+        if remove_record {
+            child.remove("tailRecord");
+        }
+        if crate::http_validation::validate("heads", &torn_json).is_ok() {
             return Err(StreamError::Unavailable);
         }
     }
