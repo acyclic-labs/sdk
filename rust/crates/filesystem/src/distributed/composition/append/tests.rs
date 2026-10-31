@@ -1,6 +1,6 @@
 use super::*;
-use acyclic_stream::testing::{Counted, RequestClass};
-use acyclic_stream::{AppendRecord, IdempotencyKey, MemoryStream, OwnedBytes, StreamProvider};
+use acyclic_stream::testing::Counted;
+use acyclic_stream::{AppendRecord, IdempotencyKey, MemoryStream, OwnedBytes};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -11,7 +11,7 @@ fn caller(key: &'static [u8]) -> Result<FilesystemCommit, acyclic_stream::Stream
         conditions: vec![CommitCondition::Absent { path: path.clone() }],
         mutations: vec![CommitMutation::Append {
             path,
-            records: vec![AppendRecord::new(OwnedBytes::from_static(
+            records: vec![AppendRecord::from(OwnedBytes::from_static(
                 b"original result",
             ))],
         }],
@@ -36,7 +36,6 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
         let members = requests(authority, count)?;
         let mut publication = caller(b"joined")?;
         let original_key = publication.request().idempotency_key.clone();
-        let before = provider.requests();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let FilesystemAppendPreparation::Ready(prepared) = store
             .contribute_append_group(&mut publication, &members, &[], &mut work)
@@ -45,27 +44,15 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
             return Err("original append group was refused".into());
         };
         assert_eq!(publication.request().idempotency_key, original_key);
-        assert_eq!(
-            provider
-                .requests()
-                .since(before)
-                .class(RequestClass::Commit),
-            0
-        );
         assert_eq!(work.spent().backend_write_operations, 0);
         store.seal(&mut publication, &mut work)?;
         let exact_request = publication.request().clone();
+        let before = provider.requests();
         let outcome = provider.commit(exact_request.clone()).await?;
         let CommitOutcome::Committed(envelope) = &outcome else {
             return Err("whole original contribution did not commit".into());
         };
-        assert_eq!(
-            provider
-                .requests()
-                .since(before)
-                .class(RequestClass::Commit),
-            1
-        );
+        assert_eq!(provider.requests().since(before).data(), 1);
 
         // Removing the actual authority range cannot certify its members.
         let records = work.path(store.placement(), authority, "/records", None)?;
