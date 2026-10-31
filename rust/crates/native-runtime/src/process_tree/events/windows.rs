@@ -7,7 +7,7 @@ use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
@@ -32,9 +32,6 @@ const EXIT_KEY: usize = 1;
 const PIPE_KEY: usize = 2;
 /// The largest stdin chunk one overlapped write carries.
 const WRITE_CHUNK: usize = 64 * 1024;
-
-/// The port the registered exit callbacks post to.
-static PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 pub(super) struct Poller {
     port: OwnedHandle,
@@ -61,10 +58,19 @@ impl Drop for Registration {
 }
 
 unsafe extern "system" fn exited(context: *mut c_void, _timed_out: bool) {
+    if let Ok(hub) = super::hub() {
+        post_exit(hub, context);
+    }
+}
+
+fn post_exit(hub: &super::Hub, context: *mut c_void) {
     // SAFETY: the port outlives the process, and the context is only the
     // token value; nothing dereferences it.
-    unsafe {
-        PostQueuedCompletionStatus(PORT.load(Ordering::Acquire), 0, EXIT_KEY, context.cast());
+    if unsafe {
+        PostQueuedCompletionStatus(hub.poller.port.as_raw_handle(), 0, EXIT_KEY, context.cast())
+    } == 0
+    {
+        hub.fail(io::Error::last_os_error());
     }
 }
 
@@ -340,7 +346,6 @@ impl Poller {
         }
         // SAFETY: a successful call returns one owned port handle.
         let port = unsafe { OwnedHandle::from_raw_handle(port) };
-        PORT.store(port.as_raw_handle(), Ordering::Release);
         Ok(Self { port })
     }
 
@@ -428,6 +433,79 @@ impl Poller {
                 _ => {}
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process_tree::events::{Hub, ProcessWaitOutcome, Registry, arm_on};
+    use std::future::Future as _;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    #[test]
+    fn rejected_exit_post_settles_active_and_late_waits() -> io::Result<()> {
+        struct Notified(AtomicBool);
+        impl Wake for Notified {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        // A live pipe cannot accept an IOCP packet. The original OS call
+        // supplies its rejection, with no fabricated native error fixture.
+        let hub = Hub {
+            poller: Poller::refused_wait()?,
+            registry: Mutex::new(Registry::default()),
+        };
+        let mut active = arm_on(&hub, &[], None)?;
+        let mut early = arm_on(&hub, &[], None)?;
+        let notification = Arc::new(Notified(AtomicBool::new(false)));
+        let waker = Waker::from(Arc::clone(&notification));
+        let mut context = Context::from_waker(&waker);
+        assert!(Pin::new(&mut active).poll(&mut context).is_pending());
+        let token = usize::try_from(active.token).map_err(io::Error::other)?;
+        let context_token = std::ptr::without_provenance_mut::<c_void>(token);
+
+        // Negative: the former callback discarded this exact failed post.
+        // At its return the live waiter is neither settled nor notified.
+        // SAFETY: the live handle and opaque token are valid syscall inputs.
+        let posted = unsafe {
+            PostQueuedCompletionStatus(
+                hub.poller.port.as_raw_handle(),
+                0,
+                EXIT_KEY,
+                context_token.cast(),
+            )
+        };
+        let original = io::Error::last_os_error();
+        assert_eq!(posted, 0);
+        assert!(original.raw_os_error().is_some());
+        assert!(Pin::new(&mut active).poll(&mut context).is_pending());
+        assert!(!notification.0.load(Ordering::Acquire));
+
+        post_exit(&hub, context_token);
+        assert!(notification.0.load(Ordering::Acquire));
+        // A later producer error cannot replace the original native cause.
+        hub.fail(io::ErrorKind::BrokenPipe.into());
+        for wait in [&mut active, &mut early] {
+            match Pin::new(wait).poll(&mut context) {
+                Poll::Ready(ProcessWaitOutcome::ServiceFailed(error)) => {
+                    assert_eq!(error.raw_os_error(), original.raw_os_error());
+                }
+                other => panic!("exit callback lost its original terminal: {other:?}"),
+            }
+        }
+        assert_eq!(
+            arm_on(&hub, &[], None).err().unwrap().raw_os_error(),
+            original.raw_os_error()
+        );
+        let registry = hub.registry();
+        assert!(registry.armed.is_empty());
+        assert!(registry.positions.is_empty());
+        assert!(registry.timers.is_empty());
         Ok(())
     }
 }
