@@ -86,6 +86,11 @@ impl OutputTail {
         self.bytes.as_slices()
     }
 
+    /// Exact original bytes observed, independent of presentation eviction.
+    pub const fn total_bytes(&self) -> u64 {
+        self.total
+    }
+
     /// Channel text and the exact count of omitted original bytes. A suffix
     /// starting inside a UTF-8 scalar omits its partial prefix instead of
     /// inventing a replacement scalar at the presentation boundary.

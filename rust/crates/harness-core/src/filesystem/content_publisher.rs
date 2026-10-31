@@ -185,15 +185,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         })
     }
 
-    fn stage_source_once<'a>(
+    fn stage_source_once<'a, 'io: 'a>(
         &'a self,
         operation: OperationId,
         path: &'a str,
         source: std::pin::Pin<&'a mut dyn crate::conversation::ContentSource>,
         media: &'a str,
         display: &'a str,
-        access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'io>>)>> {
         BoundedContentFuture::new(access.io, || async move {
             let retry = once_key(operation, access.io)?;
             let retry_hold = access

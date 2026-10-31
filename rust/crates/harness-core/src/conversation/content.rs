@@ -455,16 +455,18 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Streams one complete file contract on the original operation. The source
     /// must reach its successful terminal event before metadata is published.
     /// Replay is authenticated by the same once-publication receipt as bytes.
+    /// Receipt custody borrows the original IO owner, independently of the
+    /// source borrow, so callers can inspect terminal state after publication.
     #[cfg(feature = "filesystem")]
-    fn stage_source_once<'a>(
+    fn stage_source_once<'a, 'io: 'a>(
         &'a self,
         _operation_id: OperationId,
         _path: &'a str,
         _source: std::pin::Pin<&'a mut dyn ContentSource>,
         _media_type: &'a str,
         _display_name: &'a str,
-        access: ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'io>>)>> {
         Err(content_error(
             access.io,
             crate::wire::ErrorCode::Unsupported,

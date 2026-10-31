@@ -23,8 +23,12 @@ use std::{num::NonZeroU32, sync::Arc};
 mod host;
 mod identity;
 pub use host::MachinesHost;
+#[cfg(feature = "filesystem")]
+mod output;
 mod workspace;
 use identity::{machines_key, map_error, parse_uuid};
+#[cfg(feature = "filesystem")]
+pub use output::capture_shell_output;
 pub use workspace::MachinesWorkspace;
 #[cfg(test)]
 mod tests;
