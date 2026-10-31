@@ -246,6 +246,13 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn tool_results(&self, turn: OperationId) -> Option<String> {
+        Some(format!(
+            "{}{turn}",
+            InternalContentClass::ToolResult.prefix()
+        ))
+    }
+
     fn stage<'a>(
         &'a self,
         turn: OperationId,

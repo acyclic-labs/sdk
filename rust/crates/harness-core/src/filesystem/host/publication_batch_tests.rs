@@ -479,6 +479,7 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
     for class in [
         InternalContentClass::Interaction,
         InternalContentClass::Execution,
+        InternalContentClass::ToolResult,
     ] {
         for adapter in 0..3 {
             let provider =

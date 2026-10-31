@@ -158,6 +158,12 @@ async fn call(
 
 fn binding()
 -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
+    binding_with(Arc::new(Never))
+}
+
+fn binding_with(
+    executors: Arc<dyn TurnExecutors>,
+) -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     let stream = Arc::new(Counted::new(MemoryStream::default()));
     let objects = acyclic_objects::MemoryObjects::memory();
     Ok(Bound::local_root(
@@ -179,7 +185,7 @@ fn binding()
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
         Turns {
-            executors: Arc::new(Never),
+            executors,
             limits: TurnLimits {
                 maximum_bytes: 64 * 1024,
                 max_steps: 4,
@@ -191,6 +197,14 @@ fn binding()
         },
     )?)
 }
+
+#[cfg(all(
+    feature = "machines",
+    feature = "native-execution",
+    feature = "test-support"
+))]
+#[path = "hosting_tests/machine_results.rs"]
+mod machine_results;
 
 #[tokio::test]
 async fn session_reads_committed_tool_output_without_local_storage_features() -> Result {

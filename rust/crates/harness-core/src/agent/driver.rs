@@ -109,6 +109,13 @@ pub async fn expand_attachments(
 /// Settled turn outputs: conversation content, which every fork of the agent
 /// inherits with its conversation and reads by exact version.
 pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
+    /// The existing tool-output directory containing this turn's journal
+    /// result payloads, when this host publishes them as readable files.
+    fn tool_results(&self, turn: OperationId) -> Option<String> {
+        let _ = turn;
+        None
+    }
+
     /// Stages `turn`'s output `bytes` once and names the staged file.
     fn stage<'a>(
         &'a self,
@@ -203,6 +210,14 @@ pub struct ConversationEntry {
     #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef", optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub targets: Option<FileRef>,
+    /// Directory of this turn's original validated tool-result files, below
+    /// the agent's tool-output resource. Follow/list it lazily and use the
+    /// ordinary ToolOutput read; each file is the journal's own result payload.
+    /// A file's publication attests its validated result, not settlement of
+    /// every effect or physical retirement beyond that result's contract.
+    #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_results: Option<String>,
 }
 
 impl ConversationEntry {
@@ -460,6 +475,7 @@ async fn settle_selection(
         outcome: TurnOutcome::Completed,
         goal: None,
         targets: None,
+        tool_results: None,
     };
     Ok(TurnStep {
         reserved_children: 0,
@@ -561,6 +577,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     outcome: TurnOutcome::Cancelled,
                     goal,
                     targets: announced(&open),
+                    tool_results: open.outputs.tool_results(turn),
                 };
                 return Ok(TurnStep {
                     reserved_children: 0,
@@ -618,6 +635,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         outcome: TurnOutcome::Completed,
                         goal: run,
                         targets: announced(&open),
+                        tool_results: open.outputs.tool_results(turn),
                     };
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = if goal.is_some() {

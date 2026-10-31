@@ -50,6 +50,8 @@ pub enum WorkspaceMutation {
 pub(crate) enum InternalContentClass {
     Interaction,
     Execution,
+    /// The original validated tool result, readable through tool-output observation.
+    ToolResult,
     /// Settled turn outputs, inherited by an agent's forks.
     Conversation,
 }
@@ -64,6 +66,8 @@ impl InternalContentClass {
             Some(class) => path.starts_with(class.prefix()),
             None => {
                 !crate::conversation::is_internal_path(path)
+                    && path != "tools/.results"
+                    && !path.starts_with(Self::ToolResult.prefix())
                     && path != "turns/.canonical"
                     && !path.starts_with("turns/.canonical/")
             }
@@ -87,6 +91,7 @@ impl InternalContentClass {
         match self {
             Self::Interaction => ".system/interactions/",
             Self::Execution => ".system/execution/",
+            Self::ToolResult => "tools/.results/",
             Self::Conversation => ".system/inherited-conversation/",
         }
     }

@@ -223,6 +223,15 @@ impl ToolExecutor for MachinesWorkspace {
                     "exit_code": output.exit_code,
                     "stdout": String::from_utf8_lossy(&output.stdout),
                     "stderr": String::from_utf8_lossy(&output.stderr), "stop": stop,
+                    "execution": {
+                        "agent": context.task().agent().map(|(path, _)| path.as_str()),
+                        "turn": context.turn_id(),
+                        "call_id": context.call_id(),
+                        "operation": context.operation_id(),
+                        "provider": self.sandbox.as_resource().provider(),
+                        "machine": self.host.machine_id(&self.sandbox)?,
+                        "volume": &self.volume,
+                    },
                 }),
             })
         })

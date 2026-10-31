@@ -59,7 +59,7 @@ where
                     key: &key,
                     expected_path: Some(&path),
                     maximum_bytes: super::MAXIMUM_PAYLOAD_BYTES,
-                    internal_class: Some(InternalContentClass::Execution),
+                    internal_class: Some(payload_class(&path)),
                     purpose: super::super::PublicationPurpose::Content,
                     scope: &self.scope,
                     ceiling: None,
@@ -93,6 +93,17 @@ where
             crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
         })?)?;
         let path = crate::executor::with_history_io(io, |work| {
+            if idempotency_key.starts_with("tool:") && idempotency_key.ends_with(":result") {
+                return crate::executor::preparation_format(
+                    format_args!(
+                        "{}{}/{}.json",
+                        InternalContentClass::ToolResult.prefix(),
+                        self.turn_operation(operation_id),
+                        digest.to_hex()
+                    ),
+                    work,
+                );
+            }
             crate::executor::preparation_format(
                 format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()),
                 work,
@@ -153,7 +164,7 @@ where
                 "execution.json",
                 super::MAXIMUM_PAYLOAD_BYTES,
                 &key,
-                InternalContentClass::Execution,
+                payload_class(&path),
                 io,
             )
             .await;
@@ -570,6 +581,14 @@ where
     ) -> Result<()> {
         self.require_operation(operation, io)?;
         self.approvals(io)?.verify(id, operation, digest).await
+    }
+}
+
+pub(super) fn payload_class(path: &str) -> InternalContentClass {
+    if path.starts_with(InternalContentClass::ToolResult.prefix()) {
+        InternalContentClass::ToolResult
+    } else {
+        InternalContentClass::Execution
     }
 }
 
