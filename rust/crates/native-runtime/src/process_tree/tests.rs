@@ -915,57 +915,113 @@ fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
 }
 
 #[test]
-fn streaming_exchange_uses_the_same_bounded_capture_and_cleanup_owner() {
+fn streaming_exchange_uses_the_same_capture_and_cleanup_owner() {
     use super::ProcessInput;
+    for schedule in [
+        super::CaptureSchedule::new(Duration::from_secs(5)),
+        super::CaptureSchedule::unbounded(),
+    ] {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("stdin-handshake", temporary.path());
+        command.stdin(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn exchange");
+        let mut seen = Vec::new();
+        let mut phase = 0;
+        let output = tree
+            .wait_with_output(
+                schedule,
+                4096,
+                Some(crate::CaptureInput::Exchange {
+                    initial: b"first\n",
+                    maximum: 13,
+                }),
+                || Ok(()),
+                |chunk| {
+                    let crate::ProcessOutput::Stdout(chunk) = chunk else {
+                        return Ok(ProcessInput::default());
+                    };
+                    seen.extend_from_slice(chunk);
+                    if phase == 0 && seen.ends_with(b"first-ack\n") {
+                        seen.clear();
+                        phase = 1;
+                        Ok(ProcessInput {
+                            bytes: b"second\n".to_vec(),
+                            complete: false,
+                        })
+                    } else if phase == 1 && seen.ends_with(b"second-ack\n") {
+                        phase = 2;
+                        Ok(ProcessInput {
+                            complete: true,
+                            ..crate::ProcessInput::default()
+                        })
+                    } else {
+                        Ok(crate::ProcessInput::default())
+                    }
+                },
+                None,
+                None,
+                None,
+            )
+            .expect("complete streaming exchange");
+        assert_eq!(phase, 2);
+        assert!(output.stdout.ends_with(b"first-ack\nsecond-ack\n"));
+        assert_eq!(output.stderr, b"exchange-stderr\n");
+        assert!(
+            !output.status.success(),
+            "protocol completion terminates the stalled server"
+        );
+        assert!(tree.is_reaped());
+    }
+    // No stdout producer remains, but the original root is still alive and
+    // stderr stays open. Waiting only for process exit would hang here.
+    #[cfg(unix)]
+    {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "read first; printf 'first-ack\n'; exec 1>&-; exec sleep 60",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn withdrawn reply producer");
+        let failure = tree
+            .wait_with_output(
+                super::CaptureSchedule::unbounded(),
+                4096,
+                Some(crate::CaptureInput::Exchange {
+                    initial: b"first\n",
+                    maximum: 6,
+                }),
+                || Ok(()),
+                |_| Ok(ProcessInput::default()),
+                None,
+                None,
+                None,
+            )
+            .expect_err("stdout EOF must terminate an incomplete exchange");
+        assert_eq!(failure.error.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(failure.stdout.ends_with(b"first-ack\n"));
+        assert!(failure.cleanup_completed && tree.is_reaped());
+    }
     let temporary = tempfile::tempdir().expect("temporary directory");
-    let mut command = command("stdin-handshake", temporary.path());
-    command.stdin(Stdio::piped());
-    let mut tree = ProcessTree::spawn(&mut command).expect("spawn exchange");
-    let mut seen = Vec::new();
-    let mut phase = 0;
-    let output = tree
+    let mut tree = ProcessTree::spawn(&mut command("stdin-handshake", temporary.path()))
+        .expect("spawn bounded-overflow refusal");
+    let failure = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            super::CaptureSchedule::new(Duration::MAX),
             4096,
-            Some(crate::CaptureInput::Exchange {
-                initial: b"first\n",
-                maximum: 13,
-            }),
+            None,
             || Ok(()),
-            |chunk| {
-                let crate::ProcessOutput::Stdout(chunk) = chunk else {
-                    return Ok(ProcessInput::default());
-                };
-                seen.extend_from_slice(chunk);
-                if phase == 0 && seen.ends_with(b"first-ack\n") {
-                    seen.clear();
-                    phase = 1;
-                    Ok(ProcessInput {
-                        bytes: b"second\n".to_vec(),
-                        complete: false,
-                    })
-                } else if phase == 1 && seen.ends_with(b"second-ack\n") {
-                    phase = 2;
-                    Ok(ProcessInput {
-                        complete: true,
-                        ..crate::ProcessInput::default()
-                    })
-                } else {
-                    Ok(crate::ProcessInput::default())
-                }
-            },
+            |_| Ok(ProcessInput::default()),
             None,
             None,
             None,
         )
-        .expect("complete streaming exchange");
-    assert_eq!(phase, 2);
-    assert!(output.stdout.ends_with(b"first-ack\nsecond-ack\n"));
-    assert_eq!(output.stderr, b"exchange-stderr\n");
-    assert!(
-        !output.status.success(),
-        "protocol completion terminates the stalled server"
-    );
+        .expect_err("overflow is not an unbounded deadline");
+    assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
+    tree.terminate(None).expect("retire unaccepted capture");
     assert!(tree.is_reaped());
 }
 

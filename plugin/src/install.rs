@@ -168,88 +168,119 @@ fn codex(args: &[&str]) -> Result<()> {
 /// exactly the acyclic@acyclic hooks Codex lists, through Codex's own
 /// app-server and config writer, as its interactive hook review would.
 fn trust_codex_hooks() -> Result<()> {
+    use acyclic_native_runtime::{
+        CaptureInput, CaptureSchedule, ProcessInput, ProcessOutput, ProcessTree,
+    };
     use std::process::Stdio;
     let recovery =
         "recovery: run codex interactively and trust the acyclic@acyclic hooks in its hook review";
-    let mut server = host_command("codex")?
+    let mut command = host_command("codex")?;
+    command
         .arg("app-server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::inherit());
+    let mut server = ProcessTree::spawn(&mut command)
         .map_err(|error| format!("step=start Codex app-server: {error}; {recovery}"))?;
-    let (Some(mut input), Some(output)) = (server.stdin.take(), server.stdout.take()) else {
-        return Err(format!("step=open Codex app-server pipes; {recovery}").into());
-    };
-    let mut output = io::BufReader::new(output);
-    // Owns both pipes: dropping it closes stdin, which ends the server.
-    let mut call = move |id: u64, method: &str, params: Value| -> Result<Value> {
-        use io::{BufRead as _, Write as _};
-        writeln!(
-            input,
-            "{}",
-            json!({"id": id, "method": method, "params": params})
-        )?;
-        if method == "initialize" {
-            writeln!(input, "{}", json!({"method": "initialized"}))?;
-        }
-        let mut line = String::new();
-        loop {
-            line.clear();
-            if output.read_line(&mut line)? == 0 {
-                return Err(format!(
-                    "step=Codex {method}: app-server exited before answering; {recovery}"
-                )
-                .into());
-            }
-            let message: Value = serde_json::from_str(&line)?;
-            if message.get("id") != Some(&json!(id)) {
-                continue;
-            }
-            if let Some(error) = message.get("error") {
-                return Err(format!("step=Codex {method}: {error}; {recovery}").into());
-            }
-            return Ok(message.get("result").cloned().unwrap_or(Value::Null));
-        }
-    };
-    call(
+    let initial = codex_frame(
         1,
         "initialize",
         json!({"clientInfo": {"name": "acyclic", "title": null, "version": env!("CARGO_PKG_VERSION")}, "capabilities": null}),
     )?;
-    let listed = call(2, "hooks/list", json!({}))?;
-    let trust = listed
-        .get("data")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.get("hooks").and_then(Value::as_array))
-        .flatten()
-        .filter(|hook| {
-            hook.get("pluginId") == Some(&json!("acyclic@acyclic"))
-                && hook.get("trustStatus") != Some(&json!("trusted"))
-        })
-        .map(|hook| -> Result<(String, Value)> {
-            Ok((
-                hook.get("key").and_then(Value::as_str).ok_or("Codex hook lacks key")?.to_owned(),
-                json!({"trusted_hash": hook.get("currentHash").and_then(Value::as_str).ok_or("Codex hook lacks hash")?}),
-            ))
-        })
-        .collect::<Result<serde_json::Map<_, _>>>()?;
-    if !trust.is_empty() {
-        call(
-            3,
-            "config/batchWrite",
-            json!({"edits": [{"keyPath": "hooks.state", "value": trust, "mergeStrategy": "upsert"}]}),
-        )?;
-    }
-    drop(call);
-    let status = server.wait()?;
-    if !status.success() {
-        return Err(format!("step=stop Codex app-server: {status}; {recovery}").into());
+    let mut expected = 1;
+    let mut line = Vec::new();
+    let mut committed = false;
+    // The shared pump owns all delivery, output, root-exit and physical-close
+    // events. A final acknowledgement ends containment; stdin EOF is not an
+    // obligation for an external service to honour before we can reap it.
+    let outcome = server.wait_with_output(
+        CaptureSchedule::unbounded(), usize::MAX,
+        Some(CaptureInput::Exchange {initial: &initial, maximum: usize::MAX}),
+        || Ok(()),
+        |output| {
+            let ProcessOutput::Stdout(bytes) = output else {return Ok(ProcessInput::default());};
+            let mut next = Vec::new();
+            for fragment in bytes.split_inclusive(|byte| *byte == b'\n') {
+                line.extend_from_slice(fragment);
+                if fragment.last() != Some(&b'\n') {continue;}
+                let message: Value = serde_json::from_slice(&line).map_err(io::Error::other)?;
+                line.clear();
+                let Some(id) = message.get("id") else {continue;};
+                if id != &json!(expected) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "unexpected Codex app-server response identity"));
+                }
+                if let Some(error) = message.get("error") {
+                    return Err(io::Error::other(format!("Codex request {expected}: {error}")));
+                }
+                let result = message.get("result").ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Codex response lacks result"))?;
+                match expected {
+                    1 => {
+                        next.extend_from_slice(b"{\"method\":\"initialized\"}\n");
+                        next.extend(codex_frame(2, "hooks/list", json!({})).map_err(io::Error::other)?);
+                        expected = 2;
+                    }
+                    2 => {
+                        let trust = codex_hook_trust(result).map_err(io::Error::other)?;
+                        if trust.is_empty() {committed = true;} else {
+                            next.extend(codex_frame(3, "config/batchWrite", json!({"edits": [{"keyPath": "hooks.state", "value": trust, "mergeStrategy": "upsert"}]})).map_err(io::Error::other)?);
+                            expected = 3;
+                        }
+                    }
+                    _ => committed = true,
+                }
+                if committed {break;}
+            }
+            Ok(ProcessInput {bytes: next, complete: committed})
+        }, None, None, None,
+    ).map_err(|failure| format!("step=Codex hook trust exchange: {}; physical_cleanup_completed={}; {recovery}", failure.error, failure.cleanup_completed))?;
+    if !committed {
+        return Err(format!("step=Codex hook trust exchange: root exited {} before request {expected} acknowledgement; {recovery}", outcome.status).into());
     }
     Ok(())
 }
 
+fn codex_frame(id: u64, method: &str, params: Value) -> Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec(&json!({"id": id, "method": method, "params": params}))?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn codex_hook_trust(listed: &Value) -> Result<serde_json::Map<String, Value>> {
+    let data = listed
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or("Codex hooks/list lacks data")?;
+    let mut trust = serde_json::Map::new();
+    let mut selected = false;
+    for entry in data {
+        for hook in entry
+            .get("hooks")
+            .and_then(Value::as_array)
+            .ok_or("Codex hook entry lacks hooks")?
+        {
+            if hook.get("pluginId") != Some(&json!("acyclic@acyclic")) {
+                continue;
+            }
+            selected = true;
+            if hook.get("trustStatus") == Some(&json!("trusted")) {
+                continue;
+            }
+            let key = hook
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or("Codex hook lacks key")?;
+            let hash = hook
+                .get("currentHash")
+                .and_then(Value::as_str)
+                .ok_or("Codex hook lacks hash")?;
+            trust.insert(key.to_owned(), json!({"trusted_hash": hash}));
+        }
+    }
+    if !selected {
+        return Err("Codex hooks/list lacks installed acyclic@acyclic hooks".into());
+    }
+    Ok(trust)
+}
 fn optional(path: &Path) -> Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
