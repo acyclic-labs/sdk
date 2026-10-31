@@ -75,7 +75,25 @@ struct Slot {
     event_deliveries: AtomicUsize,
     /// Control requests serialize separately from the delivery they stop.
     control: tokio::sync::Mutex<()>,
-    pause_stop: SyncMutex<crate::guest::CancellationToken>,
+    delivery_control: SyncMutex<DeliveryControl>,
+}
+
+#[derive(Default)]
+struct DeliveryControl {
+    paused: bool,
+    cancellation: Option<crate::guest::CancellationToken>,
+}
+
+// Registration borrows the original delivery token; Drop clears it before
+// releasing the delivery lock, including caller loss and typed failure.
+struct ActiveDelivery<'a>(&'a SyncMutex<DeliveryControl>);
+impl Drop for ActiveDelivery<'_> {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancellation = None;
+    }
 }
 
 /// An event retains its placement through cooperative batch boundaries.
@@ -226,7 +244,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 refresh: AtomicBool::new(false),
                 event_deliveries: AtomicUsize::new(0),
                 control: tokio::sync::Mutex::new(()),
-                pause_stop: SyncMutex::new(crate::guest::CancellationToken::new()),
+                delivery_control: SyncMutex::new(DeliveryControl::default()),
             }),
         );
         Ok(())
@@ -293,10 +311,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 let slot = &placement.0;
                 let _control = slot.control.lock().await;
                 if paused {
-                    slot.pause_stop
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .cancel();
+                    let cancellation = {
+                        let mut control = slot
+                            .delivery_control
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        control.paused = true;
+                        control.cancellation.clone()
+                    };
+                    if let Some(cancellation) = cancellation {
+                        cancellation.cancel();
+                    }
                 }
                 // The running delivery owns this lock through handler cleanup
                 // and retained publication. No later delivery can pass its stop.
@@ -325,11 +350,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 let result = transition.await;
                 if !paused {
-                    *slot
-                        .pause_stop
+                    slot.delivery_control
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        crate::guest::CancellationToken::new();
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .paused = false;
                     self.wake(actor);
                 }
                 Ok(result)
@@ -744,11 +768,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 continue;
             }
-            let pause_stop = slot
-                .pause_stop
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
             if state.paused() {
                 // The alarm stays committed; only its active wake is withdrawn.
                 // A later wake must observe an external resume as well.
@@ -756,7 +775,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 slot.registration.suspend_alarm();
                 return Ok(true);
             }
-            if pause_stop.is_cancelled() {
+            if slot
+                .delivery_control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .paused
+            {
                 return Ok(true);
             }
             slot.registration.update_alarm(state.alarm())?;
@@ -795,6 +819,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             let limits = &self.handler.manifest().limits;
             let cancellation = crate::guest::CancellationToken::new();
             self.interrupt_follows(&mut inner, state, &trigger).await?;
+            {
+                let mut control = slot
+                    .delivery_control
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if control.paused {
+                    return Ok(true);
+                }
+                control.cancellation = Some(cancellation.clone());
+            }
+            let _active = ActiveDelivery(&slot.delivery_control);
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.
@@ -818,21 +853,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             );
             let result = {
                 let interrupted = self.interrupt(&mut inner, cancellation.clone());
-                let paused = async {
-                    pause_stop.cancelled().await;
-                    cancellation.cancel();
-                    // The original handler owns cleanup. Its completion, or
-                    // its existing manifest deadline, releases the delivery.
-                    std::future::pending::<Error>().await
-                };
-                futures::pin_mut!(interrupted);
-                futures::pin_mut!(paused);
-                let interrupted = async {
-                    match futures::future::select(interrupted, paused).await {
-                        futures::future::Either::Left((error, _))
-                        | futures::future::Either::Right((error, _)) => error,
-                    }
-                };
                 futures::pin_mut!(interrupted);
                 match futures::future::select(
                     handled,
