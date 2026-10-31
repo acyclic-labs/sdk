@@ -1,8 +1,17 @@
 use super::*;
 
 impl Delivery {
-    pub(super) fn notify_lost(&self) {
-        self.callback(|| self.sink.delivery_lost());
+    pub(super) fn notify_lost(&self) -> bool {
+        if !self.exact.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        // Terminal notification uses the retained callback, without requiring
+        // another work admission. A sink unwind must not kill the physical
+        // producer before it retires its original resources.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.callback(|| self.sink.delivery_lost());
+        }));
+        true
     }
 
     pub(super) fn new<W: SourceDemandReadWork>(
@@ -85,7 +94,6 @@ impl Delivery {
         error: DemandError,
         work: &mut W,
     ) {
-        self.exact.store(false, Ordering::Release);
         let prior = if work.is_native_original() {
             None
         } else {
@@ -199,7 +207,7 @@ impl Delivery {
     /// The host stopped reporting changes exactly: report everything once, after which the watch is inexact for good.
     #[cfg(any(windows, target_os = "linux"))]
     pub(super) fn abandon(&self) {
-        if self.exact.swap(false, Ordering::AcqRel) {
+        if self.notify_lost() {
             let mut work = self.callback_work();
             if let Err(error) = self.deliver(&[HostChange::Everything], &mut work) {
                 self.failed_with_work(error, &mut work);

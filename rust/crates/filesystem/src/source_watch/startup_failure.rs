@@ -54,7 +54,7 @@ impl SourceWatchStartupFailure {
         error: DemandError,
         platform: NativeSourceWatch,
     ) -> DemandError {
-        platform.delivery().exact.store(false, Ordering::Release);
+        platform.delivery().notify_lost();
         assert!(
             self.cause.set(error).is_ok(),
             "one startup control retains one actual native owner"

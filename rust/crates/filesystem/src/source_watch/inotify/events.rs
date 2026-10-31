@@ -48,7 +48,7 @@ impl Shared {
                 self.retire_in_service(reading);
             }
             Err(_) => {
-                self.delivery.exact.store(false, Ordering::Release);
+                self.delivery.notify_lost();
                 self.retire_in_service(reading);
             }
         }
@@ -245,7 +245,7 @@ impl Shared {
                 if let Some(invalidated) = ancestor {
                     if invalidated {
                         self.delivery.invalidate(work)?;
-                        self.delivery.exact.store(false, Ordering::Release);
+                        self.delivery.notify_lost();
                         return Ok(false);
                     }
                     reading.cursor += end;
@@ -285,7 +285,7 @@ impl Shared {
                     if alias.as_os_str().is_empty() && mask & libc::IN_DELETE_SELF != 0 {
                         drop(watches);
                         self.delivery.invalidate(work)?;
-                        self.delivery.exact.store(false, Ordering::Release);
+                        self.delivery.notify_lost();
                         return Ok(false);
                     }
                     let bytes = alias
@@ -453,7 +453,7 @@ impl Shared {
         })();
         reading.blocked = !matches!(result, Ok(true));
         if result.is_err() {
-            self.delivery.exact.store(false, Ordering::Release);
+            self.delivery.notify_lost();
         }
         if !reading.blocked {
             self.reading_changed.notify_all();

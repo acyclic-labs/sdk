@@ -129,7 +129,7 @@ impl NativeSourceWatch {
             .is_ok_and(|metadata| identity(&metadata) == self.shared.held)
         {
             self.delivery().deliver(&[HostChange::Unconfirmed], work)?;
-        } else if self.delivery().exact.swap(false, Ordering::AcqRel) {
+        } else if self.delivery().notify_lost() {
             self.delivery().deliver(&[HostChange::Everything], work)?;
         }
         Ok(false)
@@ -261,7 +261,7 @@ impl crate::fsevents::StreamTerminal for Shared {
             let mut work = self.delivery.callback_work();
             self.delivery.failed_with_work(error, &mut work);
         }
-        self.delivery.exact.store(false, Ordering::Release);
+        self.delivery.notify_lost();
         self.stream_bytes.store(0, Ordering::Release);
     }
 }
