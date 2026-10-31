@@ -147,10 +147,8 @@ impl ProcessTree {
     /// same process owner, capture, custody and retirement as every other
     /// native launch. Refusals never fall back to an unconfined spawn.
     ///
-    /// `command` is consumed logically: it must not be reused after this call,
-    /// including after a refused or failed spawn.
     pub fn spawn_granted(
-        command: &mut Command,
+        mut command: Command,
         grant: &crate::execution::ExecutionGrant,
         custody: Option<&ProcessCustody>,
     ) -> io::Result<Self> {
@@ -158,13 +156,13 @@ impl ProcessTree {
         let mut retained = None;
         let result = match custody {
             Some(custody) => Self::spawn_in_custody_with_boundary(
-                command,
+                &mut command,
                 custody,
                 None,
                 &mut retained,
                 Some(boundary),
             ),
-            None => Self::spawn_with_boundary(command, None, &mut retained, Some(boundary)),
+            None => Self::spawn_with_boundary(&mut command, None, &mut retained, Some(boundary)),
         };
         if let Err(error) = result {
             if let Some(tree) = retained.as_mut() {
