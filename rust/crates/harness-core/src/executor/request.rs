@@ -9,7 +9,7 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<Vec<ModelEvent>> {
-        let _execution = journal.claim_execution(input.operation_id, self.io)?;
+        let execution = journal.claim_execution(input.operation_id, self.io)?;
         let phase = &mut DispatchPhase::new();
         self.verify_task_context_binding(input.operation_id)?;
         self.validate_turn_input(journal, input).await?;
@@ -21,15 +21,18 @@ impl StockExecution<'_> {
             ));
         }
         self.ensure_started(journal, input).await?;
-        self.run_model_step(
-            journal,
-            input,
-            step,
-            prior_messages,
-            ModelPurpose::Response,
-            phase,
-        )?
-        .await
+        let events = self
+            .run_model_step(
+                journal,
+                input,
+                step,
+                prior_messages,
+                ModelPurpose::Response,
+                phase,
+            )?
+            .await?;
+        execution.release();
+        Ok(events)
     }
 
     pub(super) fn run_model_step<'a>(

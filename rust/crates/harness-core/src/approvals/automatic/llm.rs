@@ -117,8 +117,9 @@ mod tests {
     async fn review_uses_original_count_dispatch_terminal_and_replay() -> Result<()> {
         let allow = r#"{"verdict":"allow","reason":null}"#;
         let deny = r#"{"verdict":"deny","reason":"final decision"}"#;
-        for native in [false, true] {
-            for case in 0..8 {
+        for mode in 0..3 {
+            let native = mode == 2;
+            for case in 0..if native { 1 } else { 8 } {
                 let storage = MemoryHarnessStorage::new(AgentId::new(), 1_000_000).await?;
                 let journal = storage.journal();
                 let mut events = vec![ScriptedEvent::Event(ModelEvent::Content {
@@ -156,8 +157,27 @@ mod tests {
                 }
                 let counts = Arc::new(AtomicUsize::new(0));
                 let counter = counts.clone();
+                let observed = Arc::new(std::sync::Mutex::new(None));
+                let observation = observed.clone();
+                let original = journal.clone();
                 let provider = Arc::new(
                     ScriptedModelProvider::new([ScriptedTurn::Events(events)])
+                        .with_dispatch_observer(move |dispatch| {
+                            let result = original
+                                .acquire_execution(dispatch.operation_id, None)
+                                .and_then(|attempt| match attempt {
+                                    crate::executor::ExecutionAttempt::Observed(observation) => {
+                                        Ok(observation)
+                                    }
+                                    crate::executor::ExecutionAttempt::Owned(_) => {
+                                        Err(Error::Invalid(
+                                            "model dispatch lost its original execution claim"
+                                                .into(),
+                                        ))
+                                    }
+                                });
+                            *observation.lock().expect("observation lock") = Some(result);
+                        })
                         .with_context_capacity(ModelContextCapacity {
                             context_tokens: if case == 6 { 32 } else { 8192 },
                             output_tokens: Some(16),
@@ -185,10 +205,16 @@ mod tests {
                     })
                     .transpose()
                     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                let io = work
-                    .as_ref()
-                    .map(PreparationIo::from_native_work)
-                    .transpose()?;
+                let io = if let Some(work) = &work {
+                    Some(PreparationIo::from_native_work(work)?)
+                } else if mode == 1 {
+                    Some(PreparationIo::from_budget(
+                        acyclic_fs::performance::work_budget(8_000_000, 8_000_000),
+                        &cancellation,
+                    )?)
+                } else {
+                    None
+                };
                 let bound: Arc<dyn ModelProvider> = provider.clone();
                 let model = Model::new("test".into(), "review".into(), "1".into())?;
                 let request = ApprovalRequest::new("original", b"{\"action\":\"exact\"}", 4096)?;
@@ -204,6 +230,35 @@ mod tests {
                     limits,
                 )
                 .await;
+                if native {
+                    assert!(matches!(
+                        first,
+                        Err(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unsupported,
+                            ..
+                        })
+                    ));
+                    assert_eq!(provider.request_count(), 0);
+                    assert_eq!(counts.load(Ordering::SeqCst), 0);
+                    assert_eq!(io.as_ref().expect("native IO").owned_bytes()?, 0);
+                    continue;
+                }
+                let observation = observed.lock().expect("observation lock").take();
+                if case == 5 || case == 6 {
+                    assert!(observation.is_none());
+                } else {
+                    assert_eq!(
+                        observation
+                            .expect("original dispatch observation")?
+                            .terminated()
+                            .await,
+                        if case == 4 {
+                            acyclic_fs::OperationTermination::ProducerDropped
+                        } else {
+                            acyclic_fs::OperationTermination::Released
+                        }
+                    );
+                }
                 if case == 0 {
                     let first = first?;
                     assert_eq!(first, (RuleVerdict::Deny, Some("final decision".into())));
