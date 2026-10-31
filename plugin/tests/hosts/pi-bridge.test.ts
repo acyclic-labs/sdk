@@ -1,23 +1,15 @@
 import assert from "node:assert/strict";
 import * as childProcess from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mock, test } from "bun:test";
 import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
+import {stagePiExtension} from './package.mjs';
 
 // Run this file in its own Bun process: only the harness request boundary is
 // stubbed. The child and its failed-spawn/pipe event ordering are native Node APIs.
 const native = { ...childProcess };
-
-function extension(directory: string): string {
-  for (const asset of ["pi/index.ts", "shared/mcp-client.mjs"]) {
-    const [parent, leaf] = asset.split("/");
-    mkdirSync(join(directory, parent), {recursive: true});
-    writeFileSync(join(directory, parent, leaf), readFileSync(new URL(`../../${asset}`, import.meta.url)));
-  }
-  return join(directory, "pi/index.ts");
-}
 
 test("installed Pi failed spawn closes custody and shutdown without adjacent assets or an exit event", async () => {
   const directory = mkdtempSync(join(import.meta.dir, ".pi-bridge-"));
@@ -125,7 +117,7 @@ test("Pi boundaries leave managed capture to the physical process owner", async 
     }),
   }));
   try {
-    const path = extension(directory);
+    const path = await stagePiExtension(directory);
     const { default: acyclic } = await import(pathToFileURL(path).href);
     acyclic({on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool() {}});

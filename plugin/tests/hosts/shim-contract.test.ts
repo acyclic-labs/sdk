@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { test } from "bun:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { stagePiExtension } from "./package.mjs";
 
 test("Anthropic qualification commands explicitly select the approved model", () => {
   // Inspect the launch array without executing a host or accessing a login.
@@ -25,8 +26,7 @@ test("Anthropic qualification commands explicitly select the approved model", ()
 test("Pi registration delegates execution and exposes only native coordination", async () => {
   const directory = mkdtempSync(join(import.meta.dir, ".shim-contract-"));
   try {
-    const path = join(directory, "index.ts");
-    writeFileSync(path, readFileSync(new URL("../../pi/index.ts", import.meta.url)));
+    const path = await stagePiExtension(directory);
     const { default: acyclic } = await import(pathToFileURL(path).href);
     const hooks: string[] = [], tools: string[] = [];
     const forbidden = () => {throw new Error("registration executed host work");};

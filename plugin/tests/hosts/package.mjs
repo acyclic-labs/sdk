@@ -1,6 +1,15 @@
 import { copyFile, cp, lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
+// Import fixtures retain Pi's host SDK lookup while staging the same source
+// extension closure. Installed-extension tests use the real release assembler.
+export async function stagePiExtension(destination) {
+  for (const member of ["pi", "shared"])
+    await cp(new URL("../../" + member, import.meta.url), join(destination, member),
+      { recursive: true, force: false, errorOnExist: true });
+  return join(destination, "pi/index.ts");
+}
+
 // Stage the production npm closure with its admitted native executable. Never
 // invoke postinstall: acceptance must run the caller's exact shipping binary.
 export async function stagePlugin(source, binary, destination) {

@@ -20,12 +20,17 @@ test('Linux host qualification uses the smallest registered runner and retains e
  for(const platform of job.strategy.matrix.platform)assert.ok(registered.includes(platform.runner));
  assert.equal(job['runs-on'],'${{ matrix.platform.runner }}');
  const linux="runner.os == 'Linux'";
+ const shimCommands=[
+  'cargo build --locked -p acyclic-plugin --bin acyclic --message-format=json',
+  'export ACYCLIC_TEST_BINARY="$shimBinary"',
+  'bun run --cwd plugin/tests/hosts test:shim',
+ ];
  const scenarios=[
   ['Build shared host scenarios',undefined,'cargo test --locked -p acyclic-plugin -p acyclic-harness --all-features --lib --bins --no-run'],
   ['Run plugin unit tests',undefined,'cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4'],
   ['Run shared native host lifecycle',undefined,'cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4'],
   ['Run shared fork and merge recovery',undefined,'cargo test --locked -p acyclic-harness --all-features --lib local::tests::merge_recovery:: -- --test-threads=4'],
-  ['Run host manifest and shim contracts',undefined,'bun run --cwd plugin/tests/hosts test:shim'],
+  ['Run host manifest and shim contracts',undefined,shimCommands],
   ['Run scripted native sessions in the Codex sandbox',linux,'node plugin/tests/hosts/qualify-scripted.mjs "$ACYCLIC_E2E_RECEIPT_DIR/normal-cargo.jsonl" "$ACYCLIC_E2E_RECEIPT_DIR/managed" "${{ steps.codex.outputs.binary }}" managed'],
   ['Run shared mount scale through every host adapter',linux,'node plugin/tests/hosts/qualify-scripted.mjs "$ACYCLIC_E2E_RECEIPT_DIR/scale-cargo.jsonl" "$ACYCLIC_E2E_RECEIPT_DIR/scale" "${{ steps.codex.outputs.binary }}" scale'],
  ];
@@ -41,7 +46,15 @@ test('Linux host qualification uses the smallest registered runner and retains e
    const step=qualification.steps.find(candidate=>candidate.name===name)??assert.fail('missing '+name);
    assert.equal(step.if,condition,name+': condition');
    assert.equal(step['working-directory'],undefined,name+': working directory');
-   assert.equal(step.run.replace(/\\\r?\n/g,' ').replace(/\s+/g,' ').trim(),command,name+': command');
+   const actual=step.run.replace(/\\\r?\n/g,' ').replace(/\s+/g,' ').trim();
+   if(Array.isArray(command)){
+    let after=0;
+    for(const required of command){
+     const at=actual.indexOf(required,after);
+     assert.ok(at>=after,name+': command '+required);
+     after=at+required.length;
+    }
+   }else assert.equal(actual,command,name+': command');
   }
  };
  verify(workflow);
@@ -56,6 +69,12 @@ test('Linux host qualification uses the smallest registered runner and retains e
   const step=altered.jobs.qualify.steps.find(candidate=>candidate.name===name);
   if(change==='condition')step.if=false;else step.run='true';
   assert.throws(()=>verify(altered),new RegExp(name+': '+change));
+ }
+ for(const command of shimCommands){
+  const altered=structuredClone(workflow);
+  const step=altered.jobs.qualify.steps.find(candidate=>candidate.name==='Run host manifest and shim contracts');
+  step.run=step.run.replace(command,'true');
+  assert.throws(()=>verify(altered),/Run host manifest and shim contracts: command/);
  }
 });
 test('PRs and main retain the static lock check, and tags/releases cannot start heavy work',()=>{
