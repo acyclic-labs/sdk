@@ -45,8 +45,9 @@ fn definition(name: String, description: String) -> ToolDefinition {
 fn callable_registry_admission_preserves_original_custody_on_refusal() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .expect("original callable work");
+    let budget = acyclic_fs::performance::work_budget(1_000_000, 16_777_216);
+    let work =
+        NativeMaterializationWork::new(budget, &cancellation).expect("original callable work");
     let (mut registry, custody) = ToolRegistry::new(&work)?;
     let mut custody = Some(custody);
     let mut declared = skill("skills/inspect/SKILL.md".into())?;
@@ -71,6 +72,29 @@ fn callable_registry_admission_preserves_original_custody_on_refusal() -> Result
         })
     ));
     assert!(absent.definitions(None)?.is_empty());
+    // An exhausted original encoding allowance cannot publish any revision or
+    // consume the original registry's retained custody.
+    let exhausted = NativeMaterializationWork::new(
+        WorkBudget {
+            bytes_encoded: 0,
+            ..budget
+        },
+        &cancellation,
+    )
+    .expect("exhausted original encoding allowance");
+    let (mut denied, denied_custody) = ToolRegistry::new(&exhausted)?;
+    let mut denied_custody = Some(denied_custody);
+    let denied_bytes = denied_custody.as_ref().expect("denied custody").bytes();
+    assert!(
+        declared
+            .register_callable(&mut denied, &mut denied_custody, Some(&exhausted))
+            .is_err()
+    );
+    assert!(denied.definitions(None)?.is_empty());
+    assert_eq!(
+        denied_custody.as_ref().expect("denied custody").bytes(),
+        denied_bytes
+    );
     declared
         .fields
         .insert("input_schema".into(), json!({"type":"unknown"}));

@@ -70,13 +70,16 @@ impl SkillSource {
     ) -> Result<Self> {
         crate::executor::with_history_io(io, |work| {
             Self::validate_source(&source, &runtime, work)?;
+            let maximum = work
+                .as_deref()
+                .map(|work| work.remaining().map(|budget| budget.bytes_encoded))
+                .transpose()?
+                .unwrap_or(u64::MAX);
             Ok(Self {
                 source,
                 runtime,
                 definition: crate::executor::json::canonical_json_digest(
-                    definition,
-                    u64::MAX,
-                    work,
+                    definition, maximum, work,
                 )?,
             })
         })
@@ -122,7 +125,12 @@ impl SkillSource {
     ) -> Result<()> {
         crate::executor::with_history_io(io, |work| {
             Self::validate_source(&self.source, &self.runtime, work)?;
-            let digest = crate::executor::json::canonical_json_digest(definition, u64::MAX, work)?;
+            let maximum = work
+                .as_deref()
+                .map(|work| work.remaining().map(|budget| budget.bytes_encoded))
+                .transpose()?
+                .unwrap_or(u64::MAX);
+            let digest = crate::executor::json::canonical_json_digest(definition, maximum, work)?;
             if digest != self.definition {
                 return Err(crate::executor::stock_boundary(
                     io,
