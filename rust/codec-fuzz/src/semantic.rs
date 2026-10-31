@@ -208,6 +208,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
     harness::check(name, bytes);
     harness_protocol::check(name, bytes);
     stream_http::check(name, bytes);
+    acyclic_machines::grpc::codec_fuzz::check(name, bytes);
     use acyclic_stream::{wire as w, wire_codec as c};
     macro_rules! projection {
         ($wire:ident, $decode:expr, $encode:expr) => {
@@ -436,5 +437,6 @@ pub(super) fn seeds(
     seeds.extend(harness::seeds()?);
     seeds.extend(harness_protocol::seeds()?);
     seeds.extend(stream_http::seeds(streams)?);
+    seeds.extend(acyclic_machines::grpc::codec_fuzz::seeds()?);
     Ok(seeds)
 }
