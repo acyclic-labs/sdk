@@ -1617,9 +1617,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 // refused budget leaves nothing behind, and removing the keys of a
                 // retain that failed is never refused.
                 let n = references.len() as u64;
-                self.medium
-                    .reserve_writes(2 * n + 2, batch.len() as u64)
-                    .map_err(medium)?;
+                self.medium.reserve_writes(2 * n + 2).map_err(medium)?;
                 let key = format!("{}{name}", self.root_prefix(root));
                 match self.commit_batch(&references, &tag, &key, batch).await {
                     Ok(()) => {}

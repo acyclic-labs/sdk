@@ -114,6 +114,94 @@ async fn authenticated_batch_denials_precede_publication() -> Result<(), Box<dyn
 
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
+async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dyn std::error::Error>>
+{
+    let cancel = CancellationToken::new();
+    let budget = WorkBudget {
+        source_bytes_read: 0,
+        output_bytes: 0,
+        object_bytes_read: 8,
+        object_bytes_written: 12,
+        ..BUDGET
+    };
+    let original =
+        crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let store = store(4)?;
+    let first = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
+    let second = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"next"));
+    let mut work = AuthorityWork::native(&original, &cancel);
+    store.put_hashed(first.clone(), &mut work).await?;
+    store
+        .put_many_hashed(std::slice::from_ref(&second), &mut work)
+        .await?;
+    // Reusing an immutable payload performs medium probes, but writes no canonical bytes.
+    store.put_hashed(first.clone(), &mut work).await?;
+    let read = store.read(first.object_id(), 4, &mut work).await?;
+    assert_eq!(read.bytes, *first.bytes());
+    drop(read);
+    let (reads, custody) = store
+        .read_many(
+            &[ObjectReadRequest {
+                object_id: second.object_id(),
+                maximum_bytes: 4,
+            }],
+            &mut work,
+        )
+        .await?;
+    assert_eq!(reads[0].bytes, *second.bytes());
+    drop(reads);
+    drop(custody);
+    let receipt = original.receipt();
+    receipt.verify(budget)?;
+    assert_eq!(receipt.object_bytes_read, 8);
+    assert_eq!(receipt.object_bytes_written, 8);
+    assert_eq!(receipt.source_bytes_read, 0);
+    assert_eq!(receipt.output_bytes, 0);
+    assert!(receipt.backend_read_operations > 0);
+    assert!(receipt.backend_write_operations > 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+
+    // Canonical byte denial still fences writes before publication and reads before payload.
+    let denied_budget = WorkBudget {
+        object_bytes_read: 0,
+        object_bytes_written: 0,
+        ..budget
+    };
+    let denied = crate::NativeMaterializationWork::new(denied_budget, &cancel)
+        .map_err(|(error, _)| error)?;
+    let absent = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"deny"));
+    let mut denied_work = AuthorityWork::native(&denied, &cancel);
+    assert!(
+        store
+            .put_hashed(absent.clone(), &mut denied_work)
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .read(first.object_id(), 4, &mut denied_work)
+            .await
+            .is_err()
+    );
+    let receipt = denied.receipt();
+    receipt.verify(denied_budget)?;
+    assert_eq!(receipt.object_bytes_read, 0);
+    assert_eq!(receipt.object_bytes_written, 0);
+    assert_eq!(receipt.backend_write_operations, 0);
+    assert!(matches!(
+        store.read(absent.object_id(), 4, &mut work).await,
+        Err(ObjectStoreError::Missing)
+    ));
+    // Removing attribution must not turn the meter off for actual source or sink I/O.
+    let meter = original.runtime_meter();
+    assert!(meter.admit_read(1).is_err());
+    assert!(meter.admit_write(1).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
 async fn authenticated_native_batch_keeps_the_raw_batch_boundary_and_footer()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
