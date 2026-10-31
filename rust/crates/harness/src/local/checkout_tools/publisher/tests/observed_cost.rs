@@ -56,7 +56,7 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
         )?
         .await?;
     let view = publisher.tools.workspace.view();
-    let writer = publisher.writer_for(&harness.project, view.workspace())?;
+    let writer = publisher.writer_for(&harness.project, view.workspace(), None)?;
     let staged = writer
         .observe_staged_once(operation, None, publisher.maximum, Default::default())?
         .await?
@@ -202,7 +202,7 @@ async fn differing_captured_bytes_keep_the_original_publication_reference() -> R
     KILL_BEFORE_CAPTURE.set(false);
     assert!(pending.is_err());
     let view = publisher.tools.workspace.view();
-    let writer = publisher.writer_for(&harness.project, view.workspace())?;
+    let writer = publisher.writer_for(&harness.project, view.workspace(), None)?;
     let staged = writer
         .observe_staged_once(operation, None, publisher.maximum, Default::default())?
         .await?

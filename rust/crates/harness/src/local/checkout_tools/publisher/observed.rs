@@ -59,7 +59,7 @@ impl CheckoutPublisher {
         if !unchanged_payload {
             return Ok(rebound);
         }
-        self.writer_for(file.volume(), view.workspace())?
+        self.writer_for(file.volume(), view.workspace(), None)?
             .rebind_verified_publication(&file, rebound, None)
             .await
     }

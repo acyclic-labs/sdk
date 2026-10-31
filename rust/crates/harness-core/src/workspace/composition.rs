@@ -77,9 +77,38 @@ pub struct MountTable<T> {
     /// Absolute native process root.
     pub root: PathBuf,
     entries: BTreeMap<String, Option<Mount<T>>>,
+    volumes: std::collections::HashMap<[u8; 32], String>,
 }
 
 impl<T> MountTable<T> {
+    /// Resolves an admitted volume without scanning the mounted namespace.
+    #[doc(hidden)]
+    pub fn by_volume(
+        &self,
+        volume: &VolumeRef,
+        io: Option<&crate::conversation::ContentIo>,
+    ) -> Result<&Mount<T>> {
+        let digest = crate::executor::with_history_io(io, |work| {
+            volume.identity_digest(
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work,
+            )
+        })?;
+        let mount = self
+            .volumes
+            .get(&digest)
+            .and_then(|path| self.entries.get(path))
+            .and_then(Option::as_ref)
+            .filter(|mount| &mount.view.volume == volume);
+        mount.ok_or_else(|| {
+            crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "volume is not mounted in this task view",
+            )
+        })
+    }
+
     /// Resolves either a task-relative path or an exact volume's relative path.
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     #[doc(hidden)]
@@ -127,30 +156,36 @@ impl<T> MountTable<T> {
                 .select(path, work)
                 .map(|(mount, path)| (mount, Cow::Borrowed(path)));
         }
-        if work.is_some() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let io: Option<&crate::conversation::ContentIo> = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = io.as_ref();
+        let mount = self.by_volume(volume.expect("explicit volume checked above"), io)?;
+        crate::executor::with_history_io(io, |history| {
+            crate::conversation::validate_content_path(path, history)
+        })?;
+        if Path::new(path)
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
             return Err(path_error(
-                crate::wire::ErrorCode::Unsupported,
-                "native explicit-volume path allocation is unavailable; recovery: resolve the canonical mounted content path",
+                crate::wire::ErrorCode::Invalid,
+                "path escapes the task view",
                 work,
             ));
         }
-        let selected = if let Some(volume) = volume {
-            let (prefix, _) = self
-                .mounts()
-                .find(|(_, mount)| &mount.view.volume == volume)
-                .ok_or_else(|| {
-                    Error::Unauthorized("volume is not mounted in this task view".into())
-                })?;
-            self.resolve(&Path::new(prefix).join(path))?
-        } else {
-            self.resolve(Path::new(path))?
-        };
-        if volume.is_some_and(|volume| volume != &selected.0.view.volume) {
-            return Err(Error::Unauthorized(
-                "file path names another mounted volume".into(),
+        if path.starts_with(".volumes/") {
+            return Err(path_error(
+                crate::wire::ErrorCode::Unauthorized,
+                "explicit-volume path crosses the mounted namespace",
+                work,
             ));
         }
-        Ok((selected.0, Cow::Owned(selected.1)))
+        Ok((mount, Cow::Borrowed(path)))
     }
     /// Resolves a qualifier through the visible namespace, never by opening a
     /// model-supplied volume identity.
@@ -279,6 +314,7 @@ pub fn compose<T>(
     }
     let primary_name = primary.name.clone();
     let mut mounts = BTreeMap::new();
+    let mut volumes_by_identity = std::collections::HashMap::new();
     for (index, view) in std::iter::once(primary).chain(volumes).enumerate() {
         let access = PathTrie::compile(
             &view.policy,
@@ -333,6 +369,19 @@ pub fn compose<T>(
                 "foreign mount must select its latest published generation".into(),
             ));
         }
+        let digest = view.volume.identity_digest(
+            crate::store::default_projection_read_limits().maximum_bytes,
+            &mut None,
+        )?;
+        match volumes_by_identity.entry(digest) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(entry.key().clone());
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) if entry.key() < slot.get() => {
+                slot.insert(entry.key().clone());
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {}
+        }
         entry.insert(Some(Mount {
             view,
             mode,
@@ -343,6 +392,7 @@ pub fn compose<T>(
     Ok(MountTable {
         root,
         entries: mounts,
+        volumes: volumes_by_identity,
     })
 }
 
