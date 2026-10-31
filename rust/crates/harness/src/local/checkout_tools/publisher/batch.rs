@@ -57,37 +57,43 @@ impl CheckoutPublisher {
                     .source
                     .as_ref()
                     .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
-                access::require_volume_access(
-                    workspace,
-                    volume,
-                    &self.tools.signed,
-                    access.ceiling.unwrap_or(self.tools.signed.capabilities()),
-                    "local checkout publication",
-                )
+                BoundedContentFuture::new(access.io, || {
+                    access::require_volume_access(
+                        workspace,
+                        volume,
+                        &self.tools.signed,
+                        access.ceiling.unwrap_or(self.tools.signed.capabilities()),
+                        "local checkout publication",
+                    )
+                })?
                 .await?;
                 let writer = self.writer_for(volume, workspace, access.io)?;
                 let (original, original_hold) = writer
                     .observe_changes(volume, operation, maximum, access)?
                     .await?;
                 let (receipt, hold) = if let Some(changes) = changes {
-                    if original.is_none() {
-                        if let Some(native) = native {
-                            native.sync().await?;
-                        } else if mount.view.source.is_none() {
-                            if let Some(mounted) = &physical.mounted {
-                                mounted.sync().await.map_err(storage)?;
-                            } else {
-                                self.tools
-                                    .capture(
-                                        (&physical, view),
-                                        watcher,
-                                        operation,
-                                        0,
-                                        PublicationPermit::Unrestricted,
-                                    )?
-                                    .await?;
+                    if original.is_none() && (native.is_some() || mount.view.source.is_none()) {
+                        BoundedContentFuture::new(access.io, || async {
+                            if let Some(native) = native {
+                                native.sync().await?;
+                            } else if mount.view.source.is_none() {
+                                if let Some(mounted) = &physical.mounted {
+                                    mounted.sync().await.map_err(storage)?;
+                                } else {
+                                    self.tools
+                                        .capture(
+                                            (&physical, view),
+                                            watcher,
+                                            operation,
+                                            0,
+                                            PublicationPermit::Unrestricted,
+                                        )?
+                                        .await?;
+                                }
                             }
-                        }
+                            Ok(())
+                        })?
+                        .await?;
                     }
                     // The original transaction validates the complete request even on replay.
                     drop(original);
@@ -110,34 +116,43 @@ impl CheckoutPublisher {
                         access.io.and_then(ContentIo::original_native_work),
                     )?;
                 }
-                if let Some(native) = native {
-                    native.advance_to_head().await?;
-                } else if mount.view.source.is_none() {
-                    if physical.mounted.is_some() {
-                        reconciliation::advance_mount(&physical, &|| async { Ok(()) }).await?;
-                    } else {
-                        let generation = acyclic_fs::GenerationId::from_bytes(
-                            receipt.generation.as_resource().key(),
-                        )
-                        .ok_or_else(|| {
-                            Error::Invalid("invalid conditional publication generation".into())
-                        })?;
-                        self.tools
-                            .owe_write_capture(
-                                (&physical, view),
-                                watcher,
-                                (
-                                    publication_operation(operation, ""),
-                                    acyclic_fs::GitGenerationRef {
-                                        workspace_id: view.workspace().id(),
-                                        generation,
-                                    },
-                                ),
-                            )
-                            .await?;
-                        self.finish_pending_capture(&physical, view, watcher)
-                            .await?;
-                    }
+                if native.is_some() || mount.view.source.is_none() {
+                    BoundedContentFuture::new(access.io, || async {
+                        if let Some(native) = native {
+                            native.advance_to_head().await?;
+                        } else if mount.view.source.is_none() {
+                            if physical.mounted.is_some() {
+                                reconciliation::advance_mount(&physical, &|| async { Ok(()) })
+                                    .await?;
+                            } else {
+                                let generation = acyclic_fs::GenerationId::from_bytes(
+                                    receipt.generation.as_resource().key(),
+                                )
+                                .ok_or_else(|| {
+                                    Error::Invalid(
+                                        "invalid conditional publication generation".into(),
+                                    )
+                                })?;
+                                self.tools
+                                    .owe_write_capture(
+                                        (&physical, view),
+                                        watcher,
+                                        (
+                                            publication_operation(operation, ""),
+                                            acyclic_fs::GitGenerationRef {
+                                                workspace_id: view.workspace().id(),
+                                                generation,
+                                            },
+                                        ),
+                                    )
+                                    .await?;
+                                self.finish_pending_capture(&physical, view, watcher)
+                                    .await?;
+                            }
+                        }
+                        Ok(())
+                    })?
+                    .await?;
                 }
                 Ok((finish(Some(receipt))?, hold))
             })
