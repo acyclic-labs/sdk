@@ -238,12 +238,7 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
         FilesystemHost::new(fs, &reference, None)?
             .create_volume(&volume)
             .await?;
-        let model = Model::new(
-            "scripted".into(),
-            "dst".into(),
-            "1".into(),
-            serde_json::Value::Null,
-        )?;
+        let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
         let provider = Arc::new(ScriptedModelProvider::new([
             ScriptedTurn::Text("done".into()),
             ScriptedTurn::Text("reopened".into()),

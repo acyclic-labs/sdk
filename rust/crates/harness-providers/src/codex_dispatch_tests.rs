@@ -68,8 +68,6 @@ impl HttpTransport for Server {
     }
 }
 
-#[path = "codex_control_tests.rs"]
-mod controls;
 #[path = "codex_native_tests.rs"]
 mod native;
 #[path = "codex_reasoning_tests.rs"]
@@ -121,11 +119,9 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
         (200, json!({"access_token":"new-access"}).to_string()),
         (200, RESPONSE.into()),
     ])?;
-    let mut provider =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
-            .with_codex_login(login)
-            .resolve("openai/gpt-5")?;
-    provider.model.options["reasoning"] = serde_json::Value::Null;
+    let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
+        .with_codex_login(login)
+        .resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;
     let events = provider
         .generate(&request, dispatch)

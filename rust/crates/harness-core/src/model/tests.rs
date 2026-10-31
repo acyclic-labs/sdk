@@ -30,7 +30,7 @@ fn tool_call_constructor_preserves_the_existing_wire_shape_and_defaults_metadata
 
 fn request() -> Result<ModelRequest> {
     Ok(ModelRequest {
-        model: Model::new("mock".into(), "exact".into(), "pinned".into(), json!({}))?,
+        model: Model::new("mock".into(), "exact".into(), "pinned".into())?,
         messages: vec![ModelMessage {
             role: ModelRole::User,
             content: ModelContent::Text("é\0🦀\r\n".into()),
@@ -487,9 +487,6 @@ fn malformed_exchanges_and_bounds_fail_closed() -> Result<()> {
         mutate(&mut changed);
         assert!(PreparedModelRequest::prepare(changed, Limits::default(), None).is_err());
     }
-    let mut oversized = request()?;
-    oversized.model.options = json!({"large":"x".repeat(64 * 1024 * 1024 + 1)});
-    assert!(PreparedModelRequest::prepare(oversized, Limits::default(), None).is_ok());
     Ok(())
 }
 

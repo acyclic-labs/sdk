@@ -167,7 +167,7 @@ mod tests {
             fixed in proptest::num::u32::ANY, message in proptest::num::u32::ANY,
         ) {
             let request = PreparedModelRequest::prepare(ModelRequest {
-                model: Model::new("fixture".into(), "dense".into(), "1".into(), serde_json::json!({})).unwrap(),
+                model: Model::new("fixture".into(), "dense".into(), "1".into()).unwrap(),
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(text) }],
                 tools: Vec::new(), max_output_tokens: Some(1),
             }, crate::conversation::Limits::default(), None).unwrap();
@@ -183,12 +183,7 @@ mod tests {
     #[test]
     fn accounting_binds_content_model_and_message_dimensions() -> Result<()> {
         let request = ModelRequest {
-            model: Model::new(
-                "provider".into(),
-                "model".into(),
-                "revision".into(),
-                serde_json::json!({}),
-            )?,
+            model: Model::new("provider".into(), "model".into(), "revision".into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("hello".into()),

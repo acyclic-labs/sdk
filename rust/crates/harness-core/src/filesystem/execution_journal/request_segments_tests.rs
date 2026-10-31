@@ -5,12 +5,7 @@ use crate::model::{Model, ModelMessage, ModelRequest, ModelRole, PreparedModelRe
 fn prepare(messages: &[ModelMessage]) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new(
-                "test".into(),
-                "segmented".into(),
-                "1".into(),
-                serde_json::Value::Null,
-            )?,
+            model: Model::new("test".into(), "segmented".into(), "1".into())?,
             messages: messages.to_vec(),
             tools: Vec::new(),
             max_output_tokens: None,

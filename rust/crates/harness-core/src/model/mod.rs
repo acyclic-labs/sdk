@@ -85,6 +85,7 @@ use serde_json::Value;
 /// Immutable provider-owned model selection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
 pub struct Model {
     /// Application-selected provider.
     pub provider: String,
@@ -92,20 +93,14 @@ pub struct Model {
     pub name: String,
     /// Immutable revision or digest.
     pub revision: String,
-    /// Provider-specific options.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
-    #[serde(deserialize_with = "crate::deserialize_json_value")]
-    #[heap_layout(as = serde_json::Value)]
-    pub options: Value,
 }
 impl Model {
     /// Constructs a validated model selection.
-    pub fn new(provider: String, name: String, revision: String, options: Value) -> Result<Self> {
+    pub fn new(provider: String, name: String, revision: String) -> Result<Self> {
         let value = Self {
             provider,
             name,
             revision,
-            options,
         };
         value.validate()?;
         Ok(value)

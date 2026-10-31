@@ -102,12 +102,7 @@ pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_re
     let provider = Arc::new(provider);
     let (model, _counts) = summary_model(2);
     let executor = StockExecutor::new(
-        Model::new(
-            "synthetic".into(),
-            "continuing".into(),
-            "1".into(),
-            serde_json::json!({}),
-        )?,
+        Model::new("synthetic".into(), "continuing".into(), "1".into())?,
         model.clone(),
         ContextPipeline::new([Arc::new(SourceStage::new(
             "memory",
@@ -279,12 +274,7 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
     assert_eq!(reader.revision(1).await?.context, source);
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new(
-                "synthetic".into(),
-                "typed-payload".into(),
-                "1".into(),
-                serde_json::json!({}),
-            )?,
+            model: Model::new("synthetic".into(), "typed-payload".into(), "1".into())?,
             messages: reader.latest().await?.messages,
             tools: vec![ToolDefinition {
                 name: "echo".into(),

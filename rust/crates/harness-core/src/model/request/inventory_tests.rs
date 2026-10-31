@@ -11,12 +11,7 @@ fn request(count: usize) -> Result<ModelRequest> {
         });
     }
     Ok(ModelRequest {
-        model: Model::new(
-            "test".into(),
-            "inventory".into(),
-            "1".into(),
-            serde_json::json!({"nested": [{"sparse": "value"}]}),
-        )?,
+        model: Model::new("test".into(), "inventory".into(), "1".into())?,
         messages,
         tools: vec![crate::tool::ToolDefinition {
             name: "inventory".into(),
@@ -110,7 +105,7 @@ fn finite_preparation_admits_sparse_json_capacity_before_retaining_the_request()
             // preparation ledger. Sparse tree nodes make logical JSON bytes
             // strictly smaller than their resident allocation.
             let mut input = request(1)?;
-            input.model.options = serde_json::json!({
+            input.tools[0].input_schema = serde_json::json!({
                 "sparse": (0..64).map(|_| serde_json::json!({"one":"value"})).collect::<Vec<_>>()
             });
             assert!(input.retained_payload_bytes()? > input.payload_bytes()?);

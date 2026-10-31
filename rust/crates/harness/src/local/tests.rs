@@ -65,7 +65,7 @@ fn capacity() -> ModelContextCapacity {
 }
 
 fn model() -> Result<Model> {
-    Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)
+    Model::new("scripted".into(), "test".into(), "1".into())
 }
 
 #[test]

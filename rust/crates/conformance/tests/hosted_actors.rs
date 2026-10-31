@@ -222,12 +222,7 @@ fn composition(
         ),
         Execution {
             model: (
-                Model::new(
-                    "conformance".into(),
-                    "scripted".into(),
-                    "1".into(),
-                    serde_json::Value::Null,
-                )?,
+                Model::new("conformance".into(), "scripted".into(), "1".into())?,
                 model,
             ),
             limits: Limits::default(),

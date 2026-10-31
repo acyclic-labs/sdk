@@ -24,7 +24,7 @@ fn writerless_summaries_reject_before_any_model_or_journal_work() -> Result<()> 
                 );
                 let operation = OperationId::new();
                 let mut executor = uncompacted_executor(
-                    Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
+                    Model::new("test".into(), "summary".into(), "1".into())?,
                     provider.clone(),
                     ContextPipeline::default(),
                     ToolRegistry::default(),
@@ -89,7 +89,7 @@ async fn writerless_summary_negative_control_dispatches_when_resolution_is_defer
     );
     let operation = OperationId::new();
     let executor = uncompacted_executor(
-        Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "summary".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),

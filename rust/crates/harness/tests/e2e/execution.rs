@@ -199,12 +199,7 @@ fn configure(
         )) as Arc<dyn ContextStage>])
     };
     let mut executor = StockExecutor::new(
-        Model::new(
-            "scripted".into(),
-            "scenario".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("scripted".into(), "scenario".into(), "1".into())?,
         provider.clone(),
         context,
         ToolRegistry::default(),

@@ -47,7 +47,7 @@ impl Executor for CustomExecutor {
 fn main() -> Result<()> {
     let _executor: Box<dyn Executor> = Box::new(CustomExecutor(
         StockExecutor::new(
-            Model::new("example".into(), "mock".into(), "1".into(), Value::Null)?,
+            Model::new("example".into(), "mock".into(), "1".into())?,
             Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: Value::Null,

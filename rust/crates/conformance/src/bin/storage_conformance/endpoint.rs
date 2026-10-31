@@ -170,12 +170,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
         let turns = Turns {
             executors: Arc::new(preset.executors(
                 (
-                    Model::new(
-                        "conformance".into(),
-                        "answer".into(),
-                        "1".into(),
-                        Value::Null,
-                    )?,
+                    Model::new("conformance".into(), "answer".into(), "1".into())?,
                     Arc::new(Answer),
                 ),
                 ToolRegistry::default(),
