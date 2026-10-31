@@ -182,7 +182,10 @@ impl Providers {
         options: &WasmBrowserAgentOptions,
     ) -> Result<Self, JsValue> {
         let placement = Fs::new(authority, objects, EmbeddedCapabilities { durable });
+        let ancestry =
+            acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(Arc::clone(&stream)));
         let filesystem = FilesystemHost::new(placement.clone(), &options.filesystem_provider, None)
+            .and_then(|host| host.with_project_families(ancestry))
             .map_err(js_error)?;
         Ok(Self {
             stream,
