@@ -14,8 +14,10 @@ let tools = host.workspace(observation, &selected_volume, original_scope, verifi
 bindings.workspace_tools = Some(Arc::new(tools));
 ```
 
-`native_options` is `local::LocalOptions { cwd, environment,
-inherit_environment, process_custody }`, from the existing host admission.
+`native_options` is `local::LocalOptions { cwd, environment, process_custody }`,
+from the existing host admission. `environment` is the complete admitted child
+environment; ambient host values are excluded. Include the approved `PATH`
+and, on Windows, `PATHEXT` and `SystemRoot` where required by the selected shell.
 The observation's selected volume is that same canonical `VolumeRef`.
 The workspace consumes that original observation, checks its exact Machine and
 selected volume once, and retains the selection. No inspection RPC is added.

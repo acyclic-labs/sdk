@@ -79,6 +79,18 @@ Dropping the waiting future stops local observation without cancelling the nativ
 operation. Persist the original key for recovery after process restart; the SDK
 uses the service's durable operation journal.
 
+`results::ResultCursor` binds the original operation, terminal owner, immutable
+extent and child index. Its `Settlement` distinguishes a Streams `CommitId` from
+a native controller partition's nonzero revision; neither is interchangeable
+with the other or with a watch watermark. `SettledResults` verifies the original
+Streams fork cut once. `NativeResults` borrows the original controller's retained
+observation slice, including canonical protobuf observations, and selects each
+credited page without allocation, copying or IO. Both validate the same cursor
+before reading payload. These helpers grant no authority: the server must retain
+the original authenticated partition and verify terminal success. Native outcome
+decoding and transport serialization remain the producer's work; the borrowed
+view alone does not make a complete-array storage format lazy.
+
 `Machine::fork` (`MachinesProvider::fork_machine`) forks a *running* machine into fresh children at any moment, with no checkpoint step. Its fidelity is declared, not inferred: `Capability::LiveFork` means children resume from the source's memory, processes, and disk (`ForkFidelity::MemoryAndDisk`); `Capability::DiskFork` means they boot fresh over a copy of its disk (`ForkFidelity::DiskOnly`) and the caller restarts its workload. A machine with neither returns `ProviderError::Unsupported`; fall back to `checkpoint` plus `fork`, or a restart. Children inherit the source's contract, credentials, and environment, get fresh identities and endpoints, and never inherit open network connections. Destroy children before their source: a provider may refuse the reverse order with `ProviderError::Conflict`. The trait method documents the full semantics.
 
 `SimulatedMachines` is a bounded process-local state machine. It does **not** execute an operating system, isolate tenants, provide durability, or guarantee availability. Real providers must state their own assurance level. See the [Rust API](https://docs.rs/acyclic-machines/latest/acyclic_machines/) and [v1 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/machines).

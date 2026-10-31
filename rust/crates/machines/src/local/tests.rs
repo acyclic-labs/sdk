@@ -12,6 +12,17 @@ fn child() -> io::Result<()> {
     let Some(mode) = std::env::var_os("ACYCLIC_TEST_MACHINE_PROCESS") else {
         return Ok(());
     };
+    if mode == "environment" {
+        let closed = [
+            "OPENAI_API_KEY",
+            "BASH_ENV",
+            "ACYCLIC_MACHINE_PRIVATE_VALUE",
+        ]
+        .iter()
+        .all(|name| std::env::var_os(name).is_none());
+        let admitted = std::env::var("ACYCLIC_MACHINE_ROUTE").as_deref() == Ok("admitted");
+        std::process::exit(if closed && admitted { 0 } else { 91 });
+    }
     if let Some(marker) = std::env::var_os("ACYCLIC_TEST_MACHINE_MARKER") {
         std::fs::write(
             marker,
@@ -52,7 +63,6 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
                     marker.to_str().unwrap().into(),
                 ),
             ]),
-            inherit_environment: true,
             process_custody: None,
         },
     )?;

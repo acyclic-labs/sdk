@@ -62,8 +62,10 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
         acyclic_machines::local::LocalOptions {
             cwd: std::env::current_dir()
                 .map_err(|_| Error::Storage("local shell test has no current directory".into()))?,
-            environment: Default::default(),
-            inherit_environment: true,
+            environment: ["PATH", "PATHEXT", "SystemRoot"]
+                .into_iter()
+                .filter_map(|name| std::env::var(name).ok().map(|value| (name.into(), value)))
+                .collect(),
             process_custody: None,
         },
         Arc::new(acyclic_stream::MemoryStream::default()),

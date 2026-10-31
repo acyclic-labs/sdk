@@ -11,7 +11,6 @@ async fn blocked_physical_file_io_expires_without_attesting_retirement()
             LocalOptions {
                 cwd: std::fs::canonicalize(std::env::temp_dir())?,
                 environment: BTreeMap::new(),
-                inherit_environment: true,
                 process_custody: None,
             },
         )?,
