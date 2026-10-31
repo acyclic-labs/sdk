@@ -320,7 +320,9 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
         let records = timed!(
             rows,
             Operation::StreamRead,
-            read(1024),
+            // Resident records share their immutable payload owner. The
+            // result oracle below does not justify a timed payload copy.
+            read(0),
             serde_json::json!({"path": stream.path().as_str(), "start": receipt.start, "count": 1}),
             async {
                 stream

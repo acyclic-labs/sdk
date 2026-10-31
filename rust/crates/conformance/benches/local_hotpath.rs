@@ -147,6 +147,9 @@ impl Options {
         if !proofs && samples < 100 {
             return Err("p99 requires at least 100 observations".into());
         }
+        // Report growth checks require increasing cohorts. Normalize before
+        // calibration or any population preparation can consume resources.
+        populations.sort_unstable();
         Ok(Self {
             root: root.ok_or("--root <fresh directory on the measured device> is required")?,
             samples,
