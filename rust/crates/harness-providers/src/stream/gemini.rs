@@ -22,15 +22,41 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
     if let Some(id) = present(value.get("responseId")) {
         state.budget.member(&mut state.metadata, "id", id)?;
     }
-    if present(value["promptFeedback"].get("blockReason")).is_some() {
+    if present(value["promptFeedback"].get("blockReason"))
+        .is_some_and(|reason| reason != "BLOCK_REASON_UNSPECIFIED")
+    {
         return Err(invalid("Gemini prompt blocked"));
     }
-    let Some(candidate) = value["candidates"]
-        .as_array()
-        .and_then(|values| values.first())
-    else {
+    let Some(candidates) = present(value.get("candidates")) else {
         return Ok(Vec::new());
     };
+    let candidates = candidates.as_array().ok_or_else(|| {
+        invalid("Gemini candidate decode failed; recovery: return an array of candidates")
+    })?;
+    let Some(candidate) = candidates.first() else {
+        return Ok(Vec::new());
+    };
+    // The request uses the native single-candidate default. Silently taking
+    // the first of several candidates would discard calls and signatures.
+    if candidates.len() != 1
+        || !candidate.is_object()
+        || present(candidate.get("index")).is_some_and(|index| index.as_u64() != Some(0))
+    {
+        return Err(invalid(
+            "Gemini candidate selection failed; recovery: return the single requested candidate at index 0",
+        ));
+    }
+    let content = present(candidate.get("content"));
+    if content.is_some_and(|content| {
+        !content.is_object()
+            || present(content.get("role")).is_some_and(|role| role != "model")
+            || present(content.get("parts")).is_some_and(|parts| !parts.is_array())
+    }) || present(candidate.get("finishReason")).is_some_and(|reason| !reason.is_string())
+    {
+        return Err(invalid(
+            "Gemini candidate content decode failed; recovery: return model content with an array of parts and a string finishReason",
+        ));
+    }
     let mut events = Vec::new();
     if let Some(parts) = candidate["content"]["parts"].as_array() {
         if state.terminal && !parts.is_empty() {
@@ -45,11 +71,15 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             .ok_or_else(|| invalid("missing Gemini content"))?
             .parts;
         for (part, raw) in parts.iter().zip(raw) {
-            if present(part.get("thought")).is_some_and(|value| !value.is_boolean())
+            if !part.is_object()
+                || present(part.get("text")).is_some_and(|value| !value.is_string())
+                || present(part.get("thought")).is_some_and(|value| !value.is_boolean())
                 || present(part.get("thoughtSignature")).is_some_and(|value| !value.is_string())
                 || (part["text"].is_string() && present(part.get("functionCall")).is_some())
             {
-                return Err(invalid("invalid Gemini content part"));
+                return Err(invalid(
+                    "Gemini content part decode failed; recovery: return an object with correctly typed native fields",
+                ));
             }
             text(&mut events, &part["text"], part["thought"] == true);
             let position = (state.calls.len() + state.thinking.len()) as u64;
@@ -78,7 +108,10 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             }
         }
     }
-    if let Some(reason) = candidate["finishReason"].as_str() {
+    if let Some(reason) = candidate["finishReason"]
+        .as_str()
+        .filter(|reason| *reason != "FINISH_REASON_UNSPECIFIED")
+    {
         if !matches!(reason, "STOP" | "MAX_TOKENS") {
             return Err(invalid("Gemini generation was blocked"));
         }

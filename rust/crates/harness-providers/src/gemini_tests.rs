@@ -17,7 +17,7 @@ async fn absent_arguments_are_empty_but_invalid_supplied_arguments_are_rejected(
         if let Some(args) = args {
             call["args"] = args;
         }
-        let frame = json!({"candidates":[{"content":{"parts":[{"functionCall":call}]},"finishReason":"STOP"}]});
+        let frame = json!({"candidates":[{"index":0,"content":{"role":"model","parts":[{"functionCall":call}]},"finishReason":"STOP"}]});
         let parsed = stream::events(
             Adapter::Gemini,
             chunks(&format!("data: {frame}\n\n"), 1),
@@ -43,7 +43,9 @@ async fn absent_arguments_are_empty_but_invalid_supplied_arguments_are_rejected(
 }
 
 #[tokio::test]
-async fn truncated_tool_batches_and_invalid_native_ids_never_execute() -> Result<()> {
+async fn incomplete_or_malformed_native_tool_batches_never_execute() -> Result<()> {
+    // Generated adversarial protocol data, not captured provider fixtures.
+    let mut frames = Vec::new();
     for (reason, id) in [
         ("MAX_TOKENS", Some(json!("call"))),
         ("STOP", Some(json!(null))),
@@ -54,13 +56,41 @@ async fn truncated_tool_batches_and_invalid_native_ids_never_execute() -> Result
         if let Some(id) = id {
             function["id"] = id;
         }
-        // Generated adversarial protocol data, not a captured provider fixture.
-        let frame = json!({"candidates":[{"content":{"parts":[{
+        frames.push(json!({"candidates":[{"content":{"parts":[{
             "functionCall":function,"thoughtSignature":"opaque"
-        }]},"finishReason":reason}]});
+        }]},"finishReason":reason}]}));
+    }
+    let valid = json!({"content":{"role":"model","parts":[{
+        "functionCall":{"name":"echo","args":{}},"thoughtSignature":"opaque"
+    }]},"finishReason":"STOP"});
+    frames.push(json!({"candidates":true}));
+    frames.push(json!({"candidates":[true]}));
+    frames.push(json!({"candidates":[valid,valid]}));
+    for index in [json!(1), json!(-1), json!(true), json!("0")] {
+        let mut candidate = valid.clone();
+        candidate["index"] = index;
+        frames.push(json!({"candidates":[candidate]}));
+    }
+    for role in [json!("user"), json!(true)] {
+        let mut candidate = valid.clone();
+        candidate["content"]["role"] = role;
+        frames.push(json!({"candidates":[candidate]}));
+    }
+    for parts in [json!(true), json!({}), json!([true]), json!([{"text":42}])] {
+        let mut candidate = valid.clone();
+        candidate["content"]["parts"] = parts;
+        frames.push(json!({"candidates":[candidate]}));
+    }
+    let mut candidate = valid;
+    candidate["finishReason"] = json!(true);
+    frames.push(json!({"candidates":[candidate]}));
+    let prefix = json!({"candidates":[{"content":{"parts":[{
+        "functionCall":{"name":"prior","args":{}},"thoughtSignature":"prior-signature"
+    }]}}]});
+    for frame in frames {
         let events = stream::events(
             Adapter::Gemini,
-            chunks(&format!("data: {frame}\n\n"), 1),
+            chunks(&format!("data: {prefix}\n\ndata: {frame}\n\n"), 1),
             4096,
             parser_dispatch(),
         )
