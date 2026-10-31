@@ -29,7 +29,7 @@ impl StockExecution<'_> {
             )?;
             let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io).await?;
             let tokens = with_history_io(self.io, |work| count.validate(&request, work))?;
-            if policy.needs_compaction(accounting.capacity, tokens)? {
+            if policy.needs_compaction(accounting.capacity, tokens, self.output_tokens())? {
                 return Ok((base, true));
             }
         }

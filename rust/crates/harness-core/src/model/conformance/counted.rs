@@ -28,6 +28,9 @@ where
                 Arc::new(Counted::with_ledger(bound, self.ledger())) as Arc<dyn ModelProvider>
             })
     }
+    fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
+        self.inner().model_profile(model)
+    }
     fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
         self.record(RequestClass::Metadata);
         self.inner().context_capacity(model)

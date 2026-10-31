@@ -7,7 +7,7 @@ use crate::{
     },
     core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier, Scope},
     filesystem::{FilesystemContentPublisher, FilesystemHost},
-    model::{Model, ModelContent, ModelProvider},
+    model::{Model, ModelProvider},
     runtime::{AgentHarness, RuntimeScope, TaskRunLimits},
     tool::{Tool, ToolRegistry},
 };
