@@ -62,7 +62,7 @@ impl StockExecution<'_> {
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }
-            Err(error) if error.leaves_effect_uncertain() => {
+            Err(error) if error.leaves_effect_uncertain() || !error.is_tool_failure() => {
                 tracing::error!(%operation_id, call_id = %invocation.call_id, ?error, "tool outcome is uncertain");
                 return Err(error);
             }

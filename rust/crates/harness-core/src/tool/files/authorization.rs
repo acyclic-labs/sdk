@@ -40,13 +40,17 @@ impl FileTool {
         };
         self.public_path(file.path(), io)?;
         crate::executor::with_history_io(io, |history| {
-            scope.limits().validate_file(&file, history)?;
+            scope
+                .limits()
+                .validate_file(&file, history)
+                .map_err(Error::tool_input)?;
             if !crate::runtime::read_granted_with_work(scope.grants(), &file, history)? {
                 return Err(crate::store::guarded_boundary(
                     history,
                     crate::wire::ErrorCode::Unauthorized,
                     "file tool requires original source read grant",
-                ));
+                )
+                .tool_input());
             }
             Ok(())
         })?;
@@ -55,13 +59,14 @@ impl FileTool {
 
     fn public_path(&self, path: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history)?;
+            crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
             if crate::conversation::is_internal_path(path) {
                 return Err(crate::store::guarded_boundary(
                     history,
                     crate::wire::ErrorCode::Unauthorized,
                     "file tools cannot access internal storage",
-                ));
+                )
+                .tool_input());
             }
             Ok(())
         })
