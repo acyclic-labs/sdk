@@ -322,6 +322,7 @@ dependencies = [
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections",
  "acyclic-host-platform",
  "acyclic-observability",
  "blake3",
@@ -413,6 +414,7 @@ name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-native-runtime",
  "acyclic-observability",

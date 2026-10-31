@@ -11,7 +11,7 @@ campaign or proof. Captured corpus provenance is `rust/codec-fuzz/corpus/SOURCES
 descriptor baselines live in `compatibility/descriptors/`. Golden payloads belong
 in `compatibility/frames/`, alongside their producing encoder and refusal cases.
 
-The current SDK corpus contains 1,674 registered writer outputs and original
+The current SDK corpus contains 1,676 registered writer outputs and original
 physical schedule configurations. The initial 1,594 writer outputs were
 captured and readmitted through its owning decoder oracle, including the
 ordinary/funded and typed reader-loss controls. This completes the SDK seed
