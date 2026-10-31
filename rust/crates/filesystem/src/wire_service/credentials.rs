@@ -59,22 +59,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if deadline <= now || !view.allows_every_path(&crate::access::Action::ALL, now) {
             return Err(Status::permission_denied("credential authority expired"));
         }
-        let grant = issuer
-            .issue(CredentialGrantRequest {
-                kind,
-                workspace_id: workspace.id(),
-                workspace_name: workspace.name().clone(),
-                generation_id: generation.id(),
-                writable: request.writable,
-                expires_after_seconds: deadline - now,
-                expires_at_unix_seconds: i64::try_from(deadline).map_err(|_| {
-                    Status::invalid_argument("credential deadline is unrepresentable")
-                })?,
-                idempotency_key: operation(request.operation)?,
-            })
-            .await?;
+        let scope = CredentialGrantRequest {
+            kind,
+            workspace_id: workspace.id(),
+            workspace_name: workspace.name().clone(),
+            generation_id: generation.id(),
+            writable: request.writable,
+            expires_after_seconds: deadline - now,
+            expires_at_unix_seconds: i64::try_from(deadline)
+                .map_err(|_| Status::invalid_argument("credential deadline is unrepresentable"))?,
+            idempotency_key: operation(request.operation)?,
+        };
+        let grant = issuer.issue(scope.clone()).await?;
         Ok(Response::new(credential_response(
-            grant, kind, now, deadline,
+            grant, &scope, now, deadline,
         )?))
     }
 
@@ -125,12 +123,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
 
 fn credential_response(
     grant: CredentialGrant,
-    kind: CredentialKind,
+    scope: &CredentialGrantRequest,
     now: u64,
     deadline: u64,
 ) -> Result<wire::CredentialResponse, Status> {
     let expiry = match &grant {
-        CredentialGrant::Bearer {
+        CredentialGrant::Mount {
             expires_at_unix_seconds,
             ..
         }
@@ -147,19 +145,20 @@ fn credential_response(
         ));
     }
     let response = match grant {
-        CredentialGrant::Bearer {
+        CredentialGrant::Mount {
             endpoint,
-            token,
+            capability,
             expires_at_unix_seconds,
-        } if kind == CredentialKind::Mount
-            && !endpoint.is_empty()
-            && !token.is_empty()
-            && expires_at_unix_seconds > 0 =>
-        {
+        } if scope.kind == CredentialKind::Mount && !endpoint.is_empty() => {
+            admit_mount(&capability, scope, now, expiry)
+                .map_err(|refusal| Status::permission_denied(refusal.to_string()))?;
+            // The one capability text form, as a bearer credential.
             wire::CredentialResponse {
                 endpoint,
                 expires_at_unix_seconds,
-                credential: Some(wire::credential_response::Credential::BearerToken(token)),
+                credential: Some(wire::credential_response::Credential::BearerToken(
+                    acyclic_auth::credential::capability_text(&capability),
+                )),
             }
         }
         CredentialGrant::S3 {
@@ -170,7 +169,7 @@ fn credential_response(
             secret_access_key,
             session_token,
             expires_at_unix_seconds,
-        } if kind == CredentialKind::S3
+        } if scope.kind == CredentialKind::S3
             && !endpoint.is_empty()
             && !bucket.is_empty()
             && !region.is_empty()

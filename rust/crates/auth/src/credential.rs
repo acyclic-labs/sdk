@@ -277,6 +277,25 @@ pub fn valid_credential(value: &str) -> bool {
         && !value.contains(['\r', '\n', '\0'])
 }
 
+/// The one text form of an encoded capability: unpadded base64url, as a
+/// bearer credential, an environment value or a string wire field carries it.
+#[must_use]
+pub fn capability_text(capability: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(capability)
+}
+
+/// The encoded capability a [`capability_text`] names.
+///
+/// # Errors
+/// [`CredentialError::Invalid`] for anything else.
+pub fn capability_from_text(text: &str) -> Result<Vec<u8>, CredentialError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|_| CredentialError::Invalid)
+}
+
 /// Encode bearer metadata in one exactly sized buffer. This does not admit a
 /// request: validate static credentials first, or retain resolved custody and
 /// check it at dispatch. The transport consumes this buffer without copying it.

@@ -74,9 +74,9 @@ impl FilesystemCredentialIssuer for DeadlineIssuer {
     async fn issue(&self, request: CredentialGrantRequest) -> Result<CredentialGrant, Status> {
         assert!(request.expires_after_seconds <= 60);
         assert!(u64::try_from(request.expires_at_unix_seconds).unwrap() <= self.maximum);
-        Ok(CredentialGrant::Bearer {
+        Ok(CredentialGrant::Mount {
             endpoint: "mount://deadline".into(),
-            token: "bounded".into(),
+            capability: super::mount_fixture::Mounts::new().mint(&request),
             expires_at_unix_seconds: request.expires_at_unix_seconds + i64::from(self.widen),
         })
     }

@@ -119,6 +119,7 @@ dependencies = [
  "acyclic-proto-build",
  "acyclic-test-support",
  "arc-swap",
+ "base64 0.23.1",
  "ed25519-dalek 3.0.0",
  "futures",
  "js-sys",
@@ -276,6 +277,7 @@ dependencies = [
  "crc-fast",
  "dirs",
  "divan",
+ "ed25519-dalek 3.0.0",
  "fuser",
  "futures",
  "getrandom 0.3.4",
@@ -330,6 +332,7 @@ dependencies = [
  "web-sys",
  "windows",
  "writeable",
+ "zeroize",
 ]
 
 [[package]]
