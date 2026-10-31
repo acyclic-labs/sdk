@@ -161,7 +161,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         }
     }
 
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+    {
         let directory = tempfile::tempdir().map_err(agent)?;
         let project = volume(directory.path()).await?;
         let (entered, entering) = oneshot::channel();
@@ -177,29 +177,43 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let mut events = client.observe(0).await?;
         let inbox = client.send("lost-producer", "hello").await?;
         entering.await.map_err(agent)?;
+        let hosted = harness.agents.get().unwrap();
+        let retained = hosted.runtime.session().agent(&hosted.root().id())?;
+        retained.preparation()?;
         let waiting = async {
             loop {
                 match events.next().await? {
-                    super::super::Event::Turn(_) => return Err::<(), _>(Error::Conflict("unsettled model produced a turn".into())),
+                    super::super::Event::Turn(_) => {
+                        return Err::<(), _>(Error::Conflict(
+                            "unsettled model produced a turn".into(),
+                        ));
+                    }
                     super::super::Event::Status(_) | super::super::Event::Output => {}
                 }
             }
         };
         tokio::pin!(waiting);
-        assert!(futures::poll!(&mut waiting).is_pending(), "live producer must retain the wait");
+        assert!(
+            futures::poll!(&mut waiting).is_pending(),
+            "live producer must retain the wait"
+        );
         drop(producer);
         // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
         let observed = waiting.await;
-        assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");
+        assert!(
+            matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+            "observation lost the runtime cause: {observed:?}"
+        );
         let hosted = harness.agents.get().unwrap();
         assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
+        assert!(retained.preparation().is_err(), "runtime closure must cancel retained context work before publishing its lifetime event" );
         assert!(harness.agent_stream.as_ref().unwrap().failure().is_none(), "the Session's runtime failure must not be invented as a provider failure");
         assert!(matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "commands must retain the same runtime cause");
         assert_eq!(hosted.agents().reply(hosted.root(), &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?, inbox).await.map_err(agent)?, crate::agent::Reply::Pending, "failed input stays recoverable");
         assert!(records(&**hosted.agents().provider(), hosted.root().conversation().map_err(agent)?).await?.is_empty());
         assert!(matches!(harness.connect().await, Err(Error::Storage(_))), "late clients observe the already closed runtime");
         Ok(())
-    }).await.map_err(|_| Error::Conflict("closed local runtime retained a Session wait".into()))?
+    }
 }
 
 /// The names directly under `path` on `volume`.

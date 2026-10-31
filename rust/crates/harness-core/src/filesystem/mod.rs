@@ -67,6 +67,10 @@ use bounded_io::decode_record;
 pub(crate) use bounded_io::native_decoded;
 pub(crate) use bounded_io::{DecodeReservation, retain_decoded};
 pub use bounded_io::{PreparationCustody, PreparationIo};
+#[cfg(not(target_arch = "wasm32"))]
+mod session;
+#[cfg(not(target_arch = "wasm32"))]
+pub use session::{AgentSession, SessionOwner, SessionWork};
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use tool_output::{AgentObservation, session_authority, session_trust};
 mod memory;

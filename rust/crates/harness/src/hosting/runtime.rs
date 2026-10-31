@@ -1,5 +1,6 @@
 //! Native ownership of the shared Actors serving loop.
 use super::Server;
+use crate::filesystem::{SessionOwner, SessionWork};
 use crate::{Error, Result};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use std::sync::Arc;
@@ -11,17 +12,36 @@ pub struct Runtime {
     task: tokio::task::JoinHandle<()>,
     lifetime: watch::Receiver<()>,
     failure: watch::Receiver<Option<String>>,
+    session: Arc<SessionWork>,
+}
+
+// Field order makes retained-work cancellation precede lifetime closure, also
+// when the task is aborted before its first poll.
+struct Active {
+    _work: SessionOwner,
+    _alive: watch::Sender<()>,
 }
 
 impl Runtime {
     /// Starts the application's existing Actors runtime, with no second loop or
     /// per-agent task. A failed delivery retains its queued input for recovery.
-    pub fn start<P, O>(server: Arc<Server<P, O>>) -> Self
+    pub fn start<P, O>(server: Arc<Server<P, O>>) -> Result<Self>
     where
         P: AuthorityProvider + 'static,
         O: AsyncObjectStore + 'static,
     {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let (owner, session) = SessionWork::admit(original)?;
         let (alive, lifetime) = watch::channel(());
+        let active = Active {
+            _work: owner,
+            _alive: alive,
+        };
         let (failure, mut failed) = watch::channel(None);
         let completion = failed.clone();
         let task = tokio::spawn(async move {
@@ -33,13 +53,21 @@ impl Runtime {
                 _ = failed.changed() => {}
             }
             // The lifetime closes after cancellation drops the active delivery.
-            drop(alive);
+            drop(active);
         });
-        Self {
+        Ok(Self {
             task,
             lifetime,
             failure: completion,
-        }
+            session,
+        })
+    }
+
+    /// Original runtime admission for retained, executing-agent context. This
+    /// handle cannot keep the serving producer alive or grant volume access.
+    #[must_use]
+    pub fn session(&self) -> &Arc<SessionWork> {
+        &self.session
     }
 
     /// The event consumed by the canonical Session engine. Producer loss, even
