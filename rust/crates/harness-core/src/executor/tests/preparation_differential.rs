@@ -15,13 +15,7 @@ type Output = (
 async fn initialize(text: &[String; 3], invalid: bool) -> State {
     let journal = Journal::default();
     let (provider, calls) = counted_model(131_072, None, [], []);
-    let model = Model::new(
-        "test".into(),
-        "request-reuse".into(),
-        "1".into(),
-        Value::Null,
-    )
-    .unwrap();
+    let model = Model::new("test".into(), "request-reuse".into(), "1".into()).unwrap();
     let messages = vec![
         ModelMessage {
             role: ModelRole::System,

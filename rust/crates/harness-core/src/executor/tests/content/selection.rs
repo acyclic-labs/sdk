@@ -197,7 +197,7 @@ proptest! {
     #[test]
     fn selected_input_is_verified_once(count in 1usize..9, text in "[a-z]{1,24}") {
         let executor = uncompacted_executor(
-            Model::new("test".into(), "reads".into(), "1".into(), Value::Null).unwrap(),
+            Model::new("test".into(), "reads".into(), "1".into()).unwrap(),
             Arc::new(ScriptedModelProvider::new([])),
             ContextPipeline::default(), ToolRegistry::default(),
         );
@@ -240,7 +240,7 @@ proptest! {
     fn public_summary_rejects_an_invalid_parent_before_dispatch(count in 1usize..9, text in "[a-z]{1,24}") {
         let provider = Arc::new(ScriptedModelProvider::new([]));
         let executor = uncompacted_executor(
-            Model::new("test".into(), "reads".into(), "1".into(), Value::Null).unwrap(),
+            Model::new("test".into(), "reads".into(), "1".into()).unwrap(),
             provider.clone(), ContextPipeline::default(), ToolRegistry::default(),
         ).with_max_output_tokens(64).unwrap();
         let mut parent = input(count, &text);

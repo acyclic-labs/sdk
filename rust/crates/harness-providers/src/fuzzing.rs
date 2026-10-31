@@ -447,7 +447,6 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         provider: "fixture".into(),
         name: "model".into(),
         revision: "1".into(),
-        options: value.clone(),
     });
     round_trip(acyclic_harness_core::tool::ToolInvocation {
         operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),

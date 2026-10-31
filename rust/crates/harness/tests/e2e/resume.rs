@@ -160,7 +160,7 @@ async fn journal<P: acyclic_harness::store::JournalProvider + 'static>(
 
 fn executor(provider: Arc<dyn ModelProvider>) -> TestResult<StockExecutor> {
     Ok(StockExecutor::new(
-        Model::new("scripted".into(), "resume".into(), "1".into(), Value::Null)?,
+        Model::new("scripted".into(), "resume".into(), "1".into())?,
         provider,
         ContextPipeline::default(),
         ToolRegistry::default(),

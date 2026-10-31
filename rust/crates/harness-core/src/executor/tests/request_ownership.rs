@@ -5,7 +5,7 @@ use proptest::prelude::*;
 #[tokio::test]
 async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
     let executor = uncompacted_executor(
-        Model::new("test".into(), "transfer".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "transfer".into(), "1".into())?,
         Arc::new(ScriptedModelProvider::new([])),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -111,7 +111,7 @@ proptest! {
         let tools = echo_tools(Arc::new(FakeTool(AtomicUsize::new(0))),
             json!(true), json!(true), json!(true)).unwrap();
         let executor = uncompacted_executor(
-            Model::new("test".into(), "transfer".into(), "1".into(), Value::Null).unwrap(),
+            Model::new("test".into(), "transfer".into(), "1".into()).unwrap(),
             Arc::new(ScriptedModelProvider::new([])), ContextPipeline::default(), tools,
         ).with_tool_authority(
             RuntimeScope::new(Capabilities::new(["model:generate", "tool:call:example.echo"]), Limits::default()).unwrap(),

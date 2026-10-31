@@ -301,7 +301,6 @@ pub(super) fn provider_with(
             provider: "fixture".into(),
             name: "model".into(),
             revision: "1".into(),
-            options: json!({}),
         },
         config: Arc::new(ProviderSpec {
             adapter,

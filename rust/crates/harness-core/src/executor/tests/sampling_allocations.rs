@@ -54,7 +54,7 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
         let catalog = catalog(count)?;
         let callbacks = McpRuntimeCallbacks::new(
             uncompacted_executor(
-                Model::new("test".into(), "sampling".into(), "1".into(), Value::Null)?,
+                Model::new("test".into(), "sampling".into(), "1".into())?,
                 model.clone(),
                 ContextPipeline::default(),
                 catalog.clone(),

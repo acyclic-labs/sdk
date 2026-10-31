@@ -12,7 +12,7 @@ use serde_json::json;
 fn request() -> Result<(PreparedModelRequest, ModelDispatch)> {
     let request = PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new("scripted".into(), "test".into(), "1".into(), json!({}))?,
+            model: Model::new("scripted".into(), "test".into(), "1".into())?,
             messages: vec![
                 ModelMessage {
                     role: ModelRole::System,

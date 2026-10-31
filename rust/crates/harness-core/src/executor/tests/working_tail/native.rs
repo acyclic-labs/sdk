@@ -11,12 +11,7 @@ async fn private_cut() -> Result<CutFixture> {
     let journal = storage.journal();
     let (provider, _) = counted_model(65_536, None, [], []);
     let executor = StockExecutor::new(
-        Model::new(
-            "fixture".into(),
-            "working-cut".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("fixture".into(), "working-cut".into(), "1".into())?,
         provider,
         ContextPipeline::default(),
         ToolRegistry::default(),

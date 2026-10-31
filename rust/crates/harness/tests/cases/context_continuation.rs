@@ -222,12 +222,7 @@ async fn fixture() -> Result<Fixture> {
     covered.messages.truncate(2);
     covered.current_input_index = None;
     let summary = StockExecutor::new(
-        Model::new(
-            "synthetic".into(),
-            "summary".into(),
-            "1".into(),
-            serde_json::json!({}),
-        )?,
+        Model::new("synthetic".into(), "summary".into(), "1".into())?,
         summary_model(1).0,
         ContextPipeline::default(),
         ToolRegistry::default(),

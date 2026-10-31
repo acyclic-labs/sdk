@@ -101,12 +101,7 @@ mod tests {
             }),
         );
         let executor = StockExecutor::new(
-            Model::new(
-                "synthetic".into(),
-                "counter".into(),
-                "1".into(),
-                serde_json::Value::Null,
-            )?,
+            Model::new("synthetic".into(), "counter".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),

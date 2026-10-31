@@ -4,7 +4,7 @@ use crate::executor::transcript as segments;
 fn request(messages: &[ModelMessage]) -> Result<crate::model::PreparedModelRequest> {
     crate::model::PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new("test".into(), "segments".into(), "1".into(), Value::Null)?,
+            model: Model::new("test".into(), "segments".into(), "1".into())?,
             messages: messages.to_vec(),
             tools: Vec::new(),
             max_output_tokens: None,

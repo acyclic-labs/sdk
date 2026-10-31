@@ -129,7 +129,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
-    fn admitted_tool_schemas_survive_generation_counting_and_override_attempts(text in ".{0,64}") {
+    fn admitted_tool_schemas_survive_generation_and_counting(text in ".{0,64}") {
         let schema = json!({
             "$schema":"https://json-schema.org/draft/2020-12/schema",
             "title":"unused root title", "description":"repeated root description",
@@ -148,7 +148,6 @@ proptest! {
                 name:"echo".into(), revision:"1".into(), description:"original guidance".into(),
                 input_schema:schema.clone(), output_schema:json!({}), projection_schema:json!({}),
             });
-            request.model.options["tools"] = json!([{"type":"forged-native-tool"}]);
             let names = crate::tool_names::Names::new(&request);
             let body = crate::projection::body_named(&provider, &request, &names,
                 &provider.reasoning_origin(provider.key.as_deref(), None),
@@ -171,7 +170,7 @@ proptest! {
             request.tools.clear();
             let generation = crate::projection::body(&provider, &request).unwrap();
             prop_assert!(generation.get("tools").is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
-                "options supplied an unadmitted tool for {:?}", adapter);
+                "projection supplied an unadmitted tool for {:?}", adapter);
             prop_assert_eq!(validate_input(adapter, &generation), Vec::<&str>::new());
         }
     }

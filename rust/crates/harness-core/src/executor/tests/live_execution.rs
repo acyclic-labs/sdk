@@ -26,7 +26,7 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
         }]),
     );
     let executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -117,7 +117,7 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
         crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         tools,

@@ -33,12 +33,7 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let executor = StockExecutor::new(
-        Model::new(
-            "fixture".into(),
-            "driver-cut".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("fixture".into(), "driver-cut".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         tools,
@@ -110,12 +105,7 @@ async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Resu
         crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let executor = StockExecutor::new(
-        Model::new(
-            "fixture".into(),
-            "protected-exchange".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("fixture".into(), "protected-exchange".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         tools,
