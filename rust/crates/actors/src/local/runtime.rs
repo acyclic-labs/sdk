@@ -297,6 +297,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// waits for its cleanup before returning. Once admitted, the operation
     /// outlives its waiter. Its input/unknown publication remains with the same
     /// slot. Resume reopens admission and wakes it.
+    /// A changed state cut returns [`Error::Conflict`] without another attempt.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
         self.pause_with(actor, paused, std::future::ready(())).await
     }
