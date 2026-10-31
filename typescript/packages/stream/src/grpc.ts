@@ -157,8 +157,8 @@ export class GrpcStreamProvider implements StreamProvider {
 
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
-    await validateWireRequest(request);
-    const response = await this.#call("head", () => this.#client.head(fromBinary(wire.HeadRequestSchema, wireRequest(request))));
+    const input = await validateWireRequest(request);
+    const response = await this.#call("head", () => this.#client.head(fromBinary(wire.HeadRequestSchema, input)));
     return this.#project("head", toBinary(wire.PathHeadSchema, response));
   }
   async tail(path: string): Promise<bigint> {
@@ -181,8 +181,8 @@ export class GrpcStreamProvider implements StreamProvider {
   }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> {
     const request = { kind: "fork" as const, source, destination, ...(options === undefined ? {} : { options: structuredClone(options) }) };
-    await validateWireRequest(request);
-    const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, wireRequest(request))));
+    const input = await validateWireRequest(request);
+    const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, input)));
     const receipt = this.#project<ForkReceipt>("fork", toBinary(wire.ForkReceiptSchema, response));
     this.#sessions.observe(receipt.revision);
     return receipt;
@@ -247,8 +247,8 @@ export class GrpcStreamProvider implements StreamProvider {
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),
     };
-    await validateWireRequest(authored);
-    const response = await this.#call("children_page", () => this.#client.childrenPage(fromBinary(wire.ChildrenPageRequestSchema, wireRequest(authored))));
+    const input = await validateWireRequest(authored);
+    const response = await this.#call("children_page", () => this.#client.childrenPage(fromBinary(wire.ChildrenPageRequestSchema, input)));
     return this.#project("children_page", toBinary(wire.ChildrenPageResponseSchema, response));
   }
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {

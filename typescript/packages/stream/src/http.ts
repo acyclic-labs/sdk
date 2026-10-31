@@ -46,7 +46,7 @@ export class HttpStreamProvider implements StreamProvider {
   }
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
-  async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
+  async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); const input = await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const records = this.#sessions.read(path, options);
     try {
@@ -84,15 +84,7 @@ export class HttpStreamProvider implements StreamProvider {
     if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > StreamLimit.MAX_ITEMS) {
       throw new StreamError("limit_exceeded", `child page limit must be between 1 and ${StreamLimit.MAX_ITEMS}`);
     }
-    await validateWireRequest({
-      kind: "children_page",
-      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
-      ...(request.parent === undefined ? {} : { parent: request.parent }),
-      ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
-      limit: request.limit,
-    });
-    const input = wireRequest({
+    const input = await validateWireRequest({
       kind: "children_page",
       ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
       ...(request.parent === undefined ? {} : { parent: request.parent }),
@@ -114,8 +106,8 @@ export class HttpStreamProvider implements StreamProvider {
 
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
-    await validateWireRequest(request);
-    return this.#request("head", await encodeHttpRequest("head", wireRequest(request)));
+    const input = await validateWireRequest(request);
+    return this.#request("head", await encodeHttpRequest("head", input));
   }
   async #tail(path: string, signal?: AbortSignal): Promise<Sequence> {
     await validateWireRequest({ kind: "tail", path });
