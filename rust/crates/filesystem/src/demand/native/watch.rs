@@ -17,16 +17,28 @@ pub(crate) fn native_watch_fixture(
         _ownership: ownership,
     }))
 }
+impl Drop for NativeWatch {
+    fn drop(&mut self) {
+        self.watch.delivery_lost();
+    }
+}
+
 impl SourceWatch for NativeWatch {
     fn fence(
         &self,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<(), DemandError> {
+    ) -> Result<SourceFence, DemandError> {
         let mut context = callback_work(accounting)?;
         let result = self
             .watch
             .fence_with_work(std::time::Duration::from_secs(10), &mut context)
-            .map(|_| ());
+            .map(|confirmed| {
+                if confirmed {
+                    SourceFence::Confirmed
+                } else {
+                    SourceFence::Unconfirmed
+                }
+            });
         finish_context(result, context, accounting)
     }
     fn stop(
@@ -35,13 +47,20 @@ impl SourceWatch for NativeWatch {
     ) -> Result<(), DemandError> {
         let mut context = callback_work(accounting)?;
         let result = self.watch.stop_with_work(&mut context);
+        if result.is_ok() {
+            self.watch.delivery_lost();
+        }
         finish_context(result, context, accounting)
     }
     fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
-        self.watch.stop_with_cleanup_wait(wait)
+        self.watch.stop_with_cleanup_wait(wait)?;
+        self.watch.delivery_lost();
+        Ok(())
     }
     fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        self.watch.stop_accepted_cleanup()
+        self.watch.stop_accepted_cleanup()?;
+        self.watch.delivery_lost();
+        Ok(())
     }
     fn is_stopped(&self) -> bool {
         self.watch.is_stopped()
@@ -356,6 +375,9 @@ impl NativeChanges {
     }
 }
 impl crate::source_watch::HostChangeSink for NativeChanges {
+    fn delivery_lost(&self) {
+        self.sink.delivery_lost();
+    }
     fn logical_owned_bytes(&self) -> u64 {
         std::mem::size_of::<Self>() as u64 + self.sink.logical_owned_bytes()
     }

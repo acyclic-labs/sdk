@@ -9,8 +9,13 @@ use acyclic_fs::{
     model::{FilesystemProfile, VolumeLimits},
 };
 use std::{error::Error, sync::Arc};
-struct Changes;
+#[derive(Default)]
+struct Changes(CancellationToken);
 impl SourceChangeSink for Changes {
+    fn delivery_lost(&self) {
+        self.0.cancel();
+    }
+
     fn source_changed(
         &self,
         _: &[SourceChange],
@@ -47,10 +52,10 @@ async fn a_shared_source_registers_watches_from_different_original_ledgers()
     )
     .await?;
     let first = source
-        .watch(Arc::new(Changes), &first_work, &cancellation)?
+        .watch(Arc::new(Changes::default()), &first_work, &cancellation)?
         .ok_or("missing first source watch")?;
     let second = source
-        .watch(Arc::new(Changes), &second_work, &cancellation)?
+        .watch(Arc::new(Changes::default()), &second_work, &cancellation)?
         .ok_or("missing second source watch")?;
     assert!(!first.is_stopped());
     assert!(!second.is_stopped());

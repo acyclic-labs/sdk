@@ -156,6 +156,9 @@ where
                         work,
                         work.cancellation(),
                     ))
+                    // The mount qualifies retained entries through the view
+                    // ledger, including the producer's Unconfirmed changes.
+                    .map(|_| ())
                     .map_err(MountSourceError::from)
             })
     }

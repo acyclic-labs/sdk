@@ -1,6 +1,18 @@
 use super::*;
 
 impl NativeSourceWatch {
+    /// Invalidates observations retained by this producer's original sink.
+    pub(crate) fn delivery_lost(&self) {
+        self.delivery().sink.delivery_lost();
+    }
+
+    /// Injects a terminal failure into this actual producer's original delivery.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn inject_delivery_failure(&self, error: DemandError) {
+        let mut work = self.delivery().callback_work();
+        self.delivery().failed_with_work(error, &mut work);
+    }
+
     /// Whether this producer already observes the entire held subtree. This is
     /// registration coverage, not a delivery or restart-continuity guarantee.
     pub(crate) fn has_subtree_registration(&self) -> bool {

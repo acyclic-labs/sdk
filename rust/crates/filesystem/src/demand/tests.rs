@@ -63,9 +63,13 @@ async fn native_source(
 }
 
 #[derive(Default)]
-struct RecordedChanges(Mutex<Vec<SourceChange>>);
+struct RecordedChanges(Mutex<Vec<SourceChange>>, std::sync::atomic::AtomicBool);
 
 impl SourceChangeSink for RecordedChanges {
+    fn delivery_lost(&self) {
+        self.1.store(true, std::sync::atomic::Ordering::Release);
+    }
+
     fn source_changed(
         &self,
         changes: &[SourceChange],
@@ -81,6 +85,9 @@ impl SourceChangeSink for RecordedChanges {
 
 impl RecordedChanges {
     fn take(&self) -> Result<Vec<SourceChange>, Box<dyn Error>> {
+        if self.1.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(DemandError::SourceUnavailable.into());
+        }
         Ok(std::mem::take(
             &mut *self.0.lock().map_err(|_| "recording poisoned")?,
         ))
