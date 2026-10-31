@@ -463,7 +463,7 @@ impl ExecutionJournal for Journal {
     fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
-        io: Option<&'a PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<crate::executor::ExecutionAttempt<'a>> {
         self.6.acquire([0; 32], operation, io)
     }

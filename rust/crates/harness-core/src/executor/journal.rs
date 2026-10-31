@@ -101,7 +101,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
-        io: Option<&'a PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<ExecutionAttempt<'a>>;
 
     /// Excludes live attempts before replay can mistake them for crashed work.
@@ -109,7 +109,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn claim_execution<'a>(
         &'a self,
         operation: OperationId,
-        io: Option<&'a PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<ExecutionClaim<'a>> {
         self.acquire_execution(operation, io)?.into_owner(io)
     }

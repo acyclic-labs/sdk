@@ -18,7 +18,7 @@ impl ExecutionJournal for Checks {
     fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
-        io: Option<&'a PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<crate::executor::ExecutionAttempt<'a>> {
         self.files.acquire_execution(operation, io)
     }
