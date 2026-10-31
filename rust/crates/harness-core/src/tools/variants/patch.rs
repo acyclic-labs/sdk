@@ -70,7 +70,7 @@ pub fn apply_patch() -> Result<Tool> {
         description: "Apply exact V4A add, update, delete and move operations in one atomic publication. Start with *** Begin Patch and finish with *** End Patch; update hunks use @@ and exact context".into(),
         input_schema: schema::input::<PatchInput>()?,
         output_schema: schema::output::<PatchResult>()?,
-        projection_schema: schema::text_projection_schema(),
+        projection_schema: schema::text_projection_schema()?,
     };
     definition.input_schema["x-harness-capability"] = Value::String("edit".into());
     Ok(Tool {
