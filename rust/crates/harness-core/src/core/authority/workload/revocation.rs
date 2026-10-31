@@ -2,16 +2,16 @@
 use super::*;
 use acyclic_auth::{
     crypto::BlockId,
-    verify::{AccountState, RevocationCheck, Trust, VerifyError},
+    verify::{AccountState, Keys, RevocationCheck, Trust, VerifyError},
 };
 
 struct RevocationTarget<'a> {
-    owner: &'a Snapshot,
+    owner: &'a dyn Trust,
     block: &'a BlockId,
 }
 
 impl Trust for RevocationTarget<'_> {
-    fn environment_keys(&self, environment: &str) -> std::result::Result<&[BlockId], VerifyError> {
+    fn environment_keys(&self, environment: &str) -> std::result::Result<Keys<'_>, VerifyError> {
         self.owner.environment_keys(environment)
     }
 
@@ -30,14 +30,12 @@ impl Trust for RevocationTarget<'_> {
 }
 
 pub(in crate::core::authority) fn revoke(root: &AuthorityRoot, scope: &Scope) -> Result<()> {
-    let mut trust = root
-        .runtime
-        .public
-        .trust
-        .write()
-        .map_err(|_| Error::Storage("runtime trust poisoned".into()))?;
+    // The original signing lock serializes authentication, duplicate detection
+    // and publication, so concurrent repeats publish only once.
+    let mut keys = root.runtime.keys()?;
+    let trust = &*root.runtime.trust;
     let target = RevocationTarget {
-        owner: &trust,
+        owner: trust,
         block: &scope.proof,
     };
     let timestamp = root.runtime.public.now();
@@ -50,18 +48,19 @@ pub(in crate::core::authority) fn revoke(root: &AuthorityRoot, scope: &Scope) ->
         &authenticated,
         &mut None,
     )?;
-    if trust.revoked_block_ids.contains(scope.proof.as_ref()) {
+    if trust
+        .revoked(&scope.issuer, RevocationCheck::Block(&scope.proof))
+        .map_err(unauthorized)?
+    {
         return Ok(());
     }
-    let revision = root
-        .runtime
-        .revision
-        .borrow()
-        .checked_add(1)
-        .ok_or_else(|| Error::Storage("runtime trust revision overflow".into()))?;
-    std::sync::Arc::make_mut(&mut trust)
-        .revoked_block_ids
-        .insert(*scope.proof);
-    root.runtime.revision.send_replace(revision);
-    Ok(())
+    keys.revoke(
+        trust,
+        *scope.proof,
+        authenticated
+            .capability
+            .effective()
+            .expires_at_unix_seconds(),
+        timestamp,
+    )
 }

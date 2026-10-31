@@ -190,6 +190,19 @@ fn rollback_and_gaps_are_refused_and_fence_the_account() {
         Some(VerifyError::Trust)
     );
     let next = world.issuer.keyring(&mut world.root, NOW).unwrap();
+    let duplicate = resign(&next, 1, |keyring| {
+        keyring.revocations = vec![
+            Revocation {
+                id: id.to_vec(),
+                expires_at_unix_seconds: NOW + 500,
+            },
+            Revocation {
+                id: id.to_vec(),
+                expires_at_unix_seconds: NOW + 1,
+            },
+        ];
+    });
+    assert_eq!(trust.apply(&duplicate, NOW), Err(VerifyError::Malformed));
     // A floor or a publication time that goes backwards is refused, though
     // validly signed; so is a future record. The valid record applies.
     for rolled in [
@@ -667,12 +680,43 @@ fn a_close_resolves_every_wait_with_its_cause_and_is_final() {
         FollowerState::Closed(FenceCause::Shutdown)
     );
     assert_eq!(trust.changed().now_or_never(), Some(Err(SourceClosed)));
+    // Concurrent resume/serve cannot reopen the single closed state.
+    std::thread::scope(|threads| {
+        threads.spawn(|| trust.resume());
+        threads.spawn(|| trust.serve("account"));
+    });
     // Closed is final: a resume neither reopens trust nor changes the state.
     trust.resume();
     assert_eq!(trust.check_open(), Err(SourceClosed));
     assert_eq!(
         *trust.state().borrow(),
         FollowerState::Closed(FenceCause::Shutdown)
+    );
+}
+
+#[test]
+fn retained_records_do_not_release_an_account_before_its_revocations() {
+    let mut world = world();
+    let trust = follower(&world);
+    let (bytes, id) = credential(&world, &trust, 0);
+    let keyring = world.issuer.keyring(&mut world.root, NOW).unwrap();
+    let revoked = world.root.revoke(&[(id, NOW + 10_000)], NOW).unwrap();
+    assert!(verify::verify(&bytes, &trust, NOW).is_ok());
+    trust.refuse("account");
+    trust.apply_queued(&keyring, NOW).unwrap();
+    assert_eq!(
+        verify::verify(&bytes, &trust, NOW).err(),
+        Some(VerifyError::Trust)
+    );
+    trust.apply_queued(&revoked, NOW).unwrap();
+    assert_eq!(
+        verify::verify(&bytes, &trust, NOW).err(),
+        Some(VerifyError::Trust)
+    );
+    trust.release("account");
+    assert_eq!(
+        verify::verify(&bytes, &trust, NOW).err(),
+        Some(VerifyError::Revoked)
     );
 }
 

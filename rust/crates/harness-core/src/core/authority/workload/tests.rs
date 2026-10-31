@@ -43,7 +43,7 @@ fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result
     let verifier = issuer.verifier(&mut None)?;
     let changes = issuer.trust_changes();
     let changed = changes.changed();
-    let mut revisions = issuer.trust_revisions();
+    let mut revisions = issuer.runtime.trust.state();
     let ready = Barrier::new(2);
     std::thread::scope(|threads| -> Result<()> {
         let first = threads.spawn(|| {
@@ -64,12 +64,12 @@ fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result
         Some(Ok(())),
         "revocation publication did not wake its original owner"
     );
-    assert_eq!(*revisions.borrow_and_update(), 1);
+    revisions.borrow_and_update();
     assert!(verifier.verify(&child, &mut None).is_err());
     assert!(verifier.verify(&descendant, &mut None).is_err());
     verifier.verify(&sibling, &mut None)?;
 
-    let original = issuer.public_trust_revision()?.0;
+    let original = issuer.public_workload_trust()?;
     issuer.revoke_workload(&child)?;
     let (result, signatures) =
         acyclic_test_support::differential::observe(|| (), |()| issuer.revoke_workload(&child));
@@ -79,7 +79,7 @@ fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result
         signatures.is_empty(),
         "repeated target reauthenticated its signatures"
     );
-    assert!(Arc::ptr_eq(&original, &issuer.public_trust_revision()?.0));
+    assert!(Arc::ptr_eq(&original, &issuer.public_workload_trust()?));
     assert!(!revisions.has_changed().map_err(unauthorized)?);
 
     // A matching revoked proof alone does not authenticate the submitted scope.
@@ -101,21 +101,15 @@ fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result
         id: "foreign".into(),
     });
     assert!(other.revoke_workload(&child).is_err());
-    {
-        let mut trust = issuer.runtime.public.trust.write().map_err(unauthorized)?;
-        Arc::make_mut(&mut trust).minimum_key_epoch = 2;
-    }
-    assert!(issuer.revoke_workload(&child).is_err());
-    {
-        let mut trust = issuer.runtime.public.trust.write().map_err(unauthorized)?;
-        Arc::make_mut(&mut trust).minimum_key_epoch = 1;
-    }
     issuer.revoke_workload(&root)?;
     assert!(
         issuer.revoke_workload(&child).is_err(),
         "target exemption also exempted its revoked ancestor"
     );
-    assert_eq!(*revisions.borrow_and_update(), 2);
+    revisions.borrow_and_update();
+    issuer.raise_minimum_epoch(2)?;
+    assert!(issuer.revoke_workload(&root).is_err());
+    revisions.borrow_and_update();
     clock
         .0
         .store((timestamp + CERTIFICATE_SECONDS) * 1000, Ordering::Release);

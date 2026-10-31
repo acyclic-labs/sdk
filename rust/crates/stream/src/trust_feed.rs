@@ -207,7 +207,7 @@ impl<S: Source> TrustFeed<S> {
                         // New environment keys may admit retained records.
                         blocked.retain(|account, records| {
                             while let Some(record) = records.front() {
-                                if follower.apply(&record.value, now).is_err() {
+                                if follower.apply_queued(&record.value, now).is_err() {
                                     follower.refuse(account);
                                     return true;
                                 }
@@ -215,6 +215,7 @@ impl<S: Source> TrustFeed<S> {
                                 advance(follower, next, &mut tails, key, record.sequence);
                                 records.pop_front();
                             }
+                            follower.release(account);
                             false
                         });
                     }

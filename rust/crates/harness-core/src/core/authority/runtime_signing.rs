@@ -13,6 +13,12 @@ pub(super) struct RuntimeSigner {
     pub(super) public: Arc<PublicAuthority>,
 }
 
+impl Drop for RuntimeSigner {
+    fn drop(&mut self) {
+        self.trust.close(acyclic_auth::trust::FenceCause::Shutdown);
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, PartialEq)]
 struct KeyPreparation;
@@ -234,7 +240,7 @@ mod tests {
                 .canonical_proof(b"test-checkpoint", &42u64, &mut None)
                 .is_err()
         );
-        verifier.verify(&scope, &mut None)?;
+        assert!(verifier.verify(&scope, &mut None).is_err());
         verifier.verify_canonical_proof(b"test-checkpoint", &42u64, &proof, &mut None)?;
         assert!(
             verifier

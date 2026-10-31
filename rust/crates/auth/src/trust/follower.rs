@@ -39,7 +39,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, RwLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -280,7 +280,6 @@ pub enum FollowerState {
 pub struct Follower {
     environment: RwLock<EnvironmentFrontier>,
     accounts: RwLock<HashMap<String, Account>>,
-    open: AtomicBool,
     floor: AtomicU64,
     state: tokio::sync::watch::Sender<FollowerState>,
 }
@@ -294,7 +293,6 @@ impl Follower {
         Self {
             environment: RwLock::new(EnvironmentFrontier::genesis(environment, anchor)),
             accounts: RwLock::default(),
-            open: AtomicBool::new(false),
             floor: AtomicU64::new(0),
             state: tokio::sync::watch::Sender::new(FollowerState::Connecting),
         }
@@ -325,6 +323,26 @@ impl Follower {
     /// # Errors
     /// Malformed, forged, gapped, rolled-back or future-dated records.
     pub fn apply(&self, record: &[u8], now: u64) -> Result<Applied, VerifyError> {
+        self.apply_record(record, now, true)
+    }
+
+    /// Apply a retained record without releasing its account's refusal fence.
+    /// The driver calls [`Self::release`] only after the retained queue drains.
+    pub fn apply_queued(&self, record: &[u8], now: u64) -> Result<Applied, VerifyError> {
+        self.apply_record(record, now, false)
+    }
+
+    /// Release a successfully drained account queue, then wake its consumers.
+    pub fn release(&self, account: &str) {
+        if let Ok(mut accounts) = self.accounts.write()
+            && let Some(account) = accounts.get_mut(account)
+        {
+            account.poisoned = false;
+        }
+        self.notify(None);
+    }
+
+    fn apply_record(&self, record: &[u8], now: u64, release: bool) -> Result<Applied, VerifyError> {
         let record = decode(record)?.record;
         let result = match &record {
             TrustRecordKind::Environment(signed) => {
@@ -340,10 +358,10 @@ impl Follower {
                 result
             }
             TrustRecordKind::Keyring(signed) => {
-                self.account_record(&signed.snapshot.account_id, &record, now)
+                self.account_record(&signed.snapshot.account_id, &record, now, release)
             }
             TrustRecordKind::Revocation(signed) => {
-                self.account_record(publication_account(signed), &record, now)
+                self.account_record(publication_account(signed), &record, now, release)
             }
         };
         match result {
@@ -365,6 +383,7 @@ impl Follower {
         id: &str,
         record: &TrustRecordKind,
         now: u64,
+        release: bool,
     ) -> Result<(Applied, u64), VerifyError> {
         let environment = self
             .environment
@@ -379,7 +398,8 @@ impl Follower {
         let account = accounts.entry(id.to_owned()).or_default();
         let result = account.apply(id, record, &environment, now);
         match &result {
-            Ok((Applied::Changed, _)) => account.poisoned = false,
+            Ok((Applied::Changed, _)) if release => account.poisoned = false,
+            Ok((Applied::Changed, _)) => {}
             Ok((Applied::Duplicate, _)) => {}
             Err(_) => account.poisoned = true,
         }
@@ -406,23 +426,18 @@ impl Follower {
     }
 
     fn withdraw(&self, state: FollowerState) {
-        self.open.store(false, Ordering::SeqCst);
+        self.notify(Some(state));
         if let Ok(mut accounts) = self.accounts.write() {
             for account in accounts.values_mut() {
                 account.serving = false;
             }
         }
-        self.notify(Some(state));
     }
 
     /// The driver applied the environment Stream through the tail it observed
     /// when it (re)connected. Redelivered records are duplicates; a gap is
     /// refused, so nothing is skipped. A closed follower stays closed.
     pub fn resume(&self) {
-        if self.closed() {
-            return;
-        }
-        self.open.store(true, Ordering::SeqCst);
         self.notify(Some(FollowerState::Serving));
     }
 
@@ -466,12 +481,8 @@ impl Follower {
         });
     }
 
-    fn closed(&self) -> bool {
-        matches!(*self.state.borrow(), FollowerState::Closed(_))
-    }
-
     fn check(&self) -> Result<(), VerifyError> {
-        if self.open.load(Ordering::SeqCst) {
+        if matches!(*self.state.borrow(), FollowerState::Serving) {
             Ok(())
         } else {
             Err(VerifyError::Unavailable)
@@ -546,6 +557,21 @@ fn keyring(
     now: u64,
 ) -> Result<(Applied, u64), VerifyError> {
     let next = &signed.snapshot;
+    let mut revoked_blocks = HashMap::with_capacity(next.revocations.len());
+    for revocation in &next.revocations {
+        let id = revocation
+            .id
+            .as_slice()
+            .try_into()
+            .map_err(|_| VerifyError::Malformed)?;
+        if revoked_blocks
+            .insert(id, revocation.expires_at_unix_seconds)
+            .is_some()
+        {
+            return Err(VerifyError::Malformed);
+        }
+    }
+
     if let Some(current) = &account.keyring {
         if next.sequence <= current.sequence {
             return Ok((Applied::Duplicate, current.issued_at));
@@ -558,9 +584,7 @@ fn keyring(
                 .all(|key| next.revoked_key_ids.contains(key))
             || !current.revoked_blocks.iter().all(|(id, expiry)| {
                 *expiry <= next.issued_at_unix_seconds
-                    || next.revocations.iter().any(|revocation| {
-                        revocation.id == id && revocation.expires_at_unix_seconds >= *expiry
-                    })
+                    || revoked_blocks.get(id).is_some_and(|next| next >= expiry)
             });
         if current.sequence.checked_add(1) != Some(next.sequence)
             || next.previous_digest != current.digest
@@ -602,15 +626,6 @@ fn keyring(
         .as_slice()
         .try_into()
         .map_err(|_| VerifyError::Malformed)?;
-    let mut revoked_blocks = HashMap::with_capacity(next.revocations.len());
-    for revocation in &next.revocations {
-        let id = revocation
-            .id
-            .as_slice()
-            .try_into()
-            .map_err(|_| VerifyError::Malformed)?;
-        revoked_blocks.insert(id, revocation.expires_at_unix_seconds);
-    }
     account.keyring = Some(Keyring {
         sequence: next.sequence,
         digest: block_id(&message, &signed.signature),
@@ -696,7 +711,7 @@ impl Trust for Follower {
 
 impl ChangeSource for Follower {
     fn check_open(&self) -> Result<(), SourceClosed> {
-        if self.open.load(Ordering::SeqCst) {
+        if matches!(*self.state.borrow(), FollowerState::Serving) {
             Ok(())
         } else {
             Err(SourceClosed)
