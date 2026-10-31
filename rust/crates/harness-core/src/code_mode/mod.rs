@@ -5,6 +5,8 @@
 //! interpreter has no module loader, filesystem, network, timer or process API.
 
 mod declarations;
+#[cfg(feature = "filesystem")]
+mod native_allocator;
 mod typescript;
 
 pub use declarations::declarations;
@@ -106,6 +108,8 @@ pub struct CodeRuntime {
     runtime: Runtime,
     phase: tokio::sync::Mutex<()>,
     _memory: Arc<dyn CodeMemory>,
+    #[cfg(feature = "filesystem")]
+    native_allocator: Option<Arc<native_allocator::AllocatorState>>,
 }
 
 struct QueuedCall {
@@ -123,6 +127,29 @@ impl CodeRuntime {
             runtime,
             phase: tokio::sync::Mutex::new(()),
             _memory: memory,
+            #[cfg(feature = "filesystem")]
+            native_allocator: None,
+        })
+    }
+
+    /// Creates the shared interpreter with its C heap funded by the original
+    /// harness-wide native reservation. Each actual alloc/realloc/free retains
+    /// or returns that reservation's exact capacity, with no allocation index.
+    ///
+    /// This is the engine-heap join only. The supplied execution permit must
+    /// also admit TypeScript/Rust preparation and wait on its original release
+    /// event before a host activates this constructor for profile execution.
+    #[cfg(feature = "filesystem")]
+    pub fn new_with_native_work(
+        memory: Arc<dyn CodeMemory>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let (runtime, allocator) = native_allocator::runtime(work)?;
+        Ok(Self {
+            runtime,
+            phase: tokio::sync::Mutex::new(()),
+            _memory: memory,
+            native_allocator: Some(allocator),
         })
     }
 
@@ -178,7 +205,7 @@ impl CodeRuntime {
                 }
             }
         })));
-        let _lease = PhaseLease(&self.runtime);
+        let lease = PhaseLease(&self.runtime);
         let result = action(&self.runtime).and_then(|value| {
             while self
                 .runtime
@@ -189,6 +216,15 @@ impl CodeRuntime {
             }
             Ok(value)
         });
+        drop(lease);
+        #[cfg(feature = "filesystem")]
+        if let Some(error) = self
+            .native_allocator
+            .as_ref()
+            .and_then(|state| state.take_failure())
+        {
+            return Err(error);
+        }
         let interruption = lock(&failure).take();
         interruption.map_or(result, Err)
     }
