@@ -155,7 +155,9 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
     cancellation.cancel();
     assert!(matches!(
         cache.slot(volume, &meter),
-        Err(crate::FsError::Cancelled(_))
+        Err(crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Cancelled
+        ))
     ));
     assert_eq!(
         original.receipt(),
