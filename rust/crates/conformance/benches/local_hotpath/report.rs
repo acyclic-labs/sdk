@@ -93,6 +93,60 @@ pub(super) struct Terms {
     pub(super) hash_bytes: u32,
 }
 
+fn guarantee(operation: Operation) -> &'static str {
+    match operation {
+        Operation::ActorCreate => "publish the requested actor's initial state durably",
+        Operation::ActorWake => {
+            "enter the original actor handler for its admitted epoch and exact input cursor"
+        }
+        Operation::ActorDurableWrite => {
+            "publish metadata, checkpoint and consumed input cursor in one conditional commit"
+        }
+        Operation::ActorWarmRead => {
+            "borrow the value from the same admitted resident state, retaining its fence checks"
+        }
+        Operation::ObjectPut => {
+            "store bytes under their verified digest; crash survival belongs to the separate flush"
+        }
+        Operation::ObjectGet => "return the requested digest's bounded body range",
+        Operation::ObjectHead => "return metadata for the requested digest",
+        Operation::ObjectList => "return the requested bounded digest page",
+        Operation::StreamAppend => {
+            "durably publish the original keyed append and its exact record range"
+        }
+        Operation::StreamRead => "return the original bounded committed record range",
+        Operation::StreamFollow => {
+            "deliver the original committed record to its already parked follower"
+        }
+        Operation::WorkerCold => "start the actual native worker and complete its original call",
+        Operation::WorkerWarm => {
+            "complete the original call on the admitted resident native worker"
+        }
+        Operation::PinnedRead => "return the file body from the original immutable generation",
+        Operation::StagedWrite => {
+            "stage the original transaction's file update without publishing it"
+        }
+        Operation::Fsync => "durably publish the original transaction under its publication policy",
+        Operation::SessionStart => {
+            "create the requested root through its original host intent and volume binding"
+        }
+        _ => "composed lifecycle operation outside the primitive floor model",
+    }
+}
+
+fn floor_units(terms: Terms) -> serde_json::Value {
+    serde_json::json!({
+        "scope": "semantic model coefficients, not observed work counts; creation and in-place flush floors are reported separately",
+        "F_flush": {"units": terms.flushes, "guarantee": "crash survival at the original commit frontier; physical group and directory coverage must be established separately"},
+        "W_wake": {"units": terms.wakes, "guarantee": "deliver the original producer's event to its waiting consumer"},
+        "C_call": {"units": terms.calls, "guarantee": "enter the original operation"},
+        "R_sys": {"units": terms.read_syscalls, "guarantee": "retrieve bytes from the original descriptor"},
+        "B_copy": {"units": terms.copy_bytes, "guarantee": "transfer the original returned or published bytes"},
+        "B_encode": {"units": terms.encode_bytes, "guarantee": "encode the original publication bytes; modeled with calibrated copy throughput"},
+        "B_hash": {"units": terms.hash_bytes, "guarantee": "bind the original bytes to their content identity"},
+    })
+}
+
 pub(super) struct Measurements {
     agents: usize,
     requests: RequestLedger,
@@ -109,6 +163,8 @@ struct Row {
     coordinator_allocations: Vec<Option<[u64; 2]>>,
     provider_requests: Vec<Option<[u64; 7]>>,
     native_attempts: Vec<Option<[u64; 3]>>,
+    identities: Vec<serde_json::Value>,
+    original_work: Vec<Work>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,9 +256,8 @@ impl Measurements {
             0
         };
         let control = requests
-            .control()
-            .checked_sub(direct)
-            .ok_or("requested query exceeds observed provider calls")?;
+            .auxiliary(Some(RequestClass::Data))
+            .and_then(|count| count.checked_sub(direct));
         let allocations = before.counters.allocations.zip(after.allocations);
         let native_attempts = before
             .counters
@@ -221,7 +276,7 @@ impl Measurements {
         Ok(Observation {
             // Request accounting observes the public provider boundary. It
             // does not infer physical syscalls, locks or transport traffic.
-            work: Work([None, None, None, None, Some(control), None, None, None]),
+            work: Work([None, None, None, None, control, None, None, None]),
             // This allocator scope cannot observe native worker threads; keep
             // it diagnostic instead of qualifying the allocation dimension.
             coordinator_allocations: allocations.map(|(before, after)| {
@@ -231,15 +286,17 @@ impl Measurements {
                     after.bytes_total - before.bytes_total,
                 ]
             }),
-            provider_requests: Some([
-                requests.data(),
-                requests.class(RequestClass::Metadata),
-                requests.class(RequestClass::List),
-                requests.class(RequestClass::Head),
-                requests.class(RequestClass::Lease),
-                requests.class(RequestClass::Token),
-                direct,
-            ]),
+            provider_requests: requests.auxiliary(Some(RequestClass::Data)).map(|_| {
+                [
+                    requests.data(),
+                    requests.class(RequestClass::Metadata),
+                    requests.class(RequestClass::List),
+                    requests.class(RequestClass::Head),
+                    requests.class(RequestClass::Lease),
+                    requests.class(RequestClass::Token),
+                    direct,
+                ]
+            }),
             native_attempts,
         })
     }
@@ -268,6 +325,7 @@ impl Measurements {
         floor: Terms,
         elapsed: Duration,
         observation: Observation,
+        identity: serde_json::Value,
     ) -> Result {
         if !self.includes(operation) {
             return Ok(());
@@ -279,6 +337,8 @@ impl Measurements {
             coordinator_allocations: Vec::new(),
             provider_requests: Vec::new(),
             native_attempts: Vec::new(),
+            identities: Vec::new(),
+            original_work: Vec::new(),
         });
         row.raw_ns.push(ns(elapsed));
         row.work.record(observation.work, &self.recovery)?;
@@ -286,6 +346,8 @@ impl Measurements {
             .push(observation.coordinator_allocations);
         row.provider_requests.push(observation.provider_requests);
         row.native_attempts.push(observation.native_attempts);
+        row.identities.push(identity);
+        row.original_work.push(observation.work);
         Ok(())
     }
 
@@ -320,6 +382,8 @@ impl Measurements {
                 coordinator_allocations,
                 provider_requests,
                 native_attempts,
+                identities,
+                original_work,
             } = row;
             let quantiles = Quantiles::new(&mut raw_ns.clone())?;
             let floor_ns = floors.compose(terms);
@@ -333,6 +397,10 @@ impl Measurements {
                 },
                 "agents": self.agents, "active": 1, "quantiles": quantiles,
                 "floor": terms, "floor_ns": floor_ns,
+                "guarantee": guarantee(operation),
+                "floor_units": floor_units(terms),
+                "ratio_qualified": false,
+                "ratio_qualification": "raw semantic-model comparison; physical work, provider group coverage and matched device guarantee remain unqualified",
                 "p50_ratio": quantiles.p50_ns / floor_ns,
                 "p99_ratio": quantiles.p99_ns / floor_ns,
                 "p50_pass": quantiles.p50_ns <= floor_ns * 1.5,
@@ -343,6 +411,15 @@ impl Measurements {
                 "p99_resolution_limited": floor_ns * 3.0 < timer.p99_ns.max(floors.minimum_positive_timer_ns()),
                 "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
                 "raw_ns": raw_ns,
+                "original_work_receipts": identities.iter().zip(&original_work).enumerate().map(|(sample, (identity, work))| {
+                    serde_json::json!({
+                        "sample": sample, "identity": identity, "work": work.0,
+                        "physical_admission_binding": null,
+                        "progress": "original operation returned; operation-specific result oracle checked before the report",
+                    })
+                }).collect::<Vec<_>>(),
+                "work_columns": acyclic_test_support::scale::METRICS,
+                "identity_scope": "original API request/resource/cursor supplied by the operation driver in raw sample order; not an authenticated admission or physical coverage token",
                 "work_observations": work.observations,
                 "work": acyclic_test_support::scale::METRICS.iter().zip(&work.work).map(|(metric, counter)| {
                     (*metric, serde_json::json!({"total": counter.total.to_string(), "maximum": counter.maximum, "missing": counter.missing}))

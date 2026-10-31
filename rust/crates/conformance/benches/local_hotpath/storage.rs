@@ -46,8 +46,10 @@ impl Wake for DeliveryWake {
 }
 
 macro_rules! timed {
-    ($rows:expr, $name:expr, $floor:expr, $future:expr) => {{ timed!($rows, $name, $floor, None, $future) }};
-    ($rows:expr, $name:expr, $floor:expr, $requested_query:expr, $future:expr) => {{
+    ($rows:expr, $name:expr, $floor:expr, $identity:expr, $future:expr) => {{ timed!($rows, $name, $floor, $identity, None, $future) }};
+    ($rows:expr, $name:expr, $floor:expr, $identity:expr, $requested_query:expr, $future:expr) => {{
+        // Retain original request identity outside both measured intervals.
+        let identity = $identity;
         // Allocate the sampler's future before the interval; construction of
         // the operation itself remains inside it.
         let future = Box::pin(async { $future.await });
@@ -57,7 +59,7 @@ macro_rules! timed {
             let result = future.await;
             let elapsed = start.elapsed();
             let observed = $rows.stop(before)?;
-            $rows.record($name, $floor, elapsed, observed)?;
+            $rows.record($name, $floor, elapsed, observed, identity)?;
             result
         } else {
             future.await
@@ -155,6 +157,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             .ok_or("object fixture prefix missing")?
             .copy_from_slice(&u64::try_from(index)?.to_le_bytes());
         let expected = body.clone();
+        let expected_digest = Digest::of(&expected);
         let put = timed!(
             rows,
             Operation::ObjectPut,
@@ -164,6 +167,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
                 // survival. Charge no durability barrier to PUT admission.
                 ..read(1024)
             },
+            serde_json::json!({"digest": expected_digest.to_string()}),
             fixture.objects.put(body.into(), Vec::new())
         )?;
         let digest = put.verified().ok_or("object publication unknown")?.digest;
@@ -178,6 +182,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             rows,
             Operation::ObjectGet,
             read(1024),
+            serde_json::json!({"digest": digest.to_string(), "range": "full", "maximum_bytes": 1024}),
             fixture.objects.get(digest, ByteRange::FULL, 1024)
         )?;
         require_bytes(get.body().as_ref(), &expected)?;
@@ -195,6 +200,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             rows,
             Operation::ObjectHead,
             read(0),
+            serde_json::json!({"digest": digest.to_string()}),
             Some(RequestClass::Head),
             fixture.objects.head(digest)
         )?;
@@ -221,6 +227,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             rows,
             Operation::ObjectList,
             read(32),
+            serde_json::json!({"after": null, "limit": 1, "expected_first": first.map(|digest| digest.to_string())}),
             Some(RequestClass::List),
             fixture.objects.list(None, 1)
         )?;
@@ -288,6 +295,7 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             commit(1024),
             appended,
             Observation::default(),
+            serde_json::json!({"path": stream.path().as_str(), "key": format!("append/{index}"), "start": receipt.start, "count": 1}),
         )?;
         rows.record(
             Operation::StreamFollow,
@@ -298,6 +306,7 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             },
             notified,
             Observation::default(),
+            serde_json::json!({"path": stream.path().as_str(), "sequence": delivered.sequence, "commit": format!("{:?}", delivered.commit_id)}),
         )?;
         next = receipt
             .start
@@ -307,13 +316,19 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
         if delivered.sequence != receipt.start {
             return Err("follow cursor mismatch".into());
         }
-        let records = timed!(rows, Operation::StreamRead, read(1024), async {
-            stream
-                .read(receipt.start, 1)
-                .await?
-                .try_collect::<Vec<_>>()
-                .await
-        })?;
+        let records = timed!(
+            rows,
+            Operation::StreamRead,
+            read(1024),
+            serde_json::json!({"path": stream.path().as_str(), "start": receipt.start, "count": 1}),
+            async {
+                stream
+                    .read(receipt.start, 1)
+                    .await?
+                    .try_collect::<Vec<_>>()
+                    .await
+            }
+        )?;
         let record = records
             .first()
             .ok_or("finite read omitted committed record")?;
@@ -340,13 +355,19 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
             format!("actor-{index}").as_bytes(),
         )?;
         let creation_key = key(format!("actor-create/{index}"))?;
-        timed!(rows, Operation::ActorCreate, commit(0), async {
-            let mut creation = PreparedPublish::foreign(creation_key);
-            for effect in store.create(&actor, BTreeMap::new(), None)? {
-                creation.join(effect)?;
+        timed!(
+            rows,
+            Operation::ActorCreate,
+            commit(0),
+            serde_json::json!({"actor": format!("{actor:?}"), "key": format!("actor-create/{index}")}),
+            async {
+                let mut creation = PreparedPublish::foreign(creation_key);
+                for effect in store.create(&actor, BTreeMap::new(), None)? {
+                    creation.join(effect)?;
+                }
+                store.submit(creation).await
             }
-            store.submit(creation).await
-        })?;
+        )?;
         require_created(&store.load(&actor).await?)?;
         address = Some(actor);
     }
@@ -463,20 +484,26 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
         let requests = fixture.requests.requests();
         // Both 128-byte values are transferred into the one publication.
         // Mutation, checkpoint construction and encoding are all timed.
-        cut = timed!(rows, Operation::ActorDurableWrite, commit(256), async {
-            binding.transaction(|state| {
-                state.put("value".into(), Bytes::copy_from_slice(&payload));
-                Ok(())
-            })?;
-            let prepared =
-                binding.prepare_publish(&trigger, Some(&original), transition(), operation)?;
-            store
-                .submit_retained(prepared)
-                .await?
-                .ok_or(acyclic_actors::local::Error::Invalid(
-                    "combined publication omitted retained state",
-                ))
-        })?;
+        cut = timed!(
+            rows,
+            Operation::ActorDurableWrite,
+            commit(256),
+            serde_json::json!({"actor": format!("{address:?}"), "key": format!("actor-write/{index}"), "subscription": "inbox", "sequence": sequence}),
+            async {
+                binding.transaction(|state| {
+                    state.put("value".into(), Bytes::copy_from_slice(&payload));
+                    Ok(())
+                })?;
+                let prepared =
+                    binding.prepare_publish(&trigger, Some(&original), transition(), operation)?;
+                store
+                    .submit_retained(prepared)
+                    .await?
+                    .ok_or(acyclic_actors::local::Error::Invalid(
+                        "combined publication omitted retained state",
+                    ))
+            }
+        )?;
         let work = fixture.requests.requests().since(requests);
         if work.data() != 1 || work.control() != 0 {
             return Err(
@@ -489,9 +516,13 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
         }
         let binding = store.bind_state(cut, 1)?;
         // Borrow the admitted value without mutation bookkeeping or a handle clone.
-        let value = timed!(rows, Operation::ActorWarmRead, read(0), async {
-            binding.get("value")
-        })?;
+        let value = timed!(
+            rows,
+            Operation::ActorWarmRead,
+            read(0),
+            serde_json::json!({"actor": format!("{address:?}"), "consumed_sequence": sequence, "key": "value"}),
+            async { binding.get("value") }
+        )?;
         require_bytes(value.ok_or("actor metadata missing")?.as_ref(), &payload)?;
         cut = binding.finish()?;
     }
@@ -652,6 +683,7 @@ async fn actor_delivery(
                     .checked_duration_since(started)
                     .ok_or("handler entry preceded delivery")?,
                 observed,
+                serde_json::json!({"actor": format!("{actor:?}"), "epoch": epoch, "subscription": INBOX, "sequence": inbox}),
             )?;
             completed.push(ns(elapsed));
         }
@@ -712,6 +744,7 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) 
             rows,
             Operation::PinnedRead,
             read(1024),
+            serde_json::json!({"workspace": format!("{:?}", generation.workspace_id()), "generation": format!("{:?}", generation.id()), "path": "/value"}),
             generation.read("/value", 1024, WorkBudget::UNBOUNDED, &cancellation)
         )
         .map_err(|failure| failure.error)?
@@ -734,6 +767,7 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) 
             rows,
             Operation::StagedWrite,
             read(1024),
+            serde_json::json!({"volume": name, "transaction": format!("{operation:?}"), "path": "/value"}),
             transaction.write("/value", staged, WorkBudget::UNBOUNDED, &cancellation)
         )
         .map_err(|failure| failure.error)?;
@@ -749,6 +783,7 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) 
             rows,
             Operation::Fsync,
             commit(1024),
+            serde_json::json!({"volume": name, "transaction": format!("{operation:?}")}),
             transaction.commit(
                 None,
                 acyclic_fs::PublicationPermit::Unrestricted,
@@ -803,6 +838,7 @@ async fn sessions(
                 wakes: 1,
                 ..commit(0)
             },
+            serde_json::json!({"agent": agent.to_string(), "intent": format!("{intent:?}")}),
             fixture.bound.create_root(&intent, request)
         )?;
         require_root(&created, &expected)?;

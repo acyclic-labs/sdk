@@ -182,3 +182,12 @@ an entirely unresolved timer or a zero-median semantic floor refuses calibration
 Requested HEAD and LIST results are data. The shared observer excludes exactly
 the original query dispatch from control overhead, retains every provider class,
 and checks that an additional real HEAD remains one control request.
+Lost request-counter precision remains unknown through this partition.
+Each raw sample has an `original_work_receipts` entry with its original API
+key, resource or cursor, and the same interval's work dimensions. These diagnostic
+identities do not supply an authenticated admission token or physical group
+coverage. Missing dimensions remain null. Each operation reports its public
+guarantee and the modeled work units used to compose its floor; these coefficients
+are separate from observed counts. Raw ratios remain unqualified while physical
+coverage or the matching durability guarantee is missing. File creation plus
+directory durability is calibrated separately from an in-place flush.
