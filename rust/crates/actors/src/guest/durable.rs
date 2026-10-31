@@ -7,47 +7,6 @@ use std::{future::Future, sync::Arc};
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
-/// Durable alarm delivery metadata. Delivery retries are owned by the host.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", try_from = "RawAlarmInfo")]
-pub struct AlarmInfo {
-    /// Zero for first delivery, increasing on each retry.
-    retry_count: u32,
-    /// Whether this delivery follows a failed attempt.
-    is_retry: bool,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawAlarmInfo {
-    retry_count: u32,
-    is_retry: bool,
-}
-impl TryFrom<RawAlarmInfo> for AlarmInfo {
-    type Error = String;
-    fn try_from(raw: RawAlarmInfo) -> Result<Self, Self::Error> {
-        if raw.is_retry != (raw.retry_count != 0) {
-            return Err("contradictory alarm retry metadata".into());
-        }
-        Ok(Self::new(raw.retry_count))
-    }
-}
-impl AlarmInfo {
-    /// Number of failed delivery attempts before this call.
-    pub const fn retry_count(self) -> u32 {
-        self.retry_count
-    }
-    /// Derived from `retry_count`; never independent state.
-    pub const fn is_retry(self) -> bool {
-        self.is_retry
-    }
-    /// Derive both fields from one counter so contradictory metadata is impossible.
-    pub const fn new(retry_count: u32) -> Self {
-        Self {
-            retry_count,
-            is_retry: retry_count != 0,
-        }
-    }
-}
 /// Runtime-owned hibernatable socket identity, unrelated to the actor's identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct WebSocketId(pub String);
@@ -278,26 +237,6 @@ impl<S: Send + Sync + 'static> Activation<S> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    #[test]
-    fn alarm_metadata_rejects_contradictory_retry_state() -> Result<(), GuestError> {
-        for retry_count in [0, 1, u32::MAX] {
-            let info = AlarmInfo::new(retry_count);
-            assert_eq!(
-                serde_json::from_value::<AlarmInfo>(
-                    serde_json::json!({"retryCount":retry_count,"isRetry":retry_count != 0})
-                )
-                .map_err(|e| GuestError::Decode(e.to_string()))?,
-                info
-            );
-            assert!(
-                serde_json::from_value::<AlarmInfo>(
-                    serde_json::json!({"retryCount":retry_count,"isRetry":retry_count == 0})
-                )
-                .is_err()
-            );
-        }
-        Ok(())
-    }
     #[test]
     fn guest_socket_metadata_round_trips_without_logical_caps() -> Result<(), GuestError> {
         let result = super::super::GuestEventResult::SocketAccept {
