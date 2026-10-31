@@ -34,7 +34,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 cancellation,
             )
             .await?;
-        let file_id = self.authored_file_id(kind, &path, accounting)?;
+        let file_id = self.authored_file_id(kind, &path, operations.value.len(), accounting)?;
         push_authored_operation(
             operations,
             allocation,
@@ -105,7 +105,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     file_id,
                 ))
             } else {
-                let file_id = self.authored_file_id(record.kind, &path, accounting)?;
+                // Each copied record is applied as its own one-operation batch.
+                let file_id = self.authored_file_id(record.kind, &path, 0, accounting)?;
                 record.file_id = file_id;
                 record.link_count = 1;
                 Ok((Mutation::Create { path, record }, file_id))
@@ -234,17 +235,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         )
     }
 
+    /// Derives a retry-stable identity for a creation under a bound operation.
+    ///
+    /// A path alone is not unique within one operation: a file renamed away
+    /// keeps its identity while its old name is reused. The working file
+    /// table and the creation's ordinal in its compiled batch are inputs, so
+    /// an identity is derived only from a state that cannot already hold it,
+    /// and an identical replay from the same base derives identical ones.
     pub(super) fn authored_file_id(
         &self,
         kind: FileKind,
         path: &NamespacePath,
+        ordinal: usize,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<FileId, FsError> {
         let Some(operation) = self.authored_operation_id else {
             return Ok(FileId::new());
         };
         let domain = b"acyclic-fs-authored-file-id-v1\0";
-        let mut hashed = (domain.len() + operation.into_bytes().len() + 1) as u64;
+        let table = self.root.file_table.digest.into_bytes();
+        let ordinal = usize_to_u64(ordinal).to_le_bytes();
+        let mut hashed =
+            (domain.len() + operation.into_bytes().len() + table.len() + ordinal.len() + 1) as u64;
         for component in path.components() {
             accounting.charge(WorkCounters {
                 items_examined: 1,
@@ -262,6 +274,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let mut hasher = blake3::Hasher::new();
         hasher.update(domain);
         hasher.update(&operation.into_bytes());
+        hasher.update(&table);
+        hasher.update(&ordinal);
         hasher.update(&[kind.tag()]);
         for component in path.components() {
             hasher.update(&[component.encoding().tag()]);

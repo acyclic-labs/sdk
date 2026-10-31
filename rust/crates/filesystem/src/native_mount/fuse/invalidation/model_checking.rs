@@ -6,12 +6,17 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 loom::thread_local! {
     static OMIT_NOTIFY: Cell<bool> = Cell::new(false);
+    static OMIT_TERMINAL_NOTIFY: Cell<bool> = Cell::new(false);
     static INVALIDATOR_WAIT: RefCell<Option<(mpsc::Sender<()>, u8)>> = RefCell::new(None);
     static WAITER_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
 }
 
 pub(in crate::native_mount::fuse) fn omit_guard_notification() -> bool {
     OMIT_NOTIFY.with(Cell::get)
+}
+
+pub(in crate::native_mount::fuse) fn omit_terminal_notification() -> bool {
+    OMIT_TERMINAL_NOTIFY.with(Cell::get)
 }
 
 pub(in crate::native_mount::fuse) fn before_invalidator_wait() {
@@ -39,6 +44,46 @@ pub(in crate::native_mount::fuse) fn before_waiter_wait() {
 struct RefusesFirst {
     sent: RefCell<Vec<(u64, bool)>>,
     first_gate: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+}
+
+#[test]
+fn callback_failure_wakes_the_original_invalidation_waiter() {
+    crate::initialize_test_native_io();
+    let exercise = |broken| {
+        loom::model(move || {
+            let (core, work) = super::super::tests::model_checking::fixture();
+            let keeper = ManuallyDrop::new((Arc::clone(&core), work.clone()));
+            let (sleeping, asleep) = mpsc::channel();
+            let producer = loom::thread::spawn({
+                let core = Arc::clone(&core);
+                move || {
+                    asleep.recv().unwrap();
+                    OMIT_TERMINAL_NOTIFY.with(|fault| fault.set(broken));
+                    core.retain_handler_failure((libc::EIO.into(), WorkCounters::UNCHARGED));
+                }
+            });
+            let mut state = core.state().unwrap();
+            fuse_reserve(&mut state.invalidation.deferred, 1, &work).unwrap();
+            state.invalidation.deferred.push(KernelCacheItem::Inode(10));
+            WAITER_WAIT.with(|hook| *hook.borrow_mut() = Some(sleeping));
+            assert!(matches!(
+                core.wait_for_invalidation(state, None, &work),
+                Err(NativeMountError::Lifecycle(
+                    "a FUSE callback failure stopped this view"
+                ))
+            ));
+            producer.join().unwrap();
+            assert!(core.handler_error.lock().unwrap().first_fatal.is_some());
+            drop(ManuallyDrop::into_inner(keeper));
+        });
+    };
+    exercise(false);
+    let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
+        .expect_err("withdrawing the terminal wake must strand the original waiter");
+    let message = error
+        .downcast_ref::<String>()
+        .expect("Loom deadlock message");
+    assert!(message.contains("deadlock"), "{message}");
 }
 
 impl KernelCacheNotifier for RefusesFirst {

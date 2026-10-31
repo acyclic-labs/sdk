@@ -205,8 +205,9 @@ impl ProjectionCore {
                 return Err(NativeMountError::Lifecycle("session is stopped"));
             }
             if self.handler_failed.load(Ordering::Acquire) {
+                // The retained cause is a callback failure, not an invalidation.
                 return Err(NativeMountError::Lifecycle(
-                    "FUSE invalidation previously failed",
+                    "a FUSE callback failure stopped this view",
                 ));
             }
             // The invalidator retries on the next change; this caller learns
@@ -217,7 +218,7 @@ impl ProjectionCore {
             if !state.invalidation.is_pending(target) {
                 return Ok(());
             }
-            state = state.wait_timeout(&self.invalidation, Duration::from_millis(10))?;
+            state = state.wait(&self.invalidation)?;
         }
     }
 }
