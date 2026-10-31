@@ -99,6 +99,14 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         "a second workspace owner must not dispatch the same requests"
     );
     let requests = checkout.path().join(DIRECTORY).join("requests");
+    // A stale or untrusted status entry must neither select another reply nor
+    // be pruned by publication. Its name sorts after every former sequence.
+    let debris = checkout
+        .path()
+        .join(DIRECTORY)
+        .join("status/workspace/18446744073709551615.json");
+    std::fs::create_dir_all(debris.parent().expect("status parent")).map_err(storage)?;
+    std::fs::write(&debris, b"unrelated status is not a reply").map_err(storage)?;
     std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
     std::fs::write(
         requests.join("oversized.json"),
@@ -213,6 +221,35 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     ));
     let requests_registry = Arc::clone(&registry);
     let result = tokio::task::spawn_blocking(move || {
+        // A caller can occupy its exact writable reply name before watching.
+        // The publisher must isolate that conflict and the caller must finish
+        // without requiring a new notification for the pre-existing bytes.
+        let operation = OperationId::new();
+        let directory = cwd.join(DIRECTORY);
+        let path = reply_path(&directory.join("status"), WORKSPACE, operation);
+        std::fs::write(&path, b"{conflicting reply").map_err(storage)?;
+        let mut served = Served::default();
+        served.known.insert(
+            operation,
+            (WORKSPACE.into(), Tracked::Running { withdrawn: false }),
+        );
+        let held = acyclic_fs::hold_root(&directory).map_err(native_file_error)?;
+        served.answer(&held, operation, Ok(serde_json::json!({"ok": null})))?;
+        assert_eq!(std::fs::read(&path).map_err(storage)?, b"{conflicting reply");
+        assert!(matches!(
+            request_operation(
+                &requests_registry,
+                &cwd,
+                operation,
+                HostAction::Open {
+                    host: "codex".into(),
+                    session: "conflicting-reply".into(),
+                },
+            ),
+            Err(Error::Storage(_))
+        ));
+        served.withdraw(&directory.join("requests"), operation)?;
+        // The actual shared owner must still complete an unrelated request.
         let request = |cwd: &Path, action| request_with(&requests_registry, cwd, action);
         let result = request(
             &cwd,
@@ -379,18 +416,16 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .count(),
         0
     );
-    // Every read reply is dropped from its agent's latest status.
+    // Every consumed operation's reply is retired, without touching debris.
     let statuses = checkout.path().join(DIRECTORY).join("status");
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let mut pending = 0;
             for entry in std::fs::read_dir(&statuses).map_err(storage)? {
-                if let Some((_, path)) = latest(&entry.map_err(storage)?.path())? {
-                    // A status superseded while read is counted as pending.
-                    pending += std::fs::read(path).ok().map_or(1, |bytes| {
-                        serde_json::from_slice::<Status>(&bytes)
-                            .map_or(1, |status| status.replies.len())
-                    });
+                for reply in std::fs::read_dir(entry.map_err(storage)?.path()).map_err(storage)? {
+                    if reply.map_err(storage)?.path() != debris {
+                        pending += 1;
+                    }
                 }
             }
             if pending == 0 {
@@ -401,6 +436,11 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     })
     .await
     .map_err(storage)??;
+    assert_eq!(
+        std::fs::read(&debris).map_err(storage)?,
+        b"unrelated status is not a reply",
+        "publishing or retiring one reply must never prune unrelated leaves"
+    );
     // Every registration retired, and with the last of each key its watch.
     let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
     let bridge = Registry::live(&registry, &cwd)

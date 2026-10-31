@@ -74,9 +74,12 @@ All sandboxed coordination and custody writes stay within the existing workspace
 | --- | --- |
 | `.acyclic-sdk/host-files/owner.json` | Discover the running GraphCoder owner |
 | `.acyclic-sdk/host-files/requests/` | Drop request records, withdrawn once answered |
-| `.acyclic-sdk/host-files/status/` | Await replies in each agent's latest status |
+| `.acyclic-sdk/host-files/status/` | Await immutable replies keyed by agent and operation |
 | `.acyclic-sdk/host-processes/` | Native process custody and exclusive ownership |
 | `.volumes/agents/` | Admitted native child working views |
+
+The workspace carrier uses protocol v2. Run the matching owner and plugin in a
+fresh workspace; older coordination projections are refused and are not migrated.
 
 Install declares workspace access without adding sandbox roots. Commands never
 start a service or write state-directory identities or lifecycle locks. Keep the

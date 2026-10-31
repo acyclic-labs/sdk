@@ -4,18 +4,18 @@
 //! Only the trusted `GraphCoder` owner opens state. A sandboxed client drops
 //! one request file under `requests/`: that file is the record, keyed by its
 //! operation, and every effect it causes is an agent commit keyed by the same
-//! operation. The owner keeps one latest-status file per agent under
-//! `status/<agent>/`, holding the replies to that agent's requests whose files
-//! are still present. A client awaits its reply as one keyed waiter on its
+//! operation. The owner publishes each immutable reply under
+//! `status/<agent>/<operation>.json` while its request is still present.
+//! A client awaits its reply as one keyed waiter on its
 //! process's watcher and withdraws its request once read; the owner then drops
-//! the reply. There is no per-request result file, watcher or deadline: a
+//! the reply. There is no per-request watcher or deadline: a
 //! request waits until it is answered, its notification source fails or its owner exits.
 //!
 //! Both endpoints follow notifications, never scans. The owner indexes the
 //! request names each notification carries and dispatches every request
 //! independently, publishing each reply as soon as it is ready; only a
 //! notification overflow rescans the request directory. A client reads only
-//! the status of a key some waiter awaits, watches it only while one does,
+//! the exact reply some waiter awaits, watches its agent only while one does,
 //! and holds no lock while it publishes or waits.
 use super::host_owner::{HostAction, HostWorkspaceOwner};
 use super::*;
@@ -23,7 +23,7 @@ use futures::StreamExt as _;
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::io::Read as _;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError, Weak, mpsc};
@@ -34,8 +34,6 @@ mod tests;
 /// Reserved inside the host's existing writable workspace; never a state path.
 pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
 const MAXIMUM_BYTES: u64 = 65_536;
-/// Bound of one agent's status file: the replies of its in-flight requests.
-const STATUS_BYTES: u64 = 16 * MAXIMUM_BYTES;
 /// Status key of requests that name no agent yet.
 const WORKSPACE: &str = "workspace";
 
@@ -140,14 +138,14 @@ struct Key {
     /// Requests registered on it, delivered or not; it is watched while any.
     registered: usize,
     /// Each undelivered request's waiter.
-    waiting: BTreeMap<OperationId, mpsc::SyncSender<Delivery>>,
+    waiting: HashMap<OperationId, mpsc::SyncSender<Delivery>>,
 }
 
 #[derive(Default)]
 struct Waiters {
     gone: bool,
     failure: Option<String>,
-    keys: BTreeMap<String, Key>,
+    keys: HashMap<String, Key>,
 }
 
 /// The waiters of one running owner, shared by its watcher callback and its
@@ -166,53 +164,46 @@ impl Shared {
         if !projection_changed(&event) {
             return;
         }
-        let keys = match notified_leaves(&event, &self.status) {
-            Some(leaves) => leaves
-                .into_iter()
-                .filter_map(|leaf| leaf.into_string().ok())
-                .collect::<BTreeSet<_>>(),
-            // Overflow: every awaited key once, never every request.
-            None => lock(&self.waiters).keys.keys().cloned().collect(),
+        let replies = match notified_replies(&event, &self.status) {
+            Some(replies) => replies,
+            // Overflow: revisit only active replies, never a directory listing.
+            None => lock(&self.waiters)
+                .keys
+                .iter()
+                .flat_map(|(key, waiting)| {
+                    waiting
+                        .waiting
+                        .keys()
+                        .map(move |operation| (key.clone(), *operation))
+                })
+                .collect(),
         };
-        for key in keys {
-            self.deliver(&key);
+        for (key, operation) in replies {
+            self.deliver(&key, operation);
         }
     }
 
-    /// Delivers `key`'s latest status to its waiters; read once per key and
-    /// notification, whatever the number of other outstanding requests.
-    fn deliver(&self, key: &str) {
+    /// Reads only the immutable leaf named by this operation's notification.
+    fn deliver(&self, key: &str, operation: OperationId) {
         if lock(&self.waiters)
             .keys
             .get(key)
-            .is_none_or(|key| key.waiting.is_empty())
+            .is_none_or(|key| !key.waiting.contains_key(&operation))
         {
             return;
         }
-        let latest = latest_status(&self.status.join(key));
-        let mut waiters = lock(&self.waiters);
-        let Some(key) = waiters.keys.get_mut(key) else {
-            return;
+        let reply = match regular_bytes(&reply_path(&self.status, key, operation)) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(storage),
+            Err(Error::NotFound(_)) => return,
+            Err(error) => Err(error),
         };
-        match latest {
-            Ok(None) => {}
-            Ok(Some(mut status)) => key.waiting.retain(|operation, waiter| {
-                let Some(reply) = status.replies.remove(operation) else {
-                    return true;
-                };
-                let reply = serde_json::from_str(reply.get()).map_err(storage);
-                let _ = waiter.try_send(Delivery::Reply(reply));
-                false
-            }),
-            // An unreadable status fails each request awaiting it, as its
-            // reply would; the owner's next publication replaces it.
-            Err(error) => {
-                for (_, waiter) in std::mem::take(&mut key.waiting) {
-                    let _ = waiter.try_send(Delivery::Reply(Err(Error::Conflict(format!(
-                        "native status unreadable: {error}"
-                    )))));
-                }
-            }
+        let mut waiters = lock(&self.waiters);
+        if let Some(waiter) = waiters
+            .keys
+            .get_mut(key)
+            .and_then(|key| key.waiting.remove(&operation))
+        {
+            let _ = waiter.try_send(Delivery::Reply(reply));
         }
     }
 
@@ -461,9 +452,17 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
 }
 
 fn request_with(registry: &Mutex<Registry>, cwd: &Path, action: HostAction) -> Result<Value> {
+    request_operation(registry, cwd, OperationId::new(), action)
+}
+
+fn request_operation(
+    registry: &Mutex<Registry>,
+    cwd: &Path,
+    operation: OperationId,
+    action: HostAction,
+) -> Result<Value> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
     let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
-    let operation = OperationId::new();
     let key = status_key(&action);
     let request = Request {
         session: bridge.session,
@@ -487,6 +486,9 @@ fn request_with(registry: &Mutex<Registry>, cwd: &Path, action: HostAction) -> R
         .join("requests")
         .join(format!("{operation}.json"));
     immutable(&request_path, &bytes)?;
+    // A writable reply may predate registration. Watching before this read
+    // covers both that case and publication concurrent with the read.
+    bridge.shared.deliver(&key, operation);
     let result =
         match acyclic_native_runtime::obs::waiting_sync("native-workspace-reply", operation, || {
             delivery.recv()
@@ -519,55 +521,49 @@ fn request_with(registry: &Mutex<Registry>, cwd: &Path, action: HostAction) -> R
     })
 }
 
-/// The newest status file under `status`, by its sequence.
-fn latest(status: &Path) -> Result<Option<(u64, PathBuf)>> {
-    let mut newest: Option<(u64, PathBuf)> = None;
-    for entry in std::fs::read_dir(status).map_err(storage)? {
-        let entry = entry.map_err(storage)?;
-        // Sandboxed hosts can write here; only regular files are statuses.
-        if !entry.file_type().map_err(storage)?.is_file() {
-            continue;
-        }
-        let path = entry.path();
-        let sequence = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .filter(|_| {
-                path.extension()
-                    .is_some_and(|extension| extension == "json")
-            })
-            .and_then(|stem| stem.parse::<u64>().ok());
-        if let Some(sequence) = sequence
-            && newest.as_ref().is_none_or(|(latest, _)| *latest < sequence)
-        {
-            newest = Some((sequence, path));
-        }
-    }
-    Ok(newest)
+fn reply_path(status: &Path, key: &str, operation: OperationId) -> PathBuf {
+    status.join(key).join(format!("{operation}.json"))
 }
 
-/// The agent's latest published status, once one exists.
-fn latest_status(status: &Path) -> Result<Option<Status>> {
-    loop {
-        let Some((_, path)) = latest(status)? else {
-            return Ok(None);
-        };
-        let bytes = match bounded_bytes(&path, STATUS_BYTES) {
-            Ok(bytes) => bytes,
-            // Superseded between listing and reading: its successor exists.
-            Err(Error::NotFound(_)) => continue,
-            Err(error) => return Err(error),
-        };
-        return serde_json::from_slice(&bytes).map(Some).map_err(storage);
+fn operation_leaf(name: &std::ffi::OsStr) -> Option<OperationId> {
+    let path = Path::new(name);
+    if path.extension()? != "json" {
+        return None;
     }
+    let stem = path.file_stem()?.to_str()?;
+    OperationId::parse(stem)
+        .ok()
+        .filter(|operation| operation.to_string() == stem)
 }
 
-/// One agent's latest status: the replies of its requests still present.
-#[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Status {
-    /// Each encoded reply, held as its exact bytes so the status bound holds.
-    replies: BTreeMap<OperationId, Box<serde_json::value::RawValue>>,
+/// Named reply leaves, or an overflow/directory notification requiring active
+/// waiter checks. Unrelated files never participate in reply selection.
+fn notified_replies(
+    event: &notify::Result<notify::Event>,
+    status: &Path,
+) -> Option<BTreeSet<(String, OperationId)>> {
+    use std::path::Component::Normal;
+    let event = event.as_ref().ok()?;
+    if event.need_rescan() || event.paths.is_empty() {
+        return None;
+    }
+    let mut replies = BTreeSet::new();
+    for path in &event.paths {
+        let mut parts = path.strip_prefix(status).ok()?.components();
+        let Normal(key) = parts.next()? else {
+            return None;
+        };
+        let Normal(leaf) = parts.next()? else {
+            return None;
+        };
+        if parts.next().is_some() {
+            return None;
+        }
+        if let (Some(key), Some(operation)) = (key.to_str(), operation_leaf(leaf)) {
+            replies.insert((key.to_owned(), operation));
+        }
+    }
+    Some(replies)
 }
 
 fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
@@ -576,8 +572,13 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
         match regular_bytes(&directory.join("owner.json")) {
             Ok(bytes) => {
                 let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
-                if endpoint.version != 1
-                    || endpoint.workspace != ancestor
+                if endpoint.version != 2 {
+                    return Err(Error::Unsupported(format!(
+                        "step=admit native workspace protocol: version {}; requires 2; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
+                        endpoint.version
+                    )));
+                }
+                if endpoint.workspace != ancestor
                     || std::fs::canonicalize(&directory).map_err(storage)? != directory
                 {
                     return Err(Error::Unauthorized(
@@ -635,7 +636,7 @@ pub async fn serve_until(
         .into_bytes(),
     );
     let endpoint = Endpoint {
-        version: 1,
+        version: 2,
         session,
         workspace,
     };
@@ -657,7 +658,7 @@ pub async fn serve_until(
         .watch(&requests, RecursiveMode::NonRecursive)
         .map_err(storage)?;
     let result = tokio::select! {
-        result = serve_requests(&owner, directory.path(), session, &notices) => result,
+        result = serve_requests(&owner, &directory, session, &notices) => result,
         result = shutdown => result,
     };
     drop(watcher);
@@ -728,36 +729,23 @@ impl Notices {
 
 /// Where one request stands with this owner.
 enum Tracked {
-    /// Waiting for room in its status.
-    Deferred,
+    /// Admitted by the current notification batch.
+    Queued,
     /// Dispatched; `withdrawn` once its file disappeared.
     Running { withdrawn: bool },
     /// Its reply is published.
     Answered,
 }
 
-/// The owner's index of requests and the statuses holding their replies.
-/// Every change it makes is keyed by the request or status it concerns.
+/// The owner's active requests. Each reply is published and retired by its
+/// original operation, without reading or rewriting another operation.
 #[derive(Default)]
 struct Served {
-    known: BTreeMap<OperationId, (String, Tracked)>,
-    statuses: BTreeMap<String, (u64, Status)>,
-    /// Status bytes held for each key's dispatched requests.
-    reserved: BTreeMap<String, u64>,
-    deferred: BTreeMap<String, VecDeque<Request>>,
-    /// Keys whose deferred requests may now fit.
-    startable: BTreeSet<String>,
-    /// Keys whose status must be published.
-    changed: BTreeSet<String>,
+    known: HashMap<OperationId, (String, Tracked)>,
+    ready: Vec<Request>,
     /// Request-directory scans, all of them overflow or startup rescans.
     #[cfg(test)]
     rescans: u64,
-}
-
-/// The status space one reply can take: its key, separators and a reply at
-/// its bound, stored byte for byte.
-fn entry_bytes(operation: OperationId) -> Result<u64> {
-    Ok(serde_json::to_vec(&operation).map_err(storage)?.len() as u64 + 2 + MAXIMUM_BYTES)
 }
 
 impl Served {
@@ -802,15 +790,7 @@ impl Served {
         if path.extension().is_none_or(|extension| extension != "json") {
             return Ok(());
         }
-        let Some(operation) = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .and_then(|stem| {
-                OperationId::parse(stem)
-                    .ok()
-                    .filter(|operation| operation.to_string() == stem)
-            })
-        else {
+        let Some(operation) = operation_leaf(name) else {
             // Not a request record; see the invalid-request case below.
             let _ = remove_projection(&path);
             return Ok(());
@@ -818,7 +798,7 @@ impl Served {
         if self.known.contains_key(&operation) {
             // A known request changes only by its withdrawal.
             if std::fs::symlink_metadata(&path).is_err() {
-                self.withdraw(operation)?;
+                self.withdraw(requests, operation)?;
             }
             return Ok(());
         }
@@ -836,13 +816,8 @@ impl Served {
         match request {
             Ok(request) => {
                 let key = status_key(&request.action);
-                self.known
-                    .insert(operation, (key.clone(), Tracked::Deferred));
-                self.deferred
-                    .entry(key.clone())
-                    .or_default()
-                    .push_back(request);
-                self.startable.insert(key);
+                self.known.insert(operation, (key, Tracked::Queued));
+                self.ready.push(request);
             }
             // Withdrawn before this owner read it.
             Err(Error::NotFound(_)) => {}
@@ -855,126 +830,79 @@ impl Served {
         Ok(())
     }
 
-    /// A withdrawn request's reply is read: drop it from its status, so the
-    /// space it frees serves its key's deferred requests at once.
-    fn withdraw(&mut self, operation: OperationId) -> Result<()> {
+    /// Withdrawal retires only this request's reply, if already published.
+    fn withdraw(&mut self, requests: &Path, operation: OperationId) -> Result<()> {
         let Some((key, tracked)) = self.known.remove(&operation) else {
             return Ok(());
         };
         match tracked {
-            Tracked::Deferred => {
-                if let Some(deferred) = self.deferred.get_mut(&key) {
-                    deferred.retain(|request| request.operation != operation);
-                }
-            }
+            Tracked::Queued => {}
             Tracked::Running { .. } => {
                 // Its dispatch still runs; its reply will not be published.
                 self.known
                     .insert(operation, (key, Tracked::Running { withdrawn: true }));
             }
             Tracked::Answered => {
-                if let Some((_, status)) = self.statuses.get_mut(&key) {
-                    status.replies.remove(&operation);
+                let directory = requests.parent().ok_or_else(|| {
+                    Error::Invalid("native request directory has no parent".into())
+                })?;
+                match remove_projection(&reply_path(&directory.join("status"), &key, operation)) {
+                    Ok(()) | Err(Error::NotFound(_)) => {}
+                    Err(error) => return Err(error),
                 }
-                self.changed.insert(key.clone());
-                self.startable.insert(key);
             }
         }
         Ok(())
     }
 
-    /// The deferred requests that now fit their status, each reserving its
-    /// reply's space; a full status dispatches once a client withdraws.
-    fn start(&mut self) -> Result<Vec<Request>> {
-        let mut started = Vec::new();
-        for key in std::mem::take(&mut self.startable) {
-            let Some(deferred) = self.deferred.get_mut(&key) else {
-                continue;
-            };
-            let mut used = match self.statuses.get(&key) {
-                Some((_, status)) => serde_json::to_vec(status).map_err(storage)?.len() as u64,
-                None => serde_json::to_vec(&Status::default())
-                    .map_err(storage)?
-                    .len() as u64,
-            } + self.reserved.get(&key).copied().unwrap_or_default();
-            while let Some(request) = deferred.front() {
-                let entry = entry_bytes(request.operation)?;
-                if used + entry > STATUS_BYTES {
-                    break;
-                }
-                used += entry;
-                *self.reserved.entry(key.clone()).or_default() += entry;
-                if let Some(request) = deferred.pop_front() {
-                    self.known.insert(
-                        request.operation,
-                        (key.clone(), Tracked::Running { withdrawn: false }),
-                    );
-                    started.push(request);
-                }
+    /// Starts this notification batch; withdrawal before dispatch cancels it.
+    fn start(&mut self) -> Vec<Request> {
+        let mut ready = std::mem::take(&mut self.ready);
+        ready.retain(|request| {
+            if let Some((_, tracked)) = self.known.get_mut(&request.operation) {
+                *tracked = Tracked::Running { withdrawn: false };
+                true
+            } else {
+                false
             }
-            if deferred.is_empty() {
-                self.deferred.remove(&key);
-            }
-        }
-        Ok(started)
+        });
+        ready
     }
 
-    /// Records one dispatch's reply in its status, unless it was withdrawn.
-    fn answer(&mut self, operation: OperationId, outcome: Result<Value>) -> Result<()> {
+    /// Publishes one dispatch's immutable reply unless it was withdrawn.
+    fn answer(
+        &mut self,
+        directory: &acyclic_fs::HeldRoot,
+        operation: OperationId,
+        outcome: Result<Value>,
+    ) -> Result<()> {
         let Some((key, Tracked::Running { withdrawn })) = self.known.remove(&operation) else {
             return Ok(());
         };
-        let entry = entry_bytes(operation)?;
-        if let Some(reserved) = self.reserved.get_mut(&key) {
-            *reserved = reserved.saturating_sub(entry);
-            if *reserved == 0 {
-                self.reserved.remove(&key);
-            }
-        }
-        self.startable.insert(key.clone());
         if withdrawn {
             return Ok(());
         }
         let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
-        let reply = String::from_utf8(bytes)
-            .map_err(storage)
-            .and_then(|reply| serde_json::value::RawValue::from_string(reply).map_err(storage))?;
-        self.statuses
-            .entry(key.clone())
-            .or_default()
-            .1
-            .replies
-            .insert(operation, reply);
-        self.known
-            .insert(operation, (key.clone(), Tracked::Answered));
-        self.changed.insert(key);
-        Ok(())
-    }
-
-    fn publish(&mut self, directory: &Path) -> Result<()> {
-        for key in std::mem::take(&mut self.changed) {
-            if let Some((sequence, status)) = self.statuses.get_mut(&key) {
-                // Each publish takes the next sequence no entry names, so
-                // entries a sandboxed host leaves cannot obstruct or exhaust
-                // it. A status that still cannot publish (storage failure)
-                // retires the owner; its callers observe the owner's exit.
-                *sequence = publish_status(directory, &key, sequence.saturating_add(1), status)?;
-            }
-            if self
-                .statuses
-                .get(&key)
-                .is_some_and(|(_, status)| status.replies.is_empty())
-            {
-                self.statuses.remove(&key);
-            }
+        let root = directory
+            .create_directories(&Path::new("status").join(&key))
+            .map_err(native_file_error)?;
+        match root.publish_immutable(Path::new(&format!("{operation}.json")), &bytes) {
+            Ok(()) => {}
+            // The immutable publisher observed different existing bytes.
+            // This operation's reader observes that same writable projection;
+            // a caller cannot terminate unrelated dispatches by occupying it.
+            Err(acyclic_fs::demand::DemandError::Io(error))
+                if error.kind() == std::io::ErrorKind::InvalidData => {}
+            Err(error) => return Err(native_file_error(error)),
         }
+        self.known.insert(operation, (key, Tracked::Answered));
         Ok(())
     }
 }
 
 async fn serve_requests(
     owner: &HostWorkspaceOwner,
-    directory: &Path,
+    directory: &acyclic_fs::HeldRoot,
     session: uuid::Uuid,
     notices: &Notices,
 ) -> Result<()> {
@@ -985,56 +913,18 @@ async fn serve_requests(
     >::new();
     loop {
         served.touch(&notices.requests, session, notices.take())?;
-        for request in served.start()? {
+        for request in served.start() {
             let operation = request.operation;
             let dispatched = owner.dispatch(operation, request.action);
             running.push(Box::pin(async move { (operation, dispatched.await) }));
         }
-        served.publish(directory)?;
         tokio::select! {
             () = notices.changed.notified() => {}
             Some((operation, outcome)) = running.next(), if !running.is_empty() => {
-                served.answer(operation, outcome)?;
+                served.answer(directory, operation, outcome)?;
             }
         }
     }
-}
-
-/// Publishes `status` as `key`'s latest and removes every earlier one,
-/// returning the sequence it took.
-fn publish_status(directory: &Path, key: &str, sequence: u64, status: &Status) -> Result<u64> {
-    let root = acyclic_fs::hold_root(directory)
-        .map_err(native_file_error)?
-        .create_directories(&Path::new("status").join(key))
-        .map_err(native_file_error)?;
-    // A previous owner's statuses, or any entry a sandboxed host left, may
-    // remain. Take the next sequence no entry already names: nothing there
-    // can obstruct or exhaust it, and cleanup below leaves this one latest.
-    let mut names = BTreeSet::new();
-    for entry in std::fs::read_dir(root.path()).map_err(storage)? {
-        names.insert(entry.map_err(storage)?.file_name());
-    }
-    let mut sequence = sequence;
-    while names.contains(std::ffi::OsStr::new(&format!("{sequence}.json"))) {
-        sequence = sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("native status sequence exhausted".into()))?;
-    }
-    let bytes = serde_json::to_vec(status).map_err(storage)?;
-    if bytes.len() as u64 > STATUS_BYTES {
-        return Err(Error::Invalid("native status exceeds its bound".into()));
-    }
-    let leaf = format!("{sequence}.json");
-    root.publish_immutable(Path::new(&leaf), &bytes)
-        .map_err(native_file_error)?;
-    for earlier in names {
-        // Best effort: an entry a sandboxed host left, or one a reader
-        // raced, never fails the publish that already landed.
-        if earlier != leaf.as_str() {
-            let _ = root.remove_file(Path::new(&earlier));
-        }
-    }
-    Ok(sequence)
 }
 
 fn remove_projection(path: &Path) -> Result<()> {
