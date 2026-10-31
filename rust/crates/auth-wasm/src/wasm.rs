@@ -24,6 +24,8 @@ pub fn encode_capability_bytes(
     if proof.length() as usize != length {
         return Err(error(VerifyError::Malformed));
     }
+    let mut bytes = Zeroizing::new(vec![0; length]);
+    proof.copy_to(&mut bytes);
     let blocks = blocks
         .iter()
         .map(|block| {
@@ -34,8 +36,6 @@ pub fn encode_capability_bytes(
                 .map_err(|_| error(VerifyError::Malformed))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut bytes = Zeroizing::new(vec![0; length]);
-    proof.copy_to(&mut bytes);
     let proof = if sealed {
         TipProofRef::Sealed(
             bytes
