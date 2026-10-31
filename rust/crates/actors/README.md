@@ -153,6 +153,14 @@ after proven consumption is an invalid publication, not a successful response.
 
 ### Guest durable state binding
 
+Durable alarms are activation events carrying the original context delivery
+identity. They have no attempt counter or separate retry flag. The authoring
+fixture `tests/fixtures/authoring/guest.ts` is captured from
+`acyclic_actors::guest::typescript()` by the existing generator:
+`cargo run --locked -p acyclic-actors --example actors-http-routes -- typescript/packages/actors/src/generated/actors-service.ts`.
+The fixture is the generated `typescript/packages/actors/src/generated/guest.ts`;
+`generated_authoring_contract_has_no_drift` compares it with the Rust source.
+
 `domain::Binding::actor_state(name)` selects the executing actor's own state.
 Its public declaration is `stateTransaction: true`, with no capability,
 resource, target account, namespace or Worker target. Workers cannot select

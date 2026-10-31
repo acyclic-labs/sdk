@@ -4,15 +4,6 @@ export const GUEST_ABI_VERSION = 1 as const;
  * The host must retain close through EOF, failure and cancellation. */
 export type GuestResponseStream = { readonly status: number; readonly headers: Headers; readonly body: ReadableStream<Uint8Array> | null; readonly trailers: Promise<Headers>; close(): void; };
 export type GuestFetchResponse = Response | GuestResponseStream;
-export type AlarmInfo = {
-/**
- * Zero for first delivery, increasing on each retry.
- */
-retryCount: number,
-/**
- * Whether this delivery follows a failed attempt.
- */
-isRetry: boolean, };
 export type WebSocketId = string;
 export type WebSocketAutoResponse = {
 /**
@@ -169,11 +160,7 @@ payload: Uint8Array, } | { "type": "fetch",
 /**
  * Portable request.
  */
-request: GuestRequest, } | { "type": "alarm",
-/**
- * The sole alarm delivery counter.
- */
-info: AlarmInfo, } | { "type": "timer",
+request: GuestRequest, } | { "type": "alarm" } | { "type": "timer",
 /**
  * Timer identity, also the inbox append idempotency key.
  */
@@ -200,11 +187,11 @@ payload: Uint8Array, } | { "type": "socketAccept",
  */
 subprotocol: string | null,
 /**
- * Opaque checkpointed attachment (contract maximum 2 KiB).
+ * Opaque checkpointed attachment.
  */
 attachment: Uint8Array,
 /**
- * Checkpointed broadcast tags (at most ten, each at most 256 characters).
+ * Checkpointed broadcast tags.
  */
 tags: Array<string>, } | { "type": "socketReject",
 /**

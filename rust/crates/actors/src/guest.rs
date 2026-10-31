@@ -119,11 +119,8 @@ pub enum GuestEvent {
         /// Portable request.
         request: GuestRequest,
     },
-    /// Actor-scoped durable alarm; the host supplies retry metadata.
-    Alarm {
-        /// The sole alarm delivery counter.
-        info: AlarmInfo,
-    },
+    /// Actor-scoped durable alarm delivered through the activation gate.
+    Alarm,
     /// A timer fire delivered by an idempotent inbox append, never Invoke.
     Timer {
         /// Timer identity, also the inbox append idempotency key.
@@ -169,7 +166,7 @@ pub fn typescript() -> String {
         )+};
     }
     output.push_str(body::JAVASCRIPT_FETCH_RESPONSE);
-    declarations!(AlarmInfo, WebSocketId, WebSocketAutoResponse, GuestRequest, GuestResponse, SocketPayload, SocketCloseInitiator,
+    declarations!(WebSocketId, WebSocketAutoResponse, GuestRequest, GuestResponse, SocketPayload, SocketCloseInitiator,
         SocketTransport, GuestSocketEvent, GuestEvent, GuestEventResult,
         CodecIdentity, Checkpoint, GuestError, CheckpointCodec<()>,
         CallerCapability, AdmittedCaller, RuntimeHandle, ActorRuntime,

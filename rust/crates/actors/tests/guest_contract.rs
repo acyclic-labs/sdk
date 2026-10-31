@@ -364,6 +364,7 @@ fn every_event_round_trips_with_a_single_discriminant() -> Result<(), Box<dyn st
             payload: vec![0, 255].into(),
         },
         GuestEvent::Fetch { request },
+        GuestEvent::Alarm,
         GuestEvent::Timer {
             timer_id: "timer-1".into(),
             deadline_unix_ms: "123".into(),

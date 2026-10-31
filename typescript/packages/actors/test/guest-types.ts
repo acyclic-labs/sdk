@@ -46,7 +46,7 @@ function exhaustive(event: GuestEvent): string {
     case "invoke": return String(event.payload.byteLength);
     case "fetch": return event.request.url;
     case "timer": return event.timerId;
-    case "alarm": return String(event.info.retryCount);
+    case "alarm": return event.type;
     case "socket": return event.connectionId;
     case "unknown": return "";
     default: { const impossible: never = event; return impossible; }
