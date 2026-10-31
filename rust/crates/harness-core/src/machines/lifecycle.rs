@@ -426,6 +426,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> OnFirstUse<P> {
         }
         let target = self.machines.target(&self.target)?;
         let sandbox = self.machines.machine(&self.agent, &self.target).await?;
+        self.bind(target, sandbox).await
+    }
+
+    async fn bind(
+        &self,
+        target: &ProvisionedTarget,
+        sandbox: SandboxRef,
+    ) -> Result<Arc<dyn ToolExecutor>> {
         let observed = target.host.inspect(&sandbox).await?;
         let executor = self.executors.bind(target, sandbox, observed)?;
         Ok(Arc::clone(self.bound.get_or_init(|| executor)))
@@ -473,7 +481,24 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> ToolExecutor for OnFir
         invocation: ToolInvocation,
         context: Option<crate::runtime::ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async move { self.executor().await?.reconcile(invocation, context).await })
+        Box::pin(async move {
+            let executor = match self.bound.get() {
+                Some(bound) => Arc::clone(bound),
+                None => {
+                    // Recovery observes the original binding; it cannot create
+                    // a replacement Machine for an interrupted command.
+                    let binding = self
+                        .machines
+                        .binding(&self.agent, &self.target)
+                        .await?
+                        .ok_or(Error::Indeterminate(invocation.operation_id))?;
+                    let target = self.machines.target(&self.target)?;
+                    self.bind(target, sandbox(target, &binding)?).await?
+                }
+            };
+            executor.authorize(None, context.as_ref(), &invocation, None)?;
+            executor.reconcile(invocation, context).await
+        })
     }
 }
 
