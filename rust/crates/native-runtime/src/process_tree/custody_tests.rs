@@ -12,10 +12,10 @@ use std::thread;
 const MODE: &str = "ACYCLIC_CUSTODY_TEST_MODE";
 const ROOT: &str = "ACYCLIC_CUSTODY_TEST_ROOT";
 
-/// A shell program that publishes its descendant's PID at the path given as
-/// its first argument, then waits; paths are arguments, never script text.
+/// A shell program that publishes its descendant through the original pipe,
+/// then waits for that descendant's physical exit.
 #[cfg(unix)]
-const PUBLISHING_PROGRAM: &str = r#"sleep 3600 >/dev/null & child=$!; echo "$child" > "$1.tmp"; mv "$1.tmp" "$1"; echo ACYCLIC_CHILD_PID="$child"; wait"#;
+const PUBLISHING_PROGRAM: &str = r#""$ACYCLIC_CUSTODY_TEST_EXECUTABLE" --exact process_tree::custody_tests::custody_owner_helper --nocapture >/dev/null & child=$!; echo ACYCLIC_CHILD_PID="$child"; wait"#;
 
 // Exercise the same resolved shell as native host tools, with a real
 // grandchild. A directly spawned ping cannot detect packaged-shell breakaway.
@@ -31,12 +31,16 @@ exit $child.ExitCode
 fn program(root: &Path) -> Command {
     #[cfg(unix)]
     {
-        let pid = root.join("pid");
         let mut command =
             crate::shell_command(PUBLISHING_PROGRAM, Some("sh")).expect("resolve fixture shell");
         command
             .arg("sh")
-            .arg(pid)
+            .env(ROOT, root)
+            .env(MODE, "member")
+            .env(
+                "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
+                std::env::current_exe().expect("test executable"),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -44,10 +48,10 @@ fn program(root: &Path) -> Command {
     }
     #[cfg(windows)]
     {
-        let _ = root;
         let mut command = crate::shell_command(PUBLISHING_PROGRAM, None)
             .expect("resolve the native host's fixture shell");
         command
+            .env(ROOT, root)
             .env(MODE, "member")
             .env(
                 "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
@@ -86,10 +90,7 @@ fn custody_owner_helper() {
     if mode == "exit-before-publish" {
         return;
     }
-    #[cfg(windows)]
     if mode == "member" {
-        fs::write(root.join("pid.tmp"), std::process::id().to_string()).expect("pid");
-        fs::rename(root.join("pid.tmp"), root.join("pid")).expect("publish grandchild pid");
         publish_pid(std::process::id());
         loop {
             thread::park();
@@ -570,13 +571,19 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
         ("kill -TERM $$", None, Some(libc::SIGTERM)),
     ] {
         let mut command = crate::shell_command(
-            &format!(r#"sleep 3600 & echo $! > "$1"; {script}"#),
+            &format!(r#""$ACYCLIC_CUSTODY_TEST_EXECUTABLE" --exact process_tree::custody_tests::custody_owner_helper --nocapture >/dev/null & echo $! > "$1"; {script}"#),
             Some("sh"),
         )
         .expect("resolve fixture shell");
         command
             .arg("sh")
             .arg(&pid)
+            .env(MODE, "member")
+            .env(ROOT, root.path())
+            .env(
+                "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
+                std::env::current_exe().expect("test executable"),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -696,14 +703,7 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let custody = ProcessCustody::open(&processes).expect("custody");
-    let pid = root.path().join("pid");
-    let mut command =
-        crate::shell_command(PUBLISHING_PROGRAM, Some("sh")).expect("resolve fixture shell");
-    command.arg("sh").arg(&pid);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    let mut command = program(root.path());
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
     let descendant = Watch::new(
         read_published_pid(tree.take_stdout().expect("descendant publication pipe"))
@@ -729,13 +729,16 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
 /// A program whose descendant leaves the tree's process group and session,
 /// publishing its own PID.
 #[cfg(target_os = "linux")]
-fn escaping_program(pid: &Path) -> Command {
+fn escaping_program(root: &Path) -> Command {
     let mut command = crate::shell_command(
-        r#"setsid sh -c 'echo $$ > "$1.tmp"; mv "$1.tmp" "$1"; echo ACYCLIC_CHILD_PID=$$; exec sleep 3600 >/dev/null' sh "$1" & wait"#,
+        r#"setsid sh -c 'echo ACYCLIC_CHILD_PID=$$; exec "$ACYCLIC_CUSTODY_TEST_EXECUTABLE" --exact process_tree::custody_tests::custody_owner_helper --nocapture >/dev/null' sh "$1" & wait"#,
         Some("sh"),
     )
     .expect("resolve fixture shell");
-    command.arg("sh").arg(pid);
+    command.arg("sh").env(MODE, "member").env(ROOT, root).env(
+        "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
+        std::env::current_exe().expect("test executable"),
+    );
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -765,8 +768,8 @@ fn cancelled_custodied_tree_leaves_no_descendant_outside_its_group() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let custody = ProcessCustody::open(&processes).expect("custody");
-    let pid = root.path().join("pid");
-    let tree = ProcessTree::spawn_in_custody(&mut escaping_program(&pid), &custody).expect("spawn");
+    let tree =
+        ProcessTree::spawn_in_custody(&mut escaping_program(root.path()), &custody).expect("spawn");
     let escaped = cancel_after_escape(tree);
     let survived = !escaped.exited();
     escaped.kill();
@@ -780,8 +783,7 @@ fn cancelled_custodied_tree_leaves_no_descendant_outside_its_group() {
 #[test]
 fn a_cancelled_uncustodied_tree_leaves_its_escaped_descendant() {
     let root = tempfile::tempdir().expect("root");
-    let pid = root.path().join("pid");
-    let tree = ProcessTree::spawn(&mut escaping_program(&pid)).expect("spawn");
+    let tree = ProcessTree::spawn(&mut escaping_program(root.path())).expect("spawn");
     let escaped = cancel_after_escape(tree);
     let survived = !escaped.exited();
     escaped.kill();
