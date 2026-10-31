@@ -172,17 +172,16 @@ impl Shared {
         {
             return;
         }
-        let reply = match regular_bytes(&reply_path(&self.status, operation)) {
+        let leaf = format!("{operation}.json");
+        let reply = match regular_bytes(&self.status.join(&leaf)) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(storage),
-            Err(Error::NotFound(_)) => {
-                match std::fs::symlink_metadata(self.requests.join(format!("{operation}.json"))) {
-                    Ok(_) => return,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        Err(Error::Indeterminate(operation))
-                    }
-                    Err(error) => Err(storage(error)),
+            Err(Error::NotFound(_)) => match std::fs::symlink_metadata(self.requests.join(&leaf)) {
+                Ok(_) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Err(Error::Indeterminate(operation))
                 }
-            }
+                Err(error) => Err(storage(error)),
+            },
             Err(error) => Err(error),
         };
         let mut waiters = lock(&self.waiters);
