@@ -1247,14 +1247,12 @@ fn native_platform_derivation_retains_original_custody_work_and_stop() -> Result
             root.audience.clone(),
             root.public_workload_trust()?,
             root.verifier(&mut None)?.public_checkpoint_key(),
-            root.trust_changes(),
         )?;
         let port = AdmittedAuthority::from_platform(
             verifier,
             source.public_scope()?,
             context,
             source.clone(),
-            root.trust_changes(),
         )?;
         let runtime = RuntimeAuthority::admitted(port, OperationId::from_bytes([205; 16]));
         let cancellation = acyclic_fs::CancellationToken::new();
