@@ -26,21 +26,9 @@ impl LocalStream {
                         let result = async {
                             let _visibility = stream.inner.visibility.read().await;
                             stream.check_available()?;
-                            let input = provider.request_claim(&request)?;
-                            // Clone only before issuance, with both control vectors funded.
-                            let copied = usize::try_from(
-                                input
-                                    .as_ref()
-                                    .map_or(0, acyclic_native_runtime::ReadAllocation::bytes),
-                            )
-                            .map_err(|_| StreamError::Capacity)?;
-                            let command_claim = work.record(
-                                acyclic_native_runtime::ReadAllocation::new(&work.meter, copied),
-                            )?;
-                            work.record(work.meter.admit_codec(0, copied as u64, 0))?;
-                            let command = WriteRequest::Commit(request.clone());
-                            work.record(work.meter.record_codec(0, copied as u64, 0))?;
-                            drop(input);
+                            let copied = work.record(request.try_clone_native(&work.meter))?;
+                            let (command, command_claim) = copied.into_parts();
+                            let command = WriteRequest::Commit(command);
                             let (plan, recovery) = provider.prepare(request, maximum).await?;
                             let WriteRequest::Commit(request) = &command else {
                                 unreachable!()
