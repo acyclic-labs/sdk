@@ -14,8 +14,8 @@ Ollama-specific behavior has been qualified by this llama.cpp capture.
 Reproduce capture, then run the complete common suite in replay and against the
 live server (with an actual rate limiter and captured deterministic replay):
 
-```powershell
-bash scripts/capture-inference-local.sh
+```sh
+INFERENCE_RUN_SUITE=1 bash scripts/capture-inference-local.sh
 ```
 
 Both servers bind only to `127.0.0.1`, on ports 15480 (llama.cpp) and 15481
