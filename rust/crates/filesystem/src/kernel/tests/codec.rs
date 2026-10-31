@@ -40,7 +40,7 @@ fn canonical_object_prefix_preserves_original_copy_admission_and_stops_at_denial
                         admitted.push(length);
                     }
                     ReadAllocationStep::Copied(length) => completed.push(length),
-                    _ => panic!("object references do not allocate, hash or decode collections"),
+                    _ => return Err(CanonicalDecodeError::WrongDomain),
                 }
                 Ok(())
             });

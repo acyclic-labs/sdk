@@ -812,7 +812,8 @@ mod object_id_codec_tests {
     use super::*;
 
     #[test]
-    fn canonical_object_prefix_keeps_every_kind_seal_and_following_field() {
+    fn canonical_object_prefix_keeps_every_kind_seal_and_following_field()
+    -> Result<(), ObjectIdError> {
         for kind in [
             ObjectKind::Blob,
             ObjectKind::BlobChunk,
@@ -846,7 +847,7 @@ mod object_id_codec_tests {
                 }
                 let following = id.to_bytes();
                 let record = [bytes.as_slice(), following.as_slice()].concat();
-                let (decoded, remaining) = ObjectId::from_prefix(&record).unwrap();
+                let (decoded, remaining) = ObjectId::from_prefix(&record)?;
                 assert_eq!(decoded, id);
                 assert_eq!(remaining, following.as_slice());
                 assert_eq!(
@@ -860,27 +861,22 @@ mod object_id_codec_tests {
                     ObjectId::from_prefix(&unknown),
                     Err(ObjectIdError::Kind(ObjectKindError::Unknown(0)))
                 );
-                if storage.is_some() {
+                if let Some(mut resealed) = storage {
                     // A plain digest cannot stand in for its authenticated association.
                     let plain = ObjectId {
                         storage: None,
                         ..id
                     };
-                    assert_ne!(
-                        ObjectId::from_prefix(plain.to_bytes().as_slice())
-                            .unwrap()
-                            .0,
-                        id
-                    );
-                    let mut resealed = storage.unwrap();
+                    assert_ne!(ObjectId::from_prefix(plain.to_bytes().as_slice())?.0, id);
                     resealed.locator = Digest::from_bytes([19; 32]);
                     let other = ObjectId {
                         storage: Some(resealed),
                         ..id
                     };
-                    assert_ne!(ObjectId::try_from(other.to_bytes().as_slice()).unwrap(), id);
+                    assert_ne!(ObjectId::try_from(other.to_bytes().as_slice())?, id);
                 }
             }
         }
+        Ok(())
     }
 }
