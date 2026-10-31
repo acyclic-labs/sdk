@@ -48,28 +48,29 @@ async fn an_idle_journal_closes_its_descriptor_and_appends_after_reopening()
         assert!(status.success(), "child test failed: {status}");
         return Ok(());
     }
-    let first = tempfile::tempdir()?;
-    let second = tempfile::tempdir()?;
-    let journal = first.path().canonicalize()?.join(JOURNAL_FILE);
-    let idle = LocalStream::open(first.path(), LocalStreamLimits::default()).await?;
-    idle.append(append("agents", 0)?).await?;
-    // The process keeps one idle descriptor, so opening another stream
-    // closes the idle journal's.
-    let busy = LocalStream::open(second.path(), LocalStreamLimits::default()).await;
-    // A flush that finished may still hold the descriptor for a moment.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut closed = descriptors_naming(&journal);
-    while closed.as_ref().is_ok_and(|open| *open != 0) && std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        closed = descriptors_naming(&journal);
-    }
-    let appended = idle.append(append("agents", 1)?).await;
-    busy?.append(append("agents", 0)?).await?;
-    assert_eq!(closed?, 0, "an idle journal kept its descriptor");
-    // The append after reopening lands after the first, not over the header.
-    appended?;
-    drop(idle);
-    let reopened = LocalStream::open(first.path(), LocalStreamLimits::default()).await?;
-    reopened.append(append("agents", 2)?).await?;
-    Ok(())
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    journal_lifecycle(&schedule, &mut boundaries, async {
+        let first = tempfile::tempdir()?;
+        let second = tempfile::tempdir()?;
+        let journal = first.path().canonicalize()?.join(JOURNAL_FILE);
+        let idle = LocalStream::open(first.path(), LocalStreamLimits::default()).await?;
+        idle.append(append("agents", 0)?).await?;
+        // The process keeps one idle descriptor, so opening another stream
+        // closes the idle journal's.
+        let busy = LocalStream::open(second.path(), LocalStreamLimits::default()).await;
+        // Observe the original persistence owners' physical completion before
+        // inspecting the descriptor count at the eviction cut.
+        schedule.drained().await;
+        let closed = descriptors_naming(&journal);
+        let appended = idle.append(append("agents", 1)?).await;
+        busy?.append(append("agents", 0)?).await?;
+        assert_eq!(closed?, 0, "an idle journal kept its descriptor");
+        // The append after reopening lands after the first, not over the header.
+        appended?;
+        drop(idle);
+        let reopened = LocalStream::open(first.path(), LocalStreamLimits::default()).await?;
+        reopened.append(append("agents", 2)?).await?;
+        Ok(())
+    })
+    .await?
 }
