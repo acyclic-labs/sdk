@@ -457,20 +457,31 @@ async fn discovery_moves_schemas_and_rejects_cursor_count_and_byte_overruns() ->
     let pages = Mutex::new(VecDeque::from([first, page(&["two"], None)]));
     let mut requests = Vec::new();
     let cursors = Mutex::new(&mut requests);
-    let tools = native::discover(McpClientLimits::default(), |cursor| {
-        cursors.lock().expect("cursor lock").push(cursor);
-        std::future::ready(Ok(pages
-            .lock()
-            .expect("pages lock")
-            .pop_front()
-            .expect("next page")))
-    })
+    let tools = native::discover(
+        McpClientLimits::default(),
+        |name| name == "one",
+        |cursor| {
+            cursors.lock().expect("cursor lock").push(cursor);
+            std::future::ready(Ok(pages
+                .lock()
+                .expect("pages lock")
+                .pop_front()
+                .expect("next page")))
+        },
+    )
     .await?;
     assert_eq!(
         &tools[0].input_schema["type"] as *const Value,
         schema_pointer
     );
     assert_eq!(requests, [None, Some("next".into())]);
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["one"]
+    );
     for (pages, limits) in [
         (
             vec![page(&["a"], Some("x")), page(&["b"], Some("x"))],
@@ -501,11 +512,15 @@ async fn discovery_moves_schemas_and_rejects_cursor_count_and_byte_overruns() ->
     ] {
         let pages = Mutex::new(VecDeque::from(pages));
         assert!(
-            native::discover(limits, |_| std::future::ready(Ok(pages
-                .lock()
-                .expect("pages lock")
-                .pop_front()
-                .expect("next page"))))
+            native::discover(
+                limits,
+                |_| false,
+                |_| std::future::ready(Ok(pages
+                    .lock()
+                    .expect("pages lock")
+                    .pop_front()
+                    .expect("next page")))
+            )
             .await
             .is_err()
         );
