@@ -448,7 +448,6 @@ impl Owned<TransactionState> {
                         edit.directory_id,
                         name,
                         present,
-                        config.limits.maximum_component_bytes,
                         accounting,
                     )?;
                 }
@@ -472,7 +471,6 @@ impl Owned<TransactionState> {
                     store,
                     root,
                     group,
-                    u32::try_from(group.len()).map_err(|_| WorkError::Overflow)?,
                     DecodeLimits::for_volume(config),
                     accounting,
                     cancellation,

@@ -370,7 +370,6 @@ async fn rewrite_merge_bindings<S: AsyncObjectStore>(
                         transition.directory,
                         &change.key,
                         present,
-                        limits.maximum_name_bytes,
                         accounting,
                     )?;
                 }
@@ -388,7 +387,6 @@ async fn rewrite_merge_bindings<S: AsyncObjectStore>(
                 store,
                 before.and_then(|record| record.bindings),
                 group,
-                u32::try_from(group.len()).map_err(|_| WorkError::Overflow)?,
                 limits,
                 accounting,
                 cancellation,
