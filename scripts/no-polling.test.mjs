@@ -170,6 +170,20 @@ test('comments and Future polling remain distinct from time and readiness rechec
  assert.ok(pollingSites(rust, 'fn fixture() { command.arg(r#"sleep 30"#); }').some(site => site.kind === 'embedded-timer-or-retry'));
 });
 
+test('host language sources cannot hide a wait behind a non-comment slash', () => {
+ for (const [file, source] of [
+  ['scripts/control.py', 'value = 6 // 2; time.sleep(1)'],
+  ['scripts/control.sh', 'printf https://example.invalid; sleep 1'],
+  ['scripts/control.ps1', 'Write-Output https://example.invalid; Start-Sleep 1'],
+  ['scripts/control.cs', 'class Control { void Wait() { System.Threading.Thread.Sleep(1); } }'],
+  ['scripts/control.cs', '/* outer /* inner */ class Control { void Wait() { System.Threading.Thread.Sleep(1); } } // */'],
+  ['scripts/control.c', '/* outer /* inner */ void wait(void) { sleep(1); } // */'],
+ ]) {
+  assert.ok(sourceInScope(file));
+  assert.ok(newPollingSites(file, '', source).length, file);
+ }
+});
+
 test('unchanged baseline sites do not authorize another occurrence', () => {
  const source = 'async function operation() { await Bun.sleep(1); }\n';
  assert.deepEqual(newPollingSites(script, source, source), []);
@@ -207,7 +221,7 @@ test('event and finite-work loops have no file or helper exemption', () => {
 });
 
 test('scope covers native adapters and scripts as well as both language packages', () => {
- for (const file of [rust, script, 'typescript/packages/client/test/source.mts', 'typescript/packages/client/test/source.cts', 'typescript/packages/client/test/source.jsx', 'rust/crates/fs/native/adapter.c', 'typescript/packages/client/test/start.sh', 'scripts/release.mjs', 'scripts/native.ps1', 'rust/crates/fs/Cargo.toml', 'typescript/packages/client/settings.json']) assert.ok(sourceInScope(file));
+ for (const file of [rust, script, 'typescript/packages/client/test/source.mts', 'typescript/packages/client/test/source.cts', 'typescript/packages/client/test/source.jsx', 'rust/crates/fs/native/adapter.c', 'typescript/packages/client/test/start.sh', 'scripts/release.mjs', 'scripts/native.ps1', 'scripts/native.cs', 'scripts/native.py', 'rust/crates/fs/Cargo.toml', 'typescript/packages/client/settings.json']) assert.ok(sourceInScope(file));
  assert.equal(sourceInScope('docs/no-polling.md'), false);
  assert.equal(sourceInScope('scripts/no-polling-dispositions.json'), false);
  assert.throws(() => validateDispositions({ignore: ['scripts/**']}), /must be an array/);

@@ -31,6 +31,8 @@ export function rejectWaits(error, ...registries) {
 
 export async function browserTest(module, args) {
   const root = resolve(import.meta.dirname, "..");
+  const executable = [process.env.CHROME, "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find(path => path && existsSync(path));
+  if (!executable) throw new BrowserSourceEnded("executable", new Error("no Chromium executable; set CHROME"));
   const server = createServer((request, response) => {
     const path = new URL(request.url, "http://localhost").pathname;
     if (path === "/") { response.setHeader("content-type", "text/html"); response.end("<!doctype html><title>Browser qualification</title>"); return; }
@@ -41,8 +43,6 @@ export async function browserTest(module, args) {
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const profile = await mkdtemp(join(tmpdir(), "acyclic-browser-test-"));
-  const executable = [process.env.CHROME, "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find(path => path && existsSync(path));
-  if (!executable) { server.close(); throw new BrowserSourceEnded("executable", new Error("no Chromium executable; set CHROME")); }
   const chrome = spawn(executable, ["--headless=new", "--no-sandbox", "--remote-debugging-pipe", "--no-first-run", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], windowsHide: true });
   const exited = childExit(chrome);
   const pending = new Map(), events = new Map();

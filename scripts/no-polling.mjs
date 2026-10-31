@@ -23,7 +23,7 @@ export const temporalModule = name => /^(?:node:)?timers(?:\/promises)?$/.test(n
 export function sourceInScope(file) {
  // This declarative file is validated as exact dispositions, never executed.
  if (file === 'scripts/no-polling-dispositions.json') return false;
- return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
+ return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|cs|py|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
 }
 
 /** @param {import('typescript-parser').Expression | undefined} expression @returns {string | undefined} */
@@ -90,7 +90,9 @@ function scriptTokens(file, source) {
 
 // Nested comments, raw strings and lifetimes have Rust lexical boundaries.
 // Quoted child programs and computed property names remain visible as literals.
-function nativeTokens(source, rust) {
+function nativeTokens(source, file) {
+ const rust = file.endsWith('.rs');
+ const slashComments = /\.(?:rs|[ch]|cc|cpp|cs|proto)$/.test(file);
  const out = [];
  let at = 0;
  let line = 1;
@@ -103,12 +105,12 @@ function nativeTokens(source, rust) {
  while (at < source.length) {
   const tail = source.slice(at);
   if (/^\s/.test(tail)) { emit(at + tail.match(/^\s+/)[0].length); continue; }
-  if (tail.startsWith('//')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
-  if (tail.startsWith('/*')) {
+  if (slashComments && tail.startsWith('//')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
+  if (slashComments && tail.startsWith('/*')) {
    let depth = 1;
    let end = at + 2;
    while (end < source.length && depth) {
-    if (source.startsWith('/*', end)) { depth++; end += 2; }
+    if (rust && source.startsWith('/*', end)) { depth++; end += 2; }
     else if (source.startsWith('*/', end)) { depth--; end += 2; }
     else end++;
    }
@@ -139,7 +141,7 @@ function nativeTokens(source, rust) {
 
 export function pollingUnit(file, source) {
  const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source) : undefined;
- const stream = parsed?.stream ?? nativeTokens(source, file.endsWith('.rs'));
+ const stream = parsed?.stream ?? nativeTokens(source, file);
  // A changed producer/condition elsewhere in the source unit must reopen the
  // disposition; a short context hash could preserve approval of a changed loop.
  const unit = createHash('sha256').update(JSON.stringify(stream.map(t => [t.kind, t.value]))).digest('hex');
