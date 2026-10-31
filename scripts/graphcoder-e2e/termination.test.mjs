@@ -75,27 +75,53 @@ test("rejected control delivery remains a sink failure and still retires the sam
   }
 });
 
-test("selected owner exit cannot discard its already written acknowledgement", { skip: process.platform === "win32" }, async () => {
-  const scope = new Processes();
-  const running = launch(scope, false, "1");
-  try {
-    await ready(running);
+test("selected owner exit cannot discard its already written acknowledgement", { skip: process.platform === "win32" }, async t => {
+  for (const [mode, expected] of [["1", "empty"], ["live", "report"]]) for (const late of [0, 1]) {
+    const scope = new Processes();
+    const running = launch(scope, false, mode);
     const channel = running.child.stdio[3];
-    channel.pause();
-    const acknowledged = running.requestReport(Date.now() + 500);
-    await running.exited;
-    // The real producer has exited after writing its reply. Delivering those
-    // bytes later must preserve the snapshot rather than fabricate its loss.
-    channel.resume();
-    await acknowledged;
-    const result = await running.closed;
-    assert.equal(result.code, 0);
-    assert.equal(result.termination.report_outcome, "empty");
-    assert.equal(result.termination.report_acknowledged, true);
-    assert.equal(result.termination.missing_wait_report, false);
-    await scope.close();
-    assert.equal(scope.children.size, 0);
-  } finally { await scope.close(); }
+    const emit = channel.emit;
+    const buffered = [];
+    let drained;
+    const drain = new Promise(resolve => { drained = resolve; });
+    const hold = function (event, ...args) {
+      if (["data", "end", "close"].includes(event)) {
+        buffered.push([event, ...args]);
+        if (event === "end") drained();
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    };
+    try {
+      // Readiness must flow before holding the response and its EOF.
+      await ready(running);
+      channel.emit = hold;
+      const deadline = Date.now() + 500;
+      const acknowledged = running.requestReport(deadline);
+      await Promise.all([running.exited, drain]);
+      // Gate the actual native writer's bytes, then move only the receiver's
+      // clock across the original deadline. No sleep or fabricated frame is
+      // needed to expose a late delivery racing its timer callback.
+      const clock = t.mock.method(Date, "now", () => deadline + late);
+      try {
+        channel.emit = emit;
+        for (const event of buffered.splice(0)) emit.apply(channel, event);
+        await acknowledged;
+      } finally { clock.mock.restore(); }
+      const result = await running.closed;
+      assert.equal(result.code, 0);
+      assert.equal(result.termination.report_outcome, late ? "exited" : expected);
+      assert.equal(result.termination.report_acknowledged, !late);
+      assert.equal(result.termination.missing_wait_report, Boolean(late));
+      if (late) assert.deepEqual(result.termination.stuck_on, []);
+      await scope.close();
+      assert.equal(scope.children.size, 0, "late delivery cannot replace physical retirement");
+    } finally {
+      channel.emit = emit;
+      for (const event of buffered.splice(0)) emit.apply(channel, event);
+      await scope.close();
+    }
+  }
 });
 
 test("a capability wait ends when its report producer closes while the process stays alive", { skip: process.platform === "win32" }, async () => {

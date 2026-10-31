@@ -99,6 +99,14 @@ export class ProcessReport {
       this.#finish("write-failed", "foreign-or-invalid-acknowledgement");
       return;
     }
+    // A buffered snapshot cannot win a race against the original drain
+    // deadline merely because its timer callback has not run yet. Explicit
+    // refusal frames still describe why the producer rejected the request.
+    if ((message.outcome === "report" || message.outcome === "empty")
+      && Date.now() > request.deadline_unix_ms) {
+      this.expire();
+      return;
+    }
     this.#finish(message.outcome, undefined, message.waits, true);
   }
   #finish(outcome, cause, waits = [], acknowledged = false) {
