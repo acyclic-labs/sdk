@@ -736,11 +736,9 @@ fn a_dropped_lock_is_released_while_another_process_shares_its_description()
     let root = tempfile::tempdir()?;
     let path = root.path().join("shared.lock");
     let lock = super::fence::acquire_mount_lock(&path, false)?;
-    let mut child = acyclic_native_runtime::ProcessCommand::new("sleep")
+    let mut child = std::process::Command::new("sleep")
         .arg("30")
-        .stdin(acyclic_native_runtime::ProcessStdio::from(
-            lock.try_clone()?,
-        ))
+        .stdin(std::process::Stdio::from(lock.try_clone()?))
         .spawn()?;
     drop(lock);
     let reacquired = super::fence::acquire_existing_mount_lock(&path);

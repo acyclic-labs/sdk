@@ -98,7 +98,7 @@ fn owner_excludes_other_processes_until_it_dies() -> Result<(), Box<dyn std::err
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
         ownership_child(&root)?
             .env("ACYCLIC_CORE_STATE_CHILD_HOLD", "1")
-            .stdout(std::process::Stdio::piped()),
+            .stdout(acyclic_native_runtime::ProcessStdio::piped()),
     )?;
     let output = child.take_stdout().ok_or("owner child stdout missing")?;
     acyclic_test_support::readiness::wait(&mut std::io::BufReader::new(output), "OWNER_READY")?;
@@ -154,7 +154,7 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
         ownership_child(&root)?
             .env("ACYCLIC_CORE_STATE_CHILD_HOLD", "1")
-            .stdout(std::process::Stdio::piped()),
+            .stdout(acyclic_native_runtime::ProcessStdio::piped()),
     )?;
     let output = child.take_stdout().ok_or("owner child stdout missing")?;
     acyclic_test_support::readiness::wait(&mut std::io::BufReader::new(output), "OWNER_READY")?;
