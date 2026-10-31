@@ -187,20 +187,27 @@ pub struct WasmAgentRegistry {
 }
 
 struct Workspace {
+    target: crate::agent::TargetRecord,
     executor: Arc<dyn crate::tool::ToolExecutor>,
     tools: &'static [&'static str],
 }
 
 impl WasmAgentRegistry {
-    /// Retains the opener's admitted workspace executor. Machines hosts pass
-    /// their `MachinesWorkspace` with `["shell"]`; each turn supplies its own
-    /// task authority. Only the declared tools enter model requests or grants.
+    /// Retains the opener's admitted workspace executor as the home `target`.
+    /// Machines hosts pass their `MachinesWorkspace` with `["shell"]`; each
+    /// turn supplies its own task authority. Only the declared tools enter
+    /// model requests or grants.
     pub fn bind_workspace(
         &mut self,
+        target: crate::agent::TargetRecord,
         executor: Arc<dyn crate::tool::ToolExecutor>,
         tools: &'static [&'static str],
     ) {
-        self.workspace = Some(Workspace { executor, tools });
+        self.workspace = Some(Workspace {
+            target,
+            executor,
+            tools,
+        });
     }
 
     /// Installs a production provider without translating its admitted requests,
@@ -228,7 +235,7 @@ impl WasmAgentRegistry {
     /// supplies shell execution to guests and the ordinary agent server.
     #[wasm_bindgen(js_name = bindMachinesWorkspace)]
     pub fn bind_machines_workspace(&mut self, workspace: &WasmMachinesWorkspace) {
-        self.bind_workspace(workspace.executor(), &["shell"]);
+        self.bind_workspace(workspace.target(), workspace.executor(), &["shell"]);
     }
 
     /// Registers one immutable tool revision; turns may call it.

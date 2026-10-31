@@ -123,6 +123,7 @@ impl StockExecution<'_> {
                         crate::tool::RecordedInvocation {
                             invocation: &invocation,
                             metadata: &metadata,
+                            target: None,
                         },
                         request.tools(),
                         self.stock.limits,

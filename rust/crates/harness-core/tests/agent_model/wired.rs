@@ -68,6 +68,14 @@ fn executors_with_scope(
     model: Arc<ScriptedModelProvider>,
     matching_limits: bool,
 ) -> Result<Arc<dyn TurnExecutors>> {
+    executors_with_targets(model, matching_limits, None)
+}
+
+fn executors_with_targets(
+    model: Arc<ScriptedModelProvider>,
+    matching_limits: bool,
+    targets: Option<Arc<dyn acyclic_harness_core::runtime::TargetResolver>>,
+) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new(
         "test".into(),
         "text".into(),
@@ -82,6 +90,7 @@ fn executors_with_scope(
         ..Default::default()
     };
     let bindings = acyclic_harness_core::runtime::Bindings {
+        targets,
         scope: acyclic_harness_core::runtime::RuntimeScope::new(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
             if matching_limits {
@@ -337,6 +346,143 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         let first = request.messages.first().ok_or("empty request")?;
         assert_eq!(first.role, ModelRole::System);
         assert_eq!(first.content, ModelContent::Text("You write code.".into()));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn every_request_retains_the_roster_across_history_and_compaction_boundaries() -> Result {
+    use acyclic_harness_core::runtime::InProcessTargets;
+
+    // The finite window loses turn one's announcement before turn three.
+    // The larger window is the control: retain the original prefix unchanged.
+    for history_turns in [1, 8] {
+        let path = AgentPath::root(&id(31));
+        let stream = Arc::new(MemoryStream::default());
+        let model = Arc::new(
+            ScriptedModelProvider::new((0..6).map(|n| ScriptedTurn::Text(format!("answer {n}"))))
+                .reading_content(),
+        );
+        let targets = Arc::new(InProcessTargets::home(
+            TargetRecord {
+                name: "laptop".into(),
+                owner: "ana".into(),
+                class: TargetClass::Attached,
+                os: "linux".into(),
+                shell: "bash".into(),
+                path_style: PathStyle::Posix,
+                state: TargetState::Online,
+            },
+            acyclic_harness_core::tools::defaults()?
+                .get("shell", None, None)?
+                .ok_or("no shell")?
+                .executor
+                .clone(),
+        )?);
+        let (host, binding) = private(&path).await?;
+        let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+            stream.clone(),
+            host,
+            AuthorityRoot::new(
+                "agents",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "agents".into(),
+                },
+            ),
+            TurnAdmission::LocalRoot,
+            executors_with_targets(model.clone(), true, Some(targets))?,
+            TurnLimits {
+                history_turns,
+                ..LIMITS
+            },
+            Default::default(),
+        ));
+        let mut adoption = adopted(id(31));
+        adoption.volumes = vec![binding];
+        let mut state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+        let mut announced = Vec::new();
+        let mut roster_file = None;
+        for n in 0..6 {
+            let wake = if n == 3 {
+                Wake::Inbox {
+                    sequence: 1,
+                    record: InboxRecord::Context(ContextRequest {
+                        by: super::user(),
+                        id: intent("compact"),
+                        action: ContextAction::Compact { instructions: None },
+                    }),
+                }
+            } else {
+                requested(&format!("r{n}"), &path)
+            };
+            let settled = step(
+                &driver,
+                &path,
+                Some(state),
+                0,
+                wake,
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+            let bytes = settled
+                .outs
+                .iter()
+                .find_map(|out| match out {
+                    Out::Conversation(bytes) => Some(bytes),
+                    _ => None,
+                })
+                .ok_or("turn did not settle")?;
+            let entry = ConversationEntry::decode(bytes)?;
+            announced.push(entry.targets.is_some());
+            if roster_file.is_none() {
+                roster_file = entry.targets.clone();
+            }
+            if let Some(file) = &entry.targets {
+                assert_eq!(
+                    Some(file),
+                    roster_file.as_ref(),
+                    "reuse the immutable roster"
+                );
+            }
+            stream
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    conditions: vec![],
+                    mutations: vec![CommitMutation::Append {
+                        path: path.conversation()?,
+                        records: vec![bytes.clone().into()],
+                    }],
+                    idempotency_key: intent_key("settle-roster", &[&n.to_string()])?,
+                })
+                .await?;
+            state = settled.state;
+        }
+        let requests = model.requests();
+        assert_eq!(requests.len(), 6);
+        let roster_file = roster_file.ok_or("no roster staged")?;
+        for (n, request) in requests.iter().enumerate() {
+            assert_eq!(
+                request
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.file_parts())
+                    .filter(|(file, _)| **file == roster_file)
+                    .count(),
+                1,
+                "request {n}, history_turns={history_turns}"
+            );
+        }
+        // The second request only appends to the first. For the larger window,
+        // turn three also retains that exact prefix, without an extra roster.
+        assert!(requests[1].messages.starts_with(&requests[0].messages));
+        if history_turns == 8 {
+            assert!(requests[2].messages.starts_with(&requests[1].messages));
+            assert_eq!(announced, [true, false, false, false, true, false]);
+        } else {
+            assert_eq!(announced, [true, false, true, false, true, false]);
+        }
     }
     Ok(())
 }

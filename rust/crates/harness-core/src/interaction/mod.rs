@@ -24,7 +24,7 @@ pub use outcome::InteractionOutcome;
 mod resolution;
 pub use resolution::InteractionResolution;
 mod request;
-pub use request::{ApprovalRoute, ApprovalSubject, ChoiceOption, Interaction};
+pub use request::{ApprovalRoute, ApprovalSubject, ApprovalTarget, ChoiceOption, Interaction};
 mod response;
 pub use response::InteractionResponse;
 mod codec;

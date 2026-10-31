@@ -96,6 +96,11 @@ pub struct AgentState {
     /// context starts from, however far behind the tail it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<u64>,
+    /// Digest of the execution-target roster this agent's context last
+    /// announced ([`crate::agent::Roster`]); a context checkpoint clears it,
+    /// so the next turn announces the roster again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roster: Option<[u8; 32]>,
     /// Exact status tail; the agent is its only writer.
     pub status_tail: u64,
     /// Last published phase.
@@ -170,6 +175,8 @@ impl AgentState {
             dropped_before: 0,
             conversation_base: adopted.conversation_tail,
             checkpoint: adopted.checkpoint,
+            // A spawned agent announces its tree's roster in its first turn.
+            roster: None,
             // The creating commit wrote the first status (`Idle`).
             status_tail: 1,
             phase: Phase::Idle,
@@ -314,6 +321,8 @@ impl AgentState {
 pub enum Out {
     /// Append to this agent's conversation.
     Conversation(Vec<u8>),
+    /// The preceding conversation entry announced the roster of this digest.
+    Roster([u8; 32]),
     /// Complete this goal run with the preceding conversation entry.
     GoalCompleted {
         /// Original turn identity, preserved across self-continuations.
@@ -569,7 +578,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     }
     apply_spawns(&mut state, &mut outs, applied, MAX_OPEN_CHILDREN);
     let tails = (state.conversation_tail, state.status_tail);
-    let completion = (state.awaited, state.checkpoint, outs.len());
+    let completion = (state.awaited, state.checkpoint, state.roster, outs.len());
     let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
     let mut bytes = checkpoint::encode(&step.state)?;
     // Check the exact final tails, then retain these same bytes for commit.
@@ -584,7 +593,8 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         state.status_tail = tails.1;
         state.awaited = completion.0;
         state.checkpoint = completion.1;
-        outs.truncate(completion.2);
+        state.roster = completion.2;
+        outs.truncate(completion.3);
         shed(&mut state, &mut outs, OVERSIZED_STATE);
         step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
         bytes = checkpoint::encode(&step.state)?;
@@ -642,7 +652,11 @@ fn finalize_step(
                     .checked_add(1)
                     .ok_or(Error::Record("agent conversation tail overflow"))?;
             }
-            Out::Checkpoint => state.checkpoint = sequence.checked_sub(1),
+            Out::Checkpoint => {
+                state.checkpoint = sequence.checked_sub(1);
+                state.roster = None;
+            }
+            Out::Roster(digest) => state.roster = Some(*digest),
             Out::Send { .. }
             | Out::Archive { .. }
             | Out::Spawn { .. }
@@ -781,7 +795,7 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
-        Out::Archive { .. } | Out::Checkpoint | Out::GoalCompleted { .. } => true,
+        Out::Archive { .. } | Out::Checkpoint | Out::Roster(_) | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes).is_ok(),
     }
 }

@@ -377,6 +377,13 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
     ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
+
+    /// The execution targets `agent`'s `shell` reaches, announced to its
+    /// model whenever they change; `None` binds no targets.
+    fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
+        let _ = agent;
+        None
+    }
 }
 
 /// Bounds of one agent turn.
@@ -758,6 +765,15 @@ fn message_id(turn: OperationId, role: ModelRole) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
+/// Stable message identity of the roster announcement leading `turn`'s input.
+fn roster_id(turn: OperationId) -> uuid::Uuid {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.roster.v1");
+    hasher.update(&turn.into_bytes());
+    let mut bytes = [0; 16];
+    hasher.finalize_xof().fill(&mut bytes);
+    uuid::Uuid::from_bytes(bytes)
+}
+
 /// Stable message identity of the system `prompt`.
 fn prompt_id(prompt: &str) -> uuid::Uuid {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.prompt.v1");
@@ -777,7 +793,11 @@ struct TurnContext<'a> {
     prompt: Option<&'a str>,
     /// The latest checkpoint: its turn and its staged summary.
     checkpoint: Option<(OperationId, FileRef)>,
-    settled: Vec<(OperationId, ModelContent, FileRef)>,
+    /// Each settled turn: its id, the roster it announced, its input and
+    /// its staged output.
+    settled: Vec<(OperationId, Option<FileRef>, ModelContent, FileRef)>,
+    /// Latest roster message in `settled`, indexed while selecting history.
+    roster_at: Option<usize>,
     turn: OperationId,
     input: &'a ModelContent,
     policy: Option<&'a FileRef>,
@@ -810,12 +830,18 @@ impl<'a> TurnContext<'a> {
             None => None,
         };
         // A cancelled checkpoint selects nothing and is no turn.
+        let mut roster_at = None;
         let settled = history
             .into_iter()
             .filter(|entry| entry.input.context().is_none())
-            .map(|entry| {
+            .enumerate()
+            .map(|(at, entry)| {
+                if entry.targets.is_some() {
+                    roster_at = Some(at);
+                }
                 Ok((
                     crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
+                    entry.targets,
                     crate::agent::model_input(&entry.input).map_err(agent_error)?,
                     entry.output,
                 ))
@@ -825,12 +851,22 @@ impl<'a> TurnContext<'a> {
             prompt,
             checkpoint,
             settled,
+            roster_at,
             turn,
             input,
             // A spawned agent runs under the approval policy it inherited,
             // staged on an ancestor's private volume.
             policy: agent.policy.as_ref(),
         })
+    }
+
+    /// Compare the current bytes with the immutable roster actually rendered,
+    /// rather than an announcement outside this history window or checkpoint.
+    fn contains_roster(&self, bytes: &[u8]) -> Result<bool> {
+        match self.roster_at.and_then(|at| self.settled[at].1.as_ref()) {
+            Some(file) => file.descriptor().matches_bytes(bytes, &mut None),
+            None => Ok(false),
+        }
     }
 
     /// Every file the turn can reach, each by its exact version: the files
@@ -841,11 +877,12 @@ impl<'a> TurnContext<'a> {
         self.checkpoint
             .iter()
             .map(|(_, summary)| summary)
-            .chain(
-                self.settled.iter().flat_map(|(_, input, output)| {
-                    input.file_refs().chain(std::iter::once(output))
-                }),
-            )
+            .chain(self.settled.iter().flat_map(|(_, roster, input, output)| {
+                roster
+                    .iter()
+                    .chain(input.file_refs())
+                    .chain(std::iter::once(output))
+            }))
             .chain(self.input.file_refs())
             .chain(self.policy)
     }
@@ -853,13 +890,17 @@ impl<'a> TurnContext<'a> {
     /// The selection: the checkpoint's summary as one assistant message
     /// (none when it is empty), then one user and one assistant message per
     /// settled turn, assistant text read from its staged output through
-    /// `reader`, which holds [`Self::files`]. Without a prompt or history
+    /// `reader`, which holds [`Self::files`]. A turn that announced a roster
+    /// has it as its own user message before its input
+    /// ([`crate::agent::roster_message`]), so the announcement never counts
+    /// against an input's own bounds. Without a prompt, history or roster
     /// there is none.
     async fn select(
         self,
         agent: &AgentState,
         reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
+        roster: Option<&FileRef>,
     ) -> Result<Option<SelectedModelContext>> {
         let Self {
             prompt,
@@ -873,10 +914,10 @@ impl<'a> TurnContext<'a> {
                 .filter(|(_, summary)| !summary.is_empty()),
             None => None,
         };
-        if settled.is_empty() && summary.is_none() && prompt.is_none() {
+        if settled.is_empty() && summary.is_none() && prompt.is_none() && roster.is_none() {
             return Ok(None);
         }
-        let mut messages = Vec::with_capacity(2 * settled.len() + 2);
+        let mut messages = Vec::with_capacity(2 * settled.len() + 3);
         let mut message_ids = Vec::with_capacity(messages.capacity());
         if let Some(prompt) = prompt {
             messages.push(ModelMessage {
@@ -892,7 +933,20 @@ impl<'a> TurnContext<'a> {
             });
             message_ids.push(message_id(checkpoint, ModelRole::Assistant));
         }
-        for (settled, content, output) in settled {
+        let announce = |messages: &mut Vec<ModelMessage>,
+                        message_ids: &mut Vec<uuid::Uuid>,
+                        turn: OperationId,
+                        roster: &FileRef| {
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: crate::agent::roster_message(roster),
+            });
+            message_ids.push(roster_id(turn));
+        };
+        for (settled, announced, content, output) in settled {
+            if let Some(announced) = &announced {
+                announce(&mut messages, &mut message_ids, settled, announced);
+            }
             let text = staged_text(reader, &output).await?;
             messages.push(ModelMessage {
                 role: ModelRole::User,
@@ -904,6 +958,9 @@ impl<'a> TurnContext<'a> {
                 content: ModelContent::Text(text),
             });
             message_ids.push(message_id(settled, ModelRole::Assistant));
+        }
+        if let Some(roster) = roster {
+            announce(&mut messages, &mut message_ids, turn, roster);
         }
         messages.push(ModelMessage {
             role: ModelRole::User,
@@ -977,6 +1034,26 @@ where
             // under the grant above at the manifest's pinned length.
             let input =
                 &crate::agent::expand_attachments(input.clone(), &*bindings.content.reader).await?;
+            // Append a roster only when this rendered history lacks it. Losing
+            // its announcing turn or compacting starts a new base; no retained
+            // message is rewritten. Stage once per distinct roster. A
+            // turn decides it once, when it starts: a resumed turn keeps the
+            // announcement its checkpoint holds, so it sends the request it
+            // started with, and a roster change meanwhile is the next turn's.
+            let roster = match crate::agent::turn_roster(agent).map_err(agent_error)? {
+                Some(kept) => kept,
+                None => match self.executors.roster(agent) {
+                    Some(roster) => {
+                        let (bytes, digest) = roster.canonical().map_err(agent_error)?;
+                        if context.contains_roster(&bytes)? {
+                            None
+                        } else {
+                            Some((files.stage_roster(digest, &bytes).await?, digest))
+                        }
+                    }
+                    None => None,
+                },
+            };
             let segment = crate::agent::turn_segment(agent).map_err(agent_error)?;
             let effects = Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),
@@ -1020,7 +1097,12 @@ where
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
             let selected = context
-                .select(agent, &*bindings.content.reader, input)
+                .select(
+                    agent,
+                    &*bindings.content.reader,
+                    input,
+                    roster.as_ref().map(|(file, _)| file),
+                )
                 .await?;
             let journal = match &selected {
                 Some(selected) => journal.with_bound_selection(selected.clone()),
@@ -1052,6 +1134,7 @@ where
                 goal,
                 outputs,
                 input: Some(input.clone()),
+                roster,
             })
         })
     }

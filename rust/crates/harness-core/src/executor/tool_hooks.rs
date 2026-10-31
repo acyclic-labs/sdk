@@ -77,9 +77,11 @@ impl StockExecution<'_> {
         let (task, _) = self
             .context
             .ok_or_else(|| Error::Unauthorized("tool hook has no issued task context".into()))?;
-        let executor = task.harness.workspace_tools.as_ref().ok_or_else(|| {
-            Error::Unsupported("tool hook workspace execution is not bound".into())
-        })?;
+        // Hooks run on the home target. One it cannot reach is the target's
+        // refusal ([`Error::Target`]), which the caller settles as the call's
+        // result like any other refusal; it never becomes a turn failure.
+        let home = task.harness.target(None)?;
+        let executor = &home.executor;
         let phase = crate::hooks::effects::phase_operation(invocation.operation_id, event);
         let mut context =
             crate::runtime::ToolContext::new(Arc::clone(task), phase, &invocation.call_id)?;
@@ -110,7 +112,7 @@ impl StockExecution<'_> {
         operation: OperationId,
         invocation: &ToolInvocation,
         tool: &crate::tool::Tool,
-        prompt: String,
+        (prompt, target): (String, Option<&crate::agent::TargetRecord>),
         started: bool,
     ) -> Result<Option<tool_execution::PolicyStop>> {
         let hooks =
@@ -126,7 +128,7 @@ impl StockExecution<'_> {
             invocation,
             (prompt, None),
             None,
-            crate::interaction::ApprovalRoute::Human,
+            (crate::interaction::ApprovalRoute::Human, target),
         )?;
         self.settle_approval(journal, operation, approval, &request, invocation, started)
             .await
@@ -170,9 +172,11 @@ impl StockExecution<'_> {
         let (task, _) = self
             .context
             .ok_or_else(|| Error::Unauthorized("stop hook has no issued task context".into()))?;
-        let executor = task.harness.workspace_tools.as_ref().ok_or_else(|| {
-            Error::Unsupported("stop hook workspace execution is not bound".into())
-        })?;
+        let home = task
+            .harness
+            .target(None)
+            .map_err(|_| Error::Unsupported("stop hook workspace execution is not bound".into()))?;
+        let executor = &home.executor;
         let mut context = crate::runtime::ToolContext::new(
             Arc::clone(task),
             step_operation(operation, step),

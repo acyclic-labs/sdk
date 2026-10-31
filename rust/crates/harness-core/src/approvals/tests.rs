@@ -6,7 +6,7 @@ proptest! {
     #[test]
     fn approval_rules_deny_wins_in_either_order(allow_first in any::<bool>(), path in "[a-z]{1,32}") {
         let mut rules = [RuleVerdict::Allow, RuleVerdict::Deny].map(|verdict| ApprovalRule {
-            tool: Some("write".into()), arguments: None, selectors: vec![], verdict,
+            tool: Some("write".into()), arguments: None, selectors: vec![], target: None, verdict,
         });
         if allow_first { rules.reverse(); }
         prop_assert_eq!(ApprovalRule::evaluate(&rules, RuleVerdict::Ask, "write", &serde_json::json!({"path":path})), RuleVerdict::Deny);
@@ -20,6 +20,7 @@ fn approval_rules_bind_exact_arguments_and_policy_order() -> Result<()> {
         tool: Some("write".into()),
         arguments: Some(serde_json::json!({"path":"approved","text":"one"})),
         selectors: vec![],
+        target: None,
         verdict: RuleVerdict::Allow,
     };
     assert!(rule.matches(
@@ -101,6 +102,7 @@ fn approval_rules_explicit_wildcards_govern_opaque_subjects() {
         tool: Some("write".into()),
         arguments: None,
         selectors: vec![],
+        target: None,
         verdict: RuleVerdict::Allow,
     };
     for fallback in [RuleVerdict::Allow, RuleVerdict::Deny, RuleVerdict::Ask] {
@@ -115,6 +117,7 @@ fn approval_rules_explicit_wildcards_govern_opaque_subjects() {
         tool: None,
         arguments: None,
         selectors: vec![],
+        target: None,
         verdict: RuleVerdict::Deny,
     };
     assert_eq!(
@@ -125,10 +128,64 @@ fn approval_rules_explicit_wildcards_govern_opaque_subjects() {
         tool: Some("write".into()),
         arguments: None,
         selectors: vec![],
+        target: None,
         verdict: RuleVerdict::Deny,
     };
     assert_eq!(
         ApprovalRule::evaluate_subject(&[selected_deny], RuleVerdict::Allow, &opaque),
+        RuleVerdict::Allow
+    );
+}
+
+#[test]
+fn approval_rules_match_the_resolved_device_and_owner() {
+    let subject = |target: Option<(&str, &str)>| crate::interaction::ApprovalSubject::Tool {
+        route: crate::interaction::ApprovalRoute::Policy,
+        tool: "shell".into(),
+        call_id: "call".into(),
+        arguments: serde_json::json!({"command": "make", "target": "user:bo"}),
+        target: target.map(|(device, owner)| crate::interaction::ApprovalTarget {
+            device: device.into(),
+            owner: owner.into(),
+        }),
+    };
+    let deny_owner = ApprovalRule {
+        tool: None,
+        arguments: None,
+        selectors: vec![],
+        target: Some(super::TargetSelector {
+            device: None,
+            owner: Some("bo".into()),
+        }),
+        verdict: RuleVerdict::Deny,
+    };
+    let rules = std::slice::from_ref(&deny_owner);
+    let verdict =
+        |target| ApprovalRule::evaluate_subject(rules, RuleVerdict::Allow, &subject(target));
+    // The resolved owner decides, whatever alias the arguments used.
+    assert_eq!(verdict(Some(("desk", "bo"))), RuleVerdict::Deny);
+    // Negative controls: another owner, or no resolved target, is not selected.
+    assert_eq!(verdict(Some(("desk", "ana"))), RuleVerdict::Allow);
+    assert_eq!(verdict(None), RuleVerdict::Allow);
+    let device = ApprovalRule {
+        target: Some(super::TargetSelector {
+            device: Some("desk".into()),
+            owner: Some("bo".into()),
+        }),
+        ..deny_owner.clone()
+    };
+    let rules = std::slice::from_ref(&device);
+    let verdict =
+        |target| ApprovalRule::evaluate_subject(rules, RuleVerdict::Allow, &subject(target));
+    assert_eq!(verdict(Some(("desk", "bo"))), RuleVerdict::Deny);
+    assert_eq!(verdict(Some(("laptop", "bo"))), RuleVerdict::Allow);
+    // A target rule never matches a sealed action.
+    assert_eq!(
+        ApprovalRule::evaluate_subject(
+            rules,
+            RuleVerdict::Allow,
+            &crate::interaction::ApprovalSubject::Opaque {}
+        ),
         RuleVerdict::Allow
     );
 }

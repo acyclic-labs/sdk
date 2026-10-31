@@ -3,7 +3,7 @@
 //! each backend without a per-backend limit.
 use crate::{
     Error, Result,
-    runtime::{RuntimeScope, ToolContext},
+    runtime::{RuntimeScope, Target, ToolContext},
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture;
@@ -13,22 +13,58 @@ pub(super) fn executor(name: &'static str) -> Arc<dyn ToolExecutor> {
     Arc::new(WorkspaceExecutor { name })
 }
 
-fn workspace<'a>(
-    context: &'a ToolContext,
+/// The target this call runs on ([`crate::runtime::call_target`]).
+fn target(
+    context: &ToolContext,
+    invocation: &ToolInvocation,
     work: crate::NativeWork<'_>,
-) -> Result<&'a Arc<dyn ToolExecutor>> {
-    context
-        .task()
-        .harness
-        .workspace_tools
-        .as_ref()
-        .ok_or_else(|| {
-            boundary(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "workspace tools are not bound",
-            )
-        })
+) -> Result<Arc<Target>> {
+    if let Some(target) = &context.execution_target {
+        return Ok(Arc::clone(target));
+    }
+    let unbound = || {
+        boundary(
+            work,
+            crate::wire::ErrorCode::Unsupported,
+            "workspace tools are not bound",
+        )
+    };
+    let targets = context.task().harness.targets().ok_or_else(unbound)?;
+    crate::runtime::call_target(&**targets, invocation).ok_or_else(unbound)?
+}
+
+/// Every shell result names the target and command language it ran under.
+/// Also returns the retained bytes the result grew by, which a native
+/// caller charges to the result's allocation.
+fn echo(name: &str, target: &Target, mut result: ToolResult) -> Result<(ToolResult, u64)> {
+    let mut grown = 0u64;
+    if name == super::shell::PLATFORM.name
+        && let serde_json::Value::Object(fields) = &mut result.value
+    {
+        for (key, value) in [
+            ("target", target.record.name.clone()),
+            ("shell", target.record.shell.clone()),
+        ] {
+            let bytes = crate::executor::json::json_object_insert(fields, key, value.into())?;
+            grown = grown
+                .checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("shell result size overflows".into()))?;
+        }
+    }
+    Ok((result, grown))
+}
+
+/// [`echo`] on a native result, its growth charged to `allocation`.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn echo_charged(
+    name: &str,
+    target: &Target,
+    result: ToolResult,
+    allocation: &mut acyclic_fs::NativeAllocation,
+) -> Result<ToolResult> {
+    let (result, grown) = echo(name, target, result)?;
+    allocation.grow(grown)?;
+    Ok(result)
 }
 
 struct WorkspaceExecutor {
@@ -60,7 +96,15 @@ impl ToolExecutor for WorkspaceExecutor {
                 "workspace tool call identity changed",
             ));
         }
-        workspace(context, work)?.authorize(scope, Some(context), invocation, work)
+        match target(context, invocation, work) {
+            Ok(target) => target
+                .executor
+                .authorize(scope, Some(context), invocation, work),
+            // A target that cannot take the call is no authorization failure:
+            // the call settles with that refusal and the run continues.
+            Err(Error::Target(_)) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn execute<'a>(
@@ -77,13 +121,13 @@ impl ToolExecutor for WorkspaceExecutor {
                 )
             })?;
             self.authorize(None, Some(&context), &invocation, None)?;
-            let executor = workspace(&context, None)?.clone();
+            let target = target(&context, &invocation, None)?;
             let limits = super::bounds::limits(&context);
             if let Err(error) = super::bounds::operands(self.name, &invocation.arguments, limits) {
                 return Ok(super::rejected_input(error));
             }
-            let result = executor.execute(invocation, Some(context)).await?;
-            super::bounds::result(self.name, result, limits.0)
+            let result = target.executor.execute(invocation, Some(context)).await?;
+            super::bounds::result(self.name, echo(self.name, &target, result)?.0, limits.0)
         })
     }
 
@@ -100,13 +144,19 @@ impl ToolExecutor for WorkspaceExecutor {
                     "workspace tool requires its task context",
                 )
             })?;
+            if context.execution_target.is_none() {
+                return Err(Error::Indeterminate(invocation.operation_id));
+            }
             self.authorize(None, Some(&context), &invocation, None)?;
-            let executor = workspace(&context, None)?.clone();
+            let target = target(&context, &invocation, None)?;
             let maximum = super::bounds::limits(&context).0;
-            executor
+            target
+                .executor
                 .reconcile(invocation, Some(context))
                 .await?
-                .map(|result| super::bounds::result(self.name, result, maximum))
+                .map(|result| {
+                    super::bounds::result(self.name, echo(self.name, &target, result)?.0, maximum)
+                })
                 .transpose()
         })
     }
@@ -128,7 +178,16 @@ impl ToolExecutor for WorkspaceExecutor {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        workspace(context, Some(work))?.execute_with_native_context(context, invocation, work)
+        let target = target(context, invocation, Some(work))?;
+        let name = self.name;
+        crate::NativeFutureBundle::new(work, move || async move {
+            let (result, mut allocation) = target
+                .executor
+                .execute_with_native_context(context, invocation, work)?
+                .await?;
+            let result = echo_charged(name, &target, result, &mut allocation)?;
+            Ok((result, allocation))
+        })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -139,8 +198,22 @@ impl ToolExecutor for WorkspaceExecutor {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
     {
+        if context.execution_target.is_none() {
+            return Err(Error::Indeterminate(invocation.operation_id));
+        }
         self.authorize(None, Some(context), invocation, Some(work))?;
-        workspace(context, Some(work))?.reconcile_with_native_context(context, invocation, work)
+        let target = target(context, invocation, Some(work))?;
+        let name = self.name;
+        crate::NativeFutureBundle::new(work, move || async move {
+            let (result, mut allocation) = target
+                .executor
+                .reconcile_with_native_context(context, invocation, work)?
+                .await?;
+            let result = result
+                .map(|result| echo_charged(name, &target, result, &mut allocation))
+                .transpose()?;
+            Ok((result, allocation))
+        })
     }
 }
 

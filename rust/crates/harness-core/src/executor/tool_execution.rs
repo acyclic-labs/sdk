@@ -80,9 +80,30 @@ impl StockExecution<'_> {
             ..self.stock.limits
         };
         invocation.validate_recorded(metadata, invocation_limits, self.io)?;
+        let (_, records) = self
+            .tool_records(journal, operation_id, step, &invocation.call_id)
+            .await?;
+        let recorded = RecordedCall::classify(&records)
+            .map_err(|reason| stock_boundary(self.io, Invalid, reason))?;
+        // Keep the original record and its decode custody through replay.
+        let original = match recorded.started() {
+            Some(reference) => Some(
+                load_json::<crate::tool::RecordedInvocation>(journal, reference, self.io).await?,
+            ),
+            None => None,
+        };
+        let target = if matches!(recorded, RecordedCall::Started(_) | RecordedCall::Unstarted) {
+            self.call_target(&invocation, original.as_ref().map(|record| &record.0))?
+        } else {
+            Ok(None)
+        };
         let admitted = match self.stock.tools.get(&invocation.name, None, self.io)? {
             Some(tool) => self
-                .authorize_tool_invocation(tool, &invocation)?
+                .authorize_tool_invocation(
+                    tool,
+                    &invocation,
+                    target.as_ref().ok().and_then(|target| target.clone()),
+                )?
                 .map(|(context, capability)| (tool, context, capability)),
             None => Err(ToolCallRejection::Unavailable),
         };
@@ -98,14 +119,10 @@ impl StockExecution<'_> {
         if let Some(context) = &mut context {
             context.model_turn = (operation_id, step);
         }
-        let (_, records) = self
-            .tool_records(journal, operation_id, step, &invocation.call_id)
-            .await?;
-        let recorded = RecordedCall::classify(&records)
-            .map_err(|reason| stock_boundary(self.io, Invalid, reason))?;
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-        let (invocation, mut pre_hook) = {
-            let mut output = self
+        let (invocation, mut pre_hook, target) = {
+            let mut target = target;
+            let mut output = match self
                 .tool_hook(
                     operation_id,
                     crate::hooks::HookSite::BeforeTool,
@@ -113,14 +130,43 @@ impl StockExecution<'_> {
                     None,
                     recorded.started().is_some(),
                 )
-                .await?;
+                .await
+            {
+                Ok(output) => output,
+                // A home target that cannot run the hooks refuses the call
+                // before anything ran, exactly as an unavailable call target
+                // does below.
+                Err(refusal @ Error::Target(_)) if recorded.started().is_none() => {
+                    let content = self
+                        .settle_tool_refusal(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation,
+                            ToolCallRejection::Failed(refusal),
+                        )
+                        .await?;
+                    return self.push_tool_result(&invocation, content, prior_messages);
+                }
+                // A started call whose hook target went away may have run.
+                Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
+                Err(error) => return Err(error),
+            };
             let mut effective = invocation;
             if !output.blocks()
                 && let Some(arguments) = output.updated_input.take()
             {
                 effective.arguments = arguments;
                 effective.validate_recorded(metadata, invocation_limits, self.io)?;
-                match self.authorize_tool_invocation(tool, &effective)? {
+                if matches!(recorded, RecordedCall::Started(_) | RecordedCall::Unstarted) {
+                    target =
+                        self.call_target(&effective, original.as_ref().map(|record| &record.0))?;
+                }
+                match self.authorize_tool_invocation(
+                    tool,
+                    &effective,
+                    target.as_ref().ok().and_then(|target| target.clone()),
+                )? {
                     Ok((authorized, _)) => context = authorized,
                     Err(rejection) => {
                         let content = self
@@ -134,11 +180,9 @@ impl StockExecution<'_> {
                     context.model_turn = (operation_id, step);
                 }
             }
-            (effective, output)
+            (effective, output, target)
         };
-        if let Some(reference) = recorded.started() {
-            let recorded =
-                load_json::<crate::tool::RecordedInvocation>(journal, reference, self.io).await?;
+        if let Some(recorded) = &original {
             if recorded.0.invocation != invocation || &recorded.0.metadata != metadata {
                 return Err(stock_boundary(
                     self.io,
@@ -197,10 +241,39 @@ impl StockExecution<'_> {
             }
             pending @ (RecordedCall::Started(_) | RecordedCall::Unstarted) => {
                 let started = matches!(pending, RecordedCall::Started(_));
+                // The target is resolved before any approval, so the subject
+                // names the device and owner the command will run on, and a
+                // target that cannot take the call is refused without asking.
+                let target = match target {
+                    Ok(target) => target,
+                    Err(refusal @ Error::Target(_)) if !started => {
+                        let content = self
+                            .settle_tool_refusal(
+                                journal,
+                                operation_id,
+                                step,
+                                &invocation,
+                                ToolCallRejection::Failed(refusal),
+                            )
+                            .await?;
+                        return self.push_tool_result(&invocation, content, prior_messages);
+                    }
+                    // A dispatched command whose target went away may have run.
+                    Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
+                    Err(error) => return Err(error),
+                };
+                let target = target.as_ref().map(|target| &target.record);
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(prompt) = hook_approval
                     && let Some(stop) = self
-                        .hook_approval(journal, operation_id, &invocation, tool, prompt, started)
+                        .hook_approval(
+                            journal,
+                            operation_id,
+                            &invocation,
+                            tool,
+                            (prompt, target),
+                            started,
+                        )
                         .await?
                 {
                     match stop {
@@ -220,7 +293,13 @@ impl StockExecution<'_> {
                     }
                 }
                 match self
-                    .require_tool_policy(journal, operation_id, &invocation, tool, started)
+                    .require_tool_policy(
+                        journal,
+                        operation_id,
+                        &invocation,
+                        (tool, target),
+                        started,
+                    )
                     .await?
                 {
                     Some(PolicyStop::Progress(progress)) => return Ok(progress),
@@ -245,6 +324,13 @@ impl StockExecution<'_> {
                         crate::tool::RecordedInvocation {
                             invocation: &invocation,
                             metadata,
+                            target: if started {
+                                None // Reconciliation does not publish another start.
+                            } else {
+                                target
+                                    .map(|target| stock_string_copy(&target.name, self.io))
+                                    .transpose()?
+                            },
                         },
                         tool,
                         &mut context,
@@ -338,10 +424,45 @@ impl StockExecution<'_> {
         .await
     }
 
+    /// The target a workspace call runs on, `None` for any other call or
+    /// a composition binding no targets.
+    fn call_target(
+        &self,
+        invocation: &ToolInvocation,
+        original: Option<&crate::tool::RecordedInvocation>,
+    ) -> Result<Result<Option<Arc<crate::runtime::Target>>>> {
+        let Some(targets) = self.context.and_then(|(task, _)| task.harness.targets()) else {
+            return if original.is_some_and(|original| original.target.is_some()) {
+                Err(Error::Indeterminate(invocation.operation_id))
+            } else {
+                Ok(Ok(None))
+            };
+        };
+        if let Some(original) = original {
+            let Some(name) = original.target.as_deref() else {
+                // A workspace start must contain an exact device, never an alias.
+                return if crate::runtime::is_workspace_call(invocation) {
+                    Err(Error::Indeterminate(invocation.operation_id))
+                } else {
+                    Ok(Ok(None))
+                };
+            };
+            let target = targets
+                .resolve(Some(name))
+                .map_err(|_| Error::Indeterminate(invocation.operation_id))?;
+            if target.record.name != name || name.starts_with(crate::agent::USER_PREFIX) {
+                return Err(Error::Indeterminate(invocation.operation_id));
+            }
+            return Ok(Ok(Some(target)));
+        }
+        Ok(crate::runtime::call_target(&**targets, invocation).transpose())
+    }
+
     fn authorize_tool_invocation(
         &self,
         tool: &crate::tool::Tool,
         invocation: &ToolInvocation,
+        target: Option<Arc<crate::runtime::Target>>,
     ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
     {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -366,7 +487,10 @@ impl StockExecution<'_> {
         })? {
             return Ok(Err(ToolCallRejection::InvalidInput(violation)));
         }
-        let context = self.invocation_context(invocation)?;
+        let mut context = self.invocation_context(invocation)?;
+        if let Some(context) = &mut context {
+            context.execution_target = target;
+        }
         match stock_authorize_tool(
             tool,
             context.as_ref(),
@@ -387,7 +511,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
         invocation: &ToolInvocation,
-        tool: &crate::tool::Tool,
+        (tool, target): (&crate::tool::Tool, Option<&crate::agent::TargetRecord>),
         started: bool,
     ) -> Result<Option<PolicyStop>> {
         // Every call, ordinary or native, passes the one pinned policy. A
@@ -455,7 +579,7 @@ impl StockExecution<'_> {
                     invocation,
                     (prompt, custody),
                     self.native_work(),
-                    crate::interaction::ApprovalRoute::Policy,
+                    (crate::interaction::ApprovalRoute::Policy, target),
                 )?;
                 if let Some(progress) = self
                     .settle_approval(

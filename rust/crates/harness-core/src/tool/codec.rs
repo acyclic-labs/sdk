@@ -131,6 +131,7 @@ pub(crate) const TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES: u64 = {
         "RecordedInvocation",
         "invocation",
         "metadata",
+        "target",
         "operation_id",
         "call_id",
         "name",

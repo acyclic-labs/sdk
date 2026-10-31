@@ -60,6 +60,7 @@ fn request(route: ApprovalRoute) -> Vec<u8> {
                 tool: "write".into(),
                 call_id: "call".into(),
                 arguments: serde_json::json!({"path":"approved"}),
+                target: None,
             },
         )
         .unwrap(),

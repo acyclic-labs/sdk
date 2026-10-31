@@ -68,6 +68,11 @@ impl MachinesWorkspace {
         })
     }
 
+    /// The shell contract its commands run under.
+    pub const fn shell_spec(&self) -> &'static acyclic_host_platform::shell::ShellSpec {
+        self.shell
+    }
+
     /// The exact source-admitted selection retained by this workspace binding.
     pub fn selected_volume(&self) -> &VolumeRef {
         &self.volume

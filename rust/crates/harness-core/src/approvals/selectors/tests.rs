@@ -58,6 +58,7 @@ fn approval_selectors_reject_invalid_pointers_and_paths_and_do_not_match_opaque(
                     tool: None,
                     arguments: None,
                     selectors: vec![selector],
+                    target: None,
                     verdict: RuleVerdict::Allow,
                 }],
                 fallback: RuleVerdict::Allow,
@@ -101,6 +102,7 @@ fn approval_selectors_reject_invalid_pointers_and_paths_and_do_not_match_opaque(
         tool: None,
         arguments: None,
         selectors: vec![escaped],
+        target: None,
         verdict: RuleVerdict::Allow,
     };
     assert_eq!(
