@@ -48,4 +48,3 @@ SecretRef import with the current Actor fork and selected-entry fields.
 The Rust and independent Buf pipelines above were run on that source; the
 Rust capture was copied to both Rust descriptor paths. No descriptor bytes
 were combined by hand.
-
