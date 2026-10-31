@@ -85,7 +85,6 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             }
         };
         let written = settle(id, length, put)?;
-        self.published([id]);
         record_write(work, written)?;
         work.check()
     }
@@ -163,73 +162,42 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             }
         };
         result?;
-        self.published(writes.iter().map(|write| write.parts().0));
         work.check()
     }
 }
 
 impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
-    /// Retains `scope` under `root` within the caller's work, before the
-    /// publication's record is written.
+    /// Retains `scope` under the current epoch's root within the caller's
+    /// work, before the publication's record is written.
     ///
-    /// An enumerated closure is retained as listed; the root's earlier
-    /// batches already cover objects a reused proof omits. A closure that
-    /// cannot be enumerated retains every blob staged since this root's last
-    /// such retention, which covers everything this store admitted. Blobs
-    /// stay staged for the root until its retention succeeds, so an
-    /// overlapping publication retains them too rather than trusting one
-    /// that may still fail.
+    /// The closure is retained as listed; a reused proof's parent is live,
+    /// so the epoch already covers the objects it omits.
     pub(super) async fn retain_scope(
         &self,
-        root: acyclic_objects::RootId,
         scope: crate::PublicationScope<'_>,
         work: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         work.check()?;
-        let owed = |staged: &super::Staged| {
-            let from = staged.roots.get(&root).copied().unwrap_or(staged.base);
-            from.max(staged.base)
-        };
-        let (end, count) = match scope {
-            crate::PublicationScope::Closure { objects, .. } => (None, objects.len()),
-            crate::PublicationScope::Everything => {
-                let staged = self.staged();
-                let end = staged.end();
-                (Some(end), end.saturating_sub(owed(&staged)) as usize)
-            }
-        };
-        if count == 0 {
+        if scope.objects.is_empty() {
             return Ok(());
         }
-        let (mut references, custody) = vector::<acyclic_objects::Digest>(count, work)?;
+        // Retaining makes the closure durable in one round.
+        work.charge(WorkCounters {
+            durability_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let root = super::Epoch::root(self.epoch.current());
+        let (mut references, custody) =
+            vector::<acyclic_objects::Digest>(scope.objects.len(), work)?;
         let bytes = (references.capacity() * size_of::<acyclic_objects::Digest>()) as u64;
-        match (scope, end) {
-            (crate::PublicationScope::Everything, Some(end)) => {
-                // This root's own retention may have advanced it, and the
-                // log's base with it, past `end` meanwhile; what it passed
-                // is retained.
-                let staged = self.staged();
-                let from = owed(&staged);
-                if from < end {
-                    let range = (from - staged.base) as usize..(end - staged.base) as usize;
-                    references.extend(staged.digests.range(range).copied());
-                }
-            }
-            (crate::PublicationScope::Closure { objects, .. }, _) => {
-                references.extend(objects.iter().copied().map(blob));
-            }
-            _ => return Err(ObjectStoreError::Corrupt.into()),
-        }
-        if references.is_empty() {
-            return release(work, custody, bytes);
-        }
+        references.extend(scope.objects.iter().copied().map(blob));
         match work {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
                 let original = *original;
                 self.provider
                     .retain_native(
-                        packet((root.clone(), references), custody, original)?,
+                        packet((root, references), custody, original)?,
                         original.runtime_meter(),
                     )
                     .map_err(|error| native_error(error, original))?
@@ -246,9 +214,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 retained.map_err(ObjectStoreError::LogicalObjects)?;
             }
         }
-        if let Some(end) = end {
-            self.staged().retained(&root, end);
-        }
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        self.epoch.hooks.retained().await;
         work.check()
     }
 }

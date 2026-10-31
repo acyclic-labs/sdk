@@ -127,23 +127,19 @@ async fn required_sealing_refuses_every_unprepared_write_before_provider_dispatc
 }
 
 #[tokio::test]
-async fn sealing_preserves_each_registered_roots_retention()
--> Result<(), Box<dyn std::error::Error>> {
+async fn sealing_preserves_the_epoch_roots_retention() -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let provider = Arc::new(acyclic_objects::MemoryObjects::memory());
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let a = acyclic_objects::RootId::new(b"a".to_vec())?;
-    let b = acyclic_objects::RootId::new(b"b".to_vec())?;
-    let first = LogicalObjectStore::new(provider.clone()).with_publication_root(a.clone());
-    let second = first
-        .clone()
-        .with_publication_root(b.clone())
-        .with_sealer(Envelope {
-            lineage: FileId::from_bytes([31; 16]),
-            generation: GenerationId::new(Digest::from_bytes([32; 32])),
-        });
+    // A fresh store retains its publications under epoch 0's root.
+    let epoch =
+        acyclic_objects::RootId::new([b"fs-epoch/".as_slice(), &0_u64.to_be_bytes()].concat())?;
+    let second = LogicalObjectStore::new(provider.clone()).with_sealer(Envelope {
+        lineage: FileId::from_bytes([31; 16]),
+        generation: GenerationId::new(Digest::from_bytes([32; 32])),
+    });
     let mut work = AuthorityWork::native(&original, &cancellation);
     let payload = OwnedBytes::from(vec![42; 1 << 16]);
     let hashed = acyclic_stream::hashed_on_this_thread;
@@ -168,16 +164,15 @@ async fn sealing_preserves_each_registered_roots_retention()
     let before = hashed();
     provider.put(payload.clone(), Vec::new()).await?;
     assert!(hashed() - before >= payload.len() as u64);
-    let _first = first
+    let _second = second
         .flush_before_publish(
-            acyclic_fs::PublicationScope::Everything,
-            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            acyclic_fs::PublicationScope {
+                objects: &[id],
+                proven_at: 0,
+            },
+            &mut work,
         )
         .await?;
-    let _second = second
-        .flush_before_publish(acyclic_fs::PublicationScope::Everything, &mut work)
-        .await?;
-    provider.release(&a).await?;
     for _ in 0..3 {
         provider.collect().await?;
     }
@@ -188,8 +183,8 @@ async fn sealing_preserves_each_registered_roots_retention()
             .bytes,
         payload
     );
-    // The second root is the only remaining retention of the physical locator.
-    provider.release(&b).await?;
+    // The epoch root is the only retention of the physical locator.
+    provider.release(&epoch).await?;
     for _ in 0..3 {
         provider.collect().await?;
     }
@@ -319,7 +314,7 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
     let historical: GenerationId = serde_json::from_slice(&retained_reference)?;
     let recovered = historical.object_id();
     let ids = [recovered];
-    let scope = acyclic_fs::PublicationScope::Closure {
+    let scope = acyclic_fs::PublicationScope {
         objects: &ids,
         proven_at: 0,
     };

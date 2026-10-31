@@ -241,13 +241,9 @@ impl<P: PublicationOwner> Preparation<'_, P> {
             )
             .await?;
         }
-        let scope = if self.cache.is_some() && objects.collection().is_none() {
-            crate::PublicationScope::Everything
-        } else {
-            crate::PublicationScope::Closure {
-                objects: &prepared.authentication.proof.objects,
-                proven_at: prepared.proven_at,
-            }
+        let scope = crate::PublicationScope {
+            objects: &prepared.authentication.proof.objects,
+            proven_at: prepared.proven_at,
         };
         let publication_hold = match accounting {
             #[cfg(not(target_arch = "wasm32"))]

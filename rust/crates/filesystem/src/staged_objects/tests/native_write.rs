@@ -49,7 +49,7 @@ async fn native_flush_caller_cancellation_refuses_before_frame_allocation()
     assert!(matches!(
         store
             .flush_before_publish(
-                PublicationScope::Closure {
+                PublicationScope {
                     objects: &[id],
                     proven_at: store.collection.sweeps()
                 },
@@ -64,7 +64,7 @@ async fn native_flush_caller_cancellation_refuses_before_frame_allocation()
     drop(
         store
             .flush_before_publish(
-                PublicationScope::Closure {
+                PublicationScope {
                     objects: &[id],
                     proven_at: store.collection.sweeps(),
                 },
@@ -128,7 +128,7 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
     let closure = [object_id];
     let hold = store
         .flush_before_publish(
-            PublicationScope::Closure {
+            PublicationScope {
                 objects: &closure,
                 proven_at: store.collection.sweeps(),
             },
@@ -180,7 +180,7 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
     let closure = [id];
     let hold = store
         .flush_before_publish(
-            PublicationScope::Closure {
+            PublicationScope {
                 objects: &closure,
                 proven_at: store.collection.sweeps(),
             },
@@ -260,7 +260,7 @@ async fn native_flush_spilled_read_denial_keeps_private_remainder()
     assert!(
         store
             .flush_before_publish(
-                PublicationScope::Closure {
+                PublicationScope {
                     objects: &closure,
                     proven_at: store.collection.sweeps(),
                 },
@@ -462,7 +462,7 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
     assert!(matches!(
         store
             .flush_before_publish(
-                PublicationScope::Closure {
+                PublicationScope {
                     objects: &closure,
                     proven_at: store.collection.sweeps(),
                 },
@@ -505,7 +505,7 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
         .map_err(|(error, _)| error)?;
     let hold = store
         .flush_before_publish(
-            PublicationScope::Closure {
+            PublicationScope {
                 objects: &closure,
                 proven_at: store.collection.sweeps(),
             },
@@ -526,12 +526,18 @@ async fn only_a_store_with_spilled_objects_holds_a_spill_file()
     let (store, _provider) = open_staged(directory.path()).await?;
     let token = CancellationToken::new();
     assert!(store.spill_io.read().await.is_none());
-    spill_fixture(&store, &token).await?;
+    let (spilled, _) = spill_fixture(&store, &token).await?;
     // The probe sees a spill file while an object is spilled.
     assert!(store.spill_io.read().await.is_some());
     let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
     let result = store
-        .flush_before_publish(PublicationScope::Everything, &mut work)
+        .flush_before_publish(
+            PublicationScope {
+                objects: &[spilled],
+                proven_at: 0,
+            },
+            &mut work,
+        )
         .await;
     work.receipt(result)?;
     assert_eq!(store.index().spilled_objects, 0);

@@ -70,7 +70,7 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
     store.put_hashed(root, &mut work).await?;
     let hold = store
         .flush_before_publish(
-            PublicationScope::Closure {
+            PublicationScope {
                 objects: &[root_id, table_id, metadata_id, tree_id],
                 proven_at: 0,
             },

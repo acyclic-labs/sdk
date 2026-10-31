@@ -158,7 +158,7 @@ fn run(
                 let result = match mode {
                     Mode::Staged | Mode::ExtraFlush => store
                         .flush_before_publish(
-                            PublicationScope::Closure { objects: &ids, proven_at: 0 },
+                            PublicationScope { objects: &ids, proven_at: 0 },
                             &mut work,
                         )
                         .await
@@ -169,7 +169,7 @@ fn run(
                                 Ok(()) => store
                                     .inner
                                     .flush_before_publish(
-                                        PublicationScope::Closure { objects: &ids, proven_at: 0 },
+                                        PublicationScope { objects: &ids, proven_at: 0 },
                                         &mut work,
                                     )
                                     .await
@@ -188,7 +188,7 @@ fn run(
                                 result = store
                                     .inner
                                     .flush_before_publish(
-                                        PublicationScope::Closure {
+                                        PublicationScope {
                                             objects: std::slice::from_ref(&write.object_id),
                                             proven_at: 0,
                                         },

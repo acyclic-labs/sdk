@@ -363,7 +363,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<crate::PublicationHold, FsError> {
         self.flush_publication(
-            crate::PublicationScope::Closure {
+            crate::PublicationScope {
                 objects: &[parent],
                 proven_at: self.inner.objects.collection_sweeps(),
             },

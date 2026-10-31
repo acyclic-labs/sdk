@@ -24,6 +24,21 @@ pub(super) fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLi
     }
 }
 
+/// Stops a collection after `step`, as a crash there would.
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+fn crash(_epoch: &crate::logical_objects::Epoch, _step: Step) -> Result<(), FsError> {
+    #[cfg(test)]
+    if _epoch.hooks.crashes(_step) {
+        return Err(FsError::Object(ObjectStoreError::Rejected(
+            "crashed".to_owned(),
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+use crate::logical_objects::epoch::Step;
+
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
     match error {
@@ -37,16 +52,75 @@ pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Reclaims every stored object nothing live reaches, while the root
+    /// stays open for publications.
+    ///
+    /// A first pass sweeps what no epoch retains. Only when that finds
+    /// unreachable objects an epoch still retains does a second pass open the
+    /// next epoch: a quiet account's collection writes nothing.
     pub async fn collect_local_garbage(
         &self,
         core_state: Option<&crate::LocalCoreStateStore>,
         cancellation: &CancellationToken,
     ) -> Result<LocalGarbageCollection, FsError> {
+        let (first, retained) = self
+            .collect_local_pass(core_state, false, cancellation)
+            .await?;
+        if retained == 0 {
+            return Ok(first);
+        }
+        let (second, _) = self
+            .collect_local_pass(core_state, true, cancellation)
+            .await?;
+        Ok(LocalGarbageCollection {
+            examined: second.examined,
+            removed: first.removed.saturating_add(second.removed),
+        })
+    }
+
+    /// One mark and sweep. With `advance`, it opens the next epoch once no
+    /// publication is in flight, retains everything marked under it and
+    /// releases the earlier epochs before sweeping. Returns how many
+    /// unreachable objects some root still retains.
+    ///
+    /// Opening an epoch costs one retained index key per live object; a
+    /// collection pays it only when there is retained garbage to reclaim.
+    pub(crate) async fn collect_local_pass(
+        &self,
+        core_state: Option<&crate::LocalCoreStateStore>,
+        advance: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<(LocalGarbageCollection, u64), FsError> {
         (async move {
             let collection = Arc::clone(self.inner.objects.collection().ok_or(FsError::Object(
                 ObjectStoreError::Rejected("the local object store does not collect".to_owned()),
             ))?);
-            let collecting = collection.begin().await;
+            // Before the epoch is read: a concurrent collection never
+            // persists or switches an epoch computed from a stale one.
+            let mut running = collection.run().await;
+            let logical = self.inner.objects.inner().inner();
+            let epoch = Arc::clone(logical.epoch());
+            let previous = epoch.current();
+            let next = previous
+                .checked_add(1)
+                .ok_or(FsError::Work(WorkError::Overflow))?;
+            if advance {
+                // A restart resumes `next` before anything retains under it.
+                running = epoch
+                    .persist(next, running, self.clone())
+                    .await
+                    .map_err(FsError::LocalRoot)?;
+                crash(&epoch, Step::Persisted)?;
+            }
+            let collecting = collection
+                .begin_then(running, || {
+                    if advance {
+                        epoch.switch(next);
+                    }
+                })
+                .await;
+            if advance {
+                crash(&epoch, Step::Switched)?;
+            }
             let candidates = self.local_object_candidates(cancellation).await?;
             let mut marker = crate::kernel::Marker::new(&self.inner.objects, cancellation);
             let shadow_limits = self
@@ -113,15 +187,83 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .iter()
                 .map(|object| object.digest)
                 .collect::<std::collections::HashSet<_>>();
-            let unmarked = candidates
+            // A marked object that is not stored is still private to its
+            // holder; the hold protects it until its publication retains it.
+            let (live, unmarked) = candidates
                 .into_iter()
-                .filter(|digest| !marked.contains(digest))
-                .collect::<Vec<_>>();
+                .partition::<Vec<_>, _>(|digest| marked.contains(digest));
             drop(marker);
+            if advance {
+                self.retain_marked(logical.provider(), next, live, cancellation)
+                    .await?;
+                crash(&epoch, Step::Retained)?;
+                // Every epoch an interrupted collection left behind, then `previous`.
+                for released in epoch.unreleased()..next {
+                    cancellation.check()?;
+                    logical
+                        .provider()
+                        .release(&crate::logical_objects::Epoch::root(released))
+                        .await
+                        .map_err(|error| {
+                            FsError::Object(ObjectStoreError::LogicalObjects(error))
+                        })?;
+                }
+                epoch.released_before(next);
+                #[cfg(test)]
+                epoch.hooks.released.notify_one();
+                crash(&epoch, Step::Released)?;
+            }
             self.sweep_local_objects(&collecting, unmarked, cancellation)
                 .await
         })
         .await
+    }
+
+    /// The epoch this root's publications retain under.
+    #[cfg(test)]
+    pub(crate) fn local_epoch(&self) -> Arc<crate::logical_objects::Epoch> {
+        Arc::clone(self.inner.objects.inner().inner().epoch())
+    }
+
+    /// The account every volume of this root stores its blobs in.
+    #[cfg(test)]
+    pub(crate) fn local_account(&self) -> Arc<acyclic_objects::LocalObjects> {
+        Arc::clone(self.inner.objects.inner().inner().provider())
+    }
+
+    /// This root's collection state.
+    #[cfg(test)]
+    pub(crate) fn local_collection(&self) -> Arc<crate::collection::Collection> {
+        Arc::clone(
+            self.inner
+                .objects
+                .collection()
+                .expect("a local root collects"),
+        )
+    }
+
+    /// Retains the stored live objects under epoch `next`, one bounded batch at a time.
+    async fn retain_marked(
+        &self,
+        provider: &Arc<acyclic_objects::LocalObjects>,
+        next: u64,
+        live: Vec<crate::Digest>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        const BATCH: usize = 4096;
+        let root = crate::logical_objects::Epoch::root(next);
+        let live = live
+            .into_iter()
+            .map(|digest| acyclic_objects::Digest::from_bytes(digest.into_bytes()))
+            .collect::<Vec<_>>();
+        for batch in live.chunks(BATCH) {
+            cancellation.check()?;
+            provider
+                .retain(&root, batch.to_vec())
+                .await
+                .map_err(|error| FsError::Object(ObjectStoreError::LogicalObjects(error)))?;
+        }
+        Ok(())
     }
     /// Every stored blob digest.
     pub(super) async fn local_object_candidates(
@@ -148,36 +290,57 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             }
         }
     }
-    /// Deletes `unmarked` in batches, each under the collection gate.
+    /// Deletes `unmarked` in batches, each under the collection gate, in
+    /// the order [`crate::collection::Worklist`] sets: a dead graph of any
+    /// depth goes in one pass. Returns how many objects a root still retains.
     pub(super) async fn sweep_local_objects(
         &self,
         collecting: &crate::collection::Collecting,
         unmarked: Vec<crate::Digest>,
         cancellation: &CancellationToken,
-    ) -> Result<LocalGarbageCollection, FsError> {
+    ) -> Result<(LocalGarbageCollection, u64), FsError> {
         const BATCH: usize = 256;
         let provider = self.inner.objects.inner().inner().provider();
+        let object_error = |error| FsError::Object(ObjectStoreError::LogicalObjects(error));
         let examined = u64::try_from(unmarked.len()).unwrap_or(u64::MAX);
-        let unmarked = referrers_first(provider.as_ref(), unmarked, cancellation).await?;
+
         let mut removed = 0_u64;
-        for batch in unmarked.chunks(BATCH) {
+        let mut work = crate::collection::Worklist::new(unmarked);
+        loop {
+            let batch = work.next(BATCH);
+            if batch.is_empty() {
+                let retained = u64::try_from(work.retained()).unwrap_or(u64::MAX);
+                return Ok((LocalGarbageCollection { examined, removed }, retained));
+            }
             cancellation.check()?;
-            let (_gate, sweepable) = collecting.sweepable(batch.to_vec()).await;
+            let (_gate, sweepable) = collecting.sweepable(batch).await;
             for digest in sweepable {
+                let object = acyclic_objects::Digest::from_bytes(digest.into_bytes());
+                // The references a deletion releases, read while it still exists.
+                let children = match provider.head(object).await {
+                    Ok(head) => head.references,
+                    Err(error) if error.code == acyclic_objects::wire::ErrorCode::NotFound => {
+                        continue;
+                    }
+                    Err(error) => return Err(object_error(error)),
+                };
                 collecting.sweeping(digest);
-                let deleted = provider
-                    .delete(acyclic_objects::Digest::from_bytes(digest.into_bytes()))
-                    .await
-                    .map_err(|error| FsError::Object(ObjectStoreError::LogicalObjects(error)));
+                let deleted = provider.delete(object).await.map_err(object_error);
                 self.inner.objects.inner().clear()?;
-                if deleted? == acyclic_objects::Delete::Deleted {
-                    removed = removed.saturating_add(1);
+                match deleted?.outcome {
+                    acyclic_objects::Delete::Deleted => {
+                        removed = removed.saturating_add(1);
+                        work.deleted(
+                            children
+                                .iter()
+                                .map(|child| crate::Digest::from_bytes(*child.as_bytes())),
+                        );
+                    }
+                    acyclic_objects::Delete::Referenced => work.refused(digest),
+                    acyclic_objects::Delete::Absent => {}
                 }
             }
-            // A cached copy of a swept object must not stand in for it.
-            self.inner.objects.inner().clear()?;
         }
-        Ok(LocalGarbageCollection { examined, removed })
     }
     /// Marks every live generation of every authority, releasing the
     pub(super) async fn mark_local_authorities(
@@ -437,73 +600,4 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             .map_err(FsError::from)?;
         Ok(())
     }
-}
-
-/// Orders `unmarked` so every blob precedes the blobs it references.
-///
-/// A provider refuses to delete a blob another blob still references, so
-/// deleting in any other order leaves an unreachable chain for a later
-/// collection, one level per pass. In this order a single pass reclaims every
-/// unreachable blob, each deleted once: one head read per blob, and O(n + e)
-/// work over the references inside the set.
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-async fn referrers_first<P: acyclic_objects::Blobs + ?Sized>(
-    provider: &P,
-    unmarked: Vec<crate::Digest>,
-    cancellation: &CancellationToken,
-) -> Result<Vec<crate::Digest>, FsError> {
-    use std::collections::{HashMap, VecDeque};
-    let position = unmarked
-        .iter()
-        .enumerate()
-        .map(|(index, digest)| (*digest, index))
-        .collect::<HashMap<_, _>>();
-    let mut children = Vec::with_capacity(unmarked.len());
-    let mut referrers = vec![0_usize; unmarked.len()];
-    for digest in &unmarked {
-        cancellation.check()?;
-        let references = match provider
-            .head(acyclic_objects::Digest::from_bytes(digest.into_bytes()))
-            .await
-        {
-            Ok(head) => head.references,
-            // Already gone: it references nothing that is still stored.
-            Err(error) if error.code == acyclic_objects::wire::ErrorCode::NotFound => Vec::new(),
-            Err(error) => return Err(FsError::Object(ObjectStoreError::LogicalObjects(error))),
-        };
-        let inside = references
-            .iter()
-            .filter_map(|child| position.get(&crate::Digest::from_bytes(*child.as_bytes())))
-            .copied()
-            .collect::<Vec<_>>();
-        for child in &inside {
-            referrers[*child] += 1;
-        }
-        children.push(inside);
-    }
-    let mut ready = (0..unmarked.len())
-        .filter(|index| referrers[*index] == 0)
-        .collect::<VecDeque<_>>();
-    let mut order = Vec::with_capacity(unmarked.len());
-    let mut placed = vec![false; unmarked.len()];
-    while let Some(index) = ready.pop_front() {
-        placed[index] = true;
-        order.push(unmarked[index]);
-        for child in &children[index] {
-            referrers[*child] -= 1;
-            if referrers[*child] == 0 {
-                ready.push_back(*child);
-            }
-        }
-    }
-    // Content addressing admits no reference cycle; anything left is still
-    // offered, and the provider refuses it if it is referenced.
-    order.extend(
-        unmarked
-            .iter()
-            .zip(&placed)
-            .filter(|(_, placed)| !**placed)
-            .map(|(digest, _)| *digest),
-    );
-    Ok(order)
 }

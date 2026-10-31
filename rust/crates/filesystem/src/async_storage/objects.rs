@@ -19,20 +19,19 @@ pub(crate) async fn prepare_object<S: AsyncObjectStore>(
     result.map_err(Into::into)
 }
 
-/// The objects one authority record makes reachable, which must be durable before the record is appended.
+/// The objects one authority record makes reachable, which must be durable,
+/// and retained under the store's current collection epoch, before the
+/// record is appended. A reused proof's parent is live, so the collection
+/// that opened the epoch retained it, which is what lets its scope list
+/// only the difference.
 #[derive(Clone, Copy, Debug)]
-pub enum PublicationScope<'a> {
-    /// The authenticated closure of one published generation.
-    Closure {
-        /// Every object the record reaches, or, when its proof reused the
-        /// published parent's proof from the same collection epoch, every
-        /// object it reaches that the parent's closure did not list.
-        objects: &'a [ObjectId],
-        /// The store's [`AsyncObjectStore::collection_sweeps`] before the closure was proven.
-        proven_at: u64,
-    },
-    /// Every object admitted so far, for a record whose closure was not enumerated.
-    Everything,
+pub struct PublicationScope<'a> {
+    /// Every object the record reaches, or, when its proof reused the
+    /// published parent's proof from the same collection epoch, every
+    /// object it reaches that the parent's closure did not list.
+    pub objects: &'a [ObjectId],
+    /// The store's [`AsyncObjectStore::collection_sweeps`] before the closure was proven.
+    pub proven_at: u64,
 }
 
 contract! {
@@ -239,7 +238,7 @@ pub trait AsyncObjectStore: ProviderPlatform {
     fn collection(&self) -> Option<&Arc<crate::Collection>> {
         None
     }
-    /// The count a proof records before it starts, for [`PublicationScope::Closure`].
+    /// The count a proof records before it starts, for [`PublicationScope`].
     fn collection_sweeps(&self) -> u64 {
         self.collection()
             .map_or(0, |collection| collection.sweeps())

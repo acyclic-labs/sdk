@@ -279,51 +279,43 @@ proptest::proptest! {
 #[path = "decoded.rs"]
 mod decoded;
 
-#[tokio::test]
-async fn a_publication_root_keeps_its_closure_through_every_collection()
--> Result<(), Box<dyn std::error::Error>> {
+async fn publish(
+    store: &Store,
+    objects: &[ObjectId],
+    budget: WorkBudget,
+    cancel: &CancellationToken,
+) -> Result<crate::PublicationHold, ObjectStoreError> {
+    let scope = crate::PublicationScope {
+        objects,
+        proven_at: 0,
+    };
+    store
+        .flush_before_publish(scope, &mut AuthorityWork::new(budget, cancel))
+        .await
+}
+
+async fn stored(store: &Store, body: &'static [u8]) -> Result<ObjectId, ObjectStoreError> {
+    let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(body));
+    let id = object.object_id();
     let cancel = CancellationToken::new();
-    for (rooted, enumerated) in [(true, true), (true, false), (false, true), (false, false)] {
-        let mut store = store(64)?;
-        if rooted {
-            store = store.with_publication_root(acyclic_objects::RootId::new(b"volume".to_vec())?);
-        }
-        let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"live"));
-        let id = object.object_id();
-        let ids = [id];
-        store
-            .put_hashed(object, &mut AuthorityWork::new(BUDGET, &cancel))
-            .await?;
-        // A composition without a collection handle cannot enumerate.
-        let scope = if enumerated {
-            crate::PublicationScope::Closure {
-                objects: &ids,
-                proven_at: 0,
-            }
-        } else {
-            crate::PublicationScope::Everything
-        };
-        let _hold = store
-            .flush_before_publish(scope, &mut AuthorityWork::new(BUDGET, &cancel))
-            .await?;
-        // Admission covers one cut; only a root survives the next ones.
-        for _ in 0..3 {
-            store.provider().collect().await?;
-        }
-        let read = store
-            .read(id, 64, &mut AuthorityWork::new(BUDGET, &cancel))
-            .await;
-        if rooted {
-            assert_eq!(read?.bytes, OwnedBytes::from_static(b"live"));
-        } else {
-            // Negative control: the same publication without a root is swept.
-            assert!(read.is_err());
-        }
-    }
-    Ok(())
+    store
+        .put_hashed(object, &mut AuthorityWork::new(BUDGET, &cancel))
+        .await?;
+    Ok(id)
+}
+
+/// Makes `ids` durable without retaining them under any root.
+async fn flushed_only(store: &Store, ids: &[ObjectId]) -> Result<(), ObjectStoreError> {
+    let blobs = ids.iter().copied().map(blob).collect::<Vec<_>>();
+    store
+        .provider()
+        .flush(Some(&blobs))
+        .await
+        .map_err(ObjectStoreError::LogicalObjects)
 }
 
 async fn survives_collections(store: &Store, id: ObjectId) -> Result<bool, ObjectStoreError> {
+    // Admission covers one cut; only a root survives the next ones.
     for _ in 0..3 {
         store
             .provider()
@@ -339,49 +331,64 @@ async fn survives_collections(store: &Store, id: ObjectId) -> Result<bool, Objec
 }
 
 #[tokio::test]
-async fn each_root_retains_what_its_clones_staged() -> Result<(), Box<dyn std::error::Error>> {
+async fn collect_never_sweeps_a_live_generation() -> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
-    for flush_b in [true, false] {
-        let a = acyclic_objects::RootId::new(b"a".to_vec())?;
-        let b = acyclic_objects::RootId::new(b"b".to_vec())?;
-        let first = store(64)?.with_publication_root(a.clone());
-        let second = first.clone().with_publication_root(b.clone());
-        // Staged through the second root's clone, published first by the
-        // first root.
-        let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"shared"));
-        let id = object.object_id();
-        second
-            .put_hashed(object, &mut AuthorityWork::new(BUDGET, &cancel))
-            .await?;
-        let _hold = first
-            .flush_before_publish(
-                crate::PublicationScope::Everything,
-                &mut AuthorityWork::new(BUDGET, &cancel),
-            )
-            .await?;
-        if flush_b {
-            let _hold = second
-                .flush_before_publish(
-                    crate::PublicationScope::Everything,
-                    &mut AuthorityWork::new(BUDGET, &cancel),
-                )
-                .await?;
+    for rooted in [true, false] {
+        let store = store(64)?;
+        let parent = stored(&store, b"parent").await?;
+        let child = stored(&store, b"child").await?;
+        if rooted {
+            let _hold = publish(&store, &[parent], BUDGET, &cancel).await?;
+            // A reused proof lists only what its parent's closure did not.
+            let _hold = publish(&store, &[child], BUDGET, &cancel).await?;
+        } else {
+            // Negative control: the same closures only made durable are swept.
+            flushed_only(&store, &[parent, child]).await?;
         }
-        first.provider().release(&a).await?;
-        // Negative control: with the second root's retention also released,
-        // nothing keeps the blob.
-        if !flush_b {
-            first.provider().release(&b).await?;
+        assert_eq!(survives_collections(&store, parent).await?, rooted);
+        assert_eq!(survives_collections(&store, child).await?, rooted);
+    }
+    // The epoch's root is what keeps it: once a collection releases it,
+    // nothing does.
+    let store = store(64)?;
+    let shared = stored(&store, b"shared").await?;
+    let _hold = publish(&store, &[shared], BUDGET, &cancel).await?;
+    assert!(survives_collections(&store, shared).await?);
+    store
+        .provider()
+        .release(&super::Epoch::root(store.epoch().current()))
+        .await?;
+    assert!(!survives_collections(&store, shared).await?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_childs_inherited_objects_live_through_its_ancestors_batch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
+    // An epoch exposes no per-batch release, so nothing short of releasing
+    // its root drops the batch a child's difference-only scope inherits.
+    for ancestor in [true, false] {
+        let rooted = store(64)?;
+        let inherited = stored(&rooted, b"inherited").await?;
+        if ancestor {
+            let _hold = publish(&rooted, &[inherited], BUDGET, &cancel).await?;
+        } else {
+            // Negative control: the ancestor's batch dropped, as by a pruning
+            // of the parent's publication alone.
+            flushed_only(&rooted, &[inherited]).await?;
         }
-        assert_eq!(survives_collections(&first, id).await?, flush_b);
+        let fresh = stored(&rooted, b"fresh").await?;
+        let _hold = publish(&rooted, &[fresh], BUDGET, &cancel).await?;
+        assert_eq!(survives_collections(&rooted, inherited).await?, ancestor);
+        assert!(survives_collections(&rooted, fresh).await?);
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn a_root_retains_inside_the_callers_work() -> Result<(), Box<dyn std::error::Error>> {
-    let root = acyclic_objects::RootId::new(b"volume".to_vec())?;
-    let store = store(64)?.with_publication_root(root);
+async fn a_publication_retains_inside_the_callers_work() -> Result<(), Box<dyn std::error::Error>> {
+    let store = store(64)?;
     let exhausted = WorkBudget {
         backend_write_operations: 0,
         ..BUDGET
@@ -398,38 +405,14 @@ async fn a_root_retains_inside_the_callers_work() -> Result<(), Box<dyn std::err
         store
             .put_hashed(object, &mut AuthorityWork::new(BUDGET, &cancel))
             .await?;
-        let refused = store
-            .flush_before_publish(
-                crate::PublicationScope::Everything,
-                &mut AuthorityWork::new(budget, token),
-            )
-            .await;
-        assert!(refused.is_err());
-        // A refused flush retained nothing.
+        assert!(publish(&store, &[id], budget, token).await.is_err());
+        // A refused publication retained nothing.
         assert!(!survives_collections(&store, id).await?);
     }
-    // A refused flush keeps the blob staged for the root's next publication,
-    // here on a fresh store whose staging holds no swept blob.
-    let store = LogicalObjectStore::new(Arc::clone(store.provider()))
-        .with_publication_root(acyclic_objects::RootId::new(b"next".to_vec())?);
-    let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"kept"));
-    let id = object.object_id();
-    store
-        .put_hashed(object, &mut AuthorityWork::new(BUDGET, &cancel))
-        .await?;
-    let refused = store
-        .flush_before_publish(
-            crate::PublicationScope::Everything,
-            &mut AuthorityWork::new(exhausted, &cancel),
-        )
-        .await;
-    assert!(refused.is_err());
-    let _hold = store
-        .flush_before_publish(
-            crate::PublicationScope::Everything,
-            &mut AuthorityWork::new(BUDGET, &cancel),
-        )
-        .await?;
+    // Its retry retains the closure.
+    let id = stored(&store, b"retried").await?;
+    assert!(publish(&store, &[id], exhausted, &cancel).await.is_err());
+    let _hold = publish(&store, &[id], BUDGET, &cancel).await?;
     assert!(survives_collections(&store, id).await?);
     Ok(())
 }

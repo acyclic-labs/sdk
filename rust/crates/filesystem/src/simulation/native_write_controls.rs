@@ -331,7 +331,10 @@ async fn native_write_hooks_preserve_original_cancellation_before_effects() {
     assert!(
         (store
             .flush_before_publish(
-                crate::async_storage::PublicationScope::Everything,
+                crate::async_storage::PublicationScope {
+                    objects: &[object.object_id()],
+                    proven_at: 0,
+                },
                 &mut crate::AuthorityWork::native(&work, &argument)
             )
             .await)
