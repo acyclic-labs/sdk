@@ -29,11 +29,6 @@ async fn fork_proof_work(
             .write_text(&format!("/{file}"), &"x".repeat(5_000 + usize::from(file)))
             .await?;
     }
-    let mut transaction = workspace
-        .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
-        .await?
-        .value;
-    transaction.write_text("/retained", "original").await?;
     #[cfg(not(target_arch = "wasm32"))]
     let original = matches!(source_kind, ForkSource::NativePinned)
         .then(|| crate::NativeMaterializationWork::new(B, &cancel))
@@ -41,6 +36,38 @@ async fn fork_proof_work(
         .map_err(|(error, _)| error)?;
     #[cfg(not(target_arch = "wasm32"))]
     let baseline = original.as_ref().map(|work| work.live_allocation_bytes());
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut transaction = if let Some(original) = &original {
+        let mut transaction = workspace
+            .begin_transaction(crate::IdempotencyKey::new(), original, &cancel)
+            .await?;
+        let (bytes, allocation) = original.copy_bytes(b"original")?;
+        let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
+            bytes,
+            allocation,
+            original.runtime_meter(),
+        )?;
+        transaction
+            .write("/retained", bytes, original, &cancel)
+            .await?;
+        transaction
+    } else {
+        let mut transaction = workspace
+            .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
+            .await?
+            .value;
+        transaction.write_text("/retained", "original").await?;
+        transaction
+    };
+    #[cfg(target_arch = "wasm32")]
+    let mut transaction = {
+        let mut transaction = workspace
+            .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
+            .await?
+            .value;
+        transaction.write_text("/retained", "original").await?;
+        transaction
+    };
     let commit_ordinary = async |transaction: &mut crate::Transaction<_, _>| {
         transaction
             .commit(
