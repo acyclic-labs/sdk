@@ -514,7 +514,7 @@ where
                 };
                 let view = match provider.heads(request.clone()).await {
                     Ok(view) => {
-                        view.validate_for(&request)?;
+                        view.validate_for(&request).map_err(Error::Stream)?;
                         view
                     }
                     Err(StreamError::NotFound) => {
@@ -525,7 +525,9 @@ where
                     }
                     Err(error) => return Err(Error::Stream(error)),
                 };
-                let listed = view.children.ok_or(StreamError::InvalidResponse)?;
+                let listed = view
+                    .children
+                    .ok_or(Error::Stream(StreamError::InvalidResponse))?;
                 let mut items = Vec::with_capacity(listed.children.len());
                 let mut paths = acyclic_stream::HeadSet::with_capacity(listed.children.len());
                 for child in listed.children {
@@ -549,8 +551,11 @@ where
                         limit: page.items(),
                         at_least: RevisionCut::of(view.snapshot),
                     };
-                    let statuses = provider.heads(request.clone()).await?;
-                    statuses.validate_for(&request)?;
+                    let statuses = provider
+                        .heads(request.clone())
+                        .await
+                        .map_err(Error::Stream)?;
+                    statuses.validate_for(&request).map_err(Error::Stream)?;
                     for (item, head) in items.iter_mut().zip(statuses.heads) {
                         let record = head
                             .and_then(|head| head.last)
