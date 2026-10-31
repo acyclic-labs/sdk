@@ -91,6 +91,28 @@ impl From<Vec<ProcessWake>> for CaptureWakes {
     }
 }
 
+/// Metadata from the original capture operation, without pipe contents.
+/// These are observations, not delivery acknowledgements from the child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureProgress {
+    /// Input admitted to the original ordered buffer.
+    InputAccepted(usize),
+    /// Bytes accepted by the original OS pipe write, not necessarily consumed.
+    InputWritten(usize),
+    /// The original owner closed its stdin handle; the child may still run.
+    StdinClosed,
+    /// Bytes returned by the original stdout read.
+    StdoutRead(usize),
+    /// Bytes returned by the original stderr read.
+    StderrRead(usize),
+    /// The original stdout read returned EOF.
+    StdoutEof,
+    /// The original stderr read returned EOF.
+    StderrEof,
+    /// The original direct child's status, before descendant retirement.
+    RootExited(ExitStatus),
+}
+
 /// The owner callbacks of an async capture, run on the blocking pool.
 pub trait CaptureHandler: Send + 'static {
     /// Transfers the fixed signals once, on the first blocking turn.
@@ -101,6 +123,11 @@ pub trait CaptureHandler: Send + 'static {
     fn check(&mut self) -> io::Result<()>;
     /// Observes newly captured output, returning exchange input.
     fn observe(&mut self, chunk: ProcessOutput<'_>) -> io::Result<ProcessInput>;
+    /// Observes the original operation on its worker, without another reader.
+    /// Keep this callback nonblocking. The handler owns correlation and any
+    /// clock or fixed scalar records; capture creates none. Output callbacks
+    /// can occur more than once. No observation substitutes for `retired`.
+    fn progress(&mut self, _progress: CaptureProgress) {}
     /// Releases live execution admission after the original physical cleanup.
     /// Observation may retain this handler longer; it cannot delay retirement.
     /// Owner loss skips this callback and must remain an unproved retirement.
@@ -166,6 +193,7 @@ pub(super) fn handled_turn<H: CaptureHandler>(
         tree,
         &mut || shared.borrow_mut().check(),
         &mut |chunk| shared.borrow_mut().observe(chunk),
+        &mut |progress| shared.borrow_mut().progress(progress),
         None,
     )
 }
@@ -300,10 +328,11 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         check: &mut impl FnMut() -> io::Result<()>,
         observe: &mut impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
+        progress: &mut impl FnMut(CaptureProgress),
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> Turn {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.advance(tree, check, observe, meter)
+            self.advance(tree, check, observe, progress, meter)
         }));
         match result {
             Ok(Ok(true)) => Turn::Done(Ok(())),
@@ -322,6 +351,7 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         check: &mut impl FnMut() -> io::Result<()>,
         observe: &mut impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
+        progress: &mut impl FnMut(CaptureProgress),
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
         loop {
@@ -329,17 +359,31 @@ impl<'a> Pump<'a> {
                 self.check_deadline()?;
             }
             check()?;
-            let mut progressed = self
-                .input
-                .as_mut()
-                .map_or(Ok(false), |stdin| stdin.poll(tree, meter))?;
+            let mut progressed = self.input.as_mut().map_or(Ok(false), |stdin| {
+                stdin.poll_observed(tree, meter, progress)
+            })?;
             let [stdout_output, stderr_output] = &mut self.output;
             let before_stdout = stdout_output.len();
             let before_stderr = stderr_output.len();
             let drained = (|| {
                 Ok::<_, io::Error>(
-                    drain_pipe(&mut self.stdout, stdout_output, &mut self.remaining, meter)?
-                        | drain_pipe(&mut self.stderr, stderr_output, &mut self.remaining, meter)?,
+                    drain_pipe_observed(
+                        &mut self.stdout,
+                        stdout_output,
+                        &mut self.remaining,
+                        meter,
+                        CaptureProgress::StdoutRead,
+                        CaptureProgress::StdoutEof,
+                        progress,
+                    )? | drain_pipe_observed(
+                        &mut self.stderr,
+                        stderr_output,
+                        &mut self.remaining,
+                        meter,
+                        CaptureProgress::StderrRead,
+                        CaptureProgress::StderrEof,
+                        progress,
+                    )?,
                 )
             })();
             if stdout_output.len() > before_stdout {
@@ -350,6 +394,7 @@ impl<'a> Pump<'a> {
                     input.observe(
                         chunk,
                         &mut |bytes| observe(ProcessOutput::Stdout(bytes)),
+                        progress,
                         meter,
                     )?;
                 } else {
@@ -381,6 +426,7 @@ impl<'a> Pump<'a> {
                 && let Some(exit) = tree.try_wait(meter)?
             {
                 self.status = Some(exit);
+                progress(CaptureProgress::RootExited(exit));
                 tree.capture_terminate_descendants(meter)?;
             }
             if self.status.is_some() && self.stdout.is_none() && self.stderr.is_none() {

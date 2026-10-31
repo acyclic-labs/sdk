@@ -46,7 +46,10 @@ mod stdio;
 pub use stdio::{ProcessPipeReader, ProcessPipeWriter};
 #[cfg(windows)]
 mod spawner;
-pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, CaptureWakes, OwnedCaptureInput};
+pub use pump::{
+    CaptureHandler, CaptureOutcome, CaptureProgress, CaptureSchedule, CaptureWakes,
+    OwnedCaptureInput,
+};
 #[cfg(windows)]
 mod custodian_admission;
 #[cfg(any(windows, test))]
@@ -89,7 +92,9 @@ fn set_capture_clock(now: Option<Instant>) {
     CAPTURE_CLOCK.with(|clock| clock.set(now));
 }
 pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
-use capture::{PendingStdin, drain_pipe, observe_output, pipe_operation_attempt};
+use capture::{
+    PendingStdin, drain_pipe, drain_pipe_observed, observe_output, pipe_operation_attempt,
+};
 #[cfg(unix)]
 mod prepared;
 #[cfg(unix)]
@@ -917,7 +922,7 @@ impl ProcessTree {
                         break 'capture Err(error);
                     }
                 }
-                match pump.turn(self, &mut check, &mut observe, meter) {
+                match pump.turn(self, &mut check, &mut observe, &mut |_| {}, meter) {
                     pump::Turn::Done(result) => break result,
                     pump::Turn::Wait => match pump.arm_with_wake(self, wake) {
                         Ok(wait) => {
@@ -1023,14 +1028,26 @@ impl ProcessTree {
                 .map(PendingStdin::owned)
                 .transpose()
                 .map_err(ProcessCaptureFailure::before_capture)?;
-            pump::Pump::new(
+            if let Some(input) = &input {
+                handler.progress(CaptureProgress::InputAccepted(input.accepted_bytes()));
+            }
+            let closes_stdin = input.is_none()
+                && self
+                    .child
+                    .as_ref()
+                    .is_some_and(|child| child.stdin.is_some());
+            let pump = pump::Pump::new(
                 &mut self,
                 schedule,
                 max_bytes,
                 input,
                 None,
                 [Vec::new(), Vec::new()],
-            )
+            )?;
+            if closes_stdin {
+                handler.progress(CaptureProgress::StdinClosed);
+            }
+            Ok(pump)
         })();
         match start {
             Ok(pump) => match handler.take_wakes() {
