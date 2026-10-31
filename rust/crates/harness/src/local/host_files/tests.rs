@@ -100,7 +100,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     let requests = checkout.path().join(DIRECTORY).join("requests");
     // A stale or untrusted status entry must neither select another reply nor
-    // be pruned by publication. Its name exhausted the former sequence order.
+    // be pruned by publication. Its name sorts after every former sequence.
     let debris = checkout
         .path()
         .join(DIRECTORY)

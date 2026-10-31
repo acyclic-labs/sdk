@@ -563,7 +563,7 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
                 let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
                 if endpoint.version != 2 {
                     return Err(Error::Unsupported(format!(
-                        "native workspace protocol {}; requires 2; recovery=restart graphcoder --host-workspace and install its matching plugin",
+                        "step=admit native workspace protocol: version {}; requires 2; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
                         endpoint.version
                     )));
                 }
