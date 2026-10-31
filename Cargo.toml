@@ -52,6 +52,7 @@ members = [
   "rust/fuzz",
   "rust/proofs/model-epochs",
   "rust/crates/manifest",
+  "rust/crates/model-render",
   "plugin",
   "plugin/identity",
 ]
