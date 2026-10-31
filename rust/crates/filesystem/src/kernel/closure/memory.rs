@@ -318,6 +318,27 @@ pub(crate) struct CachedProofs {
 }
 
 impl CachedProofs {
+    /// Borrows only an existing exact-generation proof; a miss creates nothing.
+    pub(crate) fn published(
+        &self,
+        volume: crate::VolumeId,
+        generation: GenerationId,
+        limits: ClosureLimits,
+        epochs: Option<&crate::collection::Epochs>,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    ) -> Result<Option<PublishedProof>, crate::FsError> {
+        Ok(self
+            .entries
+            .get(volume.into_bytes(), accounting)?
+            .and_then(|slot| {
+                slot.published_if(epochs, |proof| {
+                    proof.generation_id == generation
+                        && proof.root.volume_id == volume
+                        && proof.limits == limits
+                })
+            }))
+    }
+
     /// The volume's proof slot, created empty on first use.
     pub(super) fn slot(
         &mut self,

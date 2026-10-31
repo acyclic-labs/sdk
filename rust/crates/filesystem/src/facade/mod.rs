@@ -275,6 +275,7 @@ use metadata::AuthoredMetadataCache;
 pub(crate) use metadata::read_record_metadata_to_file_root_with_accounting;
 use proof::DependencyLedger;
 use proof::Proof;
+pub(crate) use publication::GenerationClosure;
 use publication::LastCommit;
 pub(crate) use publication::PublicationClosure;
 pub(crate) use publication::VerifiedPublication;

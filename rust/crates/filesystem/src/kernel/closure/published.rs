@@ -30,13 +30,27 @@ impl<P> Default for ProofSlot<P> {
 impl<P: Clone> ProofSlot<P> {
     /// The published proof, if no collection has begun since its proof began.
     pub(crate) fn current(&self, epochs: Option<&Epochs>) -> Option<P> {
+        self.published_if(epochs, |_| true)
+            .map(|published| published.proof)
+    }
+
+    /// Retains the original epoch and proof together, without minting a new proof.
+    pub(super) fn published_if(
+        &self,
+        epochs: Option<&Epochs>,
+        matches: impl FnOnce(&P) -> bool,
+    ) -> Option<Published<P>> {
         let now = CollectionEpoch::read(epochs);
         self.published
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .filter(|(proven, _, _)| *proven == now)
-            .map(|(_, _, proof)| proof.clone())
+            .filter(|(_, _, proof)| matches(proof))
+            .map(|(began, _, proof)| Published {
+                began: *began,
+                proof: proof.clone(),
+            })
     }
 
     #[cfg(test)]

@@ -35,10 +35,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 cancellation,
             )
             .await
-            .map(|checkout| Generation {
-                workspace: self.clone(),
-                id: checkout.generation_id(),
-                publication_closure: None,
+            .and_then(|checkout| {
+                Generation::observed(self, checkout.generation_id(), &mut accounting)
             });
         work.finish(result, &accounting)
     }
@@ -59,10 +57,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 cancellation,
             )
             .await
-            .map(|checkout| Generation {
-                workspace: self.clone(),
-                id: checkout.generation_id(),
-                publication_closure: None,
+            .and_then(|checkout| {
+                Generation::observed(self, checkout.generation_id(), &mut accounting)
             });
         work.finish(result, &accounting)
     }

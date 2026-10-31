@@ -4,7 +4,7 @@ use super::*;
 pub struct Generation<A: 'static, O: 'static> {
     pub(crate) workspace: Workspace<A, O>,
     pub(crate) id: GenerationId,
-    pub(crate) publication_closure: Option<crate::facade::PublicationClosure<A, O>>,
+    pub(crate) publication_closure: Option<crate::facade::GenerationClosure<A, O>>,
 }
 
 impl<A: 'static, O: 'static> Clone for Generation<A, O> {
@@ -35,6 +35,24 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation<A, O> {
+    /// Keeps an exact observed proof on its original ledger through later cache replacement.
+    pub(super) fn observed(
+        workspace: &Workspace<A, O>,
+        id: GenerationId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, WorkspaceError> {
+        let publication_closure =
+            workspace
+                .volume
+                .fs
+                .observed_generation_closure(&workspace.volume, id, accounting)?;
+        Ok(Self {
+            workspace: workspace.clone(),
+            id,
+            publication_closure,
+        })
+    }
+
     /// Retains this generation until its owning volume ends, reusing durable
     /// published history when available. Unpublished generations receive an
     /// independent pin. Explicit named pins continue to use `pin`.
@@ -481,12 +499,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             if accounting.standalone_parts().is_some() {
                 accounting.release_owned(&mut label.allocation, label.bytes)?;
             }
-            let publication = self.publication_closure.as_ref().and_then(|slot| {
-                slot.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .pin
-                    .take()
-            });
+            let publication = self
+                .publication_closure
+                .as_ref()
+                .and_then(crate::facade::GenerationClosure::take_pin);
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 self.workspace

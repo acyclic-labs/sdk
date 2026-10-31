@@ -88,6 +88,32 @@ fn generation_from_payload(
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    pub(crate) fn observed_generation_closure(
+        &self,
+        volume: &Volume<A, O>,
+        generation: GenerationId,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    ) -> Result<Option<GenerationClosure<A, O>>, FsError> {
+        let epochs = self
+            .inner
+            .objects
+            .collection()
+            .map(|collection| collection.epochs());
+        self.inner
+            .publication_proof
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .published(
+                volume.id,
+                generation,
+                closure_limits(volume.config),
+                epochs,
+                accounting,
+            )
+            .map(|published| published.map(GenerationClosure::Published))
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn observe_volume_operation(
         &self,
