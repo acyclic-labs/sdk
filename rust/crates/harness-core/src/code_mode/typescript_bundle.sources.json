@@ -40,11 +40,11 @@
   ],
   "disableESTransforms": true,
   "keepUnusedImports": true,
-  "entrySha256": "1b8151432ccde10fb42ac074b3ac8c884c0ccad2a35f9175699c5e0efba17f8e",
+  "entrySha256": "589b3b7b0538883823e7cdfcfc77f095b1bdf9bcb5560457bbe1c1a2d5736132",
   "lockSha256": "0f16e7c1b6548a1f70c293622694d2c7e465fa07a9f9272407de7504a9f7a9f5",
   "licenseSha256": "c43b99fc682391ced47fee2bf964bc387ab5e65ba7b626b39cd6d1facd24e6a5",
-  "bundleSha256": "a8bf9904faf47276743723f6ee5e4e097fe0c558c1b8f912cfe8287cc2bb723f",
-  "bundleBytes": 172126,
+  "bundleSha256": "297e37902fa0b663863eb76fc8c3d1ea21b56bde9e009af0735349862f29ed25",
+  "bundleBytes": 172155,
   "inputs": [
     {
       "path": "node_modules/sucrase/dist/esm/HelperManager.js",

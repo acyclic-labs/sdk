@@ -20,6 +20,7 @@ const destination = dirname(fileURLToPath(import.meta.url));
 const dependencyRoot = process.argv[2] && resolve(process.argv[2]);
 const entry = String.raw`
 import {parse} from "sucrase/dist/esm/parser/index.js";
+import {initParser} from "sucrase/dist/esm/parser/traverser/base.js";
 import NameManager from "sucrase/dist/esm/NameManager.js";
 import {HelperManager} from "sucrase/dist/esm/HelperManager.js";
 import TokenProcessor from "sucrase/dist/esm/TokenProcessor.js";
@@ -37,19 +38,26 @@ export function transform(source) {
   if (typeof source !== "string") {
     throw new TypeError("TypeScript source must be a string");
   }
-  const file = parse(source, false, true, false);
-  const nameManager = new NameManager(source, file.tokens);
-  const helperManager = new HelperManager(nameManager);
-  const tokenProcessor = new TokenProcessor(
-    source, file.tokens, false, true, helperManager,
-  );
-  const context = {
-    tokenProcessor, scopes: file.scopes, nameManager,
-    importProcessor: null, helperManager,
-  };
-  return new RootTransformer(
-    context, options.transforms, false, options,
-  ).transform().code;
+  try {
+    const file = parse(source, false, true, false);
+    const nameManager = new NameManager(source, file.tokens);
+    const helperManager = new HelperManager(nameManager);
+    const tokenProcessor = new TokenProcessor(
+      source, file.tokens, false, true, helperManager,
+    );
+    const context = {
+      tokenProcessor, scopes: file.scopes, nameManager,
+      importProcessor: null, helperManager,
+    };
+    return new RootTransformer(
+      context, options.transforms, false, options,
+    ).transform().code;
+  } finally {
+    // The upstream parser retains its input/tokens/scopes in module globals.
+    // Its original initializer releases the last call on success and failure;
+    // resetting empty state does not tokenize or transform another program.
+    initParser("", false, true, false);
+  }
 }
 `;
 
