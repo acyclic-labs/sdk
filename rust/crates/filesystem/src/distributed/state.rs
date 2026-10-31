@@ -311,9 +311,9 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
         }
         let mut request = work.copy_commit(commit.request())?;
         self.fence_observed(&mut request, observations, deadline, work)?;
+        commit.retain_request_custody(work)?;
         commit.seal_request(request);
         commit.bind_owner(owner);
-        commit.retain_request_custody(work);
         Ok(())
     }
 

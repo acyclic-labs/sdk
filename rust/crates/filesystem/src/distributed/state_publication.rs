@@ -54,9 +54,9 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             deadline,
             work,
         )?;
+        prepared.retain_request_custody(work)?;
         prepared.seal_current_request();
         prepared.bind_owner(self.operation_claims().owner_identity());
-        prepared.retain_request_custody(work);
         // No fallible step follows the final seal/funding transfer.
         commit.install_records(prepared, holds);
         Ok(())
