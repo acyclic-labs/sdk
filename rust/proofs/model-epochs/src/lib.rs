@@ -96,3 +96,26 @@ fn stale_generation_and_exhaustion_leave_ready_state_unchanged() {
     kani::cover!(generation == u64::MAX);
     kani::cover!(generation < u64::MAX);
 }
+
+#[kani::proof]
+fn fanout_preserves_settled_coverage_and_never_drops_a_pending_producer() {
+    let cursor: u64 = kani::any();
+    let end: u64 = kani::any();
+    let common: u64 = kani::any();
+    kani::assume(cursor < end);
+    let mut state = protocol::State::restore(0, cursor, None, end).unwrap();
+    assert!(state.prepare([0; 32], end, end).is_ok());
+    let pending = state;
+    assert!(state.fork(common).is_err());
+    assert_eq!(state, pending);
+    assert!(state.complete([0; 32], protocol::Completion::Ready).is_ok());
+    assert!(state.fork(common).is_err());
+    assert!(state.swap([0; 32], 0, end).is_ok());
+    assert_eq!(state.fork(common).is_ok(), end <= common);
+    if let Ok(child) = state.fork(common) {
+        assert_eq!(child.cursor(), end);
+        assert!(child.pending().is_none());
+    }
+    kani::cover!(cursor <= common && common < end);
+    kani::cover!(end <= common);
+}

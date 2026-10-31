@@ -50,7 +50,8 @@ module epochs {
   // Existing keys reuse the original producer or its terminal result.
   action prepare(a: int, cut: int) = {
     val v = s.views.get(a)
-    val key = a * Stride + cut
+    val ancestor = if (a == 1 and cut <= s.common) 0 else a
+    val key = ancestor * Stride + cut
     val jobs = if (s.jobs.get(key) == 0) s.jobs.set(key, 1) else s.jobs
     all {
       live(a),
@@ -107,7 +108,8 @@ module epochs {
     val parent = s.views.get(0)
     all {
       not(s.forked),
-      // A fork inherits one exact committed prefix, including a pending identity.
+      parent.pending == 0,
+      // Fan-out inherits a completed swap, never unfinished producer custody.
       s' = { ...s, forked: true, common: parent.head, views: s.views.set(1, parent) }
     }
   }
@@ -153,11 +155,20 @@ module epochs {
 
   run raceAndCrash = init
     .then(append(0)).then(append(0)).then(prepare(0, 2))
-    .then(fork).then(complete(2, true))
+    .then(complete(2, true))
     .then(propose(0, 0)).then(propose(1, 0)).then(commit(0))
-    .then(discardStale(1)).then(propose(0, 1)).then(crash)
-    .then(propose(0, 1)).then(commit(0))
+    .then(discardStale(1)).then(fork)
+    .then(append(0)).then(prepare(0, 3)).then(complete(3, true))
+    .then(propose(0, 0)).then(crash)
+    .then(propose(0, 0)).then(commit(0))
     .expect(safety and s.views.get(1).cursor == 2 and s.crashed)
+
+  run sharedAncestor = init
+    .then(append(0)).then(append(0)).then(prepare(0, 1))
+    .then(complete(1, true)).then(propose(0, 0)).then(commit(0)).then(fork)
+    .then(prepare(0, 2)).then(prepare(1, 2)).then(complete(2, true))
+    .then(propose(0, 0)).then(propose(1, 1)).then(commit(0)).then(commit(1))
+    .expect(safety and s.views.get(0).summary == s.views.get(1).summary)
 
   run producerDeath = init.then(append(0)).then(prepare(0, 1))
     .then(complete(1, false)).expect(s.jobs.get(1) == 3 and s.views.get(0).cursor == 0)
