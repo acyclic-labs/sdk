@@ -92,25 +92,25 @@
       "path": "rust/crates/sdk-docs/Cargo.lock",
       "nonempty_lines": 759,
       "source_blob": "7c1ad8d478962826bb5da1f961a5d76c595a5f7f",
-      "disposition": "isolated producer graph; incompatible exact schema dependency retained"
+      "disposition": "live workspace member consolidated into root resolution; original lock remains Git-addressed; proof and fuzz sources retained"
     },
     {
       "path": "rust/crates/sdk-docs/fuzz/Cargo.lock",
       "nonempty_lines": 232,
       "source_blob": "36f4f1061f3e9dcd889df1072b56738e27ea3ee3",
-      "disposition": "isolated producer graph; incompatible exact schema dependency retained"
+      "disposition": "live workspace member consolidated into root resolution; original lock remains Git-addressed; proof and fuzz sources retained"
     },
     {
       "path": "rust/crates/sdk-generation/Cargo.lock",
       "nonempty_lines": 916,
       "source_blob": "544b6b513f49201b4d28c9ed261bbbc61e7bbfda",
-      "disposition": "isolated producer graph; incompatible exact schema dependency retained"
+      "disposition": "live workspace member consolidated into root resolution; original lock remains Git-addressed; proof and fuzz sources retained"
     },
     {
       "path": "rust/crates/sdk-generation/fuzz/Cargo.lock",
       "nonempty_lines": 770,
       "source_blob": "e525ed1aa72b0115c474e350c2a1de331a4c2f95",
-      "disposition": "isolated producer graph; incompatible exact schema dependency retained"
+      "disposition": "live workspace member consolidated into root resolution; original lock remains Git-addressed; proof and fuzz sources retained"
     },
     {
       "path": "rust/crates/stream/contract-fuzz/Cargo.lock",
@@ -179,5 +179,5 @@
       "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
     }
   ],
-  "limit": "Source and manifest-only reconciliation; no current combined dependency build or performance result. Previously observed incompatible exact schema constraints remain isolated."
+  "limit": "Original lock inventory and current manifest consolidation decisions; compiler and performance results require their own qualification. Live documentation and generation packages share the root resolution."
 }
