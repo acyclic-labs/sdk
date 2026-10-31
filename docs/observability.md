@@ -1,8 +1,54 @@
 # Observability
 
 Rust crates emit `tracing` spans and events; hosts and tests decide whether
-anything records them. Work accounting stays in `WorkCounters`, and spans only
-summarise it.
+anything records them. `acyclic-observability` owns result recording and the
+operation lifecycle projection. Work accounting stays in `WorkCounters`, and
+spans only summarise it.
+
+## One operation lifecycle
+
+Attach one `acyclic_observability::Operations` layer to the host's existing
+registry. It derives one latency histogram sample and one outcome counter from
+each `acyclic.*` span declaring `outcome`. Record completion through the shared
+`finish` or `record_outcome` on the operation's owned span. Metrics stop at the
+first explicit completion, even if descendants retain its handle. A closed span
+without a result is `incomplete`; this does not assert that its accepted work
+failed. RPC method names distinguish operations using the same span factory.
+`Completion` owns unfinished work independently of tracing handles, so producer
+drop publishes `incomplete` immediately. Caller-owned read/RPC cancellation may
+retain its explicit `cancelled` error contract through the same guard.
+
+The layer's `Sink` contract is the OpenTelemetry export boundary. Exporters
+receive the original static metadata, method, elapsed duration and outcome;
+they share the same lifecycle implementation. Sinks must not wait for I/O.
+`Export::channel` is the shared adapter for credited output. The host supplies
+record credit and drains its receiver in its existing export loop. Full credit
+and receiver closure refuse samples immediately and increment separate loss
+counters; neither changes the operation result or prevents cancellation.
+Records retain credit through consumer processing. Exact retained-record high
+water is updated at admission, so between-snapshot spikes remain visible.
+Optional first `error.kind` detail survives later generic errors and is never a
+metric label. This records the original declared cause; it does not diagnose a
+provider from an operation ID or reconstruct a terminal result.
+Native `WaitReport` remains the live-wait projection on this registry, preserving
+its own producer, retirement and diagnostic request/acknowledgement guarantees.
+
+With no subscriber there is no metric storage, timer, allocation, lock, task or
+syscall. The operation macro evaluates no fields on wasm32. The shared crate
+keeps tracing dependencies out of wasm32 builds.
+
+## SLO files and live queries
+
+An SLO is a version 1 JSON file in a volume, read and followed using the ordinary
+authorized volume reader. It selects an operation and optional RPC method, a
+success fraction in parts per million, and an optional latency objective. The
+live view is a selected metrics query, woken by that operation's completion
+watch. Losing the producer returns a typed error. There is no SLO endpoint or
+separate settings service. See the [file format and query contract](../rust/crates/observability/README.md).
+
+Empty cohorts and counter precision loss are unknown. A histogram bucket crossing a latency threshold is
+unknown whenever that ambiguity can change the verdict. Evaluating a query for
+another operation or an unsupported file version refuses by type.
 
 ## Dependencies
 
@@ -33,7 +79,7 @@ summarise it.
 
 - Span names are `acyclic.<family>.<op>`. The family is one of `fs`, `stream`,
   `objects`, `harness`, `runtime`, `machines`, `inference`, `actors`,
-  `workers` or `plugin`. Native-mount callbacks are `acyclic.fs.mount.<callback>`.
+  `workers`, `auth` or `plugin`. Native-mount callbacks are `acyclic.fs.mount.<callback>`.
 - `target` stays the default module path, so `ACYCLIC_LOG=acyclic_fs::kernel=debug`
   works.
 
@@ -55,7 +101,7 @@ ends.
 - **Retries:** each physical `acyclic.stream.grpc.call` span records its singular
   `attempt` ordinal. The logical read or follow span stays open through terminal
   completion or consumer drop.
-- **Result:** `outcome` is `"ok"` or `"err"`. `error.kind` is a stable
+- **Result:** `outcome` is `"ok"`, `"err"` or `"incomplete"`. `error.kind` is a stable
   `&'static str` from the error enum's `fn kind(&self) -> &'static str`; add
   that method to any error enum that lacks one. RPCs record `rpc.code` only for
   received transport status (the tonic `Code` or HTTP status). A streaming
@@ -78,12 +124,16 @@ or returned body records `err`/`cancelled`, including an unpolled returned body.
 A public async RPC future that is never polled creates no span.
 This is the consumer's lifetime: submitted native work may continue after
 consumer cancellation and retain its own span until actual completion. Native
-filesystem receipt spans record a terminal result only when the operation
-returns; an abandoned future leaves its outcome unset.
+filesystem receipt spans record an explicit result only when the operation
+returns. Abandonment without an owned terminal result projects `incomplete`;
+it does not reconstruct a result from cancellation.
 
 Stream gRPC bodies also require EOF for success and record `cancelled` on
 unfinished consumer drop. Detached provider work
 records its actual terminal worker result even when its caller was cancelled.
+Portable and native provider `read`/`follow` operations observe cursor opening,
+as defined by their public contracts. Returned cursors retain their original
+late error and native accounting mechanisms; opening is not evidence of EOF.
 
 **Forbidden fields.** Users attach trace files to bug reports, so never record:
 
@@ -110,35 +160,43 @@ constants, never the request path. The same rules apply to the TypeScript
 
 Do not add a second set of counters.
 
-- `WorkCounters::emit` emits one
-  `debug!` event with all `WorkCounters` fields, under their `WorkCounters`
-  names. It does so only when
-  `tracing::enabled!(target: "acyclic.work", Level::DEBUG)` is true.
-- Each receipt-returning fs `info`/`debug` span also declares three `Empty`
+- The returned `OperationReceipt` or `OperationFailure` owns the original work
+  evidence. `obs::measured_on` and `measured_on_with_kind` borrow that evidence
+  for success and failure alike, without another provider read or result copy.
+- Receipt-returning fs spans declare three `Empty`
   summary fields, filled from the receipt:
   - `work.items`: `items_examined`
   - `work.bytes`: `object_bytes_read + object_bytes_written + authority_bytes_written`
   - `work.durability`: `durability_operations`
-  Plain `Result<OperationReceipt<_>, _>` APIs record these totals on success;
-  failures without a receipt leave them unset. Measured failures carry their
-  own work totals and record those too.
-- `Observe::observe_on(self, span, op)` on `MeasuredResult` does both at the return
-  point, for success and failure alike, only at receipt-returning facade
-  operations. Observed facade operations do not call another observed facade
-  operation. Sum `acyclic.work` events to account for that facade work once.
-  Each event has an explicit operation span parent; if that span is filtered,
-  the event has no parent. Its static `op` still identifies the receipt, and
-  filtering spans does not suppress independently enabled work events.
-- Kernel, native capture, materialization, and other nested operations use
-  `obs::measured_on` to record summaries on their own spans without emitting
-  `acyclic.work`. Their `work.*` fields overlap with caller receipts and must
-  not be added together. Direct calls to those APIs are visible through spans,
-  but are outside the facade event ledger.
+  These are diagnostic summaries. The byte sum saturates on overflow; use the
+  original receipt's individual fields for exact accounting. Unrecorded fields
+  are unknown. There is no separate `acyclic.work` event ledger.
+- Kernel, native capture, materialization and other nested spans can summarize
+  work already included in their caller's receipt. Do not add those summaries
+  together or infer a physical syscall count from logical provider requests.
+- `NativeReadMeter` feeds the original invocation's work owner at the actual
+  instrumented attempts and completions. Operation and byte reservations follow
+  accepted work through cancellation; owned allocation credit retires after the
+  capacity is freed. Its production filesystem implementations update the same
+  work ledger used by the receipt. They do not count uninstrumented OS retries,
+  threads, locks or timer registrations.
+- `AllocationInfo` measures the current thread. An OS resource snapshot measures
+  one instant. Neither establishes worker coverage or a process high-water mark;
+  a maximum of periodic snapshots can miss an entire resource lifetime. Exact
+  peaks require updates at the original resource admission and release events.
 - Convenience entry points that delegate to an instrumented implementation
   share that implementation's span. Blocking workers retain the caller's span
   and scoped subscriber through the actual work, including after caller drop.
-  An abandoned operation has no terminal outcome unless it returns; a retained
-  worker span is not evidence that its caller succeeded.
+  A retained worker span is not evidence that its caller succeeded. Its
+  original worker records the terminal result; lost producers project
+  `incomplete` without asserting that accepted work failed.
+
+The shared harness conformance observer defaults to request counters without
+retaining commit, append or follow history. The finite dispatcher and publication
+fault vectors explicitly select request capture to compare exact retry bytes and
+keys. They consume the captured evidence rather than cloning its history at
+assertion time. Scale measurements use the counter-only observer. These logical
+counts remain separate from original physical work receipts.
 
 ## Enablement
 

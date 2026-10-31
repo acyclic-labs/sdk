@@ -15,6 +15,7 @@ grpc = ["dep:tonic", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio"]
 test-support = ["dep:acyclic-differential"]
 
 [dependencies]
+acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 ed25519-dalek = { version = "=3.0.0", features = ["zeroize"] }

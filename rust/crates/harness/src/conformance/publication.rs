@@ -135,7 +135,7 @@ async fn conflict(backend: &dyn Backend) -> Result {
 
 async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = Arc::new(Observed::capturing(storage.open().await?));
     let counts = Arc::new(Counts::default());
     let handler = backend.handler(Arc::new(Participating(vectors::handler(&provider)?)))?;
     let host = vectors::hosting(
@@ -149,7 +149,7 @@ async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
     vectors::drain(&host).await?;
     host.send(&root, &fixtures::sender(), &fixtures::request("once")?)
         .await?;
-    let before = provider.commits().len();
+    drop(provider.take_commits());
     let settled = counts.settled.load(Ordering::SeqCst);
     provider.arm(0, fault);
     if host.runtime().drain().await.is_empty() {
@@ -173,9 +173,9 @@ async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
     }
     host.host(&root)?;
     vectors::drain(&host).await?;
-    let commits = provider.commits();
+    let commits = provider.take_commits();
     if !terminal {
-        let Some([first, refused_retry, retry]) = commits.get(before..) else {
+        let [first, refused_retry, retry] = commits.as_slice() else {
             return Err("unknown publication issued a second commit".into());
         };
         if first != retry || first != refused_retry {

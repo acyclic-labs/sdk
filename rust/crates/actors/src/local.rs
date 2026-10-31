@@ -62,6 +62,21 @@ pub enum Error {
     Invalid(&'static str),
 }
 
+impl Error {
+    /// Stable, path-free telemetry category. Unknown effects remain unknown.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Stream(error) => error.code(),
+            Self::Unknown { .. } => "unknown",
+            Self::Settlement { .. } => "settlement",
+            Self::Conflict => "conflict",
+            Self::Paused => "paused",
+            Self::Handler(_) => "handler",
+            Self::Invalid(_) => "invalid",
+        }
+    }
+}
+
 /// Alarm identity and deadline are one durable value, including cleared alarms.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Alarm {
@@ -437,7 +452,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 
     /// Read only the final state record; recovery work is independent of history length.
     pub async fn load(&self, actor: &ActorReference) -> Result<Snapshot, Error> {
-        self.load_path(self.path(actor)?).await
+        acyclic_observability::async_operation!(
+            "acyclic.actors.load",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { self.load_path(self.path(actor)?).await }
+        )
     }
 
     async fn load_path(&self, path: StreamPath) -> Result<Snapshot, Error> {
@@ -475,16 +495,23 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         epoch: u64,
         key: IdempotencyKey,
     ) -> Result<(), Error> {
-        let mut state = previous
-            .state
-            .clone()
-            .ok_or(Error::Invalid("actor state was never created"))?;
-        if epoch <= state.epoch {
-            return Err(Error::Conflict);
-        }
-        state.epoch = epoch;
-        self.submit(self.prepare(previous, &state, Vec::new(), key)?)
-            .await
+        acyclic_observability::async_operation!(
+            "acyclic.actors.claim",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let mut state = previous
+                    .state
+                    .clone()
+                    .ok_or(Error::Invalid("actor state was never created"))?;
+                if epoch <= state.epoch {
+                    return Err(Error::Conflict);
+                }
+                state.epoch = epoch;
+                self.submit(self.prepare(previous, &state, Vec::new(), key)?)
+                    .await
+            }
+        )
     }
 
     /// Pause/resume and in-flight publication share the identical CAS fence.
@@ -496,15 +523,22 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         paused: bool,
         key: IdempotencyKey,
     ) -> Result<(), Error> {
-        let mut state = previous
-            .state
-            .as_ref()
-            .filter(|state| state.epoch == epoch)
-            .ok_or(Error::Conflict)?
-            .clone();
-        state.paused = paused;
-        self.submit(self.prepare(previous, &state, Vec::new(), key)?)
-            .await
+        acyclic_observability::async_operation!(
+            "acyclic.actors.set_paused",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let mut state = previous
+                    .state
+                    .as_ref()
+                    .filter(|state| state.epoch == epoch)
+                    .ok_or(Error::Conflict)?
+                    .clone();
+                state.paused = paused;
+                self.submit(self.prepare(previous, &state, Vec::new(), key)?)
+                    .await
+            }
+        )
     }
 
     /// Atomically publish the checkpoint, consumed cursor, alarm and effects.
@@ -518,8 +552,17 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         transition: Transition,
         key: IdempotencyKey,
     ) -> Result<(), Error> {
-        self.submit(self.prepare_publish(previous, epoch, trigger, delivered, transition, key)?)
-            .await
+        acyclic_observability::async_operation!(
+            "acyclic.actors.publish",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.submit(
+                    self.prepare_publish(previous, epoch, trigger, delivered, transition, key)?,
+                )
+                .await
+            }
+        )
     }
 
     /// Build the one publication without submitting it.
@@ -590,11 +633,16 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self,
         mut prepared: PreparedPublish,
     ) -> Result<Option<Snapshot>, Error> {
-        if !prepared.sealed {
-            if let Some(composition) = &mut prepared.composition {
-                let original = &prepared.request;
-                let request = composition.seal(original.clone()).await?;
-                if !original
+        acyclic_observability::async_operation!(
+            "acyclic.actors.submit",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                if !prepared.sealed {
+                    if let Some(composition) = &mut prepared.composition {
+                        let original = &prepared.request;
+                        let request = composition.seal(original.clone()).await?;
+                        if !original
                     .conditions
                     .iter()
                     .all(|entry| request.conditions.contains(entry))
@@ -617,57 +665,59 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 {
                     return Err(Error::Invalid("composition changed the actor publication"));
                 }
-                prepared.request = request;
+                        prepared.request = request;
+                    }
+                    prepared.sealed = true;
+                }
+                let outcome = self.provider.commit(prepared.request.clone()).await;
+                // A retry refusal cannot undo an earlier attempt that may have applied.
+                if prepared.acknowledgement_unknown {
+                    if let Err(source) = &outcome {
+                        return Err(Error::Unknown {
+                            publication: Box::new(prepared),
+                            source: source.clone(),
+                        });
+                    }
+                }
+                match &outcome {
+                    Err(source @ (StreamError::Unavailable | StreamError::InvalidResponse)) => {
+                        prepared.acknowledgement_unknown = true;
+                        return Err(Error::Unknown {
+                            publication: Box::new(prepared),
+                            source: source.clone(),
+                        });
+                    }
+                    Ok(_)
+                    | Err(
+                        StreamError::InvalidPath
+                        | StreamError::InvalidArgument
+                        | StreamError::LimitExceeded
+                        | StreamError::NotFound
+                        | StreamError::AlreadyExists
+                        | StreamError::PrefixNotRetained
+                        | StreamError::OutOfRange
+                        | StreamError::HierarchyChanged
+                        | StreamError::IdempotencyMismatch
+                        | StreamError::Capacity
+                        | StreamError::AccessDenied
+                        | StreamError::DeadlineElapsed
+                        | StreamError::Unsupported
+                        | StreamError::RevisionForeign,
+                    ) => {}
+                }
+                let retained = match &outcome {
+                    Ok(CommitOutcome::Committed(receipt)) => prepared.retained(receipt),
+                    Ok(CommitOutcome::Conflict(_)) | Err(_) => Ok(None),
+                };
+                if let Some(composition) = prepared.composition {
+                    if let Err(source) = composition.settle(outcome.as_ref()).await {
+                        return Err(Error::Settlement { outcome, source });
+                    }
+                }
+                PreparedPublish::settle(&outcome?)?;
+                retained
             }
-            prepared.sealed = true;
-        }
-        let outcome = self.provider.commit(prepared.request.clone()).await;
-        // A retry refusal cannot undo an earlier attempt that may have applied.
-        if prepared.acknowledgement_unknown {
-            if let Err(source) = &outcome {
-                return Err(Error::Unknown {
-                    publication: Box::new(prepared),
-                    source: source.clone(),
-                });
-            }
-        }
-        match &outcome {
-            Err(source @ (StreamError::Unavailable | StreamError::InvalidResponse)) => {
-                prepared.acknowledgement_unknown = true;
-                return Err(Error::Unknown {
-                    publication: Box::new(prepared),
-                    source: source.clone(),
-                });
-            }
-            Ok(_)
-            | Err(
-                StreamError::InvalidPath
-                | StreamError::InvalidArgument
-                | StreamError::LimitExceeded
-                | StreamError::NotFound
-                | StreamError::AlreadyExists
-                | StreamError::PrefixNotRetained
-                | StreamError::OutOfRange
-                | StreamError::HierarchyChanged
-                | StreamError::IdempotencyMismatch
-                | StreamError::Capacity
-                | StreamError::AccessDenied
-                | StreamError::DeadlineElapsed
-                | StreamError::Unsupported
-                | StreamError::RevisionForeign,
-            ) => {}
-        }
-        let retained = match &outcome {
-            Ok(CommitOutcome::Committed(receipt)) => prepared.retained(receipt),
-            Ok(CommitOutcome::Conflict(_)) | Err(_) => Ok(None),
-        };
-        if let Some(composition) = prepared.composition {
-            if let Err(source) = composition.settle(outcome.as_ref()).await {
-                return Err(Error::Settlement { outcome, source });
-            }
-        }
-        PreparedPublish::settle(&outcome?)?;
-        retained
+        )
     }
 
     fn prepare(

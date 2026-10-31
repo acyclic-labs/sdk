@@ -211,73 +211,83 @@ impl MemoryStream {
         let revisions = Arc::clone(&self.revisions);
         let mut probes = self.reserve_replay_probes(self.maximum_replay_height() + 8)?;
         let recovery_meter = Arc::clone(&meter);
-        let recovery = work.record(NativeProviderFuture::try_new(&meter, async move {
-            let state = state.read().await;
-            let (stored, observed) =
-                read.attempt(|| state.replay(recovery_key.as_bytes(), || probes.record(1)));
-            let stored = stored?;
-            let mut observed = observed.err();
-            let result = (|| {
-                let Some(stored) = stored else {
-                    return Ok((None, None));
-                };
-                let (mut value, claim) = prototype;
-                let target = envelope_append(&value);
-                let envelope =
-                    prepared_envelope(stored, maximum, &target.path, target.start, target.tail)?;
-                let source = envelope_append(envelope);
-                let record = source.records.first().ok_or(StreamError::Unavailable)?;
-                *envelope_append_mut(&mut value)
-                    .records
-                    .first_mut()
-                    .ok_or(StreamError::Unavailable)? = record.clone();
-                value.commit_id = envelope.commit_id;
-                value.committed_at_micros = envelope.committed_at_micros;
-                observed = observed.take().or(record_codec(
-                    &mut codec,
-                    std::mem::size_of::<Record>() as u64,
-                    0,
-                )
-                .err());
-                observed = observed
-                    .take()
-                    .or(bytes.record(envelope_payload_bytes(envelope)).err());
-                let (digest, hashed) = digest(
-                    &recovery_conditions,
-                    &source.path,
-                    &crate::AppendRecord {
-                        value: record.value.clone(),
-                        headers: record.headers.clone(),
-                    },
-                );
-                observed = observed
-                    .take()
-                    .or(record_codec(&mut codec, 0, hashed).err());
-                if digest != stored.digest {
-                    return Err(StreamError::IdempotencyMismatch);
+        let recovery = work.record(NativeProviderFuture::try_observed(
+            &meter,
+            crate::native::span!("acyclic.stream.inspect_idempotency"),
+            async move {
+                let state = state.read().await;
+                let (stored, observed) =
+                    read.attempt(|| state.replay(recovery_key.as_bytes(), || probes.record(1)));
+                let stored = stored?;
+                let mut observed = observed.err();
+                let result = (|| {
+                    let Some(stored) = stored else {
+                        return Ok((None, None));
+                    };
+                    let (mut value, claim) = prototype;
+                    let target = envelope_append(&value);
+                    let envelope = prepared_envelope(
+                        stored,
+                        maximum,
+                        &target.path,
+                        target.start,
+                        target.tail,
+                    )?;
+                    let source = envelope_append(envelope);
+                    let record = source.records.first().ok_or(StreamError::Unavailable)?;
+                    *envelope_append_mut(&mut value)
+                        .records
+                        .first_mut()
+                        .ok_or(StreamError::Unavailable)? = record.clone();
+                    value.commit_id = envelope.commit_id;
+                    value.committed_at_micros = envelope.committed_at_micros;
+                    observed = observed.take().or(record_codec(
+                        &mut codec,
+                        std::mem::size_of::<Record>() as u64,
+                        0,
+                    )
+                    .err());
+                    observed = observed
+                        .take()
+                        .or(bytes.record(envelope_payload_bytes(envelope)).err());
+                    let (digest, hashed) = digest(
+                        &recovery_conditions,
+                        &source.path,
+                        &crate::AppendRecord {
+                            value: record.value.clone(),
+                            headers: record.headers.clone(),
+                        },
+                    );
+                    observed = observed
+                        .take()
+                        .or(record_codec(&mut codec, 0, hashed).err());
+                    if digest != stored.digest {
+                        return Err(StreamError::IdempotencyMismatch);
+                    }
+                    Ok((
+                        Some(IdempotencyObservation {
+                            idempotency_key: recovery_key,
+                            request_digest: stored.digest,
+                            outcome: IdempotencyOutcome::Commit(value),
+                            revision: Some(revisions.at(stored.index)),
+                        }),
+                        claim,
+                    ))
+                })();
+                if let Some(error) = observed.or(probes.record(8).err()) {
+                    return Err(error);
                 }
-                Ok((
-                    Some(IdempotencyObservation {
-                        idempotency_key: recovery_key,
-                        request_digest: stored.digest,
-                        outcome: IdempotencyOutcome::Commit(value),
-                        revision: Some(revisions.at(stored.index)),
-                    }),
-                    claim,
-                ))
-            })();
-            if let Some(error) = observed.or(probes.record(8).err()) {
-                return Err(error);
-            }
-            Ok(result.map(|(value, claim)| {
-                crate::NativeStreamOutput::new(
-                    value,
-                    claim.unwrap_or_else(|| {
-                        acyclic_native_runtime::ReadAllocation::empty(&recovery_meter)
-                    }),
-                )
-            }))
-        }))?;
+                Ok(result.map(|(value, claim)| {
+                    crate::NativeStreamOutput::new(
+                        value,
+                        claim.unwrap_or_else(|| {
+                            acyclic_native_runtime::ReadAllocation::empty(&recovery_meter)
+                        }),
+                    )
+                }))
+            },
+            |result| crate::native::outcome(result, StreamError::code),
+        ))?;
         Ok(recovery)
     }
 }

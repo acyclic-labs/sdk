@@ -45,7 +45,7 @@ impl<T> Scoped<T> {
     pub fn set_dispatch(&mut self, dispatch: Dispatch) {
         self.context = Some(OperationSpan {
             span: Span::none(),
-            context: Span::none(),
+            caller: Span::none(),
             dispatch,
         });
     }

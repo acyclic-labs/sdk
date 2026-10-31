@@ -13,7 +13,11 @@ pub trait NativeStreamProvider: StreamProvider {
         &self,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, ()> {
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        NativeProviderFuture::ready_observed(
+            crate::native::span!("acyclic.stream.durability_barrier"),
+            Ok(Err(StreamError::Unsupported)),
+            StreamError::code,
+        )
     }
     /// Reserves a phase's completion before writes are deferred. Polling seals
     /// the then-current accepted prefix without admitting new caller work.
@@ -21,7 +25,11 @@ pub trait NativeStreamProvider: StreamProvider {
         &self,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<NativeProviderFuture<'_, ()>> {
-        Err(std::io::ErrorKind::Unsupported.into())
+        acyclic_observability::operation!(
+            "acyclic.stream.durability_barrier",
+            |_: &std::io::Error| "unsupported",
+            || Err(std::io::ErrorKind::Unsupported.into())
+        )
     }
     /// Canonical inspection funded by the original native work owner.
     fn native_inspect_idempotency(
@@ -30,7 +38,11 @@ pub trait NativeStreamProvider: StreamProvider {
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
         let _ = key;
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        NativeProviderFuture::ready_observed(
+            crate::native::span!("acyclic.stream.inspect_idempotency"),
+            Ok(Err(StreamError::Unsupported)),
+            StreamError::code,
+        )
     }
     /// Canonical tail observation on the original ledger.
     fn native_tail(
@@ -39,7 +51,11 @@ pub trait NativeStreamProvider: StreamProvider {
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, u64> {
         let _ = path;
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        NativeProviderFuture::ready_observed(
+            crate::native::span!("acyclic.stream.tail"),
+            Ok(Err(StreamError::Unsupported)),
+            StreamError::code,
+        )
     }
     /// Canonical finite read; original causes and output custody are retained.
     fn native_read(
@@ -48,7 +64,11 @@ pub trait NativeStreamProvider: StreamProvider {
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, NativeRecordStream> {
         let _ = request;
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        NativeProviderFuture::ready_observed(
+            crate::native::span!("acyclic.stream.read"),
+            Ok(Err(StreamError::Unsupported)),
+            StreamError::code,
+        )
     }
     /// Publishes a genuine request family on its original native work owner.
     /// The Commit request carries its deadline independently of its retry digest.
@@ -57,8 +77,17 @@ pub trait NativeStreamProvider: StreamProvider {
         request: WriteRequest,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, WriteOutcome> {
+        let span = match &request {
+            WriteRequest::Append(_) => crate::native::span!("acyclic.stream.append"),
+            WriteRequest::Fork(_) => crate::native::span!("acyclic.stream.fork"),
+            WriteRequest::Commit(_) => crate::native::span!("acyclic.stream.commit"),
+        };
         let _ = request;
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        NativeProviderFuture::ready_observed(
+            span,
+            Ok(Err(StreamError::Unsupported)),
+            StreamError::code,
+        )
     }
     /// Executes the canonical native Commit with an owned original guard before every protected publication attempt.
     fn native_commit_guarded<E, F, Fut>(
@@ -75,7 +104,11 @@ pub trait NativeStreamProvider: StreamProvider {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let _ = (request, deadline_unix_millis, before);
-        NativeProviderFuture::ready(Ok(Err(E::from(StreamError::Unsupported))))
+        NativeProviderFuture::ready_observed(
+            crate::native::span!("acyclic.stream.commit"),
+            Ok(Err(E::from(StreamError::Unsupported))),
+            |_| "unsupported",
+        )
     }
     /// Funds the canonical two-tail/one-append/one-record Commit ingress before physical action.
     fn native_prepare_commit(
@@ -85,6 +118,10 @@ pub trait NativeStreamProvider: StreamProvider {
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
         let _ = (request, maximum_record_bytes);
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        NativeProviderFuture::ready_observed(
+            crate::native::span!("acyclic.stream.prepare_commit"),
+            Ok(Err(StreamError::Unsupported)),
+            StreamError::code,
+        )
     }
 }

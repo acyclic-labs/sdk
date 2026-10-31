@@ -262,32 +262,39 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Durably pause or resume. Pause fences in-flight publication; resume wakes.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
-        let _refresh = RefreshOnDrop(self.slot(actor), true);
-        loop {
-            let snapshot = self.store.load(actor).await?;
-            let state = snapshot
-                .state()
-                .ok_or(Error::Invalid("actor state was never created"))?;
-            if state.paused() == paused {
-                break;
-            }
-            let operation = if paused { "pause" } else { "resume" };
-            match self
-                .store
-                .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
-                .await
-            {
-                Err(Error::Conflict) => {}
-                result => {
-                    result?;
-                    break;
+        acyclic_observability::async_operation!(
+            "acyclic.actors.pause",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let _refresh = RefreshOnDrop(self.slot(actor), true);
+                loop {
+                    let snapshot = self.store.load(actor).await?;
+                    let state = snapshot
+                        .state()
+                        .ok_or(Error::Invalid("actor state was never created"))?;
+                    if state.paused() == paused {
+                        break;
+                    }
+                    let operation = if paused { "pause" } else { "resume" };
+                    match self
+                        .store
+                        .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
+                        .await
+                    {
+                        Err(Error::Conflict) => {}
+                        result => {
+                            result?;
+                            break;
+                        }
+                    }
                 }
+                if !paused {
+                    self.wake(actor);
+                }
+                Ok(())
             }
-        }
-        if !paused {
-            self.wake(actor);
-        }
-        Ok(())
+        )
     }
 
     /// Run every currently ready or due actor to quiescence, then return the
@@ -317,29 +324,36 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Only declared interrupts retain a follow while their handler is
     /// running; no idle follow is retained.
     pub async fn drain_actor(&self, actor: &ActorReference) -> Result<(), Error> {
-        let delivery = {
-            // Pin the event under the same table lock as hibernation, before
-            // waiting for admission. Cancellation drops this guard as well.
-            let actors = self
-                .shard(actor)
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let slot = actors
-                .get(actor)
-                .ok_or(Error::Invalid("actor is not tracked"))?;
-            slot.event_deliveries
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                    count.checked_add(1)
-                })
-                .map_err(|_| Error::Invalid("event delivery count overflow"))?;
-            EventDelivery(Arc::clone(slot))
-        };
-        while !self.deliver(actor, &delivery.0).await? {
-            // Drop both the actor lock and admission before queueing another
-            // batch. Finite event delivery still drains its committed input.
-            limits::yield_now().await;
-        }
-        Ok(())
+        acyclic_observability::async_operation!(
+            "acyclic.actors.drain_actor",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let delivery = {
+                    // Pin the event under the same table lock as hibernation, before
+                    // waiting for admission. Cancellation drops this guard as well.
+                    let actors = self
+                        .shard(actor)
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let slot = actors
+                        .get(actor)
+                        .ok_or(Error::Invalid("actor is not tracked"))?;
+                    slot.event_deliveries
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                            count.checked_add(1)
+                        })
+                        .map_err(|_| Error::Invalid("event delivery count overflow"))?;
+                    EventDelivery(Arc::clone(slot))
+                };
+                while !self.deliver(actor, &delivery.0).await? {
+                    // Drop both the actor lock and admission before queueing another
+                    // batch. Finite event delivery still drains its committed input.
+                    limits::yield_now().await;
+                }
+                Ok(())
+            }
+        )
     }
 
     /// Event-owned delivery followed by the committed alarm/hibernation handoff.
@@ -347,17 +361,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// persists the returned deadline before completing the native event.
     /// A failed/unknown publication retains its slot and participant custody.
     pub async fn drain_event(&self, actor: &ActorReference) -> Result<Option<u64>, Error> {
-        self.track(actor.clone())?;
-        self.drain_actor(actor).await?;
-        let snapshot = self.store.load(actor).await?;
-        let alarm = snapshot
-            .state()
-            .filter(|state| !state.paused())
-            .and_then(|state| state.alarm().pending());
-        if !self.release(actor) {
-            return Err(Error::Invalid("actor still owns an unsettled delivery"));
-        }
-        Ok(alarm)
+        acyclic_observability::async_operation!(
+            "acyclic.actors.drain_event",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.track(actor.clone())?;
+                self.drain_actor(actor).await?;
+                let snapshot = self.store.load(actor).await?;
+                let alarm = snapshot
+                    .state()
+                    .filter(|state| !state.paused())
+                    .and_then(|state| state.alarm().pending());
+                if !self.release(actor) {
+                    return Err(Error::Invalid("actor still owns an unsettled delivery"));
+                }
+                Ok(alarm)
+            }
+        )
     }
 
     /// Host forever: follow the root's activation log to discover actors
@@ -557,21 +578,28 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Deliver one bounded batch. False retains a wake for the next batch.
     async fn deliver(&self, actor: &ActorReference, slot: &Arc<Slot>) -> Result<bool, Error> {
-        self.handler.manifest().validate_interrupts()?;
-        // Duplicate events for one actor wait outside global admission. Only
-        // an actor that can make progress may occupy an active delivery slot.
-        let inner = slot.inner.lock().await;
-        let _admission = self
-            .admission
-            .acquire()
-            .await
-            .map_err(|_| Error::Invalid("runtime admission is closed"))?;
-        let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
-        let result = self.deliver_retained(actor, slot, inner).await;
-        // Cancellation can interrupt a committed publication before its receipt
-        // is retained. A completed attempt handles its outcome in the loop.
-        refresh.0 = None;
-        result
+        acyclic_observability::async_operation!(
+            "acyclic.actors.deliver",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.handler.manifest().validate_interrupts()?;
+                // Duplicate events for one actor wait outside global admission. Only
+                // an actor that can make progress may occupy an active delivery slot.
+                let inner = slot.inner.lock().await;
+                let _admission = self
+                    .admission
+                    .acquire()
+                    .await
+                    .map_err(|_| Error::Invalid("runtime admission is closed"))?;
+                let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
+                let result = self.deliver_retained(actor, slot, inner).await;
+                // Cancellation can interrupt a committed publication before its receipt
+                // is retained. A completed attempt handles its outcome in the loop.
+                refresh.0 = None;
+                result
+            }
+        )
     }
 
     async fn deliver_retained(

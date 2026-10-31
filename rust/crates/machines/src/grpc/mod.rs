@@ -34,17 +34,22 @@ impl<E: RpcEndpoint> Provider<E> {
         &self,
         expected: Option<Image>,
     ) -> Result<ImageQualification, ProviderError> {
-        let response = self
-            .client()
-            .await?
-            .qualify_image(wire::QualifyImageRequest {
-                protocol: Some(protocol()),
-                image: expected.as_ref().map(encode_image).transpose()?,
-            })
-            .await
-            .map_err(|error| read_error(&error))?
-            .into_inner();
-        decode_qualification(response, expected.as_ref())
+        obs::operation!("acyclic.machines.qualify_image", observation, async {
+            let response = self
+                .client()
+                .await?
+                .qualify_image(wire::QualifyImageRequest {
+                    protocol: Some(protocol()),
+                    image: expected.as_ref().map(encode_image).transpose()?,
+                })
+                .await
+                .map_err(|error| {
+                    obs::failed_rpc(&observation, &error);
+                    read_error(&error)
+                })?
+                .into_inner();
+            decode_qualification(response, expected.as_ref())
+        })
     }
 }
 

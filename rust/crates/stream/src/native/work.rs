@@ -37,16 +37,32 @@ impl Work {
 
     pub(crate) fn start<'a, T, E, F>(
         meter: Arc<dyn NativeReadMeter>,
-        operation: impl FnOnce(Arc<Self>) -> F,
+        span: acyclic_native_runtime::obs::OperationSpan,
+        operation: impl FnOnce(Arc<Self>, acyclic_observability::Completion) -> F,
     ) -> crate::NativeProviderFuture<'a, T, E>
     where
         F: std::future::Future<Output = crate::NativeStreamResult<T, E>> + Send + 'a,
     {
         let work = match Self::new(meter) {
             Ok(work) => work,
-            Err(error) => return crate::NativeProviderFuture::ready(Err(error)),
+            Err(error) => {
+                acyclic_observability::record_outcome(&span, Some(super::io_kind(&error)));
+                return crate::NativeProviderFuture::ready(Err(error));
+            }
         };
-        crate::NativeProviderFuture::new(&Arc::clone(&work.meter), operation(work))
+        let meter = Arc::clone(&work.meter);
+        match crate::NativeProviderFuture::try_build(&meter, || {
+            span.scope(operation(
+                work,
+                acyclic_observability::Completion::new(&span),
+            ))
+        }) {
+            Ok(future) => future,
+            Err(error) => {
+                acyclic_observability::record_outcome(&span, Some(super::io_kind(&error)));
+                crate::NativeProviderFuture::ready(Err(error))
+            }
+        }
     }
 
     pub(crate) fn new(meter: Arc<dyn NativeReadMeter>) -> std::io::Result<Arc<Self>> {

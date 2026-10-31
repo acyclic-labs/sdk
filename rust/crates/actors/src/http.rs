@@ -260,17 +260,6 @@ impl Client {
         }
     }
 
-    #[tracing::instrument(
-            name = "acyclic.actors.http.call",
-            level = "info",
-            skip_all,
-            fields(
-                route = route,
-                http.status = tracing::field::Empty,
-                outcome = tracing::field::Empty,
-                error.kind = tracing::field::Empty,
-            )
-    )]
     async fn call<I: Message, O: Message + Default>(
         &self,
         route: &'static str,
@@ -278,6 +267,13 @@ impl Client {
         output: &str,
         request: &I,
     ) -> Result<O, Error> {
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.actors.http.call",
+            route,
+            http.status = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
         let operation = async {
             let body = encode(&self.descriptors, input, request)?;
             let request = self.transport.post(
@@ -302,7 +298,7 @@ impl Client {
                     lease.reject().await?;
                 }
             }
-            tracing::Span::current().record("http.status", status.as_u16());
+            span.record("http.status", status.as_u16());
             let bytes = self
                 .stage(async {
                     response_body(&mut response, self.maximum)
@@ -333,15 +329,12 @@ impl Client {
             }
             Ok(decoded)
         };
-        let result = self.stage(operation).await;
-        let span = tracing::Span::current();
-        match &result {
-            Ok(_) => span.record("outcome", "ok"),
-            Err(error) => span
-                .record("outcome", "err")
-                .record("error.kind", error.kind()),
-        };
-        result
+        span.scope(acyclic_observability::observe(
+            &span,
+            self.stage(operation),
+            Error::kind,
+        ))
+        .await
     }
 
     operations! {

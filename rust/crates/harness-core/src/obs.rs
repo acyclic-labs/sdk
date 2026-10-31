@@ -68,28 +68,11 @@ pub(crate) fn traced<'a, T: 'a>(
     span: OperationSpan,
     future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
 ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let context = span.clone();
-        Box::pin(context.scope(async move {
-            let result = future.await;
-            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-            if let Err(error) = &result {
-                span.record("error.kind", error.kind());
-            }
-            result
-        }))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let OperationSpan = span;
-        Box::pin(future)
-    }
+    Box::pin(traced_future(span, future))
 }
 
 // The unmetered caller supplies the one required trait-erasure box. Keep the
 // existing boxed path above intact for admitted future layouts and charges.
-#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
 #[inline(always)]
 pub(crate) fn traced_future<'a, T: 'a>(
     span: OperationSpan,
@@ -97,18 +80,13 @@ pub(crate) fn traced_future<'a, T: 'a>(
 ) -> impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use futures::FutureExt as _;
-
-        let context = span.clone();
         // Poll the underlying future in place. A forwarding async block retains
         // its initial future and await state, duplicating large journal frames.
-        context.scope(future.map(move |result| {
-            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-            if let Err(error) = &result {
-                span.record("error.kind", error.kind());
-            }
-            result
-        }))
+        span.scope(acyclic_observability::observe(
+            &span,
+            future,
+            crate::Error::kind,
+        ))
     }
     #[cfg(target_arch = "wasm32")]
     {

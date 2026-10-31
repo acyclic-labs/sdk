@@ -99,7 +99,8 @@ pub(crate) fn outcome_on<T, E: ErrorKind>(
     result: Result<T, E>,
 ) -> Result<T, E> {
     #[cfg(not(target_arch = "wasm32"))]
-    record_outcome(span, result.as_ref().err().map(E::kind));
+    return acyclic_observability::finish(span, result, E::kind);
+    #[cfg(target_arch = "wasm32")]
     result
 }
 
@@ -154,10 +155,7 @@ fn record_work(span: &tracing::Span, work: &WorkCounters) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn record_outcome(span: &tracing::Span, kind: Option<&'static str>) {
-    match kind {
-        None => span.record("outcome", "ok"),
-        Some(kind) => span.record("outcome", "err").record("error.kind", kind),
-    };
+    acyclic_observability::record_outcome(span, kind);
 }
 
 #[cfg(test)]

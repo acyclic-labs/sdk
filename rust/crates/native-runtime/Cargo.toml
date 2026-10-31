@@ -79,6 +79,7 @@ tempfile = "3.27.0"
 loom = "=0.7.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-observability = { version = "=0.2.0", path = "../observability" }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 futures-core = "0.3.31"
 pin-project-lite = "0.2.17"

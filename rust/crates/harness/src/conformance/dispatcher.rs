@@ -62,7 +62,7 @@ async fn until(
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = Arc::new(Observed::capturing(storage.open().await?));
     let host = vectors::host(backend, provider.clone())?;
     let agent = host
         .create(&vectors::intent("discovery-root")?, fixtures::adopted())
@@ -74,19 +74,19 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let root = StreamPath::new(ACTORS)?;
     let cut = provider.tail(root.clone()).await?;
     let opened = provider
-        .appends()
+        .take_appends()
         .into_iter()
         .find(|request| request.path == root)
         .ok_or("activation open was not attempted")?;
     drop(host);
     drop(provider);
-    let reopened = Arc::new(Observed::new(storage.open().await?));
+    let reopened = Arc::new(Observed::capturing(storage.open().await?));
     let host = vectors::host(backend, reopened.clone())?;
     host.send(&agent, &fixtures::sender(), &fixtures::request("after")?)
         .await?;
     until(&host, output(&host, &agent, 1, b"after")).await?;
     let follows: Vec<_> = reopened
-        .follows()
+        .take_follows()
         .into_iter()
         .filter(|(path, _)| path == &root)
         .collect();
@@ -98,7 +98,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         )
         .into());
     }
-    if reopened.appends().first() != Some(&opened) {
+    if reopened.take_appends().first() != Some(&opened) {
         return Err("activation reopen changed its request or key".into());
     }
     cursor_crashes(backend).await
@@ -108,7 +108,7 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
     use super::observe::Fault;
     for fault in [Fault::Before, Fault::After] {
         let storage = backend.fresh().await?;
-        let provider = Arc::new(Observed::new(storage.open().await?));
+        let provider = Arc::new(Observed::capturing(storage.open().await?));
         let host = vectors::host(backend, provider.clone())?;
         let agent = host
             .create(&vectors::intent("cursor-crash")?, fixtures::adopted())
@@ -121,16 +121,15 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
             return Err("cursor crash did not interrupt discovery".into());
         }
         let failed = provider
-            .commits()
-            .last()
-            .cloned()
+            .take_commits()
+            .pop()
             .ok_or("cursor commit was not attempted")?;
         drop(host);
         drop(provider);
-        let reopened = Arc::new(Observed::new(storage.open().await?));
+        let reopened = Arc::new(Observed::capturing(storage.open().await?));
         let host = vectors::host(backend, reopened.clone())?;
         until(&host, output(&host, &agent, 0, b"once")).await?;
-        if matches!(fault, Fault::Before) && reopened.commits().first() != Some(&failed) {
+        if matches!(fault, Fault::Before) && reopened.take_commits().first() != Some(&failed) {
             return Err("uncommitted cursor did not retry its exact request/key".into());
         }
         if vectors::values(&*reopened, agent.conversation()?).await? != [b"once".to_vec()] {

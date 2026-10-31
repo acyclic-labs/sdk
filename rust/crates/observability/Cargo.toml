@@ -1,0 +1,29 @@
+[package]
+name = "acyclic-observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "One operation span, latency distribution and outcome ledger for Acyclic primitives"
+
+[dependencies]
+serde.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
+tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
+futures.workspace = true
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

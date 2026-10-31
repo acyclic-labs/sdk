@@ -105,18 +105,20 @@ impl Inference {
         Self::connect_inner(endpoint, None, Some(credential), ca_pem).await
     }
 
-    #[tracing::instrument(
-        name = "acyclic.inference.connect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     async fn connect_inner(
         endpoint: &str,
         api_key: Option<&str>,
         credential: Option<CredentialProvider>,
         ca_pem: &[u8],
     ) -> Result<Self, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.connect",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 let endpoint = Endpoint::new(endpoint.to_owned())?;
                 if endpoint.uri().scheme_str() != Some("https") {
@@ -144,9 +146,10 @@ impl Inference {
                     credential,
                     client_instance: *uuid::Uuid::now_v7().as_bytes(),
                 })))
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Prepares one immutable Context creation with a stable pre-dispatch identity.
@@ -160,16 +163,18 @@ impl Inference {
     }
 
     /// Creates or reconciles the same prepared Context and requires a retained revision.
-    #[tracing::instrument(
-        name = "acyclic.inference.context.create",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn create_context(
         &self,
         request: &wire::CreateContextRequest,
     ) -> Result<[u8; 32], Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.context.create",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 bounded(request)?;
                 let receipt = self
@@ -182,19 +187,22 @@ impl Inference {
                     return Err(Error::Invalid("creation did not retain a revision"));
                 }
                 fixed(&receipt.revision)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Reads one retained Context and validates its exact revision and logical identity.
-    #[tracing::instrument(
-        name = "acyclic.inference.context.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn inspect_context(&self, revision: [u8; 32]) -> Result<wire::ContextView, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.context.inspect",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 nonzero(&revision)?;
                 let view = self
@@ -209,22 +217,25 @@ impl Inference {
                     .into_inner();
                 validate_context_view(&view, revision)?;
                 Ok(view)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Submits or reconciles the same prepared mutation and validates its receipt.
-    #[tracing::instrument(
-        name = "acyclic.inference.context.mutate",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn mutate_context(
         &self,
         request: &wire::MutateContextRequest,
     ) -> Result<wire::MutationReceipt, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.context.mutate",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 bounded(request)?;
                 fixed::<32>(&request.source)?;
@@ -235,9 +246,10 @@ impl Inference {
                     .into_inner();
                 validate_receipt(&receipt)?;
                 Ok(receipt)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Prepares one recoverable Run against an explicit immutable revision.
@@ -330,16 +342,18 @@ impl Inference {
     }
 
     /// Admits or reconciles the same prepared evaluation request.
-    #[tracing::instrument(
-        name = "acyclic.inference.evaluation.create",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn create_evaluation(
         &self,
         request: &wire::CreateEvaluationRequest,
     ) -> Result<[u8; 16], Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.evaluation.create",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 bounded(request)?;
                 let expected = fixed(
@@ -361,22 +375,25 @@ impl Inference {
                     .into_inner();
                 validate_evaluation_admission(&view, expected, spec)?;
                 Ok(expected)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Inspects one retained evaluation ID and validates its exact result evidence.
-    #[tracing::instrument(
-        name = "acyclic.inference.evaluation.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn inspect_evaluation(
         &self,
         evaluation_id: [u8; 16],
     ) -> Result<wire::EvaluationView, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.evaluation.inspect",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 nonzero(&evaluation_id)?;
                 let view = self
@@ -391,19 +408,22 @@ impl Inference {
                     .into_inner();
                 validate_evaluation_view(&view, evaluation_id)?;
                 Ok(view)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Discover exact model revisions and the customer features currently admitted for them.
-    #[tracing::instrument(
-        name = "acyclic.inference.models",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn models(&self) -> Result<Vec<wire::ModelCapability>, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.models",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 let response = self
                     .discovery()
@@ -440,22 +460,25 @@ impl Inference {
                     }
                 }
                 Ok(response.models)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Admits or reconciles the same prepared Run and validates its identity and input.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.generate",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn generate_run(
         &self,
         request: &wire::GenerateRunRequest,
     ) -> Result<[u8; 16], Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.run.generate",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 bounded(request)?;
                 if request.maximum_output == 0 {
@@ -478,19 +501,22 @@ impl Inference {
                 contract::validate_generated_run_view(&view, run_id, context)
                     .map_err(contract_error)?;
                 Ok(run_id)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Inspects durable Run state and validates its exact identity.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn inspect_run(&self, run_id: [u8; 16]) -> Result<wire::RunView, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.run.inspect",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 let view = self
                     .runs()
@@ -504,23 +530,26 @@ impl Inference {
                     .into_inner();
                 validate_run_view(&view, run_id)?;
                 Ok(view)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Resumes the validated event stream at an inclusive zero-based cursor.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.watch",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn watch_run(
         &self,
         run_id: [u8; 16],
         from_sequence: u64,
     ) -> Result<RunEvents, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.run.watch",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 let view = self.inspect_run(run_id).await?;
                 let state =
@@ -546,19 +575,22 @@ impl Inference {
                     stream: Some(stream),
                     state,
                 })
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Requests durable cancellation and validates the resulting Run state.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.cancel",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn cancel_run(&self, run_id: [u8; 16]) -> Result<wire::RunView, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.run.cancel",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 let view = self
                     .runs()
@@ -572,19 +604,22 @@ impl Inference {
                     .into_inner();
                 validate_run_view(&view, run_id)?;
                 Ok(view)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Admits or reconciles the same prepared warm-retention request.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.retain",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn retain_warm(&self, request: &wire::RetainWarmRequest) -> Result<[u8; 32], Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.warm.retain",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 bounded(request)?;
                 contract::validate_retain_request(request)
@@ -597,19 +632,22 @@ impl Inference {
                 contract::validate_retain_response(&view, request)
                     .map_err(|error| Error::Invalid(error.message()))?;
                 fixed(&view.commitment)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Inspects one warm commitment and validates the returned lifecycle evidence.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn inspect_warm(&self, commitment: [u8; 32]) -> Result<wire::WarmView, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.warm.inspect",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 nonzero(&commitment)?;
                 let view = self
@@ -624,22 +662,25 @@ impl Inference {
                     .into_inner();
                 validate_warm_view(&view, None, Some(commitment))?;
                 Ok(view)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Renews the same prepared warm promise without changing its requested policy.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.renew",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn renew_warm(
         &self,
         request: &wire::RenewWarmRequest,
     ) -> Result<wire::WarmView, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.warm.renew",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 bounded(request)?;
                 contract::validate_renew_request(request)
@@ -652,22 +693,25 @@ impl Inference {
                 contract::validate_renew_response(&view, request)
                     .map_err(|error| Error::Invalid(error.message()))?;
                 Ok(view)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     /// Releases the same prepared warm promise and requires factual terminal release.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.release",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
     pub async fn release_warm(
         &self,
         request: &wire::ReleaseWarmRequest,
     ) -> Result<wire::WarmView, Error> {
-        obs::finish(
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.inference.warm.release",
+            outcome = tracing::field::Empty,
+            rpc.code = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        span.scope(acyclic_observability::observe_output(
+            &span,
             async {
                 bounded(request)?;
                 let commitment = fixed::<32>(&request.commitment)?;
@@ -683,9 +727,10 @@ impl Inference {
                     return Err(Error::Invalid("warm release is not terminal"));
                 }
                 Ok(view)
-            }
-            .await,
-        )
+            },
+            |result| obs::outcome(&span, result),
+        ))
+        .await
     }
 
     async fn request<T>(&self, value: T) -> Result<Request<T>, Error> {

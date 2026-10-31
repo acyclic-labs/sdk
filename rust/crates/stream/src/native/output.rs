@@ -40,6 +40,17 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
     where
         F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
     {
+        Self::try_build(meter, || future)
+    }
+
+    /// Admits the concrete frame before constructing its completion owner.
+    pub(crate) fn try_build<F>(
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        build: impl FnOnce() -> F,
+    ) -> std::io::Result<Self>
+    where
+        F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
+    {
         let bytes = std::mem::size_of::<F>();
         let allocation = if bytes == 0 {
             acyclic_native_runtime::ReadAllocation::empty(meter)
@@ -47,9 +58,56 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
             acyclic_native_runtime::ReadAllocation::new(meter, bytes)?
         };
         Ok(Self::Funded {
-            future: Box::pin(future),
+            future: Box::pin(build()),
             allocation,
         })
+    }
+
+    pub(crate) fn observed<F, K>(
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        span: acyclic_native_runtime::obs::OperationSpan,
+        future: F,
+        error: K,
+    ) -> Self
+    where
+        T: 'a,
+        E: 'a,
+        F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
+        K: FnOnce(&NativeStreamResult<T, E>) -> Option<&'static str> + Send + 'a,
+    {
+        match Self::try_observed(meter, span, future, error) {
+            Ok(future) => future,
+            Err(error) => Self::ready(Err(error)),
+        }
+    }
+
+    pub(crate) fn try_observed<F, K>(
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        span: acyclic_native_runtime::obs::OperationSpan,
+        future: F,
+        error: K,
+    ) -> std::io::Result<Self>
+    where
+        T: 'a,
+        E: 'a,
+        F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
+        K: FnOnce(&NativeStreamResult<T, E>) -> Option<&'static str> + Send + 'a,
+    {
+        Self::try_build(meter, || {
+            span.scope(acyclic_observability::observe_output(&span, future, error))
+        })
+        .inspect_err(|error| span.record_error(Some(error)))
+    }
+
+    pub(crate) fn ready_observed(
+        span: acyclic_native_runtime::obs::OperationSpan,
+        result: NativeStreamResult<T, E>,
+        kind: impl FnOnce(&E) -> &'static str,
+    ) -> Self {
+        Self::ready(span.in_scope(|| {
+            acyclic_observability::Completion::new(&span)
+                .complete(result, |result| super::outcome(result, kind))
+        }))
     }
 
     /// Returns a result without allocating a provider future.

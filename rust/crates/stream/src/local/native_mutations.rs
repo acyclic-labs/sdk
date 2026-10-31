@@ -18,7 +18,9 @@ impl LocalStream {
         describe_commit(&request);
         let original = Arc::clone(&meter);
         let stream = self.clone();
-        crate::native::Work::start(meter, |work| async move {
+        let span = crate::native::span!("acyclic.stream.commit");
+        let worker_context = span.clone();
+        crate::native::Work::start(meter, span, |work, completion| async move {
             let mut stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream
@@ -30,66 +32,71 @@ impl LocalStream {
             let input = match provider.request_claim(&request) {
                 Ok(input) => input,
                 Err(error) => {
-                    return work
-                        .finish(Err(error))
-                        .map(|result| result.map_err(E::from));
+                    return completion.complete(
+                        work.finish(Err(error))
+                            .map(|result| result.map_err(E::from)),
+                        |result| crate::native::outcome(result, |_| "guarded"),
+                    );
                 }
             };
-            let worker = publication_scope(async move {
-                let _input = input;
-                let result = loop {
-                    let revision = *stream.inner.revision.borrow();
-                    let replay = match provider.has_replay(&request.idempotency_key).await {
-                        Ok(replay) => replay,
-                        Err(error) => {
-                            return work
-                                .finish(Err(error))
-                                .map(|result| result.map_err(E::from));
-                        }
-                    };
-                    if !replay && let Err(error) = before().await {
-                        return Ok(Err(error));
-                    }
-                    let Ok(visibility) = stream.inner.visibility.try_write() else {
-                        drop(stream.inner.visibility.write().await);
-                        continue;
-                    };
-                    if revision != *stream.inner.revision.borrow() {
-                        drop(visibility);
-                        continue;
-                    }
-                    let publication = stream.inner.publication.write().await;
-                    let mut result = async {
-                        stream.check_available()?;
-                        let execution = stream
-                            .execute(WriteRequest::Commit(request), deadline)
-                            .await?;
-                        let crate::WriteOutcome::Commit(outcome) = execution.outcome else {
-                            return Err(StreamError::InvalidResponse);
+            let worker = worker_context.scope(completion.observe_output(
+                publication_scope(async move {
+                    let _input = input;
+                    let result = loop {
+                        let revision = *stream.inner.revision.borrow();
+                        let replay = match provider.has_replay(&request.idempotency_key).await {
+                            Ok(replay) => replay,
+                            Err(error) => {
+                                return work
+                                    .finish(Err(error))
+                                    .map(|result| result.map_err(E::from));
+                            }
                         };
-                        Ok((outcome, execution.allocation))
-                    }
-                    .await;
-                    stream.inner.commit_clock.unpin();
-                    let _retained = stream.release_publication(publication);
-                    if result.is_ok()
-                        && let Err(error) = stream.compact_if_due().await
-                    {
-                        result = Err(error);
-                    }
-                    let required = stream.inner.required();
-                    drop(visibility);
-                    let result = match required {
-                        Ok(required) => stream.await_publication(required).await.and(result),
-                        Err(error) => Err(error),
+                        if !replay && let Err(error) = before().await {
+                            return Ok(Err(error));
+                        }
+                        let Ok(visibility) = stream.inner.visibility.try_write() else {
+                            drop(stream.inner.visibility.write().await);
+                            continue;
+                        };
+                        if revision != *stream.inner.revision.borrow() {
+                            drop(visibility);
+                            continue;
+                        }
+                        let publication = stream.inner.publication.write().await;
+                        let mut result = async {
+                            stream.check_available()?;
+                            let execution = stream
+                                .execute(WriteRequest::Commit(request), deadline)
+                                .await?;
+                            let crate::WriteOutcome::Commit(outcome) = execution.outcome else {
+                                return Err(StreamError::InvalidResponse);
+                            };
+                            Ok((outcome, execution.allocation))
+                        }
+                        .await;
+                        stream.inner.commit_clock.unpin();
+                        let _retained = stream.release_publication(publication);
+                        if result.is_ok()
+                            && let Err(error) = stream.compact_if_due().await
+                        {
+                            result = Err(error);
+                        }
+                        let required = stream.inner.required();
+                        drop(visibility);
+                        let result = match required {
+                            Ok(required) => stream.await_publication(required).await.and(result),
+                            Err(error) => Err(error),
+                        };
+                        break result;
                     };
-                    break result;
-                };
-                // Keep the callback's captured lease through the physical terminal.
-                drop(before);
-                work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
-                    .map(|result| result.map_err(E::from))
-            });
+                    // Keep the callback's captured lease through the physical terminal.
+                    drop(before);
+                    work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
+                        .map(|result| result.map_err(E::from))
+                }),
+                |result| crate::native::outcome(result, |_| "guarded"),
+            ));
             let allocation = acyclic_native_runtime::ReadAllocation::new(
                 &original,
                 std::mem::size_of_val(&worker),
@@ -121,7 +128,9 @@ impl LocalStream {
             )
         });
         let stream = self.clone();
-        crate::native::Work::start(meter, |work| async move {
+        let span = crate::native::span!("acyclic.stream.append");
+        let worker_context = span.clone();
+        crate::native::Work::start(meter, span, |work, completion| async move {
             let stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream
@@ -132,24 +141,38 @@ impl LocalStream {
             ));
             let input = match input {
                 Ok(input) => input,
-                Err(error) => return work.finish(Err(error)),
+                Err(error) => {
+                    return completion.complete(work.finish(Err(error)), |result| {
+                        crate::native::outcome(result, StreamError::code)
+                    });
+                }
             };
-            let span = obs::OperationSpan::new(tracing::info_span!(
-                "acyclic.stream.append",
-                outcome = Empty,
-                error.kind = Empty
-            ));
+            let terminal_work = Arc::clone(&work);
             let result = stream
-                .exclusive(span, move |stream| async move {
-                    let _input = input;
-                    let execution = stream.execute(WriteRequest::Append(request), None).await?;
-                    let crate::WriteOutcome::Append(outcome) = execution.outcome else {
-                        return Err(StreamError::InvalidResponse);
-                    };
-                    Ok((outcome, execution.allocation))
-                })
+                .exclusive(
+                    worker_context,
+                    move |stream| async move {
+                        let _input = input;
+                        let execution = stream.execute(WriteRequest::Append(request), None).await?;
+                        let crate::WriteOutcome::Append(outcome) = execution.outcome else {
+                            return Err(StreamError::InvalidResponse);
+                        };
+                        Ok((outcome, execution.allocation))
+                    },
+                    move |result| {
+                        completion.complete(
+                            terminal_work.finish(
+                                result.map(|(outcome, allocation)| (convert(outcome), allocation)),
+                            ),
+                            |result| crate::native::outcome(result, StreamError::code),
+                        )
+                    },
+                )
                 .await;
-            work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
+            match result {
+                Ok(result) => result,
+                Err(error) => work.finish(Err(error)),
+            }
         })
     }
 }

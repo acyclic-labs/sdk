@@ -32,11 +32,16 @@ async fn replay<const ELIDE: bool>(count: usize, bytes: Vec<u8>) -> (u64, u64) {
         let command = WriteRequest::Commit(request.clone());
         let span = obs::OperationSpan::new(tracing::info_span!("duplicate_replay_control"));
         stream
-            .exclusive(span, move |stream| async move {
-                let frame = stream.prepare(&command)?;
-                stream.persist(frame).await
-            })
+            .exclusive(
+                span,
+                move |stream| async move {
+                    let frame = stream.prepare(&command)?;
+                    stream.persist(frame).await
+                },
+                std::convert::identity,
+            )
             .await
+            .unwrap()
             .unwrap();
     }
     let after = stream.inner.required().unwrap();

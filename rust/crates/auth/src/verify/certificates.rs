@@ -30,7 +30,9 @@ impl CertificateVerifier {
         trust: &(impl Trust + ?Sized),
         timestamp: u64,
     ) -> Result<VerifiedCapability, VerifyError> {
-        verify_certified(bytes, trust, timestamp, self)
+        acyclic_observability::operation!("acyclic.auth.verify", VerifyError::kind, || {
+            verify_certified(bytes, trust, timestamp, self)
+        })
     }
 
     pub(super) fn authenticate(

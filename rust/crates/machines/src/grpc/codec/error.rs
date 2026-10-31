@@ -4,7 +4,6 @@ pub(in super::super) fn mutation_error(
     key: IdempotencyKey,
     value: &tonic::Status,
 ) -> ProviderError {
-    obs::failed_rpc(value);
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
@@ -15,8 +14,7 @@ pub(in super::super) fn mutation_error(
         _ => ProviderError::Rejected(value.message().into()),
     }
 }
-pub(in super::super) fn watch_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
-    obs::failed_rpc(value);
+pub(in super::super) fn watch_error(key: IdempotencyKey, _value: &tonic::Status) -> ProviderError {
     ProviderError::Indeterminate(key)
 }
 pub(in super::super) fn operation_watch_error(operation: OperationId) -> ProviderError {
@@ -26,7 +24,6 @@ pub(in super::super) fn recovery_error(
     key: IdempotencyKey,
     value: &tonic::Status,
 ) -> ProviderError {
-    obs::failed_rpc(value);
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
@@ -37,7 +34,6 @@ pub(in super::super) fn recovery_error(
     }
 }
 pub(in super::super) fn read_error(value: &tonic::Status) -> ProviderError {
-    obs::failed_rpc(value);
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
