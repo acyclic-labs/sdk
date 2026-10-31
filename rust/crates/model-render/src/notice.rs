@@ -17,7 +17,8 @@ pub struct Notice {
     pub body: Value,
     /// Whether delivery requests a model call.
     pub wake: bool,
-    /// Only unsent events with the same key may be collapsed.
+    /// Only unsent events with the same key may be collapsed. A keyed body
+    /// must be an object so that its accumulated changed paths are retained.
     pub coalesce_key: Option<String>,
 }
 
@@ -30,6 +31,11 @@ impl Notice {
         if self.source.is_empty() || self.kind.is_empty() {
             return Err(RenderError::InvalidItem(
                 "notice source and kind are required",
+            ));
+        }
+        if self.coalesce_key.is_some() && !self.body.is_object() {
+            return Err(RenderError::InvalidItem(
+                "coalesced notice body must be an object",
             ));
         }
         if let Some(paths) = self.body.get("paths")

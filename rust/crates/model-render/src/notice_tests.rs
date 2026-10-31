@@ -78,10 +78,17 @@ proptest! {
 #[test]
 fn malformed_pending_notice_does_not_change_the_batch() {
     let mut pending = PendingNotices::default();
-    let original = notice(None, 0, vec!["p".into()]);
+    let original = notice(Some("files".into()), 0, vec!["p".into()]);
     pending.push(original.clone()).unwrap();
     let mut invalid = original.clone();
     invalid.body = json!({"paths":[1]});
     assert!(pending.push(invalid).is_err());
+    let mut invalid = original.clone();
+    invalid.coalesce_key = Some("files".into());
+    invalid.body = Value::Null;
+    assert!(pending.push(invalid.clone()).is_err());
+    // An unkeyed event may carry any JSON body; it cannot erase accumulated paths.
+    invalid.coalesce_key = None;
+    assert!(invalid.validate().is_ok());
     assert_eq!(pending.finish(), vec![original]);
 }
