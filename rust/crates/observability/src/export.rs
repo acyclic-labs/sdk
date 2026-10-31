@@ -58,8 +58,9 @@ impl Export {
     /// queued record owns a permit, so the delivery channel cannot grow beyond
     /// admitted credit. No copy is made before credit is acquired.
     ///
-    /// Detail retains at most the first static `error.kind`; paths, payloads,
-    /// resource identities and error text must never be supplied in that field.
+    /// Detail retains the first static `error.kind` and fixed producer-declared
+    /// `work.*` totals. Paths, payloads, resource identities and error text must
+    /// never be supplied as failure categories.
     pub fn channel(credit: Arc<Semaphore>, details: bool) -> (Self, ExportReceiver) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let export = Self {
@@ -112,6 +113,8 @@ impl Export {
         let mut sample = make_sample();
         if !self.details {
             sample.error_kind = None;
+            sample.work = None;
+            sample.binding = None;
         }
         let record = ExportRecord {
             sample,
@@ -133,6 +136,8 @@ impl Sink for Export {
             span_id: sample.span_id.clone(),
             parent_id: sample.parent_id.cloned(),
             durability: sample.durability,
+            work: self.details.then_some(sample.work).flatten(),
+            binding: self.details.then(|| sample.binding.cloned()).flatten(),
             metadata: sample.metadata,
             rpc: sample.rpc.map(str::to_owned),
             error_kind: if self.details {
@@ -147,6 +152,13 @@ impl Sink for Export {
 
     fn record_owned(&self, sample: OwnedSample) {
         self.publish(|| sample);
+    }
+
+    fn work_details(&self) -> bool {
+        self.details
+    }
+    fn binding_details(&self) -> bool {
+        self.details
     }
 }
 

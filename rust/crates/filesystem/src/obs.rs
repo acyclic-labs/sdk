@@ -134,8 +134,8 @@ pub(crate) fn measured_on_with_kind<T, E>(
             Ok(value) => (work(value), None),
             Err(failure) => (&*failure.work, Some(kind(&failure.error))),
         };
-        record_outcome(span, kind);
         record_work(span, work);
+        record_outcome(span, kind);
     }
     result
 }
@@ -145,11 +145,13 @@ fn record_work(span: &tracing::Span, work: &WorkCounters) {
     if !span.is_disabled() {
         let bytes = work
             .object_bytes_read
-            .saturating_add(work.object_bytes_written)
-            .saturating_add(work.authority_bytes_written);
+            .checked_add(work.object_bytes_written)
+            .and_then(|bytes| bytes.checked_add(work.authority_bytes_written));
         span.record("work.items", work.items_examined)
-            .record("work.bytes", bytes)
             .record("work.durability", work.durability_operations);
+        if let Some(bytes) = bytes {
+            span.record("work.bytes", bytes);
+        }
     }
 }
 
@@ -170,6 +172,130 @@ mod worker_context_tests {
     use tracing_subscriber::{layer::Context, prelude::*};
 
     use acyclic_grpc_observability::tests::{Capture, Evidence};
+
+    #[test]
+    fn measured_terminal_retains_original_work_and_native_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::performance::{OperationFailure, OperationReceipt, WorkCounters};
+        use acyclic_observability::{Export, Operations, Outcome, WorkSummary};
+        use std::{
+            future::Future,
+            pin::pin,
+            task::{Context as TaskContext, Poll, Waker},
+        };
+        use tokio::sync::Semaphore;
+
+        for detailed in [false, true] {
+            let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), detailed);
+            let dispatch =
+                tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
+            for fail in [false, true] {
+                // An actual failed native request supplies the error and code;
+                // the helper must return that exact carrier and work allocation.
+                let failure = std::fs::File::open("").expect_err("empty path cannot open a file");
+                let code = failure.raw_os_error();
+                let work = WorkCounters {
+                    items_examined: 1,
+                    object_bytes_read: 3,
+                    object_bytes_written: 4,
+                    authority_bytes_written: 5,
+                    ..Default::default()
+                };
+                let input = if fail {
+                    Err(OperationFailure::new(failure, work))
+                } else {
+                    Ok(OperationReceipt { value: (), work })
+                };
+                let original = input
+                    .as_ref()
+                    .err()
+                    .map(|failure| (&*failure.work) as *const WorkCounters);
+                let returned = tracing::dispatcher::with_default(&dispatch, || {
+                    let span = super::span!(
+                        INFO,
+                        "acyclic.fs.test.measured",
+                        outcome = tracing::field::Empty,
+                        error.kind = tracing::field::Empty,
+                        work.items = tracing::field::Empty,
+                        work.bytes = tracing::field::Empty,
+                        work.durability = tracing::field::Empty
+                    );
+                    // Preserve the earliest native cause over a generic wrapper.
+                    if fail {
+                        span.record("error.kind", "not_found");
+                    }
+                    super::measured_on_with_kind(
+                        &span,
+                        input,
+                        |receipt| &receipt.work,
+                        |_| "storage",
+                    )
+                });
+                match returned {
+                    Ok(receipt) => assert_eq!(receipt.work, work),
+                    Err(failure) => {
+                        assert_eq!(failure.error.raw_os_error(), code);
+                        assert_eq!(Some((&*failure.work) as *const WorkCounters), original);
+                        assert_eq!(*failure.work, work);
+                    }
+                }
+                let Poll::Ready(Some(record)) =
+                    pin!(output.recv()).poll(&mut TaskContext::from_waker(Waker::noop()))
+                else {
+                    panic!("synchronous terminal must already be available");
+                };
+                let sample = record.sample();
+                assert_eq!(
+                    sample.outcome,
+                    if fail { Outcome::Err } else { Outcome::Ok }
+                );
+                assert_eq!(
+                    sample.work,
+                    detailed.then_some(WorkSummary {
+                        items: Some(1),
+                        bytes: Some(12),
+                        durability: Some(0)
+                    })
+                );
+                assert_eq!(sample.error_kind, (detailed && fail).then_some("not_found"));
+            }
+            tracing::dispatcher::with_default(&dispatch, || {
+                let span = super::span!(
+                    INFO,
+                    "acyclic.fs.test.overflow",
+                    outcome = tracing::field::Empty,
+                    work.items = tracing::field::Empty,
+                    work.bytes = tracing::field::Empty,
+                    work.durability = tracing::field::Empty
+                );
+                let receipt = OperationReceipt {
+                    value: (),
+                    work: WorkCounters {
+                        object_bytes_read: u64::MAX,
+                        object_bytes_written: 1,
+                        ..Default::default()
+                    },
+                };
+                super::measured_on_with_kind::<_, std::io::Error>(
+                    &span,
+                    Ok(receipt),
+                    |receipt| &receipt.work,
+                    |_| "storage",
+                )
+            })?;
+            let Poll::Ready(Some(record)) =
+                pin!(output.recv()).poll(&mut TaskContext::from_waker(Waker::noop()))
+            else {
+                panic!("overflow terminal must already be available");
+            };
+            assert_eq!(
+                record.sample().work.and_then(|work| work.bytes),
+                None,
+                "overflow cannot masquerade as an exact saturated count"
+            );
+        }
+        Ok(())
+    }
 
     struct NotifyClose(mpsc::Sender<()>);
     impl<S> tracing_subscriber::Layer<S> for NotifyClose

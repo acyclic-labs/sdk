@@ -13,6 +13,16 @@ mod durability;
 pub use durability::{DurabilityAttempt, DurabilityRequest, DurabilitySyscall};
 
 #[cfg(not(target_arch = "wasm32"))]
+mod work;
+#[cfg(not(target_arch = "wasm32"))]
+pub use work::WorkSummary;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod binding;
+#[cfg(not(target_arch = "wasm32"))]
+pub use binding::{Binding, BindingError};
+
+#[cfg(not(target_arch = "wasm32"))]
 mod operations;
 #[cfg(not(target_arch = "wasm32"))]
 pub use operations::{
