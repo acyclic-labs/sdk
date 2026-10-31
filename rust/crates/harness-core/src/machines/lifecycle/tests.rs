@@ -218,5 +218,27 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
         "no new delivery wakes the paused Machine"
     );
     host.pause(&first, false).await?;
+
+    // Resource parking remains inside that same control fence. A concurrent
+    // resume cannot overtake the original owner's pending completion.
+    let actor = ActorReference::new(b"account", b"agents", first.id().as_str().as_bytes())?;
+    let parking = Semaphore::new(0);
+    let parked = Semaphore::new(0);
+    let pause = host.runtime().pause_with(&actor, true, async {
+        parked.add_permits(1);
+        parking.acquire().await.map(|permit| permit.forget())
+    });
+    futures::pin_mut!(pause);
+    assert!(futures::poll!(&mut pause).is_pending());
+    parked.acquire().await?.forget();
+    let resume = host.pause(&first, false);
+    futures::pin_mut!(resume);
+    assert!(
+        futures::poll!(&mut resume).is_pending(),
+        "resume passed unfinished resource parking"
+    );
+    parking.add_permits(1);
+    pause.await??;
+    resume.await?;
     Ok(())
 }
