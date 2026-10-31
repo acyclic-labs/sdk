@@ -33,6 +33,14 @@ provider from an operation ID or reconstruct a terminal result.
 Native `WaitReport` remains the live-wait projection on this registry, preserving
 its own producer, retirement and diagnostic request/acknowledgement guarantees.
 
+Terminal samples preserve their original registry ID and immediate parent ID.
+The parent is captured at creation and follows the record across worker handoff
+and credited output without retaining either span. Native durability attempt
+fields project into the same sample as `DurabilityAttempt`: requested guarantee,
+actual syscall, attempt-local opaque descriptor and first native error code.
+Unknown fields remain absent. Stage markers supply no attempt evidence, and this
+projection supplies no provider/group publication range or device-drain claim.
+
 With no subscriber there is no metric storage, timer, allocation, lock, task or
 syscall. The operation macro evaluates no fields on wasm32. The shared crate
 keeps tracing dependencies out of wasm32 builds.

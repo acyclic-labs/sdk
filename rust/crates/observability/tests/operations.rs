@@ -42,6 +42,91 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 }
 
 #[test]
+fn exported_parent_is_the_original_registry_edge_without_retaining_its_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{Export, Outcome, Sink};
+    use std::sync::{Arc, mpsc};
+    use tokio::sync::Semaphore;
+
+    #[derive(Clone)]
+    struct Closed(mpsc::Sender<tracing::Id>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Closed {
+        fn on_close(&self, id: tracing::Id, _: tracing_subscriber::layer::Context<'_, S>) {
+            let _ = self.0.send(id);
+        }
+    }
+
+    let (closed, retired) = mpsc::channel();
+    let (export, mut output) = Export::channel(Arc::new(Semaphore::new(4)), false);
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry()
+            .with(Closed(closed))
+            .with(Operations(export.clone())),
+    );
+    let (work, owner, unrelated) = tracing::dispatcher::with_default(&dispatch, || {
+        let owner = tracing::info_span!(parent: None, "original.persistence");
+        let unrelated = tracing::info_span!(parent: None, "unrelated.caller");
+        // Explicit roots must not inherit the currently entered owner.
+        owner.in_scope(|| {
+            drop(tracing::info_span!(parent: None, "acyclic.test.parent", outcome = "ok"));
+            drop(tracing::info_span!(
+                "acyclic.test.parent",
+                outcome = tracing::field::Empty
+            ));
+        });
+        let work = unrelated.in_scope(|| {
+            acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+                parent: &owner,
+                "acyclic.test.parent",
+                outcome = tracing::field::Empty,
+                error.kind = tracing::field::Empty
+            ))
+        });
+        (work, owner.id(), unrelated.id())
+    });
+    let owner = owner.ok_or("original owner was disabled")?;
+    let unrelated = unrelated.ok_or("unrelated caller was disabled")?;
+    let result = std::thread::spawn(move || {
+        // Completion-time ambient context is the negative control: it has no
+        // parent, while this work still belongs to its original provider.
+        assert!(tracing::Span::current().is_none());
+        let (producer, receive) = mpsc::channel::<()>();
+        drop(producer);
+        work.in_scope(|| work.finish(receive.recv().map_err(std::io::Error::other)))
+    })
+    .join()
+    .map_err(|_| "observation worker panicked")?;
+    assert!(
+        result
+            .err()
+            .and_then(std::io::Error::into_inner)
+            .is_some_and(|cause| cause.is::<mpsc::RecvError>())
+    );
+    let root = ready(output.recv())?.ok_or("root sample absent")?;
+    let abandoned = ready(output.recv())?.ok_or("incomplete sample absent")?;
+    let failed = ready(output.recv())?.ok_or("worker sample absent")?;
+    assert_eq!(root.sample().outcome, Outcome::Ok);
+    assert_eq!(root.sample().parent_id, None);
+    assert_eq!(abandoned.sample().outcome, Outcome::Incomplete);
+    assert_eq!(abandoned.sample().parent_id, Some(&owner));
+    assert_eq!(failed.sample().outcome, Outcome::Err);
+    assert_eq!(failed.sample().parent_id, Some(&owner));
+    assert_ne!(failed.sample().parent_id, Some(&unrelated));
+    // Borrowed sinks preserve the same edge when preparing credited output.
+    export.record(&failed.sample());
+    let copied = ready(output.recv())?.ok_or("borrowed export absent")?;
+    assert_eq!(copied.sample().parent_id, Some(&owner));
+    let closed: Vec<_> = retired.try_iter().collect();
+    assert!(
+        closed.contains(&owner),
+        "output retained its original owner"
+    );
+    assert!(closed.contains(&unrelated), "worker retained its caller");
+    assert!(closed.contains(failed.sample().span_id));
+    Ok(())
+}
+
+#[test]
 fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Export, Outcome, Sink};

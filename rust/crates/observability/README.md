@@ -65,10 +65,21 @@ than sampled. These are exporter resources, not process-wide OS counters.
 An exporter can opt into the first recorded static `error.kind`. Later generic
 failures cannot replace it. It remains diagnostic evidence, never a metric
 label, and does not change uncertainty or an operation's original result.
-Every sample carries its original subscriber registry span ID, so diagnostics
-can join the existing provider/key/stage/predecessor observations. This scalar
-retains no span or physical work; it is not a metric label, globally unique
-operation identity, or a reason to reconstruct a result after completion.
+Every sample carries its original subscriber registry span ID and immediate
+parent ID, so diagnostics can join the existing provider/key/stage/predecessor
+observations. The parent is captured at creation, including explicit roots;
+completion on another worker does not replace it with that worker's context.
+These scalars retain no span or physical work. They are registry-local
+diagnostic joins, rather than metric labels or globally unique identities.
+
+The original `acyclic.runtime.durability` producer's fields project into
+`Sample::durability: Option<DurabilityAttempt>`. Its fixed fields preserve
+requested Full/Barrier, the actual named syscall, an attempt-local opaque
+descriptor ID and the first recorded native error code. Missing or unrecognized
+fields remain `None`. This projection adds no dynamic map or evidence-string
+allocation. It does not infer a device-cache drain, provider/group publication
+coverage or OS-wide counts from a successful call or descriptor. Those guarantees
+require their original producers. Ordinary stage markers carry no attempt data.
 Metrics alone retain no failure string. Detail retains one failure category per
 active operation, with one owned copy when first recorded. The collector calls
 `Sink::record_owned` to transfer its original recorded fields into output;

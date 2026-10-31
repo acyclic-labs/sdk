@@ -8,6 +8,11 @@
 #![deny(unsafe_code)]
 
 #[cfg(not(target_arch = "wasm32"))]
+mod durability;
+#[cfg(not(target_arch = "wasm32"))]
+pub use durability::{DurabilityAttempt, DurabilityRequest, DurabilitySyscall};
+
+#[cfg(not(target_arch = "wasm32"))]
 mod operations;
 #[cfg(not(target_arch = "wasm32"))]
 pub use operations::{
