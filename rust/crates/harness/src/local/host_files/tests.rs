@@ -17,14 +17,28 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
     )
     .map_err(storage)?;
     let session = uuid::Uuid::new_v4();
-    let bridge = Arc::new(Bridge::open(
-        &directory,
-        Endpoint {
-            version: 2,
-            session,
-            workspace,
-        },
-    )?);
+    let mut endpoint = Endpoint {
+        version: 2,
+        session,
+        workspace,
+    };
+    let descriptor = directory.join("owner.json");
+    immutable(
+        &descriptor,
+        &serde_json::to_vec(&endpoint).map_err(storage)?,
+    )?;
+    assert!(matches!(
+        discover(&endpoint.workspace),
+        Err(Error::Unsupported(reason)) if reason.contains("requires 3")
+    ));
+    remove_projection(&descriptor)?;
+    endpoint.version = 3;
+    immutable(
+        &descriptor,
+        &serde_json::to_vec(&endpoint).map_err(storage)?,
+    )?;
+    let (_, endpoint) = discover(&endpoint.workspace)?;
+    let bridge = Arc::new(Bridge::open(&directory, endpoint)?);
     let mut served = Served::default();
     for fault in 0..3 {
         let operation = OperationId::new();

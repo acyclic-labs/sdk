@@ -78,7 +78,7 @@ All sandboxed coordination and custody writes stay within the existing workspace
 | `.acyclic-sdk/host-processes/` | Native process custody and exclusive ownership |
 | `.volumes/agents/` | Admitted native child working views |
 
-The workspace carrier uses protocol v2. Run the matching owner and plugin in a
+The workspace carrier uses protocol v3. Run the matching owner and plugin in a
 fresh workspace; older coordination projections are refused and are not migrated.
 
 Install declares workspace access without adding sandbox roots. Commands never

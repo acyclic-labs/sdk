@@ -561,9 +561,9 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
         match regular_bytes(&directory.join("owner.json")) {
             Ok(bytes) => {
                 let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
-                if endpoint.version != 2 {
+                if endpoint.version != 3 {
                     return Err(Error::Unsupported(format!(
-                        "step=admit native workspace protocol: version {}; requires 2; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
+                        "step=admit native workspace protocol: version {}; requires 3; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
                         endpoint.version
                     )));
                 }
@@ -625,7 +625,7 @@ pub async fn serve_until(
         .into_bytes(),
     );
     let endpoint = Endpoint {
-        version: 2,
+        version: 3,
         session,
         workspace,
     };
