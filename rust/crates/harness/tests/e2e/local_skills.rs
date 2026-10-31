@@ -305,14 +305,22 @@ async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> T
 
 #[tokio::test]
 async fn malformed_skill_is_a_typed_error_before_first_provider_dispatch() -> TestResult {
-    for user in [false, true] {
+    for (user, header) in [false, true].into_iter().flat_map(|user| {
+        [
+            "name: broken",
+            "name: broken\ndescription: Broken\ninput_schema: {}",
+            "name: broken\ndescription: Broken\nruntime: {}",
+            "name: broken\ndescription: Broken\ninput_schema: []\nruntime: {}",
+        ]
+        .map(|header| (user, header))
+    }) {
         let root = super::local_workspace::temporary()?;
         let home = super::local_workspace::temporary()?;
         let state = super::local_workspace::temporary()?;
         write(
             if user { home.path() } else { root.path() },
             ".agents/skills/broken/SKILL.md",
-            "---\nname: broken\n---\nmissing description",
+            &format!("---\n{header}\n---\nBODY-MUST-STAY-LAZY"),
         )?;
         let model = provider(1);
         let harness = open(config(
