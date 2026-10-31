@@ -55,6 +55,18 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
             })
             .collect::<Vec<_>>();
         let root = apply_batch(&store, empty, &writes, limits).await?;
+        // An interior point change must stop after its original boundary
+        // resynchronizes, instead of retaining every subsequent leaf tail.
+        let (path, height) = intersecting_pages(&store, root, 16, 24).await?;
+        let (point_reads, point_writes) = write_cost(&store, root, &[(16, 24)], limits).await?;
+        assert!(
+            point_reads <= path + 2 * height,
+            "count={count}, reads={point_reads}, path={path}, height={height}"
+        );
+        assert!(
+            point_writes <= path + 2 * height,
+            "count={count}, writes={point_writes}, path={path}, height={height}"
+        );
         let unchanged = apply_extent_mutations(
             &store,
             root,
