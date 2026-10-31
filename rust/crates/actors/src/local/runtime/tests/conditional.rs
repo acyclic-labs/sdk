@@ -233,6 +233,59 @@ async fn a_lost_delivery_claim_returns_without_claiming_a_new_epoch() -> TestRes
 }
 
 #[tokio::test]
+async fn explicit_resume_restores_delivery_after_a_competing_pause() -> TestResult {
+    for event_owned in [false, true] {
+        let calls = Arc::new(AtomicU64::new(0));
+        let runtime = runtime_with(Arc::new(Invocations {
+            package: Package::new()?,
+            calls: Arc::clone(&calls),
+        }))?;
+        let store = runtime.store();
+        let provider = store.provider();
+        let address = spawn_with(store, "resume-conflict", &[b"emit"]).await?;
+        runtime.track(address.clone())?;
+        let cut = store.load(&address).await?;
+        let mut paused = cut.state().ok_or("missing state")?.clone();
+        paused.paused = true;
+        let competing = store
+            .prepare(&cut, &paused, Vec::new(), key("competing-pause")?)?
+            .into_request()?;
+        *provider.inner().before_write.lock().unwrap() = Some(Competing::Publication(competing));
+        let failure = if event_owned {
+            runtime.drain_event(&address).await
+        } else {
+            runtime
+                .drain()
+                .await
+                .into_iter()
+                .next()
+                .map_or(Ok(()), |(_, error)| Err(error))
+        };
+        assert!(matches!(failure, Err(Error::Conflict)));
+        assert_eq!(runtime.counts(), (0, 0));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store.load(&address).await?.state().map(State::paused),
+            Some(true)
+        );
+        assert!(
+            records(&**provider, "out/resume-conflict")
+                .await?
+                .is_empty()
+        );
+        runtime.pause(&address, false).await?;
+        assert_eq!(runtime.counts().0, 1);
+        assert!(runtime.drain().await.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            records(&**provider, "out/resume-conflict").await?,
+            vec![Bytes::from_static(b"r0")]
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_lost_delivery_publication_returns_without_reinvoking_the_handler() -> TestResult {
     let calls = Arc::new(AtomicU64::new(0));
     let runtime = runtime_with(Arc::new(Invocations {

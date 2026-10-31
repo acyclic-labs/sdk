@@ -45,6 +45,9 @@ pub(super) struct Registration {
     routed: AtomicBool,
     failed: AtomicBool,
     shard: AtomicUsize,
+    // A failed arm writes this before queue submission under routing custody.
+    // The serial queue consumes it once, before terminal cleanup can pass it.
+    failure: UnsafeCell<Option<Arc<DemandError>>>,
     // Only the hub's serial queue accesses this slot.
     pub(super) terminal: UnsafeCell<Option<EventStream>>,
 }
@@ -65,6 +68,7 @@ impl Registration {
             failed: AtomicBool::new(false),
             shard: AtomicUsize::new(0),
             terminal: UnsafeCell::new(None),
+            failure: UnsafeCell::new(None),
         }
     }
 }
@@ -276,39 +280,30 @@ impl Hub {
     /// Re-arms every shard that has grown or holds mostly dead roots. Arm
     /// custody serializes it; its holder never waits for the queue.
     fn arm_all(&self) {
-        // Reuse each failed shard's pending routes; retaining failures until
-        // arm custody is released needs no new queue or heap allocation.
-        let mut failed: [Option<(Vec<Route>, DemandError)>; SHARDS] = std::array::from_fn(|_| None);
+        // Failure jobs are enqueued under routing custody, but cannot enter a
+        // handler until this original arming owner has released its lock.
+        let suspended = Suspended::new(self.queue);
         {
             let _arm = self.arm.lock().unwrap_or_else(PoisonError::into_inner);
             let shards = self.state().shards.len();
-            for (index, failed) in failed.iter_mut().enumerate().take(shards) {
-                *failed = self.arm_shard(index);
+            for index in 0..shards {
+                self.arm_shard(index);
             }
         }
-        // Failure delivery follows the same rule as record delivery: user
-        // callbacks run with neither the routing nor the arm lock held.
-        for (routes, error) in failed.into_iter().flatten() {
-            let error = Arc::new(error);
-            for route in routes {
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    (route.registration.handler)(Err(Arc::clone(&error)));
-                }));
-            }
-        }
+        drop(suspended);
     }
 
-    fn arm_shard(&self, index: usize) -> Option<(Vec<Route>, DemandError)> {
+    fn arm_shard(&self, index: usize) {
         let now = self.current_event_id();
         let (mut batch, roots, since, old) = {
             let mut state = self.state();
             let Some(shard) = state.shards.get_mut(index) else {
-                return None;
+                return;
             };
             // History arrives in path order, so a replaying stream has no
             // id below which it has delivered everything; it re-arms when done.
             if (shard.pending.is_empty() && !shard.purge) || shard.replaying {
-                return None;
+                return;
             }
             let mut batch = std::mem::take(&mut shard.pending);
             for route in &mut batch {
@@ -343,7 +338,7 @@ impl Hub {
         let mut state = self.state();
         // Shards are never removed.
         let Some(shard) = state.shards.get_mut(index) else {
-            return None;
+            return;
         };
         let stream = match stream {
             Ok(stream) => stream,
@@ -357,7 +352,23 @@ impl Hub {
                         false
                     }
                 });
-                return (!batch.is_empty()).then_some((batch, error));
+                let error = Arc::new(error);
+                for route in batch {
+                    // Publish on the SAME serial queue before releasing routing
+                    // custody. Unregister's barrier therefore includes failures,
+                    // even when another registering thread owns this failed arm.
+                    // SAFETY: this failed registration is removed from routing;
+                    // its sole writer runs before the queue can consume the slot.
+                    unsafe {
+                        *route.registration.failure.get() = Some(Arc::clone(&error));
+                        dispatch_async_f(
+                            self.queue,
+                            Arc::into_raw(route.registration).cast_mut().cast(),
+                            failed_registration,
+                        );
+                    }
+                }
+                return;
             }
         };
         // A callback already running when the queue was suspended may have
@@ -402,7 +413,6 @@ impl Hub {
             }
         }
         drop(suspended);
-        None
     }
 
     fn create(&self, roots: &[PathBuf], since: u64) -> Result<FsEventStreamRef, DemandError> {
@@ -625,6 +635,17 @@ extern "C" fn hub_callback(
     let _ = catch_unwind(AssertUnwindSafe(|| {
         hub.deliver(stream, paths, flags, ids);
     }));
+}
+
+extern "C" fn failed_registration(info: *mut c_void) {
+    let _queue = OnQueue::enter();
+    // SAFETY: the failed arm gave this queue exactly one raw Arc reference.
+    let registration = unsafe { Arc::from_raw(info.cast::<Registration>()) };
+    // SAFETY: submission precedes this sole serial-queue consumer.
+    let error = unsafe { &mut *registration.failure.get() }.take();
+    if let Some(error) = error {
+        let _ = catch_unwind(AssertUnwindSafe(|| (registration.handler)(Err(error))));
+    }
 }
 
 extern "C" fn arm_later(hub: *mut c_void) {

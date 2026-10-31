@@ -33,7 +33,7 @@ test("real browser results settle on publication, script failure and producer re
       if (status === "failed") assert.match(result.text, /producer failed before publishing/);
       await browser.send("Target.closeTarget", { targetId });
     }
-    for (const retireConnection of [false, true]) {
+    for (const retire of ["crash", "page", "connection"]) {
       const { targetId, sessionId } = await page();
       await browser.send("Runtime.addBinding", { name: "__sdkQualificationStarted" }, sessionId);
       const entered = browser.event(message => message.method === "Runtime.bindingCalled"
@@ -41,9 +41,15 @@ test("real browser results settle on publication, script failure and producer re
       const outcome = navigateChrome(browser, sessionId, url("globalThis.__sdkQualificationStarted('entered')"));
       await Promise.race([entered.promise, outcome.then(() => { throw new Error("page settled before the retirement control"); })]);
       // Negative controls drop the producer while its result is still pending.
-      const refused = assert.rejects(outcome, /target detached|connection closed/);
-      if (retireConnection) browser.close();
-      else await browser.send("Target.closeTarget", { targetId });
+      const refused = assert.rejects(outcome, /target crashed|target detached|connection closed/);
+      if (retire === "connection") browser.close();
+      else if (retire === "crash") {
+        const crashed = assert.rejects(browser.send("Page.crash", {}, sessionId), /target crashed/);
+        await Promise.all([refused, crashed]);
+        // A later registration observes the same terminal, even before detach.
+        await assert.rejects(browser.event(() => false, sessionId).promise, /target crashed/);
+        await browser.send("Target.closeTarget", { targetId });
+      } else await browser.send("Target.closeTarget", { targetId });
       await refused;
     }
   } finally {

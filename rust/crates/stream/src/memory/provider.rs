@@ -653,7 +653,9 @@ impl MemoryStream {
                                     };
                                     return provider
                                         .receipt(value, provider.revisions.at(replay.index))
-                                        .map(|(receipt, claim)| (CommitOutcome::Committed(receipt), claim))
+                                        .map(|(receipt, claim)| {
+                                            (CommitOutcome::Committed(receipt), claim)
+                                        })
                                         .map_err(E::from);
                                 }
                                 state.decision

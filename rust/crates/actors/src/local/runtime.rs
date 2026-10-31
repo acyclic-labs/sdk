@@ -260,7 +260,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
     }
 
-    /// Durably pause or resume. Pause fences in-flight publication; resume wakes.
+    /// Durably pause or resume. Pause fences publication; resume restores placement.
     /// A changed state cut returns [`Error::Conflict`] without another attempt.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
         acyclic_observability::async_operation!(
@@ -280,7 +280,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         .await?;
                 }
                 if !paused {
-                    self.wake(actor);
+                    self.track(actor.clone())?;
                 }
                 Ok(())
             }

@@ -3431,7 +3431,8 @@ impl NativeWatch {
             ..WorkCounters::UNCHARGED
         })
         .map_err(demand_watch_error)?;
-        let delivered = self.place_cookie(|_, _| Ok(()))?.is_some() && self.await_cookie()?;
+        let delivered =
+            self.place_cookie(|_, _| Ok(()))?.is_some() && self.await_cookie_with_work(work)?;
         // Every batch before the cookie has now arrived or failed, and a
         // failure is already held as state; this reports it once.
         self.take_lost_delivery(work)?;
@@ -3632,6 +3633,54 @@ impl NativeWatch {
                 .map_err(|_| NativeWatchError::StatePoisoned)?;
         }
         Ok(state.invalidation.is_none())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn await_cookie_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<bool, NativeWatchError> {
+        let original = work.native_source_work();
+        let cancellation = match &original {
+            Some(original) => original.cancellation().clone(),
+            None => work.with_original_leaf(|work| work.cancellation().clone()),
+        };
+        self.await_cookie_cancellable(&cancellation, original.as_ref(), || {
+            work.check().map_err(demand_watch_error)
+        })
+    }
+
+    #[cfg(any(test, target_os = "macos"))]
+    fn await_cookie_cancellable(
+        &self,
+        cancellation: &CancellationToken,
+        original: Option<&crate::NativeMaterializationWork>,
+        mut check: impl FnMut() -> Result<(), NativeWatchError>,
+    ) -> Result<bool, NativeWatchError> {
+        let shared = Arc::clone(&self.shared);
+        let fenced = Arc::clone(&self.fenced);
+        let _cancel = cancellation
+            .on_cancel(original, move || {
+                let _state = shared
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                fenced.notify_all();
+            })
+            .map_err(NativeWatchError::NativeWork)?;
+        let mut state = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        loop {
+            check()?;
+            if state.fence.is_none() || state.invalidation.is_some() {
+                return Ok(state.invalidation.is_none());
+            }
+            state = self
+                .fenced
+                .wait(state)
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
+        }
     }
 
     /// The excluded directories that may hold fence cookies, in order. When

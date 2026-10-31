@@ -490,14 +490,18 @@ async fn exec_expiry_wakes_a_silent_stream_and_closes_only_that_rpc() {
 #[tokio::test]
 async fn stopped_capture_retains_reason_and_physical_cleanup_receipt() {
     let (machine, io, shutdown, task) = fixture().await;
-    let output = machine.exec(command(300_000)).await.unwrap();
+    let output = machine.exec(command(1)).await.unwrap();
     let sender = io.sender();
+    tokio::time::pause();
+    // Advance beyond the server execution budget before cleanup publishes its
+    // terminal. This must not become a client transport deadline.
+    tokio::time::advance(Duration::from_millis(2)).await;
     sender
         .send(Ok(frame(
             machine.id(),
             wire::exec_output::Output::Stopped(wire::ExecStop {
-                kind: wire::ExecStopKind::Expired.into(),
-                message: "scope elapsed".into(),
+                kind: wire::ExecStopKind::Timeout.into(),
+                message: "execution elapsed".into(),
                 cleanup_completed: false,
             }),
         )))
@@ -509,8 +513,8 @@ async fn stopped_capture_retains_reason_and_physical_cleanup_receipt() {
     assert_eq!(
         captured.stop,
         Some(ExecStop {
-            kind: ExecStopKind::Expired,
-            message: "scope elapsed".into(),
+            kind: ExecStopKind::Timeout,
+            message: "execution elapsed".into(),
             cleanup_completed: false
         })
     );

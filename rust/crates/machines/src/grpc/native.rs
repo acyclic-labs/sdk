@@ -256,13 +256,6 @@ impl transport::Endpoint for NativeEndpoint {
     async fn client(&self) -> Result<Self::Client, ProviderError> {
         self.authenticated_client().await
     }
-    fn deadline(
-        &self,
-        timeout: Duration,
-        expiry: Option<u64>,
-    ) -> Result<Self::Deadline, ProviderError> {
-        Self::Deadline::new(timeout, expiry)
-    }
     fn absolute_deadline(&self, expiry: u64) -> Result<Self::Deadline, ProviderError> {
         Self::Deadline::absolute(expiry)
     }

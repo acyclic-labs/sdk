@@ -67,15 +67,18 @@ machine_mutations! {
         command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
         obs::operation!("acyclic.machines.exec", observation, async {
-            let timeout = Duration::from_millis(command.timeout_ms);
-            let deadline = self.endpoint.deadline(timeout, command.expiry_unix_ms)?;
-            let mut client = deadline.run(self.client()).await
+            // Execution timeout belongs to the remote command. Only the caller's
+            // separate wall expiry may stop receipt of its physical terminal.
+            let deadline = command.expiry_unix_ms
+                .map(|expiry| self.endpoint.absolute_deadline(expiry)).transpose()?;
+            let mut client = transport::run(deadline.as_ref(), self.client()).await
                     .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
             let (input, input_guard) = duplex::input(stream::iter(input::encode(machine, command)));
             let mut request = Request::new(input);
-            request.set_timeout(deadline.remaining());
-            let output = deadline
-                .run(client.exec(request))
+            if let Some(deadline) = &deadline {
+                request.set_timeout(deadline.remaining());
+            }
+            let output = transport::run(deadline.as_ref(), client.exec(request))
                 .await
                 .ok_or(ProviderError::CommandIndeterminate(machine))?
                 .map_err(|error| {
@@ -89,8 +92,7 @@ machine_mutations! {
                     if exited {
                         return Ok(None);
                     }
-                    let frame = deadline
-                        .run(output.message())
+                    let frame = transport::run(deadline.as_ref(), output.message())
                         .await
                         .ok_or(ProviderError::CommandIndeterminate(machine))?
                         .map_err(|error| command_stream_error(machine, exited, &error))?;
