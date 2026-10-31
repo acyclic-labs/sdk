@@ -19,10 +19,18 @@ test('state bytes do not alias the seed, inputs, reads or journal pages', async 
   const binding = materializeActorState(owner);
   seed[0] = 99;
   const input = Uint8Array.of(3), frame = Uint8Array.of(4);
+  const supplied = [frame];
+  // Array helpers are caller code, not an ownership boundary. The former
+  // map-based copy retained this alias and let later mutations reach commit.
+  supplied.map = () => supplied;
   binding.transaction(state => {
     assert.deepEqual(state.get('seed'), Uint8Array.of(1));
     state.put('written',input);
-    state.appendJournal(1n,[frame]);
+    state.appendJournal(1n,supplied);
+    const incomplete = [Uint8Array.of(8), ,];
+    assert.throws(() => state.appendJournal(2n,incomplete),/requires bytes/);
+    assert.equal(state.journalTail,2n);
+    state.appendJournal(2n,[Uint8Array.of(5)]);
     input[0] = 99; frame[0] = 99;
     state.get('written')[0] = 99;
     for (const [,bytes] of state.entries()) bytes[0] = 99;
@@ -34,7 +42,7 @@ test('state bytes do not alias the seed, inputs, reads or journal pages', async 
   assert.deepEqual(page,Uint8Array.of(2));
   await binding.flush();
   assert.deepEqual(owner.commits[0].writes,[{key:'written',value:Uint8Array.of(3)}]);
-  assert.deepEqual(owner.commits[0].journal,[Uint8Array.of(4)]);
+  assert.deepEqual(owner.commits[0].journal,[Uint8Array.of(4),Uint8Array.of(5)]);
 });
 
 test('borrowed handles expire and Promise callbacks cannot publish', async () => {
@@ -89,23 +97,24 @@ test('rollback preserves an earlier pending metadata, journal and alarm group', 
 });
 
 test('transaction work excludes unrelated resident keys, pending writes and journal frames', async () => {
-  // Count real Map traversal and Array slicing, including copying controls.
+  // Count actual Map traversal, Array slicing and intermediate frame maps.
   function counted(operation) {
-    const iterate = Map.prototype[Symbol.iterator], slice = Array.prototype.slice;
-    let entries = 0, frames = 0;
+    const iterate = Map.prototype[Symbol.iterator], slice = Array.prototype.slice, map = Array.prototype.map;
+    let entries = 0, frames = 0, mappedFrames = 0;
     Map.prototype[Symbol.iterator] = function* () {
       for (const entry of iterate.call(this)) { entries++; yield entry; }
     };
     Array.prototype.slice = function (...args) { frames += this.length; return Reflect.apply(slice,this,args); };
-    try { operation(); return {entries,frames}; }
-    finally { Map.prototype[Symbol.iterator] = iterate; Array.prototype.slice = slice; }
+    Array.prototype.map = function (...args) { mappedFrames += this.length; return Reflect.apply(map,this,args); };
+    try { operation(); return {entries,frames,mappedFrames}; }
+    finally { Map.prototype[Symbol.iterator] = iterate; Array.prototype.slice = slice; Array.prototype.map = map; }
   }
   for (const size of [1,100000]) {
     const metadata = Array.from({length:size},(_,index) => ({key:`key-${index}`,value:Uint8Array.of(1)}));
     const owner = host({metadata,journalTail:'0'}), binding = materializeActorState(owner);
     const frames = Array.from({length:size},() => Uint8Array.of(3));
     const copied = new Map(metadata.map(({key,value}) => [key,value]));
-    assert.deepEqual(counted(() => { new Map(copied); frames.slice(); }),{entries:size,frames:size});
+    assert.deepEqual(counted(() => { new Map(copied); frames.slice(); frames.map(frame => new Uint8Array(frame)); }),{entries:size,frames:size,mappedFrames:size});
     binding.transaction(state => {
       for (const {key} of metadata) state.put(key,Uint8Array.of(2));
       state.appendJournal(0n,frames);
@@ -113,11 +122,11 @@ test('transaction work excludes unrelated resident keys, pending writes and jour
     });
     assert.deepEqual(counted(() => binding.transaction(state => {
       assert.deepEqual(state.get('key-0'),Uint8Array.of(2));
-    })),{entries:0,frames:0});
+    })),{entries:0,frames:0,mappedFrames:0});
     assert.deepEqual(counted(() => binding.transaction(state => {
       state.put('key-0',Uint8Array.of(4));
       state.appendJournal(BigInt(size),[Uint8Array.of(5)]);
-    })),{entries:0,frames:0});
+    })),{entries:0,frames:0,mappedFrames:0});
     const refusal = new Error('discard touched work');
     assert.deepEqual(counted(() => assert.throws(() => binding.transaction(state => {
       state.put('key-0',Uint8Array.of(9));
@@ -126,7 +135,7 @@ test('transaction work excludes unrelated resident keys, pending writes and jour
       state.appendJournal(BigInt(size + 1),[Uint8Array.of(9)]);
       state.alarm(null);
       throw refusal;
-    }),error => error === refusal)),{entries:0,frames:0});
+    }),error => error === refusal)),{entries:0,frames:0,mappedFrames:0});
     binding.transaction(state => {
       assert.deepEqual(state.get('key-0'),Uint8Array.of(4));
       assert.equal(state.get('discarded'),undefined);

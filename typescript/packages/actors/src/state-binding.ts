@@ -31,7 +31,8 @@ export interface ActorStateTransaction {
   /** Exact retained plus staged frame count. */
   readonly journalTail: bigint;
   /** Frames use the existing canonical Stream journal format. The original
-   * provider interprets them; Actors only retains the opaque admitted bytes. */
+   * provider interprets them; Actors only retains the opaque admitted bytes.
+   * A refused append leaves the previously staged journal unchanged. */
   appendJournal(expected: bigint, frames: readonly Uint8Array[]): void;
   /** Positive Unix-ms deadline, or null to clear. Delivery is GuestEvent.alarm
    * from the original Actor alarm owner, never a guest setTimeout. */
@@ -97,9 +98,13 @@ export function materializeActorState(host: ActorStateHost): ActorStateBinding {
         appendJournal(expected: bigint, appended: readonly Uint8Array[]) {
           scoped();
           if (position(expected) !== staged + BigInt(journal.length)) throw new Error("actor journal conflict");
-          if (appended.length === 0 || expected + BigInt(appended.length) > U64_MAX) throw new RangeError("invalid actor journal append");
-          const owned = appended.map(copy);
-          for (const frame of owned) journal.push(frame);
+          if (!Array.isArray(appended)) throw new TypeError("actor journal frames must be an array");
+          const count = appended.length, start = journal.length;
+          if (count === 0 || expected + BigInt(count) > U64_MAX) throw new RangeError("invalid actor journal append");
+          // Copy directly without invoking an input array's overridable helpers.
+          // A caught refusal rolls back this append, preserving prior work.
+          try { for (let index = 0; index < count; index++) journal.push(copy(appended[index]!)); }
+          catch (error) { journal.length = start; throw error; }
           pending = true;
         },
         alarm(deadline: bigint | null) { scoped(); if (deadline !== null && position(deadline) === 0n) throw new RangeError("actor alarm deadline must be positive"); alarm = deadline === null ? {type:"clear"} : {type:"set",deadline:deadline.toString()}; pending = true; },
