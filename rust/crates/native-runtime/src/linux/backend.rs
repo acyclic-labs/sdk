@@ -132,7 +132,11 @@ impl Owner {
             if self.select()? == Selected::Positional {
                 let length = (read.length - count).min(MAX_IO_BYTES);
                 let mut chunk = vec![0; length];
-                let received = file.read_at(&mut chunk, offset)?;
+                let received = super::read_at_validated(
+                    file,
+                    offset,
+                    crate::file::ReadDestination::Slice(&mut chunk),
+                )?;
                 let filled = chunk
                     .get(..received)
                     .ok_or_else(|| io::Error::other("overlong native read"))?;

@@ -2862,3 +2862,19 @@ The earlier descriptor capture receipt qualifies its original schema only.
 Fresh actual Rust/protoc and independent Buf captures now describe the composed
 schema, and the manifest binds its exact schema and descriptor bytes. The named
 freshly compiled Rust/Buf descriptor comparison remains unrun.
+
+## Original positional fallback completion
+
+| Source site at `1b74fcec1d` | Kind | Disposition | Status |
+| --- | --- | --- | --- |
+| `rust/crates/native-runtime/src/linux/backend.rs:135` | Hidden standard positional read reissue | Use the same once-only native read over the original held descriptor and already validated batch range. Return its first error directly; retain original positive-byte chunk traversal, byte buffer, EOF and dispatch custody | Actioned |
+
+The composed descriptor comparison exposed this remaining standard-library
+read call at compilation. The fallback now invokes the original shared native
+`pread` primitive, without importing the old trait operation back into scope.
+Required work remains one original syscall and the same buffer/copy per chunk;
+range admission stays at the original batch boundary. It adds no read,
+validation scan, allocation, timer, task or durability barrier. The original
+real-file fallback control and native first-error negative controls remain.
+The failed descriptor command did not reach test execution; no descriptor
+comparison result is assigned to that failed compilation.
