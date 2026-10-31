@@ -5,6 +5,60 @@ use crate::{CancellationToken, WorkBudget};
 use std::os::windows::io::AsHandle;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn completion_thread_loss_wakes_active_and_late_waiters_without_retiring_pending_storage()
+-> TestResult {
+    const CHILD: &str = "ACYCLIC_TEST_SOURCE_WATCH_HUB_END";
+    let Some(root) = std::env::var_os(CHILD) else {
+        // Ending the shared collector must not affect another test's watches.
+        // The parent owns cleanup after the child's OS handles have retired.
+        let root = tempfile::tempdir()?;
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "source_watch::directory_changes::tests::completion_thread_loss_wakes_active_and_late_waiters_without_retiring_pending_storage",
+                "--nocapture",
+            ])
+            .env(CHILD, root.path())
+            .status()?;
+        assert!(status.success(), "isolated completion-loss control failed");
+        return Ok(());
+    };
+    let held = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())?;
+    let cancellation = CancellationToken::new();
+    let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let watch = driver(&held, &mut work)?;
+    let completion = Arc::clone(&watch.shared);
+    let (registered, registration) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        hub::observe_registration(registered);
+        let reads = completion.lock_reads();
+        assert!(reads.pending && !reads.collected());
+        let overlapped = std::ptr::from_ref(&*reads.overlapped);
+        let buffer = reads.buffer.as_ref().expect("pending read buffer").as_ptr();
+        let capacity = reads.capacity();
+        for _ in 0..2 {
+            // First call is already registered when the real collector ends;
+            // the second enters after producer loss and must refuse at entry.
+            assert!(matches!(completion.await_completion(&reads),
+                Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe));
+            assert!(reads.pending, "producer loss is not native IO retirement");
+            assert_eq!(std::ptr::from_ref(&*reads.overlapped), overlapped);
+            assert_eq!(
+                reads.buffer.as_ref().expect("retained buffer").as_ptr(),
+                buffer
+            );
+            assert_eq!(reads.capacity(), capacity);
+            assert!(!completion.retired(&reads));
+        }
+    });
+    // The original waiter registration is the sole readiness producer.
+    registration.recv()?;
+    hub::end_for_test()?;
+    waiter.join().map_err(|_| "completion waiter panicked")?;
+    Ok(())
+}
+
 struct Quiet;
 impl HostChangeSink for Quiet {
     fn logical_owned_bytes(&self) -> u64 {

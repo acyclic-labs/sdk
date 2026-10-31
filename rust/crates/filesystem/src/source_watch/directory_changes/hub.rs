@@ -18,6 +18,22 @@ use windows::Win32::System::Threading::INFINITE;
 std::thread_local! {
     /// Whether this thread is the port's.
     static SERVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    #[cfg(test)]
+    static REGISTERED: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn observe_registration(sender: std::sync::mpsc::Sender<()>) {
+    REGISTERED.with(|registered| *registered.borrow_mut() = Some(sender));
+}
+
+/// Only an isolated test process may close its process-wide port.
+#[cfg(test)]
+pub(super) fn end_for_test() -> Result<(), DemandError> {
+    // SAFETY: the isolated process deliberately ends its actual collector;
+    // the pending reads retain their original storage until OS retirement.
+    unsafe { CloseHandle(port()?) }.map_err(io::Error::from)?;
+    Ok(())
 }
 
 /// Whether the caller runs on the port's thread, which collects every
@@ -50,7 +66,11 @@ pub(super) fn lost() -> bool {
 }
 
 pub(super) fn lost_error() -> DemandError {
-    io::Error::new(io::ErrorKind::BrokenPipe, "the source-watch completion thread ended").into()
+    io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "the source-watch completion thread ended",
+    )
+    .into()
 }
 
 fn waiting() -> MutexGuard<'static, HashSet<usize>> {
@@ -68,6 +88,12 @@ impl<'a> Waiting<'a> {
             return Err(lost_error());
         }
         waiting.insert(key(shared));
+        #[cfg(test)]
+        REGISTERED.with(|registered| {
+            if let Some(sender) = registered.borrow_mut().take() {
+                sender.send(()).expect("registration observer remains live");
+            }
+        });
         Ok(Self(shared))
     }
 }
