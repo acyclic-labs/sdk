@@ -83,7 +83,7 @@ static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Send
 #[cfg(test)]
 type JournalPersistBlocker = (
     usize,
-    std::sync::mpsc::SyncSender<()>,
+    tokio::sync::oneshot::Sender<()>,
     std::sync::mpsc::Receiver<()>,
 );
 #[cfg(test)]

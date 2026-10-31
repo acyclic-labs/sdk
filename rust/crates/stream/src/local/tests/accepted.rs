@@ -47,18 +47,18 @@ fn a_flush_never_certifies_a_write_accepted_after_its_device_operation()
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         deferring_durability(provider.commit(keyed_commit("before-device", 0)?)).await?;
-        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         *JOURNAL_FLUSHED_BLOCKER.lock().unwrap() = Some((
             Arc::as_ptr(&provider.inner.journal) as usize,
             started_tx,
             release_rx,
         ));
-        let flushing = tokio::spawn({
+        let mut flushing = tokio::spawn({
             let provider = provider.clone();
             async move { provider.await_flushed(1).await }
         });
-        tokio::task::spawn_blocking(move || started_rx.recv()).await??;
+        journal_started(started_rx, &mut flushing).await?;
         deferring_durability(provider.commit(keyed_commit("after-device", 0)?)).await?;
         let late_cut = provider.inner.journal.lock().unwrap().appended;
         assert_eq!(late_cut, 2);
@@ -111,18 +111,18 @@ fn a_queued_flush_covers_the_worker_cut_instead_of_the_submitter_cut()
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         deferring_durability(provider.commit(keyed_commit("first-cut", 0)?)).await?;
-        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         *JOURNAL_PERSIST_BLOCKER.lock().unwrap() = Some((
             Arc::as_ptr(&provider.inner.journal) as usize,
             started_tx,
             release_rx,
         ));
-        let flushing = tokio::spawn({
+        let mut flushing = tokio::spawn({
             let provider = provider.clone();
             async move { provider.await_flushed(1).await }
         });
-        tokio::task::spawn_blocking(move || started_rx.recv()).await??;
+        journal_started(started_rx, &mut flushing).await?;
         deferring_durability(provider.commit(keyed_commit("queued-cut", 0)?)).await?;
         assert_eq!(provider.inner.journal.lock().unwrap().appended, 2);
         assert!(!flushing.is_finished());
@@ -183,7 +183,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let path = StreamPath::new("accepted-events")?;
         for n in 0..2 {
-            let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
             *JOURNAL_PERSIST_BLOCKER
                 .lock()
@@ -192,7 +192,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                 started_tx,
                 release_rx,
             ));
-            let appending = tokio::spawn({
+            let mut appending = tokio::spawn({
                 let (provider, path) = (provider.clone(), path.clone());
                 async move {
                     provider
@@ -205,7 +205,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                         .await
                 }
             });
-            tokio::task::spawn_blocking(move || started_rx.recv()).await??;
+            journal_started(started_rx, &mut appending).await?;
             let mut follow = provider
                 .follow(crate::FollowRequest::new(path.clone(), n))
                 .map_ok(crate::records_only)

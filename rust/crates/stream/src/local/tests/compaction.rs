@@ -55,13 +55,13 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         assert_eq!(provider.watermarks(path.clone()).await?.durable, 1);
         let mut records = provider.follow(crate::FollowRequest::new(path.clone(), 1)).map_ok(crate::records_only).await?;
         assert!(futures::poll!(records.next()).is_pending());
-        let (started, waiting) = std::sync::mpsc::sync_channel(0);
+        let (started, waiting) = tokio::sync::oneshot::channel();
         let (release, released) = std::sync::mpsc::sync_channel(0);
         *JOURNAL_COMPACT_BLOCKER.lock().map_err(|_| "compaction hook")? = Some((
             Arc::as_ptr(&provider.inner.journal) as usize, started, released,
         ));
         let started = Instant::now();
-        let writing = tokio::spawn({
+        let mut writing = tokio::spawn({
             let provider = provider.clone();
             async move {
                 provider.commit(CommitRequest {
@@ -77,10 +77,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
                 }).await
             }
         });
-        if let Err(error) = tokio::task::spawn_blocking(move || waiting.recv_timeout(Duration::from_secs(1))).await? {
-            if writing.is_finished() { return Err(format!("mutation ended before compaction: {:?}", writing.await?).into()); }
-            return Err(error.into());
-        }
+        journal_started(waiting, &mut writing).await?;
         // One poll at a known held device cut establishes progress without a
         // timer or guessed number of idle polls. Drain/release before failing.
         let record = futures::poll!(records.next());
