@@ -48,6 +48,8 @@ an optimistic semantic floor, not a measurement of a particular serializer.
 The p50 and p99 thresholds are respectively 1.5 and 3 times that same floor.
 These are single-operation latency measurements, not throughput or concurrency
 claims. Payloads and exact reads are checked outside the measured intervals.
+Root setup and session samples share the same exact requested-agent receipt
+oracle; a real receipt checked against another requested agent must fail.
 Filesystem reads select an immutable generation; staged writes and dirty
 transaction publication are timed separately. Objects PUT ends at stored-byte
 admission; the explicit crash-survival flush occurs outside its interval, as

@@ -1,7 +1,7 @@
 use super::{
     actor_delivery::{Entries, EntryError},
     calibrate::Floors,
-    population::{Fixture, id, key},
+    population::{Fixture, id, key, require_root},
     report::{Measurements, Observation, Quantiles, Result, Terms, emit, ns},
 };
 use acyclic_actors::{
@@ -713,10 +713,11 @@ async fn sessions(
     samples: usize,
     rows: &mut Measurements,
 ) -> Result {
-    use acyclic_harness_core::agent::IntentId;
-    use acyclic_harness_core::filesystem::hosting::{RootRequest, RootSubmission};
+    use acyclic_harness_core::agent::{AgentPath, IntentId};
+    use acyclic_harness_core::filesystem::hosting::RootRequest;
     for index in 0..samples {
         let agent = id(agents + index)?;
+        let expected = AgentPath::root(&agent);
         let volume = fixture.volume(&agent)?;
         let intent = IntentId::try_from(format!("session-{index}").as_str())?;
         let request = RootRequest {
@@ -735,8 +736,17 @@ async fn sessions(
             },
             fixture.bound.create_root(&intent, request)
         )?;
-        if !matches!(created, RootSubmission::Created(_)) {
-            return Err("session creation outcome unknown".into());
+        require_root(&created, &expected)?;
+        if index == 0 {
+            let other = AgentPath::root(&id(agents + samples)?);
+            if require_root(&created, &other).is_ok() {
+                return Err("root receipt oracle accepted another requested agent".into());
+            }
+            emit(serde_json::json!({
+                "schema": 1, "kind": "negative_control",
+                "control": "real root receipt against another requested agent",
+                "result": "rejected",
+            }))?;
         }
     }
     Ok(())
