@@ -53,7 +53,7 @@ if (changelogText.split(/\r?\n/, 1)[0].trim() !== `# ${packageManifest.name} cha
   fail(`missing or invalid package changelog: ${changelog}`);
 }
 const assets = {};
-for (const relativePath of ["pi/index.ts", "pi/README.md"]) {
+for (const relativePath of ["pi/index.ts", "pi/README.md", "shared/mcp-client.mjs"]) {
   const path = join(plugin, relativePath);
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
 }
