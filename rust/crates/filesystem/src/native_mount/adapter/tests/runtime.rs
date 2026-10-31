@@ -259,7 +259,7 @@ fn callback_runtime_completes_ready_work_without_parking_current_thread()
         let (sent, mut received) = tokio::sync::oneshot::channel();
         let sibling = tokio::spawn(async move { sent.send(()).unwrap() });
         // Removing the refusal fails at the park boundary, without hanging.
-        super::super::runtime::BEFORE_PARK.with_borrow_mut(|hook| {
+        super::runtime::BEFORE_PARK.with_borrow_mut(|hook| {
             *hook = Some(Box::new(|| {
                 panic!("current-thread bridge parked its producer")
             }));
@@ -286,7 +286,7 @@ fn callback_runtime_completes_ready_work_without_parking_current_thread()
             refused(callback.poll_prepared(prepared, future));
             Ok(())
         })?;
-        super::super::runtime::BEFORE_PARK.with_borrow_mut(|hook| {
+        super::runtime::BEFORE_PARK.with_borrow_mut(|hook| {
             assert!(hook.take().is_some());
         });
         received.await?;
