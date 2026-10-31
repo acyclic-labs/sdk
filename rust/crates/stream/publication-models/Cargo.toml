@@ -14,6 +14,7 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 [[test]]
 name = "publication"
 path = "publication.rs"
+required-features = ["model-checking"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
