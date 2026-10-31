@@ -92,17 +92,18 @@ async fn publication_control(control: PublicationControl) -> TestResult {
     let selected = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
     let publications = Arc::new(AtomicUsize::new(0));
     let attempts = publications.clone();
+    let refresh_path = path.clone();
     let source = NativeCredentialSource::bind(
         root,
         selected,
         original.clone(),
         || 1,
         move |rejected, revision, _, file| {
-            let path = path.clone();
+            let path = refresh_path.clone();
             let attempts = attempts.clone();
             async move {
                 drop(file);
-                if rejected.is_none() {
+                if rejected.is_none() && attempts.load(Ordering::Relaxed) == 0 {
                     return CredentialSnapshot::new(
                         "original-protected-source".into(),
                         revision,
@@ -206,6 +207,28 @@ async fn publication_control(control: PublicationControl) -> TestResult {
             2,
             "one refresh per rejection"
         );
+        let changed = source.watch().await?.ok_or("missing publication watch")?;
+        std::fs::write(&path, "externally-rotated-source")?;
+        source.0.watch.clone().fence().await?;
+        changed.await?;
+        assert!(next.check().await.is_err());
+        assert!(
+            source
+                .0
+                .state
+                .observation
+                .lock()
+                .map_err(|_| "observation poisoned")?
+                .published
+                .is_some(),
+            "source notification leaves descriptor retirement with the refresh owner"
+        );
+        // The real notification already invalidated this lease. Its original
+        // publisher must now close and drain before the next writer is armed.
+        let after_rotation = source.resolve().await?;
+        after_rotation.check().await?;
+        assert_ne!(after_rotation.binding(), next.binding());
+        assert_eq!(publications.load(Ordering::Relaxed), 3);
     } else {
         assert!(
             replacement.is_err() && follower.is_err(),

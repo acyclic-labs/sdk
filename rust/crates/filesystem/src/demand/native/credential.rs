@@ -52,7 +52,8 @@ struct Observation {
     // A later rename must never erase an intervening in-place mutation.
     awaiting_rebound: bool,
     // Closing a writable publisher can itself notify the native watch. Retain
-    // it until its snapshot is already invalid, rather than suppress that event.
+    // it until the sole refresh owner can close and fence it before arming the
+    // next attempt. An invalidation callback must never steal that retirement.
     published: Option<PublishedFile>,
 }
 
@@ -146,7 +147,6 @@ impl SourceChangeSink for State {
             .lock()
             .map_err(|_| DemandError::SourceUnavailable)?;
         let mut affected = false;
-        let mut retired = None;
         let mut changes = changes.iter().peekable();
         while let Some(change) = changes.next() {
             let relevant = match change {
@@ -161,9 +161,6 @@ impl SourceChangeSink for State {
             let awaiting_rebound = observation.awaiting_rebound;
             observation.awaiting_rebound = false;
             observation.rebound = None;
-            if retired.is_none() {
-                retired = observation.published.take();
-            }
             let generation = self.advance();
             // NativeChanges emits the observed node immediately after its name
             // in the SAME ordered batch. Consume only that pair. An in-place
@@ -186,7 +183,6 @@ impl SourceChangeSink for State {
         if affected {
             self.notify(false);
         }
-        drop(retired);
         Ok(())
     }
 
@@ -406,8 +402,8 @@ impl NativeCredentialSource {
                                     return Err(error(CredentialCacheError::Stale));
                                 }
                                 observation.rebound = None;
-                                // Any preceding accepted publication was retired by
-                                // the rebound event, before this lock was acquired.
+                                // The sole refresh owner closed and fenced any
+                                // preceding publisher before arming this attempt.
                                 observation.published = Some(file);
                                 Ok(snapshot.with_revision(state.revision_at(generation)))
                             }
