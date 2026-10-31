@@ -145,7 +145,7 @@ pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObject
     } else {
         persistent_btree::apply_with_accounting::<S, ExtentFormat, ExtentEdit>(
             store,
-            root,
+            (root, Some(&old_logical_bytes)),
             &edits.value,
             u32::MAX,
             limits,
@@ -478,12 +478,12 @@ impl persistent_btree::Mutation<ExtentFormat> for ExtentEdit {
         carried: &[Extent],
         entries: &[Extent],
         edits: &[(usize, &Self)],
-        lower: Option<&u64>,
-        upper: Option<&u64>,
+        (lower, upper, expected_end): (Option<&u64>, Option<&u64>, Option<&u64>),
         output: &mut Vec<Extent>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), FsError> {
         let first = lower.copied().unwrap_or(0);
+        charge_items(accounting, 2)?;
         let end = match (entries.first(), entries.last()) {
             (Some(head), Some(tail)) => {
                 let end = extent_end(tail).map_err(extent_error)?;
@@ -497,6 +497,9 @@ impl persistent_btree::Mutation<ExtentFormat> for ExtentEdit {
             }
             _ => first,
         };
+        if upper.is_none() && expected_end.is_some_and(|expected| *expected != end) {
+            return Err(extent_error(ExtentMutationError::ChildBoundsMismatch));
+        }
         for extent in carried {
             charge_items(accounting, 1)?;
             push_joined(output, extent.clone()).map_err(extent_error)?;
