@@ -142,7 +142,7 @@ pub fn check(bytes: &[u8]) {
             },
         );
     }
-    let _ = decode_published_generation::<CanonicalDecodeError>(bytes, u64::MAX, |_| Ok(()));
+    publication_codec_fuzz::check(bytes);
     if decode_retention_created(bytes, u64::MAX).is_ok() {
         refuses_versions(
             bytes,
@@ -282,5 +282,6 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         ));
     }
     seeds.extend(populated::seeds()?);
+    seeds.extend(publication_codec_fuzz::seeds()?);
     Ok(seeds)
 }
