@@ -478,15 +478,14 @@ pub(super) fn file(path: &str) -> acyclic_harness_core::Result<FileRef> {
 
 /// A GOAL.md whose status the test sets, recording every rewrite.
 struct Goal {
+    policy: GoalContinuationPolicy,
     status: Mutex<GoalStatus>,
     rewrites: Mutex<Vec<String>>,
 }
 
 impl TurnGoal for Goal {
     fn policy(&self) -> GoalContinuationPolicy {
-        GoalContinuationPolicy {
-            max_continuations: 2,
-        }
+        self.policy
     }
 
     fn read(&self) -> BoxFuture<'_, acyclic_harness_core::Result<Option<GoalView>>> {
@@ -556,6 +555,9 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
     let path = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
     let goal = Arc::new(Goal {
+        policy: GoalContinuationPolicy {
+            max_continuations: Some(2),
+        },
         status: Mutex::new(GoalStatus::Active),
         rewrites: Mutex::new(Vec::new()),
     });
@@ -741,5 +743,60 @@ ship it
         state = settled.state;
     }
     assert_eq!(goal.rewrites.lock().expect("lock").len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -> Result {
+    for (count, turns, last) in [
+        ("31", 40, "71"),
+        ("4294967295", 2, "4294967297"),
+        (
+            "9999999999999999999999999999999999999999",
+            2,
+            "10000000000000000000000000000000000000001",
+        ),
+    ] {
+        let path = AgentPath::root(&id(1));
+        let mut state = AgentState::adopted(path.clone(), &adopted(id(1)))?;
+        let goal = Arc::new(Goal {
+            policy: GoalContinuationPolicy::default(),
+            status: Mutex::new(GoalStatus::Active),
+            rewrites: Mutex::new(Vec::new()),
+        });
+        let script = Arc::new(Script {
+            progress: Mutex::new((0..turns).map(|_| ready()).collect()),
+            ..Script::default()
+        });
+        let driver = ExecutorDriver::new(Host(script, Some(Arc::clone(&goal))));
+        let mut message = Message {
+            from: Sender::Agent { path: path.clone() },
+            id: intent(&format!("{GOAL_INTENT}original:{count}")),
+            body: Box::new(file("GOAL.md")?),
+            attachments: None,
+        };
+        for sequence in 1..=turns {
+            let previous_id = message.id.clone();
+            let settled = step(
+                &driver,
+                &path,
+                Some(state),
+                sequence,
+                Wake::Inbox {
+                    sequence,
+                    record: InboxRecord::Message(message),
+                },
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+            message = continuation(&settled, &path).expect("active unlimited goal continued");
+            assert_eq!(message.from, Sender::Agent { path: path.clone() });
+            assert_eq!(*message.body, file("GOAL.md")?);
+            assert_ne!(message.id, previous_id);
+            state = settled.state;
+        }
+        assert_eq!(message.id.as_str(), format!("{GOAL_INTENT}original:{last}"));
+        assert!(goal.rewrites.lock().expect("lock").is_empty());
+    }
     Ok(())
 }

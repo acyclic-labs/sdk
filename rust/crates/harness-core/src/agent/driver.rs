@@ -20,7 +20,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{ops::ControlFlow, sync::Arc};
 
 /// One opened turn: the executor and journal bound to the agent.
 pub struct OpenTurn {
@@ -536,6 +536,32 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             };
             let step = match progress {
                 ExecutionProgress::Ready(output) => {
+                    // An active goal continues the agent through its own inbox;
+                    // a checkpoint is no step of it.
+                    let checkpoint = input.context().is_some();
+                    let goal = match &open.goal {
+                        Some(goal) if !checkpoint => {
+                            match super::goal::settle(agent, &input, turn, &**goal).await? {
+                                ControlFlow::Break(goal) => goal,
+                                ControlFlow::Continue(()) => {
+                                    // Keep the completed model segment and yield the
+                                    // conflicting rewrite through its original actor.
+                                    return Ok(TurnStep {
+                                        checkpoint: Some(encode(&Checkpoint {
+                                            inbox,
+                                            input,
+                                            segment,
+                                        })?),
+                                        reserved_children: 0,
+                                        outs: Vec::new(),
+                                        wait: Wait::Continue,
+                                        drops: None,
+                                    });
+                                }
+                            }
+                        }
+                        _ => None,
+                    };
                     let bytes = crate::contract::canonical_json_bytes(&output)
                         .map_err(|error| host_error(error.into()))?;
                     let output = crate::obs::waiting(
@@ -545,15 +571,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     )
                     .await
                     .map_err(host_error)?;
-                    // An active goal continues the agent through its own inbox;
-                    // a checkpoint is no step of it.
-                    let checkpoint = input.context().is_some();
-                    let goal = match &open.goal {
-                        Some(goal) if !checkpoint => {
-                            super::goal::settle(agent, &input, turn, &**goal).await?
-                        }
-                        _ => None,
-                    };
                     let run = super::goal::continuing(&agent.path, &input)
                         .or_else(|| goal.as_ref().map(|_| turn));
                     let entry = ConversationEntry {
