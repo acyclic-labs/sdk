@@ -74,6 +74,23 @@ impl<R, H> Pending<R, H> {
         &self.completion.request
     }
 
+    /// Moves the exact terminal value and its funding to the sole remaining
+    /// owner. A live producer or another observer leaves this handle intact.
+    /// No native error, receipt or allocation guard is cloned.
+    pub fn try_take(self) -> Result<(CommitRequest, Option<R>, H), Self> {
+        if !self.completion.finished.load(Ordering::Acquire) {
+            return Err(self);
+        }
+        match Arc::try_unwrap(self.completion) {
+            Ok(completion) => Ok((
+                completion.request,
+                completion.result.into_inner(),
+                completion._storage,
+            )),
+            Err(completion) => Err(Self { completion }),
+        }
+    }
+
     /// Borrows the original result without copying its receipt or native error.
     /// Cancelling a wait never cancels the producer or consumes its result.
     /// Each completion wakes one waiter, which passes the wake onward in O(1).

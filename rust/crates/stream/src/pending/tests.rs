@@ -107,6 +107,10 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
         ));
     });
     let (pending, producer) = prepared.unwrap()?;
+    let pending = match pending.try_take() {
+        Err(pending) => pending,
+        Ok(_) => panic!("a live producer lost its original request"),
+    };
     assert_eq!(pending.request(), &request);
     assert_eq!(
         physical.bytes_current,
@@ -128,8 +132,18 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     let cloned = pending.clone();
     assert!(std::ptr::eq(retained, cloned.result().await?));
     assert_eq!(&provider.commit(request.clone()).await?, outcome);
+    let pending = match pending.try_take() {
+        Err(pending) => pending,
+        Ok(_) => panic!("another observer lost its original result"),
+    };
     drop(cloned);
-    drop(pending);
+    let (original, result, storage) = match pending.try_take() {
+        Ok(owned) => owned,
+        Err(_) => panic!("the sole completed owner could not take its result"),
+    };
+    assert_eq!(original, request);
+    assert!(matches!(result, Some(Ok(Ok(_)))));
+    drop((original, result, storage));
     // Committed history still physically belongs to the provider. Its native
     // storage must stay funded until that original owner retires as well.
     assert!(meter.held.load(Ordering::SeqCst) > 0);
