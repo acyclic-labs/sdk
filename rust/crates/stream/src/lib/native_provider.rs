@@ -89,7 +89,10 @@ pub trait NativeStreamProvider: StreamProvider {
             StreamError::code,
         )
     }
-    /// Executes the canonical native Commit with an owned original guard before every protected publication attempt.
+    /// Executes one canonical native Commit with its owned original guard.
+    /// A cached success skips the guard. Otherwise the guard runs once, outside
+    /// publication locks; a changed canonical cut returns `PrefixNotRetained`
+    /// without running the guard again. A fresh invocation may try a new cut.
     fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,

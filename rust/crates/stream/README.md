@@ -156,6 +156,11 @@ moved, or `DeadlineElapsed` if the original deadline elapsed. An unknown
 transport outcome closes that replica. Browser, host,
 PostgreSQL and local storage retain their native durability boundaries. Native
 local completion and prepared ingress retain their original funded guards.
+Guarded native commits run the original admission callback once outside the
+publication locks, then acquire those gates once. If the canonical revision
+changed, they return `PrefixNotRetained` without another callback or publication.
+A caller may explicitly submit a fresh invocation; cached success keeps the
+original receipt without invoking admission again.
 
 `StreamProvider::context()` borrows the session's process claims and reports its
 publication policy without allocating another owner. Clones preserve claim

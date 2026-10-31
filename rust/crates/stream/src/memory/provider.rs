@@ -639,59 +639,46 @@ impl MemoryStream {
                         let result = async {
                             let _input = provider.request_claim(&request).map_err(E::from)?;
                             let digest = provider.digest(&mut request).map_err(E::from)?;
-                            loop {
-                                {
-                                    let state = provider.state.read().await;
-                                    if let Some(replay) = provider
-                                        .replay(&state, request.idempotency_key.as_bytes())
-                                        .map_err(E::from)?
-                                    {
-                                        if replay.digest != digest {
-                                            return Err(E::from(StreamError::IdempotencyMismatch));
-                                        }
-                                        let IdempotencyOutcome::Commit(value) = &replay.result
-                                        else {
-                                            return Err(E::from(StreamError::IdempotencyMismatch));
-                                        };
-                                        return provider
-                                            .receipt(value, provider.revisions.at(replay.index))
-                                            .map(|(receipt, claim)| {
-                                                (CommitOutcome::Committed(receipt), claim)
-                                            })
-                                            .map_err(E::from);
-                                    }
-                                }
-                                before().await?;
-                                let Ok(_publication) = provider.publication.try_lock() else {
-                                    drop(provider.publication.lock().await);
-                                    continue;
-                                };
-                                let Ok(mut state) = provider.state.try_write() else {
-                                    drop(provider.state.write().await);
-                                    continue;
-                                };
-                                if provider
+                            let decision = {
+                                let state = provider.state.read().await;
+                                if let Some(replay) = provider
                                     .replay(&state, request.idempotency_key.as_bytes())
                                     .map_err(E::from)?
-                                    .is_none()
                                 {
-                                    let bytes = request
-                                        .mutations
-                                        .iter()
-                                        .map(|mutation| match mutation {
-                                            CommitMutation::Append { records, .. }
-                                            | CommitMutation::Fork { records, .. } => records
-                                                .iter()
-                                                .map(AppendRecord::payload_bytes)
-                                                .sum::<usize>(),
-                                        })
-                                        .sum();
-                                    work.reserve_write(bytes).map_err(E::from)?;
+                                    if replay.digest != digest {
+                                        return Err(E::from(StreamError::IdempotencyMismatch));
+                                    }
+                                    let IdempotencyOutcome::Commit(value) = &replay.result else {
+                                        return Err(E::from(StreamError::IdempotencyMismatch));
+                                    };
+                                    return provider
+                                        .receipt(value, provider.revisions.at(replay.index))
+                                        .map(|(receipt, claim)| (CommitOutcome::Committed(receipt), claim))
+                                        .map_err(E::from);
                                 }
-                                return provider
-                                    .commit_locked(&mut state, request, digest, deadline)
-                                    .map_err(E::from);
+                                state.decision
+                            };
+                            before().await?;
+                            let _publication = provider.publication.lock().await;
+                            let mut state = provider.state.write().await;
+                            if state.decision != decision {
+                                return Err(E::from(StreamError::PrefixNotRetained));
                             }
+                            let bytes = request
+                                .mutations
+                                .iter()
+                                .map(|mutation| match mutation {
+                                    CommitMutation::Append { records, .. }
+                                    | CommitMutation::Fork { records, .. } => records
+                                        .iter()
+                                        .map(AppendRecord::payload_bytes)
+                                        .sum::<usize>(),
+                                })
+                                .sum();
+                            work.reserve_write(bytes).map_err(E::from)?;
+                            provider
+                                .commit_locked(&mut state, request, digest, deadline)
+                                .map_err(E::from)
                         }
                         .await;
                         work.finish(
