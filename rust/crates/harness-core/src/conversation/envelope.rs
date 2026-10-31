@@ -107,9 +107,15 @@ impl SourcePosition {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContextChange {
     /// Changed frontmatter with its exact lazy body generation and authority.
-    Skill { metadata: SkillMetadata },
+    Skill {
+        /// Original changed metadata and retained body generation.
+        metadata: SkillMetadata,
+    },
     /// An original publication removed this exact context path.
-    Removed { source: PinnedContextPath },
+    Removed {
+        /// Exact removed path under the original authorized root.
+        source: PinnedContextPath,
+    },
 }
 
 /// The single immutable payload stored by the conversation's journal owner.
@@ -117,10 +123,15 @@ pub enum ContextChange {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Payload {
     /// Exact admitted provider bytes, retaining native replay provenance.
-    Wire { item: WireItem },
+    Wire {
+        /// Immutable native body and its admitted foreign projections.
+        item: WireItem,
+    },
     /// Changed context at its original publication observation.
     Context {
+        /// Original follow observation, independently of publication closure.
         position: SourcePosition,
+        /// Only the changed metadata or removed path.
         change: ContextChange,
     },
 }
