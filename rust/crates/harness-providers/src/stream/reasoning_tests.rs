@@ -98,14 +98,17 @@ fn projection(provider: &crate::ResolvedModel, events: Vec<ModelEvent>) -> Resul
     request.messages.extend(results);
     let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     let names = crate::tool_names::Names::new(prepared.request());
-    serde_json::to_vec(&crate::projection::body_named(
+    let bytes = serde_json::to_vec(&crate::projection::body_named(
         provider,
         prepared.request(),
         &names,
         &provider.reasoning_origin(provider.key.as_deref(), None),
         &mut crate::files::FileText::default(),
     )?)
-    .map_err(|_| invalid("fixture request encoding failed"))
+    .map_err(|_| invalid("fixture request encoding failed"))?;
+    let body = crate::json(&bytes)?;
+    assert!(crate::validate_input(provider.config.adapter, &body).is_empty());
+    Ok(bytes)
 }
 
 proptest! {
@@ -124,7 +127,13 @@ proptest! {
             let encoded = serde_json::to_vec(&events).unwrap();
             let replay: Vec<ModelEvent> = serde_json::from_slice(&encoded).unwrap();
             prop_assert_eq!(&events, &replay);
-            let body = projection(&provider, replay).unwrap();
+            let result = projection(&provider, replay);
+            let incomplete = adapter == Adapter::Responses && order.iter().enumerate().any(|(index, reasoning)| {
+                *reasoning && order.get(index + 1) != Some(&false)
+            });
+            prop_assert_eq!(result.is_err(), incomplete, "incomplete native pairs must refuse");
+            if incomplete { continue; }
+            let body = result.unwrap();
             let mut cursor = 0;
             for raw in raw {
                 let found = body[cursor..].windows(raw.len()).position(|part| part == raw.as_bytes());
@@ -132,6 +141,21 @@ proptest! {
                 cursor += found.unwrap() + raw.len();
             }
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn responses_display_only_summary_deltas(text in ".{1,128}") {
+        // Generated protocol mutations, not a captured provider transcript.
+        let mut state = State::new(65_536);
+        let raw = json!({"type":"response.reasoning_text.delta", "delta":text});
+        let raw_events = parse(&mut state, Adapter::Responses, &raw.to_string()).unwrap();
+        prop_assert!(raw_events.is_empty(), "raw reasoning entered user-facing events");
+        let summary = json!({"type":"response.reasoning_summary_text.delta", "delta":text});
+        let summaries = parse(&mut state, Adapter::Responses, &summary.to_string()).unwrap();
+        prop_assert_eq!(summaries, vec![ModelEvent::Reasoning { delta:text }]);
     }
 }
 

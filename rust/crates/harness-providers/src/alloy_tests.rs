@@ -431,31 +431,6 @@ const WIRE_REASONING: [(&str, &str, &[&str]); 4] = [
 ];
 
 fn assert_foreign_wire(bytes: &[u8], adapter: Adapter, ordinal: u64) {
-    let body: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    let field = match adapter {
-        Adapter::Responses => "input",
-        Adapter::Gemini => "contents",
-        _ => "messages",
-    };
-    let mut plain = Vec::new();
-    for message in body[field].as_array().expect("projected messages") {
-        let content = &message[if adapter == Adapter::Gemini {
-            "parts"
-        } else {
-            "content"
-        }];
-        if let Some(text) = content.as_str() {
-            plain.push(text);
-        }
-        for part in content.as_array().into_iter().flatten() {
-            if part["thought"] != true {
-                if let Some(text) = part["text"].as_str() {
-                    plain.push(text);
-                }
-            }
-        }
-    }
-    let plain = plain.join("\n");
     let wire = std::str::from_utf8(bytes).unwrap();
     let target = crate::stream::family(adapter);
     for (index, &(origin, readable, opaque)) in WIRE_REASONING.iter().enumerate() {
@@ -464,12 +439,8 @@ fn assert_foreign_wire(bytes: &[u8], adapter: Adapter, ordinal: u64) {
         }
         if (index as u64) < ordinal {
             assert!(
-                plain.contains(readable),
-                "foreign readable reasoning missing from plain context: {origin}"
-            );
-            assert!(
-                plain.contains(&format!("<prior-reasoning provider={origin:?}")),
-                "foreign reasoning lacks its delimiter"
+                !wire.contains(readable),
+                "foreign readable reasoning leaked: {origin}"
             );
         }
         for payload in opaque {
@@ -482,10 +453,10 @@ fn assert_foreign_wire(bytes: &[u8], adapter: Adapter, ordinal: u64) {
 }
 
 #[test]
-#[should_panic(expected = "foreign readable reasoning missing from plain context")]
-fn negative_control_dropped_foreign_readable_reasoning_is_detected_on_the_wire() {
+#[should_panic(expected = "foreign readable reasoning leaked")]
+fn negative_control_forwarded_foreign_readable_reasoning_is_detected_on_the_wire() {
     assert_foreign_wire(
-        br#"{"input":[{"role":"assistant","content":"missing"}]}"#,
+        br#"{"input":[{"role":"assistant","content":"readable-anthropic-marker"}]}"#,
         Adapter::Responses,
         1,
     );
@@ -494,6 +465,9 @@ fn negative_control_dropped_foreign_readable_reasoning_is_detected_on_the_wire()
 #[test]
 #[should_panic(expected = "foreign opaque reasoning leaked")]
 fn negative_control_forwarded_foreign_opaque_reasoning_is_detected_on_the_wire() {
-    let body = serde_json::to_vec(&json!({"input":[{"role":"assistant","content":"<prior-reasoning provider=\"anthropic\">\nreadable-anthropic-marker\n</prior-reasoning>"}], "forged_native":{"signature":"opaque-anthropic-signature"}})).unwrap();
+    let body = serde_json::to_vec(
+        &json!({"input":[], "forged_native":{"signature":"opaque-anthropic-signature"}}),
+    )
+    .unwrap();
     assert_foreign_wire(&body, Adapter::Responses, 1);
 }

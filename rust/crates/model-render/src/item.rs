@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 /// A wire protocol family, independent of model or registry aliases.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum Family {
     /// Anthropic Messages.
     Anthropic,

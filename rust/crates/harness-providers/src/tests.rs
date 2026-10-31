@@ -222,7 +222,7 @@ async fn portable_chat_arguments_are_emitted_unchanged() {
     assert_eq!(call.arguments, arguments);
 }
 
-struct Script {
+pub(super) struct Script {
     adapter: Adapter,
     status: u16,
     sent: Mutex<Vec<HttpRequest>>,
@@ -278,7 +278,7 @@ fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
     })
 }
 
-fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
+pub(super) fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
     let script = Arc::new(Script {
         adapter,
         status,

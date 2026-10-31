@@ -882,6 +882,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "tsify",
 ]
 
 [[package]]

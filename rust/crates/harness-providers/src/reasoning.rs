@@ -10,15 +10,6 @@ pub enum ProjectedReasoning<'a> {
         /// Preservation outcome for this request.
         outcome: ReasoningOutcome,
     },
-    /// Foreign reasoning becomes explicitly labelled plain context.
-    Readable {
-        /// Original readable text, without inventing a native block.
-        text: &'a str,
-        /// Attribution retained for the plain-context delimiter.
-        origin: &'a ReasoningOrigin,
-        /// Preservation outcome for this request.
-        outcome: ReasoningOutcome,
-    },
     /// Nothing is sent; retain the decision in this request's projection metadata.
     Dropped {
         /// Why this target received no content.
@@ -47,13 +38,6 @@ pub fn project_reasoning<'a>(
             } else {
                 ReasoningOutcome::PreservedOpaque
             },
-        };
-    }
-    if let Some(text) = readable {
-        return ProjectedReasoning::Readable {
-            text,
-            origin: &block.origin,
-            outcome: ReasoningOutcome::PreservedReadable,
         };
     }
     ProjectedReasoning::Dropped {
