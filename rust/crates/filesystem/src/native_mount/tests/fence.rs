@@ -402,10 +402,10 @@ fn exact_reclamation_preserves_every_authored_sibling() -> Result<(), Box<dyn st
 #[test]
 fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
 -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{BufRead as _, Write as _};
     crate::native_mount::registry::initialize().unwrap();
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
-    let release = temporary.path().join("release");
     std::fs::create_dir(&destination)?;
     let mut crashed = MountDestinationGuard::acquire_canonical(
         &destination
@@ -418,65 +418,66 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
 
     let executable = std::env::current_exe()?;
     let mut children = Vec::new();
-    let mut readiness = Vec::new();
-    for ordinal in 0..2 {
-        let ready = temporary.path().join(format!("ready-{ordinal}"));
-        let child = acyclic_native_runtime::ProcessTree::spawn(
+    for _ in 0..3 {
+        let mut child = acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new(&executable)
                 .args([
                     "--exact",
                     "native_mount::tests::destination_reclaim_child_waits_for_external_release",
                     "--nocapture",
                 ])
+                .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination)
-                .env("ACYCLIC_FS_RECLAIM_CHILD_READY", &ready)
-                .env("ACYCLIC_FS_RECLAIM_CHILD_RELEASE", &release)
-                // Child libtest summaries belong to their own invocation. The
-                // parent reports their checked exit statuses in its summary.
-                .stdout(std::process::Stdio::null()),
+                .stderr(std::process::Stdio::inherit())
+                .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination),
         )?;
-        readiness.push(ready);
-        children.push(child);
+        let release = child
+            .take_stdin()
+            .ok_or("reclaim child input pipe is absent")?;
+        let output = child
+            .take_stdout()
+            .ok_or("reclaim child output pipe is absent")?;
+        children.push((child, release, std::io::BufReader::new(output)));
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while readiness.iter().any(|path| !path.is_file()) {
-        for child in &mut children {
-            if let Some(status) = child.try_wait(None)? {
-                return Err(format!("reclaim child exited before release: {status}").into());
+    for (_, _, output) in &mut children {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if output.read_line(&mut line)? == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "reclaim child closed before publishing readiness",
+                )
+                .into());
+            }
+            if line.trim_end() == RECLAIM_CHILD_READY {
+                break;
             }
         }
-        if Instant::now() >= deadline {
-            return Err("reclaim children did not become ready".into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
     }
-    std::fs::write(&release, b"release")?;
-    for child in &mut children {
-        // Each subprocess owns its libtest protocol. Keep that output inside
-        // its process scope rather than interleaving summaries with ours.
-        let output = child.wait_with_output(
-            Duration::from_secs(5),
-            16 * 1024,
-            None,
-            || Ok(()),
-            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
-            None,
-            None,
-            None,
-        )?;
-        if !output.status.success() {
-            return Err(format!(
-                "reclaim child failed: {}\n{}\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
+    // The actual child has published readiness, but losing its original
+    // release producer must fail before any reclamation takes place.
+    let (mut abandoned, release, mut output) = children.pop().ok_or("missing reclaim child")?;
+    drop(release);
+    std::io::copy(&mut output, &mut std::io::sink())?;
+    assert!(
+        !abandoned
+            .wait(acyclic_native_runtime::CaptureSchedule::Unbounded)?
+            .success()
+    );
+    assert!(crash_left_path.is_file());
+    assert!(destination.is_dir());
+    for (_, release, _) in &mut children {
+        release.write_all(&[1])?;
+    }
+    for (mut child, release, mut output) in children {
+        drop(release);
+        std::io::copy(&mut output, &mut std::io::sink())?;
+        let status = child.wait(acyclic_native_runtime::CaptureSchedule::Unbounded)?;
+        if !status.success() {
+            return Err(format!("reclaim child failed: {status}").into());
         }
     }
-    children.clear();
     assert!(!crash_left_path.exists());
     assert!(destination.is_dir());
     Ok(())
