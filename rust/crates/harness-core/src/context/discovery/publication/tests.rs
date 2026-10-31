@@ -52,7 +52,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
             id: "source".into(),
         },
     );
-    let scope = issuer.bootstrap_scope(
+    let volume_scope = issuer.bootstrap_scope(
         "source",
         &crate::Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
@@ -61,8 +61,16 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         None,
         &mut None,
     )?;
+    let scope = issuer.bootstrap_scope(
+        "context-reader",
+        &crate::Capabilities::new([volume.directory_read_capability("skills", &mut None)?]),
+        None,
+        &mut None,
+    )?;
     let verifier = issuer.verifier(&mut None)?;
     let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
+    let denied_reader =
+        FilesystemContentVerifier::new(host.clone(), &verifier, &volume_scope, 32_768, None)?;
     let resource = acyclic_fs::session::resource(workspace.id().volume_id(), "")?;
     let credential = signed::root(|block| {
         for certificate in block
@@ -142,7 +150,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     )?;
     let write = crate::conversation::ContentGrant::verify(
         &verifier,
-        &scope,
+        &volume_scope,
         &volume,
         VolumeOperation::Write,
         32_768,
@@ -184,6 +192,23 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         panic!("one original skill expected")
     };
     assert_eq!(metadata.description, "Original header");
+    assert!(
+        matches!(
+            metadata
+                .source
+                .root
+                .skill_metadata_at(
+                    denied_reader.as_ref(),
+                    &metadata.source.path,
+                    &metadata.source.generation,
+                    "SKILL.md",
+                    ContextDiscoveryLimits::default(),
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ),
+        "ordinary volume read substituted for the original directory grant"
+    );
     assert_eq!(
         hex::encode(metadata.source.generation.as_resource().key()),
         original.version()
