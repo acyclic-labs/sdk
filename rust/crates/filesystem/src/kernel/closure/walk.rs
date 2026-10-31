@@ -264,7 +264,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         &self,
         cache: Option<&Mutex<CachedProofs>>,
         volume: crate::VolumeId,
-    ) -> Result<Option<std::sync::Arc<ProofSlot<CachedProof>>>, crate::FsError> {
+    ) -> Result<Option<CachedProofSlot>, crate::FsError> {
         cache
             .map(|cache| {
                 cache

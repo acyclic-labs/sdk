@@ -7,6 +7,7 @@
 pub mod merge;
 pub mod publish;
 pub mod rewrite;
+pub mod search;
 pub mod selection;
 
 /// One child page and the exact first key in its subtree.

@@ -1,16 +1,42 @@
 //! Arc backing stays funded until both strong and weak handles retire.
 use super::*;
 
-// Fields drop in declaration order: release the value's backing before its
-// funding, including when a failed upgrade retires the final weak handle.
+// Fields retire in declaration order, including during unwinding: value
+// backing first, then its original funding and that funding's own backing.
 pub(crate) struct RetainedArc<T> {
     value: Arc<T>,
-    allocation: Arc<RetainedAllocation>,
+    allocation: RetainedFunding,
+}
+
+#[derive(Clone, Default)]
+struct RetainedFunding(Option<Arc<RetainedAllocation>>);
+
+impl Drop for RetainedFunding {
+    fn drop(&mut self) {
+        // Take the original token out of the final Arc: its control backing
+        // retires before the returned token can refund those same bytes.
+        drop(self.0.take().and_then(Arc::into_inner));
+    }
+}
+
+/// Original backing admission, before its value is moved under shared custody.
+pub(crate) struct RetainedArcAdmission<T> {
+    allocation: RetainedAllocation,
+    value: std::marker::PhantomData<T>,
+}
+
+impl<T> RetainedArcAdmission<T> {
+    pub(crate) fn into_value(self, value: T) -> RetainedArc<T> {
+        RetainedArc {
+            value: Arc::new(value),
+            allocation: RetainedFunding(Some(Arc::new(self.allocation))),
+        }
+    }
 }
 
 pub(crate) struct RetainedWeak<T> {
     value: std::sync::Weak<T>,
-    allocation: Option<Arc<RetainedAllocation>>,
+    allocation: RetainedFunding,
 }
 
 impl<T> RetainedArc<T> {
@@ -18,6 +44,12 @@ impl<T> RetainedArc<T> {
         value: T,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
+        Ok(Self::admit(accounting)?.into_value(value))
+    }
+
+    pub(crate) fn admit(
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<RetainedArcAdmission<T>, crate::FsError> {
         let value_bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<T>())
             .map_err(|_| WorkError::Overflow)?;
         let funding_bytes =
@@ -27,16 +59,16 @@ impl<T> RetainedArc<T> {
             .checked_add(funding_bytes)
             .ok_or(WorkError::Overflow)?;
         let allocation = RetainedAllocation::claim(bytes as u64, 2, accounting)?;
-        Ok(Self {
-            value: Arc::new(value),
-            allocation: Arc::new(allocation),
+        Ok(RetainedArcAdmission {
+            allocation,
+            value: std::marker::PhantomData,
         })
     }
 
     pub(crate) fn downgrade(&self) -> RetainedWeak<T> {
         RetainedWeak {
             value: Arc::downgrade(&self.value),
-            allocation: Some(Arc::clone(&self.allocation)),
+            allocation: self.allocation.clone(),
         }
     }
 }
@@ -45,7 +77,7 @@ impl<T> Clone for RetainedArc<T> {
     fn clone(&self) -> Self {
         Self {
             value: Arc::clone(&self.value),
-            allocation: Arc::clone(&self.allocation),
+            allocation: self.allocation.clone(),
         }
     }
 }
@@ -62,7 +94,7 @@ impl<T> Default for RetainedWeak<T> {
     fn default() -> Self {
         Self {
             value: std::sync::Weak::new(),
-            allocation: None,
+            allocation: RetainedFunding::default(),
         }
     }
 }
@@ -80,7 +112,7 @@ impl<T> RetainedWeak<T> {
     pub(crate) fn upgrade(&self) -> Option<RetainedArc<T>> {
         Some(RetainedArc {
             value: self.value.upgrade()?,
-            allocation: Arc::clone(self.allocation.as_ref()?),
+            allocation: RetainedFunding(Some(Arc::clone(self.allocation.0.as_ref()?))),
         })
     }
 }
@@ -95,10 +127,11 @@ mod tests {
         let mut accounting =
             KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
         let value = RetainedArc::new(73_u64, &mut accounting)?;
-        let ledger = match &*value.allocation {
-            RetainedAllocation::Standalone { _lease } => Arc::clone(&_lease.ledger),
+        let ledger = match value.allocation.0.as_deref() {
+            Some(RetainedAllocation::Standalone { _lease }) => Arc::clone(&_lease.ledger),
             #[cfg(not(target_arch = "wasm32"))]
-            RetainedAllocation::Native { .. } => unreachable!("standalone accounting"),
+            Some(RetainedAllocation::Native { .. }) => unreachable!("standalone accounting"),
+            None => unreachable!("funded retained value"),
         };
         let funded = ledger
             .lock()

@@ -9,7 +9,11 @@ fn check<const ORDERED: bool>(deliveries: &[(u16, bool)]) {
         .iter()
         .map(|(sequence, retry)| {
             (
-                Unpublished::new(slot.clone(), CollectionEpoch::read(None), *sequence),
+                Unpublished::new(
+                    slot.clone(),
+                    CollectionEpoch::read(None),
+                    Arc::new(*sequence),
+                ),
                 *sequence,
                 *retry,
             )
@@ -77,7 +81,7 @@ fn check_epochs<const REFRESH: bool>(deliveries: &[(u16, u8, bool)]) {
     for &(sequence, epoch, retry) in deliveries {
         let value = (sequence, epoch);
         let previous = slot.current_in_any_epoch();
-        let ticket = Unpublished::new(slot.clone(), stamps[usize::from(epoch)], value);
+        let ticket = Unpublished::new(slot.clone(), stamps[usize::from(epoch)], Arc::new(value));
         if REFRESH {
             ticket.publish(&outcome(u64::from(sequence), retry));
         } else {

@@ -10,15 +10,16 @@ use crate::collection::{CollectionEpoch, Epochs};
 use crate::foundation::Sequence;
 use crate::storage::AppendOutcome;
 use crate::sync::Mutex;
+use std::ops::Deref;
 use std::sync::{Arc, PoisonError};
 
 /// One volume's last published proof and the epoch its proof began in.
-pub(crate) struct ProofSlot<T> {
+pub(crate) struct ProofSlot<P> {
     // Lock order: slot only; replaced proof custody retires after unlocking.
-    published: Mutex<Option<(CollectionEpoch, Sequence, Arc<T>)>>,
+    published: Mutex<Option<(CollectionEpoch, Sequence, P)>>,
 }
 
-impl<T> Default for ProofSlot<T> {
+impl<P> Default for ProofSlot<P> {
     fn default() -> Self {
         Self {
             published: Mutex::new(None),
@@ -26,44 +27,40 @@ impl<T> Default for ProofSlot<T> {
     }
 }
 
-impl<T> ProofSlot<T> {
+impl<P: Clone> ProofSlot<P> {
     /// The published proof, if no collection has begun since its proof began.
-    pub(crate) fn current(&self, epochs: Option<&Epochs>) -> Option<Arc<T>> {
+    pub(crate) fn current(&self, epochs: Option<&Epochs>) -> Option<P> {
         let now = CollectionEpoch::read(epochs);
         self.published
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .filter(|(proven, _, _)| *proven == now)
-            .map(|(_, _, proof)| Arc::clone(proof))
+            .map(|(_, _, proof)| proof.clone())
     }
 
     #[cfg(test)]
-    pub(super) fn current_in_any_epoch(&self) -> Option<Arc<T>> {
+    pub(super) fn current_in_any_epoch(&self) -> Option<P> {
         self.published
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map(|(_, _, proof)| Arc::clone(proof))
+            .map(|(_, _, proof)| proof.clone())
     }
 }
 
 /// A proof of a generation that is not yet durable. Only its own append outcome publishes it.
 #[must_use = "a proof is reusable only after its generation is published"]
-pub(crate) struct Unpublished<T> {
-    slot: Arc<ProofSlot<T>>,
+pub(crate) struct Unpublished<P, S = Arc<ProofSlot<P>>> {
+    slot: S,
     began: CollectionEpoch,
-    proof: Arc<T>,
+    proof: P,
 }
 
-impl<T> Unpublished<T> {
+impl<P, S: Deref<Target = ProofSlot<P>>> Unpublished<P, S> {
     /// A proof that began in `began`, read before its first object read.
-    pub(crate) fn new(slot: Arc<ProofSlot<T>>, began: CollectionEpoch, proof: T) -> Self {
-        Self {
-            slot,
-            began,
-            proof: Arc::new(proof),
-        }
+    pub(crate) fn new(slot: S, began: CollectionEpoch, proof: P) -> Self {
+        Self { slot, began, proof }
     }
 
     /// Makes the proof reusable when its generation is durable; otherwise discards it.

@@ -2,19 +2,34 @@
 
 use std::cmp::Ordering;
 
-fn examine<T>(
-    item: &T,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-    compare: &mut impl FnMut(&T) -> Ordering,
-) -> Result<Ordering, crate::FsError> {
-    let delta = crate::WorkCounters {
-        items_examined: 1,
-        ..crate::WorkCounters::UNCHARGED
-    };
-    accounting.admit(delta)?;
-    let ordering = compare(item);
-    accounting.record_completed(delta)?;
-    Ok(ordering)
+struct OriginalProbes<'a, 'b, C> {
+    accounting: &'a mut super::allocation::KernelAccounting<'b>,
+    compare: C,
+}
+
+impl<T, C: FnMut(&T) -> Ordering> acyclic_collections::page::search::Work<T>
+    for OriginalProbes<'_, '_, C>
+{
+    type Error = crate::FsError;
+
+    fn check(&mut self) -> Result<(), Self::Error> {
+        self.accounting.check()
+    }
+
+    fn compare(&mut self, item: &T) -> Result<Ordering, Self::Error> {
+        let delta = crate::WorkCounters {
+            items_examined: 1,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        self.accounting.admit(delta)?;
+        let ordering = (self.compare)(item);
+        self.accounting.record_completed(delta)?;
+        Ok(ordering)
+    }
+
+    fn invalid_prefix(&self) -> Self::Error {
+        crate::FsError::InvalidDiff
+    }
 }
 
 pub(crate) fn binary_search_with_accounting<T>(
@@ -22,10 +37,13 @@ pub(crate) fn binary_search_with_accounting<T>(
     accounting: &mut super::allocation::KernelAccounting<'_>,
     compare: impl FnMut(&T) -> Ordering,
 ) -> Result<Result<usize, usize>, crate::FsError> {
-    if items.is_empty() {
-        return Ok(Err(0));
-    }
-    binary_search_from_with_accounting(items, 0, accounting, compare)
+    acyclic_collections::page::search::binary_search(
+        items,
+        &mut OriginalProbes {
+            accounting,
+            compare,
+        },
+    )
 }
 
 /// Follows the ordinary whole-slice binary-search decision tree. Slots before
@@ -35,36 +53,16 @@ pub(crate) fn binary_search_from_with_accounting<T>(
     items: &[T],
     known_before: usize,
     accounting: &mut super::allocation::KernelAccounting<'_>,
-    mut compare: impl FnMut(&T) -> Ordering,
+    compare: impl FnMut(&T) -> Ordering,
 ) -> Result<Result<usize, usize>, crate::FsError> {
-    if known_before > items.len() {
-        return Err(crate::FsError::InvalidDiff);
-    }
-    if known_before == items.len() {
-        // An inferred append still belongs to an admitted invocation.
-        accounting.check()?;
-        return Ok(Err(known_before));
-    }
-    let (mut base, mut rest) = (0_usize, items);
-    while let Some((lower, upper)) = rest.split_at_checked(rest.len() / 2)
-        && let Some((middle, higher)) = upper.split_first()
-    {
-        let index = base + lower.len();
-        let ordering = if index < known_before {
-            Ordering::Less
-        } else {
-            examine(middle, accounting, &mut compare)?
-        };
-        match ordering {
-            Ordering::Less => {
-                base = index + 1;
-                rest = higher;
-            }
-            Ordering::Greater => rest = lower,
-            Ordering::Equal => return Ok(Ok(index)),
-        }
-    }
-    Ok(Err(base))
+    acyclic_collections::page::search::binary_search_from(
+        items,
+        known_before,
+        &mut OriginalProbes {
+            accounting,
+            compare,
+        },
+    )
 }
 
 pub(crate) fn partition_point_with_accounting<T>(

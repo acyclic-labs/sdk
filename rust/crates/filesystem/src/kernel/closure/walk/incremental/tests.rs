@@ -4,6 +4,171 @@ use crate::kernel::{FileKind, InlineFileData, NameEncoding};
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
+#[test]
+fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement() -> TestResult<()> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let meter = ProofMeter::Native {
+        original: &original,
+        cancellation: &cancellation,
+    };
+    let volume = crate::VolumeId::from_bytes([1; 16]);
+    let mut slot_bytes = None;
+    for count in [4_u128, 32, 256] {
+        let mut cache = CachedProofs::default();
+        for index in 0..count {
+            drop(cache.slot(crate::VolumeId::from_bytes(index.to_be_bytes()), &meter)?);
+        }
+        let key = crate::VolumeId::from_bytes((count / 2).to_be_bytes());
+        let before = original.receipt();
+        let slot = cache.slot(key, &meter)?;
+        let after = original.receipt();
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert!(after.items_examined - before.items_examined <= 8 * 16 + 1 + 16);
+        drop(cache);
+        let retained = original.live_allocation_bytes() - baseline;
+        assert!(
+            retained > 0,
+            "cache retirement refunded a live proof-slot alias"
+        );
+        assert_eq!(retained, *slot_bytes.get_or_insert(retained));
+        drop(slot);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+
+    let store = crate::memory::MemoryObjectStore::default();
+    let limits = ClosureLimits {
+        decode: DecodeLimits::default(),
+        maximum_objects: u64::MAX,
+        maximum_files: u64::MAX,
+        maximum_object_bytes: u64::MAX,
+        profile: FilesystemProfile::Portable,
+        symbolic_links: false,
+        hard_links: false,
+        sparse_files: false,
+    };
+    let object = |kind| ObjectId {
+        storage: None,
+        kind,
+        digest: Digest::from_bytes([1; 32]),
+    };
+    let proof = GenerationProof {
+        root: GenerationRoot {
+            volume_id: volume,
+            root_file_id: FileId::from_bytes([2; 16]),
+            file_table: object(ObjectKind::FileTablePage),
+            parents: vec![GenerationId::from_root(object(ObjectKind::GenerationRoot))],
+            required_features: 0,
+        },
+        generation_id: GenerationId::from_root(object(ObjectKind::GenerationRoot)),
+        file_count: 1,
+        logical_file_bytes: 0,
+        objects: Vec::new(),
+        work: WorkCounters::UNCHARGED,
+    };
+    let context = ProofContext::new(&store, limits, meter);
+    for committed in [false, true] {
+        let mut cache = CachedProofs::default();
+        let slot = cache.slot(volume, &context.meter)?;
+        let pending = context
+            .remember(
+                Some(slot.clone()),
+                crate::collection::CollectionEpoch::read(None),
+                &proof,
+                1,
+            )?
+            .ok_or("missing original pending proof")?;
+        drop(cache);
+        assert!(
+            slot.current(None).is_none(),
+            "unpublished proof became reusable"
+        );
+        if committed {
+            pending.created();
+            let retained = slot
+                .current(None)
+                .ok_or("committed proof lost its original handle")?;
+            drop(slot);
+            assert!(original.live_allocation_bytes() > baseline);
+            assert_eq!(retained.generation_id, proof.generation_id);
+            drop(retained);
+        } else {
+            drop(slot);
+            assert!(original.live_allocation_bytes() > baseline);
+            drop(pending);
+        }
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+
+    // Root cloning succeeds; the following two-Arc admission is refused.
+    // Its original parent-buffer guard must retire outside the meter borrow.
+    let limited = crate::NativeMaterializationWork::new(
+        WorkBudget {
+            allocation_operations: 5,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
+    let limited_baseline = limited.live_allocation_bytes();
+    let limited_meter = ProofMeter::Native {
+        original: &limited,
+        cancellation: &cancellation,
+    };
+    let mut cache = CachedProofs::default();
+    let slot = cache.slot(volume, &limited_meter)?;
+    let before = limited.live_allocation_bytes();
+    let context = ProofContext::new(&store, limits, limited_meter);
+    let refused = context
+        .remember(
+            Some(slot.clone()),
+            crate::collection::CollectionEpoch::read(None),
+            &proof,
+            1,
+        )
+        .err()
+        .ok_or("unfunded proof backing was accepted")?;
+    assert!(matches!(
+        refused,
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+            WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            }
+        ))
+    ));
+    assert_eq!(limited.live_allocation_bytes(), before);
+    drop(cache);
+    drop(slot);
+    assert_eq!(limited.live_allocation_bytes(), limited_baseline);
+
+    let meter = ProofMeter::Native {
+        original: &original,
+        cancellation: &cancellation,
+    };
+    let mut cache = CachedProofs::default();
+    drop(cache.slot(volume, &meter)?);
+    let before = original.receipt();
+    cancellation.cancel();
+    assert!(matches!(
+        cache.slot(volume, &meter),
+        Err(crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Cancelled
+        ))
+    ));
+    assert_eq!(
+        original.receipt(),
+        before,
+        "cancelled lookup performed work"
+    );
+    drop(cache);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
 fn namespace_diff(count: usize, chain: bool) -> TestResult<crate::GenerationDiff> {
     let object = |kind| ObjectId {
         storage: None,

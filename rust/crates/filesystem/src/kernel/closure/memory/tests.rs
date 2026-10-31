@@ -10,7 +10,12 @@ fn denied(meter: &ProofMeter<'_>) {
     assert!(matches!(result, Some(Err(_))));
     assert_eq!(allocation.count_total, 0, "denied slot admission allocated");
     assert_eq!(allocation.bytes_total, 0);
-    assert!(cache.entries.is_empty());
+    assert!(
+        meter
+            .with_accounting(|accounting| cache.entries.get([1; 16], accounting))
+            .unwrap()
+            .is_none()
+    );
 }
 
 proptest! {
@@ -18,7 +23,7 @@ proptest! {
     #[test]
     fn denied_first_slot_admission_never_allocates(shortfall in 1u64..=64) {
         let cancellation = CancellationToken::new();
-        let slot_bytes = usize_to_u64(size_of::<ProofSlot<CachedProof>>() + 2 * size_of::<usize>());
+        let slot_bytes = usize_to_u64(size_of::<ProofSlot<RetainedArc<CachedProof>>>() + 2 * size_of::<usize>());
         let available = slot_bytes.saturating_sub(shortfall);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.peak_allocation_bytes = proof_standalone_control_bytes() + available;

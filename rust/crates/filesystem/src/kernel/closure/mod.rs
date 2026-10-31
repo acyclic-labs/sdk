@@ -11,7 +11,7 @@ use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 use std::mem::size_of;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use thiserror::Error;
 
 /// Hard closure-walk limits admitted before generation publication.
@@ -177,6 +177,7 @@ pub(crate) fn closure_error(error: crate::FsError) -> ClosureError {
 mod memory;
 pub(crate) use memory::{CachedProofs, ProofGuard, ProofMeter};
 mod published;
+use crate::kernel::allocation::retained::RetainedArc;
 use memory::{ProofVec, map_get, map_insert, set_insert};
 use published::ProofSlot;
 pub(crate) use published::Unpublished;
@@ -195,7 +196,8 @@ pub(crate) struct CachedProof {
 }
 
 /// A publication proof whose reuse waits on its own append outcome.
-pub(crate) type PendingProof = Unpublished<CachedProof>;
+pub(crate) type PendingProof = Unpublished<RetainedArc<CachedProof>, CachedProofSlot>;
+type CachedProofSlot = RetainedArc<ProofSlot<RetainedArc<CachedProof>>>;
 
 /// Proves the complete immutable object closure and namespace/file-table consistency.
 pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
