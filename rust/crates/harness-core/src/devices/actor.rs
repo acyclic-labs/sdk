@@ -161,29 +161,29 @@ impl State {
             Err(error) => return Err(error.into()),
         }
         let before = effects.len();
-        match &self.connection {
-            Some((_, session))
-                if *session == run.command.session
-                    && run.command.target == self.target.name
-                    && run.command.generation == self.generation
-                    && run.command.actor == *blake3::hash(&self.paths()?.actor(&self.target.name)?.encode()).as_bytes() =>
-            {
-                    self.handover = Some(record.sequence);
-                    effects.push(self.event(
-                        op,
-                        RunEvent::Started {
-                            session: session.clone(),
-                            generation: self.generation,
-                        },
-                    )?);
-            }
-            _ => effects.push(self.event(
+        let accepted = self.connection.as_ref().is_some_and(|(_, session)| {
+            *session == run.command.session
+                && run.command.target == self.target.name
+                && run.command.generation == self.generation
+        }) && run.command.actor
+            == *blake3::hash(&self.paths()?.actor(&self.target.name)?.encode()).as_bytes();
+        if accepted {
+            self.handover = Some(record.sequence);
+            effects.push(self.event(
+                op,
+                RunEvent::Started {
+                    session: run.command.session.clone(),
+                    generation: self.generation,
+                },
+            )?);
+        } else {
+            effects.push(self.event(
                 op,
                 RunEvent::Refused {
                     reason: "the device's session ended before the command reached it; it did not run"
                         .into(),
                 },
-            )?),
+            )?);
         }
         if let Some(effect) = effects.get_mut(before) {
             effect

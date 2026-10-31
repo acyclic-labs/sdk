@@ -83,7 +83,12 @@ async fn status(
     Err("original presence producer ended".into())
 }
 
-async fn terminal(provider: &MemoryStream, path: StreamPath) -> Result<serde_json::Value> {
+async fn terminal(
+    provider: &MemoryStream,
+    path: StreamPath,
+    release: &mut tokio::net::TcpStream,
+) -> Result<serde_json::Value> {
+    use tokio::io::AsyncWriteExt as _;
     let mut request = FollowRequest::new(path, 0);
     request.when_absent = acyclic_stream::WhenAbsent::Wait;
     let mut events = provider.follow(request).await?;
@@ -105,6 +110,11 @@ async fn terminal(provider: &MemoryStream, path: StreamPath) -> Result<serde_jso
                     stdout.extend(data);
                 }
                 chunks += 1;
+                if chunks == 1 {
+                    // The real process cannot exit until its output has crossed
+                    // the socket and original operation publication boundary.
+                    release.write_all(b"continue\n").await?;
+                }
                 continue;
             }
             let mut event = value["event"].clone();
@@ -150,16 +160,17 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
         Arc::new(SystemClock),
     );
     let (failures, mut failed) = tokio::sync::mpsc::unbounded_channel();
+    let runtime_failures = failures.clone();
     let _runtime = Task(tokio::spawn(async move {
         let outcome = runtime
             .run(|_, error| {
-                let _sent = failures.send(error.to_string());
+                let _sent = runtime_failures.send(error.to_string());
             })
             .await;
-        let _sent = failures.send(format!("original Actor runtime ended: {outcome:?}"));
+        let _sent = runtime_failures.send(format!("original Actor runtime ended: {outcome:?}"));
     }));
     let directory = acyclic_harness_core::devices::TargetDirectory::new(
-        provider.clone(),
+        Store::new(provider.clone(), StreamPath::new("harness/actors")?),
         paths.clone(),
         Target {
             record: InProcessTargets::local_record("home", "ana"),
@@ -217,7 +228,9 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
     )?;
     let mut link = client.actor_socket(attachment.open(), 0).await?;
     let _device = Task(tokio::spawn(async move {
-        runner.serve(&attachment, &mut link).await
+        let outcome = runner.serve(&attachment, &mut link).await;
+        let _sent = failures.send(format!("original device connection ended: {outcome:?}"));
+        outcome
     }));
     let exercise = async {
         let mut presence = provider
@@ -234,12 +247,16 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             .to_str()
             .ok_or("marker path is not UTF-8")?
             .replace('\'', "''");
+        let release = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = release.local_addr()?.port();
         let command = if cfg!(windows) {
             format!(
-                "[IO.File]::AppendAllText('{path}', 'x'); [Console]::Out.Write('out'); [Console]::Error.Write('err'); exit 7"
+                "$peer = [Net.Sockets.TcpClient]::new('127.0.0.1', {port}); [IO.File]::AppendAllText('{path}', 'x'); [Console]::Out.Write('out'); [Console]::Error.Write('err'); $null = $peer.GetStream().ReadByte(); $peer.Dispose(); exit 7"
             )
         } else {
-            format!("printf x >> '{path}'; printf out; printf err >&2; exit 7")
+            format!(
+                "exec 3<>/dev/tcp/127.0.0.1/{port}; printf x >> '{path}'; printf out; printf err >&2; IFS= read -r permit <&3; exit 7"
+            )
         };
         let op = OperationId::new();
         let run = RunCommand {
@@ -269,17 +286,23 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
         let request = CommitRequest {
             deadline_unix_millis: None,
             conditions: Vec::new(),
-            mutations: vec![CommitMutation::Append {
-                path: paths.queue("desktop")?,
-                records: vec![AppendRecord::from(bytes)],
-            }],
+            mutations: vec![
+                CommitMutation::Append {
+                    path: paths.queue("desktop")?,
+                    records: vec![AppendRecord::from(bytes)],
+                },
+                Store::new(provider.clone(), StreamPath::new("harness/actors")?)
+                    .activation(&actor)
+                    .mutation,
+            ],
             idempotency_key: IdempotencyKey::new(b"original-device-dispatch".to_vec())?,
         };
         assert!(matches!(
             provider.commit(request.clone()).await?,
             CommitOutcome::Committed(_)
         ));
-        let result = terminal(&provider, paths.run("desktop", op)?).await?;
+        let (mut release, _) = release.accept().await?;
+        let result = terminal(&provider, paths.run("desktop", op)?, &mut release).await?;
         assert_eq!(result["exit"]["result"]["stdout"], "out");
         assert_eq!(result["exit"]["result"]["stderr"], "err");
         assert_eq!(result["exit"]["result"]["exit_code"], 7);

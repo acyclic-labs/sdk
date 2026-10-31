@@ -82,6 +82,7 @@ impl Drop for Presence<'_> {
 /// stream; one follow serves every agent of the host.
 pub struct TargetDirectory<P: StreamProvider + ?Sized + 'static> {
     provider: Arc<P>,
+    store: acyclic_actors::local::Store<P>,
     paths: TargetPaths,
     home: Arc<Target>,
     grant: Arc<DeviceGrant>,
@@ -104,7 +105,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
     /// # Errors
     /// When the home record is malformed.
     pub fn new(
-        provider: Arc<P>,
+        store: acyclic_actors::local::Store<P>,
         paths: TargetPaths,
         home: Target,
         grant: DeviceGrant,
@@ -118,7 +119,8 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
             active: false,
         };
         Ok(Self {
-            provider,
+            provider: Arc::clone(store.provider()),
+            store,
             paths,
             home: Arc::new(home),
             grant: Arc::new(grant),
@@ -197,6 +199,9 @@ impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P>
                 provider: Arc::clone(&self.provider),
                 paths: self.paths.clone(),
                 name: record.name.clone(),
+                wake: self
+                    .store
+                    .activation_record(&self.paths.actor(&record.name)?),
                 grant: Arc::clone(&self.grant),
                 home: self.home.record.clone(),
                 devices: self.devices.subscribe(),
@@ -211,6 +216,7 @@ struct DeviceExecutor<P: StreamProvider + ?Sized + 'static> {
     provider: Arc<P>,
     paths: TargetPaths,
     name: String,
+    wake: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
     grant: Arc<DeviceGrant>,
     devices: watch::Receiver<Devices>,
     home: crate::agent::TargetRecord,
@@ -418,8 +424,10 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             ));
         }
         Ok(Some(Dispatch {
-            path: self.paths.queue(&self.name)?,
-            record: record.into(),
+            records: vec![
+                (self.paths.queue(&self.name)?, record.into()),
+                self.wake.clone(),
+            ],
         }))
     }
 

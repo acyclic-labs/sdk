@@ -15,6 +15,15 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
     let execution = StreamPath::new("snapshot/execution")?;
     let head = StreamPath::new("snapshot/head")?;
     let pages = StreamPath::new("snapshot/pages")?;
+    let queue = StreamPath::new("snapshot/device-queue")?;
+    let dispatch = OwnedBytes::from_static(b"original-run");
+    let wake = StreamPath::new("snapshot/actor-activation")?;
+    let dispatch_records = crate::tool::Dispatch {
+        records: vec![
+            (queue.clone(), dispatch.clone()),
+            (wake.clone(), OwnedBytes::from_static(b"original-actor")),
+        ],
+    };
     let record = if large {
         OwnedBytes::from(vec![7; acyclic_stream::MAX_RECORD_BYTES])
     } else {
@@ -41,7 +50,7 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
         head_tail: 0,
         base: 0,
         digest: [7; 32],
-        dispatch: None,
+        dispatch: Some(&dispatch_records),
     };
     let mut old_work = None;
     let old = cut.request(
@@ -60,6 +69,10 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
         "one-command negative control accepted an oversized snapshot"
     );
     drop(old.1);
+    assert!(matches!(
+        provider.head(queue.clone()).await,
+        Err(StreamError::NotFound)
+    ));
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -92,15 +105,32 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
         crate::store::operations::one_record(&provider, &pages, count as u64 - 1, &mut None)
             .await?
             .expect("last page");
+    let queued = crate::store::operations::one_record(&provider, &queue, 0, &mut None)
+        .await?
+        .expect("dispatch committed with its claim");
+    let activation = crate::store::operations::one_record(&provider, &wake, 0, &mut None)
+        .await?
+        .expect("wake committed with its delivery");
     assert_eq!(execution_record.value, observation);
     assert_eq!(head_record.value, checkpoint);
     assert_eq!(head_record.commit_id, execution_record.commit_id);
     assert_eq!(last_page.commit_id, head_record.commit_id);
+    assert_eq!(queued.value, dispatch);
+    assert_eq!(queued.commit_id, head_record.commit_id);
+    assert_eq!(activation.commit_id, queued.commit_id);
+    assert_eq!(provider.tail(queue).await?, 1);
     assert_ne!(
         first_page.commit_id, head_record.commit_id,
         "snapshot was not staged before its final cut"
     );
-    drop((execution_record, head_record, first_page, last_page));
+    drop((
+        execution_record,
+        head_record,
+        first_page,
+        last_page,
+        queued,
+        activation,
+    ));
     drop(provider);
     assert_eq!(
         io.owned_bytes()?,

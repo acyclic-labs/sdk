@@ -383,13 +383,23 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// The activation-log append that rides in every state-creating commit.
     /// It is unconditioned, so concurrent creations never contend on it.
     pub fn activation(&self, actor: &ActorReference) -> Effect {
+        let (path, record) = self.activation_record(actor);
         Effect {
             conditions: Vec::new(),
             mutation: CommitMutation::Append {
-                path: self.root.clone(),
-                records: vec![actor.encode().into()],
+                path,
+                records: vec![record.into()],
             },
         }
+    }
+
+    /// Original wake record for composition with a producer's delivery commit.
+    /// Appending input without this record cannot wake a dormant actor.
+    pub fn activation_record(
+        &self,
+        actor: &ActorReference,
+    ) -> (StreamPath, acyclic_stream::OwnedBytes) {
+        (self.root.clone(), actor.encode().into())
     }
 
     /// The actor's state stream.

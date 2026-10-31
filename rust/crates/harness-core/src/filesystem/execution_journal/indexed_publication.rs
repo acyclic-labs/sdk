@@ -139,7 +139,7 @@ where
             head_tail,
             base,
             digest,
-            dispatch: dispatch.map(|dispatch| (&dispatch.path, &dispatch.record)),
+            dispatch,
         };
         let committed = cut
             .publish(
