@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { ActorsDomain, ActorsPackage } from "./generated/acyclic_cloudflare_conformance.js";
 import { WasmActorHost, WasmStream } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
-import { SqliteEventStorage, SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
+import { SqliteEventStorage, SqliteJournal } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
 
 interface Env { ACTORS: DurableObjectNamespace<Actors>; ACTOR: DurableObjectNamespace<Actor> }
@@ -26,14 +26,17 @@ export class Actors extends DurableObject<Env> {
   private readonly routes = new SqliteEventStorage(this.ctx.storage, "actors-routing");
   private readonly metadata = new SqliteEventStorage(this.ctx.storage, "actors-discovery");
   private readonly domain = Promise.resolve().then(() => ActorsDomain.open({
-    configure: (configuration: Uint8Array, maximum: number) => this.journal.configure(configuration, maximum),
-    flush: () => this.journal.flush(), read: (index: number) => this.journal.read(index),
-    append: async (index: number, admit: () => Uint8Array, changes: readonly StreamChange[]) => {
+    configure: (...args: Parameters<SqliteJournal["configure"]>) => this.journal.configure(...args),
+    flush: () => this.journal.flush(),
+    read: (...args: Parameters<SqliteJournal["read"]>) => this.journal.read(...args),
+    changed: (...args: Parameters<SqliteJournal["changed"]>) => this.journal.changed(...args),
+    append: async (...args: Parameters<SqliteJournal["append"]>) => {
       // Durable recovery exists BEFORE publishing any state or routing changes.
       await this.ctx.storage.setAlarm(Date.now());
-      await this.journal.append(index, admit, changes);
+      const head = await this.journal.append(...args);
       // Close cleanup racing the pre-publication arm while append awaited IO.
       await this.ctx.storage.setAlarm(Date.now());
+      return head;
     },
   }, async (address: Uint8Array, paused: boolean) => {
     await this.discover();
