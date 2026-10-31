@@ -123,7 +123,7 @@ fn native_file_selection_bounds_use_the_recoverable_preflight_class() -> Result<
             operation_id: crate::OperationId::new(),
             call_id: "selection".into(),
             name: "read".into(),
-            arguments: json!({"file":file,"range":{"start":start,"end":end}}),
+            arguments: json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":start,"end":end}}),
         };
         let error = FileTool::Read
             .preflight(&scope, &invocation, Some(&original))

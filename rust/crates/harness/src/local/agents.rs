@@ -250,10 +250,11 @@ impl LocalHarness {
                 harness: self.harness.with_workspace(
                     Some(home(tools)?),
                     crate::runtime::ContentBindings {
+                        volume: project.clone(),
                         reader: Arc::clone(&authority.content.reader),
                         writer: Some(writer),
                     },
-                ),
+                )?,
             });
         }
         let writer = crate::filesystem::FilesystemContentPublisher::new(
@@ -269,10 +270,11 @@ impl LocalHarness {
             harness: self.harness.with_workspace(
                 None,
                 crate::runtime::ContentBindings {
+                    volume: project.clone(),
                     reader: Arc::clone(&authority.content.reader),
                     writer: Some(writer),
                 },
-            ),
+            )?,
         })
     }
 }

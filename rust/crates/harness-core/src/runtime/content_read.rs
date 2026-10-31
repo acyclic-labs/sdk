@@ -80,6 +80,13 @@ impl ContentResidencyVerifier for TaskContext {
 }
 
 impl TaskContext {
+    pub(crate) fn tool_read_content(&self) -> &ContentBindings {
+        self.harness
+            .content
+            .as_ref()
+            .unwrap_or(&self.output_content)
+    }
+
     /// Where a tool publishes into `volume`, or, unselected, its new files:
     /// the harness's own project content when it has a writer, which is
     /// where the project's commands write too; otherwise the agent's
@@ -258,28 +265,62 @@ impl TaskContext {
         let content = self
             .content_binding(Some(volume))
             .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
-        let (file, bytes, _hold) = content
+        let (file, bytes, _) = self
+            .read_bound_path(
+                content,
+                (volume, granted_prefix, path, expected_generation),
+                &self.scope,
+                None,
+            )
+            .await?;
+        Ok((file, bytes))
+    }
+
+    pub(super) async fn read_bound_path(
+        &self,
+        content: &ContentBindings,
+        selection: (&VolumeRef, &str, &str, Option<&GenerationRef>),
+        scope: &RuntimeScope,
+        io: Option<&ContentIo>,
+    ) -> Result<(FileRef, OwnedBytes, u64)> {
+        let (volume, granted_prefix, path, expected_generation) = selection;
+        let (file, bytes, hold) = content
             .reader
             .read_private_path(
                 volume,
                 granted_prefix,
                 path,
                 expected_generation,
-                self.scope.limits.file_bytes,
+                scope.limits().file_bytes,
                 crate::conversation::ContentAccess {
-                    ceiling: Some(self.scope.grants()),
-                    io: None,
+                    ceiling: Some(scope.grants()),
+                    io,
                 },
             )?
             .await?;
-        self.scope.limits.validate_file(&file, &mut None)?;
-        if file.volume() != volume || file.path() != path {
-            return Err(Error::Conflict(
-                "private path provider returned another file".into(),
-            ));
+        crate::executor::with_history_io(io, |history| {
+            scope.limits().validate_file(&file, history)?;
+            if file.volume() != volume || file.path() != path {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Conflict,
+                    "path reader returned another file",
+                ));
+            }
+            file.descriptor().verify(&bytes, history)
+        })?;
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
         }
-        file.descriptor().verify(&bytes, &mut None)?;
-        Ok((file, bytes))
+        #[cfg(not(feature = "filesystem"))]
+        let retained = {
+            let _ = hold;
+            0
+        };
+        Ok((file, bytes, retained))
     }
 
     pub(super) fn require_private_directory(

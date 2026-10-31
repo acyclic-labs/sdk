@@ -41,7 +41,7 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
                         content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
                             "call".into(),
                             "read".into(),
-                            serde_json::json!({"file":file}),
+                            serde_json::json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()}),
                         ))),
                     },
                     ModelMessage {
@@ -50,7 +50,7 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
                             call_id: "call".into(),
                             name: "read".into(),
                             content: ToolResultContent::Json {
-                                value: serde_json::json!(body),
+                                value: serde_json::json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"text":body}),
                             },
                         }),
                     },
@@ -68,7 +68,7 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
                 };
                 assert_eq!((call_id.as_str(), name.as_str()), ("call", "read"));
                 assert_eq!(
-                    value,
+                    value["text"],
                     "Read completed; instructions already included from AGENTS.md for nested."
                 );
                 super::instruction_reads::deduplicate_reads(&mut messages, Some(io)).unwrap();

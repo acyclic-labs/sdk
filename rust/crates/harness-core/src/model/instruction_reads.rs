@@ -1,42 +1,5 @@
 use super::*;
 
-#[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for crate::tool::files::ReadFileInput {
-    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
-        Ok(Some(
-            (std::mem::size_of::<Self>() as u64)
-                .checked_add(self.file.logical_owned_bytes()?)
-                .ok_or_else(super::inventory::overflow)?,
-        ))
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn owned_read_input<'a>(
-    arguments: &Value,
-    io: &'a PreparationIo,
-) -> Result<(
-    crate::tool::files::ReadFileInput,
-    crate::filesystem::DecodeReservation<'a>,
-)> {
-    let before = io.owned_bytes()?;
-    let input = {
-        let bytes = io.encode(arguments, io.remaining()?.bytes_encoded, false)?;
-        let _hold = io.guard_bytes(&bytes)?;
-        crate::filesystem::retain_decoded(io.decode(
-            std::marker::PhantomData,
-            &bytes,
-            crate::wire::ErrorCode::Invalid,
-        )?)?
-    };
-    let hold = io.guard_owned(
-        io.owned_bytes()?
-            .checked_sub(before)
-            .ok_or_else(super::inventory::overflow)?,
-    )?;
-    Ok((input, hold))
-}
-
 // The canonical history and tool exchange remain intact. Only a verified repeated
 // body in the transient model request is replaced, using the paired call's source.
 pub(crate) fn deduplicate_reads(
@@ -125,7 +88,7 @@ pub(crate) fn deduplicate_reads(
                     continue;
                 }
                 let ToolResultContent::Json {
-                    value: Value::String(body),
+                    value: Value::Object(result),
                 } = content
                 else {
                     continue;
@@ -133,43 +96,41 @@ pub(crate) fn deduplicate_reads(
                 let Some(arguments) = call.arguments.as_object() else {
                     continue;
                 };
-                if arguments
-                    .keys()
-                    .any(|key| !matches!(key.as_str(), "file" | "range"))
+                if name.as_str() != "read"
+                    || arguments
+                        .keys()
+                        .any(|key| !matches!(key.as_str(), "path" | "version" | "range"))
                 {
                     continue;
                 }
-                let Some(file) = arguments.get("file").and_then(Value::as_object) else {
+                let Some(path) = result.get("path").and_then(Value::as_str) else {
                     continue;
                 };
-                if file.len() != 5
-                    || ["volume", "path", "version", "descriptor", "display_name"]
-                        .iter()
-                        .any(|key| !file.contains_key(*key))
-                {
+                if arguments.get("path").and_then(Value::as_str) != Some(path) {
                     continue;
                 }
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let work = io.and_then(PreparationIo::original_native_work);
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                let work = None;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let mut _owned_hold = None;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let owned = io.filter(|io| io.original_native_work().is_none());
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let decoded = if let Some(io) = owned {
-                    let (input, hold) = owned_read_input(&call.arguments, io)?;
-                    _owned_hold = Some(hold);
-                    Ok((input, None))
+                let Some(version) = result.get("version").and_then(Value::as_str) else {
+                    continue;
+                };
+                #[cfg(feature = "filesystem")]
+                let decoded = if let Some(io) = io {
+                    io.decode::<FileRef>(
+                        std::marker::PhantomData,
+                        version.as_bytes(),
+                        crate::wire::ErrorCode::Invalid,
+                    )
+                    .map(|(file, hold)| (file, Some(hold)))
                 } else {
-                    crate::tool::decode::<crate::tool::files::ReadFileInput>(&call.arguments, work)
+                    serde_json::from_str::<FileRef>(version)
+                        .map(|file| (file, None))
+                        .map_err(|error| Error::Invalid(error.to_string()))
                 };
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                let decoded =
-                    crate::tool::decode::<crate::tool::files::ReadFileInput>(&call.arguments, work);
-                let input = match decoded {
-                    Ok(input) => input,
+                #[cfg(not(feature = "filesystem"))]
+                let decoded = serde_json::from_str::<FileRef>(version)
+                    .map(|file| (file, ()))
+                    .map_err(|error| Error::Invalid(error.to_string()));
+                let (read_file, _hold) = match decoded {
+                    Ok(source) => source,
                     Err(Error::Invalid(_)) => continue,
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Err(Error::NativeJson {
@@ -179,16 +140,18 @@ pub(crate) fn deduplicate_reads(
                     }) if source.is_data() => continue,
                     Err(error) => return Err(error),
                 };
-                if input.0.range.is_some_and(|range| {
-                    range.start != 0 || range.end != input.0.file.descriptor().byte_length()
-                }) {
+                if read_file.path() != path
+                    || arguments.get("range").is_some_and(|range| {
+                        !range.is_null()
+                            && (range.get("start").and_then(Value::as_u64) != Some(0)
+                                || range.get("end").and_then(Value::as_u64)
+                                    != Some(read_file.descriptor().byte_length()))
+                    })
+                {
                     continue;
                 }
-                let key = super::instruction_index::source_key(
-                    input.0.file.volume(),
-                    input.0.file.path(),
-                    io,
-                )?;
+                let key =
+                    super::instruction_index::source_key(read_file.volume(), read_file.path(), io)?;
                 let Some((source_message, source_part)) = index_map.get(0, &key, io)? else {
                     continue;
                 };
@@ -202,15 +165,14 @@ pub(crate) fn deduplicate_reads(
                     continue;
                 };
                 let source = InstructionSource::with_identity(file, identity);
-                if !source.same_content(&input.0.file) {
+                if !source.same_content(&read_file) {
                     continue;
                 }
+                let Some(Value::String(body)) = result.get_mut("text") else {
+                    continue;
+                };
                 if !with_history_io(io, |work| {
-                    input
-                        .0
-                        .file
-                        .descriptor()
-                        .matches_bytes(body.as_bytes(), work)
+                    read_file.descriptor().matches_bytes(body.as_bytes(), work)
                 })? {
                     continue;
                 }
@@ -237,14 +199,21 @@ pub(crate) fn deduplicate_reads(
 #[test]
 fn owned_read_identity_reserves_before_decoding_with_unfunded_negative_control() {
     let file = super::instruction_tests::file("AGENTS.md", "rules", "rules");
-    let arguments = serde_json::json!({"file":file});
+    let version = serde_json::to_vec(&file).unwrap();
     let mut budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
-    budget.bytes_encoded = 0;
+    budget.items_examined = 0;
     let cancellation = acyclic_fs::CancellationToken::new();
     let io = PreparationIo::from_budget(budget, &cancellation).unwrap();
-    assert!(owned_read_input(&arguments, &io).is_err());
     assert!(
-        crate::tool::decode::<crate::tool::files::ReadFileInput>(&arguments, None).is_ok(),
+        io.decode::<FileRef>(
+            std::marker::PhantomData,
+            &version,
+            crate::wire::ErrorCode::Invalid
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_slice::<FileRef>(&version).is_ok(),
         "the unfunded decoder must miss the same exhausted preparation bound"
     );
 }

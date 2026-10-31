@@ -11,6 +11,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     let replacement = original.harness.agent_context(
         &crate::Capabilities::default(),
         crate::runtime::ContentBindings {
+            volume: private_volume(0xef)?,
             reader: Arc::new(NoReads),
             writer: Some(Arc::new(PrivateVolume(private_volume(0xef)?))),
         },

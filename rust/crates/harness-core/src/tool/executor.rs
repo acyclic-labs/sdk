@@ -58,6 +58,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<ToolResult>>;
 
     /// Reconciles a previously started invocation without executing it again.
+    /// The caller must authenticate the complete invocation against its original
+    /// start record; an operation ID alone does not admit replacement arguments.
     fn reconcile<'a>(
         &'a self,
         invocation: ToolInvocation,
@@ -91,6 +93,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     }
 
     /// Observes the already-dispatched effect; never calls ordinary execution.
+    /// The caller authenticates the complete invocation against its start record,
+    /// as for portable reconciliation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_context<'a>(
         &'a self,

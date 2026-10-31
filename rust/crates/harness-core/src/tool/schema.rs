@@ -283,32 +283,37 @@ mod tests {
             operation_id: crate::OperationId::new(),
             call_id: "file-projection".into(),
             name: "read".into(),
-            arguments: json!({"file":file}),
+            arguments: json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()}),
         };
         let published = ToolResult {
             value: json!(FileResult { file: file.clone() }),
         };
         let read = ToolResult {
-            value: json!("exact"),
+            value: json!({"file":file,"text":"exact"}),
         };
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             for (projector, result, schema) in [
                 (
                     &FileProjection::Publication(mode) as &dyn ToolProjection,
                     &published,
-                    mode.schema::<FileResult>()?,
+                    FileProjection::model_schema(mode)?,
                 ),
                 (
                     &FileProjection::Read(mode) as &dyn ToolProjection,
                     &read,
-                    mode.schema::<String>()?,
+                    FileProjection::model_schema(mode)?,
                 ),
             ] {
                 let projection = projector.project(&invocation, result, None)?.0;
                 let validator = compile_json_schema(&schema, "file projection", &mut None)?;
                 assert!(validator.is_valid(&projection));
                 if mode == ProjectionMode::Full {
-                    assert_eq!(projection, json!({"kind":"json","value":result.value}));
+                    let mut expected =
+                        json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()});
+                    if let Some(text) = result.value.get("text") {
+                        expected["text"] = text.clone();
+                    }
+                    assert_eq!(projection, json!({"kind":"json","value":expected}));
                     continue;
                 }
                 let wire: ToolResultContent = serde_json::from_value(projection.clone())
@@ -332,7 +337,7 @@ mod tests {
                 .project(
                     &invocation,
                     &ToolResult {
-                        value: json!("changed")
+                        value: json!({"file":file,"text":"changed"})
                     },
                     None
                 )
@@ -353,7 +358,9 @@ mod tests {
             "projection",
             &mut None,
         )?;
-        assert!(input.is_valid(&json!({"file":file})));
+        assert!(input.is_valid(
+            &json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()})
+        ));
         assert!(output.is_valid(&canonical));
         let envelope = project_json(&result, None)?.0;
         assert!(projection.is_valid(&envelope));
@@ -396,7 +403,7 @@ mod tests {
         for (schema, value) in [
             (
                 &edit.definition.input_schema,
-                json!({"file":file,"old_text":"","new_text":"x"}),
+                json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"old_text":"","new_text":"x"}),
             ),
             (
                 &patch.definition.input_schema,

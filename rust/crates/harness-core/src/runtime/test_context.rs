@@ -47,6 +47,7 @@ pub fn agent_context(
     .agent_context(
         &Capabilities::new(Vec::<String>::new()),
         ContentBindings {
+            volume: private_volume(0xee)?,
             reader: Arc::new(NoReads),
             writer: Some(Arc::new(PrivateVolume(private_volume(0xee)?))),
         },
