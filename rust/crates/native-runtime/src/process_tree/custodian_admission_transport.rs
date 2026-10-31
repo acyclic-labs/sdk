@@ -14,6 +14,16 @@ pub(super) struct Request {
     pub reply: oneshot::Sender<bool>,
 }
 
+impl Request {
+    /// A failed member lookup refuses only this connection. It cannot become
+    /// a service failure or cause another tree's terminal state to be queried.
+    pub fn complete(self, admitted: io::Result<bool>) -> Option<usize> {
+        let accepted = admitted.unwrap_or(false);
+        let _ = self.reply.send(accepted);
+        accepted.then_some(self.tree)
+    }
+}
+
 /// Each connection retains only its fixed request and original reply. A peer
 /// that withholds bytes or stops reading cannot park another peer's producer.
 pub(super) async fn serve(
@@ -102,7 +112,7 @@ mod tests {
                 (request.pid, request.tree, request.secret),
                 (7, 9, [13; 16])
             );
-            request.reply.send(true).expect("original reply consumer");
+            assert_eq!(request.complete(Ok(true)), Some(9));
             let mut reply = [0];
             peer.read_exact(&mut reply).await.expect("acknowledgement");
             assert_eq!(reply, [1]);
@@ -119,6 +129,54 @@ mod tests {
                 .await
                 .expect("producer-loss refusal");
             assert_eq!(reply, [0]);
+            // An actual refused native read remains local to its connection;
+            // another tree can still receive its original acknowledgement.
+            let file = tempfile::NamedTempFile::new().expect("native file");
+            let mut write_only = std::fs::OpenOptions::new()
+                .write(true)
+                .open(file.path())
+                .expect("write-only handle");
+            let failed_read = std::io::Read::read(&mut write_only, &mut [0]);
+            let native_error = failed_read.expect_err("a write-only handle cannot be read");
+            let mut refused = tokio::net::TcpStream::connect(address)
+                .await
+                .expect("refused peer");
+            refused.write_all(&bytes).await.expect("refused request");
+            assert_eq!(
+                receive
+                    .recv()
+                    .await
+                    .expect("refused request producer")
+                    .complete(Err(native_error)),
+                None
+            );
+            refused
+                .read_exact(&mut reply)
+                .await
+                .expect("native refusal");
+            assert_eq!(reply, [0]);
+            let mut other_bytes = bytes.clone();
+            other_bytes[4..12].copy_from_slice(&10_u64.to_le_bytes());
+            let mut other = tokio::net::TcpStream::connect(address)
+                .await
+                .expect("unrelated tree peer");
+            other
+                .write_all(&other_bytes)
+                .await
+                .expect("unrelated request");
+            assert_eq!(
+                receive
+                    .recv()
+                    .await
+                    .expect("unrelated request producer")
+                    .complete(Ok(true)),
+                Some(10)
+            );
+            other
+                .read_exact(&mut reply)
+                .await
+                .expect("unrelated acknowledgement");
+            assert_eq!(reply, [1]);
             // Releasing the incomplete peer loses no authenticated request.
             drop(partial);
             server.abort();

@@ -254,7 +254,7 @@ mod tests {
             return Ok(());
         };
         let mut descendant = if mode == "parent" {
-            let child = Command::new(std::env::current_exe()?)
+            let child = std::process::Command::new(std::env::current_exe()?)
                 .args(["--exact", member_child_name(), "--nocapture"])
                 .env("ACYCLIC_JOB_MEMBER_PAGE_CHILD", "child")
                 .stdin(Stdio::piped())

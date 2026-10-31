@@ -32,12 +32,21 @@ use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::sync::Mutex;
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
-use windows_sys::Win32::System::Console::{COORD, CreatePseudoConsole, HPCON};
+use windows_sys::Win32::System::Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 
 /// This process's console, once created, and the input write end that keeps
 /// it open. Neither is ever closed: the host exits when this process does.
-static CONSOLE: Mutex<Option<(HPCON, OwnedHandle)>> = Mutex::new(None);
+static CONSOLE: Mutex<Option<(Console, OwnedHandle)>> = Mutex::new(None);
+
+struct Console(HPCON);
+
+impl Drop for Console {
+    fn drop(&mut self) {
+        // SAFETY: this guard owns the successfully created pseudoconsole.
+        unsafe { ClosePseudoConsole(self.0) };
+    }
+}
 
 fn anonymous_pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     let mut read = std::ptr::null_mut();
@@ -62,7 +71,7 @@ pub(super) fn shared() -> io::Result<HPCON> {
         .lock()
         .map_err(|_| io::Error::other("the shared console lock is poisoned"))?;
     if let Some((console, _)) = console.as_ref() {
-        return Ok(*console);
+        return Ok(console.0);
     }
     let (input, typed) = anonymous_pipe()?;
     let (rendered, output) = anonymous_pipe()?;
@@ -80,6 +89,7 @@ pub(super) fn shared() -> io::Result<HPCON> {
     if result < 0 {
         return Err(io::Error::from_raw_os_error(result));
     }
+    let created = Console(created);
     // The host holds its own ends of both pipes.
     drop((input, output));
     std::thread::Builder::new()
@@ -103,6 +113,7 @@ pub(super) fn shared() -> io::Result<HPCON> {
                 }
             }
         })?;
+    let handle = created.0;
     *console = Some((created, typed));
-    Ok(created)
+    Ok(handle)
 }

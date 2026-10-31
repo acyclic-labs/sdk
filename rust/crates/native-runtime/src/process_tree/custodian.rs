@@ -584,11 +584,7 @@ fn serve() -> io::Result<()> {
                     }
                     _ => Ok(false),
                 };
-                let _ = request
-                    .reply
-                    .send(admitted.as_ref().is_ok_and(|admitted| *admitted));
-                admitted?;
-                Some(request.tree)
+                request.complete(admitted)
             }
             MEMBER_EXITED => state.members.release(message).inspect(|id| {
                 if let Some(tree) = state.trees.get_mut(id) {
