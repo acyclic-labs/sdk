@@ -67,14 +67,30 @@ pub enum Refusal {
 }
 
 impl State {
-    /// Restores an epoch pointer without reading its earlier history.
-    #[must_use]
-    pub const fn at(generation: u64, cursor: u64) -> Self {
-        Self {
+    /// Restores the indexed epoch and its pending identity without reading old
+    /// history. A crash must not turn an existing preparation into a new job.
+    pub fn restore(
+        generation: u64,
+        cursor: u64,
+        pending: Option<Pending>,
+        head: u64,
+    ) -> Result<Self, Refusal> {
+        if cursor > head {
+            return Err(Refusal::Range);
+        }
+        if let Some(prepared) = pending {
+            if prepared.generation != generation {
+                return Err(Refusal::Stale);
+            }
+            if prepared.through <= cursor || prepared.through > head {
+                return Err(Refusal::Range);
+            }
+        }
+        Ok(Self {
             generation,
             cursor,
-            pending: None,
-        }
+            pending,
+        })
     }
 
     /// Current conditional-commit generation.
