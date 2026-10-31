@@ -39,7 +39,7 @@ fn record() -> crate::Record {
 }
 
 fn source(identity: wire::SessionChannel, records: Arc<signal::Signal<crate::Record>>) -> Source {
-    futures::stream::once(async move { (identity, Ok(Event::Opened(None, None))) })
+    futures::stream::once(async move { (identity, Ok(Event::Opened(None, None, None))) })
         .chain(futures::stream::once(async move {
             (identity, Ok(Event::Record(records.next().await.unwrap())))
         }))
@@ -78,7 +78,7 @@ pub fn verify_source_saturation(global_gate: bool) {
                 sources.insert(identity, source(identity, records), channel.source_mode());
                 assert!(matches!(
                     poll(&mut sources, (false, false, false), &mut cx),
-                    Poll::Ready(Ok(Some((_, Ok(Event::Opened(_, _))))))
+                    Poll::Ready(Ok(Some((_, Ok(Event::Opened(..))))))
                 ));
             }
             slow_records.send(record()).unwrap();
@@ -140,7 +140,7 @@ pub fn verify_source_disabled(keep_polling: bool) {
         let mut cx = Context::from_waker(&wake);
         assert!(matches!(
             poll(&mut sources, (true, true, true), &mut cx),
-            Poll::Ready(Ok(Some((_, Ok(Event::Opened(_, _))))))
+            Poll::Ready(Ok(Some((_, Ok(Event::Opened(..))))))
         ));
         assert!(poll(&mut sources, (true, true, true), &mut cx).is_pending());
         let published = records.clone();
@@ -184,7 +184,7 @@ pub fn verify_reserved_capacity(frames: usize, largest: usize) {
             let mut cx = Context::from_waker(&wake);
             assert!(matches!(
                 poll(&mut sources, room, &mut cx),
-                Poll::Ready(Ok(Some((_, Ok(Event::Opened(_, _))))))
+                Poll::Ready(Ok(Some((_, Ok(Event::Opened(..))))))
             ));
             assert_eq!(
                 matches!(

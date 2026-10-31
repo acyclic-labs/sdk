@@ -50,6 +50,7 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
                 id,
                 generation,
                 Body::Opened(wire::SessionOpened {
+                    selection: None,
                     resume: Some(super::super::super::cursor(0)),
                     applied: revision.map(wire_codec::revision_to_wire),
                     preceding_commit_id: Bytes::new(),
@@ -98,7 +99,7 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
         pool.subscribe(5)?;
         assert!(pool.routes.contains_key(&5));
         pool.receive("good", opened(5, 1, Some(&original)))?;
-        assert_eq!(sibling_opened.await?, Ok(5));
+        assert_eq!(sibling_opened.await?.map(|(id, _)| id), Ok(5));
     }
     Ok(())
 }
@@ -269,6 +270,7 @@ fn open(
             id,
             1,
             Body::Opened(wire::SessionOpened {
+                selection: None,
                 resume: Some(super::super::super::cursor(0)),
                 preceding_commit_id: Bytes::new(),
                 applied: None,

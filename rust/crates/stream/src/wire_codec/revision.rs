@@ -1,6 +1,42 @@
 //! The one wire spelling of the shared applied-revision token.
 use crate::{Revision, RevisionCut, RevisionScope, StreamError, wire};
 
+/// Encodes the choices made by an original stream open.
+#[must_use]
+pub fn selection_to_wire(value: &crate::StreamSelection) -> wire::SessionSelection {
+    wire::SessionSelection {
+        from: value.from,
+        end: value.end,
+        preceding_commit_id: value.preceding.map_or_else(bytes::Bytes::new, |id| {
+            bytes::Bytes::copy_from_slice(id.as_bytes())
+        }),
+        has_bootstrap: value.bootstrap.is_some(),
+    }
+}
+
+/// Validates a successful stream opening receipt before admitting any data.
+pub fn selection_from_opened(
+    value: wire::SessionOpened,
+) -> Result<(Revision, crate::StreamSelection, bool), StreamError> {
+    let snapshot = revision_from_wire(value.applied.ok_or(StreamError::InvalidResponse)?)?;
+    let selected = value.selection.ok_or(StreamError::InvalidResponse)?;
+    let preceding = if selected.preceding_commit_id.is_empty() {
+        None
+    } else {
+        Some(super::commit_id(&selected.preceding_commit_id)?)
+    };
+    Ok((
+        snapshot,
+        crate::StreamSelection {
+            from: selected.from,
+            preceding,
+            end: selected.end,
+            bootstrap: None,
+        },
+        selected.has_bootstrap,
+    ))
+}
+
 /// Encodes one revision.
 #[must_use]
 pub fn revision_to_wire(value: &Revision) -> wire::Revision {

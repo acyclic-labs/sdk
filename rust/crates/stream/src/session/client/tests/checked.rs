@@ -36,6 +36,8 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
     assert!(matches!(
         client
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
@@ -50,6 +52,8 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
     ));
     let mut checked = client
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path.clone(),
             from: 1,
@@ -83,6 +87,8 @@ async fn unconfirmed_history_is_rejected_without_granting_credit_or_closing_sibl
     assert!(matches!(
         client
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
@@ -124,6 +130,8 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
     let path = StreamPath::new("events")?;
     let mut records = client
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path,
             from: 1,
@@ -193,6 +201,8 @@ async fn checked_delivery_reports_history_replacement_after_registration() -> Te
     let client = fixture.client()?;
     let mut records = client
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: StreamPath::new("events")?,
             from: 1,

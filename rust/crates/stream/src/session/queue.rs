@@ -18,7 +18,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             return Ok(());
         };
         let (frame, key) = match record {
-            Ok(Event::Opened(preceding, applied)) => {
+                Ok(Event::Opened(preceding, applied, selection)) => {
                 self.controls.push_back(frame(
                     identity.channel_id,
                     identity.generation,
@@ -27,6 +27,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         preceding_commit_id: preceding
                             .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
                         applied,
+                        selection,
                     }),
                 ));
                 return Ok(());

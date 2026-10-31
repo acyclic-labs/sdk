@@ -7,7 +7,7 @@ use futures::StreamExt;
 
 #[test]
 fn late_cancelled_wakes_cannot_disarm_a_live_source() {
-    use crate::{FollowRequest, RecordStream};
+    use crate::FollowRequest;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Wake as _, Waker};
 
@@ -34,7 +34,9 @@ fn late_cancelled_wakes_cannot_disarm_a_live_source() {
                 })
                 .await
                 .unwrap();
-            let mut sources = ReadySources::<RecordStream>::new();
+            let mut sources = ReadySources::<
+                crate::BoxProviderStream<'static, Result<crate::Record, StreamError>>,
+            >::new();
             sources.register(
                 wire::SessionChannel {
                     channel_id: 0,

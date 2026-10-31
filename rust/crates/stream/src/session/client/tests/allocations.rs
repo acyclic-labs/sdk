@@ -4,8 +4,8 @@ use std::{future::Future, hint::black_box, task::Poll};
 // Measure only the poll that completes registration. The real public follow
 // future runs unchanged; dial/registration allocations happen on earlier polls,
 // and other Tokio tasks cannot execute within this synchronous measurement.
-async fn completion_allocations(
-    open: impl Future<Output = Result<RecordStream, StreamError>>,
+async fn completion_allocations<T>(
+    open: impl Future<Output = Result<T, StreamError>>,
 ) -> Result<acyclic_test_support::AllocationInfo, StreamError> {
     let mut open = std::pin::pin!(open);
     let (records, allocation) = future::poll_fn(|cx| {
@@ -24,7 +24,10 @@ async fn completion_allocations(
 // Restore precisely the reviewed 9f38e976e projection shape: boxed received
 // stream, boxed canonical data projection, then boxed typed-record projection.
 // It uses the same real registration, cursor, credit and observation as today.
-async fn reviewed_follow(client: &Client, path: StreamPath) -> Result<RecordStream, StreamError> {
+async fn reviewed_follow(
+    client: &Client,
+    path: StreamPath,
+) -> Result<crate::BoxProviderStream<'static, Result<crate::Record, StreamError>>, StreamError> {
     drop(black_box(StreamPath::new(path.as_str())?));
     let received = client
         .open_kind(
@@ -136,10 +139,10 @@ struct Allocations {
     pending_polls: usize,
 }
 
-async fn all_poll_allocations(
-    open: impl Future<Output = Result<RecordStream, StreamError>>,
+async fn all_poll_allocations<T>(
+    open: impl Future<Output = Result<T, StreamError>>,
     totals: &mut Allocations,
-) -> Result<RecordStream, StreamError> {
+) -> Result<T, StreamError> {
     let mut open = std::pin::pin!(open);
     future::poll_fn(|cx| {
         let mut outcome = Poll::Pending;
@@ -204,7 +207,8 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     assert!(path_copy.count_total > 0);
     let mut before = Allocations::default();
     let mut after = Allocations::default();
-    let mut retained = Vec::with_capacity(2 * follow_count);
+    let mut retained_before = Vec::with_capacity(follow_count);
+    let mut retained_after = Vec::with_capacity(follow_count);
     for index in 0..follows {
         for legacy in if index % 2 == 0 {
             [true, false]
@@ -212,8 +216,11 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
             [false, true]
         } {
             let path = StreamPath::new("events")?;
-            let records = if legacy {
-                all_poll_allocations(reviewed_follow(&before_client, path), &mut before).await?
+            if legacy {
+                retained_before.push(
+                    all_poll_allocations(reviewed_follow(&before_client, path), &mut before)
+                        .await?,
+                );
             } else {
                 let public = async {
                     if broken {
@@ -225,9 +232,8 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
                         .follow_records(crate::FollowRequest::new(path, 1))
                         .await
                 };
-                all_poll_allocations(public, &mut after).await?
-            };
-            retained.push(records);
+                retained_after.push(all_poll_allocations(public, &mut after).await?);
+            }
         }
     }
     assert!(before.pending_polls >= follow_count);
@@ -245,7 +251,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
         path_copy.bytes_total
     );
     opening_budget(&before, &after, path_copy, follows);
-    drop((retained, before_anchor, after_anchor));
+    drop((retained_before, retained_after, before_anchor, after_anchor));
     Ok(())
 }
 

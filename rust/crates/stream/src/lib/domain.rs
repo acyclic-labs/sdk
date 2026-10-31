@@ -312,6 +312,10 @@ impl WhenAbsent {
 /// One atomic replay-to-live subscription, including its history fence.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FollowRequest {
+    /// Select the last record and live start from the opening snapshot.
+    pub bootstrap_head: bool,
+    /// Optional exclusive finite end, clamped to the opening tail.
+    pub until: Option<u64>,
     /// Stream path.
     pub path: StreamPath,
     /// First sequence, inclusive.
@@ -334,6 +338,8 @@ impl FollowRequest {
     #[must_use]
     pub fn new(path: StreamPath, from: u64) -> Self {
         Self {
+            bootstrap_head: false,
+            until: None,
             path,
             from,
             preceding: None,
@@ -713,7 +719,7 @@ pub struct IdempotencyObservation {
 }
 
 /// Backpressured finite read or long-lived follow.
-pub type RecordStream = BoxProviderStream<'static, Result<Record, StreamError>>;
+pub type RecordStream = Opened<Record>;
 
 /// An ordered filtered follow observation. Skipped records carry only a cursor
 /// and an immutable history anchor, never their values or indexed headers.
@@ -737,16 +743,78 @@ pub enum FollowUpdate {
 }
 
 /// Ordered records and skipped-prefix observations from one atomic follow.
-pub type FollowStream = BoxProviderStream<'static, Result<FollowUpdate, StreamError>>;
+pub type FollowStream = Opened<FollowUpdate>;
+
+/// The choices made at the same immutable snapshot as an opened cursor.
+#[derive(Clone, Debug)]
+pub struct StreamSelection {
+    /// Resolved first sequence, inclusive.
+    pub from: u64,
+    /// Checked or resolved history anchor immediately before `from`.
+    pub preceding: Option<CommitId>,
+    /// Exclusive finite end; absent for a live cursor.
+    pub end: Option<u64>,
+    /// Last record requested by a LATEST open, before filter projection.
+    pub bootstrap: Option<Record>,
+}
+
+/// A cursor and the exact immutable observation that selected it.
+///
+/// Forwarders preserve this receipt together with the original cursor. The
+/// revision is available before the first item, including empty and quiet opens.
+pub struct Opened<T> {
+    /// Revision of the original selected snapshot, never a later applied sample.
+    pub snapshot: Revision,
+    /// Bounds, anchor and bootstrap from that same snapshot.
+    pub selection: StreamSelection,
+    cursor: BoxProviderStream<'static, Result<T, StreamError>>,
+}
+
+impl<T> Opened<T> {
+    /// Couples a selected snapshot with its original retained cursor.
+    #[must_use]
+    pub fn new(
+        snapshot: Revision,
+        selection: StreamSelection,
+        cursor: BoxProviderStream<'static, Result<T, StreamError>>,
+    ) -> Self {
+        Self { snapshot, selection, cursor }
+    }
+
+    /// Projects cursor items without replacing their selection or ownership.
+    #[must_use]
+    pub fn map_cursor<U>(
+        self,
+        project: impl FnOnce(BoxProviderStream<'static, Result<T, StreamError>>)
+            -> BoxProviderStream<'static, Result<U, StreamError>>,
+    ) -> Opened<U> {
+        Opened::new(self.snapshot, self.selection, project(self.cursor))
+    }
+}
+
+impl<T> futures::Stream for Opened<T> {
+    type Item = Result<T, StreamError>;
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.cursor.size_hint()
+    }
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.cursor.as_mut().poll_next(cx)
+    }
+}
 
 /// Projects records from an existing follow without subscribing again.
 pub fn records_only(updates: FollowStream) -> RecordStream {
     use futures::StreamExt as _;
-    Box::pin(updates.filter_map(|update| {
+    updates.map_cursor(|updates| Box::pin(updates.filter_map(|update| {
         futures::future::ready(match update {
             Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
             Ok(FollowUpdate::Progress { .. } | FollowUpdate::Opening { .. }) => None,
             Err(error) => Some(Err(error)),
         })
-    }))
+    })))
 }

@@ -170,6 +170,19 @@ fn consume_data(
     }
 }
 
+struct SubscriptionSource {
+    opened: Option<wire::SessionOpened>,
+    records: crate::BoxProviderStream<'static, Result<Frame, StreamError>>,
+}
+impl futures::Stream for SubscriptionSource {
+    type Item = Result<Frame, StreamError>;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.records.as_mut().poll_next(cx)
+    }
+}
 enum Command {
     Credential {
         slot: u32,
@@ -194,7 +207,7 @@ struct OpenCommand {
     raw: bool,
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
-    ready: oneshot::Sender<Result<u64, StreamError>>,
+    ready: oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>,
     observation: super::runtime::OperationSpan,
 }
 
@@ -218,7 +231,7 @@ struct Route {
     credit: wire::SessionWindow,
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
-    ready: Option<oneshot::Sender<Result<u64, StreamError>>>,
+    ready: Option<oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>>,
     observation: super::runtime::OperationSpan,
 }
 struct Link {
@@ -270,7 +283,9 @@ impl Route {
     /// before its first fragment. An Actors call is never replayed.
     fn resumable(&self) -> bool {
         match &self.kind {
-            Kind::Follow(follow) => (follow.until == 0 && follow.key.is_none()) || !self.opened,
+            Kind::Follow(follow) => {
+                (follow.until.is_none() && follow.key.is_none()) || !self.opened
+            }
             Kind::ChildrenPage(_) | Kind::Heads(_) => self.received == 0,
             _ => false,
         }
@@ -451,34 +466,46 @@ impl Client {
             resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: Bytes::new(),
-            until: request.key.as_ref().map_or_else(
+            until: Some(request.key.as_ref().map_or_else(
                 || request.from.saturating_add(u64::from(request.limit)),
                 |key| key.before,
-            ),
+            )),
             at_least: crate::wire_codec::cut_to_wire(&request.at_least),
         };
         wire_codec::session::validate_follow(&follow, &cursor(request.from))?;
         wire_codec::cut_from_wire(follow.at_least.clone())?;
-        let mut records = super::runtime::boxed(
-            data::Data::new(
-                self.open_kind(
-                    Kind::Follow(follow),
-                    request.from,
-                    acknowledge,
-                    Some(crate::FollowFilter::default().transport_filter()?),
-                )
-                .await?,
+        let minimum = follow.at_least.clone();
+        let until = follow.until;
+        let mut source = self
+            .open_subscription(
+                Kind::Follow(follow),
+                cursor(request.from),
+                acknowledge,
+                false,
+                Some(crate::FollowFilter::default().transport_filter()?),
+                0,
             )
-            .map(move |item| item?.into_record(&path)),
-        );
-        // The open resolves the stream as every provider read does: an absent
-        // path or a start beyond the tail fails here, not in the stream.
-        let first = records.next().await;
-        if let Some(Err(error)) = first {
-            return Err(error);
+            .await?;
+        let (snapshot, selection, has_bootstrap) = wire_codec::selection_from_opened(
+            source.opened.take().ok_or(StreamError::InvalidResponse)?,
+        )?;
+        if has_bootstrap
+            || selection.from != request.from
+            || selection.preceding.is_some()
+            || selection.end.is_none()
+            || selection
+                .end
+                .zip(until)
+                .is_some_and(|(selected, requested)| selected > requested)
+            || !wire_codec::cut_proven_by(&minimum, Some(&snapshot))
+        {
+            return Err(StreamError::InvalidResponse);
         }
-        Ok(super::runtime::boxed(
-            futures::stream::iter(first).chain(records),
+        let records = data::Data::new(source).map(move |item| item?.into_record(&path));
+        Ok(crate::Opened::new(
+            snapshot,
+            selection,
+            super::runtime::boxed(records),
         ))
     }
     pub(crate) async fn follow_with_ack(
@@ -486,9 +513,7 @@ impl Client {
         request: crate::FollowRequest,
         acknowledge: bool,
     ) -> Result<crate::FollowStream, StreamError> {
-        Ok(super::runtime::boxed(
-            self.follow_updates(request, acknowledge).await?,
-        ))
+        self.follow_updates(request, acknowledge).await
     }
     /// Follows only records, boxed once and carrying no state beyond the
     /// subscription: the typed form of [`Self::follow`] without progress.
@@ -496,27 +521,19 @@ impl Client {
         &self,
         request: crate::FollowRequest,
     ) -> Result<RecordStream, StreamError> {
-        let filter = Some(request.filter.transport_filter()?);
-        let (from, path) = (request.from, request.path.clone());
-        Ok(super::runtime::boxed(
-            data::Data::new(
-                self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
-                    .await?,
-            )
-            .map(move |item| item?.into_record(&path)),
-        ))
+        Ok(crate::records_only(self.follow(request).await?))
     }
     async fn follow_updates(
         &self,
         request: crate::FollowRequest,
         acknowledge: bool,
-    ) -> Result<
-        impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
-        StreamError,
-    > {
+    ) -> Result<crate::FollowStream, StreamError> {
         let filter = Some(request.filter.transport_filter()?);
         let (from, progress, path) = (request.from, request.progress, request.path.clone());
-        let source = self
+        let (bootstrap, until, preceding) =
+            (request.bootstrap_head, request.until, request.preceding);
+        let minimum = wire_codec::cut_to_wire(&request.at_least);
+        let mut source = self
             .open_subscription(
                 follow_kind(request),
                 cursor(from),
@@ -526,7 +543,19 @@ impl Client {
                 0,
             )
             .await?;
-        Ok(source.flat_map(move |item| {
+        let (snapshot, mut selection, has_bootstrap) = wire_codec::selection_from_opened(
+            source.opened.take().ok_or(StreamError::InvalidResponse)?,
+        )?;
+        if (!bootstrap && selection.from != from)
+            || (!bootstrap && selection.preceding != preceding)
+            || (has_bootstrap && !bootstrap)
+            || selection.end.is_some() != until.is_some()
+            || selection.end.zip(until).is_some_and(|(selected, requested)| selected > requested)
+            || !wire_codec::cut_proven_by(&minimum, Some(&snapshot))
+        {
+            return Err(StreamError::InvalidResponse);
+        }
+        let mut updates = super::runtime::boxed(source.flat_map(move |item| {
             let opening = match &item {
                 Ok(frame) if progress => match frame.wire().body.as_ref() {
                     Some(Body::Watermark(mark)) => mark
@@ -555,7 +584,18 @@ impl Client {
                 Err(error) => Some(Err(error)),
             };
             futures::stream::iter(opening.into_iter().chain(update))
-        }))
+        }));
+        if has_bootstrap {
+            let update = updates.next().await.ok_or(StreamError::InvalidResponse)??;
+            let crate::FollowUpdate::Record(record) = update else {
+                return Err(StreamError::InvalidResponse);
+            };
+            if record.sequence.checked_add(1) != Some(selection.from) {
+                return Err(StreamError::InvalidResponse);
+            }
+            selection.bootstrap = Some(record);
+        }
+        Ok(crate::Opened::new(snapshot, selection, updates))
     }
     /// Follows ALL records or LATEST values on the shared per-node session,
     /// retaining the exact data cursor and accepted/durable watermarks.
@@ -654,34 +694,36 @@ impl Client {
         raw: bool,
         filter: Option<wire::SessionFilter>,
         credential: u32,
-    ) -> Result<
-        impl futures::Stream<Item = Result<Frame, StreamError>> + 'static + use<>,
-        StreamError,
-    > {
-        let cursor = self
+    ) -> Result<SubscriptionSource, StreamError> {
+        let mut cursor = self
             .open_cursor(kind, resume, acknowledge, raw, filter, credential)
             .await?;
         let operation = cursor.observation.operation.clone();
-        Ok(
-            operation.scope(stream::try_unfold(cursor, move |mut cursor| async move {
-                loop {
-                    let Some(mut delivery) = cursor.receive().await? else {
-                        return Ok(None);
-                    };
-                    if let Some(before) = delivery.consume_before(&cursor.progress)? {
-                        cursor.pending = Some(delivery);
-                        return Ok(Some((before, cursor)));
+        let opened = cursor.opened.take();
+        Ok(SubscriptionSource {
+            opened,
+            records: super::runtime::boxed(operation.scope(stream::try_unfold(
+                cursor,
+                move |mut cursor| async move {
+                    loop {
+                        let Some(mut delivery) = cursor.receive().await? else {
+                            return Ok(None);
+                        };
+                        if let Some(before) = delivery.consume_before(&cursor.progress)? {
+                            cursor.pending = Some(delivery);
+                            return Ok(Some((before, cursor)));
+                        }
+                        // Delivery disposal returns capacity on every exit, including
+                        // stale-generation suppression and cancellation of the cursor.
+                        let fresh = delivery.consume(&cursor.progress)?;
+                        drop(delivery.credit);
+                        if fresh {
+                            return Ok(Some((delivery.item, cursor)));
+                        }
                     }
-                    // Delivery disposal returns capacity on every exit, including
-                    // stale-generation suppression and cancellation of the cursor.
-                    let fresh = delivery.consume(&cursor.progress)?;
-                    drop(delivery.credit);
-                    if fresh {
-                        return Ok(Some((delivery.item, cursor)));
-                    }
-                }
-            })),
-        )
+                },
+            ))),
+        })
     }
     async fn open_cursor(
         &self,
@@ -737,10 +779,11 @@ impl Client {
                 })))
                 .await
                 .map_err(|_| StreamError::Unavailable)?;
-            let opened_id = opened.await.map_err(|_| StreamError::Unavailable)??;
+            let (opened_id, receipt) = opened.await.map_err(|_| StreamError::Unavailable)??;
             if opened_id != id {
                 return Err(StreamError::Unavailable);
             }
+            cursor.opened = receipt;
             Ok(())
         };
         let registered = operation
@@ -780,10 +823,12 @@ impl Client {
             progress,
             receiver,
             pending: None,
+            opened: None,
         })
     }
 }
 struct Cursor {
+    opened: Option<wire::SessionOpened>,
     pending: Option<Delivery>,
     observation: Observation,
     /// Names this cursor's deliveries in wait reports.
@@ -845,17 +890,17 @@ impl Drop for Cursor {
 /// resume never lowers it.
 fn follow_kind(request: crate::FollowRequest) -> Kind {
     Kind::Follow(wire::SessionFollow {
-        opening_cut: request.progress,
+        opening_cut: request.progress && request.until.is_none(),
         key: None,
         read_limit: 0,
-        bootstrap_head: false,
+        bootstrap_head: request.bootstrap_head,
         when_absent: request.when_absent.to_wire(),
         resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
         delivery: wire::SessionDelivery::All as i32,
         preceding_commit_id: request
             .preceding
             .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
-        until: 0,
+        until: request.until,
         at_least: crate::wire_codec::cut_to_wire(&request.at_least),
     })
 }

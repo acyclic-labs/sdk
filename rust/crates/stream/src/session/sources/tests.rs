@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 fn source(identity: wire::SessionChannel) -> Source {
     futures::stream::iter(
-        [Ok(Event::Opened(None, None))]
+        [Ok(Event::Opened(None, None, None))]
             .into_iter()
             .chain((0..2).map(|sequence| {
                 Ok(Event::Record(crate::Record {
@@ -262,7 +262,7 @@ fn replaced_generation_ignores_a_late_provider_wakeup() {
         generation: 2,
         ..old
     };
-    let stream = futures::stream::once(async move { (new, Ok(Event::Opened(None, None))) })
+    let stream = futures::stream::once(async move { (new, Ok(Event::Opened(None, None, None))) })
         .chain(futures::stream::pending())
         .boxed();
     sources.insert(new, stream, Some(ALL));

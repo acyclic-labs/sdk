@@ -1,4 +1,5 @@
 use super::*;
+use futures::Stream as _;
 use proptest::prelude::*;
 
 proptest! {

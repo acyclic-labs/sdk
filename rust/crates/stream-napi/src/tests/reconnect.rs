@@ -392,6 +392,8 @@ impl Fixture {
             &self.client,
             Buffer::from(
                 wire::FollowRequest {
+                    bootstrap_head: false,
+                    until: None,
                     when_absent: Default::default(),
                     filter: None,
                     path: path.into(),

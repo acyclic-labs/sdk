@@ -332,6 +332,8 @@ pub fn read_key_to_wire(value: &Option<crate::ReadKeySeek>) -> Option<wire::Read
 /// session supplies its separate immutable-history anchor after this conversion.
 pub fn follow_from_wire(value: wire::FollowRequest) -> Result<crate::FollowRequest, StreamError> {
     Ok(crate::FollowRequest {
+            bootstrap_head: value.bootstrap_head,
+            until: value.until,
         path: path(value.path)?,
         from: value.from,
         preceding: None,

@@ -111,6 +111,8 @@ pub(crate) fn verify(retain_pending: bool, checked: bool) {
                 block_on(
                     provider
                         .follow(crate::FollowRequest {
+                            bootstrap_head: false,
+                            until: None,
                             when_absent: Default::default(),
                             path: path.clone(),
                             from: 1,
@@ -186,6 +188,8 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
                 block_on(
                     provider
                         .follow(crate::FollowRequest {
+                            bootstrap_head: false,
+                            until: None,
                             when_absent: Default::default(),
                             path: path.clone(),
                             from: 1,

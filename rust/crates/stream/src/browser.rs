@@ -393,6 +393,8 @@ impl StreamProvider for BrowserStream {
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
         let crate::FollowRequest {
+            bootstrap_head,
+            until,
             path,
             from,
             preceding,
@@ -405,11 +407,27 @@ impl StreamProvider for BrowserStream {
             self.wait_revision(&at_least).await?;
         }
         if progress {
-            self.progress_from(path, from, preceding, when_absent, filter)
-                .await
+            self.progress_from(
+                path,
+                from,
+                preceding,
+                when_absent,
+                filter,
+                bootstrap_head,
+                until,
+            )
+            .await
         } else {
-            self.follow_from(path, from, preceding, when_absent, filter)
-                .await
+            self.follow_from(
+                path,
+                from,
+                preceding,
+                when_absent,
+                filter,
+                bootstrap_head,
+                until,
+            )
+            .await
         }
     }
 }

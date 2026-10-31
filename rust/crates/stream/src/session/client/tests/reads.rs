@@ -10,6 +10,15 @@ fn local(provider: &Arc<MemoryStream>) -> Result<Client, StreamError> {
     client.register_credential(0, crate::session::testing::credential())?;
     Ok(client)
 }
+
+#[tokio::test]
+async fn selected_open_survives_later_publication() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let fixture = Fixture::open(provider, "selected").await?;
+    crate::conformance::selected::verify(&fixture.client()?).await?;
+    Ok(())
+}
+
 fn read(path: &str, from: u64, limit: u32) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
         key: None,
@@ -267,7 +276,7 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
             before: 4,
         }),
         read_limit: 1,
-        until: 4,
+        until: Some(4),
         delivery: wire::SessionDelivery::All as i32,
         resource: wire_codec::session::stream_resource(crate::conformance::key_seek::SOURCE),
         ..Default::default()
@@ -321,7 +330,7 @@ fn bounded(path: &str, until: u64) -> wire::SessionFollow {
         resource: wire_codec::session::stream_resource(path),
         delivery: wire::SessionDelivery::All as i32,
         preceding_commit_id: Bytes::new(),
-        until,
+        until: Some(until),
         at_least: Default::default(),
     }
 }

@@ -215,6 +215,8 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             assert_eq!(record.value.as_slice(), b"delta");
             let checked = provider
                 .follow(crate::FollowRequest {
+                    bootstrap_head: false,
+                    until: None,
                     when_absent: Default::default(),
                     path: path.clone(),
                     from: n + 1,
@@ -228,6 +230,8 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             drop(checked);
             let lost = provider
                 .follow(crate::FollowRequest {
+                    bootstrap_head: false,
+                    until: None,
                     when_absent: Default::default(),
                     path: path.clone(),
                     from: n + 2,

@@ -101,17 +101,16 @@ impl StreamProvider for Arc<Counted> {
     ) -> Result<crate::FollowStream, StreamError> {
         let status = request.path.as_str() == "status";
         let counted = Arc::clone(self);
-        Ok(self
-            .memory
-            .follow(request)
-            .await?
-            .inspect(move |_| {
-                if status {
-                    counted.pulled.fetch_add(1, Ordering::Relaxed);
-                    counted.changed.notify_one();
-                }
-            })
-            .boxed())
+        Ok(self.memory.follow(request).await?.map_cursor(|cursor| {
+            cursor
+                .inspect(move |_| {
+                    if status {
+                        counted.pulled.fetch_add(1, Ordering::Relaxed);
+                        counted.changed.notify_one();
+                    }
+                })
+                .boxed()
+        }))
     }
 }
 
@@ -242,12 +241,8 @@ async fn invalid_follow_modes_and_checked_latest_are_rejected_before_session_rpc
             ..subscription("status", true)
         },
         wire::SessionFollow {
-            bootstrap_head: true,
-            ..subscription("status", false)
-        },
-        wire::SessionFollow {
             when_absent: wire::WhenAbsent::Wait as i32,
-            until: 2,
+            until: Some(2),
             ..subscription("status", false)
         },
         wire::SessionFollow {

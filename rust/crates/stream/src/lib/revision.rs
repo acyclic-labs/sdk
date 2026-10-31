@@ -419,20 +419,6 @@ pub async fn served<P: crate::StreamProvider + ?Sized>(
     }
 }
 
-/// The revision to report for data captured after [`served`] returned
-/// `waited`: sampled again once the capture is pinned, so it covers every
-/// write the captured data includes, and still proves the minimum `served`
-/// waited for. Every server read, tail and open reports through this.
-pub async fn captured<P: crate::StreamProvider + ?Sized>(
-    provider: &P,
-    waited: Option<Revision>,
-) -> Result<Option<Revision>, StreamError> {
-    match waited {
-        None => Ok(None),
-        Some(_) => served(provider, &RevisionCut::default()).await,
-    }
-}
-
 #[derive(Clone, Copy)]
 struct Applied {
     index: u64,

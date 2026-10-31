@@ -414,7 +414,7 @@ impl StreamProvider for PostgresStream {
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
                 self.refresh().await?;
-                Ok(self.guarded(self.inner.core.follow_inner(request).await?))
+                Ok(self.inner.core.follow_inner(request).await?.map_cursor(|cursor| self.guarded(cursor)))
             }
         )
     }

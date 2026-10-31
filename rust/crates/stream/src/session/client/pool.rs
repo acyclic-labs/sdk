@@ -619,9 +619,23 @@ impl Pool {
                 }
                 return Ok(Some(error));
             }
+            if follow.bootstrap_head && route.received == 0 {
+                let selected = opened
+                    .selection
+                    .as_ref()
+                    .ok_or(StreamError::InvalidResponse)?;
+                route.received = if selected.has_bootstrap {
+                    selected
+                        .from
+                        .checked_sub(1)
+                        .ok_or(StreamError::InvalidResponse)?
+                } else {
+                    selected.from
+                };
+            }
         }
         if let Some(ready) = route.ready.take() {
-            let _ = ready.send(Ok(id));
+            let _ = ready.send(Ok((id, Some(opened.clone()))));
         }
         route.observation.record("generation", route.generation);
         route.opened = true;
@@ -635,7 +649,7 @@ impl Pool {
         if closed.code == wire_codec::session::END_CODE
             && route.opened
             && match &route.kind {
-                Kind::Follow(follow) => follow.until != 0 || follow.key.is_some(),
+                Kind::Follow(follow) => follow.until.is_some() || follow.key.is_some(),
                 Kind::ActorSocket(_) => true,
                 _ => false,
             }
@@ -644,16 +658,11 @@ impl Pool {
             return None;
         }
         let error = StreamError::from_session_close(&closed.code);
-        if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
-            && let Some(ready) = route.ready.take()
-        {
+        if let Some(ready) = route.ready.take() {
             let _ = ready.send(Err(error));
             return None;
         }
         // Errors are delivered after all earlier records, using one reserved slot.
-        if let Some(ready) = route.ready.take() {
-            let _ = ready.send(Ok(id));
-        }
         Some(error)
     }
     fn control(
@@ -818,10 +827,9 @@ impl Pool {
         }
     }
     pub(super) fn fail(&mut self, error: &StreamError) {
-        for (id, mut route) in std::mem::take(&mut self.routes) {
+        for (_, mut route) in std::mem::take(&mut self.routes) {
             if let Some(ready) = route.ready.take() {
-                let checked = matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty());
-                let _ = ready.send(if checked { Err(error.clone()) } else { Ok(id) });
+                let _ = ready.send(Err(error.clone()));
             }
             let error = error.clone();
             let records = route.records;

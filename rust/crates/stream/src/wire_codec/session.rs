@@ -112,7 +112,7 @@ pub fn validate_follow(
     validate_resource(&follow.resource)?;
     if follow.opening_cut
         && (follow.delivery != wire::SessionDelivery::All as i32
-            || follow.until != 0
+            || follow.until.is_some()
             || follow.key.is_some())
     {
         return Err(StreamError::InvalidArgument);
@@ -122,7 +122,7 @@ pub fn validate_follow(
         crate::memory::validate_limit(follow.read_limit)?;
         if follow.delivery != wire::SessionDelivery::All as i32
             || !tracks_revisions(follow)
-            || follow.until != key.before
+            || follow.until != Some(key.before)
             || !follow.preceding_commit_id.is_empty()
             || follow.bootstrap_head
             || follow.when_absent != wire::WhenAbsent::NotFound as i32
@@ -135,10 +135,8 @@ pub fn validate_follow(
     let when_absent = crate::WhenAbsent::from_wire(follow.when_absent)?;
     if !resume.opaque.is_empty()
         || (when_absent != crate::WhenAbsent::NotFound
-            && (follow.until != 0 || !tracks_revisions(follow)))
-        || (follow.bootstrap_head
-            && (follow.delivery != wire::SessionDelivery::Latest as i32
-                || !tracks_revisions(follow)))
+            && (follow.until.is_some() || !tracks_revisions(follow)))
+        || (follow.bootstrap_head && !tracks_revisions(follow))
         || !matches!(
             wire::SessionDelivery::try_from(follow.delivery),
             Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)
@@ -163,13 +161,13 @@ pub fn tracks_revisions(follow: &wire::SessionFollow) -> bool {
 /// Only an ALL follow of a `streams:/` resource can be bounded: LATEST conflates
 /// away the positions a bound counts, and product resources own their cursors.
 pub fn follow_bound(follow: &wire::SessionFollow) -> Result<Option<u64>, StreamError> {
-    if follow.until == 0 && follow.key.is_none() {
+    if follow.until.is_none() && follow.key.is_none() {
         return Ok(None);
     }
     if follow.delivery != wire::SessionDelivery::All as i32 || !tracks_revisions(follow) {
         return Err(StreamError::InvalidArgument);
     }
-    Ok(Some(follow.until))
+    Ok(follow.until)
 }
 
 /// Checks data on a logical follow, including sparse indexed read sequences.
@@ -280,6 +278,8 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
     Ok(crate::records_only(
         provider
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: crate::WhenAbsent::from_wire(follow.when_absent)?,
                 path,
                 from: if preceding.is_some() { cursor.next } else { 0 },

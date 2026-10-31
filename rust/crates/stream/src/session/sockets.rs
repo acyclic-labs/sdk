@@ -56,7 +56,7 @@ pub(super) fn source(
     outbound: crate::BoxProviderStream<'static, Result<Bytes, StreamError>>,
     identity: wire::SessionChannel,
 ) -> Source {
-    let opened = stream::once(future::ready(Ok(Event::Opened(None, None))));
+    let opened = stream::once(future::ready(Ok(Event::Opened(None, None, None))));
     let frames = outbound
         .enumerate()
         .map(|(index, frame)| {

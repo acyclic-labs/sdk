@@ -11,13 +11,15 @@ impl MemoryStream {
             progress,
             when_absent,
             at_least,
+            bootstrap_head,
+            until,
         } = request;
         self.revisions.wait(&at_least).await?;
         if progress {
-            self.progress_from(path, from, preceding, when_absent, filter)
+            self.progress_from(path, from, preceding, when_absent, filter, bootstrap_head, until)
                 .await
         } else {
-            self.follow_from(path, from, preceding, when_absent, filter)
+            self.follow_from(path, from, preceding, when_absent, filter, bootstrap_head, until)
                 .await
         }
     }
@@ -62,8 +64,15 @@ impl MemoryStream {
             return Err(StreamError::OutOfRange);
         }
         let cursor = FiniteRead::new(path, request);
+        let snapshot = self.revisions.at(state.decision);
+        let selection = crate::StreamSelection {
+            from: cursor.next,
+            preceding: None,
+            end: Some(cursor.history.tail),
+            bootstrap: None,
+        };
         drop(state);
-        Ok(stream::iter(cursor).boxed())
+        Ok(crate::Opened::new(snapshot, selection, stream::iter(cursor).boxed()))
     }
 
     pub(crate) async fn read_commit_inner(

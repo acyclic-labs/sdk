@@ -39,7 +39,7 @@ async fn original_follow_eof_is_terminal_without_reopening_the_provider()
     };
     provider.append(append(b"first", 0)).await?;
     let mut original = follow(Arc::clone(&provider), path.clone());
-    assert!(matches!(original.event().await?, Event::Opened(_, _)));
+    assert!(matches!(original.event().await?, Event::Opened(..)));
     // End after the original opening cut and its real retained record. The
     // former path silently reopened at the next cursor and never returned.
     original.records = Some(
@@ -47,8 +47,7 @@ async fn original_follow_eof_is_terminal_without_reopening_the_provider()
             .records
             .take()
             .ok_or("missing follow")?
-            .take(2)
-            .boxed(),
+            .map_cursor(|records| records.take(2).boxed()),
     );
     assert!(
         matches!(original.event().await?, Event::Record(record) if record.value.as_slice() == b"first")
@@ -66,7 +65,7 @@ async fn original_follow_eof_is_terminal_without_reopening_the_provider()
     // pending wait ends on the original append event without reopening.
     let mut explicit = follow(Arc::clone(&provider), path.clone());
     explicit.next = 1;
-    assert!(matches!(explicit.event().await?, Event::Opened(_, _)));
+    assert!(matches!(explicit.event().await?, Event::Opened(..)));
     let before = provider.requests();
     let mut pending = std::pin::pin!(explicit.event());
     assert!(futures::poll!(pending.as_mut()).is_pending());

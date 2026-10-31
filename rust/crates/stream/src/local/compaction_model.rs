@@ -124,6 +124,8 @@ pub(crate) fn verify(fault: u8) {
         let opened = poll(
             provider
                 .follow(crate::FollowRequest {
+                    bootstrap_head: false,
+                    until: None,
                     when_absent: Default::default(),
                     path: path.clone(),
                     from: 1,

@@ -65,6 +65,7 @@ fn guard(
         mismatched[0] ^= 1;
         for echo in [anchor.to_vec(), Vec::new(), mismatched.to_vec()] {
             let opened = wire::SessionOpened {
+                selection: None,
                 resume: Some(resume.clone()),
                 preceding_commit_id: echo.clone().into(),
                 applied: None,

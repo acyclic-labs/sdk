@@ -50,7 +50,7 @@ impl crate::runtime::Executor for Immediate {
 struct State {
     pool: Pool,
     input: Vec<wire::SessionFrame>,
-    ready: Vec<oneshot::Receiver<Result<u64, StreamError>>>,
+    ready: Vec<oneshot::Receiver<Result<(u64, Option<wire::SessionOpened>), StreamError>>>,
     records: Vec<mpsc::Receiver<Result<Delivery, StreamError>>>,
     sender: Arc<Outbound<wire::SessionFrame>>,
     _registration: tracing::Dispatch,
@@ -112,7 +112,7 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
             } else {
                 Bytes::new()
             },
-            until: 0,
+            until: None,
             at_least: Default::default(),
         }),
         records,
@@ -168,6 +168,7 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
         })
     } else {
         Body::Opened(wire::SessionOpened {
+            selection: None,
             resume: Some(super::super::super::cursor(if kind == 5 {
                 2
             } else {
@@ -259,7 +260,11 @@ fn run(mut state: State, old: bool, redundant: bool) -> (Output, usize, Allocati
     let ready = state
         .ready
         .iter_mut()
-        .map(|r| r.try_recv().map_err(|error| error.to_string()))
+        .map(|r| {
+            r.try_recv()
+                .map(|outcome| outcome.map(|(id, _)| id))
+                .map_err(|error| error.to_string())
+        })
         .collect();
     let deliveries = state
         .records
@@ -475,7 +480,7 @@ fn old_opened(pool: &mut Pool, id: u64, opened: &wire::SessionOpened) -> Result<
         }
     }
     if let Some(ready) = route.ready.take() {
-        let _ = ready.send(Ok(id));
+        let _ = ready.send(Ok((id, None)));
     }
     route.observation.record("generation", route.generation);
     route.opened = true;
@@ -485,17 +490,12 @@ fn old_opened(pool: &mut Pool, id: u64, opened: &wire::SessionOpened) -> Result<
 fn old_closed(pool: &mut Pool, id: u64, closed: &wire::SessionClosed) -> Result<(), StreamError> {
     let route = pool.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
     let error = StreamError::from_session_close(&closed.code);
-    if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
-        && let Some(ready) = route.ready.take()
-    {
+    if let Some(ready) = route.ready.take() {
         let _ = ready.send(Err(error));
         pool.routes.remove(&id);
         return Ok(());
     }
     // Errors are delivered after all earlier records, using one reserved slot.
-    if let Some(ready) = route.ready.take() {
-        let _ = ready.send(Ok(id));
-    }
     let route = pool.routes.remove(&id).ok_or(StreamError::Unavailable)?;
     pool.executor.spawn(Box::pin(async move {
         let _ = route.records.send(Err(error)).await;

@@ -91,6 +91,8 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     ) -> BoxProviderFuture<'_, std::result::Result<WriteOutcome, StreamError>>;
     /// Opens a bounded finite read pinned to one immutable history snapshot.
     /// Invalid limits or keys return LimitExceeded before revision waits or IO.
+    /// The opening revision and bounds belong to that retained snapshot, even
+    /// when it is empty or newer writes apply before the first item is polled.
     /// Opening a missing path returns NotFound; a start beyond that snapshot's
     /// tail returns OutOfRange. Neither refusal is deferred to the first item.
     async fn read(&self, request: ReadRequest) -> std::result::Result<RecordStream, StreamError>;
@@ -98,6 +100,9 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// atomically before subscription and on replacement. Ordered progress never
     /// passes an earlier matching record. Progress-enabled follows first yield
     /// `Opening` even at the tail; record-only follows retain indexed wakes.
+    /// Selection, optional finite end and LATEST bootstrap are atomic with
+    /// registration. Quiet and initially absent paths expose the opening receipt
+    /// without waiting for an append. Finite cursors retain their original history.
     async fn follow(
         &self,
         request: FollowRequest,

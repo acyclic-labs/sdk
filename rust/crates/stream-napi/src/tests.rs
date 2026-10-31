@@ -106,7 +106,10 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
     let stream_polled = Arc::clone(&polled);
     let stream_dropped = Arc::clone(&dropped);
     let sentinel = DropSentinel(stream_dropped);
-    let records: acyclic_stream::RecordStream = Box::pin(futures::stream::poll_fn(move |_| {
+    let records: acyclic_stream::BoxProviderStream<
+        'static,
+        std::result::Result<acyclic_stream::Record, StreamError>,
+    > = Box::pin(futures::stream::poll_fn(move |_| {
         let _sentinel = &sentinel;
         stream_polled.store(true, Ordering::SeqCst);
         Poll::Pending
@@ -189,7 +192,10 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
         headers: Default::default(),
     };
     let mut record = Some(record);
-    let records: acyclic_stream::RecordStream = Box::pin(futures::stream::poll_fn(move |_| {
+    let records: acyclic_stream::BoxProviderStream<
+        'static,
+        std::result::Result<acyclic_stream::Record, StreamError>,
+    > = Box::pin(futures::stream::poll_fn(move |_| {
         let close_state = follow_state.clone();
         close_state.closed.store(true, Ordering::Release);
         close_state.token.cancel();
@@ -403,6 +409,8 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             Buffer::from(acyclic_stream::session::testing::credential().to_vec()),
         )?;
         let request = wire::FollowRequest {
+                    bootstrap_head: false,
+                    until: None,
             when_absent: Default::default(),
             filter: None,
             path: "accounts/events".to_owned(),

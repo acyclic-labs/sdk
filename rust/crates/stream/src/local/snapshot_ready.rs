@@ -63,10 +63,12 @@ impl BaselineProvider {
     }
 }
 
-async fn records(provider: BaselineProvider) -> RecordStream {
+async fn records(
+    provider: BaselineProvider,
+) -> crate::BoxProviderStream<'static, Result<Record, StreamError>> {
     let path = StreamPath::new("root").unwrap();
     let local = matches!(&provider, BaselineProvider::Local(_));
-    let (_, cursor) = provider
+    let (_, _, _, cursor) = provider
         .memory()
         .prepare_follow(
             &path,
@@ -74,6 +76,8 @@ async fn records(provider: BaselineProvider) -> RecordStream {
             None,
             crate::WhenAbsent::NotFound,
             crate::FollowFilter::default(),
+            false,
+            None,
         )
         .await
         .unwrap();
@@ -214,13 +218,17 @@ async fn prepare<P: StreamProvider>(
                 ))
                 .map_ok(crate::records_only)
                 .await
-                .unwrap(),
+                .unwrap()
+                .boxed(),
         )
     }
 }
 
 enum ReadyPair {
-    Records(RecordStream, RecordStream),
+    Records(
+        crate::BoxProviderStream<'static, Result<Record, StreamError>>,
+        crate::BoxProviderStream<'static, Result<Record, StreamError>>,
+    ),
 }
 impl ReadyPair {
     fn measure(self, negative: bool, label: &str) -> (u128, u128) {

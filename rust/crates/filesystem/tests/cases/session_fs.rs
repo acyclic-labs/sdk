@@ -279,7 +279,7 @@ impl Connection {
                             resource,
                             delivery: delivery as i32,
                             preceding_commit_id: anchor,
-                            until: 0,
+                            until: None,
                             at_least: Default::default(),
                         },
                     )),

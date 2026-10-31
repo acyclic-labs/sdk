@@ -455,58 +455,30 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
         }
         if self.records.is_none() {
             let confirmation = self.preceding;
-            // The first open waits for the floor before a bounded read pins
-            // its tail, so the pinned range covers the caller's own writes.
-            let applied = if self.opened {
-                None
-            } else {
-                crate::revision::served(&*self.provider, &self.at_least).await?
-            };
-            if let (Some(until), None) = (self.until, self.end) {
-                // Pin the range like a read: an absent stream or a start
-                // beyond the tail fails, and appends after open never count.
-                let tail = self.provider.tail(self.path.clone()).await?;
-                if self.next > tail {
-                    return Err(StreamError::OutOfRange);
-                }
-                self.end = Some(until.min(tail));
-            }
-            if self.bootstrap_head {
-                match self.provider.head(self.path.clone()).await {
-                    Ok(head) => {
-                        self.next = head.tail;
-                        self.preceding = head.last.as_ref().map(|record| record.commit_id);
-                        self.bootstrap = head
-                            .last
-                            .map(|record| self.filter.project(record))
-                            .transpose()?
-                            .flatten();
-                    }
-                    Err(StreamError::NotFound) if self.when_absent == crate::WhenAbsent::Wait => {}
-                    Err(error) => return Err(error),
-                }
-                self.bootstrap_head = false;
-            }
-            self.records = Some(
-                self.provider
-                    .follow(crate::FollowRequest {
-                        when_absent: self.when_absent,
-                        path: self.path.clone(),
-                        from: self.next,
-                        preceding: self.preceding,
-                        filter: self.filter.clone(),
-                        progress: true,
-                        at_least: self.at_least.clone(),
-                    })
-                    .await?,
-            );
+            let mut records = self.provider.follow(crate::FollowRequest {
+                bootstrap_head: self.bootstrap_head,
+                until: self.until,
+                when_absent: self.when_absent,
+                path: self.path.clone(),
+                from: self.next,
+                preceding: self.preceding,
+                filter: self.filter.clone(),
+                progress: true,
+                at_least: self.at_least.clone(),
+            }).await?;
+            self.bootstrap_head = false;
+            self.next = records.selection.from;
+            self.preceding = records.selection.preceding;
+            self.end = records.selection.end;
+            records.selection.bootstrap = records.selection.bootstrap.take()
+                .map(|record| self.filter.project(record)).transpose()?.flatten();
+            let selection = wire_codec::selection_to_wire(&records.selection);
+            self.bootstrap = records.selection.bootstrap.take();
+            let applied = wire_codec::revision_to_wire(&records.snapshot);
+            self.records = Some(records);
             if !self.opened {
                 self.opened = true;
-                let applied = crate::revision::captured(&*self.provider, applied).await?;
-                return Ok(Event::Opened(
-                    confirmation,
-                    applied.as_ref().map(wire_codec::revision_to_wire),
-                ));
+                return Ok(Event::Opened(confirmation, Some(applied), Some(selection)));
             }
         }
         if let Some(record) = self.bootstrap.take() {
@@ -565,7 +537,6 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
 
     async fn key_event(&mut self) -> Result<Event, StreamError> {
         if !self.opened {
-            let applied = crate::revision::served(&*self.provider, &self.at_least).await?;
             self.key_records = Some(
                 self.provider
                     .read(crate::ReadRequest {
@@ -578,10 +549,11 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
                     .await?,
             );
             self.opened = true;
-            let applied = crate::revision::captured(&*self.provider, applied).await?;
+            let records = self.key_records.as_ref().ok_or(StreamError::Unavailable)?;
             return Ok(Event::Opened(
                 None,
-                applied.as_ref().map(wire_codec::revision_to_wire),
+                Some(wire_codec::revision_to_wire(&records.snapshot)),
+                Some(wire_codec::selection_to_wire(&records.selection)),
             ));
         }
         let Some(record) = self

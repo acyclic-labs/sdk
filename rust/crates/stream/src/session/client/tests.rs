@@ -81,7 +81,7 @@ async fn append(provider: &MemoryStream, path: &str, count: usize) -> Result<(),
     Ok(())
 }
 async fn next(
-    records: &mut RecordStream,
+    records: &mut (impl futures::Stream<Item = Result<crate::Record, StreamError>> + Unpin),
 ) -> Result<crate::Record, Box<dyn std::error::Error + Send + Sync>> {
     Ok(records.next().await.ok_or("follow ended")??)
 }

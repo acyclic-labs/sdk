@@ -152,6 +152,8 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
     assert!(matches!(
         reader
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
@@ -166,6 +168,8 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
     ));
     let mut records = reader
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path,
             from: 1,
@@ -437,6 +441,8 @@ async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_fo
     .unwrap();
     let mut follow = reader
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: StreamPath::new("events").unwrap(),
             from: 1,

@@ -97,7 +97,7 @@ message SessionFollow {
   // reject an absent/changed anchor without waiting for future appends, and
   // reject history replacement during delivery. No read-then-follow fallback.
   bytes preceding_commit_id = 3;
-  // Optional exclusive end sequence; 0 is an unbounded live follow. A bounded
+  // Optional exclusive end sequence; absent is an unbounded live follow. A bounded
   // follow is the session read: it requires ALL delivery and a streams:/
   // resource, resolves the stream like StreamService.Read (absent stream:
   // not_found; resume.next beyond the tail: out_of_range), delivers records
@@ -106,13 +106,13 @@ message SessionFollow {
   // "end". It never waits for appends. until <= resume.next ends with no data.
   // Once opened, a bounded read fails on connection loss or placement moves;
   // it must not resume by re-resolving its end against a different snapshot.
-  uint64 until = 4;
+  optional uint64 until = 4;
   // Minimum cut, one entry per authority; every resume carries the same floor.
   repeated Revision at_least = 5;
   // Initial absence only; preserved across resumes and placement changes.
   // Bounded reads require NOT_FOUND. Missing checked anchors never wait.
   WhenAbsent when_absent = 6;
-  // LATEST only: on an initial cursor (next=0), bootstrap the last record from
+  // On an initial cursor (next=0), bootstrap the last record from
   // one Head snapshot, then follow its checked prefix. Resumes replay normally
   // so attention records after an acknowledged cut cannot be skipped.
   bool bootstrap_head = 7;
@@ -138,6 +138,15 @@ message SessionOpened {
   bytes preceding_commit_id = 2;
   // The applied revision this open was served at; covers SessionFollow.at_least.
   Revision applied = 3;
+  // Mandatory for stream cursors. Selected at the same snapshot as applied.
+  SessionSelection selection = 4;
+}
+message SessionSelection {
+  uint64 from = 1;
+  optional uint64 end = 2;
+  bytes preceding_commit_id = 3;
+  // The first ordinary data record is the selected LATEST bootstrap.
+  bool has_bootstrap = 4;
 }
 message SessionData {
   SessionCursor after = 1;

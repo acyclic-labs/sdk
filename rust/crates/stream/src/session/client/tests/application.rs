@@ -128,7 +128,7 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
         before: 4,
     });
     follow.read_limit = 3;
-    follow.until = 4;
+    follow.until = Some(4);
     let mut source = client.deliveries(selected.clone()).await?;
     let first = data(&mut source).await?;
     assert_eq!(sequence(&first)?, 0);

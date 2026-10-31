@@ -110,6 +110,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                     3,
                     1,
                     Body::Opened(wire::SessionOpened {
+                        selection: None,
                         resume: Some(wire::SessionCursor::default()),
                         ..Default::default()
                     })
@@ -420,6 +421,7 @@ pub fn verify_link_isolation(broken: bool) {
                 5,
                 1,
                 Body::Opened(wire::SessionOpened {
+                    selection: None,
                     resume: Some(wire::SessionCursor::default()),
                     ..Default::default()
                 })

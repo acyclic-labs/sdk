@@ -144,6 +144,8 @@ where
                     .filter_paths(&resource(volume_id, "")?, &request.filter)?;
                 let records = streams
                     .follow(acyclic_stream::FollowRequest {
+                        bootstrap_head: false,
+                        until: None,
                         when_absent: Default::default(),
                         path,
                         from: request.from,
