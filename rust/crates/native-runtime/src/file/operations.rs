@@ -543,14 +543,6 @@ pub(crate) fn read_at_impl(
     }
 }
 
-#[cfg(not(target_vendor = "apple"))]
-pub(crate) fn barrier_sync(_file: &File) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "ordered write barrier is unavailable on this platform",
-    ))
-}
-
 #[cfg(unix)]
 pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
     // sync_parent owns the fault boundary; never wrap the flush a second time.
