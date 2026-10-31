@@ -699,8 +699,40 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     ));
     assert!(local.agent.is_none());
     assert!(local.tools().definitions(None)?.is_empty());
-    owner.abort();
-    assert!(owner.await.unwrap_err().is_cancelled());
+    // A rejected projection that cannot be unlinked has no withdrawal
+    // producer. Its error must retire the original owner and end the call.
+    let (directory, endpoint) = discover(&cwd)?;
+    let blocked = Arc::new(Bridge::open(&directory, endpoint)?);
+    let operation = OperationId::new();
+    let (delivery, response) = mpsc::sync_channel(1);
+    let waiting = blocked.wait(operation, delivery)?;
+    // A directory at a canonical request leaf is rejected by the no-follow
+    // reader and cannot be unlinked as a file on any supported platform.
+    std::fs::create_dir(requests.join(format!("{operation}.json"))).map_err(storage)?;
+    blocked.shared.published(operation);
+    let failure = tokio::time::timeout(Duration::from_secs(2), &mut owner)
+        .await
+        .map_err(storage)?
+        .map_err(storage)?
+        .unwrap_err()
+        .to_string();
+    assert!(failure.contains(&format!(
+        "step=withdraw rejected native request {operation}:"
+    )));
+    assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
+    assert!(matches!(
+        response
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(storage)?,
+        Delivery::Gone
+    ));
+    drop(waiting);
+    assert!(lock(&blocked.shared.waiters).gone);
+    let (delivery, _) = mpsc::sync_channel(1);
+    assert!(matches!(
+        blocked.wait(operation, delivery),
+        Err(Error::NotFound(_))
+    ));
     Arc::try_unwrap(local)
         .map_err(|_| Error::Conflict("workspace owner retained after shutdown".into()))?
         .disconnect()
