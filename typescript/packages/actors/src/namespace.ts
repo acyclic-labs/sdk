@@ -1,5 +1,6 @@
 import { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "./binding-fetch.js";
 import { ActorReference, actorLocationHint } from "@acyclic-labs/auth/addressing";
+import { awaitSignal } from "@acyclic-labs/auth/credential";
 import type { ActorsClient, ActorsCallOptions } from "./client.js";
 import type * as Semantic from "./generated/semantic/actors/readonly.js";
 
@@ -68,7 +69,7 @@ export class ActorStub {
   readonly #binding: string;
   readonly #hint: LocationHint | undefined;
   #tail: Promise<void> = Promise.resolve();
-  #settled: Promise<unknown> = Promise.resolve();
+  #settled: Promise<void> = Promise.resolve();
   #broken = false;
   readonly #session = randomId();
   #sequence = 0n;
@@ -106,7 +107,10 @@ export class ActorStub {
       if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
       return response;
     }, error => { this.#break(error); throw error; }).finally(() => {signal.removeEventListener("abort",cancelled);});
-    this.#settled = result.catch(() => undefined);
+    // One constant-size join retains every preceding completion and its failure.
+    // Admission remains independent of response order; fork captures this cut.
+    this.#settled = Promise.all([this.#settled, result]).then(() => undefined);
+    void this.#settled.catch(() => undefined);
     return result;
   }
   #break(error: unknown): void {
@@ -146,11 +150,14 @@ export class ActorStub {
     const target = child.reference;
     if (!target.equals(new ActorReference(reference.account, reference.namespace, target.id))) throw new TypeError("fork child is outside this actor's namespace");
     if (target.equals(reference)) throw new TypeError("an actor cannot fork into itself");
-    await this.#tail; await this.#settled;
     const { idempotencyKey = randomId(), ...callOptions } = options;
+    const signal = callOptions.signal ? AbortSignal.any([callOptions.signal, this.#lifetime.signal]) : this.#lifetime.signal;
+    await awaitSignal(this.#settled, signal);
+    if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
+    signal.throwIfAborted();
     await fork.call(this.#transport, { actorId: this.#id.toString() as Semantic.ActorId, childActorId: child.toString() as Semantic.ActorId,
       namespace: decoder.decode(reference.namespace) as Semantic.ActorNamespace, accountId: reference.account,
-      subscriptions: [...subscriptions], idempotencyKey }, callOptions);
+      subscriptions: [...subscriptions], idempotencyKey }, {...callOptions,signal});
     return target;
   }
   /** Named RPC payload bytes use the same namespace binding, never a public HTTP credential. */
