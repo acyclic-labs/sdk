@@ -818,4 +818,4 @@ mod checkout_publication;
 ))]
 pub use checkout_publication::{AuthorizedCheckout, CheckoutApproval, CheckoutPublication};
 
-pub use host::DirectoryOptions;
+pub use host::{DirectoryOptions, DirectorySnapshot};

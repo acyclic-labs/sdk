@@ -14,6 +14,30 @@ pub struct DirectoryOptions<'a> {
     pub ceiling: Option<&'a crate::Capabilities>,
 }
 
+/// First authorized page of an immutable directory view and its follow cursor.
+/// Continue paging with `generation` through the ordinary directory query;
+/// follow changes from `publication.next` and its original preceding commit.
+pub struct DirectorySnapshot {
+    /// Original selected immutable generation, also used for conditional edits.
+    pub generation: GenerationRef,
+    /// Visible entries under the same grant and current persisted policy.
+    pub page: DirectoryPage,
+    /// Original producer's cursor; not a grant to follow undisclosed entries.
+    pub publication: acyclic_fs::PublicationSnapshot,
+}
+
+struct DirectoryRead {
+    generation: GenerationRef,
+    page: DirectoryPage,
+    publication: Option<acyclic_fs::PublicationSnapshot>,
+}
+
+impl DirectoryRead {
+    fn into_page(self) -> (GenerationRef, DirectoryPage) {
+        (self.generation, self.page)
+    }
+}
+
 pub(in crate::filesystem) struct DirectoryListing<'a> {
     pub volume: &'a VolumeRef,
     pub grant: &'a ContentGrant,
@@ -69,7 +93,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } = options;
 
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        let (page, hold) = self
+        let (read, hold) = self
             .list_directory_page(
                 DirectoryListing {
                     volume,
@@ -82,10 +106,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 },
                 &io,
                 &mut || std::future::ready(Ok(())),
+                false,
             )
             .await?;
         hold.into_retained()?;
-        Ok(page)
+        Ok(read.into_page())
+    }
+
+    /// Opens the first watched directory page without a snapshot/follow gap.
+    /// An exact generation is paged through `list_private_directory` after this
+    /// initial selection; it cannot be paired with a later current cursor.
+    pub async fn snapshot_private_directory(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        options: crate::filesystem::DirectoryOptions<'_>,
+    ) -> Result<DirectorySnapshot> {
+        if options.generation.is_some() {
+            return Err(Error::Invalid(
+                "a watched snapshot requires an initial current selection".into(),
+            ));
+        }
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let (read, hold) = self
+            .list_directory_page(
+                DirectoryListing {
+                    volume,
+                    grant,
+                    path,
+                    generation: None,
+                    after: options.after,
+                    maximum_entries: options.maximum_entries,
+                    ceiling: options.ceiling,
+                },
+                &io,
+                &mut || std::future::ready(Ok(())),
+                true,
+            )
+            .await?;
+        let publication = read
+            .publication
+            .ok_or_else(|| io.invalid("directory snapshot lost its original publication cut"))?;
+        hold.into_retained()?;
+        Ok(DirectorySnapshot {
+            generation: read.generation,
+            page: read.page,
+            publication,
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -100,10 +168,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
         let io = PreparationIo::from_native_work(work)?;
-        let (page, hold) = self.list_directory_page(request, &io, &mut guard).await?;
+        let (read, hold) = self
+            .list_directory_page(request, &io, &mut guard, false)
+            .await?;
         let retained = hold.bytes();
         hold.into_retained()?;
-        Ok((page, io.into_native_custody(retained)?))
+        Ok((read.into_page(), io.into_native_custody(retained)?))
     }
 
     async fn select_directory<'io, F, Fut>(
@@ -111,6 +181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         request: &DirectoryListing<'_>,
         io: &'io PreparationIo,
         guard: &mut F,
+        capture_changes: bool,
     ) -> Result<DirectorySelection<'io, A, O>>
     where
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
@@ -134,9 +205,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         guard().await?;
         let workspace = self.open(&reference.0, Some(io)).await?;
         guard().await?;
-        let generation = match request.generation {
-            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => self.current_generation(&workspace, io).await?,
+        let (generation, publication) = match (capture_changes, request.generation) {
+            (false, Some(expected)) => {
+                (self.generation(&workspace, expected, Some(io)).await?, None)
+            }
+            (false, None) => (self.current_generation(&workspace, io).await?, None),
+            (true, None) => {
+                let snapshot = io.sdk(workspace.snapshot(io, io.cancellation()).await)?;
+                (snapshot.generation, Some(snapshot.publication))
+            }
+            (true, Some(_)) => {
+                return Err(io.invalid("an exact generation has no current follow cursor"));
+            }
         };
         guard().await?;
         let scope = request.grant.policy_scope();
@@ -171,6 +251,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             generation,
             view,
             data_access,
+            publication,
         })
     }
 
@@ -179,7 +260,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         request: DirectoryListing<'_>,
         io: &'io PreparationIo,
         guard: &mut F,
-    ) -> Result<((GenerationRef, DirectoryPage), DecodeReservation<'io>)>
+        capture_changes: bool,
+    ) -> Result<(DirectoryRead, DecodeReservation<'io>)>
     where
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
@@ -189,7 +271,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             generation,
             view,
             data_access,
-        } = self.select_directory(&request, io, guard).await?;
+            publication,
+        } = self
+            .select_directory(&request, io, guard, capture_changes)
+            .await?;
         let parent = view
             .0
             .prepare(request.path)
@@ -266,12 +351,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             page.work = spent;
             let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
             page_hold.adopt(reference.logical_owned_bytes()?)?;
+            if publication.is_some() {
+                let bytes = std::mem::size_of::<acyclic_fs::PublicationSnapshot>() as u64;
+                io.retain_owned(bytes)?;
+                page_hold.adopt(bytes)?;
+            }
             super::super::access::require_current(&workspace, &view.0, io).await?;
             if let Some((workspace, view)) = &data_access {
                 super::super::access::require_current(workspace, &view.0, io).await?;
             }
             request.grant.recheck(Some(io))?;
-            return Ok(((reference, page), page_hold));
+            return Ok((
+                DirectoryRead {
+                    generation: reference,
+                    page,
+                    publication,
+                },
+                page_hold,
+            ));
         }
     }
 }
@@ -317,4 +414,5 @@ struct DirectorySelection<'io, A: 'static, O: 'static> {
     generation: acyclic_fs::Generation<A, O>,
     view: super::super::access::CompiledAccess<'io>,
     data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'io>)>,
+    publication: Option<acyclic_fs::PublicationSnapshot>,
 }

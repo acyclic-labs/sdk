@@ -676,6 +676,83 @@ async fn fixture(
     Ok((host, volume, read, writer, issuer))
 }
 
+#[tokio::test]
+async fn watched_directory_snapshot_preserves_authorized_names_and_its_selected_generation()
+-> Result<()> {
+    let mask = [false, true, false, true, true, false, false, true];
+    let (host, volume, grant) = fixture(mask).await?;
+    let snapshot = host
+        .snapshot_private_directory(
+            &volume,
+            &grant,
+            "rows",
+            DirectoryOptions {
+                generation: None,
+                after: None,
+                maximum_entries: 4,
+                ceiling: None,
+            },
+        )
+        .await?;
+    assert!(snapshot.publication.next > 0);
+    assert!(!snapshot.page.entries.is_empty());
+    for entry in &snapshot.page.entries {
+        let index: usize = std::str::from_utf8(entry.name.as_bytes())
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .parse()
+            .map_err(|error: std::num::ParseIntError| Error::Invalid(error.to_string()))?;
+        assert!(mask[index]);
+    }
+    let (generation, page) = host
+        .list_private_directory(
+            &volume,
+            &grant,
+            "rows",
+            DirectoryOptions {
+                generation: Some(&snapshot.generation),
+                after: None,
+                maximum_entries: 4,
+                ceiling: None,
+            },
+        )
+        .await?;
+    assert_eq!(generation, snapshot.generation);
+    assert_eq!(page.entries, snapshot.page.entries);
+    assert!(
+        host.snapshot_private_directory(
+            &volume,
+            &grant,
+            "rows",
+            DirectoryOptions {
+                generation: Some(&snapshot.generation),
+                after: None,
+                maximum_entries: 4,
+                ceiling: None,
+            }
+        )
+        .await
+        .is_err(),
+        "a later cursor cannot be attached to an exact historical generation"
+    );
+    assert!(
+        host.snapshot_private_directory(
+            &volume,
+            &grant,
+            "outside",
+            DirectoryOptions {
+                generation: None,
+                after: None,
+                maximum_entries: 4,
+                ceiling: None,
+            }
+        )
+        .await
+        .is_err(),
+        "the original directory grant remains the authority boundary"
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
