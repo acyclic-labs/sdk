@@ -183,16 +183,20 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
     }
     let delivery = host.drain(&first);
     futures::pin_mut!(delivery);
-    assert!(futures::poll!(&mut delivery).is_pending());
-    started.acquire().await?.forget();
+    tokio::select! {
+        permit = started.acquire() => permit?.forget(),
+        result = &mut delivery => panic!("delivery ended before original work started: {result:?}"),
+    }
     let pause = host.pause(&first, true);
     futures::pin_mut!(pause);
     assert!(
         futures::poll!(&mut pause).is_pending(),
         "pause must join the active delivery"
     );
-    assert!(futures::poll!(&mut delivery).is_pending());
-    stopped.acquire().await?.forget();
+    tokio::select! {
+        permit = stopped.acquire() => permit?.forget(),
+        result = &mut delivery => panic!("delivery ended before pending completion: {result:?}"),
+    }
     assert!(
         futures::poll!(&mut pause).is_pending(),
         "provider completion is not handler cleanup"
