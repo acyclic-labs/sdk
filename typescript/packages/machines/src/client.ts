@@ -15,7 +15,9 @@ export interface MachineListOptions {
 export async function createMachine(provider: MachinesProvider, request: CreateMachine): Promise<MachineId> {
   const outcome = await provider.create(request);
   if (outcome.kind !== "created") throw new TypeError(`expected created outcome, received ${outcome.kind}`);
-  return outcome.machine.id;
+  const [machine] = outcome.machines;
+  if (!machine || outcome.machines.length !== 1 || outcome.provenance !== null) throw new TypeError("create admitted other than one machine");
+  return machine.id;
 }
 export function machineEvents(provider: MachinesProvider, id: MachineId, afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize): Promise<MachineEventPage> {
   return provider.events(id, afterSequence, limit);

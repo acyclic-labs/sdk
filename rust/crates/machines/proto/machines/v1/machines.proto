@@ -205,8 +205,8 @@ message ForkCheckpointRequest {
 // Forks a running machine, without an intermediate checkpoint, into `count` fresh
 // children. Admission requires CAPABILITY_LIVE_FORK or CAPABILITY_DISK_FORK in the source
 // machine's contract; a provider or machine without either rejects with UNIMPLEMENTED so
-// callers fall back to Checkpoint + Fork or a restart. The admitted ForkFidelity states
-// what the children inherited. Children inherit the source's exact MachineContract and
+// callers fall back to Checkpoint + Fork or a restart. Each child's admitted Provenance
+// states what it inherited. Children inherit the source's exact MachineContract and
 // receive fresh MachineIds and endpoints; open network connections are never carried over.
 // See the acyclic-machines crate documentation for the complete semantics.
 message ForkMachineRequest {
@@ -302,20 +302,33 @@ message CheckpointState {
   bool forkable = 4;
   uint64 created_at_unix_ms = 5;
 }
+// Where a forked machine came from. Create leaves it unset; a forked machine
+// is otherwise the same resource a created one is.
+message Provenance {
+  oneof source {
+    // Live fork of this running machine (ForkMachine).
+    MachineId machine_id = 1;
+    // Fork of this checkpoint (Fork). Its children resume the checkpoint's
+    // captured memory and disk, so fidelity is FORK_FIDELITY_MEMORY_AND_DISK.
+    CheckpointId checkpoint_id = 2;
+  }
+  ForkFidelity fidelity = 3;
+}
 message MachineAdmission {
   MachineId machine = 1;
   OperationId operation = 2;
   MachineContract contract = 3;
+  Provenance provenance = 4;
+}
+// The machines one Fork or ForkMachine admitted, in index order, under one
+// shared operation. Each entry carries that same operation.
+message MachineAdmissions {
+  OperationId operation = 1;
+  repeated MachineAdmission machines = 2;
 }
 message CheckpointAdmission {
   CheckpointId checkpoint = 1;
   MachineId source = 2;
-  OperationId operation = 3;
-  MachineContract contract = 4;
-}
-message ForkAdmission {
-  CheckpointId checkpoint = 1;
-  repeated MachineId children = 2;
   OperationId operation = 3;
   MachineContract contract = 4;
 }
@@ -326,13 +339,6 @@ enum ForkFidelity {
   // Children boot fresh over a copy of the source's persistent disk (provider-defined; see
   // CAPABILITY_DISK_FORK) taken at one consistent instant; no process state is inherited.
   FORK_FIDELITY_DISK_ONLY = 2;
-}
-message ForkMachineAdmission {
-  MachineId source = 1;
-  repeated MachineId children = 2;
-  OperationId operation = 3;
-  MachineContract contract = 4;
-  ForkFidelity fidelity = 5;
 }
 message PolicyAdmission {
   MachineId machine = 1;
@@ -349,26 +355,24 @@ message RecoveredAdmission {
   oneof result {
     MachineAdmission create = 2;
     CheckpointAdmission checkpoint = 3;
-    ForkAdmission fork = 4;
     MutationAdmission suspend = 5;
     MutationAdmission wake = 6;
     MutationAdmission destroy_machine = 7;
     PolicyAdmission set_suspension_policy = 8;
     MutationAdmission destroy_checkpoint = 9;
-    ForkMachineAdmission fork_machine = 10;
     MachineAdmission attach_volume = 11;
+    // Fork and ForkMachine; each entry's provenance names which.
+    MachineAdmissions forked = 12;
   }
+  reserved 4, 10;
+  reserved "fork", "fork_machine";
 }
 
 // Retained terminal result. Unlike an admission, this contains the checked
 // observations produced after the operation has completed.
 message ForkedMachines {
   repeated MachineState machines = 1;
-}
-message ForkedLiveMachines {
-  MachineId source = 1;
-  ForkFidelity fidelity = 2;
-  repeated MachineState children = 3;
+  Provenance provenance = 2;
 }
 message PolicySet {
   MachineId machine = 1;
@@ -384,9 +388,10 @@ message MutationOutcome {
     PolicySet suspension_policy_set = 6;
     MachineId machine_destroyed = 7;
     CheckpointId checkpoint_destroyed = 8;
-    ForkedLiveMachines machine_forked = 9;
     MachineState volume_attached = 10;
   }
+  reserved 9;
+  reserved "machine_forked";
 }
 message OperationPage {
   repeated OperationState operations = 1;
@@ -609,8 +614,8 @@ service MachinesService {
   rpc Create(CreateMachineRequest) returns (MachineAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/create" extractor: "machines.create" }; }
   rpc AttachVolume(AttachVolumeRequest) returns (MachineAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
   rpc Checkpoint(CheckpointMachineRequest) returns (CheckpointAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/checkpoint" extractor: "machines.checkpoint" }; }
-  rpc Fork(ForkCheckpointRequest) returns (ForkAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-checkpoint" }; }
-  rpc ForkMachine(ForkMachineRequest) returns (ForkMachineAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-machine" }; }
+  rpc Fork(ForkCheckpointRequest) returns (MachineAdmissions) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-checkpoint" }; }
+  rpc ForkMachine(ForkMachineRequest) returns (MachineAdmissions) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-machine" }; }
   rpc Suspend(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
   rpc Wake(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
   rpc SetSuspensionPolicy(SetSuspensionPolicyRequest) returns (PolicyAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }

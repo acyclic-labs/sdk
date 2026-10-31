@@ -40,6 +40,7 @@ async fn create_binds_image_and_canonical_selected_volume_without_redispatch()
                 value: operation.as_bytes().to_vec(),
             }),
             contract: Some(contract.clone()),
+            provenance: None,
         },
     ));
     let (provider, shutdown, server) = serve_operation_service(service).await?;
@@ -180,6 +181,7 @@ async fn attach_settles_and_recovers_the_original_selected_volume_without_redisp
                 value: operation.as_bytes().to_vec(),
             }),
             contract: Some(contract.clone()),
+            provenance: None,
         },
     ));
     let terminal = WatchReply::Items(vec![WatchItem::State(settled_state(
