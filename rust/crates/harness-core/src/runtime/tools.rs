@@ -1,5 +1,38 @@
 use super::*;
 
+impl TaskContext {
+    /// Retains complete tool output through the existing volume publisher.
+    pub(crate) async fn spill_tool_output(
+        &self,
+        operation: OperationId,
+        bytes: &[u8],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, String)> {
+        let operation =
+            crate::conversation::derived_operation_id(operation, b"tool-output-spill-v1");
+        let path = crate::executor::with_history_io(io, |history| {
+            crate::executor::preparation_format(
+                format_args!(".volumes/scratch/tool-output/{operation}.json"),
+                history,
+            )
+        })?;
+        let file = self
+            .stage_bound_file(
+                self.tool_content(None),
+                operation,
+                &path,
+                bytes,
+                "application/json",
+                "tool-output.json",
+                super::content_write::ContentPublication::OperationBound,
+                self.scope(),
+                io,
+            )
+            .await?;
+        Ok((file.0, path))
+    }
+}
+
 /// An admission decision for one exact, schema-valid tool invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolPolicyDecision {

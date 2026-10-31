@@ -24,6 +24,9 @@ pub struct ToolDefinition {
     #[heap_layout(as = serde_json::Value)]
     pub output_schema: Value,
     /// JSON Schema for the model-facing projection, independently of the result.
+    /// The harness may replace a validated oversized projection with its common
+    /// lossless `output_spill` envelope, naming a versioned ordinary file and a
+    /// bounded preview. Replay accepts that intrinsic envelope for every tool.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     #[serde(deserialize_with = "crate::deserialize_json_value")]
     #[heap_layout(as = serde_json::Value)]
@@ -205,14 +208,7 @@ impl ToolDefinition {
         return self.check_scoped_projection(value, limits, io);
         #[cfg(not(feature = "filesystem"))]
         {
-            if let Err(violation) = crate::executor::with_history_io(io, |work| {
-                crate::executor::check_json_schema_value(
-                    &self.projection_schema,
-                    value,
-                    "tool projection",
-                    work,
-                )
-            })? {
+            if let Err(violation) = self.check_projection_schema(value, io)? {
                 return Ok(Err(violation));
             }
             let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
@@ -221,6 +217,28 @@ impl ToolDefinition {
             crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
             Ok(Ok(content))
         }
+    }
+
+    pub(super) fn check_projection_schema(
+        &self,
+        value: &Value,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Result<()>> {
+        let authored = crate::executor::with_history_io(io, |work| {
+            crate::executor::check_json_schema_value(
+                &self.projection_schema,
+                value,
+                "tool projection",
+                work,
+            )
+        })?;
+        if authored.is_ok() || !super::output::is_spill(value) {
+            return Ok(authored);
+        }
+        let schema = super::output::schema()?;
+        crate::executor::with_history_io(io, |work| {
+            crate::executor::check_json_schema_value(&schema, value, "tool output spill", work)
+        })
     }
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {

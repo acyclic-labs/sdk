@@ -541,6 +541,7 @@ pub fn validate_content_path(
 
 mod identity;
 pub use identity::assistant_message_id;
+pub(crate) use identity::derived_operation_id;
 
 /// Immutable model wire items shared with the pure request renderer.
 pub mod wire;

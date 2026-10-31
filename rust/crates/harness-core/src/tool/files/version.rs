@@ -90,7 +90,7 @@ pub(super) fn decode_version(
     Ok((file, None))
 }
 
-pub(super) fn encode_version(
+pub(crate) fn encode_version(
     file: &FileRef,
     work: crate::NativeWork<'_>,
 ) -> Result<(String, crate::NativeCustody)> {
