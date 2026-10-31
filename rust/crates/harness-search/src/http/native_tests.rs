@@ -44,7 +44,7 @@ async fn search_native_http_adapters_return_funded_results() -> Result<()> {
         assert!(work.live_allocation_bytes() >= baseline + result.1.bytes());
         drop(result);
         assert_eq!(work.live_allocation_bytes(), baseline);
-        let request = server.await.map_err(|e| Error::Storage(e.to_string()))??;
+        let request = super::tests::joined(server).await?;
         assert!(
             request
                 .to_ascii_lowercase()
@@ -102,7 +102,7 @@ async fn search_native_http_rejections_are_not_uncertain_transport_failures() ->
                 baseline,
                 "exa={exa}, status={status}, body={body}"
             );
-            server.await.map_err(|e| Error::Storage(e.to_string()))??;
+            super::tests::joined(server).await?;
         }
     }
     Ok(())
@@ -218,11 +218,7 @@ async fn search_native_http_exhaustion_rejects_before_network() -> Result<()> {
             .unwrap_err();
         assert!(matches!(error, Error::NativeWork { .. }));
         assert!(error.is_native_failure());
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
-                .await
-                .is_err()
-        );
+        assert!(futures::poll!(std::pin::pin!(listener.accept())).is_pending());
     }
     Ok(())
 }
@@ -257,7 +253,7 @@ async fn search_native_http_one_byte_allowance_cannot_read_a_whole_body() -> Res
         assert_eq!(work.receipt().source_bytes_read, 1);
         drop(error);
         assert_eq!(work.live_allocation_bytes(), baseline);
-        server.await.map_err(|e| Error::Storage(e.to_string()))??;
+        super::tests::joined(server).await?;
     }
     Ok(())
 }
@@ -304,9 +300,6 @@ async fn search_native_http_cancellation_stops_an_in_flight_exchange() -> Result
     let (result, cancelled) = tokio::join!(future, cancel);
     cancelled?;
     assert!(result.is_err());
-    tokio::time::timeout(Duration::from_secs(1), server)
-        .await
-        .map_err(|_| Error::Invalid("native search survived cancellation".into()))?
-        .map_err(|e| Error::Storage(e.to_string()))??;
+    server.await.map_err(|e| Error::Storage(e.to_string()))??;
     Ok(())
 }

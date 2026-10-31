@@ -12,22 +12,25 @@ struct WarmFixture(std::sync::Mutex<wire::WarmView>);
 impl wire::warm_contexts_service_server::WarmContextsService for Arc<WarmFixture> {
     async fn retain(
         &self,
-        _: Request<wire::RetainWarmRequest>,
+        request: Request<wire::RetainWarmRequest>,
     ) -> Result<tonic::Response<wire::WarmView>, tonic::Status> {
+        assert!(request.metadata().get("grpc-timeout").is_none());
         self.inspect(Request::new(wire::InspectWarmRequest::default()))
             .await
     }
     async fn renew(
         &self,
-        _: Request<wire::RenewWarmRequest>,
+        request: Request<wire::RenewWarmRequest>,
     ) -> Result<tonic::Response<wire::WarmView>, tonic::Status> {
+        assert!(request.metadata().get("grpc-timeout").is_none());
         self.inspect(Request::new(wire::InspectWarmRequest::default()))
             .await
     }
     async fn inspect(
         &self,
-        _: Request<wire::InspectWarmRequest>,
+        request: Request<wire::InspectWarmRequest>,
     ) -> Result<tonic::Response<wire::WarmView>, tonic::Status> {
+        assert!(request.metadata().get("grpc-timeout").is_none());
         self.0
             .lock()
             .map(|view| tonic::Response::new(view.clone()))
