@@ -1,5 +1,8 @@
 use super::*;
 
+pub(super) const GENERATION_INDEX_DOMAIN: &[u8] = b"fs-generation-v1\0";
+pub(super) const OPERATION_INDEX_DOMAIN: &[u8] = b"fs-operation-v1\0";
+
 impl<'a> AuthorityWork<'a> {
     pub(super) fn absorb(&mut self, child: &AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
         if !self.is_native() {
@@ -485,11 +488,67 @@ impl<'a> AuthorityWork<'a> {
         Ok(delta)
     }
 
-    pub(super) fn append_record<const N: usize>(
+    pub(super) fn publication_record(
+        &mut self,
+        record: &crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+        generation: Option<GenerationId>,
+    ) -> Result<acyclic_stream::AppendRecord, AuthorityStoreError> {
+        let operation = record.operation_id.into_bytes();
+        let reference = generation.map(|generation| generation.to_bytes());
+        // Streams admits value and indexed headers together. Reserve the exact
+        // header bytes before the canonical encoder allocates the durable value.
+        let header_bytes = OPERATION_INDEX_DOMAIN.len()
+            + operation.len()
+            + reference.as_ref().map_or(0, |reference| {
+                GENERATION_INDEX_DOMAIN.len() + reference.len()
+            });
+        let value = StreamsDurableRecord::encode_borrowed_with(
+            record,
+            STREAM_RECORD_LIMIT - header_bytes as u64,
+            |domain, fields| self.stream_bytes(domain, fields),
+        )
+        .map_err(AuthorityStoreError::DurableCodec)??;
+        let headers = match reference {
+            Some(reference) => {
+                let split = GENERATION_INDEX_DOMAIN.len() + reference.len();
+                let keys = self.stream_bytes(
+                    GENERATION_INDEX_DOMAIN,
+                    &[reference.as_slice(), OPERATION_INDEX_DOMAIN, &operation],
+                )?;
+                // The two domains establish canonical order without sorting.
+                self.record_keys([keys.slice(..split), keys.slice(split..)])?
+            }
+            None => {
+                let key = self.stream_bytes(OPERATION_INDEX_DOMAIN, &[&operation])?;
+                self.record_keys([key])?
+            }
+        };
+        Ok(acyclic_stream::AppendRecord { value, headers })
+    }
+
+    fn record_keys<const N: usize>(
+        &mut self,
+        keys: [acyclic_stream::OwnedBytes; N],
+    ) -> Result<acyclic_stream::RecordHeaders, AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.is_native() {
+            return acyclic_stream::RecordHeaders::from_keys_native(keys, &self.native_meter()?)
+                .map_err(|error| self.native_io_failure(error))?
+                .map_err(Into::into);
+        }
+        let mut owned = self.vec(N)?;
+        owned.extend(keys);
+        self.accounting()
+            .claim_owned(acyclic_stream::RecordHeaders::control_bytes() as u64, 1)
+            .map_err(authority_error)?;
+        acyclic_stream::RecordHeaders::new(owned, Vec::new()).map_err(Into::into)
+    }
+
+    pub(super) fn append_record<const N: usize, V: Into<acyclic_stream::AppendRecord>>(
         &mut self,
         mutations: &mut Vec<acyclic_stream::CommitMutation>,
         path: acyclic_stream::StreamPath,
-        values: [acyclic_stream::OwnedBytes; N],
+        values: [V; N],
     ) -> Result<(), AuthorityStoreError> {
         let mut records = self.vec(N)?;
         records.extend(values.into_iter().map(Into::into));

@@ -11,6 +11,122 @@ fn fork() -> WorkspaceForkCommit {
 }
 
 #[tokio::test]
+async fn indexed_authority_record_size_admission_covers_creation_and_append() -> TestResult {
+    let empty = crate::streams_record::BorrowedStreamsDurableRecord {
+        epoch: Epoch::GENESIS,
+        sequence: Sequence::new(1),
+        operation_id: proposed(80).operation_id,
+        fingerprint: proposed(80).fingerprint,
+        previous_digest: Digest::ZERO,
+        digest: Digest::ZERO,
+        payload: &[],
+    };
+    let envelope = StreamsDurableRecord::encode_borrowed_with(
+        &empty,
+        STREAM_RECORD_LIMIT,
+        |domain, fields| {
+            Ok::<_, AuthorityStoreError>(
+                domain.len() + fields.iter().map(|field| field.len()).sum::<usize>(),
+            )
+        },
+    )??;
+    let maximum_value = acyclic_stream::MAX_RECORD_BYTES - OPERATION_INDEX_DOMAIN.len() - 16;
+    let maximum_payload = maximum_value - envelope;
+    for native in [false, true] {
+        let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+        let token = CancellationToken::new();
+        let original =
+            crate::NativeMaterializationWork::new(BUDGET, &token).map_err(|(error, _)| error)?;
+        let mut work = if native {
+            AuthorityWork::native(&original, &token)
+        } else {
+            AuthorityWork::new(BUDGET, &token)
+        };
+        let authority = AuthorityId::from_bytes([80; 16]);
+        let mut oversized = proposed(80);
+        oversized.payload = vec![1; maximum_payload + 1].into();
+        let error = store
+            .create_first_record(authority, oversized, &mut work, None::<&mut ()>)
+            .await
+            .expect_err("creation must reserve the operation index before value allocation");
+        assert!(matches!(error,
+            AuthorityError::Authority(AuthorityStoreError::DurableCodec(
+                crate::StreamsAuthorityRecordError::RecordTooLarge { observed, maximum }
+            )) if observed == maximum_value as u64 + 1 && maximum == maximum_value as u64
+        ));
+        assert!(store.head(authority, &mut work).await.is_err());
+        let mut first = proposed(81);
+        first.payload = vec![1; maximum_payload].into();
+        assert!(
+            store
+                .create_first_record(authority, first.clone(), &mut work, None::<&mut ()>)
+                .await?
+        );
+        let first_record =
+            indexed_operation(&store, authority, first.operation_id, 2, &mut work).await?;
+        assert_eq!(
+            first_record.payload_bytes(),
+            acyclic_stream::MAX_RECORD_BYTES
+        );
+        let expected = store.head(authority, &mut work).await?;
+        let mut next = proposed(82);
+        next.payload = vec![1; maximum_payload + 1].into();
+        let mut request = crate::GuardedAppend {
+            authority_id: authority,
+            epoch: Epoch::GENESIS,
+            expected,
+            commit: next,
+            permit: PublicationPermit::Unrestricted,
+        };
+        let error = store
+            .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
+            .await
+            .expect_err("append must reserve the operation index before value allocation");
+        assert!(matches!(error,
+            AuthorityError::Authority(AuthorityStoreError::DurableCodec(
+                crate::StreamsAuthorityRecordError::RecordTooLarge { observed, maximum }
+            )) if observed == maximum_value as u64 + 1 && maximum == maximum_value as u64
+        ));
+        assert_eq!(store.head(authority, &mut work).await?, expected);
+        request.commit.payload = vec![1; maximum_payload].into();
+        assert!(matches!(
+            store
+                .compare_and_append(request, &mut work, None::<&mut ()>)
+                .await?,
+            FsAppendOutcome::Committed(_)
+        ));
+        let appended =
+            indexed_operation(&store, authority, proposed(82).operation_id, 3, &mut work).await?;
+        assert_eq!(appended.payload_bytes(), acyclic_stream::MAX_RECORD_BYTES);
+        assert_eq!(appended.sequence, 2);
+    }
+    Ok(())
+}
+
+async fn indexed_operation(
+    store: &StreamAuthorityStore<MemoryStream>,
+    authority: AuthorityId,
+    operation: OperationId,
+    before: u64,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::Record, Box<dyn std::error::Error>> {
+    let key = work.stream_bytes(OPERATION_INDEX_DOMAIN, &[&operation.into_bytes()])?;
+    let mut records = store
+        .provider
+        .read(ReadRequest {
+            key: Some(acyclic_stream::ReadKeySeek { key, before }),
+            path: stream_path(authority, "/records")?,
+            from: 1,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    let record = records.next().await.ok_or("operation index missing")??;
+    assert!(records.next().await.is_none());
+    Ok(record)
+}
+
+#[tokio::test]
 async fn operation_locators_cover_first_records_and_atomic_fork_replay() -> TestResult {
     for native in [false, true] {
         let stream = Arc::new(MemoryStream::default());
@@ -35,6 +151,10 @@ async fn operation_locators_cover_first_records_and_atomic_fork_replay() -> Test
             .ok_or("first-record operation locator is missing")?;
         assert_eq!(located.0.sequence, Sequence::new(1));
         assert_eq!(located.0.fingerprint, proposed(70).fingerprint);
+        let indexed =
+            indexed_operation(&store, id, proposed(70).operation_id, 2, &mut work).await?;
+        assert_eq!(indexed.sequence, located.0.sequence.get());
+        assert_eq!(indexed.commit_id, located.1);
         assert!(matches!(
             store
                 .compare_and_append(
@@ -80,6 +200,31 @@ async fn operation_locators_cover_first_records_and_atomic_fork_replay() -> Test
         );
         assert_eq!(retained.0.sequence, Sequence::new(1));
         assert_eq!(created.0.sequence, Sequence::new(1));
+        for (authority, operation) in [
+            (fork.retention, fork.retained.operation_id),
+            (fork.destination, fork.creation.operation_id),
+        ] {
+            let indexed = indexed_operation(&store, authority, operation, 2, &mut work).await?;
+            assert_eq!(indexed.commit_id, retained.1);
+        }
+
+        let commit = proposed(71);
+        let appended = store
+            .compare_and_append(
+                crate::GuardedAppend {
+                    authority_id: id,
+                    epoch: Epoch::GENESIS,
+                    expected: store.head(id, &mut work).await?,
+                    commit: commit.clone(),
+                    permit: PublicationPermit::Unrestricted,
+                },
+                &mut work,
+                None::<&mut ()>,
+            )
+            .await?;
+        assert!(matches!(appended, FsAppendOutcome::Committed(_)));
+        let indexed = indexed_operation(&store, id, commit.operation_id, 3, &mut work).await?;
+        assert_eq!(indexed.sequence, 2);
         let mut changed = fork.clone();
         changed.creation.fingerprint = Digest::from_bytes([75; 32]);
         assert_eq!(

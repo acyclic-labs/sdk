@@ -42,17 +42,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 sequence: record.sequence,
                 digest: record.digest,
             };
-            let encoded = StreamsDurableRecord::encode_borrowed_with(
-                &record,
-                STREAM_RECORD_LIMIT,
-                |domain, fields| work.stream_bytes(domain, fields),
-            )
-            .map_err(AuthorityStoreError::DurableCodec)??;
-            work.append_record(&mut request.mutations, records, [genesis, encoded])?;
+            let generation =
+                generation_from_payload(authority, record.sequence, record.payload, work)?;
+            let encoded = work.publication_record(&record, generation)?;
+            work.append_record(&mut request.mutations, records, [genesis.into(), encoded])?;
             // Sequence one is intrinsically addressable. Its authenticated
             // record carries the operation identity and atomic commit identity,
             // so it needs no separate operation-locator record.
-            generation_from_payload(authority, record.sequence, record.payload, work)?
+            generation
         } else {
             work.append_record(&mut request.mutations, records, [genesis])?;
             None

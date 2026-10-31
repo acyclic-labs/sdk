@@ -28,6 +28,29 @@ async fn proposal_normalization_reuses_receipt_owned_publication_roots() -> Test
             workspace.write("/file", Bytes::from_static(b"new")).await?;
         }
         let (head, root) = fixture_publication_root(&store, authority, &cancel).await?;
+        let reference = GenerationId::from_root(root).to_bytes();
+        let mut seek_work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancel);
+        let key = seek_work.stream_bytes(GENERATION_INDEX_DOMAIN, &[reference.as_slice()])?;
+        let mut records = store
+            .provider
+            .read(ReadRequest {
+                key: Some(acyclic_stream::ReadKeySeek {
+                    key,
+                    before: head
+                        .sequence
+                        .get()
+                        .checked_add(1)
+                        .ok_or("sequence overflow")?,
+                }),
+                path: stream_path(authority, "/records")?,
+                from: 1,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?;
+        let record = records.next().await.ok_or("generation index missing")??;
+        assert_eq!(record.sequence, head.sequence.get());
+        assert!(records.next().await.is_none());
         let request = crate::kernel::PublishGenerationRequest {
             authority_id: authority,
             volume_id: workspace.id().volume_id(),
