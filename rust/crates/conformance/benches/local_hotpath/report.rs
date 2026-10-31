@@ -20,9 +20,9 @@ impl Quantiles {
         if values.is_empty()
             || values
                 .iter()
-                .any(|value| !value.is_finite() || *value <= 0.0)
+                .any(|value| !value.is_finite() || *value < 0.0)
         {
-            return Err("quantiles require positive finite samples".into());
+            return Err("quantiles require nonnegative finite samples".into());
         }
         values.sort_unstable_by(f64::total_cmp);
         let rank = |percent: usize| -> Result<f64> {
@@ -51,7 +51,13 @@ pub(super) fn check_quantiles() -> Result {
     if quantiles.p50_ns != 50.0 || quantiles.p99_ns != 99.0 {
         return Err("nearest-rank quantiles changed".into());
     }
-    for mut invalid in [Vec::new(), vec![0.0], vec![f64::NAN], vec![f64::INFINITY]] {
+    // A timestamp pair can occupy one clock tick. Preserve that observation
+    // rather than fabricating a positive elapsed duration.
+    let zero = Quantiles::new(&mut [0.0; 100])?;
+    if zero.p50_ns != 0.0 || zero.p99_ns != 0.0 {
+        return Err("zero-duration observations were changed".into());
+    }
+    for mut invalid in [Vec::new(), vec![-1.0], vec![f64::NAN], vec![f64::INFINITY]] {
         if Quantiles::new(&mut invalid).is_ok() {
             return Err("invalid observations admitted by quantile negative control".into());
         }
@@ -228,8 +234,9 @@ impl Measurements {
                 "p50_pass": quantiles.p50_ns <= floor_ns * 1.5,
                 "p99_pass": quantiles.p99_ns <= floor_ns * 3.0,
                 "timer_only_quantiles": timer,
-                "p50_resolution_limited": floor_ns * 1.5 < timer.p50_ns,
-                "p99_resolution_limited": floor_ns * 3.0 < timer.p99_ns,
+                "minimum_positive_timer_ns": floors.minimum_positive_timer_ns(),
+                "p50_resolution_limited": floor_ns * 1.5 < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
+                "p99_resolution_limited": floor_ns * 3.0 < timer.p99_ns.max(floors.minimum_positive_timer_ns()),
                 "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
                 "raw_ns": raw_ns,
                 "work_observations": work.observations,
