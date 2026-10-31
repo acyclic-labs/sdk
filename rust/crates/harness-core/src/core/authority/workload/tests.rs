@@ -304,32 +304,150 @@ fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_a
         id: "neighbor".into(),
     };
     assert!(verify(&verifier, &other, &child, now(), &mut None).is_err());
-    // A holder can sign an append, but cannot add authority to the authenticated claims.
+    // A holder can sign an append, but cannot widen its parent's grants.
+    let name = resource(&issuer.audience)?;
     let mut widened = child.clone();
     widened.capabilities = root.capabilities.clone();
     widened.parent_proof = Some(*child.proof);
-    let forged_chain = verified
-        .attenuate(vec![claims(&widened, 2)?], &entropy())
-        .map_err(unauthorized)?;
-    retain(&mut widened, &forged_chain, &mut None)?;
-    assert!(verifier.verify(&widened, &mut None).is_err());
-    // Empty and multi-claim appends must not impersonate successive workload
-    // delegations even when the total pin and block counts happen to agree.
+    assert!(
+        verified
+            .attenuate(facts(&widened, &name, child.agent)?, &entropy())
+            .is_err()
+    );
+    // A block without scope facts is not a delegation: a later block cannot
+    // stand in for it, though each one alone is well formed.
     let skipped = verified
         .attenuate(vec![], &entropy())
         .map_err(unauthorized)?;
     let mut misplaced = child.clone();
     misplaced.parent_proof = Some(*skipped.block_ids().last().unwrap());
-    let mut earlier = child.clone();
-    earlier.parent_proof = Some(*child.proof);
     let chain = skipped
-        .attenuate(
-            vec![claims(&earlier, 2)?, claims(&misplaced, 3)?],
-            &entropy(),
-        )
+        .attenuate(facts(&misplaced, &name, child.agent)?, &entropy())
         .map_err(unauthorized)?;
     retain(&mut misplaced, &chain, &mut None)?;
     assert!(verifier.verify(&misplaced, &mut None).is_err());
+    // Control: the same block appended directly is admitted.
+    let mut direct = child.clone();
+    direct.parent_proof = Some(*child.proof);
+    let chain = verified
+        .attenuate(facts(&direct, &name, child.agent)?, &entropy())
+        .map_err(unauthorized)?;
+    retain(&mut direct, &chain, &mut None)?;
+    verifier.verify(&direct, &mut None)?;
+    Ok(())
+}
+
+#[test]
+fn a_holder_delegates_to_another_agent_and_only_its_key_extends_the_chain() -> Result<()> {
+    use acyclic_auth::contract::{CapabilityProto, SignedBlock, TipProof};
+    use ed25519_dalek::Signer as _;
+    use prost::Message as _;
+    let issuer = fixture();
+    let audience = issuer.audience.clone();
+    let trust = issuer.public_workload_trust()?;
+    let first = AgentId::from_bytes([1; 16]);
+    let second = AgentId::from_bytes([2; 16]);
+    let parent = issuer.bootstrap_scope(
+        "owner",
+        &Capabilities::new(["tool:call:read", "tool:call:write"]),
+        Some(first),
+        &mut None,
+    )?;
+    let delegated = parent.attenuate_workload(
+        "delegate",
+        &Capabilities::new(["tool:call:read"]),
+        Some(second),
+        &trust,
+        &audience,
+        now(),
+    )?;
+    delegated.verify_workload(&trust, &audience, now(), &mut None)?;
+    assert_eq!(delegated.agent, Some(second));
+    let grandchild = delegated.attenuate_workload(
+        "grandchild",
+        &Capabilities::new(["tool:call:read"]),
+        Some(second),
+        &trust,
+        &audience,
+        now(),
+    )?;
+    grandchild.verify_workload(&trust, &audience, now(), &mut None)?;
+    // A delegate never drops its acting agent, nor claims another unsigned.
+    assert!(
+        delegated
+            .attenuate_workload(
+                "anonymous",
+                &Capabilities::new(["tool:call:read"]),
+                None,
+                &trust,
+                &audience,
+                now()
+            )
+            .is_err()
+    );
+    let mut claimed = delegated.clone();
+    claimed.agent = Some(first);
+    assert!(
+        claimed
+            .verify_workload(&trust, &audience, now(), &mut None)
+            .is_err()
+    );
+    // A widened delegate is refused.
+    assert!(
+        delegated
+            .attenuate_workload(
+                "widened",
+                &Capabilities::new(["tool:call:write"]),
+                Some(second),
+                &trust,
+                &audience,
+                now()
+            )
+            .is_err()
+    );
+    // The tip block re-signed by a key other than the previous holder's.
+    let mut capability =
+        acyclic_auth::authority::decode_capability(&delegated.workload).map_err(unauthorized)?;
+    let index = capability.blocks.len() - 1;
+    let previous = verify::verify(&parent.workload, &trust, now())
+        .map_err(unauthorized)?
+        .block_ids()
+        .last()
+        .copied()
+        .ok_or_else(|| unauthorized("missing tip"))?;
+    let SignedBlock { payload, .. } = capability.blocks[index].clone();
+    let transcript = acyclic_auth::crypto::block_transcript(index as u64, &previous, &payload);
+    capability.blocks[index].signature = SigningKey::from_bytes(&[42; 32])
+        .sign(&transcript)
+        .to_bytes()
+        .to_vec();
+    let mut resigned = delegated.clone();
+    resigned.workload = CapabilityProto::from(capability.clone()).encode_to_vec();
+    assert!(
+        resigned
+            .verify_workload(&trust, &audience, now(), &mut None)
+            .is_err()
+    );
+    // A presenter without the final holder key.
+    let mut capability =
+        acyclic_auth::authority::decode_capability(&delegated.workload).map_err(unauthorized)?;
+    assert!(matches!(capability.proof, TipProof::Secret(_)));
+    capability.proof = TipProof::Secret(vec![43; 32]);
+    let mut keyless = delegated.clone();
+    keyless.workload = CapabilityProto::from(capability).encode_to_vec();
+    assert!(
+        keyless
+            .verify_workload(&trust, &audience, now(), &mut None)
+            .is_err()
+    );
+    // Revoking the middle block refuses its descendants and keeps its parent.
+    issuer.revoke_workload(&delegated)?;
+    assert!(
+        grandchild
+            .verify_workload(&trust, &audience, now(), &mut None)
+            .is_err()
+    );
+    parent.verify_workload(&trust, &audience, now(), &mut None)?;
     Ok(())
 }
 
@@ -348,6 +466,7 @@ fn workload_holders_attenuate_with_public_trust_and_revocation_invalidates_desce
     let child = parent.attenuate_workload(
         "reader",
         &Capabilities::new(["tool:call:read"]),
+        None,
         &trust,
         &audience,
         now(),
@@ -358,6 +477,7 @@ fn workload_holders_attenuate_with_public_trust_and_revocation_invalidates_desce
             .attenuate_workload(
                 "writer",
                 &Capabilities::new(["tool:call:write"]),
+                None,
                 &trust,
                 &audience,
                 now()
@@ -375,6 +495,7 @@ fn workload_holders_attenuate_with_public_trust_and_revocation_invalidates_desce
             .attenuate_workload(
                 "reader-again",
                 &Capabilities::new(["tool:call:read"]),
+                None,
                 &trust,
                 &audience,
                 now()

@@ -15,7 +15,6 @@ pub(super) use revocation::revoke;
 
 pub(super) struct AuthenticatedWorkload {
     capability: std::sync::Arc<VerifiedCapability>,
-    attributes: RecordAttributes,
     last: Claims,
 }
 
@@ -26,10 +25,9 @@ pub(super) struct WorkloadOwner {
 }
 
 fn authenticated(capability: VerifiedCapability) -> Result<std::sync::Arc<AuthenticatedWorkload>> {
-    let (attributes, last) = admission::scope_facts(&capability, false)?;
+    let last = admission::scope_facts(&capability)?;
     Ok(std::sync::Arc::new(AuthenticatedWorkload {
         capability: std::sync::Arc::new(capability),
-        attributes,
         last,
     }))
 }
@@ -60,29 +58,22 @@ fn authenticate(
     Ok(authenticated)
 }
 
-const CLAIM: &str = "harness.scope.";
+// Scope facts, format v1: each block's label names its scope, its grants
+// hold the audience and one exact grant per capability, and a lineage entry
+// names a new acting agent. Chains of any other form are refused.
+const SCOPE: &str = "acyclic.harness.scope.v1:";
+const AGENT: &str = "acyclic.harness.agent:";
+const CAPABILITIES: &str = "harness:/capabilities/";
+const HOLD: &str = "harness/hold";
 const ACTION: &str = "harness/execute";
 const CERTIFICATE_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-#[derive(Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+/// The authenticated facts of a chain's tip block; the issuer is its account.
 struct Claims {
     id: String,
     capabilities: Capabilities,
     agent: Option<AgentId>,
-    issuer: String,
     parent: Option<[u8; 32]>,
-}
-impl Claims {
-    fn from_scope(scope: &Scope) -> Self {
-        Self {
-            id: scope.id.clone(),
-            capabilities: scope.capabilities.clone(),
-            agent: scope.agent,
-            issuer: scope.issuer.clone(),
-            parent: scope.parent_proof,
-        }
-    }
 }
 pub(super) fn unauthorized(error: impl std::fmt::Display) -> Error {
     Error::Unauthorized(format!("workload capability rejected: {error}"))
@@ -185,9 +176,14 @@ impl RuntimeKeys {
                         roles: vec![],
                         attributes: vec![],
                     },
+                    // The parent's tip first: a root block's authenticated parent.
                     parent_revocation_ids: parent
                         .into_iter()
-                        .flat_map(VerifiedCapability::revocation_ids)
+                        .flat_map(|parent| {
+                            let tip = parent.block_ids().last().map(|tip| tip.as_slice());
+                            tip.into_iter()
+                                .chain(parent.revocation_ids().filter(move |id| Some(*id) != tip))
+                        })
                         .map(<[u8]>::to_vec)
                         .collect(),
                 },
@@ -206,8 +202,9 @@ impl RuntimeKeys {
         {
             return Ok(signer.clone());
         }
-        let signer =
-            std::sync::Arc::new(self.certify(timestamp, grant("harness:/", true), None)?);
+        let mut grants = grant("harness:/", true);
+        grants.grants.push(resource_grant(CAPABILITIES, true, HOLD));
+        let signer = std::sync::Arc::new(self.certify(timestamp, grants, None)?);
         let renew_at = timestamp
             .checked_add(RENEW_SECONDS)
             .ok_or_else(|| unauthorized("clock overflow"))?;
@@ -267,28 +264,66 @@ pub(super) fn resource(audience: &Authority) -> Result<String> {
     };
     Ok(format!("harness:/{kind}/{}", audience.id))
 }
-fn grant(resource: &str, prefix: bool) -> GrantSet {
-    GrantSet {
-        grants: vec![Grant {
-            kind: GrantKind::Resource(ResourceGrant {
-                resource: ResourcePattern {
-                    name: resource.into(),
-                    prefix,
-                },
-                actions: vec![ACTION.into()],
-            }),
-        }],
+fn resource_grant(resource: &str, prefix: bool, action: &str) -> Grant {
+    Grant {
+        kind: GrantKind::Resource(ResourceGrant {
+            resource: ResourcePattern {
+                name: resource.into(),
+                prefix,
+            },
+            actions: vec![action.into()],
+        }),
     }
 }
-fn claims(scope: &Scope, index: usize) -> Result<Caveat> {
-    Ok(Caveat {
-        kind: CaveatKind::Pin(Pin {
-            name: format!("{CLAIM}{index}"),
-            value: PinValue::Literal(
-                serde_json::to_vec(&Claims::from_scope(scope)).map_err(unauthorized)?,
-            ),
+fn grant(resource: &str, prefix: bool) -> GrantSet {
+    GrantSet {
+        grants: vec![resource_grant(resource, prefix, ACTION)],
+    }
+}
+/// Execution on `audience` plus one exact grant per capability.
+fn scope_grants(audience: &str, capabilities: &Capabilities) -> GrantSet {
+    let mut grants = grant(audience, false);
+    grants
+        .grants
+        .extend(capabilities.0.iter().map(|capability| {
+            resource_grant(
+                &format!(
+                    "{CAPABILITIES}{}",
+                    acyclic_auth::encode_component(capability.as_bytes())
+                ),
+                false,
+                HOLD,
+            )
+        }));
+    grants
+}
+/// The typed facts of one block of `scope` for `audience`. A block names
+/// its agent only when it differs from `holder`, the agent the chain names
+/// so far; an acting agent is never dropped.
+fn facts(scope: &Scope, audience: &str, holder: Option<AgentId>) -> Result<Vec<Caveat>> {
+    let mut caveats = vec![
+        Caveat {
+            kind: CaveatKind::Label(format!("{SCOPE}{}", scope.id)),
+        },
+        Caveat {
+            kind: CaveatKind::Grants(scope_grants(audience, &scope.capabilities)),
+        },
+    ];
+    if scope.agent == holder {
+        return Ok(caveats);
+    }
+    let Some(agent) = scope.agent else {
+        return Err(unauthorized("a delegate cannot drop its acting agent"));
+    };
+    caveats.push(Caveat {
+        kind: CaveatKind::LineageAppend(LineageAppend {
+            ids: vec![format!(
+                "{AGENT}{}",
+                uuid::Uuid::from_bytes(agent.into_bytes()).hyphenated()
+            )],
         }),
-    })
+    });
+    Ok(caveats)
 }
 fn retain(
     scope: &mut Scope,
@@ -323,26 +358,24 @@ pub(super) fn issue(
     let signer = {
         let mut keys = issuer.runtime.keys()?;
         match parent {
-            Some(parent) => {
-                std::sync::Arc::new(keys.certify(timestamp, grant(&name, false), Some(parent))?)
-            }
+            Some(parent) => std::sync::Arc::new(keys.certify(
+                timestamp,
+                scope_grants(&name, &scope.capabilities),
+                Some(parent),
+            )?),
             None => keys.root_signer(timestamp)?,
         }
     };
+    let mut caveats = facts(scope, &name, None)?;
+    caveats.push(Caveat {
+        kind: CaveatKind::Audience(ResourcePattern {
+            name,
+            prefix: false,
+        }),
+    });
     let capability = signer
         .mint(
-            vec![
-                claims(scope, 0)?,
-                Caveat {
-                    kind: CaveatKind::Grants(grant(&name, false)),
-                },
-                Caveat {
-                    kind: CaveatKind::Audience(ResourcePattern {
-                        name,
-                        prefix: false,
-                    }),
-                },
-            ],
+            caveats,
             SigningKey::from_bytes(&entropy()),
             &*issuer.runtime.trust,
             timestamp,
@@ -399,13 +432,16 @@ pub(super) fn resource_credential(
     let principal = capability.effective().principal().id.clone();
     Ok((capability.encode().to_vec(), principal))
 }
+/// Appends `scope`'s block for `audience`, signed by the current holder;
+/// `holder` is the agent the chain names so far.
 pub(super) fn append(
     capability: &VerifiedCapability,
     scope: &mut Scope,
+    audience: &Authority,
+    holder: Option<AgentId>,
     expires: Option<u64>,
 ) -> Result<()> {
-    let index = capability.block_ids().len();
-    let mut caveats = vec![claims(scope, index)?];
+    let mut caveats = facts(scope, &resource(audience)?, holder)?;
     if let Some(expires) = expires {
         caveats.push(Caveat {
             kind: CaveatKind::ExpiresAtUnixSeconds(expires),
@@ -484,7 +520,6 @@ fn authorize_scope(
     if last.id != scope.id
         || last.capabilities != scope.capabilities
         || last.agent != scope.agent
-        || last.issuer != scope.issuer
         || last.parent != scope.parent_proof
         || capability.block_ids().last() != Some(scope.proof.as_ref())
     {
@@ -502,7 +537,7 @@ fn authorize_scope(
                 holder: Some(&scope.issuer),
                 now_unix_seconds: timestamp,
                 keys: &[],
-                attributes: &authenticated.attributes,
+                attributes: &RecordAttributes::default(),
                 usage: &usage(),
                 cpu_millis: 0,
                 memory_bytes: 0,

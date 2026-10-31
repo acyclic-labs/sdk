@@ -214,11 +214,14 @@ impl Scope {
         Ok(self)
     }
 
-    /// Attenuates this workload offline; possession of a runtime root is unnecessary.
+    /// Attenuates this workload offline, as its holder; possession of a
+    /// runtime root is unnecessary. The appended block may name another
+    /// acting `agent`, but never drops one or widens a capability.
     pub fn attenuate_workload(
         &self,
         id: impl Into<String>,
         capabilities: &Capabilities,
+        agent: Option<AgentId>,
         trust: &dyn acyclic_auth::verify::Trust,
         audience: &Authority,
         now_unix_seconds: u64,
@@ -233,13 +236,13 @@ impl Scope {
         let mut scope = Self {
             id: id.into(),
             capabilities: capabilities.clone(),
-            agent: self.agent,
+            agent,
             issuer: self.issuer.clone(),
             parent_proof: Some(*self.proof),
             proof: Box::new([0; 32]),
             workload: Vec::new(),
         };
-        workload::append(&capability, &mut scope, None)?;
+        workload::append(&capability, &mut scope, audience, self.agent, None)?;
         Ok(scope)
     }
 
@@ -257,7 +260,14 @@ impl Scope {
         let capability =
             workload::verify_trusted(trust, audience, &self, now_unix_seconds, &mut None)?;
         self.parent_proof = Some(*self.proof);
-        workload::append(&capability, &mut self, Some(expires_at_unix_seconds))?;
+        let holder = self.agent;
+        workload::append(
+            &capability,
+            &mut self,
+            audience,
+            holder,
+            Some(expires_at_unix_seconds),
+        )?;
         Ok(self)
     }
 
@@ -329,6 +339,7 @@ impl AuthorityIssuer {
         parent.attenuate_workload(
             id,
             capabilities,
+            parent.agent,
             &*self.verifier.public.trust,
             &self.verifier.audience,
             self.verifier.public.now(),
