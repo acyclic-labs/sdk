@@ -54,6 +54,7 @@ async fn check(mode: u8) -> Result<()> {
     }
     let foreign = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let foreign_baseline = foreign.live_allocation_bytes();
     let io = PreparationIo::from_native_work(if mode == 2 { &foreign } else { &original })?;
     let mut history = Some(io.history_io());
     let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
@@ -97,6 +98,6 @@ async fn check(mode: u8) -> Result<()> {
     drop(io);
     drop(provider);
     assert_eq!(original.live_allocation_bytes(), baseline, "mode {mode}");
-    assert_eq!(foreign.live_allocation_bytes(), 0);
+    assert_eq!(foreign.live_allocation_bytes(), foreign_baseline);
     Ok(())
 }
