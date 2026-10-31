@@ -26,6 +26,10 @@ Protobuf and its JSON projection compare descriptor-decoded values, retaining th
 original packet when map order changes; all other formats compare exact bytes.
 Changed-value and selector controls refuse rather than replace a baseline.
 
+The binary protobuf target completed one 10,000-run ASan campaign in 13 s at
+its recorded source, with 55,464 libFuzzer coverage edges and 83,088 features.
+No crash artifact was produced. These aggregate counters do not establish
+per-decoder branch coverage, JSON coverage or a bounded proof result.
 | Boundary | Canonical implementation | Version admission | Fuzz entry | Golden / proof work remaining |
 | --- | --- | --- | --- | --- |
 | Auth RPC messages | `auth::contract` | `acyclic.auth.v1` route | `protobuf`, including semantic conversion for every Auth message | Registered semantic seeds captured/readmitted and fresh writers compared; campaigns remain |
