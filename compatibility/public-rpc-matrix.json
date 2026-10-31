@@ -317,7 +317,7 @@
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": false,
+    "typescriptHttp": true,
     "typescriptGrpcWeb": false,
     "typescriptPackageExported": true
   },
