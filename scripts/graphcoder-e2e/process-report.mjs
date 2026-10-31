@@ -61,7 +61,10 @@ export class ProcessReport {
       this.#ended = true;
       this.#drainResolve();
       this.#endReady("write-failed", "control-eof-before-ready");
-      if (this.#ownerExited && this.#request) this.#finish("exited");
+      // EOF follows every buffered frame. A still-live process cannot produce
+      // another reply on this port; physical exit remains a separate join.
+      if (this.#request) this.#finish(this.#ownerExited ? "exited" : "write-failed",
+        this.#ownerExited ? undefined : "control-eof-before-acknowledgement");
     };
     channel.on("end", ended);
     channel.on("close", ended);

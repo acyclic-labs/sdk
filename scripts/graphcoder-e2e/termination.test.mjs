@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { once } from "node:events";
 import { isAbsolute } from "node:path";
 import { Processes } from "./process.mjs";
 
@@ -102,6 +103,30 @@ test("a capability wait ends when its report producer closes while the process s
     await scope.close();
     const result = await running.closed;
     assert.equal(result.termination.report_outcome, "write-failed");
+    assert.equal(result.termination.report_acknowledged, false);
+    assert.equal(physicallyClosed, true);
+    assert.equal(scope.children.size, 0);
+  } finally { await scope.close(); }
+});
+
+test("a requested report settles at producer EOF while the selected process remains alive", { skip: process.platform === "win32" }, async () => {
+  const scope = new Processes();
+  const running = launch(scope, false, "eof-after-request");
+  let physicallyClosed = false;
+  running.child.once("close", () => { physicallyClosed = true; });
+  try {
+    await ready(running);
+    const eof = once(running.child.stdio[3], "end");
+    let settled = false;
+    const request = running.requestReport(Date.now() + 500).then(() => { settled = true; });
+    await eof;
+    assert.equal(settled, true, "producer EOF must settle the original request before physical exit");
+    assert.equal(physicallyClosed, false);
+    await request;
+    await scope.close();
+    const result = await running.closed;
+    assert.equal(result.termination.report_outcome, "write-failed");
+    assert.equal(result.termination.report_cause, "control-eof-before-acknowledgement");
     assert.equal(result.termination.report_acknowledged, false);
     assert.equal(physicallyClosed, true);
     assert.equal(scope.children.size, 0);

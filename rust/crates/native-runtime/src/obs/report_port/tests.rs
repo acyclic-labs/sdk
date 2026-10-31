@@ -113,6 +113,11 @@ fn inherited_report_port_joins_the_selected_real_process() {
             if mode == "crash" {
                 std::process::exit(17);
             }
+            if mode == "eof-after-request" {
+                drop(port);
+                std::future::pending::<()>().await;
+                return;
+            }
             if mode == "hold" {
                 std::future::pending::<()>().await;
             }
