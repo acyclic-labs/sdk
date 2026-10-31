@@ -231,9 +231,13 @@ impl Shared {
         if waiters.gone || waiters.failure.is_some() {
             return;
         }
-        let failure = failure();
-        waiters.failure = Some(failure.clone());
-        for key in waiters.keys.values_mut() {
+        let Waiters {
+            failure: retained,
+            keys,
+            ..
+        } = &mut *waiters;
+        let failure = retained.insert(failure());
+        for key in keys.values_mut() {
             for (operation, waiter) in std::mem::take(&mut key.waiting) {
                 let _ = waiter.try_send(Delivery::Reply(Err(Error::Storage(format!(
                     "operation={operation}; {failure}"
