@@ -27,6 +27,7 @@ use std::sync::{
 struct CountingReader<'a> {
     inner: &'a dyn ContentResidencyVerifier,
     reads: AtomicUsize,
+    prefix: std::sync::Mutex<Option<acyclic_stream::OwnedBytes>>,
 }
 
 impl ContentResidencyVerifier for CountingReader<'_> {
@@ -41,14 +42,22 @@ impl ContentResidencyVerifier for CountingReader<'_> {
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
         self.reads.fetch_add(1, Ordering::Relaxed);
-        self.inner.read_private_prefix(
+        let read = self.inner.read_private_prefix(
             volume,
             granted_prefix,
             path,
             generation,
             maximum_bytes,
             access,
-        )
+        )?;
+        acyclic_harness::conversation::BoundedContentFuture::new(None, || async move {
+            let bytes = read.await?;
+            *self
+                .prefix
+                .lock()
+                .map_err(|error| Error::Storage(error.to_string()))? = Some(bytes.clone());
+            Ok(bytes)
+        })
     }
 
     fn read<'a>(
@@ -111,6 +120,7 @@ async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> 
     let reader = CountingReader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        prefix: std::sync::Mutex::new(None),
     };
     for unrelated in [
         "plans/current.md",
@@ -164,6 +174,23 @@ async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> 
     );
     assert_eq!(revised.description, "Revised description");
     assert_eq!(revised.source.generation, generation);
+
+    // Inspect the real provider's retained allocation at the shared adapter
+    // boundary. Equal contents alone would miss a copied prefix and its owner.
+    use acyclic_harness::context::SkillReader;
+    let (prefix, pinned) = acyclic_harness::context::VolumeDiscovery {
+        reader: &reader,
+        root,
+    }
+    .skill_prefix(path, &generation, declaration.limits.header_bytes)
+    .await?;
+    let retained = reader.prefix.lock().unwrap();
+    let retained = retained.as_ref().expect("real prefix read completed");
+    assert_eq!(prefix.as_ptr(), retained.as_ptr());
+    assert_eq!(pinned, revised.source);
+    let copied = prefix.to_vec();
+    assert_eq!(copied.as_slice(), prefix.as_ref());
+    assert_ne!(copied.as_ptr(), retained.as_ptr(), "copy negative control");
     Ok(())
 }
 
@@ -419,6 +446,7 @@ async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<
     let reader = CountingReader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        prefix: std::sync::Mutex::new(None),
     };
     let message = skill.invoke(&reader, 512).await?;
     let ModelContent::Text(text) = message.content else {
