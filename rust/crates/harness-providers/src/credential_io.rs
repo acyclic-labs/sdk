@@ -4,15 +4,53 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness_core::Result;
 use serde_json::Value;
 
-pub(super) struct CredentialIo<'a> {
-    custody: Option<&'a mut NativeAllocation>,
+pub(super) struct CredentialIo {
+    custody: Option<NativeAllocation>,
 }
 
-impl<'a> CredentialIo<'a> {
-    pub fn new(custody: Option<&'a mut NativeAllocation>) -> Result<Self> {
+impl CredentialIo {
+    pub fn new(custody: Option<&mut NativeAllocation>) -> Result<Self> {
+        // A zero-byte loan retains the original ledger without moving claims
+        // backing other request data. Subsequent IO payload claims are owned.
+        let custody = custody.map(|parent| parent.split_off(0)).transpose()?;
         let mut io = Self { custody };
         io.claim(8192, 16, WorkCounters::UNCHARGED)?;
         Ok(io)
+    }
+
+    pub fn finish(mut self, parent: Option<&mut NativeAllocation>) -> Result<()> {
+        if let (Some(parent), Some(mut custody)) = (parent, self.custody.take()) {
+            parent.absorb(&mut custody)?;
+        }
+        Ok(())
+    }
+
+    /// Transfers the original payload custody and serialization owner to the
+    /// accepted physical operation. Observer cancellation cannot release either.
+    pub async fn blocking<T: Send + 'static, S: Send + 'static>(
+        &mut self,
+        owner: &mut Option<S>,
+        operation: impl FnOnce(&mut Self) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let mut io = Self {
+            custody: self.custody.take(),
+        };
+        let retained = owner.take();
+        let meter = io.work().map(|work| (work.runtime_meter(), false));
+        let completion = acyclic_native_runtime::run_blocking_io(
+            move || {
+                let result = operation(&mut io);
+                (result, io, retained)
+            },
+            meter,
+        )
+        .map_err(acyclic_fs::NativeTreeMaterializationError::Io)?;
+        let (result, io, retained) = completion
+            .await
+            .map_err(acyclic_fs::NativeTreeMaterializationError::Io)?;
+        *self = io;
+        *owner = retained;
+        result
     }
 
     pub fn work(&self) -> Option<&NativeMaterializationWork> {

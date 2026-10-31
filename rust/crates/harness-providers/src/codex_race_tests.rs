@@ -264,7 +264,7 @@ async fn metadata_only_cli_edit_keeps_rotated_tokens_and_unrelated_fields() -> R
     let (root, login, _) = fixture(&jwt(0), 200)?;
     let mut cli = auth(&jwt(0));
     cli["agent_identity"] = json!({"new":"metadata"});
-    cli["tokens"]["cli_metadata"] = json!(["keep", "λ"]);
+    cli["tokens"]["cli_metadata"] = json!(["keep", "Î»"]);
     let transport = race(
         &root.path().join("auth.json"),
         cli,
@@ -277,7 +277,7 @@ async fn metadata_only_cli_edit_keeps_rotated_tokens_and_unrelated_fields() -> R
     let stored = decode_auth(&std::fs::read(&transport.path).unwrap())?;
     assert_eq!(stored["tokens"]["refresh_token"], "single-use-rotated");
     assert_eq!(stored["tokens"]["id_token"], "new-id");
-    assert_eq!(stored["tokens"]["cli_metadata"], json!(["keep", "λ"]));
+    assert_eq!(stored["tokens"]["cli_metadata"], json!(["keep", "Î»"]));
     assert_eq!(stored["agent_identity"], json!({"new":"metadata"}));
     Ok(())
 }
@@ -471,10 +471,11 @@ async fn account_binding_errors_are_not_shared_with_a_newly_resolved_model() -> 
     // Queue both model bindings behind one guard so their sampled generation
     // is identical. The old model's account rejection must not poison the new one.
     let (release, wait) = futures::channel::oneshot::channel::<()>();
-    let holder = crate::refresh::serialized(&old.refresh, async {
+    let holder = async {
+        let permit = old.refresh.acquire().await.ok().unwrap();
         wait.await.unwrap();
-        ((), None)
-    });
+        old.refresh.complete(permit, None);
+    };
     let old_request = old.bearer(&transport, None, None);
     let new_request = fresh.bearer(&transport, None, None);
     futures::pin_mut!(holder, old_request, new_request);

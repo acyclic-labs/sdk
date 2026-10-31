@@ -21,8 +21,12 @@ const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 
 /// Native-only reuse of an existing Codex CLI ChatGPT login.
 /// Refreshes serialize in memory and defer to concurrent CLI writes.
+/// File reads, parsing and publication use the shared native I/O service.
+/// Cancelling an admitted publication does not undo it: its original lock and
+/// accounting remain owned until physical completion. Metered callers initialize
+/// the shared native I/O services before admitting their original work.
 pub struct CodexLogin {
-    path: PathBuf,
+    path: std::sync::Arc<Path>,
     account: OnceLock<Option<blake3::Hash>>,
     refresh: crate::sync::Arc<crate::refresh::Refresh<RefreshFailure>>,
     clock: std::sync::Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
@@ -127,7 +131,7 @@ impl RefreshFailure {
         }
         result
     }
-    fn error(self, io: &mut CredentialIo<'_>) -> Result<acyclic_harness_core::Error> {
+    fn error(self, io: &mut CredentialIo) -> Result<acyclic_harness_core::Error> {
         use acyclic_harness_core::Error;
         let diagnostic = match self {
             Self::Boundary { code, reason } => return Ok(Error::NativeBoundary { code, reason }),
@@ -152,7 +156,7 @@ impl CodexLogin {
     /// Reuses this auth.json; never starts an interactive login flow.
     pub fn from_path(path: PathBuf) -> Self {
         Self {
-            path,
+            path: path.into(),
             account: OnceLock::new(),
             refresh: crate::sync::Arc::new(crate::refresh::Refresh::new()),
             clock: std::sync::Arc::new(OffsetDateTime::now_utc),
@@ -199,32 +203,38 @@ impl CodexLogin {
         &self,
         transport: &dyn HttpTransport,
         rejected: Option<&str>,
-        custody: Option<&mut NativeAllocation>,
+        mut custody: Option<&mut NativeAllocation>,
     ) -> Result<(String, Option<String>)> {
-        let mut io = CredentialIo::new(custody)?;
-        let result = crate::refresh::serialized(&self.refresh, async {
-            let mut failure = None;
-            let result = self
-                .refresh_bearer(transport, rejected, &mut io, &mut failure)
-                .await;
-            (result, failure)
-        })
-        .await;
-        let result = match result {
-            Ok(result) => result,
+        let mut io = CredentialIo::new(custody.as_deref_mut())?;
+        let result = match self.refresh.acquire().await {
+            Ok(permit) => {
+                let mut permit = Some(permit);
+                let mut failure = None;
+                let result = self
+                    .refresh_bearer(transport, rejected, &mut io, &mut permit, &mut failure)
+                    .await;
+                if let Some(permit) = permit {
+                    self.refresh.complete(permit, failure);
+                }
+                result
+            }
             Err(failure) => Err(failure.error(&mut io)?),
         };
-        io.checked(result)
+        let result = io.checked(result);
+        io.finish(custody)?;
+        result
     }
 
     async fn refresh_bearer(
         &self,
         transport: &dyn HttpTransport,
         rejected: Option<&str>,
-        io: &mut CredentialIo<'_>,
+        io: &mut CredentialIo,
+        permit: &mut Option<crate::refresh::Permit<RefreshFailure>>,
         failure: &mut Option<RefreshFailure>,
     ) -> Result<(String, Option<String>)> {
-        let (mut original, mut auth) = load(&self.path, io)?;
+        let path = self.path.clone();
+        let (mut original, mut auth) = io.blocking(permit, move |io| load(&path, io)).await?;
         self.check_account(&auth)?;
         for attempt in 0..2 {
             let access = token(&auth, "access_token")?;
@@ -253,7 +263,8 @@ impl CodexLogin {
             )?;
             if response.status != 200 {
                 if attempt == 0 && matches!(response.status, 400 | 401) {
-                    let (bytes, current) = load(&self.path, io)?;
+                    let path = self.path.clone();
+                    let (bytes, current) = io.blocking(permit, move |io| load(&path, io)).await?;
                     self.check_account(&current)?;
                     if token(&current, "refresh_token").ok() != Some(refresh)
                         || token(&current, "access_token").ok() != Some(access)
@@ -287,9 +298,12 @@ impl CodexLogin {
                     .format(&Rfc3339)
                     .map_err(|_| invalid("Codex refresh timestamp failed"))?
             );
-            // Keep publication inside the refresh guard. A detached blocking task
-            // could outlive cancellation and overwrite a subsequent refresh.
-            auth = persist_if_unchanged(&self.path, &original, auth, io)?;
+            let path = self.path.clone();
+            auth = io
+                .blocking(permit, move |io| {
+                    persist_if_unchanged(&path, &original, auth, io)
+                })
+                .await?;
             self.check_account(&auth)?;
             break;
         }
@@ -316,7 +330,7 @@ impl CodexLogin {
 
 async fn refresh_document(
     mut body: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
-    io: &mut CredentialIo<'_>,
+    io: &mut CredentialIo,
 ) -> Result<Value> {
     let mut bytes = Vec::new();
     while let Some(chunk) = body.next().await {
@@ -390,13 +404,13 @@ pub(crate) fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
         .is_none_or(|last| now - last >= time::Duration::days(8))
 }
 
-fn load(path: &Path, io: &mut CredentialIo<'_>) -> Result<(Vec<u8>, Value)> {
+fn load(path: &Path, io: &mut CredentialIo) -> Result<(Vec<u8>, Value)> {
     let bytes = read(path, io)?;
     let auth = document(&bytes, io)?;
     Ok((bytes, auth))
 }
 
-fn read(path: &Path, io: &mut CredentialIo<'_>) -> Result<Vec<u8>> {
+fn read(path: &Path, io: &mut CredentialIo) -> Result<Vec<u8>> {
     io.charge(WorkCounters {
         backend_read_operations: 2,
         object_probes: 1,
@@ -449,7 +463,7 @@ fn read(path: &Path, io: &mut CredentialIo<'_>) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn document(bytes: &[u8], io: &mut CredentialIo<'_>) -> Result<Value> {
+fn document(bytes: &[u8], io: &mut CredentialIo) -> Result<Value> {
     let auth = io.json(bytes)?;
     validate_auth(&auth)?;
     Ok(auth)
@@ -478,7 +492,7 @@ fn persist_if_unchanged(
     path: &Path,
     original: &[u8],
     auth: Value,
-    io: &mut CredentialIo<'_>,
+    io: &mut CredentialIo,
 ) -> Result<Value> {
     persist_with(path, original, auth, || Ok(()), io)
 }
@@ -488,7 +502,7 @@ fn persist_with(
     original: &[u8],
     auth: Value,
     before_replace: impl FnOnce() -> Result<()>,
-    io: &mut CredentialIo<'_>,
+    io: &mut CredentialIo,
 ) -> Result<Value> {
     io.charge(WorkCounters {
         backend_write_operations: 1,
@@ -549,7 +563,7 @@ fn persist_with(
 fn stage(
     file: &mut acyclic_native_runtime::private_file::StagedFile,
     auth: &Value,
-    io: &mut CredentialIo<'_>,
+    io: &mut CredentialIo,
 ) -> Result<()> {
     let encoded = (crate::projection::encoded_len(auth)? as u64)
         .checked_add(1)
@@ -562,7 +576,7 @@ fn write_staged(
     file: &mut acyclic_native_runtime::private_file::StagedFile,
     auth: &Value,
     encoded: u64,
-    io: &mut CredentialIo<'_>,
+    io: &mut CredentialIo,
 ) -> Result<()> {
     use std::io::{Seek as _, SeekFrom};
     io.charge(WorkCounters {
@@ -587,7 +601,7 @@ fn merge_refresh(
     current_wire: &[u8],
     current: &Value,
     refreshed: &Value,
-    io: &mut CredentialIo<'_>,
+    io: &mut CredentialIo,
 ) -> Result<Option<Value>> {
     const FIELDS: [&str; 4] = ["account_id", "access_token", "refresh_token", "id_token"];
     if original["auth_mode"].as_str().unwrap_or("chatgpt")

@@ -1,46 +1,42 @@
-use crate::sync::{
-    AsyncMutex,
-    atomic::{AtomicU64, Ordering},
-};
+use crate::sync::atomic::{AtomicU64, Ordering};
+use acyclic_harness_core::sync::owned::{Arc, Mutex, OwnedMutexGuard, lock_owned};
+
+pub(crate) type Permit<F> = OwnedMutexGuard<Option<F>>;
 
 /// Sole credential lock. Never acquire another refresh lock while holding it.
 /// The generation is sampled before queuing; failures belong to that attempt,
-/// not to subsequent callers. Cancellation drops ownership without publication.
+/// not to subsequent callers. A permit follows accepted physical work even if
+/// its async observer is cancelled; dropping it publishes no attempt result.
 pub(crate) struct Refresh<F> {
     generation: AtomicU64,
-    result: AsyncMutex<Option<F>>,
+    result: Arc<Mutex<Option<F>>>,
 }
 
-impl<F> Refresh<F> {
+impl<F: Copy> Refresh<F> {
     pub(crate) fn new() -> Self {
         Self {
             generation: AtomicU64::new(0),
-            result: AsyncMutex::new(None),
+            result: Arc::new(Mutex::new(None)),
         }
     }
-}
 
-pub(crate) fn serialized<T, F: Copy>(
-    state: &Refresh<F>,
-    operation: impl std::future::Future<Output = (T, Option<F>)>,
-) -> impl std::future::Future<Output = Result<T, F>> {
-    let generation = state.generation.load(Ordering::Acquire);
-    execute(state, generation, operation)
-}
-
-async fn execute<T, F: Copy>(
-    state: &Refresh<F>,
-    generation: u64,
-    operation: impl std::future::Future<Output = (T, Option<F>)>,
-) -> Result<T, F> {
-    let mut result = state.result.lock().await;
-    if state.generation.load(Ordering::Acquire) != generation {
-        if let Some(failure) = *result {
-            return Err(failure);
-        }
+    pub(crate) fn acquire(&self) -> impl Future<Output = Result<Permit<F>, F>> {
+        let generation = self.generation.load(Ordering::Acquire);
+        self.acquire_generation(generation)
     }
-    let (value, failure) = operation.await;
-    *result = failure;
-    state.generation.fetch_add(1, Ordering::Release);
-    Ok(value)
+
+    async fn acquire_generation(&self, generation: u64) -> Result<Permit<F>, F> {
+        let result = lock_owned(self.result.clone()).await;
+        if self.generation.load(Ordering::Acquire) != generation {
+            if let Some(failure) = *result {
+                return Err(failure);
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn complete(&self, mut result: Permit<F>, failure: Option<F>) {
+        *result = failure;
+        self.generation.fetch_add(1, Ordering::Release);
+    }
 }

@@ -1,7 +1,7 @@
 //! Owned async locking: Tokio in production, instrumented ownership under Loom.
 #[cfg(not(loom))]
 #[doc(hidden)]
-pub use crate::sync::Arc;
+pub use std::sync::Arc;
 #[cfg(not(loom))]
 #[doc(hidden)]
 pub use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -12,7 +12,7 @@ pub fn lock_owned<T>(mutex: Arc<Mutex<T>>) -> impl Future<Output = OwnedMutexGua
     mutex.lock_owned()
 }
 
-#[cfg(all(loom, feature = "native-execution"))]
+#[cfg(loom)]
 #[doc(hidden)]
 pub use modeled::OwnedMutexGuard;
 #[cfg(loom)]

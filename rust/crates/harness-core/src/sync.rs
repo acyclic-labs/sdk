@@ -35,7 +35,7 @@ pub use mutex::Mutex as SyncMutex;
 ))]
 include!("sync/atomic.rs");
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[path = "sync/owned.rs"]
 #[doc(hidden)]
 pub mod owned;
