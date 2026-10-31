@@ -72,7 +72,11 @@ pub fn run_blocking_io<T: Send + 'static>(
         // Prepared tasks also materialize the node their admission prepaid.
         let charge = task.pending.as_mut().and_then(NativeJob::take_admission);
         task.waiter = Some(capacity_waiter(charge));
-        task.prepared_wake = Some(allocate_blocking_wait_wake(&meter)?);
+        task.prepared_wake = Some(allocate_blocking_wait_wake(&meter).inspect_err(|error| {
+            if let Some(job) = task.pending.as_ref() {
+                job.record_submission_error(error);
+            }
+        })?);
     }
     Ok(task)
 }
@@ -156,8 +160,12 @@ pub(crate) fn task_completion<T: Send + 'static>(
     };
     let allocation = allocation_meter
         .map(|meter| ReadAllocation::new(meter, std::mem::size_of_val(&operation)))
-        .transpose()?;
-    let admission = allocation_meter.map(prepay_capacity_waiter).transpose()?;
+        .transpose()
+        .inspect_err(|error| NativeJob::submission_error(&observation, error))?;
+    let admission = allocation_meter
+        .map(prepay_capacity_waiter)
+        .transpose()
+        .inspect_err(|error| NativeJob::submission_error(&observation, error))?;
     Ok(NativeCompletion::pending(
         NativeJob::Task {
             observation,

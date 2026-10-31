@@ -41,6 +41,21 @@ pub(crate) enum NativeJob {
 }
 
 impl NativeJob {
+    pub(crate) fn submission_error(span: &tracing::Span, error: &io::Error) {
+        if !span.is_disabled() {
+            if let Some(code) = error.raw_os_error() {
+                span.record("error.os", code);
+            }
+            acyclic_observability::record_outcome(span, Some(obs::kind(error)));
+        }
+    }
+
+    pub(crate) fn record_submission_error(&self, error: &io::Error) {
+        if let Self::Task { observation, .. } = self {
+            Self::submission_error(observation, error);
+        }
+    }
+
     /// Marks only the candidate transfer. A Full result restores this job;
     /// only a successfully received job can run with `queued = true`.
     pub(crate) fn queue_observation(&mut self) -> Option<tracing::Span> {

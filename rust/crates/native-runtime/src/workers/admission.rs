@@ -196,7 +196,12 @@ pub(crate) fn poll_submission(
         workers(pool, false)
     } {
         Ok(workers) => workers,
-        Err(error) => return Poll::Ready(Err(error)),
+        Err(error) => {
+            if let Some(job) = pending.as_ref() {
+                job.record_submission_error(&error);
+            }
+            return Poll::Ready(Err(error));
+        }
     };
     poll_submission_with(workers, pending, waiter, context)
 }
@@ -214,6 +219,7 @@ pub(crate) fn poll_submission_with(
     if let Some(meter) = &meter
         && let Err(error) = meter.check()
     {
+        job.record_submission_error(&error);
         remove_capacity_waiter(workers, waiter.take());
         return Poll::Ready(Err(error));
     }
@@ -269,10 +275,12 @@ pub(crate) fn poll_submission_with(
         Err(mpsc::TrySendError::Disconnected(job)) => {
             let next = waiter.take().and_then(|node| admission.retire_owner(node));
             drop(admission);
+            let error = io::Error::from(io::ErrorKind::BrokenPipe);
+            job.record_submission_error(&error);
             drop(job);
             drop(prepaid);
             wake_capacity_waiter(next);
-            Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+            Poll::Ready(Err(error))
         }
     }
 }

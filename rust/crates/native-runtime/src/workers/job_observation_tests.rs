@@ -37,6 +37,7 @@ struct Fields {
     queued: bool,
     terminal: bool,
     stage: bool,
+    outcome: bool,
 }
 impl Visit for Fields {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
@@ -44,6 +45,7 @@ impl Visit for Fields {
     }
     fn record_str(&mut self, field: &tracing::field::Field, _: &str) {
         self.terminal |= field.name() == "native.terminal";
+        self.outcome |= field.name() == "outcome";
     }
     fn record_u64(&mut self, field: &tracing::field::Field, _: u64) {
         self.stage |= field.name() == "stage";
@@ -63,7 +65,7 @@ impl<S: tracing::Subscriber> Layer<S> for Probe {
     fn on_record(&self, _: &tracing::Id, record: &Record<'_>, _: LayerContext<'_, S>) {
         let mut fields = Fields::default();
         record.record(&mut fields);
-        if fields.queued || fields.terminal || fields.stage {
+        if fields.queued || fields.terminal || fields.stage || fields.outcome {
             assert!(
                 self.admission.try_lock().is_ok(),
                 "callback under admission"
@@ -366,9 +368,14 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
         );
         drop(disconnected);
         let refused = sample(&mut output)?;
-        assert_eq!(refused.sample().outcome, Outcome::Incomplete);
+        assert_eq!(refused.sample().outcome, Outcome::Err);
+        assert_eq!(refused.sample().error_kind, Some("broken_pipe"));
         assert_eq!(
             refused.sample().native_task.and_then(|task| task.queued),
+            None
+        );
+        assert_eq!(
+            refused.sample().native_task.and_then(|task| task.terminal),
             None
         );
         drop(refused);

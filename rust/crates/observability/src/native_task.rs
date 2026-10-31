@@ -29,7 +29,7 @@ pub struct NativeTask {
     /// Original retained panic, independent of a stored I/O result. Both may
     /// coexist; an I/O cause is never replaced by the panic disposition.
     pub panicked: Option<bool>,
-    /// Original I/O error code, captured before result publication.
+    /// Original I/O error code from submission or result publication.
     pub os_error: Option<i32>,
 }
 
