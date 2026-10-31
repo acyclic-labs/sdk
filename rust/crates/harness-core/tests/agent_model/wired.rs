@@ -77,8 +77,6 @@ fn executors_with_targets(
     targets: Option<Arc<dyn acyclic_harness_core::runtime::TargetResolver>>,
 ) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
-    let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
-    preset.tools.clear();
     let base = acyclic_harness_core::conversation::Limits {
         model_steps: 1,
         ..Default::default()
