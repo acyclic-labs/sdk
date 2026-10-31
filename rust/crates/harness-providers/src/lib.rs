@@ -155,8 +155,11 @@ async fn http_failure(
     }
     if matches!(status, 400 | 413) {
         return match http::bounded::read(body, maximum, work).await {
-            Ok(body) if stream::context_overflow_bytes(&body.bytes) => Error::ModelContextOverflow,
-            Ok(_) => http_error(status),
+            Ok(body) => match stream::context_overflow_bytes(&body.bytes, work) {
+                Ok(true) => Error::ModelContextOverflow,
+                Ok(false) => http_error(status),
+                Err(error) => error,
+            },
             Err(error) => error,
         };
     }
