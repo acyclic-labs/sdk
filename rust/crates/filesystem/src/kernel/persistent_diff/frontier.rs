@@ -506,7 +506,7 @@ impl<F: Format> Cursor<F> {
         cancellation: &CancellationToken,
     ) -> Result<Option<(usize, Owned<F::Value>)>, FsError>
     where
-        F: Format<Key = <F as Format>::Value>,
+        F: Format<Key = <F as acyclic_collections::page::Format>::Value>,
     {
         let side = match self.advance(store, accounting, cancellation).await? {
             Some((true, false)) => 0,

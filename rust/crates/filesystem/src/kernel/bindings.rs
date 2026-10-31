@@ -188,16 +188,19 @@ where
     )
 }
 
-impl Format for BindingFormat {
+impl acyclic_collections::page::Format for BindingFormat {
     type Key = Binding;
     type Value = Binding;
-
-    fn kind() -> ObjectKind {
-        ObjectKind::BindingPage
-    }
+    type Reference = ObjectId;
 
     fn key(value: &Binding) -> &Binding {
         value
+    }
+}
+
+impl Format for BindingFormat {
+    fn kind() -> ObjectKind {
+        ObjectKind::BindingPage
     }
 
     fn decode<E: From<CanonicalDecodeError>>(
