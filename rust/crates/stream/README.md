@@ -10,6 +10,10 @@ loop or connection pool. Forwarding adapters preserve filters, absence policy,
 history fences, deadlines and revisions, including across reconnects. Credentials
 remain transport-owned and never enter record payloads or persisted cursors.
 
+An unexpected provider-follow EOF closes the original session channel with
+`Unavailable`. The server opens that provider follow once; a caller may create
+a new subscription explicitly. A completed caller-bounded range ends cleanly.
+
 The physical connection is independent of an operation's causal context. Rust
 `grpc::Client::with_revisions` and `session::Client::with_revisions` attach an
 explicit `Arc<RevisionTracker>` while reusing the original transport, credentials

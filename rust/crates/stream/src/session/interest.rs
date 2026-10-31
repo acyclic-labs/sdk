@@ -170,7 +170,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     let source = follow_source(
                         Follow {
                             provider: Arc::clone(&self.provider),
-                            executor: self.executor.clone(),
                             path,
                             next: resume.next,
                             preceding,
@@ -186,7 +185,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                             read_limit: follow.read_limit,
                             key_records: None,
                             opened: false,
-                            ended: 0,
                         },
                         identity,
                     );
@@ -369,7 +367,6 @@ impl Channel {
 // Provider opens run independently so a remote owner never stalls other follows.
 struct Follow<P: ?Sized> {
     provider: Arc<P>,
-    executor: Arc<dyn crate::runtime::Executor>,
     path: StreamPath,
     next: u64,
     preceding: Option<crate::CommitId>,
@@ -377,7 +374,7 @@ struct Follow<P: ?Sized> {
     until: Option<u64>,
     end: Option<u64>,
     filter: crate::FollowFilter,
-    /// The subscription's floor; every reopen keeps it.
+    /// The subscription's original revision floor.
     at_least: crate::RevisionCut,
     when_absent: crate::WhenAbsent,
     records: Option<crate::FollowStream>,
@@ -387,7 +384,6 @@ struct Follow<P: ?Sized> {
     bootstrap_head: bool,
     bootstrap: Option<crate::Record>,
     opened: bool,
-    ended: u8,
 }
 
 /// One ALL/LATEST follow. A bounded follow (`until`) is the session read: it
@@ -415,114 +411,103 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
         if self.key.is_some() {
             return self.key_event().await;
         }
-        loop {
-            if self.records.is_none() {
-                let confirmation = self.preceding;
-                // The first open waits for the floor before a bounded read pins
-                // its tail, so the pinned range covers the caller's own writes.
-                let applied = if self.opened {
-                    None
-                } else {
-                    crate::revision::served(&*self.provider, &self.at_least).await?
-                };
-                if let (Some(until), None) = (self.until, self.end) {
-                    // Pin the range like a read: an absent stream or a start
-                    // beyond the tail fails, and appends after open never count.
-                    let tail = self.provider.tail(self.path.clone()).await?;
-                    if self.next > tail {
-                        return Err(StreamError::OutOfRange);
-                    }
-                    self.end = Some(until.min(tail));
+        if self.records.is_none() {
+            let confirmation = self.preceding;
+            // The first open waits for the floor before a bounded read pins
+            // its tail, so the pinned range covers the caller's own writes.
+            let applied = if self.opened {
+                None
+            } else {
+                crate::revision::served(&*self.provider, &self.at_least).await?
+            };
+            if let (Some(until), None) = (self.until, self.end) {
+                // Pin the range like a read: an absent stream or a start
+                // beyond the tail fails, and appends after open never count.
+                let tail = self.provider.tail(self.path.clone()).await?;
+                if self.next > tail {
+                    return Err(StreamError::OutOfRange);
                 }
-                if self.bootstrap_head {
-                    match self.provider.head(self.path.clone()).await {
-                        Ok(head) => {
-                            self.next = head.tail;
-                            self.preceding = head.last.as_ref().map(|record| record.commit_id);
-                            self.bootstrap = head
-                                .last
-                                .map(|record| self.filter.project(record))
-                                .transpose()?
-                                .flatten();
-                        }
-                        Err(StreamError::NotFound)
-                            if self.when_absent == crate::WhenAbsent::Wait => {}
-                        Err(error) => return Err(error),
+                self.end = Some(until.min(tail));
+            }
+            if self.bootstrap_head {
+                match self.provider.head(self.path.clone()).await {
+                    Ok(head) => {
+                        self.next = head.tail;
+                        self.preceding = head.last.as_ref().map(|record| record.commit_id);
+                        self.bootstrap = head
+                            .last
+                            .map(|record| self.filter.project(record))
+                            .transpose()?
+                            .flatten();
                     }
-                    self.bootstrap_head = false;
+                    Err(StreamError::NotFound) if self.when_absent == crate::WhenAbsent::Wait => {}
+                    Err(error) => return Err(error),
                 }
-                self.records = Some(
-                    self.provider
-                        .follow(crate::FollowRequest {
-                            when_absent: self.when_absent,
-                            path: self.path.clone(),
-                            from: self.next,
-                            preceding: self.preceding,
-                            filter: self.filter.clone(),
-                            progress: true,
-                            at_least: self.at_least.clone(),
-                        })
-                        .await?,
-                );
-                if !self.opened {
-                    self.opened = true;
-                    let applied = crate::revision::captured(&*self.provider, applied).await?;
-                    return Ok(Event::Opened(
-                        confirmation,
-                        applied.as_ref().map(wire_codec::revision_to_wire),
-                    ));
-                }
+                self.bootstrap_head = false;
             }
-            if let Some(record) = self.bootstrap.take() {
-                return Ok(Event::Record(record));
-            }
-            if self.end.is_some_and(|end| self.next >= end) {
-                return Ok(Event::End);
-            }
-            if let Some(update) = self
-                .records
-                .as_mut()
-                .ok_or(StreamError::Unavailable)?
-                .next()
-                .await
-                .transpose()?
-            {
-                self.ended = 0;
-                return match update {
-                    crate::FollowUpdate::Record(record) => {
-                        self.next = record
-                            .sequence
-                            .checked_add(1)
-                            .ok_or(StreamError::OutOfRange)?;
-                        self.preceding = self.preceding.map(|_| record.commit_id);
-                        Ok(Event::Record(record))
-                    }
-                    crate::FollowUpdate::Progress {
-                        next: cut,
-                        preceding: anchor,
-                    } => {
-                        self.next = cut;
-                        self.preceding = self.preceding.map(|_| anchor);
-                        Ok(Event::Progress(wire::SessionWatermark {
-                            accepted: cut,
-                            durable: 0,
-                            after: Some(cursor(cut)),
-                            preceding_commit_id: Bytes::copy_from_slice(anchor.as_bytes()),
-                        }))
-                    }
-                };
-            }
-            // EOF is transport recovery, never an idle record wakeup.
-            // Keep already queued records on this generation intact.
-            self.records = None;
-            self.ended += 1;
-            if self.ended >= 3 {
-                return Err(StreamError::Unavailable);
-            }
-            if self.ended > 1 {
-                self.executor.sleep(10).await;
+            self.records = Some(
+                self.provider
+                    .follow(crate::FollowRequest {
+                        when_absent: self.when_absent,
+                        path: self.path.clone(),
+                        from: self.next,
+                        preceding: self.preceding,
+                        filter: self.filter.clone(),
+                        progress: true,
+                        at_least: self.at_least.clone(),
+                    })
+                    .await?,
+            );
+            if !self.opened {
+                self.opened = true;
+                let applied = crate::revision::captured(&*self.provider, applied).await?;
+                return Ok(Event::Opened(
+                    confirmation,
+                    applied.as_ref().map(wire_codec::revision_to_wire),
+                ));
             }
         }
+        if let Some(record) = self.bootstrap.take() {
+            return Ok(Event::Record(record));
+        }
+        if self.end.is_some_and(|end| self.next >= end) {
+            return Ok(Event::End);
+        }
+        if let Some(update) = self
+            .records
+            .as_mut()
+            .ok_or(StreamError::Unavailable)?
+            .next()
+            .await
+            .transpose()?
+        {
+            return match update {
+                crate::FollowUpdate::Record(record) => {
+                    self.next = record
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(StreamError::OutOfRange)?;
+                    self.preceding = self.preceding.map(|_| record.commit_id);
+                    Ok(Event::Record(record))
+                }
+                crate::FollowUpdate::Progress {
+                    next: cut,
+                    preceding: anchor,
+                } => {
+                    self.next = cut;
+                    self.preceding = self.preceding.map(|_| anchor);
+                    Ok(Event::Progress(wire::SessionWatermark {
+                        accepted: cut,
+                        durable: 0,
+                        after: Some(cursor(cut)),
+                        preceding_commit_id: Bytes::copy_from_slice(anchor.as_bytes()),
+                    }))
+                }
+            };
+        }
+        // An unbounded provider follow must remain live. Its original EOF is
+        // terminal; another invocation may explicitly open a new subscription.
+        Err(StreamError::Unavailable)
     }
 
     async fn key_event(&mut self) -> Result<Event, StreamError> {
@@ -577,3 +562,7 @@ fn unique(ids: &mut BTreeSet<u64>, channel: wire::SessionChannel) -> Result<(), 
     }
     Ok(())
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "interest_tests.rs"]
+mod tests;
