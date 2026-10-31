@@ -1,6 +1,6 @@
 # Polling and timed-wait inventory
 
-Baseline: `d33ed17571`. Locations refer to that baseline so deletion does not erase the audit trail.
+Baseline: `d33ed17571`. Locations refer to that baseline so deletion does not erase the audit trail. A location explicitly followed by a revision names a later source composition at that revision.
 
 Scope: `rust/crates/**` and `typescript/packages/**`, excluding the separately owned `harness`, `harness-core`, `harness-tui` and `harness-client` packages. Product code, tests, conformance, examples, benchmarks and scripts are included.
 
@@ -2552,10 +2552,12 @@ Candidates include event-driven loops and retry identity references; these requi
 | `typescript/packages/machines/test/grpc.test.mjs:535` | Test or child-process readiness deadline | Deleted test/process timeout guard. Await actual RPC cancellation, terminal response, socket closure or child-process exit; caller-selected request-deadline controls remain | Actioned |
 | `typescript/packages/objects/src/v1-grpc.ts:35` | Implicit message capacity | Omission passes undefined to the pinned Connect 2.2.0 transport, whose default is the physical protobuf/gRPC encoding maximum, not a logical 64 MiB total. Explicit caller message capacity retains validation and read/write transport enforcement. Existing real TLS lifecycle retained; source only, uncompiled/unrun | Actioned |
 | `typescript/packages/objects/src/v1-grpc.ts:57` | Additional timer / implicit deadline candidate | Only explicitly provided caller timeoutMs supplies defaultTimeoutMs; omitted timeout is unbounded | Allowed deadline |
+| `typescript/packages/objects/src/v1-grpc.ts:57` at `40359be5f8` | Post-baseline caller deadline composition | Delete the merged availability adapter opening-timeout fallback. Omitted caller policy remains undefined through the original shared request owner; no clock, timer, extra request or payload copy is added. Explicit caller-selected opening budgets remain optional | Actioned |
 | `typescript/packages/objects/src/v1-http.ts:35` | Implicit response capacity | Omitted HTTP response capacity remains undefined; only explicit positive safe-integer capacity checks declared/body bytes. Actual input length crosses the existing WASM JSON boundary, without another policy limit. Real loopback provider response crosses the former 64 MiB total; explicit one-byte capacity still refuses. Source only, uncompiled/unrun | Actioned |
 | `typescript/packages/objects/src/v1-http.ts:36` | Logical response uint32 restriction | Removed logical uint32 policy restriction; caller may select any positive safe-integer response capacity. The WASM adapter already validates its f64 input without wrapping and saturates only at physical usize representation | Actioned |
 | `typescript/packages/objects/src/v1-http.ts:42` | Timer / delay / interval | Only explicitly provided caller timeoutMs arms AbortController; omitted or zero timeout is unbounded | Allowed deadline |
 | `typescript/packages/objects/src/v1-http.ts:52` | Timer / delay / interval | Only explicitly provided caller timeoutMs arms AbortController; omitted or zero timeout is unbounded | Allowed deadline |
+| `typescript/packages/objects/src/v1.ts:90` at `40359be5f8` | Post-baseline caller deadline composition | The shared opening owner registers one timer only for a strictly positive caller-selected budget. Omission and zero remain unbounded on the original stream/abort events; source close clears its original optional timer. No readiness retry or replacement timer | Actioned |
 | `typescript/packages/objects/test/v1-conformance.mjs:127` | Timer / delay / interval | Fetch-entry/release promises | Actioned |
 | `typescript/packages/stream/CHANGELOG.md:12` | Retry / backoff / identity | Describes projection of an absent original idempotency-key observation; no retry loop | Allowed retry identity |
 | `typescript/packages/stream/README.md:60` | Restart recovery / logical capacity documentation | Describe actual paged durable-journal replay and unbounded omitted capacities; retain caller-selected retention totals and exact resend outcomes. No recovery-attempt window exists in the browser publication owner | Actioned |
@@ -2615,7 +2617,7 @@ Candidates include event-driven loops and retry identity references; these requi
 
 ## Logical capacity audit
 
-Audit basis: design audit v3 (2026-10-30), axis (f), and gap register G63â€“G67. This inventory distinguishes limits on complete logical work from pages, scheduling credit, physical protocol constraints and explicit caller capacity. Status starts as **open**; completion requires removal of the refusal/truncation and its hidden default, with consumer updates.
+Audit basis: design audit v3 (2026-10-30), axis (f), and gap register G63Ã¢â‚¬â€œG67. This inventory distinguishes limits on complete logical work from pages, scheduling credit, physical protocol constraints and explicit caller capacity. Status starts as **open**; completion requires removal of the refusal/truncation and its hidden default, with consumer updates.
 
 Excluded: `harness`, `harness-core`, `harness-tui`, `harness-client`, and `typescript/packages/harness` (tracked separately in #1744). MCP startup/tool defaults, agent depth/goals/checkpoints/children/history and the shell preset in those packages remain in that scope. The filesystem shell adapter must preserve the optional caller deadline supplied by that work.
 

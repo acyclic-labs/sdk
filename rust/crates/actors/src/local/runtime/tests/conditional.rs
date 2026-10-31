@@ -155,7 +155,7 @@ async fn pause_returns_a_lost_cut_before_an_explicit_new_request() -> TestResult
     let mut claimed = cut.state().ok_or("missing state")?.clone();
     claimed.epoch = 1;
     let claim = store
-        .prepare(&cut, &claimed, Vec::new(), key("competing-claim")?)?
+        .prepare(&cut, claimed, Vec::new(), key("competing-claim")?)?
         .into_request()?;
     *provider.inner().before_write.lock().unwrap() = Some(Competing::Publication(claim));
     let before = provider.requests();
@@ -248,7 +248,7 @@ async fn explicit_resume_restores_delivery_after_a_competing_pause() -> TestResu
         let mut paused = cut.state().ok_or("missing state")?.clone();
         paused.paused = true;
         let competing = store
-            .prepare(&cut, &paused, Vec::new(), key("competing-pause")?)?
+            .prepare(&cut, paused, Vec::new(), key("competing-pause")?)?
             .into_request()?;
         *provider.inner().before_write.lock().unwrap() = Some(Competing::Publication(competing));
         let failure = if event_owned {
@@ -304,7 +304,7 @@ async fn a_lost_delivery_publication_returns_without_reinvoking_the_handler() ->
         .metadata
         .insert("foreign".into(), Bytes::from_static(b"committed"));
     let competing = store
-        .prepare(&cut, &changed, Vec::new(), key("competing-checkpoint")?)?
+        .prepare(&cut, changed, Vec::new(), key("competing-checkpoint")?)?
         .into_request()?;
     provider
         .append(AppendRequest {
