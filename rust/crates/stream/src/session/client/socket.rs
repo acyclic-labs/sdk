@@ -70,11 +70,11 @@ impl ActorSocket {
             if !fresh {
                 continue;
             }
-            return match delivery.item {
-                Received::Data(wire::SessionData {
+            return match delivery.item.into_wire().body {
+                Some(Body::Data(wire::SessionData {
                     item: Some(Item::ActorSocket(frame)),
                     ..
-                }) => Ok(Some(frame)),
+                })) => Ok(Some(frame)),
                 _ => Err(StreamError::InvalidResponse),
             };
         }
