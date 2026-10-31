@@ -5,6 +5,7 @@ pub(super) struct HostPort {
     pub(super) journal: HostJournal,
     pub(super) limits: JournalStreamLimits,
     pub(super) bytes: u64,
+    pub(super) clock: Option<Arc<dyn UnixMillisClock>>,
 }
 
 impl CommandJournal for HostPort {
@@ -70,7 +71,11 @@ impl CommandJournal for HostPort {
         Ok(JournalPage {
             entries,
             head,
-            at_millis: SystemUnixMillisClock.now_unix_millis(),
+            at_millis: self
+                .clock
+                .as_deref()
+                .unwrap_or(&SystemUnixMillisClock)
+                .now_unix_millis(),
         })
     }
 
@@ -112,6 +117,7 @@ impl CommandJournal for HostPort {
         let sampled = accepted.clone();
         let at_millis = frames.last().ok_or(StreamError::InvalidArgument)?.at_millis;
         let deadline = frames.iter().filter_map(|frame| frame.deadline).min();
+        let clock = self.clock.clone();
         // Only owned encoded bytes escape into the host's deferred factory.
         let encoded: Vec<_> = frames
             .iter()
@@ -128,7 +134,10 @@ impl CommandJournal for HostPort {
             if sampled.get().is_some() {
                 return Err(JsValue::from_str("STEP journal-accept failed: repeated frame admission; recovery: reopen and replay the original Stream request"));
             }
-            let at = SystemUnixMillisClock.now_unix_millis();
+            let at = clock
+                .as_deref()
+                .unwrap_or(&SystemUnixMillisClock)
+                .now_unix_millis();
             sampled.set(Some(at));
             if deadline.is_some_and(|deadline| at >= deadline) {
                 return Err(JsValue::from_str("STEP journal-accept refused: deadline elapsed; recovery: inspect the original request identity before submitting another operation"));

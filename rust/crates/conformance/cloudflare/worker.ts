@@ -200,15 +200,15 @@ export class Suite extends DurableObject {
 
   async deadline(retry: boolean): Promise<void> {
     const journal = new SqliteJournal(this.ctx.storage, "deadline-admission");
-    await qualifyJournalDeadline({
+    await qualifyJournalDeadline((atAcceptance: () => void) => ({
       configure: (configuration: Uint8Array, maximum: number, authority: Uint8Array) => journal.configure(configuration, maximum, authority),
       flush: () => journal.flush(),
       read: (index: number) => journal.read(index),
-      async append(index: number, admit: () => Uint8Array, changes: readonly StreamChange[]) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        await journal.append(index, admit, changes);
+      changed: (after: number, ready: () => void) => journal.changed(after, ready),
+      append(index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]) {
+        return journal.append(index, () => { atAcceptance(); return admit(); }, changes);
       },
-    }, retry);
+    })), retry);
   }
 
   async wakeIsolation(): Promise<void> {
@@ -299,7 +299,7 @@ export default {
     if (["/deadline", "/deadline-replay"].includes(new URL(request.url).pathname)) {
       const retry = new URL(request.url).pathname === "/deadline-replay";
       await env.SUITE.getByName("deadline").deadline(retry);
-      return Response.json({ deadline: retry ? "expired acceptance remains refused after emulator restart; same key commits and replays" : "delayed acceptance refuses expired commit without records or retry-key effects" });
+      return Response.json({ deadline: retry ? "expired acceptance remains refused after emulator restart; same key commits and replays" : "acceptance clock refuses expired commit without records or retry-key effects" });
     }
     if (new URL(request.url).pathname === "/placement") {
       const owner = env.AGENT.getByName("placement-owner");
