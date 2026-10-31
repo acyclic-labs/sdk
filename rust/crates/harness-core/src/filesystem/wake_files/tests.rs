@@ -141,7 +141,10 @@ async fn index_selection_reads_only_the_first_authored_document_and_refuses_a_fa
     let cancellation = CancellationToken::new();
     let io = PreparationIo::from_budget(work_budget(20_000_000, 20_000_000), &cancellation)?;
     let fs = acyclic_fs::Fs::memory();
-    let workspace = io.sdk(fs.create_workspace("wake-index", &io, &cancellation).await)?;
+    let workspace = io.receive(
+        fs.create_workspace("wake-index", io.remaining()?, &cancellation)
+            .await,
+    )?;
     let mut transaction = io.sdk(
         workspace
             .begin_transaction(acyclic_fs::IdempotencyKey::new(), &io, &cancellation)
