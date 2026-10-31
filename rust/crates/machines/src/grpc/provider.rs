@@ -67,10 +67,7 @@ machine_mutations! {
         command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
         obs::operation!("acyclic.machines.exec", observation, async {
-            let timeout = command.timeout_ms.map(|timeout| {
-                Duration::from_millis(timeout).checked_add(Duration::from_secs(1))
-                    .ok_or_else(|| ProviderError::Invalid("exec observation deadline overflow".into()))
-            }).transpose()?;
+            let timeout = command.timeout_ms.map(Duration::from_millis);
             let deadline = self.endpoint.deadline(timeout, command.expiry_unix_ms)?;
             let mut client = deadline.run(self.client()).await
                     .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
