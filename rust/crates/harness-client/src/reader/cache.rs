@@ -126,6 +126,8 @@ pub struct RecordCache {
     mark: u64,
     max_bytes: usize,
     max_streams: usize,
+    #[cfg(test)]
+    listing_visits: std::cell::Cell<usize>,
 }
 
 impl RecordCache {
@@ -147,6 +149,8 @@ impl RecordCache {
             mark: 0,
             max_bytes,
             max_streams,
+            #[cfg(test)]
+            listing_visits: std::cell::Cell::new(0),
         }
     }
 
@@ -404,15 +408,26 @@ impl RecordCache {
     }
 
     pub(super) fn clear_listings(&mut self) {
-        let keys: Vec<_> = self
-            .entries
-            .keys()
-            .chain(self.passed.keys())
-            .filter(|key| matches!(key, Key::Listing(..)))
-            .cloned()
-            .collect();
-        for key in keys {
-            self.remove(&key);
+        // Listing is the final Key variant, so each map's suffix contains
+        // exactly the hierarchy observations being retired.
+        while let Some(entry) = self.entries.last_entry() {
+            if !matches!(entry.key(), Key::Listing(..)) {
+                break;
+            }
+            let (_, entry) = entry.remove_entry();
+            self.lru.remove(&entry.used);
+            self.bytes -= entry.charge;
+            #[cfg(test)]
+            self.listing_visits.set(self.listing_visits.get() + 1);
+        }
+        while let Some(entry) = self.passed.last_entry() {
+            if !matches!(entry.key(), Key::Listing(..)) {
+                break;
+            }
+            let (_, (_, charge)) = entry.remove_entry();
+            self.passed_bytes -= charge;
+            #[cfg(test)]
+            self.listing_visits.set(self.listing_visits.get() + 1);
         }
     }
 
@@ -521,6 +536,48 @@ impl RecordCache {
             Some(Value::Listing(listing)) => Some(listing),
             _ => None,
         }
+    }
+
+    /// The last retained page in `[from, before)` of one parent. Cached and
+    /// displayed pass-through pages share the same cursor order. Two range
+    /// seeks inspect at most one candidate from each residency map.
+    #[must_use]
+    pub fn listing_before(
+        &self,
+        parent: &StreamPath,
+        from: u32,
+        before: u32,
+    ) -> Option<(u32, &Listing)> {
+        if !self.access.allows() || from >= before {
+            return None;
+        }
+        let range = Key::Listing(parent.clone(), from)..Key::Listing(parent.clone(), before);
+        [
+            self.entries
+                .range(range.clone())
+                .next_back()
+                .map(|(key, entry)| (key, &entry.value)),
+            self.passed
+                .range(range)
+                .next_back()
+                .map(|(key, (value, _))| (key, value)),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| {
+            #[cfg(test)]
+            self.listing_visits.set(self.listing_visits.get() + 1);
+            match (key, value) {
+                (Key::Listing(_, index), Value::Listing(listing)) => Some((*index, listing)),
+                _ => None,
+            }
+        })
+        .max_by_key(|(index, _)| *index)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_listing_visits(&self) -> usize {
+        self.listing_visits.replace(0)
     }
 
     /// Retained pages of one parent, including displayed pass-through pages.

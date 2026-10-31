@@ -85,6 +85,8 @@ mod tests {
             let mut after = None;
             let mut version = None;
             let mut target = None;
+            let mut indexed = crate::reader::RecordCache::new(1024, 16);
+            let protected = indexed.clock();
             for index in 0..=128 {
                 let page = provider
                     .children_page(ChildrenPageRequest {
@@ -97,6 +99,22 @@ mod tests {
                     .await
                     .unwrap();
                 version = Some(page.hierarchy_version);
+                indexed.insert_listing(
+                    &parent,
+                    index,
+                    Listing {
+                        after: after.clone(),
+                        children: page
+                            .children
+                            .iter()
+                            .map(|child| child.path.clone())
+                            .collect(),
+                        next: page.next_after.clone(),
+                        fresh: true,
+                        witnessed: None,
+                    },
+                    Some(protected),
+                );
                 if index == 0 {
                     explorer.reader.complete(
                         first_id,
@@ -141,12 +159,59 @@ mod tests {
             ));
             explorer.expand(&target);
             assert_eq!(explorer.expanded.get(&target), Some(&128));
-            let want = explorer.page(parent, 1_000_000);
-            explorer.reader.plan([(want, Priority::Visible)]);
-            assert!(matches!(
-                explorer.reader.poll(1).as_slice(),
-                [Op::Children { index: 129, .. }]
-            ));
+            // Both residency maps contain actual pages from this same cut.
+            // A bounded predecessor query cannot borrow a later page's cursor
+            // or fall below its retained anchor, even on pass-through pages.
+            assert!(!indexed.is_empty());
+            assert!(indexed.passed_bytes() > 0);
+            assert_eq!(indexed.listing_before(&parent, 64, 128).unwrap().0, 127);
+            assert!(
+                indexed.take_listing_visits() <= 2,
+                "page predecessor visited unrelated retained pages"
+            );
+            assert!(indexed.listing_before(&parent, 129, u32::MAX).is_none());
+            assert_eq!(indexed.take_listing_visits(), 0);
+            assert!(indexed.listing_before(&parent, 128, 128).is_none());
+            let sparse = std::mem::replace(explorer.reader.cache_mut(), indexed);
+            // Keep the displayed pass-through pages in the logical plan while
+            // seeking beyond them; unrelated wants cannot prolong residency.
+            let wants: Vec<_> = (0..=128)
+                .chain(std::iter::once(1_000_000))
+                .map(|index| (explorer.page(parent.clone(), index), Priority::Visible))
+                .collect();
+            explorer.reader.plan(wants);
+            let [resume]: [Op; 1] = explorer.reader.poll(1).try_into().unwrap();
+            assert!(matches!(resume, Op::Children { index: 129, .. }));
+            assert!(
+                explorer.reader.cache().take_listing_visits() <= 2,
+                "page predecessor visited unrelated retained pages"
+            );
+            let target_path = StreamPath::new(target.as_str()).unwrap();
+            let record = provider
+                .head(target_path.clone())
+                .await
+                .unwrap()
+                .last
+                .unwrap();
+            explorer.reader.cache_mut().insert_record(
+                &target_path,
+                record.sequence,
+                record.value,
+                Some(protected),
+            );
+            explorer.reader.complete(
+                resume.id(),
+                Outcome::Failed(crate::reader::Failure::Changed),
+                2,
+            );
+            assert_eq!(
+                explorer.reader.cache().take_listing_visits(),
+                129,
+                "hierarchy reset visited unrelated retained records"
+            );
+            assert!(explorer.reader.cache().listings(&parent).next().is_none());
+            assert!(explorer.reader.cache().record(&target_path, 0).is_some());
+            *explorer.reader.cache_mut() = sparse;
             explorer.frame(2);
             assert!(
                 explorer

@@ -870,13 +870,9 @@ impl Reader {
             .get(parent)
             .and_then(|anchors| anchors.at.range(..=index).next_back());
         let floor = anchor.map_or(0, |(at, _)| *at);
-        // Search retained pages instead of counting down from a potentially
-        // enormous logical offset through evicted pages.
-        let cached = self
-            .cache
-            .listings(parent)
-            .filter(|(page, _)| *page < index && *page >= floor)
-            .max_by_key(|(page, _)| *page);
+        // Seek the retained predecessor directly, including displayed pages
+        // that could not fit beside protected cache entries.
+        let cached = self.cache.listing_before(parent, floor, index);
         if let Some((page, listing)) = cached {
             return listing.next.clone().map(|next| (page + 1, Some(next)));
         }
