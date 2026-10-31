@@ -40,5 +40,21 @@ Its emitted `target/entry-configuration/Actors.service.bin` was copied to both
 Rust descriptor paths above. The independent Buf capture used the commands
 above and the same maintained protobuf input.
 
+The 2026-10-31 capture removes the unused subscription retry counter while
+retaining every other field's wire identity. The Rust descriptor came from:
+
+```
+cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actor-observation/routes.json --proto-out target/actor-observation/proto
+cmp target/actor-observation/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
+```
+
+The emitted `target/actor-observation/Actors.service.bin` was copied to both
+Rust descriptor paths. The independent compiler capture was:
+
+```
+node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o actors-observation-buf.bin
+cargo run --locked -p sdk-proto-codegen -- canonicalize actors actors-observation-buf.bin rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin
+```
+
 `actors-pre-secrets.bin` retains the unmodified actual
 predecessor descriptor; its separate provenance file identifies that capture.
