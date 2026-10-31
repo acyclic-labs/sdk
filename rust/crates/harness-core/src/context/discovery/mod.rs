@@ -24,7 +24,7 @@ pub use skills::discover_skills;
 #[cfg(feature = "filesystem-local")]
 #[doc(hidden)]
 pub use skills::discover_skills_at;
-pub use skills::{SkillMetadata, parse_skill_metadata};
+pub use skills::{BUILTIN_SKILLS, SkillMetadata, parse_skill_metadata};
 mod frontmatter;
 #[doc(hidden)]
 pub use frontmatter::{frontmatter_end, parse_frontmatter};

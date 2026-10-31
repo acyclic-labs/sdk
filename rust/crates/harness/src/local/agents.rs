@@ -129,15 +129,20 @@ impl TurnContext for LocalContext {
                 .writer
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
+            let bindings = local.turn_bindings(agent, authority).await?;
             let manifest = match &local.context_manifest {
                 Some(manifest) => manifest.clone(),
-                None => local.stage_context_manifest_with(turn, &**writer)?.await?,
+                None => {
+                    local
+                        .stage_context_manifest_with(turn, &bindings.context, &**writer)?
+                        .await?
+                }
             };
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
                 .await?;
-            let bindings = local.turn_bindings(agent, authority).await?;
-            let (executor, context) = Tasks::bind(&bindings, executor, agent, turn, authority)?;
+            let (executor, context) =
+                Tasks::bind(&bindings.harness, executor, agent, turn, authority)?;
             let executor = executor.with_live_reply(crate::executor::LiveReply::new(
                 Arc::clone(writer),
                 format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
@@ -155,32 +160,60 @@ impl TurnContext for LocalContext {
     }
 }
 
+struct TurnBindings<'a> {
+    harness: Arc<crate::runtime::AgentHarness>,
+    context: super::context::Binding<'a>,
+}
+
 impl LocalHarness {
     /// An agent's default files and commands select the same project. The
     /// root reuses its admitted binding; a child opens its retained fork.
-    async fn turn_bindings(
+    async fn turn_bindings<'a>(
         &self,
-        agent: &AgentState,
-        authority: &TurnAuthority,
-    ) -> Result<Arc<crate::runtime::AgentHarness>> {
+        agent: &'a AgentState,
+        authority: &'a TurnAuthority,
+    ) -> Result<TurnBindings<'a>> {
         let project = agent
             .volumes
             .iter()
             .find(|binding| binding.name == "project")
             .map(|binding| &binding.volume)
             .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
-        if project == &self.project {
-            return Ok(Arc::clone(&self.harness));
-        }
+        let scratch = agent
+            .volumes
+            .iter()
+            .find(|binding| binding.name == "scratch")
+            .map(|binding| &binding.volume)
+            .ok_or_else(|| Error::Invalid("agent has no scratch volume".into()))?;
         let verifier = authority.issuer.verifier(&mut None)?;
         #[cfg(any(test, feature = "native-execution"))]
+        let journal = agent
+            .volumes
+            .iter()
+            .find(|binding| binding.name == PRIVATE_VOLUME)
+            .map(|binding| &binding.volume)
+            .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
+        let context = super::context::Binding {
+            project,
+            scratch,
+            #[cfg(any(test, feature = "native-execution"))]
+            journal,
+            reader: authority.content.reader.as_ref(),
+            #[cfg(any(test, feature = "native-execution"))]
+            verifier: verifier.clone(),
+            #[cfg(any(test, feature = "native-execution"))]
+            scope: &authority.scope,
+            #[cfg(any(test, feature = "native-execution"))]
+            workspace: self.workspace.clone(),
+        };
+        if project == &self.project && scratch == &self.scratch {
+            return Ok(TurnBindings {
+                harness: Arc::clone(&self.harness),
+                context,
+            });
+        }
+        #[cfg(any(test, feature = "native-execution"))]
         if let Some(workspace) = &self.workspace {
-            let scratch = agent
-                .volumes
-                .iter()
-                .find(|binding| binding.name == "scratch")
-                .map(|binding| binding.volume.clone())
-                .ok_or_else(|| Error::Invalid("agent has no scratch volume".into()))?;
             let view = workspace.spawned_project_view(project).await?;
             let owner = super::workspace::owner::AgentOwner(agent.path.clone());
             let mount_authority = crate::filesystem::NativeMountAuthority::admitted(
@@ -188,7 +221,7 @@ impl LocalHarness {
                 authority.scope.copy(&mut None)?,
             );
             let (workspace, _) = workspace
-                .bound_task_view(view, project, scratch, &owner, &mount_authority)
+                .bound_task_view(view, project, scratch.clone(), &owner, &mount_authority)
                 .await?;
             let (tools, writer) = workspace
                 .executor(
@@ -198,13 +231,20 @@ impl LocalHarness {
                     &verifier,
                 )
                 .await?;
-            return Ok(self.harness.with_workspace(
-                Some(tools),
-                crate::runtime::ContentBindings {
-                    reader: Arc::clone(&authority.content.reader),
-                    writer: Some(writer),
-                },
-            ));
+            let context = super::context::Binding {
+                workspace: Some(Arc::clone(&workspace)),
+                ..context
+            };
+            return Ok(TurnBindings {
+                context,
+                harness: self.harness.with_workspace(
+                    Some(tools),
+                    crate::runtime::ContentBindings {
+                        reader: Arc::clone(&authority.content.reader),
+                        writer: Some(writer),
+                    },
+                ),
+            });
         }
         let writer = crate::filesystem::FilesystemContentPublisher::new(
             Arc::clone(&self.files),
@@ -214,13 +254,16 @@ impl LocalHarness {
             self.limits.file_bytes,
             None,
         )?;
-        Ok(self.harness.with_workspace(
-            None,
-            crate::runtime::ContentBindings {
-                reader: Arc::clone(&authority.content.reader),
-                writer: Some(writer),
-            },
-        ))
+        Ok(TurnBindings {
+            context,
+            harness: self.harness.with_workspace(
+                None,
+                crate::runtime::ContentBindings {
+                    reader: Arc::clone(&authority.content.reader),
+                    writer: Some(writer),
+                },
+            ),
+        })
     }
 }
 

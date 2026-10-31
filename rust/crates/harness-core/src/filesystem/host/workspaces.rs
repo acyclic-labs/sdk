@@ -25,7 +25,7 @@ where
 }
 
 #[derive(Clone, Copy)]
-enum FilePublication<'a> {
+pub(super) enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
     Authorized(acyclic_fs::access::PolicyFence, &'a ContentGrant),
 }
