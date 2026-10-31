@@ -8,6 +8,39 @@ pub(crate) use projection::load_projection;
 
 pub(crate) const REQUEST_MEDIA: &str = "application/vnd.acyclic.request-segments+json";
 
+#[derive(Deserialize)]
+pub(super) struct UsageModel {
+    pub provider: String,
+    pub name: String,
+}
+
+/// Read only model identity from the original admitted request/header. Serde
+/// skips context, tool schemas and options instead of allocating them again.
+pub(super) async fn usage_model(
+    journal: &dyn ExecutionJournal,
+    request: &FileRef,
+) -> Result<UsageModel> {
+    #[derive(Deserialize)]
+    struct Header {
+        model: UsageModel,
+    }
+    #[derive(Deserialize)]
+    struct Manifest {
+        header: FileRef,
+    }
+    let bytes = journal.load(request, None)?.await?;
+    let header = if request.descriptor().media_type() == REQUEST_MEDIA {
+        let manifest: Manifest = serde_json::from_slice(&bytes)
+            .map_err(|_| Error::Storage("usage request manifest is malformed".into()))?;
+        journal.load(&manifest.header, None)?.await?
+    } else {
+        bytes
+    };
+    let header: Header = serde_json::from_slice(&header)
+        .map_err(|_| Error::Storage("usage request header is malformed".into()))?;
+    Ok(header.model)
+}
+
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
 mod tests;
 

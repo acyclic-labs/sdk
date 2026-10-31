@@ -100,6 +100,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     let completed = ModelEvent::Completed { metadata };
     let mut usage = crate::executor::model_usage::ModelCallUsage {
         version: 1,
+        completed: true,
         dispatch: crate::model::ModelDispatch {
             operation_id: operation,
             step: 0,
@@ -133,6 +134,18 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         .is_err()
     );
     assert_eq!(journal.records(operation, 0, 64, None).await?.len(), 2);
+    let before = crate::executor::usage_page(&journal, operation, "agents/usage", 0).await?;
+    assert_eq!(
+        before.items.len(),
+        1,
+        "uncommitted usage must stay invisible"
+    );
+    assert!(!before.items[0].completed);
+    assert_eq!(
+        before.items[0].tokens,
+        crate::executor::ModelTokenUsage::default()
+    );
+    assert_eq!(before.items[0].latency_ns, None);
     usage.dispatch.operation_id = OperationId::new();
     assert!(
         crate::executor::append_model_event(
@@ -192,6 +205,12 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     assert_eq!(record.tokens, usage.tokens);
     assert_eq!(record.latency_ns, Some(123));
     assert_eq!(record.agent_path, None);
+    let after = crate::executor::usage_page(&journal, operation, "agents/usage", 0).await?;
+    assert_eq!(after.items.len(), 2);
+    assert!(!after.items[0].completed);
+    assert!(after.items[1].completed);
+    assert_eq!(after.items[0].dispatch, after.items[1].dispatch);
+    assert_eq!(after.items[1].tokens, usage.tokens);
     Ok(())
 }
 

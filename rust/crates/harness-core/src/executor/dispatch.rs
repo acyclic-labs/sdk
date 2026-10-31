@@ -471,6 +471,7 @@ impl StockExecution<'_> {
                     ModelEvent::Completed { metadata } => {
                         Some(super::model_usage::ModelCallUsage {
                             version: 1,
+                            completed: true,
                             dispatch,
                             purpose,
                             provider: &model.provider,
