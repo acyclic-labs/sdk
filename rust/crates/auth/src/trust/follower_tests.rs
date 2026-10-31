@@ -169,10 +169,14 @@ fn swap_precedes_wake_and_lost_follow_fences() {
     }
     trust.serve("second");
     assert!(trust.account("second").is_ok());
+    let earlier = trust.generation.load(Ordering::Relaxed);
     trust.connect();
     trust.fence(FenceCause::LostFollow);
     trust.connect();
     trust.serve("account");
+    // Complete the original acknowledgement phase of an older serve call
+    // after the new call. It must not withdraw the new call's progress.
+    trust.acknowledge("account", earlier);
     trust.resume();
     assert!(verify::verify(&other, &trust, NOW).is_ok());
     assert!(trust.initialized("second").unwrap());

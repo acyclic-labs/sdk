@@ -511,11 +511,14 @@ impl Follower {
             }
             self.generation.load(Ordering::Relaxed)
         };
+        self.acknowledge(account, generation);
+    }
+
+    fn acknowledge(&self, account: &str, generation: u64) {
         if let Ok(mut accounts) = self.accounts.write() {
-            accounts
-                .entry(account.to_owned())
-                .or_default()
-                .serving_generation = generation;
+            let account = accounts.entry(account.to_owned()).or_default();
+            // A delayed older call must not undo a newer catch-up acknowledgement.
+            account.serving_generation = account.serving_generation.max(generation);
         }
         self.notify(None);
     }
