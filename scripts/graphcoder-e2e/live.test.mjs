@@ -24,3 +24,28 @@ test("model prose and pre-tool events cannot prove a completed native tool", () 
   requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell" }], ["shell"]);
   assert.throws(() => requireTools([{ hook_event_name: "PostToolUse", tool_name: "spawn" }], ["spawn", "wait"]));
 });
+
+test("collaboration requires the spawned child's exact settled public result", () => {
+  // Generated SDK hook contract controls, not captured provider output.
+  const child = "agents/project/worker", expected = "child result";
+  const hooks = () => [
+    { hook_event_name: "PostToolUse", tool_name: "spawn", tool_response: { agent: child } },
+    { hook_event_name: "PostToolUse", tool_name: "wait", tool_input: { agents: [child] },
+      tool_response: { settled: [{ agent: child, phase: "idle", answer: expected }], running: [] } },
+  ];
+  requireTools(hooks(), ["spawn", "wait"], expected);
+  for (const mutate of [
+    events => events.pop(),
+    events => { events[1].hook_event_name = "PreToolUse"; },
+    events => { events[1].tool_input.agents = ["agents/project/other"]; },
+    events => { events[1].tool_response.settled[0].agent = "agents/project/other"; },
+    events => { events[1].tool_response.running = [child]; },
+    events => { events[1].tool_response.settled = []; },
+    events => { events[1].tool_response.settled[0].phase = "failed"; },
+    events => { events[1].tool_response.settled[0].answer = "parent's invented result"; },
+  ]) {
+    const events = hooks();
+    mutate(events);
+    assert.throws(() => requireTools(events, ["spawn", "wait"], expected));
+  }
+});
