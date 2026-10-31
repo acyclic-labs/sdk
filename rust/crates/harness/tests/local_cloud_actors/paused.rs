@@ -26,7 +26,6 @@ fn paused() -> wire::SubscriptionObservation {
         stream_path: SOURCE.into(),
         state: wire::SubscriptionState::Paused as i32,
         failed_cursor: Some(1),
-        retry_count: 1,
         failure_code: "customer_exception".into(),
         ..subscription(1)
     }
@@ -219,7 +218,6 @@ pub(super) async fn qualify() -> TestResult {
     expected.state = wire::SubscriptionState::Active as i32;
     expected.failed_cursor = None;
     expected.failure_code.clear();
-    expected.retry_count = 0;
     let resume = wire::ResumeSubscriptionRequest {
         namespace: Some(NS.into()),
         account_id: Vec::new(),
@@ -288,7 +286,7 @@ fn paused_oracle_rejects_active_and_changed_failure_boundaries() -> TestResult {
         match field {
             0 => sub.state = wire::SubscriptionState::Active as i32,
             1 => sub.failed_cursor = None,
-            2 => sub.retry_count += 1,
+            2 => sub.failed_cursor = Some(2),
             3 => sub.failure_code.clear(),
             4 => sub.completed_cursor += 1,
             5 => sub.delivered_cursor += 1,

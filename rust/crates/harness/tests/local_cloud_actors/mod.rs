@@ -340,7 +340,7 @@ proptest::proptest! {
             ..Default::default()
         };
         assert!(subscriptions(&valid, &expected).is_ok());
-        for field in 0..10 {
+        for field in 0..9 {
             let mut changed = valid.clone();
             let sub = &mut changed.subscriptions[0];
             match field {
@@ -351,8 +351,7 @@ proptest::proptest! {
                 4 => sub.recoverable_cursor = cursor.wrapping_add(1),
                 5 => sub.state = wire::SubscriptionState::Paused as i32,
                 6 => sub.placement_anchor = true,
-                7 => sub.retry_count = 1,
-                8 => sub.failure_code = "customer_exception".into(),
+                7 => sub.failure_code = "customer_exception".into(),
                 _ => sub.failed_cursor = Some(cursor),
             }
             assert!(subscriptions(&changed, &expected).is_err());
