@@ -479,7 +479,7 @@ fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
             .native_prepare_commit(request, 64, meter.original())
             .await??;
         let (packet, packet_guard) = packet.into_parts();
-        let (started_send, started_receive) = std::sync::mpsc::sync_channel(1);
+        let (started_send, started_receive) = tokio::sync::oneshot::channel();
         let (release_send, release_receive) = std::sync::mpsc::sync_channel(1);
         *JOURNAL_PERSIST_BLOCKER
             .lock()
@@ -491,7 +491,7 @@ fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
         let future = packet.finish((OwnedBytes::from_static(b"accepted-without-reply")).into());
         drop(future);
         drop(packet_guard);
-        tokio::task::spawn_blocking(move || started_receive.recv()).await??;
+        started_receive.await?;
         assert!(meter.held.load(Ordering::SeqCst) > 0);
         assert!(meter.write_bytes.load(Ordering::SeqCst) > 0);
         assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
