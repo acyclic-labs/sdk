@@ -98,8 +98,35 @@ impl MemoryStream {
         request: &crate::HeadsRequest,
         durable: bool,
     ) -> Result<crate::Heads, StreamError> {
+        let mut view = self.empty_heads(request);
+        view.heads
+            .try_reserve_exact(request.paths.len())
+            .map_err(|_| StreamError::Capacity)?;
+        self.capture_heads_into(request, durable, &mut view, None)
+            .await?;
+        Ok(view)
+    }
+
+    fn empty_heads(&self, request: &crate::HeadsRequest) -> crate::Heads {
+        crate::Heads {
+            retained: Default::default(),
+            projection: request.projection,
+            snapshot: self.revisions.at(0),
+            heads: Default::default(),
+            children: None,
+        }
+    }
+
+    // The native caller admits any spill before entering this same capture.
+    async fn capture_heads_into(
+        &self,
+        request: &crate::HeadsRequest,
+        durable: bool,
+        view: &mut crate::Heads,
+        _work: CaptureWork<'_>,
+    ) -> Result<(), StreamError> {
         let state = self.state.read().await;
-        let retained = request
+        view.retained = request
             .retained
             .iter()
             .map(|selected| crate::RetainedRecordObservation {
@@ -125,10 +152,8 @@ impl MemoryStream {
                 })(),
             })
             .collect();
-        let heads = request
-            .paths
-            .iter()
-            .map(|path| {
+        for path in &request.paths {
+            let capture = || {
                 head_at(
                     &state,
                     path,
@@ -136,27 +161,31 @@ impl MemoryStream {
                     request.durable_through,
                     durable,
                 )
-            })
-            .collect::<Result<_, _>>()?;
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let head = if let Some(work) = _work {
+                work.record(inspect(&work.meter, capture))??
+            } else {
+                capture()?
+            };
+            #[cfg(target_arch = "wasm32")]
+            let head = capture()?;
+            view.heads.push(head);
+        }
         let mut children = request.children.clone();
         if let Some(children) = &mut children {
             children.limit = children
                 .limit
                 .min(request.limit - request.selection_count()?);
         }
-        let view = crate::Heads {
-            retained,
-            projection: request.projection,
-            snapshot: self.revisions.at(state.decision),
-            heads,
-            children: children
-                .map(|request| children_at(&state, request))
-                .transpose()?,
-        };
+        view.snapshot = self.revisions.at(state.decision);
+        view.children = children
+            .map(|request| children_at(&state, request))
+            .transpose()?;
         if !request.at_least.proven_by(Some(&view.snapshot)) {
             return Err(StreamError::InvalidResponse);
         }
-        Ok(view)
+        Ok(())
     }
 }
 
@@ -455,6 +484,34 @@ impl StreamProvider for MemoryStream {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::NativeStreamProvider for MemoryStream {
+    fn native_heads(
+        &self,
+        request: crate::HeadsRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, crate::Heads> {
+        if let Err(error) = Self::validate_native_heads(&request) {
+            return crate::NativeProviderFuture::ready_observed(
+                crate::native::span!("acyclic.stream.heads"),
+                Ok(Err(error)),
+                StreamError::code,
+            );
+        }
+        let original = Arc::clone(&meter);
+        crate::NativeProviderFuture::observed(
+            &original,
+            crate::native::span!("acyclic.stream.heads"),
+            async move {
+                let work = Work::inline(meter);
+                let result = async {
+                    self.revisions.wait(&request.at_least).await?;
+                    self.capture_native_heads(&request, &work).await
+                }
+                .await;
+                work.finish(result)
+            },
+            |result| crate::native::outcome(result, StreamError::code),
+        )
+    }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_read(
         &self,
@@ -726,6 +783,53 @@ impl MemoryStream {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl MemoryStream {
+    pub(crate) fn validate_native_heads(request: &crate::HeadsRequest) -> Result<(), StreamError> {
+        request.validate()?;
+        if request.projection != crate::HeadProjection::Tail
+            || !request.retained.is_empty()
+            || request.children.is_some()
+        {
+            return Err(StreamError::Unsupported);
+        }
+        Ok(())
+    }
+
+    /// Captures the original request after its floor is satisfied. The output
+    /// owns its spill before allocation and through every failure and return.
+    pub(crate) async fn capture_native_heads(
+        &self,
+        request: &crate::HeadsRequest,
+        work: &Work,
+    ) -> Result<(crate::Heads, Allocation), StreamError> {
+        let mut output = crate::NativeStreamOutput::new(
+            self.empty_heads(request),
+            ReadAllocation::empty(&work.meter),
+        );
+        let length = request.paths.len();
+        if length > output.value.heads.inline_size() {
+            let bytes = length
+                .checked_mul(std::mem::size_of::<Option<crate::PathHead>>())
+                .ok_or(StreamError::LimitExceeded)?;
+            output.allocation = work.record(ReadAllocation::new(&work.meter, bytes))?;
+            work.record(
+                output
+                    .value
+                    .heads
+                    .try_reserve_exact(length)
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory)),
+            )?;
+            work.record(output.allocation.reconcile_capacity(
+                output.value.heads.capacity() * std::mem::size_of::<Option<crate::PathHead>>(),
+            ))?;
+        }
+        work.record(work.meter.check())?;
+        self.capture_heads_into(request, false, &mut output.value, Some(work))
+            .await?;
+        work.record(work.meter.check())?;
+        let (view, allocation) = output.into_parts();
+        Ok((view, Some(allocation)))
+    }
+
     pub(crate) async fn native_read_inner(
         &self,
         request: ReadRequest,

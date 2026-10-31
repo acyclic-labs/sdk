@@ -205,6 +205,13 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
 impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
     acyclic_stream::ExplicitNativeStreamProvider for Attested<P>
 {
+    fn native_heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, acyclic_stream::Heads> {
+        self.inner.native_heads(request, meter)
+    }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_durability_barrier(
         &self,
