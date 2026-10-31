@@ -1,18 +1,11 @@
 //! Ordered function-based context assembly.
 
-use crate::contract::next_revision;
 use crate::{
     Result,
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef, Limits},
     model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
-use acyclic_stream::{
-    AppendOutcome, AppendRequest, IdempotencyKey as StreamIdempotencyKey, MAX_RECORD_BYTES,
-    ReadRequest, StreamError, StreamPath, StreamProvider,
-};
-use bytes::Bytes;
-use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -48,9 +41,9 @@ pub mod native_skills;
     not(target_arch = "wasm32")
 ))]
 mod skill_materializer;
-pub(crate) use compaction::clone_context;
 pub(crate) use compaction::mandatory_messages;
 pub use compaction::*;
+pub(crate) use compaction::{clone_context, compact_projection};
 mod snapshot;
 pub use snapshot::*;
 mod manifest;
@@ -60,9 +53,6 @@ pub use manifest::DEFAULT_CONVENTIONS_JSON;
 
 mod checkpoint;
 pub use checkpoint::*;
-#[doc(hidden)]
-mod durable;
-pub use durable::*;
 mod validation;
 pub(crate) use validation::{
     plan_compaction_budget, restrict_context_limits, validate_compaction,
@@ -82,7 +72,6 @@ use allocations::append_context_messages;
 use allocations::context_contract;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use allocations::reserve_context_vec_native;
-pub(crate) use validation::verify_file;
 use validation::{validate_context_refs, validate_source_messages};
 use value::{BorrowedContext, ContextMessages};
 #[cfg(test)]

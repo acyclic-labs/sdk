@@ -149,7 +149,7 @@ impl TurnContext for LocalContext {
                 .with_agent_hooks(&context, turn, input, session_operation(&agent.path))
                 .await?;
             #[cfg(not(any(test, feature = "hooks")))]
-            let _ = context;
+            let _ = (context, input);
             Ok(executor)
         })
     }

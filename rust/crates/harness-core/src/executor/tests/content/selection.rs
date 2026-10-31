@@ -281,7 +281,7 @@ proptest! {
                 source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
                 output,
             };
-            let (retained, proof) = crate::context::DurableContextProvider::compact(
+            let (retained, proof) = crate::context::compact_projection(
                 &source, 2, Some(summary), None)?;
             let source_file = stage_json(&journal, input.operation_id, "source", &source, None).await?;
             let proof_file = stage_json(&journal, input.operation_id, "proof", &proof, None).await?;

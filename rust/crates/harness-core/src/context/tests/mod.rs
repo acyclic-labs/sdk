@@ -5,7 +5,6 @@ use crate::{
     model::{FileProjectionPolicy, ModelContentPart, ModelRole},
     resources::ProviderRef,
 };
-use acyclic_stream::MemoryStream;
 #[cfg(feature = "filesystem")]
 fn owned_context_budget() -> acyclic_fs::WorkBudget {
     acyclic_fs::WorkBudget {
@@ -282,27 +281,10 @@ fn compact(
     maximum: usize,
     through: usize,
 ) -> Result<(Context, CompactionReference)> {
-    DurableContextProvider::compact(source, maximum, Some(summary(source, through)?), None)
-}
-fn durable(
-    stream: Arc<MemoryStream>,
-    payloads: Arc<TestPayloadStore>,
-    maximum: u32,
-    limits: Limits,
-) -> Result<DurableContextProvider> {
-    DurableContextProvider::new(
-        stream,
-        StreamPath::new("context/test")?,
-        "memory",
-        "1",
-        maximum,
-        payloads,
-        limits,
-    )
+    compact_projection(source, maximum, Some(summary(source, through)?), None)
 }
 mod compaction;
 mod configuration_sources;
-mod durable;
 mod pipeline;
 #[cfg(not(target_arch = "wasm32"))]
 mod reasoning_compaction;

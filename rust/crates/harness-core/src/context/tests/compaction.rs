@@ -159,7 +159,7 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
     for through in [0, 2, 7] {
         assert!(compact(&source, 5, through).is_err());
     }
-    assert!(DurableContextProvider::compact(&source, 3, None, None).is_err());
+    assert!(compact_projection(&source, 3, None, None).is_err());
     let plain = context(
         vec![
             source.messages[0].clone(),

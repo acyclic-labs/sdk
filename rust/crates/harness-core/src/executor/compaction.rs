@@ -49,12 +49,8 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let (compacted, reference) = crate::context::DurableContextProvider::compact(
-            &context,
-            maximum,
-            Some(summary),
-            self.io,
-        )?;
+        let (compacted, reference) =
+            crate::context::compact_projection(&context, maximum, Some(summary), self.io)?;
         let compaction_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:compaction"), work)
         })?;
