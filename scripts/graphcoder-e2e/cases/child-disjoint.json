@@ -82,6 +82,21 @@
       },
       {
         "when": {
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "child finished"
+        },
+        "tools": [
+          {
+            "id": "child-merge",
+            "name": "fs",
+            "arguments": {
+              "command": "merge {{tool_result:/settled/0/branch}}"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
           "user": "PARENT_E2E_TASK"
         },
         "tools": [
@@ -128,20 +143,6 @@
         "when": {
           "user": "PARENT_E2E_TASK"
         },
-        "tools": [
-          {
-            "id": "child-final",
-            "name": "fs",
-            "arguments": {
-              "command": "merge agents/worker"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "PARENT_E2E_TASK"
-        },
         "text": [
           "done"
         ]
@@ -160,7 +161,18 @@
     "files": {
       "child.txt": "child\n",
       "parent.txt": "parent\n"
-    }
+    },
+    "tool_results": [
+      {
+        "settled": [
+          {
+            "name": "worker",
+            "branch": "agents/worker",
+            "answer": "child finished"
+          }
+        ]
+      }
+    ]
   },
   "ntfs": true
 }
