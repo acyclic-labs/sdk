@@ -212,7 +212,7 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
-        self.append_contributed_if_tail(operation, expected_tail, key, event, &[], io)
+        self.append_contributed_if_tail(operation, expected_tail, key, event, &[], None, io)
     }
 
     fn append_envelope_if_tail<'a>(

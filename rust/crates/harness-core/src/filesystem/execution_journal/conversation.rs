@@ -57,6 +57,7 @@ where
                     step,
                     &bytes,
                     contributions,
+                    None,
                     io,
                 )
                 .await;
@@ -74,6 +75,7 @@ where
         step: u32,
         bytes: &acyclic_stream::OwnedBytes,
         contributions: &[indexed_publication::Contribution<'_>],
+        confirmation: Option<&mut Option<acyclic_stream::CommitId>>,
         io: &PreparationIo,
     ) -> Result<bool> {
         let reference =
@@ -91,6 +93,7 @@ where
                 key,
                 &event,
                 contributions,
+                confirmation,
                 Some(io),
             )?
             .await;

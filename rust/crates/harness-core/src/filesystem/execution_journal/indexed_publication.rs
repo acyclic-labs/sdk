@@ -79,7 +79,7 @@ where
         bytes: &OwnedBytes,
         contributions: &[Contribution<'_>],
         io: Option<&PreparationIo>,
-    ) -> Result<Option<Recovery>> {
+    ) -> Result<Option<(Recovery, acyclic_stream::CommitId)>> {
         let operation = summary.operation.ok_or_else(|| invalid(io))?;
         let pages = self.index_path(operation, "pages", io)?;
         let head = self.index_path(operation, "head", io)?;
@@ -152,13 +152,16 @@ where
                 &mut work,
             )
             .await?;
-        let result = if committed {
+        let result = if let Some(commit_id) = committed {
             summary.scratch = Some(writer.take_scratch());
-            Some(Recovery {
-                state,
-                head_tail: next_head_tail,
-                indexed: true,
-            })
+            Some((
+                Recovery {
+                    state,
+                    head_tail: next_head_tail,
+                    indexed: true,
+                },
+                commit_id,
+            ))
         } else {
             None
         };

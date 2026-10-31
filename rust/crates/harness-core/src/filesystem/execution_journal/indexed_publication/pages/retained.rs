@@ -68,7 +68,7 @@ impl<P: crate::store::JournalProvider + ?Sized> NativeCut<'_, '_, P> {
     pub(in crate::filesystem::execution_journal) async fn finish(
         self,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<bool> {
+    ) -> Result<Option<acyclic_stream::CommitId>> {
         let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
         let (outcome, retained) = self
             .commit

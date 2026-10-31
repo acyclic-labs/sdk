@@ -211,7 +211,7 @@ impl Cut<'_> {
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<bool> {
+    ) -> Result<Option<acyclic_stream::CommitId>> {
         let mut offset = 0;
         loop {
             let pending = records
@@ -276,7 +276,7 @@ impl Cut<'_> {
                 drop(request);
             }
             let Some(count) = self.stage(provider, offset, pending, work).await? else {
-                return Ok(false);
+                return Ok(None);
             };
             offset += count;
         }
@@ -289,9 +289,9 @@ impl Cut<'_> {
         records: &[OwnedBytes],
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
-    ) -> Result<bool> {
+    ) -> Result<Option<acyclic_stream::CommitId>> {
         match outcome {
-            CommitOutcome::Conflict(_) => Ok(false),
+            CommitOutcome::Conflict(_) => Ok(None),
             CommitOutcome::Committed(receipt) => {
                 if receipt.appends.len() != 3 + self.contributions.len() {
                     return Err(Error::Indeterminate(self.operation));
@@ -355,7 +355,7 @@ impl Cut<'_> {
                 if seen != 7 || contributions.next().is_some() {
                     return Err(Error::Indeterminate(self.operation));
                 }
-                Ok(true)
+                Ok(Some(receipt.commit_id))
             }
         }
     }
