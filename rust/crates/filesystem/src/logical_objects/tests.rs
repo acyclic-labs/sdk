@@ -393,11 +393,18 @@ async fn a_publication_retains_inside_the_callers_work() -> Result<(), Box<dyn s
         backend_write_operations: 0,
         ..BUDGET
     };
+    // The old unmetered root plus a manually released digest vector fit 32
+    // bytes. The same original ledger must fund the root and retain custody.
+    let unfunded_root = WorkBudget {
+        peak_allocation_bytes: size_of::<acyclic_objects::Digest>() as u64,
+        ..BUDGET
+    };
     let cancel = CancellationToken::new();
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     for (body, budget, token) in [
         (&b"no budget"[..], exhausted, &cancel),
+        (&b"unfunded root"[..], unfunded_root, &cancel),
         (&b"cancelled"[..], BUDGET, &cancelled),
     ] {
         let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::copy_from_slice(body));
@@ -414,6 +421,24 @@ async fn a_publication_retains_inside_the_callers_work() -> Result<(), Box<dyn s
     assert!(publish(&store, &[id], exhausted, &cancel).await.is_err());
     let _hold = publish(&store, &[id], BUDGET, &cancel).await?;
     assert!(survives_collections(&store, id).await?);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let original =
+            crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let hold = store
+            .flush_before_publish(
+                crate::PublicationScope {
+                    objects: &[id],
+                    proven_at: 0,
+                },
+                &mut AuthorityWork::native(&original, &cancel),
+            )
+            .await?;
+        drop(hold);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert!(survives_collections(&store, id).await?);
+    }
     Ok(())
 }
 
