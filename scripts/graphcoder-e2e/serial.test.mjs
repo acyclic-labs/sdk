@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { collect, runSuites, partition, collectPartitions,acceptanceBinding, variants } from "./serial.mjs";
-import {mkdtemp,mkdir,readFile,writeFile,rename,rm,rmdir} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rename,rm,rmdir,copyFile,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
@@ -14,7 +14,7 @@ import { schedule } from "./process.mjs";
 test('installed host admission launches package entries and binds their actual closure',async()=>{
  const directory=dirname(fileURLToPath(import.meta.url)),scope=new Processes();
  const cases=['codex','claude-code','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));
- let entry,closure,dependency,retained;
+ let entry,dependency,backup,retained;
  try {
   for(const {inputs:[{host}]} of cases) {
    const native=await nativeHost(host,{});
@@ -22,7 +22,7 @@ test('installed host admission launches package entries and binds their actual c
    assert.equal(result.code,0,result.stderr);
    assert.ok(result.stdout.trim(),'actual host version must be nonempty');
   }
-  ({entry,closure}=await nativeHost('pi',{}));
+  ({entry}=await nativeHost('pi',{}));
   const env={E2E_PI:entry,E2E_CODEX:(await nativeHost('codex',{})).entry,
    E2E_CLAUDE:(await nativeHost('claude-code',{})).entry};
   const before=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
@@ -31,8 +31,12 @@ test('installed host admission launches package entries and binds their actual c
   // entry rather than modifying an inode shared with another installation.
   dependency=join(dirname(entry),'cli-runtime.js');
   const original=await readFile(dependency);
-  retained=join(await mkdtemp(join(dirname(closure),'.pi-runtime-')),'runtime.js');
-  await rename(dependency,retained);
+  // Stay on the runtime's filesystem, and arm restoration only after the
+  // original move succeeds. A failed move must leave its source untouched.
+  backup=await mkdtemp(join(dirname(dependency),'.pi-runtime-'));
+  const destination=join(backup,'runtime.js');
+  await rename(dependency,destination);
+  retained=destination;
   await writeFile(dependency,Buffer.concat([original,Buffer.from('\n')]));
   const changed=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
   assert.deepEqual(changed.hosts,before.hosts,'the executable entries did not change');
@@ -52,12 +56,56 @@ test('installed host admission launches package entries and binds their actual c
    capture(){assert.fail('unsupported Pi produced a process result');}}),
    error=>error.code==='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER');
  } finally {
-  if(retained) {
-   await rm(dependency,{force:true});await rename(retained,dependency);
-   await rmdir(dirname(retained));
-  }
-  await scope.close();
+  try {
+   if(retained) {
+    await rm(dependency,{force:true});await rename(retained,dependency);
+   }
+   if(backup)await rmdir(backup);
+  }finally{await scope.close();}
  }
+});
+
+test('installed host admission binds second trees, nested hidden files and link edges',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'host-closure-'));
+ try {
+  const directory=join(root,'scripts/graphcoder-e2e'),hosts=join(root,'plugin/tests/hosts');
+  for(const path of [directory,hosts,join(root,'scripts/graphcoder-pty')])await mkdir(path,{recursive:true});
+  await copyFile(new URL('../../plugin/tests/hosts/package.json',import.meta.url),join(hosts,'package.json'));
+  // Copy real pinned package manifests and entry bytes for identity admission;
+  // these reduced trees are never launched as installed runtimes.
+  async function packageEntry(host,pkg,modules) {
+   const native=await nativeHost(host,{}),source=join(native.closure,pkg);
+   const manifest=JSON.parse(await readFile(join(source,'package.json'),'utf8'));
+   const name=host==='codex'?'codex':'pi',bin=typeof manifest.bin==='string'?manifest.bin:manifest.bin[name];
+   const target=join(modules,pkg),entry=join(target,bin);
+   await mkdir(dirname(entry),{recursive:true});
+   await copyFile(join(source,'package.json'),join(target,'package.json'));
+   await copyFile(native.entry,entry);
+   return entry;
+  }
+  const first=await packageEntry('codex','@openai/codex',join(hosts,'node_modules'));
+  const secondModules=join(root,'second/node_modules');
+  const second=await packageEntry('pi','@earendil-works/pi-coding-agent',secondModules);
+  const nested=join(secondModules,'.retained/node_modules/runtime.js');
+  await mkdir(dirname(nested),{recursive:true});await copyFile(second,nested);
+  const link=join(secondModules,'runtime-link');await symlink(second,link);
+  const cases=['codex','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));
+  const env={E2E_CODEX:first,E2E_PI:second};
+  const bind=()=>acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
+  const before=await bind(),key='installed-hosts/pi/.retained/node_modules/runtime.js';
+  assert.notEqual(before.hosts.codex.closure,before.hosts.pi.closure,'distinct installations need distinct provenance');
+  assert.match(before.source[key],/^[a-f0-9]{64}$/,'second-tree nested hidden bytes must be retained');
+  await writeFile(nested,Buffer.concat([await readFile(nested),Buffer.from('\n')]));
+  const changed=await bind();
+  assert.deepEqual(changed.hosts,before.hosts,'both package entries stay unchanged');
+  assert.notEqual(changed.source[key],before.source[key],'second-tree dependency changes must fence composition');
+  await rm(link);await symlink(nested,link);
+  const retargeted=await bind(),edge='installed-hosts/pi/runtime-link';
+  assert.notEqual(retargeted.source[edge],changed.source[edge],'internal link retargeting must fence composition');
+  await rm(link);await symlink(process.execPath,link);
+  await assert.rejects(bind(),/step=admit pi dependency tree:.*recovery=npm ci/,
+   'a link outside the admitted installation must refuse');
+ }finally{await rm(root,{recursive:true,force:true});}
 });
 
 test('partition provenance includes plugin executables and host helper source',async()=>{
