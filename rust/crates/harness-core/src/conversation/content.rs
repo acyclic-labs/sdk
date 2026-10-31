@@ -371,7 +371,7 @@ impl ContentChanges {
     ) -> Result<(Vec<FileRef>, Option<ContentHold<'a>>)> {
         let Self { generation, files } = self;
         #[cfg(feature = "filesystem")]
-        let generation_bytes = crate::filesystem::UploadRecord::logical_owned_bytes(&generation)?;
+        let generation_bytes = generation.logical_owned_bytes()?;
         drop(generation);
         #[cfg(feature = "filesystem")]
         if let Some(hold) = hold.as_mut() {
