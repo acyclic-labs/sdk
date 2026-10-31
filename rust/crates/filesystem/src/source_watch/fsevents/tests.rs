@@ -162,7 +162,7 @@ fn callback_admission_and_cancellation_preserve_work_and_retire_owned_paths() ->
 }
 
 #[test]
-fn stop_denial_and_precancellation_preserve_the_original_stream_for_retry() -> TestResult {
+fn stop_denial_and_precancellation_preserve_the_original_stream_custody() -> TestResult {
     let (_root, directory) = held()?;
     let watch = driver(&directory, Arc::new(Ignored), &mut ordinary_work())?;
     let owned = watch.platform_owned_bytes();
@@ -218,12 +218,12 @@ fn stop_denial_and_precancellation_preserve_the_original_stream_for_retry() -> T
     assert!(watch.delivery().is_exact());
     assert_eq!(watch.platform_owned_bytes(), owned);
 
-    let mut retry = DemandWork::new(stop_budget, &CancellationToken::new());
-    watch.stop_with_work(&mut retry)?;
+    let mut admitted_stop = DemandWork::new(stop_budget, &CancellationToken::new());
+    watch.stop_with_work(&mut admitted_stop)?;
     assert!(watch.is_stopped());
-    assert_eq!(retry.work.allocation_operations, 0);
-    assert_eq!(retry.work.peak_allocation_bytes, 0);
-    assert_eq!(retry.work.items_examined, 0);
+    assert_eq!(admitted_stop.work.allocation_operations, 0);
+    assert_eq!(admitted_stop.work.peak_allocation_bytes, 0);
+    assert_eq!(admitted_stop.work.items_examined, 0);
     assert!(!watch.delivery().is_exact());
     assert!(watch.platform_owned_bytes() < owned);
     assert!(
