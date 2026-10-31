@@ -93,8 +93,11 @@ mod format_recovery_tests {
             "{}batch",
             account.root_prefix(&RootId::new(b"root".to_vec())?)
         );
+        account.issued().await?;
         for (key, original) in [(&envelope_key, &envelope), (&batch_key, &batch)] {
             assert!(account.medium.create(key, original.clone().into()).await?);
+        }
+        for (key, original) in [(&envelope_key, &envelope), (&batch_key, &batch)] {
             let header = original
                 .iter()
                 .position(|byte| *byte == 0)
@@ -123,9 +126,34 @@ mod format_recovery_tests {
                         account.clear_torn(key).await.unwrap_err().code,
                         ErrorCode::Unsupported
                     );
+                    let retained = encode_batch(&[digest]);
+                    assert!(
+                        account
+                            .medium
+                            .replace(&batch_key, &batch, retained.clone().into())
+                            .await?
+                    );
+                    assert_eq!(
+                        crate::Blobs::collect(&account).await.unwrap_err().code,
+                        ErrorCode::Unsupported
+                    );
+                    assert!(
+                        account
+                            .medium
+                            .replace(&batch_key, &retained, batch.clone().into())
+                            .await?
+                    );
                 } else {
                     assert_eq!(
                         account.batch(key).await.unwrap_err().code,
+                        ErrorCode::Unsupported
+                    );
+                    assert_eq!(
+                        account.rooted().await.unwrap_err().code,
+                        ErrorCode::Unsupported
+                    );
+                    assert_eq!(
+                        crate::Blobs::collect(&account).await.unwrap_err().code,
                         ErrorCode::Unsupported
                     );
                     assert_eq!(
@@ -1367,10 +1395,16 @@ impl<M: Medium> Account<M> {
         })
     }
 
-    /// Every reference held by a retained root. Any failure is `Suspended`:
-    /// an incomplete scan never means an empty root set.
+    /// Every reference held by a retained root. Unsupported formats retain
+    /// their refusal; other failures suspend an incomplete scan.
     async fn rooted(&self) -> Result<Vec<Digest>, Error> {
-        let suspended = |_| Error::from(ErrorCode::Suspended);
+        let suspended = |error: Error| {
+            if error.code == ErrorCode::Unsupported {
+                error
+            } else {
+                ErrorCode::Suspended.into()
+            }
+        };
         let mut references = Vec::new();
         for (key, _) in self
             .list_all(&format!("{}r/", self.prefix))
@@ -1814,6 +1848,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                         }
                         // A retained reference to nothing protects nothing.
                         Ok(None) => {}
+                        Err(error) if error.code == ErrorCode::Unsupported => return Err(error),
                         Err(_) => return Err(ErrorCode::Suspended.into()),
                     }
                 }
