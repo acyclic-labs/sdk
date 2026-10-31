@@ -293,7 +293,7 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
                 operation_id: OperationId::from_bytes([41; 16]),
                 input: ModelContent::Text("hello".into()),
                 selected_context: None,
-                max_steps: 4,
+                max_steps: Some(4),
             };
             let output = executor.execute(input, &journal).await;
             let dispatched = usize::from(stage == Stage::Execute);

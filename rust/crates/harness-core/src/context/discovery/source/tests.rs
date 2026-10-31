@@ -11,7 +11,7 @@ impl DiscoverySource for Pages {
         _: &'a str,
         _: Option<&'a u8>,
         _: Option<u8>,
-        _: u64,
+        _: u32,
     ) -> BoxProviderFuture<'a, Result<DiscoveryPage<u8, u8>>> {
         Box::pin(async {
             self.0

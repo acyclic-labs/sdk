@@ -52,7 +52,7 @@ pub trait DiscoverySource {
         directory: &'a str,
         revision: Option<&'a Self::Revision>,
         cursor: Option<Self::Cursor>,
-        maximum: u64,
+        maximum: u32,
     ) -> BoxProviderFuture<'a, Result<DiscoveryPage<Self::Revision, Self::Cursor>>>;
 }
 
@@ -469,7 +469,7 @@ impl DiscoverySource for VolumeDiscovery<'_> {
         directory: &'a str,
         revision: Option<&'a GenerationRef>,
         cursor: Option<String>,
-        maximum: u64,
+        maximum: u32,
     ) -> BoxProviderFuture<'a, Result<DiscoveryPage<GenerationRef, String>>> {
         Box::pin(async move {
             self.root.validate(&mut None)?;
