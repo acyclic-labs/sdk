@@ -386,8 +386,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<GenerationRef> {
-        let generation = bounded_io::generation_version(reference.version(), io)?;
+        let generation = self.file_generation_id(reference, io)?;
         bounded_io::generation_ref(&self.provider, generation, io)
+    }
+
+    /// Decode the complete generation identity, including its storage
+    /// association, that a file reference names.
+    pub fn file_generation_id(
+        &self,
+        reference: &FileRef,
+        io: Option<&PreparationIo>,
+    ) -> Result<acyclic_fs::GenerationId> {
+        bounded_io::generation_version(reference.version(), io)
     }
     #[cfg(all(
         feature = "filesystem-local",

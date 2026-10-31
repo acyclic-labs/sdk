@@ -234,9 +234,7 @@ impl CheckoutPublisher {
     }
 
     fn staged_generation(&self, file: &FileRef) -> Result<acyclic_fs::GenerationId> {
-        let staged = self.files.file_generation(file, None)?;
-        acyclic_fs::GenerationId::from_bytes(staged.as_resource().key())
-            .ok_or_else(|| Error::Invalid("invalid canonical generation reference".into()))
+        self.files.file_generation_id(file, None)
     }
 }
 
