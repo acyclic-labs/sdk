@@ -103,6 +103,7 @@ prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures", "parallel"] }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["grpc"], optional = true }
 dirs = { workspace = true, optional = true }

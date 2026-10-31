@@ -38,6 +38,42 @@ an effect left uncertain ends the turn as indeterminate.
 Changing the projector or its schema requires new admission; no implicit schema
 alias or old-data migration is installed.
 
+## Native JavaScript composition
+
+The stable native catalog includes `run_js { code }`, backed by embedded QuickJS.
+Use it for multi-step reads, filters and loops, for example:
+
+```javascript
+const files = await tools.read({ path: "README.md" });
+files
+```
+
+Each currently granted model tool is an async function in the frozen `tools`
+object, indexed by its exact name. Its `input_schema` is the original JSON schema.
+Calls use ordinary stock settlement, including schema validation, authority,
+approval, hooks, receipts and reconciliation. Refusals throw
+`Error("tool execution failed: <reason>")`. Approvals suspend the parent turn;
+resumption reruns deterministic JavaScript against the same inner call receipts.
+Programs should derive call order and arguments only from their code and tool
+results. Ambient time and randomness are absent.
+
+The final expression becomes `value`; an uncaught exception becomes `error`.
+Both outcomes include `calls` (tool name, `ok`, input/output JSON byte counts)
+and `omitted_calls`. Results occupy at most a 64 KiB output page, further bounded
+by the admitted render budget. Oversized final values become
+`{ truncated: true, bytes }`; overflowed log entries increment `omitted_calls`.
+Intermediate tool results remain inside the interpreter and ordinary journal
+artifacts; they are not added to model history.
+
+The interpreter installs no filesystem, network, environment, module loader or
+host API. Credentials and tool contexts stay in the stock dispatcher. QuickJS
+allocations use the original native memory ledger. A 1 GiB engine memory ceiling
+and a billion interrupt checks protect against runaway scripts; neither bounds
+product counts. Cancellation follows the parent's event and interrupts executing
+bytecode, including infinite loops. Outstanding tool calls settle through their
+ordinary cancellation contracts before the composition retires.
+CPU polls share the native blocking pool; waiting on a tool releases the thread.
+
 ## Portable file operations
 
 `tool::files::{read_file,write_file,edit_file}` individually assemble owner-bound

@@ -6,7 +6,7 @@ pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
         // original-turn admission remain in verify_checkpoint.
         let encoded = codec::encode(&value, None).expect("admitted checkpoint encodes");
         assert_eq!(encoded.as_ref(), bytes);
-        for version in [b'0', b'3', b'4', u8::MAX] {
+        for version in [b'0', b'3', b'4', b'5', u8::MAX] {
             let mut header = bytes[..4].to_vec();
             header[3] = version;
             assert_eq!(
