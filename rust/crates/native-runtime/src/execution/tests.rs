@@ -148,6 +148,21 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(retained.is_none());
         assert!(!workspace.join("new").exists());
+        // The actual launch must use this same ledger for preparation. Its
+        // first root open is refused before a process can acquire custody.
+        let exhausted = crate::tests::ReadBudgetMeter::new(0, u64::MAX);
+        let mut exhausted_command = make_command();
+        exhausted_command.env_clear();
+        ProcessTree::spawn_granted_controlled(
+            exhausted_command,
+            &grant,
+            custody,
+            Some(&exhausted),
+            &mut retained,
+        )
+        .expect_err("an exhausted invocation prepared an execution boundary");
+        assert!(retained.is_none());
+        assert!(!workspace.join("new").exists());
         let mut command = make_command();
         command.env_clear();
         let original = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
@@ -225,39 +240,105 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn native_preparation_preserves_original_operation_admission_and_late_failures() {
+    use std::sync::atomic::Ordering;
+    let root = tempfile::tempdir().unwrap();
+    let read = root.path().join("source");
+    std::fs::write(&read, "read-only root").unwrap();
+    let grant = ExecutionGrant::new(
+        root.path(),
+        ExecutionAccess::ReadOnly,
+        [read],
+        ExecutionNetwork::TcpPorts(BTreeSet::from([443])),
+    )
+    .unwrap();
+    // Workspace and regular-file open/identity/rules, the ABI query and ruleset
+    // creation, two device open/metadata/rules, and one TCP port rule.
+    let roots = 2;
+    let operations = 3 * roots + 2 + 2 * 3 + 1;
+    let admission = (0..=operations).map(|limit| (limit, None));
+    let recording = (1..=operations).map(|failure| (u64::MAX, Some(failure)));
+    for (limit, failure) in admission.chain(recording) {
+        let mut meter = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
+        meter.fail_recorded_operation = failure;
+        let prepared = match grant.prepare_controlled(Some(&meter)) {
+            Ok(prepared) => prepared,
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                // No supported-kernel claim is made on this path. Admission
+                // failures before the facility query still run on any kernel.
+                assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+                return;
+            }
+            Err(error) => {
+                assert!(failure.is_some() || limit < operations, "{error}");
+                assert_eq!(error.kind(), io::ErrorKind::Other, "{error}");
+                assert_eq!(
+                    meter.used_operations.load(Ordering::Acquire),
+                    failure.unwrap_or(limit),
+                );
+                continue;
+            }
+        };
+        assert_eq!((limit, failure), (operations, None));
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2 * roots + 5);
+        assert_eq!(meter.write_attempts.load(Ordering::Acquire), roots + 4);
+        drop(prepared);
+        // The identical native preparation without an invocation ceiling is
+        // the real-kernel negative control for the rejected funded attempts.
+        grant.prepare().unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn replaced_grant_root_refuses_before_guest_execution() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
+    let external = root.path().join("external");
     std::fs::create_dir(&workspace).unwrap();
-    let grant = ExecutionGrant::new(
-        &workspace,
-        ExecutionAccess::WorkspaceWrite,
-        [],
-        ExecutionNetwork::Off,
-    )
-    .unwrap();
-    // The grant itself must pin the deleted object. A numeric identity alone
-    // could otherwise be reused by the replacement directory.
-    std::fs::remove_dir(&workspace).unwrap();
-    std::fs::create_dir(&workspace).unwrap();
-    let error = match grant.prepare() {
-        Ok(_) => panic!("replaced workspace acquired the previous grant"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("root was replaced"), "{error}");
-    // A lexical prefix alone used to refresh the replaced root's identity and
-    // mint a new child grant. The original object's authority must survive.
-    let nested = workspace.join("nested");
-    std::fs::create_dir(&nested).unwrap();
-    let error = grant
-        .attenuate(
-            &nested,
-            ExecutionAccess::ReadOnly,
-            [],
+    std::fs::create_dir(&external).unwrap();
+    for replaced in [&workspace, &external] {
+        let grant = ExecutionGrant::new(
+            &workspace,
+            ExecutionAccess::WorkspaceWrite,
+            [external.clone()],
             ExecutionNetwork::Off,
         )
-        .unwrap_err();
-    assert!(error.to_string().contains("root was replaced"), "{error}");
+        .unwrap();
+        // The grant itself must pin the deleted object. A numeric identity
+        // alone could otherwise be reused by the replacement directory.
+        std::fs::remove_dir(replaced).unwrap();
+        std::fs::create_dir(replaced).unwrap();
+        // A lexical prefix alone used to refresh the replaced root's identity
+        // and mint another child grant, including for a read-only root.
+        let nested = replaced.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let (child, read) = if replaced == &workspace {
+            (&nested, vec![])
+        } else {
+            (&workspace, vec![nested.clone()])
+        };
+        let error = grant
+            .attenuate(
+                child,
+                ExecutionAccess::ReadOnly,
+                read,
+                ExecutionNetwork::Off,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("root was replaced"), "{error}");
+        let error = match grant.prepare() {
+            Ok(_) => panic!("replaced root acquired the previous grant"),
+            Err(error) => error,
+        };
+        if error.kind() == io::ErrorKind::Unsupported && replaced == &external {
+            // Without Landlock, preparation stops before adding read roots.
+            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        } else {
+            assert!(error.to_string().contains("root was replaced"), "{error}");
+        }
+        std::fs::remove_dir(&nested).unwrap();
+    }
 }
 
 #[cfg(target_os = "linux")]

@@ -1,5 +1,36 @@
 use crate::*;
 
+/// One actual SDK/kernel attempt owns one operation credit. The result stays
+/// separate from a late recording error so accepted work can retain custody.
+pub(crate) fn native_operation_attempt<T>(
+    meter: Option<&dyn NativeReadMeter>,
+    kind: NativeOperationKind,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<(io::Result<T>, io::Result<()>)> {
+    match meter {
+        Some(meter) => {
+            let mut token = NativeOperationReservation::new(meter, kind, 1)?;
+            Ok(token.attempt(operation))
+        }
+        None => Ok((operation(), Ok(()))),
+    }
+}
+
+/// Completes an operation whose successful value owns its resources. A late
+/// recording failure drops that value; effects needing recovery must already
+/// be retained by the caller before the operation returns.
+pub(crate) fn native_control_attempt<T>(
+    meter: Option<&dyn NativeReadMeter>,
+    kind: NativeOperationKind,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let (result, recorded) = native_operation_attempt(meter, kind, operation)?;
+    match result {
+        Err(error) => Err(error),
+        Ok(value) => recorded.map(|()| value),
+    }
+}
+
 /// Reserved native operations, borrowed or owned by an accepted request.
 pub struct NativeOperationReservation<M: std::ops::Deref<Target: NativeReadMeter>> {
     pub(crate) meter: M,

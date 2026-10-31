@@ -11,6 +11,11 @@ use super::{
     BoundPath, ExecutionAccess, ExecutionGrant, ExecutionNetwork, Grant, failure, refused,
     unavailable,
 };
+use crate::{
+    NativeOperationKind::{Read, Write},
+    NativeReadMeter,
+    meter::native_control_attempt,
+};
 use std::{
     ffi::CString,
     fs::File,
@@ -102,9 +107,6 @@ struct PortRule {
 
 pub(super) struct Prepared {
     ruleset: OwnedFd,
-    // These verified bindings remain open through spawn. The immutable grant
-    // separately pins the original objects to prevent identity reuse.
-    roots: Vec<File>,
 }
 
 impl Prepared {
@@ -129,24 +131,31 @@ impl Prepared {
         Ok(self.ruleset.as_raw_fd())
     }
 
-    pub(super) fn new(grant: &Grant, roots: Vec<File>) -> io::Result<Self> {
+    pub(super) fn new(
+        grant: &Grant,
+        root: File,
+        meter: Option<&dyn NativeReadMeter>,
+    ) -> io::Result<Self> {
         // ABI 6 supplies signal and abstract-UNIX scoping; earlier ABIs cannot
         // prove this contract. Never silently discard an unsupported right.
-        // SAFETY: VERSION accepts a null attribute and zero attribute length.
-        let abi = unsafe {
-            libc::syscall(
-                libc::SYS_landlock_create_ruleset,
-                std::ptr::null::<()>(),
-                0,
-                1,
-            )
-        };
-        if abi < 0 {
-            return Err(unavailable(format!(
-                "Landlock unavailable: {}",
-                io::Error::last_os_error()
-            )));
-        }
+        let abi = native_control_attempt(meter, Read, || {
+            // SAFETY: VERSION accepts a null attribute and zero attribute length.
+            let abi = unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_create_ruleset,
+                    std::ptr::null::<()>(),
+                    0,
+                    1,
+                )
+            };
+            if abi < 0 {
+                return Err(unavailable(format!(
+                    "Landlock unavailable: {}",
+                    io::Error::last_os_error()
+                )));
+            }
+            Ok(abi)
+        })?;
         if abi < 6 {
             return Err(unavailable("Landlock ABI 6 or later is required"));
         }
@@ -160,76 +169,96 @@ impl Prepared {
             },
             scoped: 3,
         };
-        // SAFETY: initialized ABI 6 attributes, correct length, zero flags.
-        let descriptor = syscall(|| unsafe {
-            libc::syscall(
-                libc::SYS_landlock_create_ruleset,
-                &raw const rules,
-                std::mem::size_of::<Ruleset>(),
-                0,
-            )
+        let ruleset = native_control_attempt(meter, Write, || {
+            // SAFETY: initialized ABI 6 attributes, correct length, zero flags.
+            let descriptor = syscall(|| unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_create_ruleset,
+                    &raw const rules,
+                    std::mem::size_of::<Ruleset>(),
+                    0,
+                )
+            })?;
+            let descriptor =
+                i32::try_from(descriptor).map_err(|_| refused("invalid Landlock handle"))?;
+            // SAFETY: landlock_create_ruleset returned this uniquely owned fd.
+            // Acquire RAII ownership before checking a late recording failure.
+            Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
         })?;
-        let descriptor =
-            i32::try_from(descriptor).map_err(|_| refused("invalid Landlock handle"))?;
-        // SAFETY: landlock_create_ruleset returned this uniquely owned fd.
-        let ruleset = unsafe { OwnedFd::from_raw_fd(descriptor) };
-        let prepared = Self { ruleset, roots };
+        let prepared = Self { ruleset };
         let workspace = READ
             | if grant.access == ExecutionAccess::WorkspaceWrite {
                 WRITE
             } else {
                 0
             };
-        for (index, root) in prepared.roots.iter().enumerate() {
-            prepared.path(root, if index == 0 { workspace } else { READ })?;
+        prepared.path(&root, workspace, grant.workspace.is_dir, meter)?;
+        // The kernel ruleset owns the inserted inode reference. The grant
+        // independently pins every original object against identity reuse;
+        // another live descriptor per rule buys no additional guarantee.
+        drop(root);
+        for root in &grant.read {
+            prepared.path(&root.bind_controlled(meter)?, READ, root.is_dir, meter)?;
         }
         // Null output and entropy are capabilities of computation. No arbitrary
         // device, host home, procfs or temporary tree is exposed.
-        prepared.path(
-            &BoundPath::open_path(Path::new("/dev/null"))?,
-            (1 << 1) | (1 << 2),
-        )?;
-        prepared.path(&BoundPath::open_path(Path::new("/dev/urandom"))?, 1 << 2)?;
+        for (path, access) in [
+            (Path::new("/dev/null"), (1 << 1) | (1 << 2)),
+            (Path::new("/dev/urandom"), 1 << 2),
+        ] {
+            let root = native_control_attempt(meter, Read, || BoundPath::open_path(path))?;
+            let metadata =
+                native_control_attempt(meter, Read, || root.metadata().map_err(failure))?;
+            prepared.path(&root, access, metadata.is_dir(), meter)?;
+        }
         if let ExecutionNetwork::TcpPorts(ports) = &grant.network {
             for port in ports {
                 let rule = PortRule {
                     access: CONNECT_TCP,
                     port: u64::from(*port),
                 };
-                // SAFETY: live owned ruleset and initialized native port rule.
-                syscall(|| unsafe {
-                    libc::syscall(
-                        libc::SYS_landlock_add_rule,
-                        prepared.ruleset.as_raw_fd(),
-                        2,
-                        &raw const rule,
-                        0,
-                    )
+                native_control_attempt(meter, Write, || {
+                    // SAFETY: live owned ruleset and initialized native port rule.
+                    syscall(|| unsafe {
+                        libc::syscall(
+                            libc::SYS_landlock_add_rule,
+                            prepared.ruleset.as_raw_fd(),
+                            2,
+                            &raw const rule,
+                            0,
+                        )
+                    })
                 })?;
             }
         }
         Ok(prepared)
     }
 
-    fn path(&self, file: &File, access: u64) -> io::Result<()> {
+    fn path(
+        &self,
+        file: &File,
+        access: u64,
+        is_dir: bool,
+        meter: Option<&dyn NativeReadMeter>,
+    ) -> io::Result<()> {
         let rule = PathRule {
-            access: if file.metadata().map_err(failure)?.is_dir() {
-                access
-            } else {
-                access & FILE
-            },
+            // A pinned inode cannot change its file type. Binding already
+            // verified its identity; another metadata query buys no guarantee.
+            access: if is_dir { access } else { access & FILE },
             parent: file.as_raw_fd(),
         };
-        // SAFETY: the live root fd and packed path rule remain borrowed until
-        // the kernel copies this rule into the exclusively owned ruleset.
-        syscall(|| unsafe {
-            libc::syscall(
-                libc::SYS_landlock_add_rule,
-                self.ruleset.as_raw_fd(),
-                1,
-                &raw const rule,
-                0,
-            )
+        native_control_attempt(meter, Write, || {
+            // SAFETY: the live root fd and packed path rule remain borrowed until
+            // the kernel copies this rule into the exclusively owned ruleset.
+            syscall(|| unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_add_rule,
+                    self.ruleset.as_raw_fd(),
+                    1,
+                    &raw const rule,
+                    0,
+                )
+            })
         })?;
         Ok(())
     }

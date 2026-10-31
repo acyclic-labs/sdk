@@ -3,6 +3,10 @@
     reason = "process containment and bounded pipes use platform OS calls"
 )]
 
+use crate::meter::{
+    native_control_attempt as process_control_attempt,
+    native_operation_attempt as pipe_operation_attempt,
+};
 use crate::obs;
 #[cfg(unix)]
 use platform::Child;
@@ -96,7 +100,7 @@ fn set_capture_clock(now: Option<Instant>) {
     CAPTURE_CLOCK.with(|clock| clock.set(now));
 }
 pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
-use capture::{PendingStdin, drain_pipe_observed, observe_output, pipe_operation_attempt};
+use capture::{PendingStdin, drain_pipe_observed, observe_output};
 #[cfg(unix)]
 mod prepared;
 #[cfg(unix)]
@@ -253,8 +257,9 @@ impl ProcessTree {
     /// and recovery slot. On error, `retained` can still own an admitted tree
     /// or custody record: the caller must preserve it through recovery. This
     /// method never replaces an occupied slot or performs unmetered cleanup.
-    /// The meter covers the shared process owner; native grant preparation
-    /// does not yet support invocation-local resource accounting.
+    /// The meter covers the shared process owner and Linux root/ruleset calls.
+    /// Grant construction and remaining launch allocations still require
+    /// invocation-local resource accounting.
     pub fn spawn_granted_controlled(
         mut command: ProcessCommand,
         grant: &crate::execution::ExecutionGrant,
@@ -271,7 +276,7 @@ impl ProcessTree {
             meter.check()?;
         }
         grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
-        command.boundary = Some(grant.prepare()?);
+        command.boundary = Some(grant.prepare_controlled(meter)?);
         let result = match custody {
             Some(custody) => {
                 Self::spawn_in_custody_controlled(&mut command, custody, meter, retained)
@@ -1372,18 +1377,5 @@ impl Drop for ProcessTree {
             return;
         }
         let _ = self.terminate(None);
-    }
-}
-
-/// One actual SDK/kernel attempt, not a prediction of its hidden internals.
-fn process_control_attempt<T>(
-    meter: Option<&dyn crate::NativeReadMeter>,
-    kind: crate::NativeOperationKind,
-    call: impl FnOnce() -> io::Result<T>,
-) -> io::Result<T> {
-    let (result, recorded) = pipe_operation_attempt(meter, kind, call)?;
-    match result {
-        Err(error) => Err(error),
-        Ok(value) => recorded.map(|()| value),
     }
 }

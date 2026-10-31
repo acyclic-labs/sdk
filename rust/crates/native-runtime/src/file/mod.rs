@@ -68,10 +68,14 @@ pub(crate) fn file_identity(file: &File) -> io::Result<FileIdentity> {
     return windows::file_identity(file);
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     {
-        use std::os::unix::fs::MetadataExt as _;
-        let metadata = file.metadata()?;
-        Ok((metadata.dev(), metadata.ino()))
+        Ok(file_identity_from_metadata(&file.metadata()?))
     }
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub(crate) fn file_identity_from_metadata(metadata: &std::fs::Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt as _;
+    (metadata.dev(), metadata.ino())
 }
 
 pub(crate) fn is_uncertain_io_error(error: &io::Error) -> bool {

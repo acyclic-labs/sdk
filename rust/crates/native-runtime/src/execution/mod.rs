@@ -88,6 +88,7 @@ struct Grant {
 #[derive(Debug)]
 struct BoundPath {
     path: PathBuf,
+    is_dir: bool,
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     identity: crate::FileIdentity,
     // A numeric identity alone can be reused after unlink. This shared handle
@@ -99,10 +100,14 @@ impl BoundPath {
     fn new(path: &Path) -> io::Result<Self> {
         let path = canonical(path)?;
         let object = Self::open_path(&path)?;
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+        let metadata = object.metadata().map_err(failure)?;
+        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+        let identity = crate::file::file_identity_from_metadata(&metadata);
+        #[cfg(windows)]
         let identity = crate::file_identity(&object).map_err(failure)?;
         Ok(Self {
             path,
+            is_dir: metadata.is_dir(),
             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
             identity,
             _object: object,
@@ -128,8 +133,17 @@ impl BoundPath {
 
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn bind(&self) -> io::Result<std::fs::File> {
-        let file = Self::open_path(self)?;
-        self.verify(&file)?;
+        self.bind_controlled(None)
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn bind_controlled(
+        &self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<std::fs::File> {
+        use crate::{NativeOperationKind::Read, meter::native_control_attempt};
+        let file = native_control_attempt(meter, Read, || Self::open_path(self))?;
+        native_control_attempt(meter, Read, || self.verify(&file))?;
         Ok(file)
     }
 
@@ -191,7 +205,7 @@ impl ExecutionGrant {
         network: ExecutionNetwork,
     ) -> io::Result<Self> {
         let workspace = BoundPath::new(workspace)?;
-        if !workspace.is_dir() {
+        if !workspace.is_dir {
             return Err(refused("execution workspace is not a directory"));
         }
         let mut read = read
@@ -280,13 +294,17 @@ impl ExecutionGrant {
     /// Prepares OS objects without starting untrusted code. A failure is a
     /// refusal, never an instruction to retry without confinement.
     pub fn prepare(&self) -> io::Result<PreparedExecution> {
+        self.prepare_controlled(None)
+    }
+
+    pub(crate) fn prepare_controlled(
+        &self,
+        _meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<PreparedExecution> {
         #[cfg(target_os = "linux")]
-        let roots = std::iter::once(&self.0.workspace)
-            .chain(&self.0.read)
-            .map(BoundPath::bind)
-            .collect::<io::Result<Vec<_>>>()?;
+        let workspace = self.0.workspace.bind_controlled(_meter)?;
         #[cfg(target_os = "linux")]
-        let platform = linux::Prepared::new(&self.0, roots)?;
+        let platform = linux::Prepared::new(&self.0, workspace, _meter)?;
         #[cfg(not(target_os = "linux"))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",

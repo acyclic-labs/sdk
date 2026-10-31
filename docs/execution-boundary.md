@@ -30,7 +30,14 @@ checks cancellation before preparing enforcement. Admission errors preserve
 any acquired tree or custody record in that slot. Recovery remains a separately
 admitted operation; the controlled entry performs no hidden cleanup. Original
 control interruption remains interruption, rather than a definitive refusal.
-The grant-preparation objects themselves still require resource accounting.
+Linux preparation charges each root open and identity query, device metadata, ABI
+query, ruleset creation and rule insertion to that same invocation ledger.
+Every operation reserves before the native call. Successful handles acquire
+RAII ownership before a late recording failure is returned, so preparation
+failure closes them without launching a child. No preparation wait is added.
+Grant construction, implicit path storage and remaining launch allocations
+still require resource accounting; operation charging is not a complete
+active-memory reservation contract.
 The granted entry consumes the original `ProcessCommand`; ordinary command conversion refuses
 to discard an attached boundary. Linux custodied launches carry the prepared
 ruleset descriptor and native filter in their original launch request. Both
@@ -76,8 +83,14 @@ Metadata changes are conservatively denied even in writable workspaces.
 Read roots are explicit; host home, procfs, temporary directories and the
 filesystem root are never implicitly added. `/dev/null` and `/dev/urandom`
 provide null I/O and entropy. Only pipes and null may cross as stdio;
-nonstdio descriptors become close-on-exec. Landlock rule roots are held during
-active launch, with object identities checked against the original grant.
+nonstdio descriptors become close-on-exec. Each Landlock root is opened and
+checked against the original grant, then closed after its rule is inserted.
+The kernel ruleset retains its own object references; the immutable grant
+also pins the original roots. Preparation keeps only one temporary root
+descriptor, with no root-descriptor vector or copied root collection.
+Root file types are bound with their identities at grant construction. A
+pinned inode's type cannot change; launch reuses that type after checking
+identity, removing one repeated metadata syscall per declared root.
 Missing native facilities return a typed unsupported refusal before execution.
 Conformance checks verify that refusal and the absence of guest effects on
 unsupported kernels; kernel enforcement requires a supported kernel.

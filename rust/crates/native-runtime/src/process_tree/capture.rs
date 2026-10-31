@@ -549,18 +549,3 @@ pub(super) fn drain_pipe_observed<T: Read + platform::Pipe>(
     }
     Ok(true)
 }
-
-/// One pipe SDK call owns its own credit.
-pub(super) fn pipe_operation_attempt<T>(
-    meter: Option<&dyn crate::NativeReadMeter>,
-    kind: crate::NativeOperationKind,
-    operation: impl FnOnce() -> io::Result<T>,
-) -> io::Result<(io::Result<T>, io::Result<()>)> {
-    match meter {
-        Some(meter) => {
-            let mut token = crate::NativeOperationReservation::new(meter, kind, 1)?;
-            Ok(token.attempt(operation))
-        }
-        None => Ok((operation(), Ok(()))),
-    }
-}
