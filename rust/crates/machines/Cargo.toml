@@ -14,6 +14,9 @@ keywords = ["machines", "compute", "grpc"]
 categories = ["api-bindings"]
 
 
+[package.metadata.acyclic]
+consumer-features = [{ features = [], target = "wasm32-unknown-unknown" }]
+
 [features]
 conformance = ["acyclic-stream/conformance", "tokio/time"]
 default = ["grpc"]
