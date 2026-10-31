@@ -242,16 +242,23 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
         None,
     );
     client.register_credential(0, credential(server.resource()))?;
+    let (failed, failure) = tokio::sync::oneshot::channel();
+    let failed = Mutex::new(Some(failed));
     let mut runner = {
         let server = server.clone();
         tokio::spawn(async move {
             server
-                .run(|actor, error| panic!("original actor {actor:?} failed: {error}"))
+                .run(|actor, error| {
+                    if let Some(failed) = failed.lock().expect("failure sender").take() {
+                        let _ = failed.send(format!("original actor {actor:?} failed: {error}"));
+                    }
+                })
                 .await
         })
     };
     let scenario = async {
         let root = server.root().clone();
+        eprintln!("parent prompt: original Actor inbox admission");
         call(
             &client,
             "agents",
@@ -262,7 +269,9 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
             },
         )
         .await??;
+        eprintln!("parent result: original conversation and tool-output publication");
         let parent = observe(&client, &server, &root, 1).await?;
+        eprintln!("fork spawn: original parent Actor settlement");
         let Ok(AgentReply::Spawned { agent: child, .. }) = call(
             &client,
             "agents",
@@ -276,6 +285,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
         else {
             return Err("fork was not admitted".into());
         };
+        eprintln!("fork result: original conversation and tool-output publication");
         let fork = observe(&client, &server, &child, 2).await?;
         assert_ne!(
             parent["execution"]["volume"]["id"],
@@ -323,6 +333,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
     };
     let result = tokio::select! {
         result = scenario => result,
+        failed = failure => Err(format!("Actor failure producer: {failed:?}").into()),
         stopped = &mut runner => return Err(format!("original Actor producer stopped: {stopped:?}").into()),
     };
     runner.abort();
@@ -396,6 +407,7 @@ async fn observe(
         }
         break entry;
     };
+    eprintln!("{agent}: original conversation output observed");
     // This scenario has one execution segment. Reopen its original journal
     // read-only and require its own ToolCompleted file, before awaiting delivery.
     let directory = entry
@@ -427,6 +439,7 @@ async fn observe(
         })
         .ok_or("original completion missing")?;
     assert!(file.path().starts_with(&format!("{directory}/")));
+    eprintln!("{agent}: original ToolCompleted result observed");
     loop {
         let update = changes.next().await.ok_or("tool-output producer lost")??;
         if let Some(session_wire::session_frame::Body::Data(data)) = update.into_wire().body
