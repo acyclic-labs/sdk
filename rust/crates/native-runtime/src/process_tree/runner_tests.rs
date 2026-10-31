@@ -372,6 +372,38 @@ fn security_owner() {
             .join()
             .expect("launching thread");
     });
+    // Ignored dispositions survive exec, unlike installed handlers. A
+    // long-lived runner must not preserve the owner's earlier disposition.
+    // SAFETY: this isolated owner has no other signal users; save and restore
+    // the original action without installing a Rust signal handler.
+    unsafe {
+        let mut ignored: libc::sigaction = std::mem::zeroed();
+        let mut original: libc::sigaction = std::mem::zeroed();
+        ignored.sa_sigaction = libc::SIG_IGN;
+        assert_eq!(libc::sigemptyset(&raw mut ignored.sa_mask), 0);
+        assert_eq!(
+            libc::sigaction(libc::SIGUSR1, &raw const ignored, &raw mut original),
+            0
+        );
+        let direct = Command::new("/bin/cat")
+            .arg("/proc/self/status")
+            .output()
+            .expect("direct child with ignored signal");
+        let direct = String::from_utf8(direct.stdout).expect("status");
+        let observed = status(&first_custody);
+        assert_ne!(field(&direct, "SigIgn:"), field(&before, "SigIgn:"));
+        assert_eq!(field(&observed, "SigIgn:"), field(&direct, "SigIgn:"));
+        let ignoring_runner = runner_pid().expect("runner with current ignored signals");
+        assert_ne!(ignoring_runner, first_runner);
+        assert_eq!(
+            libc::sigaction(libc::SIGUSR1, &raw const original, std::ptr::null_mut()),
+            0
+        );
+        let restored = status(&first_custody);
+        assert_eq!(field(&restored, "SigIgn:"), field(&before, "SigIgn:"));
+        assert_ne!(runner_pid(), Some(ignoring_runner));
+    }
+    let current_runner = runner_pid().expect("current runner");
     let original = fs::read_to_string("/proc/thread-self/status").expect("owner status");
     if field(&original, "NoNewPrivs:").ends_with('0') {
         // SAFETY: irreversible restriction confined to this helper process.
@@ -383,7 +415,7 @@ fn security_owner() {
         assert!(field(&observed, "NoNewPrivs:").ends_with('1'));
         assert_ne!(
             runner_pid(),
-            Some(first_runner),
+            Some(current_runner),
             "old runner retained unrestricted credentials"
         );
         eprintln!("actual NoNewPrivs transition qualified");
@@ -414,7 +446,7 @@ fn security_owner() {
 }
 
 #[test]
-fn a_runner_preserves_current_security_and_each_launching_threads_signal_mask() {
+fn launch_admission_preserves_current_security_and_signal_state() {
     owner("security");
 }
 

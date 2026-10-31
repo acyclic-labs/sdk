@@ -27,9 +27,9 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_INVALID_HANDLE,
-    ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    CloseHandle, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle,
+    ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::IO::{
@@ -66,7 +66,7 @@ const INPUT_CLOSED: usize = usize::MAX - 4;
 /// The owner's handle on its running custodian.
 pub(super) struct Custodian {
     child: Child,
-    input: Mutex<ChildStdin>,
+    input: Mutex<Option<ChildStdin>>,
     identity: String,
     endpoint: String,
 }
@@ -140,7 +140,7 @@ fn launch() -> io::Result<Custodian> {
     match started {
         Ok((input, endpoint, identity)) => Ok(Custodian {
             child,
-            input: Mutex::new(input),
+            input: Mutex::new(Some(input)),
             identity,
             endpoint,
         }),
@@ -213,41 +213,25 @@ impl Custodian {
         let ready = event(false)?;
         let done = event(true)?;
         let target: HANDLE = self.child.as_raw_handle().cast();
-        // SAFETY: owned Job, process and event handles of this process, and
-        // the live custodian with duplicate access. Each lands in the
-        // custodian, which owns and closes it.
-        let handed = unsafe {
-            [
-                duplicate(job, target, 0, DUPLICATE_SAME_ACCESS)?,
-                duplicate(
-                    process,
-                    target,
-                    PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-                    0,
-                )?,
-                duplicate(
-                    ready.as_raw_handle().cast(),
-                    target,
-                    0,
-                    DUPLICATE_SAME_ACCESS,
-                )?,
-                duplicate(
-                    done.as_raw_handle().cast(),
-                    target,
-                    0,
-                    DUPLICATE_SAME_ACCESS,
-                )?,
-            ]
-        };
-        writeln!(
-            self.input.lock().map_err(|_| poisoned())?,
-            "{tree} {} {} {} {} {}",
-            handed[0].expose_provenance(),
-            handed[1].expose_provenance(),
-            handed[2].expose_provenance(),
-            handed[3].expose_provenance(),
-            admission::encode(secret)
+        let mut handoff = Handoff::new(target);
+        handoff.duplicate(job, 0, DUPLICATE_SAME_ACCESS)?;
+        handoff.duplicate(
+            process,
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
         )?;
+        handoff.duplicate(ready.as_raw_handle().cast(), 0, DUPLICATE_SAME_ACCESS)?;
+        handoff.duplicate(done.as_raw_handle().cast(), 0, DUPLICATE_SAME_ACCESS)?;
+        {
+            let mut input = self.input.lock().map_err(|_| poisoned())?;
+            let output = input.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
+            if let Err(error) = handoff.publish(output, tree, secret) {
+                // A partial line is never followed by another handover. EOF
+                // withdraws that publication; subsequent callers fail closed.
+                drop(input.take());
+                return Err(error);
+            }
+        }
         // Done before ready is the custodian's refusal; its exit is its loss.
         match wait_any(&[
             ready.as_raw_handle().cast(),
@@ -260,6 +244,84 @@ impl Custodian {
             }),
             1 => Err(io::Error::other("the process custodian refused the tree")),
             _ => Err(io::Error::other("the process custodian exited")),
+        }
+    }
+}
+
+/// Owns remote duplicates until the complete original handover is published.
+/// A failed later duplicate, lock, or write must not leave earlier handles in
+/// the shared custodian without a tree that can close them.
+struct Handoff {
+    target: HANDLE,
+    handles: [HANDLE; 4],
+    count: usize,
+}
+
+impl Handoff {
+    fn new(target: HANDLE) -> Self {
+        Self {
+            target,
+            handles: [std::ptr::null_mut(); 4],
+            count: 0,
+        }
+    }
+
+    fn duplicate(&mut self, source: HANDLE, access: u32, options: u32) -> io::Result<()> {
+        let slot = self
+            .handles
+            .get_mut(self.count)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        // SAFETY: the caller retains its source and the custodian process.
+        *slot = unsafe { duplicate(source, self.target, access, options)? };
+        self.count += 1;
+        Ok(())
+    }
+
+    fn publish(
+        mut self,
+        output: &mut impl io::Write,
+        tree: usize,
+        secret: &Secret,
+    ) -> io::Result<()> {
+        if self.count != self.handles.len() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        writeln!(
+            output,
+            "{tree} {} {} {} {} {}",
+            self.handles[0].expose_provenance(),
+            self.handles[1].expose_provenance(),
+            self.handles[2].expose_provenance(),
+            self.handles[3].expose_provenance(),
+            admission::encode(secret)
+        )?;
+        self.count = 0;
+        Ok(())
+    }
+}
+
+impl Drop for Handoff {
+    fn drop(&mut self) {
+        for handle in &self.handles[..self.count] {
+            let mut local = std::ptr::null_mut();
+            // SAFETY: these are our unpublished duplicates in the retained
+            // target. CLOSE_SOURCE closes each there, including on failure.
+            // If the target has exited its handle table is already retired.
+            if unsafe {
+                DuplicateHandle(
+                    self.target,
+                    *handle,
+                    GetCurrentProcess(),
+                    &raw mut local,
+                    0,
+                    0,
+                    DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS,
+                )
+            } != 0
+            {
+                // SAFETY: the successful transfer returned one local handle.
+                unsafe { CloseHandle(local) };
+            }
         }
     }
 }
@@ -415,14 +477,15 @@ impl Opened {
             let value = fields.next()?.parse::<usize>().ok()?;
             Some(std::ptr::with_exposed_provenance_mut(value))
         };
-        Some(Self {
+        let opened = Self {
             tree,
             job: handle()?,
             process: handle()?,
             ready: handle()?,
             done: handle()?,
             secret: admission::decode(fields.next()?)?,
-        })
+        };
+        fields.next().is_none().then_some(opened)
     }
 }
 
@@ -690,7 +753,7 @@ fn read_trees(mut input: BufReader<io::Stdin>, port: HANDLE) -> io::Result<mpsc:
                 line.clear();
                 let tree = match input.read_line(&mut line) {
                     Ok(0) | Err(_) => None,
-                    Ok(_) => Opened::parse(line.trim_end()),
+                    Ok(_) => line.strip_suffix('\n').and_then(Opened::parse),
                 };
                 let key = if let Some(tree) = tree {
                     if send.send(tree).is_err() {
@@ -834,4 +897,66 @@ fn active_processes(job: HANDLE) -> io::Result<u32> {
         return Err(io::Error::last_os_error());
     }
     Ok(accounting.ActiveProcesses)
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+    use windows_sys::Win32::Foundation::GetHandleInformation;
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+
+    fn assert_closed(handle: HANDLE) {
+        let mut flags = 0;
+        // SAFETY: queries a numeric handle without dereferencing it.
+        assert_eq!(unsafe { GetHandleInformation(handle, &raw mut flags) }, 0);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(ERROR_INVALID_HANDLE.cast_signed())
+        );
+    }
+
+    #[test]
+    fn failed_handover_retires_every_unpublished_duplicate() {
+        let source = event(false).expect("source event");
+        // SAFETY: the current process pseudo-handle is always live.
+        let target = unsafe { GetCurrentProcess() };
+        let copied;
+        {
+            let mut handoff = Handoff::new(target);
+            handoff
+                .duplicate(source.as_raw_handle().cast(), 0, DUPLICATE_SAME_ACCESS)
+                .expect("first duplicate");
+            copied = handoff.handles[0];
+            assert!(
+                handoff
+                    .duplicate(std::ptr::null_mut(), 0, DUPLICATE_SAME_ACCESS)
+                    .is_err()
+            );
+        }
+        assert_closed(copied);
+
+        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+        // SAFETY: writable outputs for a real anonymous pipe; close its only
+        // reader so the original handover write receives an actual OS error.
+        unsafe {
+            assert_ne!(
+                CreatePipe(&raw mut read, &raw mut write, std::ptr::null(), 0),
+                0
+            );
+            assert_ne!(CloseHandle(read), 0);
+        }
+        // SAFETY: CreatePipe transferred this writable handle.
+        let mut output = std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(write) });
+        let mut handoff = Handoff::new(target);
+        for _ in 0..4 {
+            handoff
+                .duplicate(source.as_raw_handle().cast(), 0, DUPLICATE_SAME_ACCESS)
+                .expect("duplicate before write");
+        }
+        let copied = handoff.handles;
+        assert!(handoff.publish(&mut output, 1, &[0; 16]).is_err());
+        for handle in copied {
+            assert_closed(handle);
+        }
+    }
 }

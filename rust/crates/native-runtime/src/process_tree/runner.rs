@@ -77,6 +77,13 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<Vec<u8>> {
         .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
         .ok_or(io::ErrorKind::InvalidData)?;
     body.extend_from_slice(&signals.to_ne_bytes());
+    let ignored = status
+        .split(|byte| *byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"SigIgn:"))
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+        .ok_or(io::ErrorKind::InvalidData)?;
+    body.extend_from_slice(&ignored.to_ne_bytes());
     for resource in 0..LIMITS {
         let mut limit = libc::rlimit {
             rlim_cur: 0,
@@ -90,7 +97,7 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<Vec<u8>> {
         body.extend_from_slice(&limit.rlim_max.to_ne_bytes());
     }
     // Reuse the status allocation. Credentials (including supplementary
-    // groups and capabilities) and irreversible security restrictions must
+    // groups and capabilities), ignored signals and security restrictions must
     // be inherited from the current caller, never an earlier privileged one.
     let mut read = 0;
     let mut written = 0;
@@ -104,6 +111,7 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<Vec<u8>> {
             b"Uid:".as_slice(),
             b"Gid:",
             b"Groups:",
+            b"SigIgn:",
             b"Cap",
             b"NoNewPrivs:",
             b"Seccomp",
