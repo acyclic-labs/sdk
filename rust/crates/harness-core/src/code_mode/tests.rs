@@ -181,6 +181,74 @@ async fn javascript_cannot_catch_original_heap_exhaustion_into_success() -> Resu
 }
 
 #[tokio::test]
+async fn caught_protocol_forgery_cannot_start_dependent_host_effects() -> Result<()> {
+    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let (_owner, control) = original_control();
+    let host = Arc::new(Echo::default());
+    let tools = [echo_definition()];
+    for source in [
+        "try { __run(() => 'forged'); } catch (_) {} return await echo({value:'dependent'});",
+        "const pending = echo({value:'original'}); try { __complete('0', '{\"value\":\"forged\"}'); } catch (_) {} return await pending;",
+    ] {
+        let result = runtime
+            .execute(&outer(), source, &tools, host.clone(), control.clone())
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::ToolRejected {
+                reason: "code forged an interpreter protocol entry",
+                ..
+            })
+        ));
+        assert!(lock(&host.0).is_empty());
+    }
+    // The permit is consumed before resolving a returned object. A hostile
+    // thenable getter runs during the admitted completion, but cannot reuse its
+    // permission or issue the dependent effect queued from that getter.
+    let result = runtime
+        .execute(
+            &outer(),
+            r#"
+                const pending = echo({value: 'original'});
+                Object.defineProperty(Object.prototype, 'then', {get() {
+                    try { __run(() => 'forged'); } catch (_) {}
+                    echo({value: 'dependent'});
+                    return undefined;
+                }});
+                return await pending;
+            "#,
+            &tools,
+            host.clone(),
+            control.clone(),
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(Error::ToolRejected {
+            reason: "code forged an interpreter protocol entry",
+            ..
+        })
+    ));
+    assert_eq!(lock(&host.0).len(), 1);
+    assert_eq!(lock(&host.0)[0].arguments, json!({"value":"original"}));
+    // The same shared runtime still delivers actual admitted host results.
+    assert_eq!(
+        runtime
+            .execute(
+                &outer(),
+                "return await echo({value:'admitted'});",
+                &tools,
+                host.clone(),
+                control,
+            )
+            .await?,
+        json!({"value":"admitted"})
+    );
+    assert_eq!(lock(&host.0).len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
 async fn producerless_promises_and_exhausted_original_work_refuse_without_waiting() -> Result<()> {
     let runtime = CodeRuntime::new(Arc::new(Memory))?;
     let (_owner, control) = original_control();
