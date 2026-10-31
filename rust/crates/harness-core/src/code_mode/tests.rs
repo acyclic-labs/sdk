@@ -3,16 +3,6 @@ use crate::OperationId;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-struct Memory;
-impl CodeMemory for Memory {
-    fn credit_bytes(&self) -> Option<NonZeroUsize> {
-        None
-    }
-    fn acquire(&self) -> BoxProviderFuture<'_, Result<Box<dyn CodeCredit>>> {
-        Box::pin(async { Ok(Box::new(()) as Box<dyn CodeCredit>) })
-    }
-}
-
 struct Control {
     owner: Mutex<tokio::sync::oneshot::Receiver<()>>,
     remaining: AtomicUsize,
@@ -84,7 +74,7 @@ fn echo_definition() -> ToolDefinition {
 
 #[tokio::test]
 async fn sandbox_uses_only_host_calls_and_replays_seeded_values_and_identity() -> Result<()> {
-    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let runtime = CodeRuntime::new()?;
     runtime.compiler.context.with(|ctx| {
         let visibility = ctx.eval(c"typeof __harness_typescript")?;
         assert_eq!(visibility.text()?.as_str()?, "undefined");
@@ -182,7 +172,7 @@ async fn javascript_cannot_catch_original_heap_exhaustion_into_success() -> Resu
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
-    let runtime = CodeRuntime::new_with_native_work(Arc::new(Memory), &work)?;
+    let runtime = CodeRuntime::new_with_native_work(&work)?;
     // Retain all but one MiB of the real remaining configured capacity after
     // loading the shared compiler. The tested execution allowance is unchanged.
     let blocker = work.claim(
@@ -237,7 +227,7 @@ fn rust_frames_retain_exact_original_custody_until_the_last_reference() -> Resul
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let runtime = CodeRuntime::new_with_native_work(Arc::new(Memory), &work)?;
+    let runtime = CodeRuntime::new_with_native_work(&work)?;
     let baseline = work.live_allocation_bytes();
     let frame = runtime.retained_arc(Mutex::new(None::<Error>))?;
     let retained =
@@ -268,7 +258,7 @@ fn dynamic_buffers_keep_the_original_owner_through_queue_and_result_handoff() ->
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let runtime = CodeRuntime::new_with_native_work(Arc::new(Memory), &work)?;
+    let runtime = CodeRuntime::new_with_native_work(&work)?;
     let buffers = Buffers::new(&runtime);
     let baseline = work.live_allocation_bytes();
     let payload = json!({"value": "retained result".repeat(257)});
@@ -328,7 +318,7 @@ fn dynamic_buffers_keep_the_original_owner_through_queue_and_result_handoff() ->
 
 #[tokio::test]
 async fn caught_protocol_forgery_cannot_start_dependent_host_effects() -> Result<()> {
-    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let runtime = CodeRuntime::new()?;
     let (_owner, control) = original_control();
     let host = Arc::new(Echo::default());
     let tools = [echo_definition()];
@@ -397,7 +387,7 @@ async fn caught_protocol_forgery_cannot_start_dependent_host_effects() -> Result
 
 #[tokio::test]
 async fn producerless_promises_and_exhausted_original_work_refuse_without_waiting() -> Result<()> {
-    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let runtime = CodeRuntime::new()?;
     let (_owner, control) = original_control();
     let host = Arc::new(Echo::default());
     let failed = runtime
@@ -461,7 +451,24 @@ impl CodeHost for HeldHost {
 
 #[tokio::test]
 async fn host_wait_releases_shared_interpreter_and_owner_drop_terminates() -> Result<()> {
-    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 64 * 1024 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let (session_owner, session) = crate::filesystem::SessionWork::admit(work.clone())?;
+    let runtime = session.code_runtime()?;
+    let before = work.receipt();
+    assert!(Arc::ptr_eq(&runtime, &session.code_runtime()?));
+    assert_eq!(
+        work.receipt().allocation_operations,
+        before.allocation_operations
+    );
     let (_owner, control) = original_control();
     let (started, ready) = tokio::sync::oneshot::channel();
     let (release, released) = tokio::sync::oneshot::channel();
@@ -515,6 +522,35 @@ async fn host_wait_releases_shared_interpreter_and_owner_drop_terminates() -> Re
         )
         .await;
     assert!(failed.is_err());
+    // The serving producer closes a live host wait even when the invocation's
+    // separate control and host producer remain alive.
+    let (_invocation_owner, control) = original_control();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (_release, released) = tokio::sync::oneshot::channel();
+    let host = Arc::new(HeldHost {
+        started: Mutex::new(Some(started)),
+        released: Mutex::new(Some(released)),
+    });
+    let waiting = runtime.execute(
+        &outer,
+        "return await echo({value: 'held'});",
+        &tools,
+        host,
+        control,
+    );
+    let close = async {
+        ready
+            .await
+            .map_err(|_| rejected("host admission dropped"))?;
+        drop(session_owner);
+        Ok::<_, Error>(())
+    };
+    let (waiting, close) = tokio::join!(waiting, close);
+    close?;
+    assert!(waiting.is_err());
+    assert!(session.code_runtime().is_err());
+    drop((runtime, session));
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
 
@@ -557,7 +593,7 @@ impl CodeHost for ReverseCompletion {
 
 #[tokio::test]
 async fn concurrent_host_completion_order_cannot_change_replay_continuations() -> Result<()> {
-    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let runtime = CodeRuntime::new()?;
     let (_owner, control) = original_control();
     let (second, _) = tokio::sync::watch::channel(false);
     let host = Arc::new(ReverseCompletion(second));
@@ -603,7 +639,7 @@ impl CodeHost for AdmissionRefusal {
 
 #[tokio::test]
 async fn host_future_admission_refuses_before_any_batch_effect() -> Result<()> {
-    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let runtime = CodeRuntime::new()?;
     let (_owner, control) = original_control();
     let host = Arc::new(AdmissionRefusal {
         admitted: AtomicUsize::new(0),
@@ -632,7 +668,7 @@ async fn host_future_admission_refuses_before_any_batch_effect() -> Result<()> {
 
 #[tokio::test]
 async fn javascript_cannot_catch_and_acknowledge_uncertain_host_custody() -> Result<()> {
-    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let runtime = CodeRuntime::new()?;
     let (_owner, control) = original_control();
     let result = runtime
         .execute(
@@ -654,7 +690,7 @@ proptest::proptest! {
     fn host_call_json_boundary_preserves_arbitrary_strings(text in ".*") {
         let executor = tokio::runtime::Builder::new_current_thread().build().unwrap();
         executor.block_on(async {
-            let runtime = CodeRuntime::new(Arc::new(Memory)).unwrap();
+            let runtime = CodeRuntime::new().unwrap();
             let (_owner, control) = original_control();
             let host = Arc::new(Echo::default());
             let literal = serde_json::to_string(&text).unwrap();
@@ -671,7 +707,7 @@ proptest::proptest! {
 
 #[tokio::test]
 async fn credited_compiler_realm_is_private_and_recovers_after_parse_failure() -> Result<()> {
-    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let runtime = CodeRuntime::new()?;
     let (_owner, control) = original_control();
     let host = Arc::new(Echo::default());
     let tools = [echo_definition()];

@@ -37,6 +37,7 @@ impl Runtime {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let (owner, session) = SessionWork::admit(original)?;
+        server.bound().turns().admit_session(&session)?;
         let (alive, lifetime) = watch::channel(());
         let active = Active {
             _work: owner,

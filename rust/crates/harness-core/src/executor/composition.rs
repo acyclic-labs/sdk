@@ -1,6 +1,15 @@
 use super::*;
 
 impl StockExecutor {
+    #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+    pub(crate) fn with_session(
+        mut self,
+        session: Option<Arc<crate::filesystem::SessionWork>>,
+    ) -> Self {
+        self.code_session = session;
+        self
+    }
+
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
@@ -20,7 +29,7 @@ impl StockExecutor {
             #[cfg(feature = "filesystem")]
             profile: None,
             #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
-            code_runtime: None,
+            code_session: None,
             max_output_tokens: None,
             provider,
             context,

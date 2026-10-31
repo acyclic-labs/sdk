@@ -1,6 +1,6 @@
 //! A shared QuickJS interpreter; effects remain ordinary journaled tool calls.
 //!
-//! An execution owns a transient realm while holding the interpreter's credit.
+//! An execution owns a transient realm funded by the original shared ledger.
 //! No realm, process, task or runtime is retained for a dormant agent. The
 //! interpreter has no module loader, filesystem, network, timer or process API.
 
@@ -18,17 +18,13 @@ use crate::{
     Error, NativeFutureBundle, NativeOrdered, Result,
     tool::{ToolDefinition, ToolInvocation, ToolResult},
 };
-use acyclic_stream::BoxProviderFuture;
 use buffers::{Buffers, Owned, PendingQueue};
 use custody::Retained;
 use engine::{Context, Runtime};
 use serde_json::Value;
-use std::{
-    num::NonZeroUsize,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 /// The original invocation's admission and interruption producer.
@@ -42,22 +38,6 @@ pub trait CodeControl: Send + Sync {
     /// Waits on the original cancellation/owner-loss event, never a probe.
     fn poll_interrupted(&self, context: &mut std::task::Context<'_>) -> std::task::Poll<Error>;
 }
-
-/// The original harness-wide memory reservation funding the shared interpreter.
-/// Its owner remains retained while the VM or any transient realm is live.
-pub trait CodeMemory: Send + Sync {
-    /// Already admitted shared memory credit; `None` means truly unbounded.
-    fn credit_bytes(&self) -> Option<NonZeroUsize>;
-    /// Acquires the original pool's transient execution/preparation credit.
-    /// Waits on release by that pool's original owner; producer loss must refuse.
-    /// The permit funds parsing as well as the realm and all pending host calls.
-    fn acquire(&self) -> BoxProviderFuture<'_, Result<Box<dyn CodeCredit>>>;
-}
-
-/// Original reservation custody, retained until all code and issued calls end.
-/// Dropping the concrete reservation returns credit to its existing pool.
-pub trait CodeCredit: Send + Sync {}
-impl<T: Send + Sync> CodeCredit for T {}
 
 /// Canonical host result and the original reservation funding its live bytes.
 /// The reservation retires only after those bytes have been delivered to JS.
@@ -120,12 +100,12 @@ pub trait CodeHost: Send + Sync {
     ) -> Result<NativeFutureBundle<'_, CodeHostResult>>;
 }
 
-/// One interpreter shared by the harness, with event-driven execution credit.
+/// One interpreter shared by the harness on its original admitted ledger.
 pub struct CodeRuntime {
     compiler: typescript::Compiler,
     runtime: Runtime,
     phase: tokio::sync::Mutex<()>,
-    _memory: Arc<dyn CodeMemory>,
+    _credit: crate::NativeCustody,
     #[cfg(feature = "filesystem")]
     native_allocator: Option<Arc<native_allocator::AllocatorState>>,
 }
@@ -201,17 +181,14 @@ impl Drop for ProtocolLease<'_> {
 
 impl CodeRuntime {
     /// Creates the harness's shared interpreter, without any ambient host APIs.
-    pub fn new(memory: Arc<dyn CodeMemory>) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let runtime = Runtime::new()?;
-        if let Some(credit) = memory.credit_bytes() {
-            runtime.set_memory_limit(credit.get());
-        }
         let compiler = typescript::Compiler::new(&runtime)?;
         Ok(Self {
             compiler,
             runtime,
             phase: tokio::sync::Mutex::new(()),
-            _memory: memory,
+            _credit: None,
             #[cfg(feature = "filesystem")]
             native_allocator: None,
         })
@@ -222,13 +199,9 @@ impl CodeRuntime {
     /// or returns that reservation's exact capacity, with no allocation index.
     ///
     /// The TypeScript parser and output share this same credited C heap. The
-    /// supplied execution permit also retains original Rust dispatch custody
-    /// and waits on its original release event before profile activation.
+    /// original session cancellation also interrupts running code and waits.
     #[cfg(feature = "filesystem")]
-    pub fn new_with_native_work(
-        memory: Arc<dyn CodeMemory>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
+    pub fn new_with_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         let (runtime, allocator) = native_allocator::runtime(work)?;
         let compiler = typescript::Compiler::new(&runtime);
         if let Some(error) = allocator.take_failure() {
@@ -239,9 +212,30 @@ impl CodeRuntime {
             compiler,
             runtime,
             phase: tokio::sync::Mutex::new(()),
-            _memory: memory,
+            _credit: None,
             native_allocator: Some(allocator),
         })
+    }
+
+    /// Admits the shared runtime's Arc before building it on the same ledger.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn shared(work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
+        let credit = work.claim(
+            acyclic_collections::arc_allocation_bytes::<Self>() as u64,
+            1,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
+        let mut runtime = Self::new_with_native_work(work)?;
+        runtime._credit = Some(credit);
+        Ok(Arc::new(runtime))
+    }
+
+    fn check_session(&self) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        if let Some(allocator) = &self.native_allocator {
+            allocator.work().remaining()?;
+        }
+        Ok(())
     }
 
     /// Runs TypeScript with only the admitted tools available as host functions.
@@ -278,10 +272,15 @@ impl CodeRuntime {
         control: Arc<dyn CodeControl>,
     ) -> Result<CodeOutput> {
         control.check()?;
-        let _credit = tokio::select! {
-            error = futures::future::poll_fn(|context| control.poll_interrupted(context)) => return Err(error),
-            credit = self._memory.acquire() => credit?,
-        };
+        self.check_session()?;
+        #[cfg(feature = "filesystem")]
+        if let Some(allocator) = &self.native_allocator {
+            let cancelled = allocator.work().cancellation_wait()?;
+            return tokio::select! {
+                _ = cancelled => Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled)),
+                result = run(self, outer, source, input, tools, host, control) => result,
+            };
+        }
         run(self, outer, source, input, tools, host, control).await
     }
 
@@ -295,15 +294,22 @@ impl CodeRuntime {
             phase = self.phase.lock() => phase,
         };
         control.check()?;
+        self.check_session()?;
         let failure = Mutex::new(None);
         let interruption = engine::Interrupt {
             control,
             failure: &failure,
+            #[cfg(feature = "filesystem")]
+            session: self
+                .native_allocator
+                .as_ref()
+                .map(|allocator| allocator.work()),
         };
         let lease = self.runtime.interrupt(&interruption);
         let result = action(&self.runtime).and_then(|value| {
             while self.runtime.execute_pending_job()? {
                 control.check()?;
+                self.check_session()?;
             }
             Ok(value)
         });

@@ -119,6 +119,8 @@ impl TurnContext for Grants {
 /// the tools with the turn's agent tools bound to its effects, the limits and
 /// compaction, then the host's [`TurnContext`].
 pub struct StockExecutors {
+    #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+    session: std::sync::OnceLock<Arc<super::SessionWork>>,
     model: Model,
     provider: Arc<dyn ModelProvider>,
     tools: ToolRegistry,
@@ -210,6 +212,8 @@ impl StockExecutors {
         context: Arc<dyn TurnContext>,
     ) -> Self {
         Self {
+            #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+            session: std::sync::OnceLock::new(),
             model,
             provider,
             tools,
@@ -255,6 +259,17 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+    fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
+        match self.session.set(Arc::clone(session)) {
+            Ok(()) => Ok(()),
+            Err(session) if Arc::ptr_eq(self.session.get().unwrap(), &session) => Ok(()),
+            Err(_) => Err(Error::Invalid(
+                "executor belongs to another serving session".into(),
+            )),
+        }
+    }
+
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
         self.context.roster(agent)
     }
@@ -302,6 +317,8 @@ impl TurnExecutors for StockExecutors {
             let executor = StockExecutor::new(model, provider, ContextPipeline::default(), tools)
                 .with_limits(self.limits)
                 .with_compaction_policy(self.compaction.clone());
+            #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+            let executor = executor.with_session(self.session.get().cloned());
             let executor = self
                 .context
                 .prepare((executor, self.limits), agent, turn, input, authority)

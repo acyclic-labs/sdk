@@ -548,7 +548,7 @@ pub struct StockExecutor {
         String,
     )>,
     #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
-    code_runtime: Option<Arc<crate::code_mode::CodeRuntime>>,
+    code_session: Option<Arc<crate::filesystem::SessionWork>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,

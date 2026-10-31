@@ -107,12 +107,6 @@ impl Runtime {
         Ok(runtime)
     }
 
-    pub(super) fn set_memory_limit(&self, bytes: usize) {
-        let _gate = self.enter();
-        // SAFETY: this live runtime is exclusively locked.
-        unsafe { qjs::JS_SetMemoryLimit(self.0.raw.as_ptr(), bytes as _) };
-    }
-
     pub(super) fn execute_pending_job(&self) -> Result<bool> {
         let _gate = self.enter();
         self.execute_pending_job_locked()
@@ -163,6 +157,8 @@ impl Runtime {
 pub(super) struct Interrupt<'a> {
     pub(super) control: &'a Arc<dyn CodeControl>,
     pub(super) failure: &'a Mutex<Option<Error>>,
+    #[cfg(feature = "filesystem")]
+    pub(super) session: Option<&'a acyclic_fs::NativeMaterializationWork>,
 }
 
 pub(super) struct InterruptLease<'a> {
@@ -189,7 +185,13 @@ unsafe extern "C" fn stop(_: *mut qjs::JSRuntime, _: *mut qjs::c_void) -> qjs::c
 unsafe extern "C" fn interrupt(_: *mut qjs::JSRuntime, opaque: *mut qjs::c_void) -> qjs::c_int {
     // SAFETY: InterruptLease retains this stack object for the entire callback.
     let state = unsafe { &*opaque.cast::<Interrupt<'_>>() };
-    match catch_unwind(AssertUnwindSafe(|| state.control.check())) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        #[cfg(feature = "filesystem")]
+        if let Some(session) = state.session {
+            session.remaining()?;
+        }
+        state.control.check()
+    })) {
         Ok(Ok(())) => 0,
         result => {
             let error = match result {

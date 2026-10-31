@@ -212,7 +212,7 @@ impl StockExecution<'_> {
         }
         #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
         {
-            let runtime = self.stock.code_runtime.as_ref().ok_or_else(|| {
+            let session = self.stock.code_session.as_ref().ok_or_else(|| {
                 Error::tool_rejected("code mode has no admitted shared memory reservation")
             })?;
             let work = self.native_work().ok_or_else(|| {
@@ -224,6 +224,7 @@ impl StockExecution<'_> {
                 .and_then(|object| object.get("code"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| Error::tool_rejected("code requires a TypeScript source field"))?;
+            let runtime = session.code_runtime()?;
             let mut tools = self
                 .stock
                 .tools
@@ -317,7 +318,7 @@ impl StockExecution<'_> {
                     Error::tool_rejected("skill code requires original accounted execution custody")
                 })?;
                 #[cfg(feature = "code-mode")]
-                if self.stock.code_runtime.is_none() {
+                if self.stock.code_session.is_none() {
                     return Err(Error::ToolRejected {
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "skill code has no admitted shared memory reservation",

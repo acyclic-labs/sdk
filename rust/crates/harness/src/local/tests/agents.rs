@@ -118,6 +118,91 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "code-mode")]
+#[tokio::test]
+async fn served_shared_interpreter_uses_original_session_and_journaled_file_calls() -> Result<()> {
+    use crate::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
+    use crate::test_support::{PromptOutcome, ScriptedEvent, ScriptedTurn};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "code-write".into(),
+                "code".into(),
+                serde_json::json!({"code": "return await write({path: 'code.txt', content: 'admitted'});"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .tool(crate::executor::code_tool()?),
+        )
+        .await?,
+    );
+    harness.agents().await?;
+    let completion = harness.agents.get().unwrap().runtime.completion();
+    let outcome = tokio::select! {
+        result = crate::test_support::prompt_settled(&harness, "code", "write through code") => result?,
+        failure = completion => return Err(Error::Storage(format!("code serving producer ended: {failure:?}"))),
+    };
+    let PromptOutcome::Settled(_, output) = outcome else {
+        return Err(Error::Conflict(format!("code turn failed: {outcome:?}")));
+    };
+    assert_eq!(output.text, "done");
+    let request = provider
+        .request(1)
+        .ok_or_else(|| Error::NotFound("code result request".into()))?;
+    let value = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            ModelContentPart::ToolResult {
+                name,
+                content: ToolResultContent::Json { value },
+                ..
+            } if name == "code" => Some(value.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("successful code result".into()))?;
+    let file = serde_json::from_value::<crate::tool::files::FileResult>(value)
+        .map_err(agent)?
+        .file;
+    assert_eq!(file.path(), "code.txt");
+    assert_eq!(
+        &*harness
+            .client_reader()?
+            .read(&file, 1024, None, None)?
+            .await?,
+        b"admitted"
+    );
+    let requests = provider.request_count();
+    conversation(&harness)
+        .await?
+        .send("code", "write through code")
+        .await?;
+    assert_eq!(provider.request_count(), requests);
+    let session = Arc::clone(harness.agents.get().unwrap().runtime.session());
+    let retained = session.agent(&crate::AgentId::from_bytes([71; 16]))?;
+    let stopped = retained
+        .preparation()?
+        .original_native_work()
+        .unwrap()
+        .cancellation_wait()?;
+    drop(harness);
+    // The serving task owns cancellation. Retained handles cannot prolong it.
+    stopped.await;
+    assert!(retained.preparation().is_err());
+    Ok(())
+}
+
 /// The model's real channel owns progress; dropping it must close the same
 /// Session that carries the local commands and follows, retaining queued input.
 #[tokio::test]

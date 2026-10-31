@@ -25,6 +25,8 @@ impl Drop for SessionOwner {
 /// This is funding, not filesystem authority. Readers still need the executing
 /// agent's original volume grants and pinned generation.
 pub struct SessionWork {
+    #[cfg(feature = "code-mode")]
+    code: SyncMutex<Option<Arc<crate::code_mode::CodeRuntime>>>,
     agents: SyncMutex<FixedIndex<Arc<AgentSession>, NativeAllocation>>,
     io: PreparationIo,
     _allocation: NativeAllocation,
@@ -52,11 +54,32 @@ impl SessionWork {
         Ok((
             owner,
             Arc::new(Self {
+                #[cfg(feature = "code-mode")]
+                code: SyncMutex::new(None),
                 agents: SyncMutex::new(FixedIndex::default()),
                 io,
                 _allocation: allocation,
             }),
         ))
+    }
+
+    /// Lazily builds the one interpreter on this session's original ledger.
+    /// No agent owns a VM. Retained consumers cannot keep its producer alive.
+    #[cfg(feature = "code-mode")]
+    pub(crate) fn code_runtime(&self) -> Result<Arc<crate::code_mode::CodeRuntime>> {
+        self.io.check_cancellation()?;
+        let work = self
+            .io
+            .original_native_work()
+            .ok_or_else(|| Error::Invalid("session has no native admission".into()))?;
+        let mut code = self
+            .code
+            .lock()
+            .map_err(|_| Error::Invalid("session interpreter admission is poisoned".into()))?;
+        if code.is_none() {
+            *code = Some(crate::code_mode::CodeRuntime::shared(work)?);
+        }
+        Ok(Arc::clone(code.as_ref().unwrap()))
     }
 
     /// Selects the original slot by the complete actor identity. Each index

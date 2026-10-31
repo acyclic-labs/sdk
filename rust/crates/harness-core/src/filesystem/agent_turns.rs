@@ -557,6 +557,14 @@ async fn agent_authority_with_io<'v>(
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
+    /// Attaches the original serving lifetime before any delivery can run.
+    /// Implementations without retained work need no session attachment.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
+        let _ = session;
+        Ok(())
+    }
+
     /// Executor for `agent`'s turn `turn` on `input`.
     fn executor<'a>(
         &'a self,
@@ -613,6 +621,12 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Attaches the serving task's original admission before actor dispatch.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
+        self.executors.admit_session(session)
+    }
+
     /// Host signing each agent's authority with `issuer`'s custody, derived
     /// from `admission`. Every turn runs under one approval policy, resolved
     /// once: the agent's own policy file, chosen explicitly when it was
