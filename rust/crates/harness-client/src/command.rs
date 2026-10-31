@@ -260,6 +260,9 @@ pub enum AgentCommand {
         input: u64,
         /// Original exclusive journal continuation, initially zero.
         after: u64,
+        /// Wait for original source progress or committed input consumption
+        /// when the selected page is quiet. False takes a bounded snapshot.
+        wait: bool,
     },
     /// Read one bounded range of a file the agent's turns produced, through
     /// the host's authorized reader of that agent's volumes.

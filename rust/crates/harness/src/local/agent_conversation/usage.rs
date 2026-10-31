@@ -27,11 +27,13 @@ async fn write_agent(
         let AgentReply::Usage {
             page,
             input: admitted,
+            ..
         } = connection
             .execute(&AgentCommand::Usage {
                 agent: agent.clone(),
                 input,
                 after,
+                wait: false,
             })
             .await?
         else {

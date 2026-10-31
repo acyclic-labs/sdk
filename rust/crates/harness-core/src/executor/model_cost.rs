@@ -253,7 +253,7 @@ impl UsageTotal {
     }
 }
 
-/// Incremental query projection for one currency and an explicitly selected
+/// Incremental query projection for an optional currency and an explicitly selected
 /// agent or tree. Consume each settled usage-file row once at its original
 /// query frontier; this is not another journal or duplicate/replay detector.
 /// Storage is fixed-size, independent of calls, history and children. A price
@@ -261,10 +261,11 @@ impl UsageTotal {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelUsageTotals {
-    /// Aggregate projection format, currently one.
+    /// Aggregate projection format, currently two.
     pub version: u32,
-    /// One explicitly selected currency; no conversion is inferred.
-    pub currency: String,
+    /// One explicitly selected currency, or unknown. No conversion or automatic
+    /// selection from incoming rows is inferred.
+    pub currency: Option<String>,
     /// Selected original calls, including admitted calls without completion.
     pub calls: u64,
     /// Calls with an original committed terminal observation.
@@ -290,8 +291,18 @@ impl ModelUsageTotals {
             return Err(ModelPriceError::InvalidRecord);
         }
         Ok(Self {
-            version: 1,
-            currency,
+            currency: Some(currency),
+            ..Self::unpriced()
+        })
+    }
+
+    /// Starts a token-only query without choosing a currency. Even priced rows
+    /// contribute unknown charges here; their original token units still count.
+    /// This performs no allocation and never guesses a currency or price.
+    pub fn unpriced() -> Self {
+        Self {
+            version: 2,
+            currency: None,
             calls: 0,
             completed: 0,
             input: UsageTotal::default(),
@@ -300,7 +311,7 @@ impl ModelUsageTotals {
             output: UsageTotal::default(),
             reasoning: UsageTotal::default(),
             token_nano_units: UsageTotal::default(),
-        })
+        }
     }
 
     /// All fallible arithmetic precedes installation, so a refusal preserves
@@ -332,27 +343,32 @@ impl ModelUsageTotals {
         previous: Option<&ModelUsageProjection<'_>>,
         row: &ModelUsageProjection<'_>,
     ) -> Result<(), ModelPriceError> {
-        if row.version != 2
+        if self.version != 2
+            || self
+                .currency
+                .as_deref()
+                .is_some_and(|currency| !currency_valid(currency))
+            || row.version != 2
             || row.usage.version != 1
             || previous.is_some_and(|old| old.version != 2 || old.usage.version != 1)
         {
             return Err(ModelPriceError::InvalidRecord);
         }
-        if row
-            .estimated_cost
-            .currency
-            .as_deref()
-            .is_some_and(|currency| currency != self.currency)
-        {
-            return Err(ModelPriceError::CurrencyMismatch);
-        }
-        if previous.is_some_and(|old| {
-            old.estimated_cost
+        if let Some(selected) = self.currency.as_deref() {
+            if row
+                .estimated_cost
                 .currency
                 .as_deref()
-                .is_some_and(|currency| currency != self.currency)
-        }) {
-            return Err(ModelPriceError::CurrencyMismatch);
+                .is_some_and(|currency| currency != selected)
+                || previous.is_some_and(|old| {
+                    old.estimated_cost
+                        .currency
+                        .as_deref()
+                        .is_some_and(|currency| currency != selected)
+                })
+            {
+                return Err(ModelPriceError::CurrencyMismatch);
+            }
         }
         let calls = self
             .calls
@@ -391,8 +407,14 @@ impl ModelUsageTotals {
             .reasoning
             .update(old.map(|tokens| tokens.reasoning), tokens.reasoning)?;
         let cost = self.token_nano_units.update(
-            previous.map(|row| row.estimated_cost.token_nano_units),
-            row.estimated_cost.token_nano_units,
+            previous.map(|row| {
+                self.currency
+                    .as_ref()
+                    .and(row.estimated_cost.token_nano_units)
+            }),
+            self.currency
+                .as_ref()
+                .and(row.estimated_cost.token_nano_units),
         )?;
         self.calls = calls;
         self.completed = completed;
@@ -478,6 +500,13 @@ mod tests {
             let mut admitted = row.clone();
             admitted.completed = false;
             let pending = admitted.estimate(Some(&inclusive)).unwrap();
+            let mut unpriced = ModelUsageTotals::unpriced();
+            unpriced.push(&pending).unwrap();
+            unpriced.replace(&pending, &projected).unwrap();
+            prop_assert_eq!(unpriced.currency.as_deref(), None);
+            prop_assert_eq!(unpriced.input.value(), row.tokens.input);
+            prop_assert_eq!(unpriced.output.value(), row.tokens.output);
+            prop_assert_eq!(unpriced.token_nano_units, UsageTotal { known: 0, unknown: 1 });
             let mut total = ModelUsageTotals::new("USD".into()).unwrap();
             total.push(&pending).unwrap();
             prop_assert_eq!(total.input, UsageTotal { known: 0, unknown: 1 });
@@ -518,6 +547,14 @@ mod tests {
             revised.currency = "EUR".into();
             prop_assert_eq!(total.push(&row.estimate(Some(&revised)).unwrap()), Err(ModelPriceError::CurrencyMismatch));
             prop_assert_eq!(&total, &snapshot);
+            let euro = row.estimate(Some(&revised)).unwrap();
+            unpriced.replace(&projected, &euro).unwrap();
+            prop_assert_eq!(unpriced.currency.as_deref(), None);
+            prop_assert_eq!(unpriced.token_nano_units.value(), None);
+            let unpriced_wire = serde_json::to_value(&unpriced).unwrap();
+            prop_assert!(unpriced_wire["currency"].is_null());
+            let round_trip: ModelUsageTotals = serde_json::from_value(unpriced_wire).unwrap();
+            prop_assert_eq!(&round_trip, &unpriced);
             revised.currency = "USD".into();
             revised.input_nano_units_per_million = Some(29);
             let updated = row.estimate(Some(&revised)).unwrap();
@@ -528,6 +565,9 @@ mod tests {
             let allocations = acyclic_test_support::measure(|| {
                 let same = std::hint::black_box(row.estimate(Some(&revised)).unwrap());
                 total.replace(&same, &same).unwrap();
+                let mut token_only = ModelUsageTotals::unpriced();
+                token_only.push(&same).unwrap();
+                token_only.replace(&same, &same).unwrap();
             });
             prop_assert_eq!((allocations.count_total, allocations.bytes_total), (0, 0));
             let copied = acyclic_test_support::measure(|| { std::hint::black_box(row.clone()); });

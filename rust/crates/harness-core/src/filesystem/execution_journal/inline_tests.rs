@@ -152,6 +152,20 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     assert!(quiet.items.is_empty());
     assert_eq!(quiet.end, before.end);
     assert_eq!(quiet.next, None);
+    let change = async {
+        let updates = journal
+            .stream
+            .follow(journal.usage_follow(operation, quiet.end)?)
+            .await?;
+        let record = futures::StreamExt::next(&mut acyclic_stream::records_only(updates)).await;
+        assert!(matches!(record, Some(Ok(_))));
+        Ok::<(), Error>(())
+    };
+    let mut changed = std::pin::pin!(change);
+    assert!(
+        futures::poll!(&mut changed).is_pending(),
+        "the original producer is quiet"
+    );
     usage.dispatch.operation_id = OperationId::new();
     assert!(
         crate::executor::append_model_event(
@@ -195,6 +209,17 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         )
         .await?;
     }
+    changed.await?;
+    // Registration after the publication still starts at the same exclusive
+    // cut, rather than resolving a new head and losing this terminal record.
+    let updates = journal
+        .stream
+        .follow(journal.usage_follow(operation, quiet.end)?)
+        .await?;
+    assert!(matches!(
+        futures::StreamExt::next(&mut acyclic_stream::records_only(updates)).await,
+        Some(Ok(_))
+    ));
     let records = journal.records(operation, 0, 64, None).await?;
     assert_eq!(records.len(), 3);
     let ExecutionEvent::Model {

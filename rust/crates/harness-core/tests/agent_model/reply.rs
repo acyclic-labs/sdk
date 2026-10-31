@@ -101,6 +101,7 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
         ));
     }
     assert_eq!(ask(state.clone(), "m5", 5).await?, Reply::Pending);
+    assert_eq!(state.settled_before(7), 5);
     assert_eq!(ask(state.clone(), "m8", 8).await?, Reply::Pending);
     // m2 was consumed without an entry: a cancel cleared it.
     assert_eq!(ask(state.clone(), "m2", 2).await?, Reply::Dropped);
@@ -115,7 +116,22 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
         inbox: 6,
         checkpoint: Vec::new(),
     });
-    assert_eq!(ask(state, "m6", 6).await?, Reply::Pending);
+    assert_eq!(ask(state.clone(), "m6", 6).await?, Reply::Pending);
+    state.queued.clear();
+    assert_eq!(
+        state.settled_before(7),
+        6,
+        "a consumed paused turn is still pending"
+    );
+    state.turn = None;
+    state.overflow = Some(4);
+    assert_eq!(
+        state.settled_before(7),
+        4,
+        "unloaded inputs retain the original frontier"
+    );
+    state.overflow = None;
+    assert_eq!(state.settled_before(7), 7);
 
     // A forked agent searches only its own entries above the inherited base.
     let forked = create(provider, id(2)).await?;

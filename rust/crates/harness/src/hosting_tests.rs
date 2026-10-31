@@ -509,6 +509,37 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &AgentCommand::Root {}).await?,
         Ok(AgentReply::Root { agent }) if agent == root
     ));
+    let usage = AgentCommand::Usage {
+        agent: root.clone(),
+        input: 0,
+        after: 0,
+        wait: true,
+    };
+    let mut live_usage = std::pin::pin!(call(&client, "agents", &usage));
+    assert!(
+        futures::poll!(&mut live_usage).is_pending(),
+        "adoption is committed but its original actor has not consumed the input"
+    );
+    assert!(server.bound().agents().runtime().drain().await.is_empty());
+    assert!(
+        matches!(live_usage.await?, Ok(AgentReply::Usage { input: 0, page: Some(page), settled: true })
+        if page.end == 0 && page.items.is_empty()),
+        "a consumed input with no model call must finish its original quiet query"
+    );
+    let usage = AgentCommand::Usage {
+        agent: root.clone(),
+        input: 1,
+        after: 0,
+        wait: false,
+    };
+    assert!(matches!(
+        call(&client, "agents", &usage).await?,
+        Ok(AgentReply::Usage {
+            input: 1,
+            page: None,
+            settled: false
+        })
+    ));
     let diff = AgentCommand::Diff {
         agent: root.clone(),
         page: Default::default(),

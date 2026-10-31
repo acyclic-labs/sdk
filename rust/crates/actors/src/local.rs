@@ -186,6 +186,15 @@ impl Snapshot {
         &self.path
     }
 
+    /// Follows commits after this exact observation, anchored to its original
+    /// history. No second head read is needed to avoid losing a publication.
+    pub fn follow_request(&self) -> acyclic_stream::FollowRequest {
+        let mut request = acyclic_stream::FollowRequest::new(self.path.clone(), self.tail);
+        request.preceding = self.anchor;
+        request.when_absent = acyclic_stream::WhenAbsent::Wait;
+        request
+    }
+
     /// Original inherited prefix from this same committed observation.
     pub const fn provenance(&self) -> Option<&Provenance<StreamPath, ForkCut>> {
         self.provenance.as_ref()

@@ -191,6 +191,41 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         Ok(self.agents.state(&self.actor(agent)?, agent).await?.0)
     }
 
+    /// Settlement and continuation from the same original actor observation.
+    /// Consumption alone may retain a paused turn, queued or overflowed input.
+    pub(crate) async fn input_progress(
+        &self,
+        agent: &AgentPath,
+        input: u64,
+    ) -> Result<(bool, acyclic_stream::FollowRequest), Error> {
+        let snapshot = self
+            .runtime
+            .store()
+            .load(&self.actor(agent)?)
+            .await
+            .map_err(actor_error)?;
+        let state = snapshot.state().ok_or(Error::NoSuchAgent)?;
+        let inbox = agent.inbox()?;
+        let subscription = state
+            .subscriptions()
+            .get(INBOX)
+            .filter(|subscription| subscription.path == inbox)
+            .ok_or(Error::Record("agent inbox subscription differs"))?;
+        let settled = if subscription.cursor <= input {
+            false
+        } else {
+            let checkpoint = state
+                .checkpoint()
+                .ok_or(Error::Record("consumed input has no agent checkpoint"))?;
+            let observed = super::checkpoint_state(checkpoint)?;
+            if &observed.path != agent || observed.parent != agent.parent() {
+                return Err(Error::Record("agent state binding differs"));
+            }
+            input < observed.settled_before(subscription.cursor)
+        };
+        Ok((settled, snapshot.follow_request()))
+    }
+
     /// The committed reply to `agent`'s message `id` at inbox sequence `inbox`
     /// (see [`super::reply`]), from its committed checkpoint.
     pub async fn reply(
