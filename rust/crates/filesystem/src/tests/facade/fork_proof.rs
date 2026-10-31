@@ -154,9 +154,18 @@ async fn first_publication_reuses_the_public_forks_installed_proof()
     eprintln!(
         "first publication cached4={few:?} cached32={many:?} uncached4={few_walked:?} uncached32={many_walked:?}"
     );
-    assert_eq!(
-        few.object_probes, many.object_probes,
-        "first publication probed the inherited closure"
+    // The public commit also reads changed authenticated index paths, whose
+    // height can grow. Compare the SAME publication with its installed proof
+    // removed: forgetting pending.created() makes these savings disappear.
+    assert!(few.object_probes < few_walked.object_probes);
+    assert!(few.object_bytes_read < few_walked.object_bytes_read);
+    assert!(
+        many_walked.object_probes - many.object_probes
+            > few_walked.object_probes - few.object_probes
+    );
+    assert!(
+        many_walked.object_bytes_read - many.object_bytes_read
+            > few_walked.object_bytes_read - few.object_bytes_read
     );
     assert!(many_walked.object_probes > few_walked.object_probes);
     assert!(many_walked.object_bytes_read > few_walked.object_bytes_read);
