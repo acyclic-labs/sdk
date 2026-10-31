@@ -117,33 +117,22 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
     // The original delivery retains this lock through physical cleanup and
     // publication settlement. A later control cannot pass either transition.
     let delivery = slot.inner.lock().await;
-    let mut epoch = (delivery.epoch != 0).then_some(delivery.epoch);
+    let epoch = (delivery.epoch != 0).then_some(delivery.epoch);
     let result = async {
-        loop {
-            let snapshot = store.load(actor).await?;
-            let state = snapshot
-                .state()
-                .ok_or(Error::Invalid("actor state was never created"))?;
-            if epoch.is_some_and(|epoch| epoch != state.epoch()) {
-                return Err(Error::Conflict);
-            }
-            epoch = Some(state.epoch());
-            gate.decided = state.paused();
-            if state.paused() == paused {
-                break;
-            }
+        let snapshot = store.load(actor).await?;
+        let state = snapshot
+            .state()
+            .ok_or(Error::Invalid("actor state was never created"))?;
+        if epoch.is_some_and(|epoch| epoch != state.epoch()) {
+            return Err(Error::Conflict);
+        }
+        gate.decided = state.paused();
+        if state.paused() != paused {
             let operation = if paused { "pause" } else { "resume" };
-            match store
+            store
                 .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
-                .await
-            {
-                Err(Error::Conflict) => {}
-                result => {
-                    result?;
-                    gate.decided = paused;
-                    break;
-                }
-            }
+                .await?;
+            gate.decided = paused;
         }
         Ok(transition.await)
     }
