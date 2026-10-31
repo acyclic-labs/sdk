@@ -1092,6 +1092,7 @@ dependencies = [
  "base64 0.23.1",
  "blake3",
  "bytes",
+ "ed25519-dalek 3.0.0",
  "futures",
  "getrandom 0.4.3",
  "h2",

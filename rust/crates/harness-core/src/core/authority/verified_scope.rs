@@ -101,15 +101,7 @@ impl VerifiedScope {
         }
         self.verifier.admission.check(&self.scope)?;
         self.evidence
-            .check(
-                self.verifier
-                    .public
-                    .trust
-                    .read()
-                    .map_err(workload::unauthorized)?
-                    .as_ref(),
-                timestamp,
-            )
+            .check(&*self.verifier.public.trust, timestamp)
             .map_err(workload::unauthorized)?;
         self.verifier.admission.check(&self.scope)
     }
@@ -118,20 +110,19 @@ impl VerifiedScope {
 impl AuthorityVerifier {
     /// Builds a verification-only owner from independently authenticated public configuration.
     /// This value cannot admit events, issue workloads or sign checkpoints.
-    /// `changes` must follow the same authenticated owner's trust publications,
-    /// never a new local channel. The snapshot remains public historical evidence;
-    /// live admission also rechecks its original owner's exact validity guard.
+    /// `trust` answers both current authority and its publications, so a
+    /// verifier can never pair trust with another owner's notifications; live
+    /// admission also rechecks its original owner's exact validity guard.
     pub fn from_public(
         id: String,
         audience: Authority,
-        trust: acyclic_auth::trust::Snapshot,
+        trust: std::sync::Arc<dyn acyclic_auth::trust::Live>,
         checkpoint_key: [u8; 32],
-        changes: std::sync::Arc<dyn acyclic_auth::trust::ChangeSource>,
     ) -> Result<Self> {
         audience.validate_with_work(&mut None)?;
-        if id != trust.account {
+        if trust.account(&id).is_err() {
             return Err(Error::Unauthorized(
-                "public authority account mismatch".into(),
+                "public authority account is not trusted".into(),
             ));
         }
         ed25519_dalek::VerifyingKey::from_bytes(&checkpoint_key)
@@ -140,10 +131,9 @@ impl AuthorityVerifier {
             id,
             audience,
             public: std::sync::Arc::new(runtime_signing::PublicAuthority {
-                trust: std::sync::RwLock::new(std::sync::Arc::new(trust)),
+                trust,
                 metadata_key: checkpoint_key,
                 workload: Default::default(),
-                changes,
                 clock: None,
             }),
             admission: runtime_signing::AdmissionPort::closed(),

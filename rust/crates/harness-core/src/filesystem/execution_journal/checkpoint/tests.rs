@@ -324,7 +324,6 @@ async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> 
         journal.verifier.audience().clone(),
         issuer.public_workload_trust()?,
         journal.verifier.public_checkpoint_key(),
-        issuer.trust_changes(),
     )?;
     drop(issuer);
     journal.verifier = public;

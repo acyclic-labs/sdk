@@ -232,6 +232,11 @@ impl VerifiedCapability {
                         self.expires_at = self.expires_at.min(*time);
                     }
                     CaveatKind::Limits(limits) => intersect(&mut self.limits, limits),
+                    CaveatKind::Allowance(signed) => {
+                        let allowance = &signed.allowance;
+                        minimum(&mut self.limits.spend_micros, Some(allowance.spend_micros));
+                        self.expires_at = self.expires_at.min(allowance.expires_at_unix_seconds);
+                    }
                     _ => (),
                 }
             }

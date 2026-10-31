@@ -260,12 +260,6 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
             *self.0.lock().map_err(agent)? = Some(caller.scope.clone());
             Ok(caller)
         }
-        fn session(
-            &self,
-            custody: &crate::local::Custody<'_>,
-        ) -> Result<Arc<acyclic_stream::session::Authority>> {
-            crate::local::Verifier::session(&crate::local::KeyFileVerifier, custody)
-        }
     }
     let admission = Arc::new(Admission(std::sync::Mutex::new(None)));
     let directory = tempfile::tempdir().map_err(agent)?;

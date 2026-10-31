@@ -111,6 +111,9 @@ mod snapshot;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
 pub use follow_filter::FollowFilter;
+/// Follows signed trust Streams into the one Auth trust follower.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod trust_feed;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

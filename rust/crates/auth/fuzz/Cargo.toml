@@ -58,3 +58,10 @@ path = "fuzz_targets/holder_snapshot.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "trust_record"
+path = "fuzz_targets/trust_record.rs"
+test = false
+doc = false
+bench = false

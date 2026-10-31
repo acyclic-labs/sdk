@@ -431,13 +431,11 @@ mod tests {
             )?;
             let native = issuer.verifier(&mut None)?;
             let scope = scope.seal(&native)?;
-            let changes = issuer.trust_changes();
             let public = crate::core::AuthorityVerifier::from_public(
                 "owner".into(),
                 audience,
                 issuer.public_workload_trust()?,
                 native.public_checkpoint_key(),
-                changes.clone(),
             )?;
             let (producer, stopped) = futures::channel::oneshot::channel::<()>();
             let context = acyclic_auth::operation::Context::from_stopped(
@@ -448,22 +446,11 @@ mod tests {
                 },
             );
             let operations = Arc::new(PublicObservation(native));
-            assert!(
-                crate::core::AdmittedAuthority::from_platform(
-                    public.clone(),
-                    scope.clone(),
-                    context.clone(),
-                    operations.clone(),
-                    unrelated.trust_changes(),
-                )
-                .is_err()
-            );
             let admitted = crate::core::AdmittedAuthority::from_platform(
                 public.clone(),
                 scope.clone(),
                 context.clone(),
                 operations,
-                changes,
             )?;
             let binding = acyclic_auth::guest::GuestAdmission::admit(admitted)?;
             let runtime = binding.project(

@@ -4,11 +4,11 @@
 use crate::{
     contract::*,
     crypto::{BlockId, public_key, verify_signature},
-    verify::{AccountState, RevocationCheck, Trust, VerifyError},
+    verify::{AccountState, Keys, RevocationCheck, Trust, VerifyError},
 };
 use prost::Message;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 /// Domain and version for the canonical SignedRevocation with signature cleared.
 pub const REVOCATION_DOMAIN: &[u8] = b"acyclic.auth.v1/revocation\0";
@@ -36,8 +36,8 @@ pub struct RevocationState {
     published_at: u64,
     retired_before: u64,
     minimum_key_epoch: u64,
-    keys: BTreeMap<String, u64>,
-    blocks: BTreeMap<BlockId, u64>,
+    keys: HashMap<String, u64>,
+    blocks: HashMap<BlockId, u64>,
 }
 
 /// A committed change for exact dependent-cache invalidation. Checkpoints may
@@ -73,8 +73,8 @@ impl RevocationState {
             published_at: 0,
             retired_before: 0,
             minimum_key_epoch: 0,
-            keys: BTreeMap::new(),
-            blocks: BTreeMap::new(),
+            keys: HashMap::new(),
+            blocks: HashMap::new(),
         };
         state.checkpoint(checkpoint, now)?;
         state.digest = digest(&transcript, &signed.signature);
@@ -173,6 +173,32 @@ impl RevocationState {
         Ok(())
     }
 
+    /// Whether this frontier revokes `check`, including the explicit epoch floor.
+    pub(crate) fn revokes(&self, check: RevocationCheck<'_>) -> bool {
+        match check {
+            RevocationCheck::Key { id, epoch } => {
+                epoch < self.minimum_key_epoch || self.keys.contains_key(id)
+            }
+            RevocationCheck::Block(id) => self.blocks.contains_key(id),
+        }
+    }
+
+    /// Revoked key identities, blocks and the epoch floor, for export.
+    pub(crate) fn revoked(
+        &self,
+    ) -> (
+        impl Iterator<Item = &String>,
+        impl Iterator<Item = &BlockId>,
+        u64,
+    ) {
+        (self.keys.keys(), self.blocks.keys(), self.minimum_key_epoch)
+    }
+
+    /// Latest accepted publication time.
+    pub(crate) const fn published_at(&self) -> u64 {
+        self.published_at
+    }
+
     /// Last accepted sequence and exact signed-publication digest. Persist with
     /// the checkpoint and replayed deltas; never separately advance this frontier.
     pub fn frontier(&self) -> (u64, BlockId) {
@@ -193,12 +219,15 @@ impl RevocationState {
     }
 }
 
-type Keys = BTreeMap<String, u64>;
-type Blocks = BTreeMap<BlockId, u64>;
+type KeyIndex = HashMap<String, u64>;
+type BlockIndex = HashMap<BlockId, u64>;
 
-fn entries(keys: &[KeyRevocation], blocks: &[Revocation]) -> Result<(Keys, Blocks), VerifyError> {
-    let mut key_index = Keys::new();
-    let mut block_index = Blocks::new();
+fn entries(
+    keys: &[KeyRevocation],
+    blocks: &[Revocation],
+) -> Result<(KeyIndex, BlockIndex), VerifyError> {
+    let mut key_index = KeyIndex::new();
+    let mut block_index = BlockIndex::new();
     for key in keys {
         if key.key_id.is_empty()
             || key_index
@@ -224,7 +253,11 @@ fn entries(keys: &[KeyRevocation], blocks: &[Revocation]) -> Result<(Keys, Block
     Ok((key_index, block_index))
 }
 
-fn preserves<K: Ord>(old: &BTreeMap<K, u64>, new: &BTreeMap<K, u64>, retired: u64) -> bool {
+fn preserves<K: Eq + std::hash::Hash>(
+    old: &HashMap<K, u64>,
+    new: &HashMap<K, u64>,
+    retired: u64,
+) -> bool {
     old.iter()
         .all(|(id, expiry)| *expiry <= retired || new.get(id).is_some_and(|new| new >= expiry))
 }
@@ -251,7 +284,7 @@ pub struct RevocationTrust<'a, T> {
 }
 
 impl<T: Trust> Trust for RevocationTrust<'_, T> {
-    fn environment_keys(&self, environment: &str) -> Result<&[BlockId], VerifyError> {
+    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
         self.owner.environment_keys(environment)
     }
 

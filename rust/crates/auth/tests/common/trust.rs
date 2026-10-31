@@ -24,9 +24,9 @@ impl Default for Snapshot {
     }
 }
 impl Trust for Snapshot {
-    fn environment_keys(&self, environment: &str) -> Result<&[BlockId], VerifyError> {
+    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
         if self.available && environment == "test" {
-            Ok(&self.environments)
+            Ok((&self.environments).into())
         } else {
             Err(VerifyError::Trust)
         }
@@ -34,7 +34,7 @@ impl Trust for Snapshot {
     fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError> {
         if self.available && account == "account" {
             Ok(AccountState {
-                issuer_keys: &self.issuers,
+                issuer_keys: (&self.issuers).into(),
                 minimum_key_epoch: self.minimum_epoch,
                 not_before_unix_seconds: 0,
             })

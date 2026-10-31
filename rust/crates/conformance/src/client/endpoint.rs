@@ -60,7 +60,17 @@ pub async fn connect(options: &ConnectionOptions) -> Result<Client, Failure> {
         .session_client()
         .map_err(|error| stream_failure("session", error))?;
     session
-        .register_credential(0, options.credential().as_bytes().to_vec().into())
+        .register_credential(
+            0,
+            options
+                .session_credential()
+                .map_err(|_| Failure {
+                    case: "credential",
+                    detail: "credential is not a capability".into(),
+                    cause: None,
+                })?
+                .into(),
+        )
         .map_err(|error| stream_failure("credential", error))?;
     Ok(session)
 }

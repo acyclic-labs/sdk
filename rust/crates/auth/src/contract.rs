@@ -71,12 +71,29 @@ pub struct ExecutionGrant {
     /// preserve this signed identity when reserving and recording usage.
     #[wire(tag = 5, string)]
     pub usage_owner: Option<String>,
-    /// Maximum concurrent executions against the owner's shared usage ledger.
+    /// Maximum concurrent executions; unset inherits the parent's ceiling.
     #[wire(tag = 6, uint64)]
     pub max_concurrency: Option<u64>,
-    /// Reserved capacity units admitted and accounted by the execution owner.
+    /// Reserved capacity units; unset inherits the parent's reservation.
     #[wire(tag = 7, uint64)]
     pub reserved_capacity_units: Option<u64>,
+}
+
+/// Filesystem authority for one volume mount. A generation, when pinned, is
+/// part of the resource (`fs:/<volume>~<generation>`): a pattern naming the
+/// volume alone covers every generation of it.
+#[acyclic_contract_derive::message(error = Error, file = AuthFile)]
+#[derive(Clone, Debug, PartialEq, TS)]
+pub struct FilesystemGrant {
+    /// Filesystem actions and the volume resource.
+    #[wire(tag = 1, message)]
+    pub grant: ResourceGrant,
+    /// POSIX owner the mount presents; once set, never changed.
+    #[wire(tag = 2, uint32)]
+    pub posix_uid: Option<u32>,
+    /// POSIX group the mount presents; once set, never changed.
+    #[wire(tag = 3, uint32)]
+    pub posix_gid: Option<u32>,
 }
 
 /// Billing authority with a typed spend ceiling.
@@ -129,7 +146,7 @@ pub struct WebsocketConnectGrant {
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct Grant {
     /// Typed authority.
-    #[wire(oneof = "1, 2, 3, 4")]
+    #[wire(oneof = "1, 2, 3, 4, 5")]
     pub kind: GrantKind,
 }
 
@@ -276,7 +293,7 @@ pub struct Holder {
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct Caveat {
     /// Fixed caveat vocabulary.
-    #[wire(oneof = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[wire(oneof = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: CaveatKind,
 }
 
@@ -355,6 +372,9 @@ pub enum GrantKind {
     /// `WebsocketConnect` payload.
     #[wire(tag = 4, message)]
     WebsocketConnect(WebsocketConnectGrant),
+    /// Filesystem mount payload.
+    #[wire(tag = 5, message)]
+    Filesystem(FilesystemGrant),
 }
 
 /// Typed `PinValue` cases. Unknown wire cases are rejected.
@@ -407,6 +427,9 @@ pub enum CaveatKind {
     /// Advisory label scoped to this block revocation id; never authority.
     #[wire(tag = 11, string)]
     Label(String),
+    /// Environment-signed spend allowance; the minimum over all applies.
+    #[wire(tag = 12, message)]
+    Allowance(SignedAllowance),
 }
 
 /// Typed `TipProof` cases. Unknown wire cases are rejected.
@@ -438,15 +461,21 @@ pub enum TipProof {
         RevocationProto,
         KeyringSnapshotProto,
         SignedKeyringSnapshotProto,
+        EnvironmentKeyringProto,
+        SignedEnvironmentKeyringProto,
+        AllowanceProto,
+        SignedAllowanceProto,
         KeyRevocationProto,
         RevocationDeltaProto,
         RevocationCheckpointProto,
         SignedRevocationProto,
+        TrustRecordProto,
         AuditRecordProto,
         ResourcePatternProto,
         ResourceGrantProto,
         ExecutionGrantProto,
         BillingGrantProto,
+        FilesystemGrantProto,
         SocketPortRangeProto,
         SocketHostRuleProto,
         WebsocketConnectGrantProto,

@@ -190,10 +190,10 @@ pub struct AdmittedAuthority {
 
 impl acyclic_auth::trust::ChangeSource for AdmittedAuthority {
     fn check_open(&self) -> std::result::Result<(), acyclic_auth::trust::SourceClosed> {
-        self.caller.verifier.public.changes.check_open()
+        self.caller.verifier.public.trust.check_open()
     }
     fn changed(&self) -> acyclic_auth::trust::Changed {
-        self.caller.verifier.public.changes.changed()
+        self.caller.verifier.public.trust.changed()
     }
 }
 
@@ -215,21 +215,15 @@ impl AdmittedAuthority {
 
     /// Bind a platform-admitted operation port to its independently authenticated
     /// public configuration and sealed original caller. This belongs to the trusted
-    /// opener, never to request decoding or routing. `changes` is the SAME owner's
-    /// live trust stream used to construct `verifier`; source loss fences active
-    /// invocations. The original operations guard observes each publication.
+    /// opener, never to request decoding or routing. The verifier's live trust
+    /// is its own change source; source loss fences active invocations. The
+    /// original operations guard observes each publication.
     pub fn from_platform(
         verifier: AuthorityVerifier,
         caller: Scope,
         context: Context,
         operations: Arc<dyn AuthorityOperations>,
-        changes: Arc<dyn acyclic_auth::trust::ChangeSource>,
     ) -> Result<Self> {
-        if !Arc::ptr_eq(&verifier.public.changes, &changes) {
-            return Err(Error::Unauthorized(
-                "platform trust change owner mismatch".into(),
-            ));
-        }
         Self::new(verifier, caller, context, Custody::Platform(operations))
     }
 
@@ -313,7 +307,7 @@ impl AdmittedAuthority {
         self.caller
             .verifier
             .public
-            .changes
+            .trust
             .check_open()
             .map_err(|_| Error::Cancelled)?;
         if let Custody::Platform(source) = &self.custody {

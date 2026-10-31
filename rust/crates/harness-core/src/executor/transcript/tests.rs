@@ -166,7 +166,6 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
         verifier.audience().clone(),
         issuer.public_workload_trust()?,
         verifier.public_checkpoint_key(),
-        issuer.trust_changes(),
     )?;
     drop(issuer);
     let authenticated = manifest.authenticates(&public, Limits::default(), digest, None);

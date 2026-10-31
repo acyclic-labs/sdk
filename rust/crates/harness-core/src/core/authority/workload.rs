@@ -3,11 +3,10 @@ use super::*;
 use acyclic_auth::{
     authority::{PolicyDecision, Request, Target},
     contract::*,
-    trust::Snapshot,
+    trust::{AccountRoot, Certification, Follower, Issuer},
     verify::{self, CertifiedSigner, VerifiedCapability},
 };
-use ed25519_dalek::{Signer, SigningKey};
-use prost::Message;
+use ed25519_dalek::SigningKey;
 mod admission;
 mod retained;
 mod revocation;
@@ -91,22 +90,164 @@ pub(super) fn unauthorized(error: impl std::fmt::Display) -> Error {
 pub(super) fn now() -> u64 {
     acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock) / 1000
 }
+/// The local environment every runtime-certified key is born in.
+pub(super) const ENVIRONMENT: &str = "local-harness";
+// Root scopes reuse one certificate until half its validity remains.
+const RENEW_SECONDS: u64 = CERTIFICATE_SECONDS / 2;
+
+/// The locally run Issuer's environment key, derived from the runtime seed.
+pub(super) fn issuer(seed: &[u8; 32]) -> Issuer {
+    Issuer::new(
+        ENVIRONMENT,
+        runtime_signing::prepare_key(&blake3::derive_key("acyclic.harness.environment.v1", seed)),
+    )
+}
+
 // Prepared keys stay inside runtime custody. Issuance borrows this owner;
-// neither a verifier nor an admitted workload receives its root keys.
+// neither a verifier nor an admitted workload receives its root keys. Local
+// and self-hosted runs publish trust exactly as a platform Issuer does: signed
+// records applied to the Follower every verifier reads.
 pub(super) struct RuntimeKeys {
-    environment: SigningKey,
-    account: SigningKey,
+    issuer: Issuer,
+    account: AccountRoot,
     runtime: SigningKey,
+    root: Option<(std::sync::Arc<CertifiedSigner>, u64)>,
 }
 
 impl RuntimeKeys {
-    pub(super) fn new(seed: &[u8; 32]) -> Self {
+    /// Creates account `id` and publishes its first keyring and revocation
+    /// checkpoint to `trust`, which then serves it.
+    pub(super) fn genesis(
+        id: &str,
+        issuer: Issuer,
+        seed: &[u8; 32],
+        trust: &Follower,
+        now: u64,
+    ) -> Result<Self> {
         let key = |domain| runtime_signing::prepare_key(&blake3::derive_key(domain, seed));
-        Self {
-            environment: key("acyclic.harness.environment.v1"),
-            account: key("acyclic.harness.account.v1"),
-            runtime: key("acyclic.harness.runtime.v1"),
+        let (account, records) = issuer
+            .genesis(id, key("acyclic.harness.account.v1"), now)
+            .map_err(unauthorized)?;
+        for record in &records {
+            trust.apply(record, now).map_err(unauthorized)?;
         }
+        trust.resume();
+        trust.serve(id);
+        Ok(Self {
+            issuer,
+            account,
+            runtime: key("acyclic.harness.runtime.v1"),
+            root: None,
+        })
+    }
+
+    /// Certifies the runtime key for `grants` plus admission receipts. A
+    /// `parent` bounds the certificate: it expires no later and is revoked
+    /// with it.
+    fn certify(
+        &self,
+        timestamp: u64,
+        mut grants: GrantSet,
+        parent: Option<&VerifiedCapability>,
+    ) -> Result<CertifiedSigner> {
+        grants.grants.push(Grant {
+            kind: GrantKind::Resource(ResourceGrant {
+                resource: ResourcePattern {
+                    name: "harness:/admissions/".into(),
+                    prefix: true,
+                },
+                actions: vec![acyclic_auth::admission::RECEIPT_ACTION.into()],
+            }),
+        });
+        let expires = timestamp
+            .checked_add(CERTIFICATE_SECONDS)
+            .ok_or_else(|| unauthorized("clock overflow"))?
+            .min(parent.map_or(u64::MAX, |parent| {
+                parent.effective().expires_at_unix_seconds()
+            }));
+        let certificates = self
+            .issuer
+            .certify(
+                &self.account,
+                Certification {
+                    key_id: "runtime",
+                    public_key: self.runtime.verifying_key(),
+                    validity: Validity {
+                        not_before_unix_seconds: timestamp,
+                        expires_at_unix_seconds: expires,
+                    },
+                    grants,
+                    principal: Principal {
+                        kind: PrincipalKind::Service,
+                        id: self.account.id().into(),
+                        lineage: vec![],
+                        groups: vec![],
+                        roles: vec![],
+                        attributes: vec![],
+                    },
+                    parent_revocation_ids: parent
+                        .into_iter()
+                        .flat_map(VerifiedCapability::revocation_ids)
+                        .map(<[u8]>::to_vec)
+                        .collect(),
+                },
+            )
+            .map_err(unauthorized)?;
+        #[cfg(test)]
+        acyclic_test_support::differential::record(CertificateSignature);
+        CertifiedSigner::new(certificates, self.runtime.clone()).map_err(unauthorized)
+    }
+
+    /// The signer of root scopes for every `harness:/` audience, certified
+    /// once and renewed (the same key, a new validity) at half its lifetime.
+    fn root_signer(&mut self, timestamp: u64) -> Result<std::sync::Arc<CertifiedSigner>> {
+        if let Some((signer, renew_at)) = &self.root
+            && timestamp < *renew_at
+        {
+            return Ok(signer.clone());
+        }
+        let signer =
+            std::sync::Arc::new(self.certify(timestamp, grant("harness:/", true), None)?);
+        let renew_at = timestamp
+            .checked_add(RENEW_SECONDS)
+            .ok_or_else(|| unauthorized("clock overflow"))?;
+        self.root = Some((signer.clone(), renew_at));
+        Ok(signer)
+    }
+
+    /// Publishes the revocation of `block` and every descendant, retained
+    /// until `retain_until`, and applies it to `trust`.
+    pub(super) fn revoke(
+        &mut self,
+        trust: &Follower,
+        block: [u8; 32],
+        retain_until: u64,
+        now: u64,
+    ) -> Result<()> {
+        let record = self
+            .account
+            .revoke(&[(block, retain_until)], now)
+            .map_err(unauthorized)?;
+        trust.apply(&record, now).map_err(unauthorized)?;
+        Ok(())
+    }
+
+    /// Publishes a keyring that retires every key below `epoch`; the next
+    /// root scope is certified at the new epoch.
+    #[cfg(test)]
+    pub(super) fn raise_minimum_epoch(
+        &mut self,
+        trust: &Follower,
+        epoch: u64,
+        now: u64,
+    ) -> Result<()> {
+        let record = self
+            .account
+            .raise_minimum_epoch(epoch, now)
+            .map_err(unauthorized)?;
+        trust.apply(&record, now).map_err(unauthorized)?;
+        self.root = None;
+        Ok(())
     }
 }
 fn entropy() -> [u8; 32] {
@@ -126,130 +267,18 @@ pub(super) fn resource(audience: &Authority) -> Result<String> {
     };
     Ok(format!("harness:/{kind}/{}", audience.id))
 }
-pub(super) fn trust(id: &str, keys: &RuntimeKeys) -> Snapshot {
-    Snapshot {
-        environment: "local-harness".into(),
-        environment_keys: vec![keys.environment.verifying_key().to_bytes()],
-        account: id.into(),
-        issuer_keys: vec![keys.account.verifying_key().to_bytes()],
-        minimum_key_epoch: 1,
-        revoked_key_ids: Default::default(),
-        revoked_block_ids: Default::default(),
-    }
-}
-fn grant(resource: &str) -> GrantSet {
+fn grant(resource: &str, prefix: bool) -> GrantSet {
     GrantSet {
         grants: vec![Grant {
             kind: GrantKind::Resource(ResourceGrant {
                 resource: ResourcePattern {
                     name: resource.into(),
-                    prefix: false,
+                    prefix,
                 },
                 actions: vec![ACTION.into()],
             }),
         }],
     }
-}
-fn signature(domain: &[u8], claims: &impl Message, signer: &SigningKey) -> Vec<u8> {
-    #[cfg(test)]
-    acyclic_test_support::differential::record(CertificateSignature);
-    let mut message = domain.to_vec();
-    message.extend_from_slice(&claims.encode_to_vec());
-    signer.sign(&message).to_bytes().to_vec()
-}
-fn signer(
-    id: &str,
-    keys: &RuntimeKeys,
-    timestamp: u64,
-    name: Option<&str>,
-    parent: Option<&VerifiedCapability>,
-) -> Result<CertifiedSigner> {
-    signer_with_grants(
-        id,
-        keys,
-        timestamp,
-        name.map_or(GrantSet { grants: Vec::new() }, grant),
-        parent,
-    )
-}
-
-pub(super) fn signer_with_grants(
-    id: &str,
-    keys: &RuntimeKeys,
-    timestamp: u64,
-    grants: GrantSet,
-    parent: Option<&VerifiedCapability>,
-) -> Result<CertifiedSigner> {
-    let environment = &keys.environment;
-    let account = &keys.account;
-    let leaf = &keys.runtime;
-    let birth = Birth {
-        account_id: id.into(),
-        environment: "local-harness".into(),
-        genesis_public_key: account.verifying_key().to_bytes().to_vec(),
-        issued_at_unix_seconds: timestamp,
-    };
-    let certified = CertifiedKey {
-        account_id: id.into(),
-        key_id: "runtime".into(),
-        public_key: leaf.verifying_key().to_bytes().to_vec(),
-        key_epoch: 1,
-        validity: Validity {
-            not_before_unix_seconds: timestamp,
-            expires_at_unix_seconds: timestamp
-                .checked_add(CERTIFICATE_SECONDS)
-                .ok_or_else(|| unauthorized("clock overflow"))?
-                .min(parent.map_or(u64::MAX, |parent| {
-                    parent.effective().expires_at_unix_seconds()
-                })),
-        },
-        grants: {
-            let mut grants = grants;
-            grants.grants.push(Grant {
-                kind: GrantKind::Resource(ResourceGrant {
-                    resource: ResourcePattern {
-                        name: "harness:/admissions/".into(),
-                        prefix: true,
-                    },
-                    actions: vec![acyclic_auth::admission::RECEIPT_ACTION.into()],
-                }),
-            });
-            grants
-        },
-        principal: Principal {
-            kind: PrincipalKind::Service,
-            id: id.into(),
-            lineage: vec![],
-            groups: vec![],
-            roles: vec![],
-            attributes: vec![],
-        },
-        parent_key_id: None,
-        parent_revocation_ids: parent
-            .into_iter()
-            .flat_map(VerifiedCapability::revocation_ids)
-            .map(<[u8]>::to_vec)
-            .collect(),
-    };
-    let certificates = CertificateChain {
-        birth: BirthCertificate {
-            signature: signature(
-                acyclic_auth::BIRTH_DOMAIN,
-                &BirthProto::from(birth.clone()),
-                environment,
-            ),
-            birth,
-        },
-        keys: vec![KeyCertificate {
-            signature: signature(
-                acyclic_auth::KEY_DOMAIN,
-                &CertifiedKeyProto::from(certified.clone()),
-                account,
-            ),
-            key: certified,
-        }],
-    };
-    CertifiedSigner::new(certificates, leaf.clone()).map_err(unauthorized)
 }
 fn claims(scope: &Scope, index: usize) -> Result<Caveat> {
     Ok(Caveat {
@@ -291,31 +320,34 @@ pub(super) fn issue(
     }
     let timestamp = issuer.runtime.public.now();
     let name = resource(&issuer.audience)?;
-    let capability = signer(
-        &issuer.id,
-        &issuer.runtime.workload,
-        timestamp,
-        Some(&name),
-        parent,
-    )?
-    .mint(
-        vec![
-            claims(scope, 0)?,
-            Caveat {
-                kind: CaveatKind::Grants(grant(&name)),
-            },
-            Caveat {
-                kind: CaveatKind::Audience(ResourcePattern {
-                    name,
-                    prefix: false,
-                }),
-            },
-        ],
-        SigningKey::from_bytes(&entropy()),
-        issuer.public_trust_revision()?.0.as_ref(),
-        timestamp,
-    )
-    .map_err(unauthorized)?;
+    let signer = {
+        let mut keys = issuer.runtime.keys()?;
+        match parent {
+            Some(parent) => {
+                std::sync::Arc::new(keys.certify(timestamp, grant(&name, false), Some(parent))?)
+            }
+            None => keys.root_signer(timestamp)?,
+        }
+    };
+    let capability = signer
+        .mint(
+            vec![
+                claims(scope, 0)?,
+                Caveat {
+                    kind: CaveatKind::Grants(grant(&name, false)),
+                },
+                Caveat {
+                    kind: CaveatKind::Audience(ResourcePattern {
+                        name,
+                        prefix: false,
+                    }),
+                },
+            ],
+            SigningKey::from_bytes(&entropy()),
+            &*issuer.runtime.trust,
+            timestamp,
+        )
+        .map_err(unauthorized)?;
     retain(scope, &capability, work)
 }
 /// A sealed credential for exactly `grants`, each `(resource, prefix,
@@ -341,31 +373,29 @@ pub(super) fn resource_credential(
             })
             .collect(),
     };
-    let capability = signer_with_grants(
-        &issuer.id,
-        &issuer.runtime.workload,
-        timestamp,
-        grants.clone(),
-        Some(parent),
-    )?
-    .mint(
-        vec![
-            Caveat {
-                kind: CaveatKind::Grants(grants),
-            },
-            Caveat {
-                kind: CaveatKind::Audience(ResourcePattern {
-                    name: resource(&issuer.audience)?,
-                    prefix: false,
-                }),
-            },
-        ],
-        SigningKey::from_bytes(&entropy()),
-        issuer.public_trust_revision()?.0.as_ref(),
-        timestamp,
-    )
-    .and_then(VerifiedCapability::seal)
-    .map_err(unauthorized)?;
+    let signer = issuer
+        .runtime
+        .keys()?
+        .certify(timestamp, grants.clone(), Some(parent))?;
+    let capability = signer
+        .mint(
+            vec![
+                Caveat {
+                    kind: CaveatKind::Grants(grants),
+                },
+                Caveat {
+                    kind: CaveatKind::Audience(ResourcePattern {
+                        name: resource(&issuer.audience)?,
+                        prefix: false,
+                    }),
+                },
+            ],
+            SigningKey::from_bytes(&entropy()),
+            &*issuer.runtime.trust,
+            timestamp,
+        )
+        .and_then(VerifiedCapability::seal)
+        .map_err(unauthorized)?;
     let principal = capability.effective().principal().id.clone();
     Ok((capability.encode().to_vec(), principal))
 }
@@ -411,16 +441,9 @@ pub(super) fn verify(
     }
     verifier.admission.check(scope)?;
     let capability = {
-        let trust = verifier.public.trust.read().map_err(unauthorized)?;
-        let authenticated = authenticate(&verifier.public, trust.as_ref(), scope, timestamp, work)?;
-        authorize_scope(
-            trust.as_ref(),
-            audience,
-            scope,
-            timestamp,
-            &authenticated,
-            work,
-        )?
+        let trust: &dyn verify::Trust = &*verifier.public.trust;
+        let authenticated = authenticate(&verifier.public, trust, scope, timestamp, work)?;
+        authorize_scope(trust, audience, scope, timestamp, &authenticated, work)?
     };
     // A foreign owner is never invoked while holding the public trust lock.
     verifier.admission.check(scope)?;

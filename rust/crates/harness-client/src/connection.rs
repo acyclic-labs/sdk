@@ -84,6 +84,20 @@ impl ConnectionOptions {
         &self.credential
     }
 
+    /// The credential's signed capability envelope, for in-band session
+    /// admission. An account credential is that envelope in base64url text;
+    /// the one text form every client and endpoint shares.
+    ///
+    /// # Errors
+    /// When the credential is not base64url text.
+    #[cfg(feature = "grpc")]
+    pub fn session_credential(&self) -> Result<Vec<u8>, ConnectionConfigError> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&self.credential)
+            .map_err(|_| ConnectionConfigError::InvalidCredential)
+    }
+
     /// Read only unshadowed environment values; no config file or local fallback.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_env(

@@ -149,6 +149,26 @@ pub(crate) fn keyring_snapshot(v: &KeyringSnapshot) -> Result<(), Error> {
 pub(crate) fn signed_snapshot(v: &SignedKeyringSnapshot) -> Result<(), Error> {
     require(v.signature.len() == 64)
 }
+pub(crate) fn environment_keyring(v: &EnvironmentKeyring) -> Result<(), Error> {
+    require(
+        !v.environment.is_empty()
+            && v.sequence > 0
+            && v.previous_digest.len() == 32
+            && !v.keys.is_empty()
+            && v.keys.iter().all(|key| key.len() == 32)
+            && v.issued_at_unix_seconds <= MAX_UNIX_SECONDS,
+    )
+}
+pub(crate) fn signed_environment(v: &SignedEnvironmentKeyring) -> Result<(), Error> {
+    require(v.signature.len() == 64)
+}
+pub(crate) fn signed_allowance(v: &SignedAllowance) -> Result<(), Error> {
+    require(
+        v.signature.len() == 64
+            && !v.allowance.account_id.is_empty()
+            && v.allowance.expires_at_unix_seconds <= MAX_UNIX_SECONDS,
+    )
+}
 
 fn unique_attributes(values: &[Attribute]) -> bool {
     let mut names = HashSet::with_capacity(values.len());

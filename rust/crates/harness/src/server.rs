@@ -5,9 +5,7 @@
 //! stream session protocol over gRPC; a client reaches either with
 //! [`crate::local::Connection::connect`], the endpoint being its only
 //! difference. A host supplies only what [`ServerConfig`] names.
-pub use crate::local::{
-    Custody, KeyFileCredentials, KeyFileVerifier, Observation, RootCredential, Verifier,
-};
+pub use crate::local::{Custody, KeyFileVerifier, Observation, RootCredential, Verifier};
 use crate::{Error, LocalHarnessConfig, Result};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_stream::BoxProviderFuture;
@@ -41,7 +39,7 @@ pub struct TlsIdentity {
 /// A required TLS client: a certificate chain its authorities verify, whose
 /// end-entity certificate names `uri_san` exactly. It authenticates the
 /// connecting peer (a gateway or relay, say) and authorizes no account:
-/// every session's credential is still verified by [`ServerConfig::verifier`].
+/// every session's credential is still verified against the tree's trust.
 pub struct PeerIdentity {
     /// PEM certificates of the authorities a client chain must verify against.
     pub certificate_authorities: Vec<u8>,
@@ -56,7 +54,7 @@ pub struct ServerConfig<C = LocalHarnessConfig> {
     /// The harness the tree runs on: its storage, model, preset (prompt,
     /// tools, limits, approval policy) and settings.
     pub harness: C,
-    /// Verifies the tree's caller and each client's credential;
+    /// Verifies the tree's caller and publishes its clients' credential;
     /// [`KeyFileVerifier`] by default.
     pub verifier: Arc<dyn Verifier>,
     /// The TLS identity; without one only a loopback address is served,
@@ -206,12 +204,14 @@ pub async fn serve<C: Composition>(
     };
     let server = &host.server;
     let bound = server.bound();
-    let authority = config.verifier.session(&Custody {
-        issuer: bound.issuer().native().ok_or_else(|| {
+    // Every client's credential is the capability envelope its issuer
+    // signs, verified against the issuer's trust.
+    let authority = Arc::new(crate::filesystem::session_authority(
+        bound.issuer().native().ok_or_else(|| {
             Error::Invalid("local server enrollment requires native custody".into())
         })?,
-        clock: &host.clock,
-    })?;
+        host.clock.clone(),
+    )?);
     let (lifetime, ended) = tokio::sync::watch::channel(());
     let completion = host.completion.take();
     let mut completion = std::pin::pin!(async move {

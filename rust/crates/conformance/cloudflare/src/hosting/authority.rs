@@ -210,7 +210,15 @@ impl HostFixtureAuthority {
             issuer: "browser-agents",
             audience: self.admitted.caller().0,
             scope: self.admitted.public_scope().map_err(error)?,
-            trust: self.root.public_workload_trust().map_err(error)?,
+            trust: self
+                .root
+                .public_workload_trust()
+                .and_then(|trust| {
+                    trust.snapshot(self.root.id()).map_err(|error| {
+                        acyclic_harness_core::Error::Unauthorized(error.to_string())
+                    })
+                })
+                .map_err(error)?,
             checkpoint_key: self
                 .root
                 .verifier(&mut None)

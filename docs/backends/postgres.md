@@ -266,14 +266,11 @@ private blob engine, or backend-specific filesystem branch.
 
 Complete the OSS endpoint qualification separately from compile-only admission:
 
-1. Integrate the canonical async credential-verifier shape from #1715
-   (`CredentialVerifier::verify` and retryable `VerifyError::Unavailable`).
-   This does not by itself make filesystem policy cuts current.
-2. Compose a durable selected filesystem policy-cut provider with asynchronous
+1. Compose a durable selected filesystem policy-cut provider with asynchronous
    revalidation immediately before disclosure and independent terminal push at
    zero credit. Retain Postgres AtomicPublication; no process-owner relabel or
    polling. Missing resources must keep failing closed.
-3. On bb2 run `scripts/backends/storage-conformance.sh` with its unchanged host
+2. On bb2 run `scripts/backends/storage-conformance.sh` with its unchanged host
    vectors and endpoint phases for Postgres/memory, local/MinIO and
    Postgres/MinIO. Bind emulators to 127.0.0.1:15400-15499 under /mnt/bb and stop
    them after the run. Prove prompt/retry, follow, reply, settlement and reopen;

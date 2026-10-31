@@ -78,10 +78,42 @@ impl VerifyError {
     }
 }
 
-/// Authenticated account keyring state, including still-trusted historical issuers.
+/// Trusted public keys, borrowed from an immutable owner or shared with a
+/// followed trust feed. Either way a read is O(1) and copies no key.
+#[derive(Clone, Debug)]
+pub enum Keys<'a> {
+    /// Keys owned by the trust value itself.
+    Borrowed(&'a [BlockId]),
+    /// Keys of one published feed version, shared without copying.
+    Shared(std::sync::Arc<[BlockId]>),
+}
+
+impl std::ops::Deref for Keys<'_> {
+    type Target = [BlockId];
+    fn deref(&self) -> &[BlockId] {
+        match self {
+            Self::Borrowed(keys) => keys,
+            Self::Shared(keys) => keys,
+        }
+    }
+}
+
+impl<'a> From<&'a [BlockId]> for Keys<'a> {
+    fn from(keys: &'a [BlockId]) -> Self {
+        Self::Borrowed(keys)
+    }
+}
+
+impl<'a> From<&'a Vec<BlockId>> for Keys<'a> {
+    fn from(keys: &'a Vec<BlockId>) -> Self {
+        Self::Borrowed(keys)
+    }
+}
+
+/// Authenticated account keyring state: the current account root.
 pub struct AccountState<'a> {
     /// Authorized account issuer roots; never workload or online leaf keys.
-    pub issuer_keys: &'a [BlockId],
+    pub issuer_keys: Keys<'a>,
     /// Minimum epoch accepted for every online ancestor certificate.
     pub minimum_key_epoch: u64,
     /// Earliest verification time supported by retained revocation evidence.
@@ -108,11 +140,23 @@ pub enum RevocationCheck<'a> {
 /// missing/stale state; metering and network refresh belong outside these hooks.
 pub trait Trust {
     /// Still-trusted environment issuers, including historical Birth signers.
-    fn environment_keys(&self, environment: &str) -> Result<&[BlockId], VerifyError>;
+    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError>;
     /// Authenticated current account keyring, anchored in environment trust.
     fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError>;
     /// Check key/block revocations; errors are denials, never soft failures.
     fn revoked(&self, account: &str, check: RevocationCheck<'_>) -> Result<bool, VerifyError>;
+}
+
+impl<T: Trust + ?Sized> Trust for std::sync::Arc<T> {
+    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
+        (**self).environment_keys(environment)
+    }
+    fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError> {
+        (**self).account(account)
+    }
+    fn revoked(&self, account: &str, check: RevocationCheck<'_>) -> Result<bool, VerifyError> {
+        (**self).revoked(account, check)
+    }
 }
 
 enum Proof {
@@ -127,7 +171,9 @@ pub struct VerifiedCapability {
     signed: Vec<SignedBlockProto>,
     ids: Vec<BlockId>,
     issuers: Vec<BlockId>,
-    environment_issuer: BlockId,
+    /// The Birth signer, then each distinct allowance signer: every
+    /// environment key this chain's admission depends on.
+    environment_issuers: Vec<BlockId>,
     signing_keys: HashSet<BlockId>,
     proof: Proof,
     principal: Principal,
@@ -189,6 +235,65 @@ fn verify_proof(
             Ok(Proof::Sealed(signature))
         }
     }
+}
+
+/// Authenticate every environment-signed allowance against current environment
+/// trust and the chain's own account. Unsigned or foreign allowances refuse.
+/// Authenticate every allowance caveat and return the environment keys that
+/// signed them, so cached admission rechecks each one against current trust.
+fn allowances(
+    blocks: &[Block],
+    trust: &(impl Trust + ?Sized),
+    signers: &mut Vec<BlockId>,
+) -> Result<(), VerifyError> {
+    let birth = &blocks
+        .first()
+        .and_then(|block| block.certificates.as_ref())
+        .ok_or(VerifyError::Malformed)?
+        .birth
+        .birth;
+    let mut keys = None;
+    let mut message = Vec::new();
+    for caveat in blocks.iter().flat_map(|block| &block.caveats) {
+        let CaveatKind::Allowance(signed) = &caveat.kind else {
+            continue;
+        };
+        if signed.allowance.account_id != birth.account_id {
+            return Err(VerifyError::Trust);
+        }
+        let keys = match &mut keys {
+            Some(keys) => keys,
+            None => keys.insert(trust.environment_keys(&birth.environment)?),
+        };
+        let signer = allowance_signer(signed, birth.account_id.as_str(), keys, &mut message)?;
+        if !signers.contains(&signer) {
+            signers.push(signer);
+        }
+    }
+    Ok(())
+}
+
+fn allowance_signer(
+    signed: &SignedAllowance,
+    account: &str,
+    keys: &[BlockId],
+    message: &mut Vec<u8>,
+) -> Result<BlockId, VerifyError> {
+    if signed.allowance.account_id != account {
+        return Err(VerifyError::Trust);
+    }
+    message.clear();
+    message.extend_from_slice(crate::ALLOWANCE_DOMAIN);
+    AllowanceProto::from(signed.allowance.clone())
+        .encode(&mut *message)
+        .map_err(|_| VerifyError::Malformed)?;
+    keys.iter()
+        .find(|key| {
+            public_key(key.as_slice())
+                .is_ok_and(|key| verify_signature(&key, message, &signed.signature).is_ok())
+        })
+        .copied()
+        .ok_or(VerifyError::Signature)
 }
 
 /// Verify signatures before semantic certificate subset admission. The returned
@@ -256,12 +361,14 @@ fn verify_certified(
     let proof = verify_proof(envelope.proof, signer, &previous, &mut message)?;
     // No expensive claims/subset conversion happens until every signature is valid.
     let blocks = admit_blocks(wire)?;
+    let mut environment_issuers = vec![environment];
+    allowances(&blocks, trust, &mut environment_issuers)?;
     let mut verified = VerifiedCapability {
         blocks,
         signed: envelope.blocks,
         ids,
         issuers,
-        environment_issuer: environment,
+        environment_issuers,
         signing_keys: seen,
         proof,
         principal: Principal {
@@ -350,6 +457,9 @@ impl VerifiedCapability {
 
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;
     /// reusing any ancestor key is rejected, including the account's online leaf.
+    /// An allowance must authenticate under an environment signer already
+    /// retained by this admission. Introducing another signer requires fresh
+    /// verification of the resulting wire capability against its trust owner.
     pub fn attenuate(
         &self,
         caveats: Vec<Caveat>,
@@ -363,6 +473,17 @@ impl VerifiedCapability {
             let public = next.verifying_key().to_bytes();
             if self.signing_keys.contains(&public) {
                 return Err(VerifyError::RepeatedKey);
+            }
+            let mut message = Vec::new();
+            for caveat in &caveats {
+                if let CaveatKind::Allowance(signed) = &caveat.kind {
+                    allowance_signer(
+                        signed,
+                        self.account_id()?,
+                        &self.environment_issuers,
+                        &mut message,
+                    )?;
+                }
             }
             let blocks = authority::attenuate(&self.blocks, caveats, public.to_vec())?;
             let block = blocks.last().ok_or(VerifyError::Malformed)?;
@@ -384,7 +505,7 @@ impl VerifiedCapability {
                 signed,
                 ids,
                 issuers: self.issuers.clone(),
-                environment_issuer: self.environment_issuer,
+                environment_issuers: self.environment_issuers.clone(),
                 signing_keys,
                 proof: Proof::Append(next),
                 principal: self.principal.clone(),
@@ -395,6 +516,56 @@ impl VerifiedCapability {
             child.evaluate();
             Ok(child)
         })
+    }
+
+    /// Forward one hop: append an exact audience block and seal, without a
+    /// round trip. Two Ed25519 signatures and one encode, whatever the chain
+    /// length; the holder keeps its own append authority for the next hop.
+    /// The recipient's verifier enforces every ancestor caveat, depth included.
+    ///
+    /// # Errors
+    /// When this chain is sealed, `audience` is not an exact resource, or the
+    /// fresh key repeats an ancestor key.
+    pub fn forward(
+        &self,
+        audience: &str,
+        next_secret: &[u8; 32],
+    ) -> Result<Zeroizing<Vec<u8>>, VerifyError> {
+        let Proof::Append(signer) = &self.proof else {
+            return Err(VerifyError::Sealed);
+        };
+        if !crate::valid_resource(audience) {
+            return Err(VerifyError::Malformed);
+        }
+        let next = SigningKey::from_bytes(next_secret);
+        let public = next.verifying_key().to_bytes();
+        if self.signing_keys.contains(&public) {
+            return Err(VerifyError::RepeatedKey);
+        }
+        let payload = BlockProto::from(Block {
+            certificates: None,
+            caveats: vec![Caveat {
+                kind: CaveatKind::Audience(ResourcePattern {
+                    name: audience.into(),
+                    prefix: false,
+                }),
+            }],
+            next_public_key: public.to_vec(),
+        })
+        .encode_to_vec();
+        let previous = self.ids.last().ok_or(VerifyError::Malformed)?;
+        let message = block_transcript(self.blocks.len() as u64, previous, &payload);
+        let signature = signer.sign(&message).to_bytes();
+        let mut seal = [0; SEAL_DOMAIN.len() + 32];
+        seal[..SEAL_DOMAIN.len()].copy_from_slice(SEAL_DOMAIN);
+        seal[SEAL_DOMAIN.len()..].copy_from_slice(&block_id(&message, &signature));
+        let sealed = next.sign(&seal).to_bytes();
+        let mut signed = self.signed.clone();
+        signed.push(SignedBlockProto {
+            payload,
+            signature: signature.to_vec(),
+        });
+        Ok(wire::encode(&signed, 26, &sealed, VERSION))
     }
 
     /// Consume append authority and replace it with a final tip signature.

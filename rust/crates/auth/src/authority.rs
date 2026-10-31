@@ -139,7 +139,124 @@ pub fn valid_chain(blocks: &[Block]) -> bool {
             && b.caveats.iter().all(
                 |c| !matches!(c.kind, CaveatKind::MaxDepth(max) if blocks.len() - 1 > max as usize),
             )
+            && (i == 0 || narrows(&blocks[..i], b))
         })
+}
+
+/// An appended block only narrows. Requests already meet every block's grants
+/// conjunctively; a typed grant also carries values its consumer takes as the
+/// effective setting (a reservation, a mount's POSIX owner), so each typed
+/// grant must lie within every earlier ceiling: the certified leaf's grants
+/// and each earlier block's. Each allowance covers a subset of every earlier
+/// allowance's products.
+fn narrows(ancestors: &[Block], block: &Block) -> bool {
+    let leaf = ancestors
+        .first()
+        .and_then(|root| root.certificates.as_ref())
+        .and_then(|certificates| certificates.keys.last())
+        .map(|leaf| &leaf.key.grants);
+    let ceilings: Vec<&GrantSet> = leaf
+        .into_iter()
+        .chain(ancestors.iter().flat_map(|ancestor| {
+            ancestor
+                .caveats
+                .iter()
+                .filter_map(|caveat| match &caveat.kind {
+                    CaveatKind::Grants(set) => Some(set),
+                    _ => None,
+                })
+        }))
+        .collect();
+    let allowances: Vec<&Allowance> = ancestors
+        .iter()
+        .flat_map(|ancestor| &ancestor.caveats)
+        .filter_map(|caveat| match &caveat.kind {
+            CaveatKind::Allowance(signed) => Some(&signed.allowance),
+            _ => None,
+        })
+        .collect();
+    block.caveats.iter().all(|caveat| match &caveat.kind {
+        CaveatKind::Grants(set) => set.grants.iter().filter(|grant| typed(grant)).all(|grant| {
+            ceilings
+                .iter()
+                .all(|ceiling| ceiling.grants.iter().any(|parent| covers(parent, grant)))
+        }),
+        CaveatKind::Allowance(signed) => allowances.iter().all(|parent| {
+            parent.products.is_empty()
+                || !signed.allowance.products.is_empty()
+                    && signed
+                        .allowance
+                        .products
+                        .iter()
+                        .all(|product| parent.products.contains(product))
+        }),
+        _ => true,
+    })
+}
+
+// A child bound is within its parent's: unset inherits, set never exceeds.
+fn at_most(parent: Option<u64>, child: Option<u64>) -> bool {
+    child.is_none_or(|child| parent.is_none_or(|parent| child <= parent))
+}
+
+// A pinned value is kept: unset inherits, set never changes a set parent.
+fn kept<T: PartialEq>(parent: Option<&T>, child: Option<&T>) -> bool {
+    child.is_none_or(|child| parent.is_none_or(|parent| child == parent))
+}
+
+fn within(parent: &ResourceGrant, child: &ResourceGrant) -> bool {
+    (parent.resource.prefix || !child.resource.prefix)
+        && resource_matches(&parent.resource, &child.resource.name)
+        && child
+            .actions
+            .iter()
+            .all(|action| parent.actions.contains(action))
+}
+
+const fn typed(grant: &Grant) -> bool {
+    matches!(
+        grant.kind,
+        GrantKind::Execution(_) | GrantKind::Billing(_) | GrantKind::Filesystem(_)
+    )
+}
+
+// A plain resource ceiling bounds only the resource; a typed one also bounds
+// its own kind's values.
+fn covers(parent: &Grant, child: &Grant) -> bool {
+    let resource = match &child.kind {
+        GrantKind::Resource(grant) => grant,
+        GrantKind::Execution(grant) => &grant.grant,
+        GrantKind::Billing(grant) => &grant.grant,
+        GrantKind::Filesystem(grant) => &grant.grant,
+        GrantKind::WebsocketConnect(_) => return false,
+    };
+    match (&parent.kind, &child.kind) {
+        (GrantKind::Resource(parent), _) => within(parent, resource),
+        (GrantKind::Execution(parent), GrantKind::Execution(child)) => {
+            within(&parent.grant, &child.grant)
+                && at_most(parent.cpu_millis, child.cpu_millis)
+                && at_most(parent.memory_bytes, child.memory_bytes)
+                && at_most(parent.max_concurrency, child.max_concurrency)
+                && at_most(
+                    parent.reserved_capacity_units,
+                    child.reserved_capacity_units,
+                )
+                && kept(
+                    parent.policy_generation.as_ref(),
+                    child.policy_generation.as_ref(),
+                )
+                && kept(parent.usage_owner.as_ref(), child.usage_owner.as_ref())
+        }
+        (GrantKind::Billing(parent), GrantKind::Billing(child)) => {
+            within(&parent.grant, &child.grant) && at_most(parent.spend_micros, child.spend_micros)
+        }
+        (GrantKind::Filesystem(parent), GrantKind::Filesystem(child)) => {
+            within(&parent.grant, &child.grant)
+                && kept(parent.posix_uid.as_ref(), child.posix_uid.as_ref())
+                && kept(parent.posix_gid.as_ref(), child.posix_gid.as_ref())
+        }
+        _ => false,
+    }
 }
 
 /// The only offline append form. Public certificates and issuer claims are
@@ -167,6 +284,8 @@ pub fn attenuate(
 /// Match canonical resources using the same whole-segment rule as admission.
 /// Callers must validate the resource and pattern with the owning grammar first.
 pub fn resource_matches(pattern: &ResourcePattern, name: &str) -> bool {
+    let name = generation_open(&pattern.name, name);
+    let name = name.as_ref();
     if pattern.prefix {
         let prefix = pattern.name.trim_end_matches('/');
         name == prefix
@@ -177,6 +296,29 @@ pub fn resource_matches(pattern: &ResourcePattern, name: &str) -> bool {
         name == pattern.name
     }
 }
+/// A filesystem pattern naming a volume without a generation covers that
+/// volume at every generation: `fs:/<volume>~<generation>/...` is matched as
+/// `fs:/<volume>/...`. A pattern that pins a generation matches only it.
+fn generation_open<'a>(pattern: &str, name: &'a str) -> std::borrow::Cow<'a, str> {
+    let volume = |value: &'a str| {
+        value
+            .strip_prefix("fs:/")
+            .map(|rest| rest.split('/').next())
+    };
+    if let (Some(Some(open)), Some(Some(pinned))) = (
+        pattern
+            .strip_prefix("fs:/")
+            .map(|rest| rest.split('/').next()),
+        volume(name),
+    ) && !open.contains('~')
+        && let Some((base, _generation)) = pinned.split_once('~')
+        && base == open
+    {
+        return format!("fs:/{base}{}", &name["fs:/".len() + pinned.len()..]).into();
+    }
+    name.into()
+}
+
 fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
     if matches!(r.target, Target::Context) {
         return true;
@@ -201,6 +343,7 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
             {
                 &g.grant
             }
+            GrantKind::Filesystem(g) => &g.grant,
             _ => return false,
         };
         grant.actions.iter().any(|a| a == action)
@@ -209,6 +352,18 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
                     && resource_matches(&ResourcePattern { name: resource.into(), prefix: true }, &grant.resource.name))
     })
 }
+// An allowance limits spend on the products it covers and admits no other.
+fn allowance_covers(allowance: &Allowance, target: Target<'_>) -> bool {
+    allowance.products.is_empty()
+        || match target {
+            Target::Resource { action, .. } => action
+                .split_once('/')
+                .is_some_and(|(product, _)| allowance.products.iter().any(|p| p == product)),
+            Target::Context => true,
+            _ => false,
+        }
+}
+
 fn limits_allow(ceiling: &Limits, usage: &Limits) -> bool {
     let bounds = [
         ceiling.rps,
@@ -404,6 +559,11 @@ fn permits_canonical<const CURRENT: bool>(
                     })
             }
             CaveatKind::Limits(limits) => limits_allow(limits, r.usage),
+            CaveatKind::Allowance(signed) => {
+                (CURRENT || r.now_unix_seconds < signed.allowance.expires_at_unix_seconds)
+                    && r.usage.spend_micros.unwrap_or(0) <= signed.allowance.spend_micros
+                    && allowance_covers(&signed.allowance, r.target)
+            }
             CaveatKind::LineageAppend(_) | CaveatKind::MaxDepth(_) | CaveatKind::Label(_) => true,
         })
     })

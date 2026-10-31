@@ -249,7 +249,6 @@ async fn working_checkpoint_reads_require_only_the_public_key() -> Result<()> {
         verifier.audience().clone(),
         issuer.public_workload_trust()?,
         verifier.public_checkpoint_key(),
-        issuer.trust_changes(),
     )?;
     drop(issuer);
     drop(verifier);
