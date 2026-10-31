@@ -1,6 +1,4 @@
-use crate::{
-    Adapter, HttpRequest, HttpResponse, HttpTransport as _, ResolvedModel, invalid, projection,
-};
+use crate::{Adapter, HttpRequest, HttpResponse, ResolvedModel, invalid, projection};
 use acyclic_harness_core::{
     Result,
     model::{ModelDispatch, ModelEvent, PreparedModelRequest},

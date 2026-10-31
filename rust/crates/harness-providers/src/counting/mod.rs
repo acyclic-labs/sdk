@@ -1,6 +1,6 @@
 //! Verified provider admission, independent of usage-calibrated planning weights.
 pub(crate) mod wire;
-use crate::{HttpRequest, HttpTransport as _, ResolvedModel, dispatch, projection};
+use crate::{HttpRequest, ResolvedModel, dispatch, projection};
 use acyclic_harness_core::{Error, NativeCustody, NativeWork, Result, context::ModelTokenCount};
 
 struct Body {
