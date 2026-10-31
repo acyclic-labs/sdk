@@ -82,7 +82,6 @@ pub struct MountTable<T> {
 
 impl<T> MountTable<T> {
     /// Resolves an admitted volume without scanning the mounted namespace.
-    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     #[doc(hidden)]
     pub fn by_volume(
         &self,
@@ -102,10 +101,10 @@ impl<T> MountTable<T> {
             .and_then(Option::as_ref)
             .filter(|mount| &mount.view.volume == volume);
         mount.ok_or_else(|| {
-            path_error(
+            crate::executor::stock_boundary(
+                io,
                 crate::wire::ErrorCode::Unauthorized,
                 "volume is not mounted in this task view",
-                None,
             )
         })
     }
@@ -315,6 +314,7 @@ pub fn compose<T>(
     }
     let primary_name = primary.name.clone();
     let mut mounts = BTreeMap::new();
+    let mut volumes_by_identity = std::collections::HashMap::new();
     for (index, view) in std::iter::once(primary).chain(volumes).enumerate() {
         let access = PathTrie::compile(
             &view.policy,
@@ -369,6 +369,19 @@ pub fn compose<T>(
                 "foreign mount must select its latest published generation".into(),
             ));
         }
+        let digest = view.volume.identity_digest(
+            crate::store::default_projection_read_limits().maximum_bytes,
+            &mut None,
+        )?;
+        match volumes_by_identity.entry(digest) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(entry.key().clone());
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) if entry.key() < slot.get() => {
+                slot.insert(entry.key().clone());
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {}
+        }
         entry.insert(Some(Mount {
             view,
             mode,
@@ -376,20 +389,10 @@ pub fn compose<T>(
             native_root: None,
         }));
     }
-    let mut volumes = std::collections::HashMap::new();
-    for (path, mount) in &mounts {
-        if let Some(mount) = mount {
-            let digest = mount.view.volume.identity_digest(
-                crate::store::default_projection_read_limits().maximum_bytes,
-                &mut None,
-            )?;
-            volumes.entry(digest).or_insert_with(|| path.clone());
-        }
-    }
     Ok(MountTable {
         root,
         entries: mounts,
-        volumes,
+        volumes: volumes_by_identity,
     })
 }
 

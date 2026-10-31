@@ -256,17 +256,18 @@ impl ContentPublisher for CheckoutPublisher {
             ),
         >,
     > {
-        BoundedContentFuture::new(access.io, || async move {
-            let (receipt, hold) = self
-                .publish_changes(volume, operation, Some(changes), self.maximum, access)
-                .await?;
-            Ok((
+        self.publish_changes(
+            volume,
+            operation,
+            Some(changes),
+            self.maximum,
+            access,
+            |receipt| {
                 receipt.ok_or_else(|| {
                     Error::Storage("conditional publication returned no receipt".into())
-                })?,
-                hold,
-            ))
-        })
+                })
+            },
+        )
     }
 
     fn observe_changes<'a, 'io: 'a>(
@@ -284,9 +285,7 @@ impl ContentPublisher for CheckoutPublisher {
             ),
         >,
     > {
-        BoundedContentFuture::new(access.io, || {
-            self.publish_changes(volume, operation, None, maximum, access)
-        })
+        self.publish_changes(volume, operation, None, maximum, access, Ok)
     }
 
     fn volume(&self) -> &VolumeRef {
