@@ -134,8 +134,12 @@ impl Recorded {
 }
 impl HttpTransport for Recorded {
     // Backoff and the explicitly selected request deadline use the virtual clock.
-    fn delay(&self, wait: Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-        Box::pin(elapse(self.clock.clone(), wait))
+    fn delay(&self, wait: Duration) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
+        let clock = self.clock.clone();
+        Box::pin(async move {
+            elapse(clock, wait).await;
+            Ok(())
+        })
     }
     fn now(&self) -> Duration {
         // Whole virtual milliseconds, as a millisecond platform timer reports them.

@@ -27,7 +27,7 @@ impl HttpTransport for RetryTransport {
         crate::http::native_now()
     }
 
-    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, ()> {
+    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
         self.portable.fetch_add(1, Ordering::SeqCst);
         self.platform.delay(wait)
     }

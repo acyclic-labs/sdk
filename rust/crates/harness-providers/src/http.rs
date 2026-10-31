@@ -58,7 +58,8 @@ pub trait HttpTransport: ProviderPlatform {
     /// Sends exactly one request without retries.
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>>;
     /// Waits `duration` on the platform timer: a redelivery backoff, or a deadline's wake-up.
-    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()>;
+    /// A lost or failed timer producer returns an error, never an elapsed wait.
+    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, Result<()>>;
     /// Monotonic time on the platform clock that `delay` waits on, from a fixed origin.
     /// Deadlines are measured on it; timers only wake their measurement.
     fn now(&self) -> std::time::Duration;
@@ -221,8 +222,11 @@ impl HttpTransport for ReqwestTransport {
         ))
     }
 
-    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()> {
-        Box::pin(tokio::time::sleep(duration))
+    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
+        Box::pin(async move {
+            tokio::time::sleep(duration).await;
+            Ok(())
+        })
     }
 
     fn now(&self) -> std::time::Duration {

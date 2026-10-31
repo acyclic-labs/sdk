@@ -79,7 +79,10 @@ struct CountResponse {
     empty_chunks: usize,
 }
 impl HttpTransport for CountResponse {
-    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+    fn delay(
+        &self,
+        wait: std::time::Duration,
+    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
         crate::fixtures::delay(wait)
     }
     fn now(&self) -> std::time::Duration {
@@ -183,7 +186,7 @@ proptest::proptest! {
             failures: usize, timeout: bool, partial: bool, definitive: bool,
         }
         impl HttpTransport for CountBody {
-            fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+            fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
                 crate::fixtures::delay(wait)
             }
             fn now(&self) -> std::time::Duration {

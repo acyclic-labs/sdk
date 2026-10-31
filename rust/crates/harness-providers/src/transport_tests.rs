@@ -28,7 +28,7 @@ impl HttpTransport for Counted {
         self.inner.send(request)
     }
     // Each failed exchange is the explicit model-redelivery step.
-    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
         crate::fixtures::delay(wait)
     }
     fn now(&self) -> std::time::Duration {

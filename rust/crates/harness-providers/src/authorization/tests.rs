@@ -119,7 +119,7 @@ impl HttpTransport for Protected {
     fn now(&self) -> std::time::Duration {
         self.transport.now()
     }
-    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
         self.transport.delay(duration)
     }
 }

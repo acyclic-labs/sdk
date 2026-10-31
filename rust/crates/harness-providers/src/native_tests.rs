@@ -27,7 +27,10 @@ impl Fixture {
 
 impl HttpTransport for Fixture {
     // No deadline ever expires: these fixtures exercise cancellation, never a timeout.
-    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+    fn delay(
+        &self,
+        _: std::time::Duration,
+    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
         Box::pin(std::future::pending())
     }
     fn now(&self) -> std::time::Duration {

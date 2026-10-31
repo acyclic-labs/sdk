@@ -27,7 +27,7 @@ impl HttpTransport for NoHttp {
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         panic!("encoding must not send HTTP")
     }
-    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, ()> {
+    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, Result<()>> {
         panic!("encoding must not wait")
     }
     fn now(&self) -> Duration {

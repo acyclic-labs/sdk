@@ -119,7 +119,7 @@ impl HttpTransport for TrackedTransport {
             Ok(response)
         })
     }
-    fn delay(&self, duration: Duration) -> BoxProviderFuture<'static, ()> {
+    fn delay(&self, duration: Duration) -> BoxProviderFuture<'static, Result<()>> {
         self.inner.delay(duration)
     }
     fn now(&self) -> Duration {
@@ -181,7 +181,7 @@ impl HttpTransport for Replay {
             })
         })
     }
-    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, ()> {
+    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, Result<()>> {
         Box::pin(futures::future::pending())
     }
     fn now(&self) -> Duration {
