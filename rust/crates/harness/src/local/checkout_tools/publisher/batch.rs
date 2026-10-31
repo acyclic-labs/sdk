@@ -77,19 +77,15 @@ impl CheckoutPublisher {
                             if let Some(native) = native {
                                 native.sync().await?;
                             } else if mount.view.source.is_none() {
-                                if let Some(mounted) = &physical.mounted {
-                                    mounted.sync().await.map_err(storage)?;
-                                } else {
-                                    self.tools
-                                        .capture(
-                                            (&physical, view),
-                                            watcher,
-                                            operation,
-                                            0,
-                                            PublicationPermit::Unrestricted,
-                                        )?
-                                        .await?;
-                                }
+                                self.tools
+                                    .capture(
+                                        (&physical, view),
+                                        watcher,
+                                        operation,
+                                        0,
+                                        PublicationPermit::Unrestricted,
+                                    )?
+                                    .await?;
                             }
                             Ok(())
                         })?

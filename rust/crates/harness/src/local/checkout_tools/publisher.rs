@@ -299,11 +299,17 @@ impl ContentPublisher for CheckoutPublisher {
         io: Option<&ContentIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         self.supports_stage(io)?;
-        let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
-        mount.check(
+        let work = io.and_then(ContentIo::original_native_work);
+        let (mount, relative) = self
+            .tools
+            .workspace
+            .mounts
+            .file_with_work(volume, path, work)?;
+        mount.check_with_work(
             acyclic_fs::access::Action::Write,
             &relative,
             self.tools.clock.now_unix_millis() / 1000,
+            work,
         )?;
         Ok((&mount.view.volume, relative))
     }
