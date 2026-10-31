@@ -24,7 +24,8 @@ pub(super) fn intercept(command: i32) -> io::Result<i32> {
             command
         };
         probe.calls.push(command);
-        if let Some(error) = probe.errors.pop_front() {
+        // A queued 0 lets that call succeed, reaching the next queued error.
+        if let Some(error) = probe.errors.pop_front().filter(|error| *error != 0) {
             return Err(io::Error::from_raw_os_error(error));
         }
         Ok(command)
@@ -61,19 +62,19 @@ fn public_flush_paths_require_fullfsync_and_detect_fsync_negative_control() -> i
         crate::sync_file(&file, Durability::Full, None)
     });
     result?;
-    assert_eq!(calls, [libc::F_FULLFSYNC]);
+    assert_eq!(calls, [0, libc::F_FULLFSYNC]);
     let (result, calls) = observe(&[], true, || {
         crate::sync_file(&file, Durability::Full, None)
     });
     result?;
     assert_ne!(
         calls,
-        [libc::F_FULLFSYNC],
+        [0, libc::F_FULLFSYNC],
         "fsync must fail the same Full pin"
     );
     let (result, calls) = observe(&[], false, || crate::sync_data(&file, Durability::Full));
     result?;
-    assert_eq!(calls, [libc::F_FULLFSYNC]);
+    assert_eq!(calls, [0, libc::F_FULLFSYNC]);
     let (result, calls) = observe(&[], false, || {
         crate::sync_file(&file, Durability::Barrier, None)
     });
@@ -85,9 +86,12 @@ fn public_flush_paths_require_fullfsync_and_detect_fsync_negative_control() -> i
 #[test]
 fn interrupted_flush_retries_once_and_admits_both_attempts() -> io::Result<()> {
     let file = tempfile::tempfile()?;
-    for (durability, command) in [
-        (Durability::Full, libc::F_FULLFSYNC),
-        (Durability::Barrier, libc::F_BARRIERFSYNC),
+    for (durability, expected) in [
+        (Durability::Full, &[0, 0, libc::F_FULLFSYNC][..]),
+        (
+            Durability::Barrier,
+            &[libc::F_BARRIERFSYNC, libc::F_BARRIERFSYNC][..],
+        ),
     ] {
         let mut admissions = 0;
         let (result, calls) = observe(&[libc::EINTR], false, || {
@@ -97,7 +101,7 @@ fn interrupted_flush_retries_once_and_admits_both_attempts() -> io::Result<()> {
             })
         });
         result?;
-        assert_eq!(calls, [command, command]);
+        assert_eq!(calls, expected);
         assert_eq!(admissions, 2);
     }
     Ok(())
@@ -109,13 +113,25 @@ fn held_flush_uses_the_same_native_attempt_without_retry_or_fallback() -> io::Re
     let file = tempfile::tempfile()?;
     let (result, calls) = observe(&[], false, || crate::sync_descriptor_once(file.as_fd()));
     result?;
-    assert_eq!(calls, [libc::F_FULLFSYNC]);
+    assert_eq!(calls, [0, libc::F_FULLFSYNC]);
+    // An interrupted stage returns before the drain; the caller retries.
+    let (result, calls) = observe(&[libc::EINTR], false, || {
+        crate::sync_descriptor_once(file.as_fd())
+    });
+    assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
+    assert_eq!(calls, [0]);
+    // A descriptor that cannot be staged still takes its own drain.
+    let (result, calls) = observe(&[libc::EINVAL], false, || {
+        crate::sync_descriptor_once(file.as_fd())
+    });
+    result?;
+    assert_eq!(calls, [0, libc::F_FULLFSYNC]);
     for error in [libc::EINTR, libc::ENOTSUP, libc::EIO] {
-        let (result, calls) = observe(&[error], false, || {
+        let (result, calls) = observe(&[0, error], false, || {
             crate::sync_descriptor_once(file.as_fd())
         });
         assert_eq!(result.unwrap_err().raw_os_error(), Some(error));
-        assert_eq!(calls, [libc::F_FULLFSYNC]);
+        assert_eq!(calls, [0, libc::F_FULLFSYNC]);
     }
     Ok(())
 }
@@ -123,22 +139,23 @@ fn held_flush_uses_the_same_native_attempt_without_retry_or_fallback() -> io::Re
 #[test]
 fn unsupported_barrier_admits_its_full_fallback_and_full_never_weakens() -> io::Result<()> {
     let file = tempfile::tempfile()?;
+
     let mut admissions = 0;
-    let (result, calls) = observe(&[libc::ENOTSUP], false, || {
+    let (result, calls) = observe(&[0, libc::ENOTSUP], false, || {
         sync_once(&file, Durability::Full, || {
             admissions += 1;
             Ok(())
         })
     });
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
-    assert_eq!(calls, [libc::F_FULLFSYNC]);
+    assert_eq!(calls, [0, libc::F_FULLFSYNC]);
     assert_eq!(admissions, 1);
     for error in [libc::EIO, libc::EINVAL, libc::EBADF, libc::EACCES] {
-        let (result, calls) = observe(&[error], false, || {
+        let (result, calls) = observe(&[0, error], false, || {
             crate::sync_file(&file, Durability::Full, None)
         });
         assert_eq!(result.unwrap_err().raw_os_error(), Some(error));
-        assert_eq!(calls, [libc::F_FULLFSYNC]);
+        assert_eq!(calls, [0, libc::F_FULLFSYNC]);
     }
     let mut admissions = 0;
     let (result, calls) = observe(&[libc::ENOTSUP], false, || {
@@ -148,7 +165,7 @@ fn unsupported_barrier_admits_its_full_fallback_and_full_never_weakens() -> io::
         })
     });
     result?;
-    assert_eq!(calls, [libc::F_BARRIERFSYNC, libc::F_FULLFSYNC]);
+    assert_eq!(calls, [libc::F_BARRIERFSYNC, 0, libc::F_FULLFSYNC]);
     assert_eq!(admissions, 2);
     let mut admissions = 0;
     let (result, calls) = observe(&[libc::ENOTSUP], false, || {

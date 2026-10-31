@@ -1,16 +1,18 @@
-//! One native full flush of a held descriptor, with no internal retry.
+//! One native full flush attempt of a held descriptor, with no internal retry.
 use std::io;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, BorrowedFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle as _, BorrowedHandle};
 
-/// Issues exactly one native full flush of `descriptor`: `fcntl(F_FULLFSYNC)`
-/// on Apple, where a bare `fsync` stops at the drive cache, and `fsync` on
-/// Linux, and `FlushFileBuffers` on Windows. Every failure returns to the caller, whose metered
-/// loop owns retry, charging and cancellation for each native attempt.
-/// Unlike std's `sync_all`, nothing is retried here, and Apple never falls
-/// back to a weaker flush.
+/// Makes `descriptor` durable with one native full flush attempt: `fsync` on
+/// Linux and `FlushFileBuffers` on Windows. On Apple, where a bare `fsync`
+/// stops at the drive cache, it stages the file with `fsync` and then waits
+/// for an `F_FULLFSYNC` of its device that started after the stage, sharing
+/// it with every concurrent request on that device. Every failure returns to
+/// the caller, whose metered loop owns retry, charging and cancellation for
+/// each native attempt. Unlike std's `sync_all`, nothing is retried here, and
+/// Apple never falls back to a weaker flush.
 #[cfg_attr(
     not(target_vendor = "apple"),
     allow(
