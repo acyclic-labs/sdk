@@ -9,6 +9,7 @@
 use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
 use acyclic_stream::StreamProviderExt as _;
+mod clock;
 mod dispatcher;
 mod interrupt;
 mod limits;
@@ -20,9 +21,10 @@ use acyclic_stream::AppendRequest;
 use acyclic_stream::query_sync::SyncMutex;
 use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
 use acyclic_stream::{
-    BoxProviderFuture, IdempotencyKey, ProviderPlatform, Record, RecordStream, StreamError,
-    StreamPath, StreamProvider, UnixMillisClock as _,
+    BoxProviderFuture, IdempotencyKey, Record, RecordStream, StreamError, StreamPath, StreamProvider,
 };
+use clock::sleep;
+pub use clock::{Clock, ClockControl, ClockError, ControlledClock, SystemClock};
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 pub use limits::RuntimeLimits;
 use sha2::{Digest, Sha256};
@@ -37,38 +39,6 @@ use std::{
     },
     task::{Context, Poll, Waker},
 };
-
-/// The host clock. The dispatcher owns the only timer, armed at the earliest
-/// committed, undelivered alarm.
-pub trait Clock: ProviderPlatform + 'static {
-    /// Current Unix milliseconds.
-    fn now_unix_ms(&self) -> u64;
-    /// Resolve no earlier than `deadline_unix_ms`.
-    fn sleep_until(&self, deadline_unix_ms: u64) -> BoxProviderFuture<'static, ()>;
-}
-
-/// Wall clock over the platform timer: Tokio natively, the event loop in a browser.
-pub struct SystemClock;
-impl Clock for SystemClock {
-    fn now_unix_ms(&self) -> u64 {
-        acyclic_stream::SystemUnixMillisClock.now_unix_millis()
-    }
-    fn sleep_until(&self, deadline_unix_ms: u64) -> BoxProviderFuture<'static, ()> {
-        sleep(deadline_unix_ms.saturating_sub(self.now_unix_ms()))
-    }
-}
-
-/// A platform sleep of `milliseconds`, in steps the platform timer can express.
-fn sleep(milliseconds: u64) -> BoxProviderFuture<'static, ()> {
-    Box::pin(async move {
-        let mut remaining = milliseconds;
-        while remaining > 0 {
-            let step = u32::try_from(remaining).unwrap_or(u32::MAX);
-            PlatformExecutor.sleep(step).await;
-            remaining -= u64::from(step);
-        }
-    })
-}
 
 struct Slot {
     registration: Registration<ActorReference>,
@@ -145,7 +115,7 @@ enum Event {
     Work(Work<ActorReference>),
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
-    Due,
+    Due(Result<(), ClockError>),
     Failed(StreamError),
 }
 
@@ -475,7 +445,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // checkpoint in flight at the latest seen end.
         let mut seen = from;
         let mut running = FuturesUnordered::new();
-        let mut timer: Option<(u64, BoxProviderFuture<'static, ()>)> = None;
+        let mut timer: Option<(u64, BoxProviderFuture<'static, Result<(), ClockError>>)> = None;
         let mut next_class = 0;
         let mut steps = 0;
         loop {
@@ -532,9 +502,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 return Poll::Ready(Event::Rearm(next));
                             }
                             if let Some((_, sleep)) = timer.as_mut()
-                                && sleep.poll_unpin(context).is_ready()
+                                && let Poll::Ready(result) = sleep.poll_unpin(context)
                             {
-                                return Poll::Ready(Event::Due);
+                                return Poll::Ready(Event::Due(result));
                             }
                         }
                     }
@@ -570,7 +540,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Rearm(next) => {
                     timer = next.map(|deadline| (deadline, self.clock.sleep_until(deadline)));
                 }
-                Event::Due => {
+                Event::Due(result) => {
+                    result?;
                     timer = None;
                     self.ready
                         .wake_due(self.clock.now_unix_ms(), self.limits.work);
