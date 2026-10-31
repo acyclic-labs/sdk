@@ -146,7 +146,7 @@ impl Collection {
         let admitted = self
             .admit(
                 objects,
-                crate::PublicationScope::Closure {
+                crate::PublicationScope {
                     objects: &proof.objects,
                     proven_at,
                 },
