@@ -280,11 +280,9 @@ fn original_git_links_are_opaque_and_cannot_supply_cargo_inputs() {
     assert_eq!(captured.symlink_paths, BTreeSet::from([link_path.into()]));
     assert_eq!(captured.owners, BTreeSet::from(["demo".into()]));
     assert_eq!(fs::read(export.join(link_path)).unwrap(), link_bytes);
-    assert!(
-        fs::symlink_metadata(export.join(link_path))
-            .unwrap()
-            .is_file()
-    );
+    assert!(fs::symlink_metadata(export.join(link_path))
+        .unwrap()
+        .is_file());
     assert_eq!(
         registry_owner_source_inner(&repository, &export, &revision, &cargo(), false, None)
             .unwrap(),
@@ -460,17 +458,15 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
         responses: BTreeMap::new(),
         publisher_anchors: BTreeMap::new(),
     };
-    assert!(
-        verify_registry_corpus(
-            &corpus,
-            &fixture.path().join("frontier"),
-            Path::new("absent-cargo"),
-            "0.1.1",
-            fixture.path()
-        )
-        .unwrap_err()
-        .contains("empty")
-    );
+    assert!(verify_registry_corpus(
+        &corpus,
+        &fixture.path().join("frontier"),
+        Path::new("absent-cargo"),
+        "0.1.1",
+        fixture.path()
+    )
+    .unwrap_err()
+    .contains("empty"));
 }
 
 #[test]
@@ -500,20 +496,16 @@ fn cohort_publisher_anchors_require_immutable_archive_checksum_lineage() {
         BTreeSet::from([publisher, "b".repeat(40)])
     );
     fs::write(&retained, "different published bytes").unwrap();
-    assert!(
-        cohort_publishers(&inventory, "0.1.0", &archives)
-            .unwrap_err()
-            .contains("checksum")
-    );
+    assert!(cohort_publishers(&inventory, "0.1.0", &archives)
+        .unwrap_err()
+        .contains("checksum"));
 }
 
 #[test]
 fn registry_frontier_rejects_missing_or_nonimmutable_history_before_git() {
-    assert!(
-        frontier_revisions(Path::new("absent"), &BTreeSet::new())
-            .unwrap_err()
-            .contains("immutable Git")
-    );
+    assert!(frontier_revisions(Path::new("absent"), &BTreeSet::new())
+        .unwrap_err()
+        .contains("immutable Git"));
     assert!(
         frontier_revisions(Path::new("absent"), &BTreeSet::from(["HEAD".into()]))
             .unwrap_err()
@@ -537,17 +529,15 @@ fn registry_frontier_rejects_missing_or_nonimmutable_history_before_git() {
         responses: BTreeMap::new(),
         publisher_anchors: BTreeMap::new(),
     };
-    assert!(
-        verify_registry_corpus(
-            &corpus,
-            Path::new("absent"),
-            Path::new("absent-cargo"),
-            "0.1.0",
-            Path::new("absent")
-        )
-        .unwrap_err()
-        .contains("declared original history")
-    );
+    assert!(verify_registry_corpus(
+        &corpus,
+        Path::new("absent"),
+        Path::new("absent-cargo"),
+        "0.1.0",
+        Path::new("absent")
+    )
+    .unwrap_err()
+    .contains("declared original history"));
 }
 use super::*;
 
