@@ -10,6 +10,10 @@ or read-only access, and network authority. It is not a model tool parameter,
 environment override, additional configuration hierarchy or sandbox service.
 The existing approval/decision files remain authoritative. No separate system
 event path is introduced; lifecycle consumers use the sessions lane's Notice.
+Raw-volume admission takes the same read/write access kind as native grants.
+It intersects the signed role and original caller ceiling through the existing
+policy compiler, requiring native mount actions rather than volume
+administration. Admission alone does not enforce a process boundary.
 
 `ExecutionGrant::attenuate` permits narrower workspace/read roots, removal of
 writes, and narrower networking. It refuses an increase of authority.

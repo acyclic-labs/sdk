@@ -471,3 +471,6 @@ fn denied_syscalls() -> Vec<libc::c_long> {
     ]);
     calls
 }
+
+#[cfg(all(test, any(target_arch = "x86_64", target_arch = "aarch64")))]
+mod checks;
