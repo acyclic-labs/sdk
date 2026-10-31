@@ -139,6 +139,19 @@ impl ToolRegistry {
         revision: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
+        self.get_shared(name, revision, io)
+            .map(|tool| tool.map(Arc::as_ref))
+    }
+
+    /// Borrows the original immutable registration, including its executor and
+    /// projection. Thin variants retain this Arc rather than cloning a contract
+    /// or constructing another execution implementation.
+    pub fn get_shared(
+        &self,
+        name: &str,
+        revision: Option<&str>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<&Arc<Tool>>> {
         #[cfg(feature = "filesystem")]
         if revision.is_none()
             && let Some(io) = io
@@ -162,7 +175,7 @@ impl ToolRegistry {
             if let Some(work) = work.as_deref_mut() {
                 work.check_cancellation()?;
             }
-            Ok(lookup::get(&self.data.versions, name, revision).map(Arc::as_ref))
+            Ok(lookup::get(&self.data.versions, name, revision))
         })
     }
 

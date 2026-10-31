@@ -21,3 +21,7 @@ Codex and Gemini CLI schema material retains its Apache-2.0 attribution in the
 root NOTICE. The JSON files are extracted declarations, not captured model
 responses. Adversarial protocol tests generate their own data and do not claim
 provider-fixture provenance.
+
+The `golden/` lists are deterministic protocol projections of those extracted
+public declarations, with recursively sorted schema keys. They are declaration
+goldens, not observations of a provider stream or a private harness prompt.

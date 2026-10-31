@@ -1,4 +1,6 @@
 use super::*;
+#[path = "native_variant_tests.rs"]
+mod native_variants;
 use crate::conversation::ContentGrant;
 
 const FINITE_CONTENT_BUDGET: acyclic_fs::WorkBudget =

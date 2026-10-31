@@ -1,5 +1,14 @@
 use super::*;
 
+/// Workspace selection retained by an executor's immutable registry binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceBinding {
+    /// Always use the task's home target.
+    Home,
+    /// Use the call's optional `target`, otherwise the task's home target.
+    Named,
+}
+
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Runs a JavaScript composition through the stock caller. The interpreter
@@ -7,6 +16,13 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     fn is_code_mode(&self) -> bool {
         false
     }
+    /// Selects the workspace before authorization and original start publication.
+    /// Adapters retain their underlying executor's binding; model-visible names
+    /// do not choose execution placement or grant another capability.
+    fn workspace_binding(&self) -> Option<WorkspaceBinding> {
+        None
+    }
+
     /// Resolves an already validated content path in this exact workspace.
     /// Selection and read policy do not require a publication binding. The
     /// task's original reader still authenticates the selected volume/grants.

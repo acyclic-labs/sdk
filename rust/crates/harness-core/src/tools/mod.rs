@@ -19,6 +19,9 @@ mod bounds;
 pub(crate) use bounds::prefix as json_string_prefix;
 mod command;
 mod fs_command;
+/// Pinned native declarations and thin adapters over registered capabilities.
+#[cfg(feature = "filesystem")]
+pub mod native;
 mod workspace_executor;
 pub use command::parse_command;
 #[cfg(feature = "filesystem")]
