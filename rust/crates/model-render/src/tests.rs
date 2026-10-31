@@ -267,6 +267,90 @@ fn sink_failure_returns_at_the_failed_write_without_retrying() {
     assert_ne!(closed.writes, 1);
 }
 
+#[test]
+fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
+    struct Writer {
+        writes: usize,
+        fail_at: Option<usize>,
+        chunk: usize,
+        bytes: Vec<u8>,
+    }
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            if self.fail_at == Some(self.writes) {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            let length = bytes.len().min(self.chunk);
+            self.bytes.extend_from_slice(&bytes[..length]);
+            Ok(length)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            unreachable!("rendering never flushes")
+        }
+    }
+    let source = item(Family::Responses, ItemKind::Message, "original bytes");
+    let header = header(Family::Responses);
+    let ordinary = bytes(&header, std::slice::from_ref(&source));
+    let mut summary = Vec::new();
+    let instruction = "summarize \"\\\n猫";
+    render_summary(&header, [&source], instruction, &mut summary).unwrap();
+    for (is_summary, expected) in [(false, ordinary), (true, summary)] {
+        let run = |writer: &mut Writer| {
+            if is_summary {
+                render_summary(&header, [&source], instruction, writer)
+            } else {
+                render(&header, [&source], Tail, writer)
+            }
+        };
+        let mut partial = Writer {
+            writes: 0,
+            fail_at: None,
+            chunk: 1,
+            bytes: Vec::new(),
+        };
+        run(&mut partial).unwrap();
+        assert_eq!(partial.bytes, expected);
+        assert_eq!(partial.writes, expected.len());
+        // Every failure position, including JSON instruction escaping, is
+        // finite. The writer would succeed on the next call: retrying here
+        // would silently convert an interrupted request into a successful one.
+        for fail_at in 1..=expected.len() {
+            let mut interrupted = Writer {
+                writes: 0,
+                fail_at: Some(fail_at),
+                chunk: 1,
+                bytes: Vec::new(),
+            };
+            assert!(
+                matches!(run(&mut interrupted), Err(RenderError::Write(error))
+                if error.kind() == io::ErrorKind::Interrupted)
+            );
+            assert_eq!(interrupted.writes, fail_at);
+            assert_eq!(interrupted.bytes, expected[..fail_at - 1]);
+        }
+        let mut stopped = Writer {
+            writes: 0,
+            fail_at: None,
+            chunk: 0,
+            bytes: Vec::new(),
+        };
+        assert!(matches!(run(&mut stopped), Err(RenderError::Write(error))
+            if error.kind() == io::ErrorKind::WriteZero));
+        assert_eq!(stopped.writes, 1);
+    }
+    // The actual former primitive retries Interrupted. This control exposes
+    // the incorrect success with a finite producer, without a hang or timeout.
+    let mut former = Writer {
+        writes: 0,
+        fail_at: Some(1),
+        chunk: usize::MAX,
+        bytes: Vec::new(),
+    };
+    former.write_all(b"original bytes").unwrap();
+    assert_eq!(former.writes, 2);
+}
+
 proptest! {
     // Generated request inputs and an independent semantic oracle, not captured
     // provider exchanges. Byte-prefix identity is not a cache-hit assertion.
