@@ -52,6 +52,16 @@ impl PersistenceKey {
 /// its observer; the original job retains physical completion custody.
 /// `medium`, `operation` and the opaque `key` identify the original producer in
 /// wait reports. Never include credentials, user content or paths in the key.
+/// Borrowed formatting arguments cannot enter the asynchronous submission:
+///
+/// ```compile_fail
+/// async fn read() {
+///     let owner = 7;
+///     acyclic_native_runtime::spawn_persistence(
+///         "streams", "read", &format_args!("{owner}"), || (),
+///     ).await.unwrap();
+/// }
+/// ```
 pub fn spawn_persistence<F, T>(
     medium: &'static str,
     operation: &'static str,
