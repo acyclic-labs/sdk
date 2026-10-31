@@ -340,6 +340,8 @@ pub enum Out {
     Conversation(Vec<u8>),
     /// The preceding conversation entry announced the roster of this digest.
     Roster([u8; 32]),
+    /// Consume a frozen Notice prefix with its original conversation append.
+    Notices(super::NoticeSelection),
     /// Complete this goal run with the preceding conversation entry.
     GoalCompleted {
         /// Original turn identity, preserved across self-continuations.
@@ -604,7 +606,13 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     }
     apply_spawns(&mut state, &mut outs, applied, MAX_OPEN_CHILDREN);
     let tails = (state.conversation_tail, state.status_tail);
-    let completion = (state.awaited, state.checkpoint, state.roster, outs.len());
+    let completion = (
+        state.awaited,
+        state.checkpoint,
+        state.roster,
+        outs.len(),
+        state.pending_notices.clone(),
+    );
     let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
     let mut bytes = checkpoint::encode(&step.state)?;
     // Check the exact final tails, then retain these same bytes for commit.
@@ -620,6 +628,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         state.awaited = completion.0;
         state.checkpoint = completion.1;
         state.roster = completion.2;
+        state.pending_notices = completion.4;
         outs.truncate(completion.3);
         shed(&mut state, &mut outs, OVERSIZED_STATE);
         step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
@@ -683,6 +692,7 @@ fn finalize_step(
                 state.roster = None;
             }
             Out::Roster(digest) => state.roster = Some(*digest),
+            Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
             | Out::Archive { .. }
             | Out::Spawn { .. }
@@ -831,7 +841,11 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
-        Out::Archive { .. } | Out::Checkpoint | Out::Roster(_) | Out::GoalCompleted { .. } => true,
+        Out::Archive { .. }
+        | Out::Checkpoint
+        | Out::Roster(_)
+        | Out::Notices(_)
+        | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes).is_ok(),
     }
 }

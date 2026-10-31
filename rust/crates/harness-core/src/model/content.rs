@@ -238,6 +238,19 @@ impl ModelContent {
         }
         Ok(())
     }
+    /// Agent turns also admit one standalone frozen event block. Human command
+    /// inputs keep their narrower validation at the public command boundary.
+    pub(crate) fn validate_turn_input(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
+        if let Self::Part(ModelContentPart::Notices { notices }) = self {
+            history_step(work, 1)?;
+            return if notices.is_empty() {
+                Err(invalid(work, "turn notice block is empty"))
+            } else {
+                Ok(())
+            };
+        }
+        self.validate_user_input(work)
+    }
     /// Rejects empty or tool content in a human input.
     pub fn validate_user_input(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         history_step(work, 1)?;
