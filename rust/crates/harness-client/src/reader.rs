@@ -20,7 +20,6 @@ mod demand;
 mod driver;
 
 pub use backing::RecordBytes;
-use cache::Key;
 pub use cache::{Listing, RecordCache, SnapshotError};
 pub use credential::CredentialStatus;
 use credential::{Access, Credentials};
@@ -336,11 +335,26 @@ enum OpKey {
     Children(StreamPath, u32),
 }
 
+#[cfg(test)]
+thread_local! {
+    static OP_PATH_PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl OpKey {
     fn path(&self) -> &StreamPath {
+        #[cfg(test)]
+        OP_PATH_PROJECTIONS.with(|visits| visits.set(visits.get() + 1));
         match self {
             Self::Read(path, _) | Self::Head(path) | Self::Children(path, _) => path,
         }
+    }
+
+    fn path_ranges(path: &StreamPath) -> [std::ops::RangeInclusive<Self>; 3] {
+        [
+            Self::Read(path.clone(), 0)..=Self::Read(path.clone(), u64::MAX),
+            Self::Head(path.clone())..=Self::Head(path.clone()),
+            Self::Children(path.clone(), 0)..=Self::Children(path.clone(), u32::MAX),
+        ]
     }
 }
 
@@ -732,15 +746,20 @@ impl Reader {
     /// passed-through values no want covers any longer are released.
     pub fn plan(&mut self, wants: impl IntoIterator<Item = (Want, Priority)>) {
         let wants: Vec<(Want, Priority)> = wants.into_iter().collect();
+        let pass_mark = self.cache.clock();
         // Rows of one page each state the same page want; display it once.
         let mut displayed = BTreeSet::new();
         for (want, priority) in &wants {
             if *priority == Priority::Visible && displayed.insert(want) {
-                self.display(want);
+                self.touch_want(want, true);
             }
         }
-        self.cache
-            .retain_passed(|cache, key| wants.iter().any(|(want, _)| covers(cache, want, key)));
+        for (want, _) in &wants {
+            if displayed.insert(want) {
+                self.touch_want(want, false);
+            }
+        }
+        self.cache.retain_passed(pass_mark);
         self.demand.begin_plan();
         for (want, priority) in wants {
             let Some((key, paging)) = self.resolve(&want) else {
@@ -770,11 +789,16 @@ impl Reader {
         }
     }
 
-    /// Mark one visible want's cached values and facts in use this frame.
-    fn display(&mut self, want: &Want) {
+    /// Retain a want's pass-throughs; only displayed wants protect cached
+    /// values and facts against eviction.
+    fn touch_want(&mut self, want: &Want, displayed: bool) {
         if let Some((stream, from, to)) = window(&self.cache, want) {
             let stream = stream.clone();
-            self.cache.touch_range(&stream, from, to);
+            if displayed {
+                self.cache.touch_range(&stream, from, to);
+            } else {
+                self.cache.retain_range(&stream, from, to);
+            }
         }
         if let Want::Listing {
             parent,
@@ -784,12 +808,20 @@ impl Reader {
         } = want
         {
             for (stream, last) in projected(&self.cache, want) {
-                self.cache.touch_record(&stream, last);
+                if displayed {
+                    self.cache.touch_record(&stream, last);
+                } else {
+                    self.cache.retain_range(&stream, last, last + 1);
+                }
             }
-            self.cache.touch_listing(parent, *index);
-            self.cache.touch_stream(parent);
-            if let Some(witness) = witness {
-                self.cache.touch_stream(witness);
+            if displayed {
+                self.cache.touch_listing(parent, *index);
+                self.cache.touch_stream(parent);
+                if let Some(witness) = witness {
+                    self.cache.touch_stream(witness);
+                }
+            } else {
+                self.cache.retain_listing(parent, *index);
             }
         }
     }
@@ -1415,7 +1447,9 @@ impl Reader {
     /// Acknowledge a displayed issue. Retry a denial only after renewing authority.
     pub fn acknowledge_issue(&mut self, stream: &StreamPath) {
         self.issues.remove(stream);
-        self.refused.retain(|key| key.path() != stream);
+        for range in OpKey::path_ranges(stream) {
+            self.refused.extract_if(range, |_| true).for_each(drop);
+        }
         self.generation += 1;
     }
 
@@ -1544,22 +1578,6 @@ fn projected(cache: &RecordCache, want: &Want) -> Vec<(StreamPath, u64)> {
             Some((stream, last))
         })
         .collect()
-}
-
-/// Whether `want` reads the value cached or passed through under `key`.
-fn covers(cache: &RecordCache, want: &Want, key: &Key) -> bool {
-    match (want, key) {
-        (Want::Listing { parent, index, .. }, Key::Listing(path, at)) => {
-            parent == path && index == at
-        }
-        (Want::Listing { .. }, Key::Record(..)) => projected(cache, want)
-            .iter()
-            .any(|(stream, last)| cache.resolve(stream, *last) == *key),
-        (_, Key::Record(_, sequence)) => window(cache, want).is_some_and(|(stream, from, to)| {
-            (from..to).contains(sequence) && cache.resolve(stream, *sequence) == *key
-        }),
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -2199,7 +2217,40 @@ mod reader_tests {
         reader.begin_frame(10_000);
         reader.plan([(want.clone(), Priority::Visible)]);
         assert!(reader.poll(10_000).is_empty());
+        let refused = [
+            OpKey::Read(stream.clone(), 0),
+            OpKey::Read(stream.clone(), u64::MAX),
+            OpKey::Head(stream.clone()),
+            OpKey::Children(stream.clone(), 0),
+            OpKey::Children(stream.clone(), u32::MAX),
+        ];
+        reader.refused.extend(refused.iter().cloned());
+        for index in 0..100_000 {
+            reader.refused.insert(OpKey::Head(
+                StreamPath::new(format!("test/source/unrelated-{index}")).unwrap(),
+            ));
+        }
+        let neighboring = [
+            OpKey::Read(child.clone(), u64::MAX),
+            OpKey::Head(grandchild.clone()),
+            OpKey::Children(parent.clone(), u32::MAX),
+        ];
+        reader.refused.extend(neighboring.iter().cloned());
+        OP_PATH_PROJECTIONS.with(|visits| visits.set(0));
         reader.acknowledge_issue(&stream);
+        assert_eq!(
+            OP_PATH_PROJECTIONS.with(std::cell::Cell::get),
+            0,
+            "explicit retry enumerated retained refusal paths"
+        );
+        assert!(reader.issues().next().is_none());
+        assert!(
+            refused.iter().all(|key| !reader.refused.contains(key)),
+            "explicit retry retained an operation for the acknowledged stream"
+        );
+        assert_eq!(reader.refused.len(), 100_003);
+        assert!(neighboring.iter().all(|key| reader.refused.contains(key)));
+        assert!(reader.refused.contains(&unrelated));
         reader.plan([(want, Priority::Visible)]);
         assert_eq!(reader.poll(10_000).len(), 1);
     }
@@ -2252,6 +2303,45 @@ mod reader_tests {
         let residency = reader.residency();
         assert!(residency.cache_bytes <= 64 * 1024);
         assert!(residency.passed_bytes > 64 * 1024);
+        // One still-wanted value among unrelated retained values and
+        // interests must not require their Cartesian product. Prefetch
+        // retains a pass-through without protecting cold cached entries.
+        let shared = OwnedBytes::from(vec![0_u8; 64 * 1024]);
+        for index in 0..32 {
+            let path = StreamPath::new(format!("cold/{index}")).unwrap();
+            assert!(
+                !reader
+                    .cache
+                    .insert_record(&path, 0, shared.clone(), Some(reader.frame_mark),)
+            );
+        }
+        drop(shared);
+        let wants = (0..100_000)
+            .map(|index| {
+                (
+                    Want::Range {
+                        stream: StreamPath::new(format!("unrelated/{index}")).unwrap(),
+                        from: 0,
+                        to: 1,
+                    },
+                    Priority::Prefetch,
+                )
+            })
+            .chain([(want[0].0.clone(), Priority::Prefetch)]);
+        reader.begin_frame(6);
+        reader.cache.take_retention_visits();
+        reader.plan(wants);
+        assert!(
+            reader.cache.record(&stream, 0).is_some(),
+            "prefetch lost its retained result"
+        );
+        assert_eq!(
+            reader.cache.take_retention_visits(),
+            33,
+            "retention enumerated unrelated wants for each retained value"
+        );
+        assert_eq!(reader.cache.record(&stream, 0).unwrap().len(), 64 * 1024);
+        assert_eq!(reader.residency().passed_bytes, residency.passed_bytes);
         assert!(frame(&mut reader, 6, &[]).is_empty());
         assert!(reader.cache.record(&stream, 0).is_none());
         assert_eq!(reader.residency().passed_bytes, 0);
@@ -2341,6 +2431,15 @@ mod reader_tests {
                 let head = StreamPath::new(format!("test/agents/{name}/conversation")).unwrap();
                 assert!(reader.cache.record(&head, 0).is_some(), "{name} at {now}");
             }
+        }
+        let prefetch = [(want[0].0.clone(), Priority::Prefetch)];
+        assert!(frame(&mut reader, 6, &prefetch).is_empty());
+        for name in ["a", "b"] {
+            let head = StreamPath::new(format!("test/agents/{name}/conversation")).unwrap();
+            assert!(
+                reader.cache.record(&head, 0).is_some(),
+                "prefetch head {name}"
+            );
         }
         assert!(reader.residency().cache_bytes <= 64 * 1024);
     }

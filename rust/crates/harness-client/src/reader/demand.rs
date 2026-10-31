@@ -127,11 +127,9 @@ impl Demands {
     /// Each operation variant already groups a path's entries in the owning
     /// map. Invalidation visits only those ranges, preserving unrelated ages.
     pub(super) fn remove_path(&mut self, path: &super::StreamPath) {
-        self.remove_range(OpKey::Read(path.clone(), 0)..=OpKey::Read(path.clone(), u64::MAX));
-        self.remove_range(OpKey::Head(path.clone())..=OpKey::Head(path.clone()));
-        self.remove_range(
-            OpKey::Children(path.clone(), 0)..=OpKey::Children(path.clone(), u32::MAX),
-        );
+        for range in OpKey::path_ranges(path) {
+            self.remove_range(range);
+        }
     }
 
     pub(super) fn remove_children_after(&mut self, path: &super::StreamPath, index: u32) {

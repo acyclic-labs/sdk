@@ -117,8 +117,11 @@ pub struct RecordCache {
     entries: BTreeMap<Key, Entry>,
     lru: BTreeMap<u64, Key>,
     meta: BTreeMap<StreamPath, Meta>,
+    dependents: BTreeMap<StreamPath, BTreeSet<StreamPath>>,
+    meta_lru: [BTreeMap<u64, StreamPath>; 2],
     /// Values served uncached, with their charge, while a want covers them.
-    passed: BTreeMap<Key, (Value, usize)>,
+    passed: BTreeMap<Key, Entry>,
+    passed_lru: BTreeMap<u64, Key>,
     children: BTreeSet<ChildLocation>,
     passed_bytes: usize,
     bytes: usize,
@@ -133,6 +136,10 @@ pub struct RecordCache {
     max_streams: usize,
     #[cfg(test)]
     listing_visits: std::cell::Cell<usize>,
+    #[cfg(test)]
+    retention_visits: std::cell::Cell<usize>,
+    #[cfg(test)]
+    invalidation_visits: usize,
 }
 
 impl RecordCache {
@@ -144,7 +151,10 @@ impl RecordCache {
             entries: BTreeMap::new(),
             lru: BTreeMap::new(),
             meta: BTreeMap::new(),
+            dependents: BTreeMap::new(),
+            meta_lru: Default::default(),
             passed: BTreeMap::new(),
+            passed_lru: BTreeMap::new(),
             children: BTreeSet::new(),
             passed_bytes: 0,
             bytes: 0,
@@ -157,6 +167,10 @@ impl RecordCache {
             max_streams,
             #[cfg(test)]
             listing_visits: std::cell::Cell::new(0),
+            #[cfg(test)]
+            retention_visits: std::cell::Cell::new(0),
+            #[cfg(test)]
+            invalidation_visits: 0,
         }
     }
 
@@ -165,7 +179,10 @@ impl RecordCache {
         self.entries.clear();
         self.lru.clear();
         self.meta.clear();
+        self.dependents.clear();
+        self.meta_lru.iter_mut().for_each(BTreeMap::clear);
         self.passed.clear();
+        self.passed_lru.clear();
         self.children.clear();
         self.passed_bytes = 0;
         self.bytes = 0;
@@ -248,10 +265,30 @@ impl RecordCache {
         if self.origin_changed(stream, &origin) {
             self.remove_stream(stream, true);
         }
-        let meta = self.meta_mut(stream);
-        meta.fork = origin;
-        meta.origin_known = true;
-        meta.origin_observed = meta.observed;
+        let source = origin.as_ref().map(|origin| origin.source.clone());
+        let (previous, used) = {
+            let meta = self.meta_mut(stream);
+            let previous = std::mem::replace(&mut meta.fork, origin);
+            meta.origin_known = true;
+            meta.origin_observed = meta.observed;
+            (previous, meta.used)
+        };
+        let current = source.is_some();
+        if previous.as_ref().map(|origin| &origin.source) != source.as_ref() {
+            if let Some(previous) = &previous {
+                self.unlink_origin(stream, &previous.source);
+            }
+            if let Some(source) = source {
+                self.dependents
+                    .entry(source)
+                    .or_default()
+                    .insert(stream.clone());
+            }
+        }
+        if previous.is_some() != current {
+            self.meta_lru[usize::from(previous.is_some())].remove(&used);
+            self.meta_lru[usize::from(current)].insert(used, stream.clone());
+        }
     }
 
     pub(super) fn origin_changed(&self, stream: &StreamPath, origin: &Option<ForkOrigin>) -> bool {
@@ -374,24 +411,22 @@ impl RecordCache {
                 path = &origin.source;
             }
         }
-        let mut dependents = BTreeMap::<_, Vec<_>>::new();
-        for (path, meta) in &self.meta {
-            if let Some(origin) = &meta.fork {
-                dependents.entry(&origin.source).or_default().push(path);
-            }
-        }
         let mut affected = BTreeSet::new();
         while let Some(path) = pending.pop() {
+            #[cfg(test)]
+            {
+                self.invalidation_visits += 1;
+            }
             if !affected.insert(path.clone()) {
                 continue;
             }
-            if let Some(children) = dependents.get(&path) {
-                pending.extend(children.iter().map(|child| (*child).clone()));
+            if let Some(children) = self.dependents.get(&path) {
+                pending.extend(children.iter().cloned());
             }
         }
         for path in &affected {
             self.forget(path);
-            self.meta.remove(path);
+            self.remove_meta(path);
         }
         let listings =
             self.keys_in(Key::Listing(stream.clone(), 0)..=Key::Listing(stream.clone(), u32::MAX));
@@ -432,9 +467,10 @@ impl RecordCache {
             if !matches!(entry.key(), Key::Listing(..)) {
                 break;
             }
-            let (key, (value, charge)) = entry.remove_entry();
-            index_listing(&mut self.children, &key, &value, true, false);
-            self.passed_bytes -= charge;
+            let (key, entry) = entry.remove_entry();
+            index_listing(&mut self.children, &key, &entry.value, true, false);
+            self.passed_lru.remove(&entry.used);
+            self.passed_bytes -= entry.charge;
             #[cfg(test)]
             self.listing_visits.set(self.listing_visits.get() + 1);
         }
@@ -465,30 +501,54 @@ impl RecordCache {
             // most bytes) survives longest. When every retained fact is in
             // use the frame needs them all: retain it rather than thrash.
             let mark = self.mark;
-            let victim = self
-                .meta
-                .iter()
-                .find(|(_, meta)| meta.used <= mark && meta.fork.is_none())
-                .or_else(|| self.meta.iter().find(|(_, meta)| meta.used <= mark))
-                .map(|(path, _)| path.clone());
+            let victim = self.meta_lru.iter().find_map(|index| {
+                index
+                    .first_key_value()
+                    .filter(|(used, _)| **used <= mark)
+                    .map(|(_, path)| path.clone())
+            });
             if let Some(victim) = victim {
                 // Cached bytes must not outlive the anchor that identifies them.
                 self.forget(&victim);
-                self.meta.remove(&victim);
+                self.remove_meta(&victim);
             }
         }
         self.clock += 1;
         let meta = self.meta.entry(stream.clone()).or_default();
+        let index = &mut self.meta_lru[usize::from(meta.fork.is_some())];
+        index.remove(&meta.used);
         meta.used = self.clock;
         meta.observed = self.clock;
+        index.insert(meta.used, stream.clone());
         meta
+    }
+
+    fn unlink_origin(&mut self, stream: &StreamPath, source: &StreamPath) {
+        if let Some(children) = self.dependents.get_mut(source) {
+            children.remove(stream);
+            if children.is_empty() {
+                self.dependents.remove(source);
+            }
+        }
+    }
+
+    fn remove_meta(&mut self, stream: &StreamPath) {
+        if let Some(meta) = self.meta.remove(stream) {
+            self.meta_lru[usize::from(meta.fork.is_some())].remove(&meta.used);
+            if let Some(origin) = meta.fork {
+                self.unlink_origin(stream, &origin.source);
+            }
+        }
     }
 
     /// Mark a displayed stream's facts in use this frame.
     pub fn touch_stream(&mut self, stream: &StreamPath) {
         if let Some(meta) = self.meta.get_mut(stream) {
             self.clock += 1;
+            let index = &mut self.meta_lru[usize::from(meta.fork.is_some())];
+            index.remove(&meta.used);
             meta.used = self.clock;
+            index.insert(meta.used, stream.clone());
         }
     }
 
@@ -523,7 +583,7 @@ impl RecordCache {
         self.entries
             .get(key)
             .map(|entry| &entry.value)
-            .or_else(|| self.passed.get(key).map(|(value, _)| value))
+            .or_else(|| self.passed.get(key).map(|entry| &entry.value))
     }
 
     /// Whether `[from, to)` of `stream` is entirely cached.
@@ -569,7 +629,7 @@ impl RecordCache {
             self.passed
                 .range(range)
                 .next_back()
-                .map(|(key, (value, _))| (key, value)),
+                .map(|(key, entry)| (key, &entry.value)),
         ]
         .into_iter()
         .flatten()
@@ -600,7 +660,7 @@ impl RecordCache {
             .chain(
                 self.passed
                     .range(range)
-                    .map(|(key, (value, _))| (key, value)),
+                    .map(|(key, entry)| (key, &entry.value)),
             )
             .filter(|_| self.access.allows())
             .filter_map(|(key, value)| self.listing_entry(key, value))
@@ -627,7 +687,7 @@ impl RecordCache {
             .next()?;
         let key = Key::Listing(parent.clone(), *page);
         let value = if *passed {
-            &self.passed.get(&key)?.0
+            &self.passed.get(&key)?.value
         } else {
             &self.entries.get(&key)?.value
         };
@@ -654,20 +714,42 @@ impl RecordCache {
     /// facts (and the records they own) are in use too. The walk visits only
     /// cached entries, so an unbounded window costs what is cached.
     pub fn touch_range(&mut self, stream: &StreamPath, from: u64, to: u64) {
+        self.touch_records(stream, from, to, true);
+    }
+
+    pub(super) fn retain_range(&mut self, stream: &StreamPath, from: u64, to: u64) {
+        self.touch_records(stream, from, to, false);
+    }
+
+    fn touch_records(&mut self, stream: &StreamPath, from: u64, to: u64, displayed: bool) {
         let mut path = stream.clone();
         let mut end = to;
-        for _ in 0..=self.meta.len() {
-            self.touch_stream(&path);
-            let fork = self.fork(&path).cloned();
+        let edges = self.meta.len();
+        for step in 0..=edges {
+            if displayed {
+                self.touch_stream(&path);
+            }
+            // Use exactly resolve's edge budget, including its final owner
+            // on malformed cycles. No record outside that owner is retained.
+            let fork = if step < edges {
+                self.fork(&path).cloned()
+            } else {
+                None
+            };
             let own = fork
                 .as_ref()
                 .map_or(from, |origin| from.max(origin.forked_at));
             if own < end {
-                for (key, entry) in self
-                    .entries
-                    .range_mut(Key::Record(path.clone(), own)..Key::Record(path.clone(), end))
-                {
-                    touch_entry(&mut self.lru, &mut self.clock, key, entry);
+                let range = Key::Record(path.clone(), own)..Key::Record(path.clone(), end);
+                if displayed {
+                    for (key, entry) in self.entries.range_mut(range.clone()) {
+                        touch_entry(&mut self.lru, &mut self.clock, key, entry);
+                    }
+                }
+                for (key, entry) in self.passed.range_mut(range) {
+                    #[cfg(test)]
+                    self.retention_visits.set(self.retention_visits.get() + 1);
+                    touch_entry(&mut self.passed_lru, &mut self.clock, key, entry);
                 }
             }
             match fork {
@@ -685,10 +767,23 @@ impl RecordCache {
         self.touch(&Key::Listing(parent.clone(), index));
     }
 
+    pub(super) fn retain_listing(&mut self, parent: &StreamPath, index: u32) {
+        self.touch_passed(&Key::Listing(parent.clone(), index));
+    }
+
+    fn touch_passed(&mut self, key: &Key) {
+        if let Some(entry) = self.passed.get_mut(key) {
+            #[cfg(test)]
+            self.retention_visits.set(self.retention_visits.get() + 1);
+            touch_entry(&mut self.passed_lru, &mut self.clock, key, entry);
+        }
+    }
+
     fn touch(&mut self, key: &Key) {
         if let Some(entry) = self.entries.get_mut(key) {
             touch_entry(&mut self.lru, &mut self.clock, key, entry);
         }
+        self.touch_passed(key);
     }
 
     /// Insert one committed record. A position inherited through a fork is
@@ -746,7 +841,7 @@ impl RecordCache {
             .entries
             .get(&key)
             .map(|entry| (&entry.value, false))
-            .or_else(|| self.passed.get(&key).map(|(value, _)| (value, true)));
+            .or_else(|| self.passed.get(&key).map(|entry| (&entry.value, true)));
         if let Some((value, passed)) = retained {
             index_listing(&mut self.children, &key, value, passed, true);
         }
@@ -787,32 +882,45 @@ impl RecordCache {
             value = entry.value;
         }
         if protect.is_some() {
+            self.clock += 1;
             self.passed_bytes += charge;
-            self.passed.insert(key, (value, charge));
+            self.passed_lru.insert(self.clock, key.clone());
+            self.passed.insert(
+                key,
+                Entry {
+                    value,
+                    charge,
+                    used: self.clock,
+                },
+            );
         }
         false
     }
 
-    /// Drop every passed-through value no current want covers; called with
-    /// each frame's plan, so pass-through memory is bounded by what the
-    /// renderer asks for, not by history size.
-    pub(super) fn retain_passed(&mut self, mut covered: impl FnMut(&Self, &Key) -> bool) {
-        let this = &*self;
-        let dropped: Vec<Key> = this
-            .passed
-            .keys()
-            .filter(|key| !covered(this, key))
-            .cloned()
-            .collect();
-        for key in dropped {
+    /// Retire only entries not touched by this plan. The recency prefix is
+    /// exactly the abandoned values; retained values need no sweep.
+    pub(super) fn retain_passed(&mut self, mark: u64) {
+        while let Some((&used, key)) = self.passed_lru.first_key_value() {
+            if used > mark {
+                break;
+            }
+            let key = key.clone();
             self.unpass(&key);
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn take_retention_visits(&self) -> usize {
+        self.retention_visits.replace(0)
+    }
+
     fn unpass(&mut self, key: &Key) {
-        if let Some((value, charge)) = self.passed.remove(key) {
-            index_listing(&mut self.children, key, &value, true, false);
-            self.passed_bytes -= charge;
+        if let Some(entry) = self.passed.remove(key) {
+            #[cfg(test)]
+            self.retention_visits.set(self.retention_visits.get() + 1);
+            index_listing(&mut self.children, key, &entry.value, true, false);
+            self.passed_lru.remove(&entry.used);
+            self.passed_bytes -= entry.charge;
         }
     }
 
@@ -1357,7 +1465,7 @@ mod tests {
         assert_eq!(cache.record(&stream, 1).unwrap().as_ref(), &[2]);
         assert!(cache.listing(&stream, 0).is_some());
         assert_eq!(cache.backing_bytes(), 8193);
-        cache.retain_passed(|_, _| false);
+        cache.retain_passed(cache.clock());
         assert_eq!(cache.backing_bytes(), 1);
 
         // After memory pressure, a new tiny record must not prolong an old
@@ -1396,7 +1504,7 @@ mod tests {
         let source = StreamPath::new("source").unwrap();
         let child = StreamPath::new("child").unwrap();
         let grandchild = StreamPath::new("grandchild").unwrap();
-        let mut cache = RecordCache::new(64 * 1024, 128);
+        let mut cache = RecordCache::new(64 * 1024, 100_008);
         let origin = ForkOrigin {
             source: source.clone(),
             forked_at: 0,
@@ -1416,6 +1524,31 @@ mod tests {
         let mut restored = RecordCache::new(64 * 1024, 128);
         restored.restore(&cache.snapshot()).unwrap();
         assert_eq!(restored.fork(&child), Some(&origin));
+        // Source replacement retires the rebuilt links too, even when the
+        // same path names are reused by another admitted source.
+        restored.remove_stream(&child, false);
+        assert!(restored.record(&grandchild, 0).is_none());
+        restored.restore(&cache.snapshot()).unwrap();
+        restored.reset_access(super::super::Access::default());
+        restored.observe_origin(&grandchild, None);
+        restored.insert_record(&grandchild, 0, OwnedBytes::from_static(b"new-source"), None);
+        restored.remove_stream(&child, false);
+        assert_eq!(
+            restored.record(&grandchild, 0).unwrap().as_ref(),
+            b"new-source"
+        );
+        let unrelated = StreamPath::new("unrelated").unwrap();
+        for index in 0..100_000 {
+            cache.observe_origin(
+                &StreamPath::new(format!("unrelated/{index}")).unwrap(),
+                Some(ForkOrigin {
+                    source: unrelated.clone(),
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([4; 32]),
+                }),
+            );
+        }
+        cache.invalidation_visits = 0;
         cache.observe_origin(
             &child,
             Some(ForkOrigin {
@@ -1426,6 +1559,52 @@ mod tests {
         assert!(cache.record(&child, 0).is_none());
         assert!(cache.record(&grandchild, 0).is_none());
         assert!(!cache.origin_known(&grandchild));
+        assert_eq!(
+            cache.invalidation_visits, 2,
+            "invalidation rebuilt unrelated dependencies"
+        );
+        assert_eq!(cache.dependents[&unrelated].len(), 100_000);
+
+        // Evicting a source fact must retain the reverse links owned by
+        // children that still name it, then retire them on actual denial.
+        let mut evicted = RecordCache::new(64 * 1024, 2);
+        evicted.observe_origin(
+            &child,
+            Some(ForkOrigin {
+                source: source.clone(),
+                forked_at: 1,
+                commit_id: CommitId::from_bytes([5; 32]),
+            }),
+        );
+        evicted.observe_origin(&source, None);
+        evicted.begin_frame();
+        evicted.touch_stream(&child);
+        evicted.observe_tail(&unrelated, 0);
+        assert!(!evicted.origin_known(&source));
+        assert!(evicted.origin_known(&child));
+        assert_eq!(evicted.remove_stream(&source, false).len(), 2);
+        assert!(!evicted.origin_known(&child));
+        assert!(evicted.dependents.is_empty());
+
+        // Malformed cycles retain exactly the same final owner as record
+        // lookup; retention must neither lose it nor invent another owner.
+        let mut cyclic = RecordCache::new(0, 2);
+        for (path, source) in [(&child, &source), (&source, &child)] {
+            cyclic.observe_origin(
+                path,
+                Some(ForkOrigin {
+                    source: source.clone(),
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([6; 32]),
+                }),
+            );
+        }
+        assert!(!cyclic.insert_record(&child, 0, OwnedBytes::from_static(b"cycle"), Some(0)));
+        let mark = cyclic.clock();
+        cyclic.retain_range(&child, 0, 1);
+        cyclic.retain_passed(mark);
+        assert_eq!(cyclic.record(&child, 0).unwrap().as_ref(), b"cycle");
+        assert!(cyclic.record(&source, 0).is_none());
     }
 
     #[test]
@@ -1563,5 +1742,47 @@ mod tests {
         assert!(target.bytes() <= 4096);
         assert!(target.record(&obsolete, 0).is_none());
         assert_eq!(target.record(&stream, 39).unwrap().as_ref(), &[7; 64]);
+
+        // Page membership follows replacement, persistence and actual
+        // residency retirement, including uncached pages kept by a want.
+        let child = StreamPath::new("test/history/child").unwrap();
+        let next_child = StreamPath::new("test/history/next").unwrap();
+        let page = |child: &StreamPath| Listing {
+            after: None,
+            children: vec![child.clone()],
+            next: None,
+            fresh: true,
+            witnessed: None,
+        };
+        assert!(target.insert_listing(&stream, 0, page(&child), None));
+        assert!(target.insert_listing(&stream, 0, page(&next_child), None));
+        assert!(target.listing_containing(&stream, &child).is_none());
+        assert_eq!(
+            target.listing_containing(&stream, &next_child).unwrap().0,
+            0
+        );
+        let snapshot = target.snapshot();
+        target.restore(&snapshot).unwrap();
+        assert_eq!(
+            target.listing_containing(&stream, &next_child).unwrap().0,
+            0
+        );
+        target.set_budget(0);
+        assert!(target.listing_containing(&stream, &next_child).is_none());
+        let mark = target.begin_frame();
+        assert!(!target.insert_listing(&stream, 0, page(&child), Some(mark)));
+        assert_eq!(target.listing_containing(&stream, &child).unwrap().0, 0);
+        let mark = target.clock();
+        target.retain_listing(&stream, 0);
+        target.retain_passed(mark);
+        assert!(target.listing_containing(&stream, &child).is_some());
+        target.retain_passed(target.clock());
+        assert!(target.listing_containing(&stream, &child).is_none());
+        assert!(!target.insert_listing(&stream, 0, page(&next_child), Some(mark)));
+        assert!(target.listing_containing(&stream, &child).is_none());
+        assert_eq!(
+            target.listing_containing(&stream, &next_child).unwrap().0,
+            0
+        );
     }
 }
