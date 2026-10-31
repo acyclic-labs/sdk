@@ -143,6 +143,7 @@ impl FileTool {
                 text: String::new(),
                 page: None,
                 media: selection,
+                outputs: Vec::new(),
             },
             u64::MAX,
             work,

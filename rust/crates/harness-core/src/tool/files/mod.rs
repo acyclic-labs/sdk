@@ -49,8 +49,8 @@ mod inputs;
 mod source;
 pub(crate) use inputs::FileView;
 pub use inputs::{
-    EditFileInput, FileResult, NotebookEdit, PatchFileInput, ReadFileInput, ReadFileResult,
-    ReadPage, ReadSelection, WriteFileInput,
+    EditFileInput, FileResult, NotebookEdit, NotebookOutput, PatchFileInput, ReadFileInput,
+    ReadFileResult, ReadPage, ReadSelection, WriteFileInput,
 };
 pub use source::FileReadSource;
 mod executor;
@@ -62,6 +62,7 @@ mod authorization;
 mod index;
 mod lines;
 mod notebook;
+mod notebook_outputs;
 mod notebook_read;
 mod projection;
 mod read;

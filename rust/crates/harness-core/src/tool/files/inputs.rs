@@ -191,6 +191,30 @@ pub struct ReadFileResult {
     /// Native media selection; the immutable file supplies its bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<ReadSelection>,
+    /// Native MIME outputs from selected notebook cells. Payload intervals
+    /// refer to this result's original notebook, never the derived file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<NotebookOutput>,
+}
+
+/// A retained native notebook output and its exact original JSON provenance.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct NotebookOutput {
+    /// Immutable decoded media, retained by the original private-volume writer.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+    pub file: FileRef,
+    /// Zero-based source cell.
+    pub cell_index: u64,
+    /// Zero-based output within that cell.
+    pub output_index: u64,
+    /// First byte of the original MIME value, including JSON framing.
+    pub start: u64,
+    /// Exclusive end of that original MIME value.
+    pub end: u64,
 }
 
 /// Model-visible file identity; the version is opaque and grants no authority.

@@ -81,6 +81,9 @@ proptest! {
                     let count = cursor.feed(&bytes[consumed..], bounds, None, &mut |_| Ok(()), &mut |event| warm.event(event,None)).unwrap();
                     prop_assert!(count > 0);
                     consumed += count;
+                    if let Some((start, end, key)) = warm.pending() {
+                        warm.supply(&source.as_bytes()[start as usize..end as usize], key, None).unwrap();
+                    }
                 }
                 if warm.done { break; }
             }
@@ -88,6 +91,47 @@ proptest! {
             prop_assert_eq!(warm.interval, selected.interval);
             prop_assert_eq!(warm.next_cell, selected.next_cell);
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn native_payloads_keep_cell_output_and_source_spans(
+        data in prop::collection::vec(any::<u8>(), 0..500),
+        offset in 0u64..4, count in 0u64..4, chunk in 1usize..100,
+    ) {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let encoded = STANDARD.encode(&data);
+        let pieces: Vec<_> = encoded.as_bytes().chunks(7)
+            .map(|bytes| std::str::from_utf8(bytes).unwrap()).collect();
+        let cells: Vec<_> = (0..4).map(|_| json!({"outputs":[
+            {"data":{"image/png":encoded,"text/plain":"untouched"}},
+            {"data":{"application/pdf":pieces}},
+        ],"metadata":{"outputs":[{"data":{"image/jpeg":"ignored"}}]}})).collect();
+        let source = serde_json::to_string_pretty(&json!({"cells":cells,"nbformat":4})).unwrap()
+            .replace("\"outputs\"", "\"outp\\u0075ts\"")
+            .replace("\"data\"", "\"d\\u0061ta\"")
+            .replace("\"image/png\"", "\"image\\u002fpng\"");
+        let selection = discover(&source, offset, Some(count), chunk).unwrap();
+        let expected = (4 - offset).min(count);
+        prop_assert_eq!(selection.outputs.payloads.len() as u64, expected * 2);
+        for (index, payload) in selection.outputs.payloads.iter().enumerate() {
+            prop_assert_eq!(payload.cell, offset + index as u64 / 2);
+            prop_assert_eq!(payload.output, index as u64 % 2);
+            let value: Value = serde_json::from_str(&source[payload.start as usize..payload.end as usize]).unwrap();
+            if payload.output == 0 {
+                prop_assert_eq!(value, json!(encoded));
+                prop_assert_eq!(payload.media, super::super::notebook_outputs::Media::Png);
+            } else {
+                prop_assert_eq!(value, json!(pieces));
+                prop_assert_eq!(payload.media, super::super::notebook_outputs::Media::Pdf);
+            }
+        }
+        // Removing the selected native MIME key keeps all text/cells readable,
+        // while the same cursor produces no native output references.
+        let plain = source.replace("image\\u002fpng", "other/plain").replace("application/pdf", "other/binary");
+        prop_assert!(discover(&plain, offset, Some(count), chunk).unwrap().outputs.payloads.is_empty());
     }
 }
 
@@ -99,6 +143,8 @@ fn duplicate_or_mistyped_notebook_fields_fail_on_the_same_scan() {
         r#"{"cells":[null],"nbformat":4}"#,
         r#"{"cells":{},"nbformat":4}"#,
         r#"{"cells":[],"nbformat":"4"}"#,
+        r#"{"cells":[{"outputs":[],"outputs":[]}],"nbformat":4}"#,
+        r#"{"cells":[{"outputs":[{"data":{"image/png":"","image/png":""}}]}],"nbformat":4}"#,
     ] {
         assert!(discover(source, 0, None, 1).is_err(), "accepted {source}");
     }

@@ -13,6 +13,13 @@ enum Field {
     Format,
 }
 
+#[derive(Clone, Copy)]
+enum Label {
+    Root,
+    Format,
+    Output(u32),
+}
+
 struct Document {
     origin: u64,
     end: u64,
@@ -61,6 +68,7 @@ impl Document {
 }
 
 struct Selection {
+    outputs: super::notebook_outputs::Spans,
     offset: u64,
     limit: Option<u64>,
     maximum: u64,
@@ -88,6 +96,7 @@ struct Selection {
 impl Selection {
     fn new(offset: u64, limit: Option<u64>, maximum: u64) -> Self {
         Self {
+            outputs: Default::default(),
             offset,
             limit,
             maximum,
@@ -113,10 +122,13 @@ impl Selection {
         }
     }
 
-    fn supply(&mut self, bytes: &[u8], key: bool, work: crate::NativeWork<'_>) -> Result<()> {
+    fn supply(&mut self, bytes: &[u8], key: Label, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Label::Output(level) = key {
+            return self.outputs.supply(bytes, level, work);
+        }
         let text = std::str::from_utf8(bytes)
             .map_err(|_| executor::rejection(work, "invalid notebook metadata"))?;
-        if key {
+        if matches!(key, Label::Root) {
             let key = notebook::decode(
                 std::marker::PhantomData::<crate::executor::json::BorrowedText<'_>>,
                 text,
@@ -137,22 +149,37 @@ impl Selection {
         Ok(())
     }
 
-    fn pending(&mut self) -> Option<(u64, u64, bool)> {
+    fn pending(&mut self) -> Option<(u64, u64, Label)> {
         if let Some((start, end)) = self.key.take() {
             self.field = Field::Other;
             // A longer spelling cannot equal either known ASCII key, even
             // when every character uses a six-byte Unicode escape.
             if end - start <= 2 + 6 * 8 {
-                return Some((start, end, true));
+                return Some((start, end, Label::Root));
             }
+        }
+        if let Some((start, end, level)) = self.outputs.pending() {
+            return Some((start, end, Label::Output(level)));
         }
         self.format_span
             .take()
-            .map(|(start, end)| (start, end, false))
+            .map(|(start, end)| (start, end, Label::Format))
     }
 
     fn event(&mut self, event: SpanEvent, work: crate::NativeWork<'_>) -> Result<bool> {
         let invalid = || executor::rejection(work, "invalid nbformat v4 cell document");
+        if self.cells
+            && self.outputs.event(
+                event,
+                self.element_depth,
+                self.count,
+                self.count >= self.offset
+                    && self.count - self.offset < self.limit.unwrap_or(u64::MAX),
+                work,
+            )?
+        {
+            return Ok(true);
+        }
         match event {
             SpanEvent::Key {
                 depth: 1,
@@ -209,6 +236,7 @@ impl Selection {
                         self.next_cell = next;
                     }
                 }
+                self.outputs.retain_cell(self.next_cell == next);
                 self.count = next;
                 if self.warm
                     && self.interval.is_some()
@@ -319,6 +347,7 @@ pub(super) async fn read(
     )?;
     let mut cursor = JsonSpans::default();
     let mut selection = Selection::new(offset, limit, budget.min(quantum));
+    selection.outputs.hold = edit::allocation(work, 0)?;
     let mut position = 0;
     if let Some(document) = &document {
         if offset > document.count {
@@ -490,6 +519,16 @@ pub(super) async fn read(
         .or(selection.array_end)
         .ok_or_else(|| executor::rejection(work, "notebook cell array is missing"))?;
     let (start, selected_end) = selection.interval.unwrap_or((empty, empty));
+    let outputs = super::notebook_outputs::retain(
+        context,
+        input,
+        &window,
+        (&version, position),
+        &selection.outputs.payloads,
+        work,
+        io,
+    )
+    .await?;
     let length = (selected_end - start)
         .min(budget.saturating_add(3))
         .min(quantum);
@@ -527,6 +566,8 @@ pub(super) async fn read(
         file: FileReadSource,
         text: &'a str,
         page: ReadPage,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        outputs: &'a Vec<NotebookOutput>,
     }
     let result = super::value(
         &Read {
@@ -538,6 +579,7 @@ pub(super) async fn read(
                 next: (selection.next_cell < total || end < selected_end).then_some(end),
                 offset,
             },
+            outputs: &outputs.values,
         },
         u64::MAX,
         work,

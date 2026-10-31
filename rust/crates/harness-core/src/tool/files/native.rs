@@ -68,5 +68,11 @@ record!(
     ReadFileResult,
     self,
     self.file.logical_owned_bytes()?,
-    self.text.capacity()
+    self.text.capacity(),
+    self.outputs.capacity() * std::mem::size_of::<NotebookOutput>(),
+    self.outputs.iter().try_fold(0u64, |total, output| {
+        total
+            .checked_add(output.file.logical_owned_bytes()?)
+            .ok_or_else(|| invalid("notebook output ownership overflow"))
+    })?
 );

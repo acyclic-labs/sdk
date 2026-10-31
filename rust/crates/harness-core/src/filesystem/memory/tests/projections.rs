@@ -3,6 +3,190 @@ use super::*;
 use crate::runtime::{Bindings, TaskContext, ToolContext};
 
 #[test]
+fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Result<()> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let source = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 131_072))?;
+    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 8192))?;
+    // Captured from the actual PNG encoder; provenance accompanies the bytes.
+    let image = include_bytes!("../../../../tests/fixtures/notebook-output.png");
+    let encoded = STANDARD.encode(image);
+    let lines: Vec<_> = encoded
+        .as_bytes()
+        .chunks(13)
+        .map(|bytes| format!("{}\n", std::str::from_utf8(bytes).unwrap()))
+        .collect();
+    let notebook = json!({"nbformat":4,"cells":[
+        {"outputs":[{"data":{"image/png":"!".repeat(12_000)}}]},
+        {"source":["λ"],"outputs":[
+            {"data":{"image/png":encoded,"text/plain":"kept"}},
+            {"data":{"image/png":lines}},
+        ]},
+    ]});
+    let body = serde_json::to_string_pretty(&notebook)
+        .unwrap()
+        .replace("\"image/png\"", "\"image\\u002fpng\"");
+    runtime.block_on(source.stage(
+        OperationId::new(),
+        "outputs.ipynb",
+        body.as_bytes(),
+        "application/x-ipynb+json",
+        "outputs.ipynb",
+    ))?;
+    let limits = Limits {
+        file_bytes: 8192,
+        render_bytes: 8192,
+        ..Limits::default()
+    };
+    let task = Bindings {
+        scope: RuntimeScope::new(
+            Capabilities::new([
+                source.read_capability.clone(),
+                private.read_capability.clone(),
+                private.write_capability.clone(),
+                "tool:call:read".into(),
+            ]),
+            limits,
+        )?,
+        content: Some(source.content_bindings()),
+        artifacts: Some(private.content_bindings()),
+        ..Bindings::local()
+    }
+    .build()?
+    .agent_context(&Capabilities::default(), private.content_bindings())?;
+    let tool = crate::tool::files::read()?;
+    let invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "native-cells".into(),
+        name: tool.definition.name.clone(),
+        arguments: json!({"path":"outputs.ipynb","selection":{"kind":"cells","offset":1,"limit":1}}),
+    };
+    let context = ToolContext::new(
+        Arc::new(task.clone()),
+        invocation.operation_id,
+        &invocation.call_id,
+    )?;
+    let result = runtime.block_on(
+        tool.executor
+            .execute(invocation.clone(), Some(context.clone())),
+    )?;
+    let selected: crate::tool::files::ReadFileResult =
+        serde_json::from_value(result.value.clone()).unwrap();
+    assert_eq!(selected.outputs.len(), 2);
+    assert!(selected.file.byte_length() > limits.file_bytes);
+    for (index, output) in selected.outputs.iter().enumerate() {
+        assert_eq!((output.cell_index, output.output_index), (1, index as u64));
+        assert_eq!(output.file.descriptor().media_type(), "image/png");
+        assert_eq!(
+            runtime
+                .block_on(task.read_file(&output.file, None))?
+                .as_ref(),
+            image
+        );
+        let original: Value =
+            serde_json::from_str(&body[output.start as usize..output.end as usize]).unwrap();
+        assert_eq!(
+            original,
+            notebook["cells"][1]["outputs"][index]["data"]["image/png"]
+        );
+    }
+    let projection = tool.projection.project(&invocation, &result, None)?.0;
+    tool.definition
+        .validate_projection(&projection, limits, None)?;
+    let parts = projection["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 3);
+    assert!(parts[0]["text"].as_str().unwrap().contains('λ'));
+    for part in &parts[1..] {
+        assert_eq!(part["policy"]["native"]["intent"]["kind"], "image");
+        assert_eq!(part["policy"]["native"]["intent"]["detail"], "auto");
+    }
+    let (warm, ranges) =
+        acyclic_test_support::differential::observe::<_, _, (&'static str, u64, u64)>(
+            || context.clone(),
+            |context| runtime.block_on(tool.executor.execute(invocation.clone(), Some(context))),
+        );
+    assert_eq!(warm?.value, result.value);
+    let ranges: Vec<_> = ranges
+        .into_iter()
+        .filter(|(kind, _, length)| *kind == "generation-bound range" && *length != 0)
+        .collect();
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(ranges[0].1, selected.page.as_ref().unwrap().start);
+    let workspace = super::super::super::bounded_io::content_workspace(
+        &private.host.provider,
+        &private.volume,
+        None,
+    )?;
+    runtime.block_on(private.host.apply(
+        &workspace,
+        None,
+        &[crate::filesystem::WorkspaceMutation::PutFile {
+            path: format!("/{}", selected.outputs[0].file.path()),
+            bytes: bytes::Bytes::from_static(b"changed head").into(),
+        }],
+        &crate::IdempotencyKey::new("changed-output-head")?,
+    ))?;
+    let unchanged = runtime.block_on(
+        tool.executor
+            .execute(invocation.clone(), Some(context.clone())),
+    )?;
+    assert_eq!(unchanged.value, result.value);
+    assert_eq!(
+        runtime
+            .block_on(task.read_file(&selected.outputs[0].file, None))?
+            .as_ref(),
+        image
+    );
+    // The projector cannot substitute an unrelated ordinal or MIME span.
+    for (field, value) in [
+        ("cell_index", json!(0)),
+        ("start", json!(0)),
+        ("end", json!(body.len() + 1)),
+    ] {
+        let mut changed = result.clone();
+        changed.value["outputs"][0][field] = value;
+        assert!(
+            tool.projection
+                .project(&invocation, &changed, None)
+                .is_err()
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        {
+            let _hold;
+            let (native, hold) = runtime.block_on(tool.executor.execute_with_native_context(
+                &context,
+                &invocation,
+                &work,
+            )?)?;
+            _hold = hold;
+            assert_eq!(native.value, result.value);
+            let _projection = tool.projection.project(&invocation, &native, Some(&work))?;
+        }
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        cancellation.cancel();
+        let cancelled =
+            match tool
+                .executor
+                .execute_with_native_context(&context, &invocation, &work)
+            {
+                Ok(future) => runtime.block_on(future).map(|_| ()),
+                Err(error) => Err(error),
+            };
+        assert!(cancelled.is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

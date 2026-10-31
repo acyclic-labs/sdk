@@ -43,15 +43,118 @@ impl FileProjection {
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ReadProjection<'a> {
-    Json { value: FileView<'a> },
-    Parts { parts: [MediaPart<'a>; 2] },
+    Json {
+        value: FileView<'a>,
+    },
+    Parts {
+        #[schemars(with = "Vec<MediaPart<'a>>")]
+        parts: MediaParts<'a>,
+    },
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum MediaPart<'a> {
-    Text { text: &'a str },
-    File { file: &'a FileRef, policy: Value },
+    Text {
+        #[schemars(with = "str")]
+        text: MediaText<'a>,
+    },
+    File {
+        file: &'a FileRef,
+        #[schemars(with = "Value")]
+        policy: NativePolicy,
+    },
+}
+
+#[derive(Serialize)]
+struct NativePolicy {
+    native: crate::model::NativeMediaPolicy,
+}
+
+#[derive(Clone, Copy)]
+enum MediaText<'a> {
+    Version(&'a str),
+    Notebook {
+        path: &'a str,
+        version: &'a str,
+        page: &'a ReadPage,
+        text: &'a str,
+    },
+}
+
+impl Serialize for MediaText<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Version(version) => serializer.serialize_str(version),
+            Self::Notebook { path, version, page, text } => serializer.collect_str(&format_args!(
+                "{version}\nFile {path}; cells from {}; source bytes {}..{}; next byte {:?}\n{text}",
+                page.offset, page.start, page.end, page.next,
+            )),
+        }
+    }
+}
+
+struct MediaParts<'a> {
+    text: MediaText<'a>,
+    primary: Option<(&'a FileRef, &'a ReadSelection)>,
+    outputs: &'a [NotebookOutput],
+}
+
+fn policy(file: &FileRef, intent: crate::model::NativeMediaIntent) -> NativePolicy {
+    NativePolicy {
+        native: crate::model::NativeMediaPolicy {
+            intent,
+            maximum_bytes: file.descriptor().byte_length().max(1),
+            maximum_work: file.descriptor().byte_length().max(1),
+            configuration: None,
+        },
+    }
+}
+
+impl Serialize for MediaParts<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{Error as _, SerializeSeq};
+        let length = self
+            .outputs
+            .len()
+            .checked_add(1 + usize::from(self.primary.is_some()))
+            .ok_or_else(|| S::Error::custom("native read part count overflow"))?;
+        let mut parts = serializer.serialize_seq(Some(length))?;
+        parts.serialize_element(&MediaPart::Text { text: self.text })?;
+        if let Some((file, selection)) = self.primary {
+            let intent = match selection {
+                ReadSelection::Image { detail } => {
+                    crate::model::NativeMediaIntent::Image { detail: *detail }
+                }
+                ReadSelection::Pdf => crate::model::NativeMediaIntent::Document,
+                _ => return Err(S::Error::custom("invalid native read modality")),
+            };
+            parts.serialize_element(&MediaPart::File {
+                file,
+                policy: policy(file, intent),
+            })?;
+        }
+        for output in self.outputs {
+            let intent = if output.file.descriptor().media_type() == "application/pdf" {
+                crate::model::NativeMediaIntent::Document
+            } else {
+                crate::model::NativeMediaIntent::Image {
+                    detail: crate::model::ImageDetail::Auto,
+                }
+            };
+            parts.serialize_element(&MediaPart::File {
+                file: &output.file,
+                policy: policy(&output.file, intent),
+            })?;
+        }
+        parts.end()
+    }
 }
 
 impl ToolProjection for FileProjection {
@@ -163,6 +266,54 @@ impl ToolProjection for FileProjection {
                         )),
                     })?;
                 }
+                if !result.0.outputs.is_empty() {
+                    let cells = match input.0.selection {
+                        Some(ReadSelection::Cells { offset, limit }) => Some((offset, limit)),
+                        None if input.0.path.ends_with(".ipynb") && input.0.range.is_none() => {
+                            Some((0, None))
+                        }
+                        _ => None,
+                    };
+                    let Some((offset, limit)) = cells else {
+                        return Err(super::executor::rejection(
+                            work,
+                            "native outputs require a notebook cell selection",
+                        ));
+                    };
+                    let Some(page) = &result.0.page else {
+                        return Err(super::executor::rejection(
+                            work,
+                            "notebook outputs require source page provenance",
+                        ));
+                    };
+                    let mut previous = None;
+                    for output in &result.0.outputs {
+                        let position = (output.cell_index, output.output_index, output.start);
+                        if output.start < page.start
+                            || output.start >= output.end
+                            || output.end > file.byte_length()
+                            || (page.next.is_none() && output.end > page.end)
+                            || output.cell_index < offset
+                            || limit.is_some_and(|limit| output.cell_index - offset >= limit)
+                            || previous.is_some_and(|previous| previous >= position)
+                            || !matches!(
+                                output.file.descriptor().media_type(),
+                                "image/png"
+                                    | "image/jpeg"
+                                    | "image/gif"
+                                    | "image/webp"
+                                    | "application/pdf"
+                            )
+                            || output.file.descriptor().byte_length() == 0
+                        {
+                            return Err(super::executor::rejection(
+                                work,
+                                "notebook output differs from source provenance",
+                            ));
+                        }
+                        previous = Some(position);
+                    }
+                }
                 // The original executor validates the exact mounted path and
                 // volume before dispatch. A projector has no workspace and
                 // cannot compare that view path to a volume-relative path.
@@ -184,40 +335,37 @@ impl ToolProjection for FileProjection {
                                 "native media requires a complete content descriptor",
                             ));
                         };
-                        let intent = match media {
-                            ReadSelection::Image { detail } => {
-                                crate::model::NativeMediaIntent::Image { detail: *detail }
-                            }
-                            ReadSelection::Pdf => crate::model::NativeMediaIntent::Document,
-                            _ => {
-                                return Err(super::executor::rejection(
-                                    work,
-                                    "invalid native read modality",
-                                ));
-                            }
-                        };
-                        let policy = crate::model::NativeMediaPolicy {
-                            intent,
-                            maximum_bytes: file.descriptor().byte_length().max(1),
-                            maximum_work: file.descriptor().byte_length().max(1),
-                            configuration: None,
-                        };
-                        // The source version doubles as the compact text provenance.
-                        let encoded = super::value(&policy, u64::MAX, work)?;
-                        #[derive(Serialize)]
-                        struct Native<'a> {
-                            native: &'a Value,
-                        }
-                        let encoded = super::value(&Native { native: &encoded.0 }, u64::MAX, work)?;
                         return super::value(
                             &ReadProjection::Parts {
-                                parts: [
-                                    MediaPart::Text { text: &version.0 },
-                                    MediaPart::File {
-                                        file,
-                                        policy: encoded.0,
+                                parts: MediaParts {
+                                    text: MediaText::Version(&version.0),
+                                    primary: Some((file, media)),
+                                    outputs: &[],
+                                },
+                            },
+                            u64::MAX,
+                            work,
+                        );
+                    }
+                    if !result.0.outputs.is_empty() {
+                        let page = result.0.page.as_ref().ok_or_else(|| {
+                            super::executor::rejection(
+                                work,
+                                "notebook outputs require source page provenance",
+                            )
+                        })?;
+                        return super::value(
+                            &ReadProjection::Parts {
+                                parts: MediaParts {
+                                    text: MediaText::Notebook {
+                                        path: &input.0.path,
+                                        version: &version.0,
+                                        page,
+                                        text,
                                     },
-                                ],
+                                    primary: None,
+                                    outputs: &result.0.outputs,
+                                },
                             },
                             u64::MAX,
                             work,
