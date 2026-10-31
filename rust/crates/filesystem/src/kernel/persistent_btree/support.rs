@@ -366,7 +366,7 @@ where
     pub(crate) fn next<E: std::error::Error>(
         &mut self,
     ) -> Result<Option<(&'a [T], u64, bool)>, Error<E>> {
-        self.inner.next_page().map_err(packing_error)
+        self.inner.next_page(|| Ok(())).map_err(packing_error)
     }
 }
 

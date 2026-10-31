@@ -477,6 +477,50 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
 #[tokio::test]
 async fn hard_object_bounds_keep_valid_attributes_writable_and_history_independent()
 -> Result<(), Box<dyn std::error::Error>> {
+    // The hard cut examines its next item before publishing either page.
+    // Refused original credit must stop before that item's encoder runs.
+    for credit in 0..=3 {
+        let cancellation = CancellationToken::new();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+            WorkBudget {
+                items_examined: credit,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        let measured = std::cell::Cell::new(0_u64);
+        let mut chunks = acyclic_collections::page::PageChunks::<_, _, _, 15, 2048>::new(
+            &[47_usize, 146],
+            acyclic_collections::page::PackingLimits {
+                maximum_items: 100,
+                maximum_bytes: 200,
+                maximum_object_bytes: 200,
+            },
+            0,
+            |length| {
+                measured.set(measured.get() + 1);
+                Ok::<_, crate::FsError>(*length)
+            },
+            |_| 0,
+        )?;
+        let first = chunks.next_page(|| accounting.charge_items(1));
+        if credit < 2 {
+            assert!(first.is_err());
+        } else {
+            let (page, examined, closed) = first?.ok_or("missing first chunk")?;
+            assert_eq!(page, [47]);
+            assert_eq!(examined, 2);
+            assert!(closed);
+            let second = chunks.next_page(|| accounting.charge_items(1));
+            if credit == 2 {
+                assert!(second.is_err());
+            } else {
+                assert_eq!(second?.ok_or("missing final chunk")?.0, [146]);
+            }
+        }
+        assert_eq!(measured.get(), credit);
+        assert_eq!(accounting.spent().items_examined, credit);
+    }
     async fn apply(
         store: &MemoryObjectStore,
         root: ObjectId,

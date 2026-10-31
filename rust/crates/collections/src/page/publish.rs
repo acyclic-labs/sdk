@@ -63,8 +63,6 @@ pub trait Level<F: Format> {
     type Pending<W: Work<F>>;
     /// Copies only an unfinished tail under original admission.
     fn carry<W: Work<F>>(work: &mut W, items: &[Self::Item]) -> Result<Self::Pending<W>, W::Error>;
-    /// Internal pages must prove that the next level reduces before any IO.
-    const INTERNAL: bool;
     /// Borrows the first key without cloning it.
     fn key(item: &Self::Item) -> &F::Key;
     /// Measures the original item through the original encoder.
@@ -82,7 +80,6 @@ impl<F: Format> Level<F> for Leaf {
     fn carry<W: Work<F>>(work: &mut W, items: &[Self::Item]) -> Result<Self::Pending<W>, W::Error> {
         work.carry_leaf(items)
     }
-    const INTERNAL: bool = false;
 
     fn key(item: &Self::Item) -> &F::Key {
         F::key(item)
@@ -106,7 +103,6 @@ impl<F: Format> Level<F> for Internal {
     fn carry<W: Work<F>>(work: &mut W, items: &[Self::Item]) -> Result<Self::Pending<W>, W::Error> {
         work.carry_children(items)
     }
-    const INTERNAL: bool = true;
 
     fn key(item: &Self::Item) -> &F::Key {
         &item.first
@@ -148,8 +144,10 @@ where
     .map_err(W::packing_error)?;
     let mut output = work.allocate(0)?;
     let mut consumed = 0_usize;
-    while let Some((chunk, examined, closed)) = chunks.next_page().map_err(W::packing_error)? {
-        work.charge_items(examined)?;
+    while let Some((chunk, _, closed)) = chunks
+        .next_page(|| work.charge_items(1))
+        .map_err(W::packing_error)?
+    {
         consumed += chunk.len();
         if (!closed && !close) || (hold_last && consumed == items.len()) {
             return Ok((output, Some(K::carry(work, chunk)?)));

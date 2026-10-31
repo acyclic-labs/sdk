@@ -185,9 +185,13 @@ where
         u128::from(hash) * (TARGET_BYTES as u128) < (weight as u128) << 64
     }
 
-    /// The next page, the items it examined, and whether a boundary closed
-    /// it; an unclosed page ended only because the items ran out.
-    pub fn next_page(&mut self) -> Result<Option<(&'a [T], u64, bool)>, PackingError<E>> {
+    /// Admits each inspection before measuring or hashing its item. Returns
+    /// the next page, all examined items (including hard-bound lookahead),
+    /// and whether a boundary closed it. An unclosed page exhausted the input.
+    pub fn next_page(
+        &mut self,
+        mut admit: impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<(&'a [T], u64, bool)>, PackingError<E>> {
         let items = self.items;
         let Some(rest) = items.get(self.start..).filter(|rest| !rest.is_empty()) else {
             return Ok(None);
@@ -197,9 +201,12 @@ where
         }
         let half = self.capacity / 2;
         let mut count = 0_usize;
+        let mut examined = 0_u64;
         let mut payload = 0_usize;
         let mut closed = false;
         for item in rest {
+            admit().map_err(PackingError::Encode)?;
+            examined += 1;
             let bytes = (self.encoded_length)(item).map_err(PackingError::Encode)?;
             if bytes > self.object_capacity {
                 return Err(PackingError::ItemTooLarge);
@@ -227,7 +234,7 @@ where
         }
         let page = &rest[..count];
         self.start += count;
-        Ok(Some((page, count as u64, closed)))
+        Ok(Some((page, examined, closed)))
     }
 }
 
