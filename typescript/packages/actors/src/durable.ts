@@ -1,7 +1,7 @@
 import { ActorActivation } from "./activation.js";
 export { ActorActivation } from "./activation.js";
 import { ActorReference } from "@acyclic-labs/auth/addressing";
-import type { AlarmInfo, WebSocketAutoResponse } from "./generated/guest.js";
+import type { WebSocketAutoResponse } from "./generated/guest.js";
 
 /** Host adapter admitted for one actor. Serialized addresses grant no authority. */
 export interface DurableHost {
@@ -49,20 +49,12 @@ export class DurableObjectState {
   getTags(socket: WebSocket): string[] { return this.#host.getTags(this.#address(), socket); }
 }
 
-/** Validate host metadata before delivering an alarm to application code. */
-export function alarmInfo(retryCount: number, isRetry = retryCount !== 0): Readonly<AlarmInfo> {
-  if (!Number.isInteger(retryCount) || retryCount < 0 || retryCount > 0xffff_ffff || isRetry !== (retryCount !== 0)) {
-    throw new TypeError("invalid alarm retry metadata");
-  }
-  return Object.freeze({ retryCount, isRetry });
-}
-
 /** Namespace class handlers. The constructor runs before any delivered call. */
 export interface DurableObjectHandlers<State> {
   initialize(state: DurableObjectState): State | Promise<State>;
   fetch?(state: State, request: Request): Response | Promise<Response>;
   rpc?(state: State, method: string, payload: Uint8Array): Uint8Array | Promise<Uint8Array>;
-  alarm?(state: State, info: Readonly<AlarmInfo>): void | Promise<void>;
+  alarm?(state: State): void | Promise<void>;
   webSocketMessage?(state: State, socket: WebSocket, message: string | ArrayBuffer): void | Promise<void>;
   webSocketClose?(state: State, socket: WebSocket, code: number, reason: string, wasClean: boolean): void | Promise<void>;
   webSocketError?(state: State, socket: WebSocket, error: unknown): void | Promise<void>;
@@ -93,9 +85,8 @@ export class DurableObjectActivation<State> {
       return this.#handlers.rpc(state, method, snapshot);
     });
   }
-  alarm(info: AlarmInfo): Promise<void> {
-    const checked = alarmInfo(info.retryCount, info.isRetry);
-    return this.#activation.deliver(state => this.#handlers.alarm?.(state, checked));
+  alarm(): Promise<void> {
+    return this.#activation.deliver(state => this.#handlers.alarm?.(state));
   }
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const snapshot = typeof message === "string" ? message : message.slice(0);
