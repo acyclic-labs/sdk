@@ -8,19 +8,33 @@ import { Processes } from "./process.mjs";
 import { alive } from "./orphan-check.mjs";
 
 test("Node test flags always use Node independently of the parent interpreter", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "helper-interpreter-"));
   let observed;
-  await runHelperSuite(["fixture.test.mjs"], {
-    processes: {
-      async runOwned(command, args) {
-        observed = {command, args};
-        return {code: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n", stderr: ""};
-      },
-      async close() {},
-    },
-    publish() {},
-  });
-  assert.equal(observed.command, "node");
-  assert.equal(observed.args[0], "--test");
+  class ObservedProcesses extends Processes {
+    startOwned(command, args, ...options) {
+      observed = { command, args };
+      return super.startOwned(command, args, ...options);
+    }
+  }
+  try {
+    const fixture = join(directory, "interpreter.test.mjs");
+    // Program input; the original Node executable produces the qualified TAP.
+    await writeFile(fixture, `import test from 'node:test'; import assert from 'node:assert/strict';
+      test('original interpreter',()=>assert.equal(process.versions.bun,undefined));`);
+    await runHelperSuite([fixture], { processes: new ObservedProcesses(), publish() {} });
+    assert.equal(observed.command, "node");
+    assert.equal(observed.args[0], "--test");
+
+    // The original child has exited successfully, but cancellation at its
+    // publication cut must still prevent that actual summary from qualifying.
+    const late = new AbortController();
+    await assert.rejects(runHelperSuite([fixture], {
+      signal: late.signal,
+      publish() { late.abort(new Error("late helper cancellation")); },
+    }), /late helper cancellation/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("helper cancellation drains every process and cannot qualify a blocked suite", async () => {
@@ -47,7 +61,7 @@ test("helper cancellation drains every process and cannot qualify a blocked suit
     await writeFile(fixture, `import test from 'node:test'; import {spawn} from 'node:child_process';
       import {once} from 'node:events';
       test('blocked fixture',async()=>{
-        const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});
+        const child=spawn(process.execPath,['-e','process.stdin.resume()'],{stdio:['pipe','ignore','ignore'],windowsHide:true});
         await once(child,'spawn'); console.log('BLOCKED_HELPER '+JSON.stringify([process.pid,child.pid]));
         await new Promise(()=>{});
       });`);
@@ -55,17 +69,6 @@ test("helper cancellation drains every process and cannot qualify a blocked suit
       processes: new ObservedProcesses(), publish() {} }), /deliberate helper cancellation/);
     assert.equal(pids.length, 2);
     for (const pid of pids) assert.equal(alive(pid), false, `helper process ${pid} survived cancellation`);
-
-    // A late exit0/full summary is still inadmissible after cancellation.
-    const late = new AbortController();
-    const processes = {
-      async runOwned() {
-        late.abort(new Error("late helper cancellation"));
-        return { code: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n", stderr: "" };
-      }, async close() {},
-    };
-    await assert.rejects(runHelperSuite([fixture], { signal: late.signal, processes, publish() {} }),
-      /late helper cancellation/);
   } finally {
     controller.abort();
     await rm(directory, { recursive: true, force: true });

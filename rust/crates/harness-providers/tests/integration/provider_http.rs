@@ -32,8 +32,7 @@ pub(super) struct Recorded {
     width: usize,
     replies: Vec<(u16, Bytes, bool)>,
     unreachable: usize,
-    /// The virtual clock in milliseconds: every wait under the total deadline elapses at once
-    /// and advances it.
+    /// The virtual clock advances when a model backoff or selected request deadline fires.
     clock: Arc<AtomicU64>,
 }
 impl Recorded {
@@ -134,10 +133,13 @@ impl Recorded {
     }
 }
 impl HttpTransport for Recorded {
-    // Backoffs and idle deadlines elapse at once on the virtual clock, so a silent body times
-    // out at its idle deadline; the exchange's total deadline never does.
-    fn delay(&self, wait: Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-        Box::pin(elapse(self.clock.clone(), wait))
+    // Backoff and the explicitly selected request deadline use the virtual clock.
+    fn delay(&self, wait: Duration) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
+        let clock = self.clock.clone();
+        Box::pin(async move {
+            elapse(clock, wait).await;
+            Ok(())
+        })
     }
     fn now(&self) -> Duration {
         // Whole virtual milliseconds, as a millisecond platform timer reports them.
@@ -179,12 +181,8 @@ impl HttpTransport for Recorded {
         })
     }
 }
-/// Advances `clock` by `wait` once polled, or never for a wait as long as the total deadline.
+/// Advances the caller's logical clock by the chosen wait.
 async fn elapse(clock: Arc<AtomicU64>, wait: Duration) {
-    let total = acyclic_harness_providers::TimeoutSpec::DEFAULT.total_ms;
-    if wait.as_millis() >= u128::from(total) {
-        futures::future::pending::<()>().await;
-    }
     let millis = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
     clock.fetch_add(millis, Ordering::SeqCst);
 }
@@ -225,7 +223,9 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
             }),
             max_event_bytes: 4096,
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
-            timeouts: acyclic_harness_providers::TimeoutSpec::DEFAULT,
+            timeouts: acyclic_harness_providers::TimeoutSpec {
+                total_ms: Some(100),
+            },
         },
     )?;
     registry.resolve("recorded/model")

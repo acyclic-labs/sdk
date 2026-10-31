@@ -394,11 +394,9 @@ fn read_bounded<'a>(path: &Path, buffer: &'a mut [u8]) -> io::Result<&'a [u8]> {
         if rest.is_empty() {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
-        match file.read(rest) {
-            Ok(0) => break,
-            Ok(read) => filled += read,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
+        match file.read(rest)? {
+            0 => break,
+            read => filled += read,
         }
     }
     buffer

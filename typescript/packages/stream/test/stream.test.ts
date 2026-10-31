@@ -896,7 +896,7 @@ describe("website Stream contract", () => {
       const next = iterator.next();
       await checkpoint();
       expect(timers.size).toBe(0);
-      expect(created).toBe(2); // Cleared Welcome and logical registration deadlines.
+      expect(created).toBe(0);
       socket.node.append("events");
       await expect(next).resolves.toMatchObject({ done: false, value: { sequence: 1n } });
       controller.abort();
@@ -904,7 +904,7 @@ describe("website Stream contract", () => {
       expect(added).toBe(removed);
       expect(socket.node.active).toBe(0);
       expect(timers.size).toBe(0);
-      expect(created).toBe(2);
+      expect(created).toBe(0);
     } finally {
       controller.abort(); socket.close();
       globalThis.setTimeout = originalTimeout;
@@ -1032,6 +1032,17 @@ describe("website Stream contract", () => {
     expect(token.token).toBe("secret");
     expect(pathReads).toBe(1);
     expect(requestBody).toEqual({ expiresIn: "1h", allow: [{ path: "runs", operations: ["read"] }] });
+  });
+
+  test("HTTP responses have no implicit logical total", async () => {
+    const memory = new MemoryStreamProvider();
+    await memory.append("events", [new Uint8Array([1])]);
+    // The original provider's valid tail reply crosses the former wire-body
+    // fallback without manufacturing logical history or malformed fields.
+    const padding = " ".repeat(8 * 1024 * 1024 + 1);
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
+      new Response(padding + JSON.stringify({ tail: (await memory.tail("events")).toString() })) });
+    expect(await provider.tail("events")).toBe(1n);
   });
 
   test("cancels oversized streaming transport responses at the configured bound", async () => {

@@ -27,24 +27,43 @@ impl Owner {
         }
     }
 
-    pub(super) fn run(mut self, receiver: &mpsc::Receiver<OwnerJob>) {
+    pub(super) fn run(mut self, receiver: &mpsc::Receiver<OwnerJob>, wake: &OwnerWake) {
         loop {
-            let next = if matches!(self.backend, Backend::Retiring(_)) {
-                receiver.recv_timeout(Duration::from_millis(100))
-            } else {
-                receiver
-                    .recv()
-                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-            };
-            let job = match next {
-                Ok(job) => job,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.reap_retired();
-                    continue;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            };
             self.reap_retired();
+            let job = if let Backend::Retiring(retired) = &mut self.backend {
+                // Publish the ring wake before checking the mailbox: a send
+                // either precedes this check or interrupts the kernel wait.
+                *wake
+                    .driver
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retired.waker());
+                wake.retiring.store(true, Ordering::SeqCst);
+                match receiver.try_recv() {
+                    Ok(job) => job,
+                    Err(mpsc::TryRecvError::Disconnected) => break,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        if let Err(error) = retired.wait_event()
+                            && error.kind() != io::ErrorKind::Interrupted
+                        {
+                            // A failed completion source cannot release a
+                            // buffer that may still be owned by the kernel.
+                            tracing::error!(%error, "native completion source failed during retirement");
+                            std::process::abort();
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                wake.retiring.store(false, Ordering::SeqCst);
+                wake.driver
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                match receiver.recv() {
+                    Ok(job) => job,
+                    Err(_) => break,
+                }
+            };
             match job {
                 OwnerJob::Read(file, reads, finish) => finish(self.read_batch(&file, &reads)),
                 OwnerJob::Write(file, writes, finish) => finish(self.write_batch(&file, writes)),
@@ -113,7 +132,11 @@ impl Owner {
             if self.select()? == Selected::Positional {
                 let length = (read.length - count).min(MAX_IO_BYTES);
                 let mut chunk = vec![0; length];
-                let received = file.read_at(&mut chunk, offset)?;
+                let received = super::read_at_validated(
+                    file,
+                    offset,
+                    crate::file::ReadDestination::Slice(&mut chunk),
+                )?;
                 let filled = chunk
                     .get(..received)
                     .ok_or_else(|| io::Error::other("overlong native read"))?;
@@ -228,7 +251,7 @@ impl Owner {
             skip -= covered;
             let rest = bytes.get(covered..).ok_or(io::ErrorKind::InvalidData)?;
             if !rest.is_empty() {
-                file.write_all_at(rest, offset)?;
+                crate::file::write_all_in_place(file, offset, rest, None)?;
                 offset += rest.len() as u64;
             }
         }
@@ -251,23 +274,10 @@ impl Owner {
             }
             PushEntry::Pending(key) => key,
         };
-        let deadline = std::time::Instant::now() + OWNER_IO_DEADLINE;
         loop {
-            if std::time::Instant::now() >= deadline {
-                return Err(self.retire(retired(key), io::ErrorKind::TimedOut.into()));
-            }
-            match driver.poll(Some(
-                deadline.saturating_duration_since(std::time::Instant::now()),
-            )) {
+            match driver.poll(None) {
                 Ok(()) => {}
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::Interrupted | io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    continue;
-                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(self.retire(retired(key), error)),
             }
             match driver.pop(key) {

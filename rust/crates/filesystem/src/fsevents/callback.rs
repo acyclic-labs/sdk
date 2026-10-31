@@ -25,7 +25,8 @@ impl<'a> EventBatch<'a> {
     }
 }
 
-pub(crate) type BorrowedEventHandlerFn = dyn for<'a> Fn(EventBatch<'a>) + Send + Sync;
+pub(crate) type BorrowedEventHandlerFn =
+    dyn for<'a> Fn(Result<EventBatch<'a>, Arc<DemandError>>) + Send + Sync;
 
 thread_local! {
     static ON_QUEUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -47,7 +48,7 @@ impl Drop for OnQueue {
     }
 }
 
-pub(super) fn on_queue() -> bool {
+pub(crate) fn on_queue() -> bool {
     ON_QUEUE.with(std::cell::Cell::get)
 }
 

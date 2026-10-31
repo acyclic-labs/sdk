@@ -146,7 +146,6 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             .arg("--io-child")
             .arg(&mount_path)
             .env("ACYCLIC_EXPECTED_NATIVE_KIND", kind),
-        Duration::from_secs(10),
     );
     let watched = wait_for_watch_after_child(
         &watch_rx,
@@ -155,7 +154,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     );
     eprintln!("qualification phase: I/O child finished; parallel clients starting");
     let parallel = if kind == "macos-nfs" {
-        run_parallel_io_children(&mount_path, MACOS_NFS_PARALLEL_CLIENTS)
+        run_parallel_io_children(&mount_path, MACOS_NFS_PARALLEL_CLIENTS).await
     } else {
         Ok(())
     };

@@ -22,7 +22,7 @@ mod origin;
 
 /// Exact command for rerunning the endpoint suite with the same environment.
 pub const RECOVERY: &str =
-    "build-slot --remote cargo run -p acyclic-stream --features http --example wave1-conformance";
+    "cargo run -p acyclic-stream --features http --example wave1-conformance";
 
 /// Fixed histories; no provider-specific cases or in-memory fallback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -311,10 +311,9 @@ fn provider_failure(case: Case, step: &'static str, source: StreamError) -> Fail
 
 /// Runs every fixed history against this exact provider in a fresh namespace.
 ///
-/// The returned cases completed all assertions. Callers must impose an outer
-/// deadline appropriate to their executor; the endpoint runner uses nine seconds
-/// per history. Receipt loss here discards a result and retries; it does not claim
-/// a process crash or a transport fault was injected.
+/// The returned cases completed all assertions through their original provider
+/// operations. Receipt loss here discards a result and resends the same request;
+/// it does not claim a process crash or a transport fault was injected.
 pub async fn verify<P: StreamProvider + ?Sized>(
     provider: &P,
     namespace: &StreamPath,

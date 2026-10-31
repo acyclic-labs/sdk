@@ -43,7 +43,6 @@ pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyW
     use crate::LazyWorkspaceError as Lazy;
     match error {
         LocalCoreStateStoreError::Io(error) => Lazy::NativeRecordIo(error, None),
-        LocalCoreStateStoreError::LockTimeout(path) => Lazy::NativeRecordLockTimeout(path, None),
         LocalCoreStateStoreError::OwnershipConflict(path) => {
             Lazy::NativeRecordOwnershipConflict(path, None)
         }

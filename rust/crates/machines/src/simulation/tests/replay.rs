@@ -57,3 +57,52 @@ async fn failed_policy_mutation_does_not_advance_the_simulation_clock() {
     };
     assert_eq!(second.created_at_unix_ms, 3);
 }
+
+#[tokio::test]
+async fn retained_transition_receipts_and_event_pages_survive_long_histories()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = SimulatedMachines::default();
+    let MutationOutcome::Created(machine) = provider.create(request(key(1))).await? else {
+        return Err("create returned another outcome".into());
+    };
+    let transition_key =
+        |index: u32| IdempotencyKey::from_digest(Sha256::digest(index.to_be_bytes()).into());
+    for index in 0..4_096_u32 {
+        if index % 2 == 0 {
+            provider.suspend(machine.id, transition_key(index)).await?;
+        } else {
+            provider.wake(machine.id, transition_key(index)).await?;
+        }
+    }
+    let original = MutationOutcome::Suspended(machine.id);
+    assert_eq!(provider.recover(transition_key(0)).await?, original);
+    assert_eq!(
+        provider.suspend(machine.id, transition_key(0)).await?,
+        original
+    );
+    assert!(matches!(
+        provider.wake(machine.id, transition_key(0)).await,
+        Err(ProviderError::Conflict(_))
+    ));
+    assert_eq!(
+        provider.inspect_machine(machine.id).await?.state,
+        MachineState::Running
+    );
+    let last = provider.events(machine.id, Some(4_096), 1).await?;
+    assert_eq!(last.events.len(), 1);
+    let event = last
+        .events
+        .first()
+        .ok_or("the terminal event page is empty")?;
+    assert_eq!(event.sequence, 4_097);
+    assert_eq!(event.fact, EventFact::State(MachineState::Running));
+    assert_eq!(last.next_sequence, None);
+    assert!(
+        provider
+            .events(machine.id, Some(4_097), 1)
+            .await?
+            .events
+            .is_empty()
+    );
+    Ok(())
+}

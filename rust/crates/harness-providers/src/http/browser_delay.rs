@@ -16,7 +16,7 @@ impl Drop for Timeout {
     }
 }
 
-pub(super) async fn delay(duration: std::time::Duration) {
+pub(super) async fn delay(duration: std::time::Duration) -> acyclic_harness_core::Result<()> {
     // setTimeout takes signed 32-bit milliseconds. Split longer waits, and round fractional
     // milliseconds up so Retry-After is never shortened by the conversion.
     let mut remaining = duration.as_millis() + u128::from(duration.subsec_nanos() % 1_000_000 != 0);
@@ -30,8 +30,7 @@ pub(super) async fn delay(duration: std::time::Duration) {
                 .ok()
         };
         let (Some(set), Some(clear)) = (function("setTimeout"), function("clearTimeout")) else {
-            // No platform timer: expire rather than leave an exchange waiting forever.
-            return;
+            return Err(crate::invalid("browser platform timer is unavailable"));
         };
         let mut handle = JsValue::UNDEFINED;
         let promise = Promise::new(&mut |resolve, reject| match set.call2(
@@ -51,11 +50,10 @@ pub(super) async fn delay(duration: std::time::Duration) {
         };
         let elapsed = JsFuture::from(promise).await;
         drop(timeout);
-        if elapsed.is_err() {
-            return;
-        }
+        elapsed.map_err(|_| crate::invalid("browser platform timer registration failed"))?;
         remaining -= u128::from(interval);
     }
+    Ok(())
 }
 
 /// The platform's monotonic clock, `performance.now()`, in the realm's own origin. A realm

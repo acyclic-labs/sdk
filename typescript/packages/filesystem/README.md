@@ -46,7 +46,7 @@ try {
 }
 ```
 
-The transport requires HTTPS, accepts an optional private CA, and bounds protobuf messages. Calls, including streaming imports and exports, default to a 30-second deadline. Connect call options override it: pass `{ timeoutMs: 120_000 }` for two minutes or `{ timeoutMs: 0, signal }` to disable the deadline while retaining caller-owned cancellation. For example:
+The transport requires HTTPS, accepts an optional private CA, and bounds protobuf messages. Calls, including streaming imports and exports, have no deadline by default. Pass Connect call options such as `{ timeoutMs: 120_000 }` for a two-minute caller deadline or `{ signal }` for caller-owned cancellation. For example:
 
 ```ts
 for await (const chunk of client.filesystem.export(request, { timeoutMs: 0, signal })) {

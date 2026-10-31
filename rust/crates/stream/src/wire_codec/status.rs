@@ -4,6 +4,7 @@ use tonic::{Code, Status};
 pub(crate) fn status(error: &Status) -> StreamError {
     match (error.code(), error.message()) {
         (Code::DataLoss, _) => StreamError::InvalidResponse,
+        (Code::DeadlineExceeded, _) => StreamError::DeadlineElapsed,
         (Code::InvalidArgument, "invalid_path") => StreamError::InvalidPath,
         (Code::InvalidArgument, "limit_exceeded") => StreamError::LimitExceeded,
         (Code::InvalidArgument, _) => StreamError::InvalidArgument,

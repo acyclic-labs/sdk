@@ -66,12 +66,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         operations: Vec<Mutation>,
         operation_id: OperationId,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<LiveMutationOutcome> {
-        self.validate_live_operation(maximum_attempts)
+        self.validate_live_operation()
             .map_err(OperationFailure::before_work)?;
         if self.has_pending_mutations() {
             return Err(OperationFailure::before_work(FsError::PendingLiveMutation));
@@ -79,13 +77,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let mutation = self.mutate(operations, budget, cancellation).await?;
         let mut work = mutation.work;
         let publication = self
-            .resume_live(
-                operation_id,
-                maximum_attempts,
-                maximum_conflicts,
-                remaining(work, budget)?,
-                cancellation,
-            )
+            .resume_live(operation_id, remaining(work, budget)?, cancellation)
             .await
             .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
         work = add(work, publication.work)?;
@@ -100,12 +92,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         authored: Vec<AuthoredMutation>,
         operation_id: OperationId,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<AuthoredLiveMutationResult> {
-        self.validate_live_operation(maximum_attempts)
+        self.validate_live_operation()
             .map_err(OperationFailure::before_work)?;
         if self.has_pending_mutations() {
             return Err(OperationFailure::before_work(FsError::PendingLiveMutation));
@@ -116,13 +106,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let mut work = transaction.work;
         let created_file_ids = transaction.value.created_file_ids;
         let publication = self
-            .resume_live(
-                operation_id,
-                maximum_attempts,
-                maximum_conflicts,
-                remaining(work, budget)?,
-                cancellation,
-            )
+            .resume_live(operation_id, remaining(work, budget)?, cancellation)
             .await
             .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
         work = add(work, publication.work)?;
@@ -135,16 +119,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         })
     }
 
-    /// Resumes publication of an unresolved direct-live candidate.
+    /// Publishes this candidate once with the original operation identity.
+    /// A conditional conflict leaves the candidate unchanged and permits an
+    /// explicit `rebase_head`; an indeterminate error retains the identity fence.
     pub async fn resume_live(
         &mut self,
         operation_id: OperationId,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<LiveMutationOutcome> {
-        self.validate_live_operation(maximum_attempts)
+        self.validate_live_operation()
             .map_err(OperationFailure::before_work)?;
         if !self.has_pending_mutations() {
             return Err(OperationFailure::before_work(FsError::NoPendingMutations));
@@ -157,33 +141,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             None => self.live_operation_id = Some(operation_id),
         }
         let publication = self
-            .publish_live(
-                operation_id,
-                maximum_attempts,
-                maximum_conflicts,
-                budget,
-                cancellation,
-            )
+            .publish_live(operation_id, budget, cancellation)
             .await?;
         if matches!(
             publication.value,
             LiveMutationOutcome::Committed { .. }
                 | LiveMutationOutcome::AlreadyCommitted { .. }
                 | LiveMutationOutcome::IdempotencyConflict { .. }
+                | LiveMutationOutcome::Conflict { .. }
         ) {
             self.live_operation_id = None;
         }
         Ok(publication)
     }
 
-    /// Resumes the existing live retry controller on the original operation.
+    /// Publishes once or resolves the exact retained durable operation.
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg(any(test, feature = "native-mount"))]
     pub(crate) async fn resume_live_with_native_work<'a, E, F, Fut>(
         &mut self,
         operation_id: OperationId,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
         permit: PublicationPermit,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
@@ -204,8 +181,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let mut accounting =
             crate::kernel::allocation::KernelAccounting::native(original, cancellation);
         accounting.check().map_err(E::from)?;
-        self.validate_live_operation(maximum_attempts)
-            .map_err(E::from)?;
+        self.validate_live_operation().map_err(E::from)?;
         self.validate_native_work(original).map_err(E::from)?;
         if !self.has_pending_mutations() {
             return Err(E::from(FsError::NoPendingMutations));
@@ -217,62 +193,43 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             Some(_) => {}
             None => self.live_operation_id = Some(operation_id),
         }
-        let mut state = LiveRetryState::new(maximum_attempts)
-            .map_err(|error| E::from(FsError::LiveRetry(error)))?;
-        let mut empty_allocation = accounting.claim_owned(0, 0).map_err(E::from)?;
-        let (outcome, allocation) = loop {
-            accounting.check().map_err(E::from)?;
-            let mut before_publication = (*before_publication).clone();
-            let publication = match self
-                .retry_stale_commit_with_native_work(
+        let outcome = match self
+            .retry_stale_commit_with_native_work(
+                operation_id,
+                permit,
+                original,
+                cancellation,
+                before_publication,
+                producer_custody,
+                operation_context,
+                operation_evidence.clone(),
+                original_fingerprint_permit,
+            )
+            .await?
+        {
+            Some(outcome) => outcome,
+            None => {
+                self.publish_pending_with_native_work(
                     operation_id,
+                    operation_context,
+                    operation_evidence,
+                    original_fingerprint_permit,
                     permit,
                     original,
                     cancellation,
-                    &mut before_publication,
+                    before_publication,
                     producer_custody,
-                    operation_context,
-                    operation_evidence.clone(),
-                    original_fingerprint_permit,
                 )
                 .await?
-            {
-                Some(outcome) => outcome,
-                None => {
-                    self.publish_pending_with_native_work(
-                        operation_id,
-                        operation_context,
-                        operation_evidence.clone(),
-                        original_fingerprint_permit,
-                        permit,
-                        original,
-                        cancellation,
-                        &mut before_publication,
-                        producer_custody,
-                    )
-                    .await?
-                }
-            };
-            if let Some(completed) = self
-                .finish_live_retry(
-                    &mut state,
-                    publication,
-                    maximum_conflicts,
-                    &mut accounting,
-                    cancellation,
-                    &mut empty_allocation,
-                )
-                .await
-                .map_err(E::from)?
-            {
-                break completed;
             }
         };
+        let allocation = accounting.claim_owned(0, 0).map_err(E::from)?;
         if matches!(
             outcome,
             LiveMutationOutcome::Committed { .. }
                 | LiveMutationOutcome::AlreadyCommitted { .. }
                 | LiveMutationOutcome::IdempotencyConflict { .. }
+                | LiveMutationOutcome::Conflict { .. }
         ) {
             self.live_operation_id = None;
         }
@@ -286,15 +243,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         }
     }
 
-    pub(super) fn validate_live_operation(&self, maximum_attempts: u32) -> Result<(), FsError> {
+    pub(super) fn validate_live_operation(&self) -> Result<(), FsError> {
         if self.mode.access != AccessMode::ReadWrite
             || self.mode.consistency != ConsistencyMode::Live
             || self.mode.mutations != MutationMode::DirectLive
         {
             return Err(FsError::MutationNotAllowed);
-        }
-        if maximum_attempts == 0 {
-            return Err(FsError::ZeroLiveRetryLimit);
         }
         Ok(())
     }
@@ -302,97 +256,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(super) async fn publish_live(
         &mut self,
         operation_id: OperationId,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<LiveMutationOutcome> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        let result = async {
-            accounting.check()?;
-            let mut state = LiveRetryState::new(maximum_attempts).map_err(FsError::LiveRetry)?;
-            let mut empty_allocation = accounting.claim_owned(0, 0)?;
-            loop {
-                accounting.check()?;
-                let publication = self
-                    .publish_pending(
-                        operation_id,
-                        None,
-                        None,
-                        None,
-                        PublicationPermit::Unrestricted,
-                        accounting.remaining()?,
-                        cancellation,
-                        &mut |_| async {
-                            FsResult::Ok(OperationReceipt {
-                                value: (),
-                                work: WorkCounters::UNCHARGED,
-                            })
-                        },
-                    )
-                    .await;
-                let incoming = match &publication {
-                    Ok(receipt) => receipt.work,
-                    Err(failure) => *failure.work,
-                };
-                let (allocations, work, allowance, _) = accounting
-                    .standalone_parts()
-                    .ok_or(FsError::PendingMutationAllocationFailed)?;
-                *work =
-                    merge_simultaneous_work(*work, incoming, allocations.live_bytes(), allowance)
-                        .map_err(|failure| failure.error)?;
-                let publication = publication
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?;
-                if let Some((outcome, _allocation)) = self
-                    .finish_live_retry(
-                        &mut state,
-                        publication,
-                        maximum_conflicts,
-                        &mut accounting,
-                        cancellation,
-                        &mut empty_allocation,
-                    )
-                    .await?
-                {
-                    return Ok(outcome);
-                }
-            }
-        }
-        .await;
-        measured(result, &accounting)
-    }
-
-    pub(super) async fn finish_live_retry(
-        &mut self,
-        state: &mut LiveRetryState,
-        publication: LivePublicationObservation,
-        maximum_conflicts: u32,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-        empty_allocation: &mut KernelOwnedAllocation,
-    ) -> Result<Option<(LiveMutationOutcome, KernelOwnedAllocation)>, FsError> {
-        match state
-            .observe_publication(publication)
-            .map_err(FsError::LiveRetry)?
-        {
-            LiveRetryAction::Complete(outcome) => Ok(Some((
-                outcome,
-                std::mem::replace(empty_allocation, KernelOwnedAllocation::Standalone),
-            ))),
-            LiveRetryAction::Publish => Err(FsError::LiveRetry(LiveRetryError::InvalidTransition)),
-            LiveRetryAction::Rebase => {
-                let (decision, allocation) = self
-                    .rebase_head_with_accounting(maximum_conflicts, accounting, cancellation)
-                    .await?;
-                match state.observe_rebase(decision).map_err(FsError::LiveRetry)? {
-                    LiveRetryAction::Publish => Ok(None),
-                    LiveRetryAction::Complete(outcome) => Ok(Some((outcome, allocation))),
-                    LiveRetryAction::Rebase => {
-                        Err(FsError::LiveRetry(LiveRetryError::InvalidTransition))
-                    }
-                }
-            }
-        }
+        self.publish_pending(
+            operation_id,
+            None,
+            None,
+            None,
+            PublicationPermit::Unrestricted,
+            budget,
+            cancellation,
+            &mut |_| async {
+                FsResult::Ok(OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
     }
 }

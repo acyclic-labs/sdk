@@ -162,7 +162,7 @@ fn callback_admission_and_cancellation_preserve_work_and_retire_owned_paths() ->
 }
 
 #[test]
-fn stop_denial_and_precancellation_preserve_the_original_stream_for_retry() -> TestResult {
+fn stop_denial_and_precancellation_preserve_the_original_stream_custody() -> TestResult {
     let (_root, directory) = held()?;
     let watch = driver(&directory, Arc::new(Ignored), &mut ordinary_work())?;
     let owned = watch.platform_owned_bytes();
@@ -218,12 +218,12 @@ fn stop_denial_and_precancellation_preserve_the_original_stream_for_retry() -> T
     assert!(watch.delivery().is_exact());
     assert_eq!(watch.platform_owned_bytes(), owned);
 
-    let mut retry = DemandWork::new(stop_budget, &CancellationToken::new());
-    watch.stop_with_work(&mut retry)?;
+    let mut admitted_stop = DemandWork::new(stop_budget, &CancellationToken::new());
+    watch.stop_with_work(&mut admitted_stop)?;
     assert!(watch.is_stopped());
-    assert_eq!(retry.work.allocation_operations, 0);
-    assert_eq!(retry.work.peak_allocation_bytes, 0);
-    assert_eq!(retry.work.items_examined, 0);
+    assert_eq!(admitted_stop.work.allocation_operations, 0);
+    assert_eq!(admitted_stop.work.peak_allocation_bytes, 0);
+    assert_eq!(admitted_stop.work.items_examined, 0);
     assert!(!watch.delivery().is_exact());
     assert!(watch.platform_owned_bytes() < owned);
     assert!(
@@ -593,7 +593,7 @@ fn measured_fence_rejects_denied_reads_and_abandons_a_replaced_root() -> TestRes
     let cancellation = CancellationToken::new();
     let mut denied = DemandWork::new(WorkBudget::default(), &cancellation);
     assert!(matches!(
-        watch.fence_with_work(Duration::ZERO, &mut denied),
+        watch.fence_with_work(&mut denied),
         Err(DemandError::Work(_))
     ));
     assert_eq!(denied.work, WorkCounters::default());
@@ -608,7 +608,7 @@ fn measured_fence_rejects_denied_reads_and_abandons_a_replaced_root() -> TestRes
         },
         &cancellation,
     );
-    assert!(!watch.fence_with_work(Duration::ZERO, &mut work)?);
+    assert!(!watch.fence_with_work(&mut work)?);
     assert!(!watch.delivery().is_exact());
     assert_eq!(work.work.source_entries_visited, 0);
     Ok(())
@@ -659,10 +659,14 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
         original: Weak<NativeDemandReadMeter>,
         cancellation: CancellationToken,
         invoked: AtomicBool,
+        terminal: std::sync::mpsc::Sender<()>,
     }
     impl HostChangeSink for Retires {
         fn logical_owned_bytes(&self) -> u64 {
             0
+        }
+        fn delivery_lost(&self) {
+            let _ = self.terminal.send(());
         }
         fn host_changed(&self, _: &[HostChange], _: &mut DemandWork) -> Result<(), DemandError> {
             Err(DemandError::NativeWorkUnavailable)
@@ -694,6 +698,16 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
                 .lock()
                 .map_err(|_| DemandError::WorkerUnavailable)?
                 .take();
+            if let Some(watch) = &watch {
+                let fence = watch
+                    .stream
+                    .lock()
+                    .map_err(|_| DemandError::WorkerUnavailable)?
+                    .as_ref()
+                    .ok_or(DemandError::WorkerUnavailable)?
+                    .delivery_fence();
+                assert!(matches!(fence.wait(), Err(DemandError::WorkerUnavailable)));
+            }
             drop(watch);
             Ok(())
         }
@@ -712,26 +726,31 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
         &cancellation,
     )));
     let lifetime = Arc::downgrade(&original);
+    let (terminal, stopped) = std::sync::mpsc::channel();
     let sink = Arc::new(Retires {
         watch: Mutex::new(None),
         original: lifetime.clone(),
         cancellation,
         invoked: AtomicBool::new(false),
+        terminal,
     });
     let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&held, delivery, &mut work)?;
+    let fence = watch
+        .stream
+        .lock()
+        .map_err(|_| "poisoned stream custody")?
+        .as_ref()
+        .ok_or("stream was not registered")?
+        .delivery_fence();
     let completion = Arc::clone(&watch.shared);
     let funded_live = original.with_original_leaf(|work| work.live_allocation_bytes());
     *sink.watch.lock().map_err(|_| "poisoned callback custody")? = Some(watch);
     drop(work);
     std::fs::write(root.path().join("retire"), b"native event")?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while completion.stream_bytes.load(Ordering::Acquire) != 0
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    stopped.recv()?;
+    fence.wait()?;
     assert!(sink.invoked.load(Ordering::Acquire));
     assert!(
         completion.stream_bytes.load(Ordering::Acquire) == 0,
@@ -756,9 +775,6 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
         Ok::<_, crate::WorkError>(())
     })?;
     drop(original);
-    while lifetime.upgrade().is_some() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(1));
-    }
     assert!(
         lifetime.upgrade().is_none(),
         "no context-slot or custody/root strong cycle remains"

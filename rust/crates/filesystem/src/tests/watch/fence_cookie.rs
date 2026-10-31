@@ -3,9 +3,6 @@
 use super::*;
 use crate::source_watch::{HostChange, HostChangeSink as _};
 use std::os::unix::fs::PermissionsExt as _;
-use std::time::Duration;
-
-const FENCE: Duration = Duration::from_secs(5);
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -100,7 +97,7 @@ fn a_fence_places_its_cookie_where_the_host_takes_one() -> Result<(), Box<dyn st
     let arrived = cookie(&mut writable.watch)?;
     assert!(matches!(&arrived, HostChange::Altered(path) if path.starts_with(".volumes")));
     deliver(&writable.hints, &[arrived], u64::MAX)?;
-    assert!(writable.watch.await_cookie(FENCE)?);
+    assert!(writable.watch.await_cookie()?);
     assert!(writable.watch.confirmable()?);
 
     // Negative control: the only excluded directory refuses the cookie.
@@ -125,14 +122,14 @@ fn a_cookie_after_a_lost_batch_never_confirms() -> Result<(), Box<dyn std::error
     let mut quiet = fixture(&[(".volumes", 0o755)])?;
     let arrived = cookie(&mut quiet.watch)?;
     deliver(&quiet.hints, &[arrived], u64::MAX)?;
-    assert!(quiet.watch.await_cookie(FENCE)?);
+    assert!(quiet.watch.await_cookie()?);
 
     // A batch is lost while the fence waits, then the cookie arrives.
     let mut lost = fixture(&[(".volumes", 0o755)])?;
     let arrived = cookie(&mut lost.watch)?;
     lost.hints.delivery_lost();
     deliver(&lost.hints, &[arrived], u64::MAX)?;
-    assert!(!lost.watch.await_cookie(FENCE)?);
+    assert!(!lost.watch.await_cookie()?);
     assert!(!lost.watch.confirmable()?);
     assert!(matches!(
         lost.watch
@@ -156,6 +153,94 @@ fn a_cookie_after_a_lost_batch_never_confirms() -> Result<(), Box<dyn std::error
         "a torn batch confirms nothing"
     );
     torn.hints.delivery_lost();
-    assert!(!torn.watch.await_cookie(FENCE)?);
+    assert!(!torn.watch.await_cookie()?);
+
+    // Producer loss settles a cookie that can no longer arrive. The join
+    // covers termination before or after the waiter acquires the state lock.
+    let mut stopped = fixture(&[(".volumes", 0o755)])?;
+    let _undelivered = cookie(&mut stopped.watch)?;
+    assert!(stopped.watch.confirmable()?);
+    let producer = AdapterDelivery {
+        shared: Arc::clone(&stopped.watch.shared),
+        fenced: Arc::clone(&stopped.watch.fenced),
+    };
+    let stopping = std::thread::spawn(move || drop(producer));
+    let delivered = stopped.watch.await_cookie()?;
+    stopping.join().map_err(|_| "cookie producer panicked")?;
+    assert!(!delivered);
+    assert!(matches!(
+        stopped
+            .watch
+            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::BackendError,
+            ..
+        }
+    ));
+
+    // A consumer that loses continuity publishes the same rescan obligation
+    // directly, without manufacturing an expired deadline or host changes.
+    let mut invalidated = fixture(&[(".volumes", 0o755)])?;
+    let _undelivered = cookie(&mut invalidated.watch)?;
+    invalidated.watch.invalidate()?;
+    assert!(!invalidated.watch.await_cookie()?);
+    assert!(matches!(
+        invalidated
+            .watch
+            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::NativeRescanRequired,
+            ..
+        }
+    ));
+    Ok(())
+}
+
+/// A held native cookie cannot make cancellation depend on another delivery.
+#[test]
+fn cancellation_ends_a_cookie_wait_before_or_after_registration()
+-> Result<(), Box<dyn std::error::Error>> {
+    for cancelled_first in [false, true] {
+        let mut fixture = fixture(&[(".volumes", 0o755)])?;
+        let arrived = cookie(&mut fixture.watch)?;
+        let stop = CancellationToken::new();
+        if cancelled_first {
+            stop.cancel();
+        }
+        std::thread::scope(|scope| {
+            let (entered, registered) = std::sync::mpsc::sync_channel(1);
+            let token = &stop;
+            let cancelling = scope.spawn(move || {
+                registered
+                    .recv()
+                    .expect("cookie waiter ended before its registration");
+                token.cancel();
+            });
+            let mut entered = Some(entered);
+            let result = fixture.watch.await_cookie_cancellable(&stop, None, || {
+                if let Some(entered) = entered.take() {
+                    let _ = entered.send(());
+                }
+                stop.check().map_err(|_| {
+                    NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::Cancelled)
+                })
+            });
+            cancelling
+                .join()
+                .expect("cookie cancellation producer panicked");
+            assert!(matches!(
+                result,
+                Err(NativeWatchError::NativeWork(
+                    crate::NativeTreeMaterializationError::Cancelled
+                ))
+            ));
+        });
+        // Cancellation leaves continuity and the original cookie intact.
+        assert!(armed(&fixture.watch)?.is_some());
+        deliver(&fixture.hints, &[arrived], u64::MAX)?;
+        assert!(fixture.watch.await_cookie()?);
+    }
     Ok(())
 }

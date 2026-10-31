@@ -278,25 +278,12 @@ pub(crate) fn remove_prepared_leaf<W: NativeHostWork>(
     remove_windows_leaf(parent, name, directory, None, work)
 }
 
-pub(super) fn retry_io<W: NativeHostWork, T>(
-    work: &mut W,
-    delta: WorkCounters,
-    mut operation: impl FnMut() -> io::Result<T>,
-) -> Result<T, W::Error> {
-    loop {
-        match work.attempt_io(delta, &mut operation) {
-            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {}
-            result => return result,
-        }
-    }
-}
-
 #[cfg(unix)]
 pub(super) fn unix_mutation<W: NativeHostWork>(
     work: &mut W,
-    mut operation: impl FnMut() -> libc::c_int,
+    operation: impl FnOnce() -> libc::c_int,
 ) -> Result<(), W::Error> {
-    retry_io(work, WRITE, || {
+    work.attempt_io(WRITE, || {
         if operation() == 0 {
             Ok(())
         } else {

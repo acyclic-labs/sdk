@@ -32,16 +32,18 @@ export function httpFixture(mode) {
   };
   return state;
 }
-export function timerFixture() {
+export function timerFixture(mode) {
   const originalSet = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
   const active = new Map(), waits = [];
   globalThis.setTimeout = (callback, wait) => {
+    if (mode === 'reject') throw new Error('injected timer registration failure');
     const handle = {};
     waits.push(wait);
     active.set(handle, callback);
     return handle;
   };
   globalThis.clearTimeout = handle => active.delete(handle);
+  if (mode === 'missing') globalThis.setTimeout = undefined;
   return {
     active: () => active.size,
     waits: () => waits,
@@ -56,7 +58,7 @@ extern "C" {
     #[wasm_bindgen(js_name = httpFixture)]
     fn http_fixture(mode: &str) -> JsValue;
     #[wasm_bindgen(js_name = timerFixture)]
-    fn timer_fixture() -> JsValue;
+    fn timer_fixture(mode: &str) -> JsValue;
 }
 
 struct TimerFixture(JsValue);
@@ -79,7 +81,7 @@ impl Drop for TimerFixture {
 #[wasm_bindgen_test]
 async fn deadline_timers_are_cancelled_and_long_waits_never_overflow() {
     for millis in [1, i32::MAX as u64, i32::MAX as u64 + 1, u32::MAX as u64] {
-        let fixture = TimerFixture(timer_fixture());
+        let fixture = TimerFixture(timer_fixture("working"));
         let mut delay = Box::pin(timer::delay(std::time::Duration::from_millis(millis)));
         let mut elapsed = false;
         while !elapsed {
@@ -90,7 +92,13 @@ async fn deadline_timers_are_cancelled_and_long_waits_never_overflow() {
             JsFuture::from(Promise::resolve(&JsValue::UNDEFINED))
                 .await
                 .unwrap();
-            elapsed = futures::poll!(&mut delay).is_ready();
+            elapsed = match futures::poll!(&mut delay) {
+                std::task::Poll::Pending => false,
+                std::task::Poll::Ready(result) => {
+                    result.expect("original timer event");
+                    true
+                }
+            };
         }
         let waits = js_sys::Array::from(&fixture.call("waits"));
         let mut total = 0u64;
@@ -102,7 +110,7 @@ async fn deadline_timers_are_cancelled_and_long_waits_never_overflow() {
         assert_eq!(total, millis);
         assert_eq!(fixture.call("active").as_f64(), Some(0.0));
     }
-    let fixture = TimerFixture(timer_fixture());
+    let fixture = TimerFixture(timer_fixture("working"));
     let mut delay = Box::pin(timer::delay(std::time::Duration::from_secs(3600)));
     assert!(futures::poll!(&mut delay).is_pending());
     drop(delay);
@@ -111,6 +119,18 @@ async fn deadline_timers_are_cancelled_and_long_waits_never_overflow() {
     fixture.call("leak");
     assert_eq!(fixture.call("active").as_f64(), Some(1.0));
     fixture.call("fire");
+}
+
+#[wasm_bindgen_test]
+async fn deadline_timer_registration_failure_is_terminal() {
+    for mode in ["missing", "reject"] {
+        let fixture = TimerFixture(timer_fixture(mode));
+        assert!(matches!(
+            timer::delay(std::time::Duration::from_millis(1)).await,
+            Err(acyclic_harness_core::Error::Invalid(_))
+        ));
+        assert_eq!(fixture.call("active").as_f64(), Some(0.0));
+    }
 }
 
 fn field(object: &JsValue, name: &str) -> std::result::Result<JsValue, JsValue> {

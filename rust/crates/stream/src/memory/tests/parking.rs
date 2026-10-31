@@ -128,15 +128,22 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
                 .boxed_local()
         };
         let held = provider.state.write().await;
-        assert!(
+        let cut = if keep {
+            crate::snapshot::Cut::Pending
+        } else {
+            crate::snapshot::Cut::Retired
+        };
+        let (pending, settled) = crate::snapshot::observe(cut, || {
             follow
                 .as_mut()
                 .poll_next(&mut Context::from_waker(Waker::noop()))
                 .is_pending()
-        );
+        });
+        assert!(pending);
         let kept = keep.then_some(follow);
-        // Run the spawned job while the writer still holds the lock.
-        tokio::task::yield_now().await;
+        settled
+            .await
+            .expect("original snapshot job ended before its observed cut");
         drop(held);
         assert_eq!(provider.state.try_write().is_ok(), !keep, "keep={keep}");
         if let Some(mut follow) = kept {

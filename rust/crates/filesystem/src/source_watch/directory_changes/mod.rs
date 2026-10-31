@@ -16,6 +16,7 @@ use std::mem::size_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+#[cfg(test)]
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_FUNCTION, ERROR_IO_INCOMPLETE, ERROR_NOT_FOUND,

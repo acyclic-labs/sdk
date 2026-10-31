@@ -20,21 +20,9 @@ pub fn write_file_with(
 
 /// Writes all bytes through the same per-call durable boundary.
 pub fn write_file_all(writer: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
-    #[cfg(not(feature = "test-support"))]
-    return writer.write_all(bytes);
-    #[cfg(feature = "test-support")]
-    {
-        let mut bytes = bytes;
-        while !bytes.is_empty() {
-            match write_file(writer, bytes) {
-                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                Ok(count) => bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
-    }
+    crate::io_progress::write_all(&mut [io::IoSlice::new(bytes)], |buffers| {
+        write_file(writer, &buffers[0])
+    })
 }
 
 /// Retains the caller's original data-only flush policy.
@@ -60,7 +48,20 @@ fn flush_file_policy(file: &File, _data_only: bool) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
+pub(super) fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if data_only {
+        use std::os::fd::AsFd as _;
+        return crate::held_sync::sync_data_descriptor_once(file.as_fd());
+    }
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    {
+        use std::os::fd::AsFd as _;
+        #[cfg(target_vendor = "apple")]
+        let _ = data_only;
+        crate::sync_descriptor_once(file.as_fd())
+    }
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
     if data_only {
         file.sync_data()
     } else {
@@ -79,7 +80,13 @@ pub fn rename_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<(
 /// Truncates the original held file without changing synchronization policy.
 pub fn truncate_file(file: &File, length: u64) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:truncate", || file.set_len(length));
+    return testing::durable_operation("file:truncate", || {
+        super::operations::resize_file(file, length, None)
+    });
     #[cfg(not(feature = "test-support"))]
-    file.set_len(length)
+    super::operations::resize_file(file, length, None)
 }
+
+#[cfg(test)]
+#[path = "durable_tests.rs"]
+mod tests;

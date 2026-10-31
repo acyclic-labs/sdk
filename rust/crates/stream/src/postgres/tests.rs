@@ -129,6 +129,20 @@ async fn publication_uses_only_required_sql_observations()
     );
     assert!(matches!(
         replica
+            .execute(WriteRequest::Append(remote.clone()), None, PAGE)
+            .await,
+        Err(StreamError::PrefixNotRetained)
+    ));
+    assert!(
+        replica
+            .provider
+            .inspect_idempotency(remote.idempotency_key.clone())
+            .await?
+            .is_none()
+    );
+    sql_case(&replica, "explicit-stale-refusal-resend").await?;
+    assert!(matches!(
+        replica
             .execute(WriteRequest::Append(remote), None, PAGE)
             .await?
             .outcome,
@@ -145,6 +159,21 @@ async fn publication_uses_only_required_sql_observations()
         idempotency_key: IdempotencyKey::unique(),
         ..original.clone()
     };
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(competing.clone()), None, PAGE)
+            .await,
+        Err(StreamError::PrefixNotRetained)
+    ));
+    assert!(!replica.is_failed());
+    assert!(
+        replica
+            .provider
+            .inspect_idempotency(competing.idempotency_key.clone())
+            .await?
+            .is_none()
+    );
+    sql_case(&replica, "explicit-stale-cas-resend").await?;
     assert!(matches!(
         replica
             .execute(WriteRequest::Append(competing), None, PAGE)
@@ -393,7 +422,7 @@ impl ReplayObserver for CompetingPublication<'_> {
 
 #[tokio::test]
 #[ignore = "requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
-async fn stale_publication_replans_without_retaining_the_losing_identity()
+async fn stale_publication_returns_without_retaining_the_losing_identity()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
     let namespace = format!("stale-publication-{}", uuid::Uuid::new_v4());
@@ -422,11 +451,9 @@ async fn stale_publication_replans_without_retaining_the_losing_identity()
                 published: false,
             },
         )
-        .await?;
-    assert!(matches!(
-        result.outcome,
-        WriteOutcome::Append(AppendOutcome::TailConflict { actual_tail: 1 })
-    ));
+        .await;
+    assert!(matches!(result, Err(StreamError::PrefixNotRetained)));
+    assert!(!replica.is_failed());
     let count = replica
         .journal
         .client

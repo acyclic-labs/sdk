@@ -87,7 +87,7 @@ pub(super) fn rename_unix_names_once(
 
 #[cfg(unix)]
 pub(super) fn sync_held_descriptor_once(file: &impl std::os::fd::AsFd) -> io::Result<()> {
-    // One native full flush per metered attempt; EINTR returns to `retry_io`.
+    // The original native result returns directly to the metered caller.
     acyclic_native_runtime::sync_descriptor_once(file.as_fd())
 }
 

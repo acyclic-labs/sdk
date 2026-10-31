@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { ActorReference } from "@acyclic-labs/auth/addressing";
 import { ActorNamespaceBinding } from "../src/namespace.js";
-import { DurableObjectActivation, DurableObjectState, alarmInfo, type DurableHost } from "../src/durable.js";
+import { DurableObjectActivation, DurableObjectState, type DurableHost } from "../src/durable.js";
 const bytes = (s: string) => new TextEncoder().encode(s);
 const reference = () => new ActorReference(bytes("account"), bytes("ClassOne"), bytes("same"));
 
@@ -129,7 +129,7 @@ test("cancelling a blocked body reader cancels the stream and rejects queued cal
   expect(invocations).toBe(0);
 });
 
-test("durable host receives the exact triple; validation rejects bounds before any host effect", async () => {
+test("durable host receives the exact triple and complete socket metadata", async () => {
   const seen: string[] = [];
   const host = new Proxy({}, {get(_target, property) { return (address: Uint8Array) => {
     expect(ActorReference.decode(address).equals(reference())).toBe(true); seen.push(String(property));
@@ -137,14 +137,9 @@ test("durable host receives the exact triple; validation rejects bounds before a
   }; }}) as DurableHost;
   const state = new DurableObjectState(reference(), host);
   const socket = {} as WebSocket;
-  state.acceptWebSocket(socket, Array(10).fill("λ".repeat(256)));
-  expect(() => state.acceptWebSocket(socket, Array(11).fill(""))).toThrow();
-  expect(() => state.acceptWebSocket(socket, ["λ".repeat(257)])).toThrow();
-  state.serializeAttachment(socket, new Uint8Array(2048));
-  expect(() => state.serializeAttachment(socket, new Uint8Array(2049))).toThrow();
-  state.setWebSocketAutoResponse({request:"λ".repeat(2048),response:"ok"});
-  expect(() => state.setWebSocketAutoResponse({request:"",response:"λ".repeat(2049)})).toThrow();
-  expect(() => alarmInfo(0,true)).toThrow(); expect(alarmInfo(1)).toEqual({retryCount:1,isRetry:true});
+  state.acceptWebSocket(socket, Array(11).fill("λ".repeat(257)));
+  state.serializeAttachment(socket, new Uint8Array(2049));
+  state.setWebSocketAutoResponse({request:"λ".repeat(2049),response:"ok"});
   expect(seen).toEqual(["acceptWebSocket","serializeAttachment","setWebSocketAutoResponse"]);
   const delivered: string[] = [];
   const actor = new DurableObjectActivation(state, {
@@ -156,7 +151,7 @@ test("durable host receives the exact triple; validation rejects bounds before a
     webSocketClose() { delivered.push("close"); },
     webSocketError() { delivered.push("error"); },
   });
-  await Promise.all([actor.fetch(new Request("https://example.com/")),actor.rpc("method",new Uint8Array()),actor.alarm(alarmInfo(0)),actor.webSocketMessage(socket,"data"),actor.webSocketClose(socket,1000,"",true),actor.webSocketError(socket,new Error())]);
+  await Promise.all([actor.fetch(new Request("https://example.com/")),actor.rpc("method",new Uint8Array()),actor.alarm(),actor.webSocketMessage(socket,"data"),actor.webSocketClose(socket,1000,"",true),actor.webSocketError(socket,new Error())]);
   expect(delivered).toEqual(["initialize","fetch","rpc","alarm","message","close","error"]);
   await state.deleteAll(); expect(seen.at(-1)).toBe("deleteAll");
 });

@@ -57,10 +57,7 @@ impl HostStatReader {
                     return Ok(None);
                 }
                 work.started_io(READ)?;
-                self.filled = match self.refill() {
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    value => value?,
-                };
+                self.filled = self.refill()?;
                 self.next = 0;
                 if self.filled == 0 {
                     return Ok(None);

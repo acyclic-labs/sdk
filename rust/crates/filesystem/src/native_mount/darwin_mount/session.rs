@@ -2,15 +2,6 @@ use super::*;
 use crate::native_mount::retirement::SourceRetirementWait;
 
 impl DriverSessionResources {
-    pub(super) fn wait_until(&self, timeout: Duration, done: impl Fn(&LoopState) -> bool) {
-        let state = self.state();
-        drop(
-            self.changed
-                .wait_timeout_while(state, timeout, |state| !done(state))
-                .unwrap_or_else(PoisonError::into_inner),
-        );
-    }
-
     pub(super) fn retire(
         &self,
         state: &mut LoopState,
@@ -60,6 +51,7 @@ impl DriverSessionResources {
                 Ok(()) => return,
                 Err(error) => {
                     state.failure.cleanup.get_or_insert(error);
+                    self.changed.notify_all();
                 }
             }
             if state.resources.is_none()
@@ -249,14 +241,11 @@ impl DarwinMountSession {
         if !events.provider_exited.load(Ordering::Acquire) {
             events.interrupt(wait)?;
         }
-        let deadline = Instant::now() + MOUNT_LOOP_EXIT_TIMEOUT;
-        while let Some(thread) = &self.thread {
-            work.check()?;
-            if thread.is_finished() {
-                break;
-            }
-            {
-                let mut state = events.state();
+        if self.thread.is_some() {
+            let mut cancellation = None;
+            let mut state = events.state();
+            while !state.loop_finished {
+                work.check()?;
                 if (state.resources.is_some()
                     || state
                         .retirement
@@ -266,12 +255,23 @@ impl DarwinMountSession {
                 {
                     return Err(error);
                 }
+                if cancellation.is_none()
+                    && let Some(wait) = wait
+                {
+                    drop(state);
+                    let notification = Arc::clone(&events);
+                    cancellation = Some(wait.on_cancel(None, move || {
+                        let _state = notification.state();
+                        notification.changed.notify_all();
+                    })?);
+                    state = events.state();
+                    continue;
+                }
+                state = events
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
             }
-            if Instant::now() >= deadline {
-                return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
-            }
-            work.read()?;
-            events.wait_until(STOP_POLL_INTERVAL, |_| thread.is_finished());
         }
         if self.thread.is_some() {
             events.sdk_credit.started_io(READ_WORK, wait)?;

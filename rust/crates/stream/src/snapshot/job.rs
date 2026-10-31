@@ -6,6 +6,9 @@ use std::{
     task::{Poll, Waker},
 };
 
+#[cfg(all(test, not(loom)))]
+pub(super) mod inspection;
+
 // Leaf lock: only transfers owned state/results and the waiter registration.
 // No provider guard is held here; wake and state destruction happen outside it.
 struct Completion<S: Snapshot> {
@@ -24,6 +27,8 @@ pub(super) struct Job<S: Snapshot> {
     completed: Arc<SyncMutex<Completion<S>>>,
     #[cfg(loom)]
     discard_on_drop: bool,
+    #[cfg(all(test, not(loom)))]
+    observation: Option<inspection::Observation>,
 }
 
 pub(super) fn new<S: Snapshot>(
@@ -42,6 +47,8 @@ pub(super) fn new<S: Snapshot>(
         completed: completed.clone(),
         #[cfg(loom)]
         discard_on_drop: super::model::discard_on_drop(),
+        #[cfg(all(test, not(loom)))]
+        observation: inspection::take(),
     };
     (
         job,
@@ -128,6 +135,8 @@ impl<S: Snapshot> Drop for Receiver<S> {
 impl<S: Snapshot> Job<S> {
     pub(super) async fn run(mut self) {
         let completed = self.completed.clone();
+        #[cfg(all(test, not(loom)))]
+        let observation = &mut self.observation;
         // A job owns its state until it finishes, and it runs once.
         let Some(state) = self.state.as_mut() else {
             return;
@@ -148,7 +157,12 @@ impl<S: Snapshot> Job<S> {
                     }
                     completed.worker = Some(cx.waker().clone());
                 }
-                read.as_mut().poll(cx).map(Some)
+                let result = read.as_mut().poll(cx).map(Some);
+                #[cfg(all(test, not(loom)))]
+                if result.is_pending() {
+                    inspection::notify(observation, inspection::Cut::Pending);
+                }
+                result
             })
             .await
         };
@@ -194,5 +208,7 @@ impl<S: Snapshot> Drop for Job<S> {
         // The awaited read is dropped before this owner, so cancellation has
         // already released any queued/granted permit and has not moved a cursor.
         self.finish(None);
+        #[cfg(all(test, not(loom)))]
+        inspection::notify(&mut self.observation, inspection::Cut::Retired);
     }
 }

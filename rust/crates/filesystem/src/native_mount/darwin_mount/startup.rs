@@ -23,6 +23,7 @@ pub(super) struct LoopState {
         [usize; 7],
     )>,
     pub(super) mounted: bool,
+    pub(super) loop_finished: bool,
     pub(super) control: DarwinRecoveryControl,
     pub(super) probe: MountProbe,
     pub(super) retirement: Option<crate::native_mount::NativeMountRetirement>,
@@ -50,9 +51,7 @@ impl DriverSessionResources {
         let probe = MountProbe::new(destination, work)?;
         // Both the stopping caller and the provider's retirement owner can
         // observe the same accepted detach before its completion wakes them.
-        const READS: u64 = 5
-            + 2 * control_visits(DIRECT_UNMOUNT_TIMEOUT, STOP_POLL_INTERVAL)
-            + control_visits(MOUNT_LOOP_EXIT_TIMEOUT, STOP_POLL_INTERVAL);
+        const READS: u64 = 5;
         let credit = work.reserve_work(WorkCounters {
             backend_read_operations: READS,
             ..WorkCounters::UNCHARGED
@@ -90,6 +89,7 @@ impl DriverSessionResources {
             state: Mutex::new(LoopState {
                 resources: Some((context, destination, pointers)),
                 mounted: false,
+                loop_finished: false,
                 control,
                 probe,
                 retirement: None,
@@ -270,20 +270,28 @@ impl DarwinMountSession {
     }
 
     fn await_mount(&mut self, original: &Work) -> Result<(), NativeMountError> {
-        let deadline = Instant::now() + MOUNT_VISIBILITY_TIMEOUT;
+        let mut cancellation = None;
         let mut state = self.unmount.state();
         while !state.mounted && !self.unmount.provider_exited.load(Ordering::Acquire) {
-            original.charge(READ_WORK)?;
-            if Instant::now() >= deadline {
-                return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
+            original.admit(WorkCounters::UNCHARGED)?;
+            if cancellation.is_none() {
+                drop(state);
+                let events = Arc::clone(&self.unmount);
+                cancellation =
+                    Some(original.cancellation().on_cancel(Some(original), move || {
+                        let _state = events.state();
+                        events.changed.notify_all();
+                    })?);
+                state = self.unmount.state();
+                continue;
             }
             state = self
                 .unmount
                 .changed
-                .wait_timeout(state, STOP_POLL_INTERVAL)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
         }
+        original.admit(WorkCounters::UNCHARGED)?;
         if let Some((error, _)) = self.take_callback_failure() {
             return Err(error);
         }
@@ -321,6 +329,7 @@ impl DarwinMountSession {
 fn run_loop(
     (driver, original, _allocation): (Arc<DriverSessionResources>, Work, NativeAllocation),
 ) -> c_int {
+    let _exit = DriverExit(&driver);
     let mut state = driver.state();
     if driver.pointer() == 0 && !state.control.start_aborted {
         driver.credit.started_drop_io(READ_WORK);
@@ -373,9 +382,25 @@ fn run_loop(
         driver.state().control.start_aborted = true;
         -context.record_failure(error, original.receipt())
     });
-    driver.provider_exited.store(true, Ordering::Release);
-    driver.changed.notify_all();
+    {
+        let _state = driver.state();
+        driver.provider_exited.store(true, Ordering::Release);
+        driver.changed.notify_all();
+    }
     drop(original);
     driver.finish();
     status
+}
+
+/// Every provider path, including unwind, publishes a terminal event under
+/// the same mutex that mount and shutdown waiters release into their wait.
+pub(super) struct DriverExit<'a>(pub(super) &'a DriverSessionResources);
+
+impl Drop for DriverExit<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state();
+        state.loop_finished = true;
+        self.0.provider_exited.store(true, Ordering::Release);
+        self.0.changed.notify_all();
+    }
 }

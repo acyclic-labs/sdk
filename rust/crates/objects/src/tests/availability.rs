@@ -34,17 +34,17 @@ pub(crate) async fn verify(medium: impl Medium) -> TestResult {
         ErrorCode::NotFound
     );
 
-    let (reached, release) = medium.park("create", key.clone());
+    let (mut reached, release) = medium.park("create", key.clone());
     let repair = account.put(body.clone(), Vec::new());
     tokio::pin!(repair);
-    drive_to_park(repair.as_mut(), &reached).await;
+    drive_to_park(repair.as_mut(), &mut reached).await;
     // The physical write is in flight at registration; its acknowledgement
     // has not yet published an invalidation. Verification races completion.
     let mut observation = account.availability(digest).await?;
     let mut unauthorized = other.availability(digest).await?;
     let initial = observation.cursor();
     assert!(observation.changed().now_or_never().is_none());
-    release.notify_one();
+    release.send(()).expect("original repair remains alive");
     let repaired = repair.await?;
     assert!(matches!(repaired, Put::AlreadyExists { .. }));
     let repaired = repaired.verified().ok_or("repair was unknown")?;
@@ -74,11 +74,11 @@ pub(crate) async fn verify(medium: impl Medium) -> TestResult {
     // Cancellation after sending the physical write leaves its acknowledgment
     // uncertain. Closing the source ends the original wait instead of hanging.
     assert!(medium.inner.remove(&key).await?);
-    let (reached, _release) = medium.park("create", key);
+    let (mut reached, _release) = medium.park("create", key);
     {
         let repair = account.put(body, Vec::new());
         tokio::pin!(repair);
-        drive_to_park(repair.as_mut(), &reached).await;
+        drive_to_park(repair.as_mut(), &mut reached).await;
         // Dropping the original pending operation cancels its publication owner.
     }
     assert_eq!(

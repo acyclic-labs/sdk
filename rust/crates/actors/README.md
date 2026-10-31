@@ -42,6 +42,20 @@ caller-supplied private CA; that CA is then the whole trust.
 nine operations using canonical Protobuf JSON. Invocation carries request and
 response headers. HTTP mutations are not automatically retried.
 
+Local runtime pause/resume and dispatcher checkpointing each submit at most one
+conditional publication. A competing owner returns `local::Error::Conflict`;
+the call does not reload state and propose again. Dispatcher startup also
+returns that original result. Restoration advances through one hierarchy
+version in pages; `HierarchyChanged` ends that traversal. The caller can
+explicitly restart after observing either refusal. The running dispatcher
+returns these failures to its owner, and unknown acknowledgements retain the
+original publication and participant custody.
+
+Delivery also returns a lost claim, changed admission cut or refused checkpoint
+as `Conflict`, releasing this placement. It does not claim another epoch or
+invoke the handler again within that delivery. A new placement or explicit
+resume can deliver unconsumed input using the original committed cursor.
+
 ## Guest streaming fetch
 
 `GuestStreamingResponse` carries `GuestBody`, an HTTP body that preserves data
@@ -158,6 +172,14 @@ errors keep their storage or unknown-outcome classification; an absent reply
 after proven consumption is an invalid publication, not a successful response.
 
 ### Guest durable state binding
+
+Durable alarms are activation events carrying the original context delivery
+identity. They have no attempt counter or separate retry flag. The authoring
+fixture `tests/fixtures/authoring/guest.ts` is captured from
+`acyclic_actors::guest::typescript()` by the existing generator:
+`cargo run --locked -p acyclic-actors --example actors-http-routes -- typescript/packages/actors/src/generated/actors-service.ts`.
+The fixture is the generated `typescript/packages/actors/src/generated/guest.ts`;
+`generated_authoring_contract_has_no_drift` compares it with the Rust source.
 
 `domain::Binding::actor_state(name)` selects the executing actor's own state.
 Its public declaration is `stateTransaction: true`, with no capability,

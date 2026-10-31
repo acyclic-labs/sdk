@@ -131,8 +131,6 @@ pub(super) struct ProjectionCore {
     /// Set for a view of a shared session, whose one invalidator serves
     /// every view: pending invalidation queues this view there.
     pub(super) shared_wake: OnceLock<Arc<super::shared::SharedWake>>,
-    /// The shared invalidator's blocked key for this view.
-    pub(super) shared_blocked: Mutex<Option<InvalidationKey>>,
     source_original_work: Option<Work>,
     allocation_custody: Arc<crate::demand::NativeMountAllocationCustody>,
     _allocation: NativeAllocation,
@@ -201,7 +199,6 @@ impl ProjectionCore {
             handler_error: Mutex::new(FuseHandlerReports::default()),
             callback_guard,
             shared_wake: OnceLock::new(),
-            shared_blocked: Mutex::new(None),
             source_original_work,
             allocation_custody,
             _allocation: allocation,

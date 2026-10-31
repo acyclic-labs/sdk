@@ -3,6 +3,54 @@ use crate::{
     test_meter::{Meter, NativeDenial},
 };
 use acyclic_native_runtime::ReadAllocation;
+
+/// The actual worker start or its caller's terminal, without a receiver task.
+async fn journal_started<T>(
+    started: tokio::sync::oneshot::Receiver<()>,
+    producer: &mut tokio::task::JoinHandle<T>,
+) -> std::io::Result<()> {
+    tokio::select! {
+        result = started => result.map_err(|error| std::io::Error::new(std::io::ErrorKind::BrokenPipe, error)),
+        result = producer => {
+            result.map_err(std::io::Error::other)?;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "journal operation ended before its held worker cut",
+            ))
+        }
+    }
+}
+
+/// Drives actual owned-task/native boundaries, including detached retirement.
+async fn journal_lifecycle<F: Future>(
+    schedule: &acyclic_native_runtime::testing::Schedule,
+    boundaries: &mut tokio::sync::mpsc::UnboundedReceiver<
+        acyclic_native_runtime::testing::Boundary,
+    >,
+    operation: F,
+) -> std::io::Result<F::Output> {
+    let operation = schedule.scope(operation);
+    tokio::pin!(operation);
+    let output = loop {
+        tokio::select! {
+            output = &mut operation => break output,
+            boundary = boundaries.recv() => boundary
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "journal boundary producer ended"))?
+                .release(),
+        }
+    };
+    let drained = schedule.drained();
+    tokio::pin!(drained);
+    loop {
+        tokio::select! {
+            () = &mut drained => return Ok(output),
+            boundary = boundaries.recv() => boundary
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "journal retirement producer ended"))?
+                .release(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum NativeGuardFailure {
     Provider(StreamError),

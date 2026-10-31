@@ -125,8 +125,13 @@ assert.ok(invokedBeforeCancel > 0);
 
 // A transport deadline is carried by AbortSignal too. An already-expired signal
 // is above; here it expires while a provider that ignores cancellation is pending.
-const deadline = AbortSignal.timeout(1);
-const deadlineResult = credentialProvider({ credential: () => new Promise(() => {}) })(deadline);
-const keepAlive = setTimeout(() => {}, 1000);
-try { await assert.rejects(deadlineResult, error => error.name === "TimeoutError"); }
-finally { clearTimeout(keepAlive); }
+const deadline = new AbortController();
+let deadlineStarted;
+const deadlineEntered = new Promise(resolve => { deadlineStarted = resolve; });
+const deadlineResult = credentialProvider({ credential: () => {
+  deadlineStarted();
+  return new Promise(() => {});
+} })(deadline.signal);
+await deadlineEntered;
+deadline.abort(new DOMException("request deadline elapsed", "TimeoutError"));
+await assert.rejects(deadlineResult, error => error.name === "TimeoutError");

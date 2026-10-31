@@ -1,4 +1,4 @@
-//! One native full flush attempt of a held descriptor, with no internal retry.
+//! Native full and data-only flushes of a held descriptor, each returning its first result.
 use std::io;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, BorrowedFd};
@@ -10,8 +10,8 @@ use std::os::windows::io::{AsRawHandle as _, BorrowedHandle};
 /// stops at the drive cache, it stages the file with `fsync` and then waits
 /// for an `F_FULLFSYNC` of its device that started after the stage, sharing
 /// it with every concurrent request on that device. Every failure returns to
-/// the caller, whose metered loop owns retry, charging and cancellation for
-/// each native attempt. Unlike std's `sync_all`, nothing is retried here, and
+/// the caller's original metered operation, including an interrupted flush.
+/// Unlike std's `sync_all`, nothing is retried here, and
 /// Apple never falls back to a weaker flush.
 #[cfg_attr(
     not(target_vendor = "apple"),
@@ -38,11 +38,26 @@ pub fn sync_descriptor_once(
         let failed = unsafe {
             windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(descriptor.as_raw_handle())
         } == 0;
-        if failed {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
+        flush_result(failed)
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(
+    unsafe_code,
+    reason = "one data flush on the caller's borrowed descriptor"
+)]
+pub(crate) fn sync_data_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
+    // SAFETY: the borrowed descriptor stays open for this one data flush.
+    flush_result(unsafe { libc::fdatasync(descriptor.as_raw_fd()) } == -1)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn flush_result(failed: bool) -> io::Result<()> {
+    if failed {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -52,7 +67,7 @@ pub fn sync_descriptor_once(
 /// `fcntl(F_BARRIERFSYNC)`; an unsupported barrier returns to the caller,
 /// which can separately admit a full flush. Linux and Windows have no ordering
 /// primitive weaker than the full flush and issue [`sync_descriptor_once`].
-/// Every failure returns to the caller, which owns retry.
+/// Every failure returns to the caller's original metered operation.
 pub fn order_descriptor_once(
     #[cfg(unix)] descriptor: BorrowedFd<'_>,
     #[cfg(windows)] descriptor: BorrowedHandle<'_>,

@@ -4,7 +4,9 @@ Content-addressed, account-scoped immutable blobs.
 
 - A blob's digest is BLAKE3-256 of its logical bytes. `put` returns
   `Created`, `AlreadyExists` (verified against this account) or `Unknown`
-  (outcome ambiguous; retrying is safe).
+  (outcome ambiguous; retrying is safe). Definite storage contention returns
+  `Conflict` after its original conditional result; a caller may resend the
+  identical put. Opening a writer revision authority follows the same rule.
 - `get(digest, range, maximum)` reads a half-open logical range; `head`
   returns kind, length and references.
 - A manifest lists `(digest, length)` parts plus typed edges; its digest is

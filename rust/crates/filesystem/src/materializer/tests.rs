@@ -609,8 +609,21 @@ async fn native_recovery_handles_both_rename_boundaries() -> Result<(), Box<dyn 
             let materializer = JournaledMaterializer::new(Store::default(), backend.clone());
             let journal = materializer.prepare(plan, None).await?;
             let mut journal = materializer.capture_preimages(journal, &mut allow).await?;
+            let stale = materializer
+                .load(operation_id)
+                .await?
+                .expect("original journal");
             journal.phase = MaterializationPhase::Applying;
             let journal = materializer.persist(journal).await?;
+            assert!(matches!(
+                materializer.persist(stale).await,
+                Err(MaterializationError::Contended)
+            ));
+            assert_eq!(
+                materializer.load(operation_id).await?.as_ref(),
+                Some(&journal)
+            );
+            assert_eq!(std::fs::read(root.join("file"))?, b"before");
             if applied {
                 backend
                     .apply(&journal.plan.edits[0], &journal.preimages[0])

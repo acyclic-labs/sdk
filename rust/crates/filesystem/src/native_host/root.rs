@@ -145,7 +145,7 @@ impl HostRoot {
         #[cfg(target_os = "macos")]
         let generation = {
             let fd = self.directory.as_raw_fd();
-            let unique = retry_io(work, READ, || {
+            let unique = work.attempt_io(READ, || {
                 let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
                 // SAFETY: the held descriptor and complete output remain live.
                 if unsafe { libc::fstatfs(fd, stat.as_mut_ptr()) } != 0 {
@@ -611,7 +611,7 @@ fn durable_volume<W: NativeHostWork<Error = DemandError>>(
     device: u64,
     work: &mut W,
 ) -> Result<u64, DemandError> {
-    let fsid = retry_io(work, READ, || {
+    let fsid = work.attempt_io(READ, || {
         #[cfg(test)]
         stat_probe::event("fsid");
         #[cfg(test)]

@@ -1,8 +1,7 @@
 import { ActorActivation } from "./activation.js";
 export { ActorActivation } from "./activation.js";
 import { ActorReference } from "@acyclic-labs/auth/addressing";
-import { WEB_SOCKET_TAG_COUNT, WEB_SOCKET_TAG_CHARACTERS, WEB_SOCKET_ATTACHMENT_BYTES, WEB_SOCKET_AUTO_RESPONSE_CHARACTERS } from "./generated/guest.js";
-import type { AlarmInfo, WebSocketAutoResponse } from "./generated/guest.js";
+import type { WebSocketAutoResponse } from "./generated/guest.js";
 
 /** Host adapter admitted for one actor. Serialized addresses grant no authority. */
 export interface DurableHost {
@@ -30,15 +29,12 @@ export class DurableObjectState {
   deleteAll(): Promise<void> { return this.#host.deleteAll(this.#address()); }
   acceptWebSocket(socket: WebSocket, tags: readonly string[] = []): void {
     tags = [...tags];
-    validateTags(tags);
     this.#host.acceptWebSocket(this.#address(), socket, tags);
   }
   getWebSockets(tag?: string): WebSocket[] {
-    if (tag !== undefined) validateTags([tag]);
     return this.#host.getWebSockets(this.#address(), tag);
   }
   serializeAttachment(socket: WebSocket, bytes: Uint8Array): void {
-    if (bytes.byteLength > WEB_SOCKET_ATTACHMENT_BYTES) throw new RangeError("WebSocket attachment exceeds 2048 bytes");
     this.#host.serializeAttachment(this.#address(), socket, new Uint8Array(bytes));
   }
   deserializeAttachment(socket: WebSocket): Uint8Array | null {
@@ -46,9 +42,6 @@ export class DurableObjectState {
     return bytes === null ? null : new Uint8Array(bytes);
   }
   setWebSocketAutoResponse(pair: WebSocketAutoResponse | null): void {
-    if (pair !== null && ([...pair.request].length > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS || [...pair.response].length > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS)) {
-      throw new RangeError("WebSocket auto-response exceeds 2048 characters");
-    }
     this.#host.setWebSocketAutoResponse(this.#address(), pair === null ? null : { ...pair });
   }
   getWebSocketAutoResponse(): WebSocketAutoResponse | null { return this.#host.getWebSocketAutoResponse(this.#address()); }
@@ -56,24 +49,12 @@ export class DurableObjectState {
   getTags(socket: WebSocket): string[] { return this.#host.getTags(this.#address(), socket); }
 }
 
-function validateTags(tags: readonly string[]): void {
-  if (tags.length > WEB_SOCKET_TAG_COUNT || tags.some(tag => [...tag].length > WEB_SOCKET_TAG_CHARACTERS)) throw new RangeError("WebSocket tags exceed 10 tags or 256 characters");
-}
-
-/** Validate host metadata before delivering an alarm to application code. */
-export function alarmInfo(retryCount: number, isRetry = retryCount !== 0): Readonly<AlarmInfo> {
-  if (!Number.isInteger(retryCount) || retryCount < 0 || retryCount > 0xffff_ffff || isRetry !== (retryCount !== 0)) {
-    throw new TypeError("invalid alarm retry metadata");
-  }
-  return Object.freeze({ retryCount, isRetry });
-}
-
 /** Namespace class handlers. The constructor runs before any delivered call. */
 export interface DurableObjectHandlers<State> {
   initialize(state: DurableObjectState): State | Promise<State>;
   fetch?(state: State, request: Request): Response | Promise<Response>;
   rpc?(state: State, method: string, payload: Uint8Array): Uint8Array | Promise<Uint8Array>;
-  alarm?(state: State, info: Readonly<AlarmInfo>): void | Promise<void>;
+  alarm?(state: State): void | Promise<void>;
   webSocketMessage?(state: State, socket: WebSocket, message: string | ArrayBuffer): void | Promise<void>;
   webSocketClose?(state: State, socket: WebSocket, code: number, reason: string, wasClean: boolean): void | Promise<void>;
   webSocketError?(state: State, socket: WebSocket, error: unknown): void | Promise<void>;
@@ -104,9 +85,8 @@ export class DurableObjectActivation<State> {
       return this.#handlers.rpc(state, method, snapshot);
     });
   }
-  alarm(info: AlarmInfo): Promise<void> {
-    const checked = alarmInfo(info.retryCount, info.isRetry);
-    return this.#activation.deliver(state => this.#handlers.alarm?.(state, checked));
+  alarm(): Promise<void> {
+    return this.#activation.deliver(state => this.#handlers.alarm?.(state));
   }
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const snapshot = typeof message === "string" ? message : message.slice(0);

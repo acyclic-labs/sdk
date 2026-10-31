@@ -364,15 +364,7 @@ pub(super) fn apply_native_metadata(
     }
     #[cfg(unix)]
     if let Some(mode) = desired.posix_mode {
-        use std::os::unix::fs::PermissionsExt as _;
-        loop {
-            work.charge(NativeResourceCredit::WriteOperations.delta(1))?;
-            match file.set_permissions(std::fs::Permissions::from_mode(mode)) {
-                Ok(()) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
+        crate::native_host::set_posix_mode_held(&file, mode, &mut &*work)?;
         crate::native_host::sync_file_held(&file, &mut &*work)?;
     }
     Ok(())

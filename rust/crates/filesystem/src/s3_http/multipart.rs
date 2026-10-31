@@ -381,7 +381,7 @@ where
         }
     }
 
-    /// Drives the upload toward a `Completing(requested)` terminal intent, retrying CAS conflicts up to the configured bound.
+    /// Conditionally records one completion intent, retaining exact caller resends.
     async fn admit_multipart_completion_intent(
         &self,
         workspace: &Workspace<A, O>,
@@ -390,53 +390,45 @@ where
         operation: IdempotencyKey,
         requested: &[(u32, String)],
     ) -> S3Result<MultipartCompletionIntent> {
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
-            let mut snapshot = self.multipart_snapshot(workspace, upload_id).await?;
-            if snapshot.key != key {
-                return Err(s3s::s3_error!(NoSuchUpload));
+        let mut snapshot = self.multipart_snapshot(workspace, upload_id).await?;
+        if snapshot.key != key {
+            return Err(s3s::s3_error!(NoSuchUpload));
+        }
+        match &snapshot.terminal {
+            Some(MultipartTerminal::Completed(generation)) => {
+                return Ok(MultipartCompletionIntent::AlreadyCompleted(*generation));
             }
-            match &snapshot.terminal {
-                Some(MultipartTerminal::Completed(generation)) => {
-                    return Ok(MultipartCompletionIntent::AlreadyCompleted(*generation));
-                }
-                Some(MultipartTerminal::Completing(existing))
-                    if existing.as_slice() == requested =>
-                {
-                    return Ok(MultipartCompletionIntent::Admitted(Box::new(snapshot)));
-                }
-                Some(_) => return Err(s3s::s3_error!(NoSuchUpload)),
-                None => {
-                    validate_completed_parts(
-                        &snapshot.parts,
-                        requested,
-                        snapshot.minimum_part_bytes,
-                    )?;
-                    if self
-                        .multipart_append(
-                            workspace,
+            Some(MultipartTerminal::Completing(existing)) if existing.as_slice() == requested => {
+                return Ok(MultipartCompletionIntent::Admitted(Box::new(snapshot)));
+            }
+            Some(_) => return Err(s3s::s3_error!(NoSuchUpload)),
+            None => {
+                validate_completed_parts(&snapshot.parts, requested, snapshot.minimum_part_bytes)?;
+                if self
+                    .multipart_append(
+                        workspace,
+                        upload_id,
+                        snapshot.tail,
+                        encode_multipart_completing(requested)?,
+                        Self::multipart_cas_operation(
                             upload_id,
+                            b"complete-intent\0",
+                            operation,
                             snapshot.tail,
-                            encode_multipart_completing(requested)?,
-                            Self::multipart_cas_operation(
-                                upload_id,
-                                b"complete-intent\0",
-                                operation,
-                                snapshot.tail,
-                            )?,
-                        )
-                        .await?
-                    {
-                        snapshot.tail += 1;
-                        snapshot.terminal = Some(MultipartTerminal::Completing(requested.to_vec()));
-                        return Ok(MultipartCompletionIntent::Admitted(Box::new(snapshot)));
-                    }
+                        )?,
+                    )
+                    .await?
+                {
+                    snapshot.tail += 1;
+                    snapshot.terminal = Some(MultipartTerminal::Completing(requested.to_vec()));
+                    return Ok(MultipartCompletionIntent::Admitted(Box::new(snapshot)));
                 }
             }
         }
         Err(s3s::s3_error!(SlowDown))
     }
 
-    /// Drives the upload from a `Completing` intent to a `Completed` terminal record, retrying CAS conflicts up to the configured bound.
+    /// Conditionally records completion of the original admitted intent.
     async fn terminalize_multipart_completion(
         &self,
         workspace: &Workspace<A, O>,
@@ -445,35 +437,33 @@ where
         requested: &[(u32, String)],
         generation: crate::GenerationId,
     ) -> S3Result<bool> {
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
-            let latest = self.multipart_snapshot(workspace, upload_id).await?;
-            match latest.terminal {
-                Some(MultipartTerminal::Completed(existing)) if existing == generation => {
+        let latest = self.multipart_snapshot(workspace, upload_id).await?;
+        match latest.terminal {
+            Some(MultipartTerminal::Completed(existing)) if existing == generation => {
+                return Ok(true);
+            }
+            Some(MultipartTerminal::Completing(ref existing))
+                if existing.as_slice() == requested =>
+            {
+                if self
+                    .multipart_append(
+                        workspace,
+                        upload_id,
+                        latest.tail,
+                        encode_multipart_completed(generation),
+                        Self::multipart_cas_operation(
+                            upload_id,
+                            b"complete-terminal\0",
+                            operation,
+                            latest.tail,
+                        )?,
+                    )
+                    .await?
+                {
                     return Ok(true);
                 }
-                Some(MultipartTerminal::Completing(ref existing))
-                    if existing.as_slice() == requested =>
-                {
-                    if self
-                        .multipart_append(
-                            workspace,
-                            upload_id,
-                            latest.tail,
-                            encode_multipart_completed(generation),
-                            Self::multipart_cas_operation(
-                                upload_id,
-                                b"complete-terminal\0",
-                                operation,
-                                latest.tail,
-                            )?,
-                        )
-                        .await?
-                    {
-                        return Ok(true);
-                    }
-                }
-                _ => return Err(s3s::s3_error!(InternalError)),
             }
+            _ => return Err(s3s::s3_error!(InternalError)),
         }
         Ok(false)
     }

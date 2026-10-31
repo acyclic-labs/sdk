@@ -110,7 +110,6 @@ impl NativeMaterializationWork {
             execution: None,
         })
     }
-    #[cfg(feature = "native-mount")]
     pub(crate) fn from_meter(state: Arc<crate::demand::NativeDemandReadMeter>) -> Self {
         Self {
             state,

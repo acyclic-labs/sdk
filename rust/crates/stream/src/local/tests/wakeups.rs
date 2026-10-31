@@ -37,7 +37,7 @@ where
 {
     for stream in streams {
         assert!(matches!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), stream.next()).await?,
+            stream.next().await,
             Some(Err(StreamError::Unavailable))
         ));
         assert!(stream.next().await.is_none());
@@ -87,9 +87,7 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
         1,
         "accepted append must wake its follower once"
     );
-    let record = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next())
-        .await?
-        .ok_or("follow ended")??;
+    let record = follow.next().await.ok_or("follow ended")??;
     assert_eq!(record.sequence, 1);
     let wake = Waker::from(woken.clone());
     assert!(
@@ -138,15 +136,20 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
                 .boxed()
         };
         let held = provider.inner.publication.write().await;
-        assert!(
+        let cut = if keep {
+            crate::snapshot::Cut::Pending
+        } else {
+            crate::snapshot::Cut::Retired
+        };
+        let (pending, settled) = crate::snapshot::observe(cut, || {
             follow
                 .as_mut()
                 .poll_next(&mut Context::from_waker(Waker::noop()))
                 .is_pending()
-        );
+        });
+        assert!(pending);
         let kept = keep.then_some(follow);
-        // Run the spawned job while the writer still holds the lock.
-        tokio::task::yield_now().await;
+        settled.await?;
         drop(held);
         assert_eq!(
             provider.inner.publication.try_write().is_ok(),

@@ -71,6 +71,20 @@ struct Objects {
     pause: crate::sync::Mutex<Option<Pause>>,
 }
 
+struct PauseOwner<'a>(&'a Objects);
+
+impl Drop for PauseOwner<'_> {
+    fn drop(&mut self) {
+        let pause = self
+            .0
+            .pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        drop(pause);
+    }
+}
+
 impl Default for Objects {
     fn default() -> Self {
         let objects = acyclic_objects::MemoryObjects::memory();
@@ -401,7 +415,9 @@ fn revoked_return_after_prefix(
     let worker = std::thread::spawn({
         let source = source.clone();
         let pinned = pinned.clone();
+        let objects = Arc::clone(&objects);
         move || {
+            let _pause = PauseOwner(&objects);
             OBSERVE_DATA.set(true);
             let _old = Omit::enter(broken && !matches!(change, Change::Data));
             let _retry = Retry::enter(broken && matches!(change, Change::Data));
@@ -411,7 +427,7 @@ fn revoked_return_after_prefix(
             read(&source, pinned.as_ref(), op)
         }
     });
-    pending.recv_timeout(Duration::from_secs(2))?;
+    pending.recv()?;
     let policy = crate::access::fixtures::denied(crate::access::Action::Read, "**");
     let publication = (|| -> Result<(), Box<dyn std::error::Error>> {
         if matches!(change, Change::Policy) {
@@ -452,6 +468,36 @@ fn revoked_return_after_prefix(
         matches!(result, Err(MountSourceError::AccessDenied)),
         "native result escaped a revoked cut: {op:?} {result:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn completed_native_read_drops_an_unreached_storage_cut() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (source, objects, pinned) = fixture(None)?;
+    let (entered, pending) = mpsc::channel();
+    let (_release, released) = tokio::sync::oneshot::channel();
+    *objects
+        .pause
+        .lock()
+        .map_err(|_| "fixture pause lock poisoned")? = Some(Pause {
+        cut: ReadCut::Ordinal(usize::MAX),
+        entered,
+        release: released,
+        after: None,
+    });
+    let worker = std::thread::spawn({
+        let objects = Arc::clone(&objects);
+        move || {
+            let _pause = PauseOwner(&objects);
+            read(&source, pinned.as_ref(), Read::Bytes)
+        }
+    });
+    worker.join().map_err(|_| "native read worker panicked")??;
+    assert!(matches!(
+        pending.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    ));
     Ok(())
 }
 

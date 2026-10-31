@@ -13,6 +13,7 @@ import errno
 import fcntl
 import os
 import select
+import shlex
 import signal
 import struct
 import subprocess
@@ -157,8 +158,14 @@ def read_terminal(fd):
 
 
 def write_all(fd, data):
+    data = memoryview(data)
     while data:
-        data = data[os.write(fd, data):]
+        written = os.write(fd, data)
+        if written == 0:
+            recovery = shlex.join([sys.executable, *sys.argv])
+            raise OSError(errno.EIO,
+                          f"acceptance write: zero byte progress; recovery: {recovery}")
+        data = data[written:]
 
 
 def relay(root, terminal):

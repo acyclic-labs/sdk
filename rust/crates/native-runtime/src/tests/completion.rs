@@ -5,7 +5,7 @@ fn failed_child(test: &str, marker: &str, message: &str) -> io::Result<()> {
         std::process::Command::new(std::env::current_exe()?)
             .args(["--exact", test, "--nocapture"])
             .env(marker, "1"),
-        Duration::from_secs(120),
+        CaptureSchedule::Unbounded,
         8 * 1024 * 1024,
     )?;
     assert!(!output.status.success());
@@ -65,10 +65,10 @@ fn native_file_worker_unwind_is_fail_stop() -> io::Result<()> {
 
 #[test]
 fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
-    struct RetainedPanic(Arc<AtomicBool>);
+    struct RetainedPanic(mpsc::Sender<()>);
     impl Drop for RetainedPanic {
         fn drop(&mut self) {
-            self.0.store(true, Ordering::Release);
+            let _ = self.0.send(());
         }
     }
     initialize_native_io_services()?;
@@ -78,8 +78,8 @@ fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
         let mut file = temporary.reopen()?;
         let meter = Arc::new(ReadBudgetMeter::new(1, 3));
         let body_meter = meter.clone();
-        let dropped = Arc::new(AtomicBool::new(false));
-        let payload = Box::new(RetainedPanic(dropped.clone()));
+        let (retired, dropped) = mpsc::channel();
+        let payload = Box::new(RetainedPanic(retired));
         let address = std::ptr::from_ref(payload.as_ref()) as usize;
         let (entered_tx, entered) = mpsc::sync_channel(1);
         let (release, released) = mpsc::sync_channel(1);
@@ -114,8 +114,70 @@ fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
             drop(task);
             release.send(()).map_err(io::Error::other)?;
         }
-        wait_until(|| dropped.load(Ordering::Acquire) && meter.memory.load(Ordering::Acquire) == 0);
+        dropped.recv().map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "panic payload retirement lost")
+        })?;
+        meter.wait_for_memory_retirement()?;
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
+    }
+    Ok(())
+}
+
+#[test]
+fn interrupted_wait_retains_the_native_producer_until_terminal_completion() -> io::Result<()> {
+    initialize_native_io_services()?;
+    for dropped in [false, true] {
+        let meter = Arc::new(ReadBudgetMeter::new(0, 0));
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let (cancel, mut cancelled) = tokio::sync::oneshot::channel();
+        let (registered, waiting) = mpsc::channel();
+        let mut task = run_blocking_io(
+            move || -> io::Result<usize> {
+                entered.send(()).map_err(io::Error::other)?;
+                blocked.recv().map_err(io::Error::other)?;
+                Ok(37)
+            },
+            Some((meter.clone(), true)),
+        )?;
+        submit(&mut task);
+        started.recv().map_err(io::Error::other)?;
+        let allocations = meter.used_allocations.load(Ordering::Acquire);
+        meter.deny_allocations.store(true, Ordering::Release);
+        let caller = std::thread::spawn(move || {
+            let mut registered = Some(registered);
+            let result = task.wait_interruptible(std::future::poll_fn(|context| {
+                match Pin::new(&mut cancelled).poll(context) {
+                    Poll::Ready(_) => Poll::Ready(()),
+                    Poll::Pending => {
+                        if let Some(registered) = registered.take() {
+                            let _ = registered.send(());
+                        }
+                        Poll::Pending
+                    }
+                }
+            }));
+            (task, result)
+        });
+        waiting.recv().map_err(io::Error::other)?;
+        cancel
+            .send(())
+            .map_err(|()| io::Error::other("cancellation waiter disappeared"))?;
+        let (task, result) = caller
+            .join()
+            .map_err(|_| io::Error::other("waiter panicked"))?;
+        assert!(result?.is_none());
+        if !dropped {
+            release.send(()).map_err(io::Error::other)?;
+        }
+        drop(release);
+        let result = task.wait(None, std::future::pending(), || {})?;
+        if dropped {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+        } else {
+            assert_eq!(result?, 37);
+        }
+        assert_eq!(meter.used_allocations.load(Ordering::Acquire), allocations);
     }
     Ok(())
 }

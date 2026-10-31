@@ -1,6 +1,11 @@
 use super::*;
 
 impl NativeSourceWatch {
+    /// The original delivery path cannot wait for its own next batch.
+    pub(crate) fn ensure_wait_available(&self) -> Result<(), DemandError> {
+        self.delivery().ensure_stop_available()
+    }
+
     /// Invalidates observations retained by this producer's original sink.
     pub(crate) fn delivery_lost(&self) {
         self.delivery().notify_lost();
@@ -50,12 +55,11 @@ impl NativeSourceWatch {
     #[cfg(target_os = "linux")]
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self,
-        timeout: std::time::Duration,
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
         self.delivery().take_failure(work)?;
-        self.fence_events_with_work(timeout, work)
+        self.fence_events_with_work(work)
     }
 
     #[cfg(windows)]

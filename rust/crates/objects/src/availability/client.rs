@@ -103,22 +103,12 @@ pub(crate) async fn observe(
     Ok(Availability::new(initial, changes))
 }
 
-/// Opening and delivery retain the same caller-owned stop. Only callers with
-/// no Context use the default finite opening budget; idle waits add no timer.
+/// Opening and delivery retain the same caller-owned stop.
 pub(crate) async fn open(
     context: Option<&Context>,
     work: impl Future<Output = Result<Availability, Error>>,
 ) -> Result<Availability, Error> {
-    crate::operation::run(context, async {
-        if context.is_some() {
-            work.await
-        } else {
-            tokio::time::timeout(std::time::Duration::from_secs(30), work)
-                .await
-                .map_err(|_| Error::from(ErrorCode::DeadlineElapsed))?
-        }
-    })
-    .await
+    crate::operation::run(context, work).await
 }
 
 #[cfg(test)]

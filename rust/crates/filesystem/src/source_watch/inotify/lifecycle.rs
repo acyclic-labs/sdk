@@ -59,8 +59,6 @@ impl NativeSourceWatch {
                 stopping: AtomicBool::new(false),
                 completed: AtomicBool::new(false),
                 controller_alive: AtomicBool::new(true),
-                #[cfg(test)]
-                polling: AtomicBool::new(false),
                 cleanup: Mutex::new(StartupCleanup::default()),
                 ownership,
                 delivery,
@@ -160,8 +158,6 @@ impl NativeSourceWatch {
                 .unwrap_or_else(PoisonError::into_inner)
                 .reserve_worker(work)?;
             work.started_io(READ)?;
-            #[cfg(test)]
-            initialized.polling.store(true, Ordering::Release);
             drop(startup_reading);
             let cancelled = work.check().err();
             if cancelled.is_some() {
@@ -293,7 +289,7 @@ impl NativeSourceWatch {
     pub(crate) fn fence(&self) -> io::Result<()> {
         let mut work = self.shared.delivery.callback_work();
         self.shared
-            .read_events_and_deliver(std::time::Duration::MAX, &mut work)
+            .read_events_and_deliver(&mut work)
             .map(|_| ())
             .map_err(|error| {
                 self.shared.delivery.notify_lost();
@@ -303,10 +299,9 @@ impl NativeSourceWatch {
 
     pub(crate) fn fence_events_with_work<W: SourceDemandReadWork>(
         &self,
-        timeout: std::time::Duration,
         work: &mut W,
     ) -> Result<bool, DemandError> {
-        self.shared.read_events_and_deliver(timeout, work)
+        self.shared.read_events_and_deliver(work)
     }
 
     pub(crate) fn delivery(&self) -> &Delivery {
@@ -574,6 +569,7 @@ impl Shared {
         }
         *retired = true;
         self.retiring.store(true, Ordering::Release);
+        self.delivery.notify_lost();
         let mut reading = self.reading();
         if self.delivery.original.is_some() {
             self.finish_native_reader_locked(&mut reading);
@@ -594,6 +590,7 @@ impl Shared {
         }
         *retired = true;
         self.retiring.store(true, Ordering::Release);
+        self.delivery.notify_lost();
         if self.delivery.original.is_some() {
             self.finish_native_reader_locked(&mut reading);
         }

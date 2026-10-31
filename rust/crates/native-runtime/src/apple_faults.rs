@@ -24,8 +24,8 @@ pub(super) enum Mutation {
     None,
     /// After a short write, resumes data at the next segment boundary.
     WrongResume,
-    /// Returns `EINTR` instead of retrying it.
-    DropRetry,
+    /// Reissues the real transfer after an injected interruption.
+    ReissueInterrupted,
     /// Forgets the last byte of a short read that did move bytes.
     LoseByte,
     /// Advises later runs even when the timed run was cached.
@@ -123,9 +123,11 @@ pub(super) fn resume_point(writes: &[OwnedWrite], done: usize) -> usize {
 pub(super) fn attempt(
     segments: &[libc::iovec],
     raw: impl FnOnce(&[libc::iovec]) -> io::Result<usize>,
+    reissue: impl FnOnce() -> io::Result<usize>,
 ) -> io::Result<usize> {
     match FAULTS.with_borrow_mut(VecDeque::pop_front) {
         None | Some(Fault::Pass) => raw(segments),
+        Some(Fault::Interrupt) if mutated(Mutation::ReissueInterrupted) => reissue(),
         Some(Fault::Interrupt) => Err(io::Error::from_raw_os_error(libc::EINTR)),
         Some(Fault::Zero) => Ok(0),
         Some(Fault::Short(limit)) => {

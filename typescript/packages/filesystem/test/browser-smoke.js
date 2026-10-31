@@ -133,8 +133,6 @@ async function run() {
       { kind: "write", path: "/live.txt", offset: 4n, bytes: new TextEncoder().encode("-published") },
     ],
     new Uint8Array(16).fill(42),
-    3,
-    8,
   );
   assert(liveTransaction.status === "committed", "authored live transaction did not publish");
   assert(

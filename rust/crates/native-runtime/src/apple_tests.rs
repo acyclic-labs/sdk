@@ -8,7 +8,7 @@ use std::os::unix::fs::FileExt as _;
 type Event = (&'static str, u64, u64);
 type Outcome<T> = Result<T, (io::ErrorKind, Option<i32>)>;
 type ReadCase<'a> = (&'a [(u64, usize)], Vec<Event>);
-type FaultCase = (Option<Vectored>, Vec<Fault>, Vec<Event>, bool);
+type FaultCase = (Option<Vectored>, Vec<Fault>, Vec<Event>, Outcome<()>);
 type WriteObservation = ((Outcome<()>, Vec<u8>), Vec<Event>);
 
 const FILE: usize = 10_000;
@@ -352,10 +352,76 @@ fn first_difference(left: &[u8], right: &[u8]) -> Option<usize> {
         .or_else(|| (left.len() != right.len()).then(|| left.len().min(right.len())))
 }
 
-/// The write oracle: a faulted batch must leave exactly the baseline bytes,
-/// unless an injected zero-byte transfer ended it with `WriteZero`, in which
-/// case every byte is untouched, a hole past the old end, or written there
-/// by some request.
+/// Applies a finite fault schedule to the requested logical byte ranges.
+/// Every successful transfer writes a prefix; an interruption or zero result
+/// ends the batch immediately. This model holds no native segment pointers.
+fn modelled_write(
+    writes: &[OwnedWrite],
+    vectored: bool,
+    faults: &[Fault],
+) -> (Outcome<()>, Vec<u8>, usize) {
+    let mut bytes: Vec<u8> = (0..FILE).map(content).collect();
+    let mut consumed = 0;
+    let mut rest = writes;
+    while let Some(first) = rest.first() {
+        let joined = rest
+            .windows(2)
+            .take(segment_limit().saturating_sub(1))
+            .take_while(|pair| match pair {
+                [left, right] => right.offset == left.offset + left.bytes.len() as u64,
+                _ => false,
+            })
+            .count();
+        let (run, tail) = rest.split_at(joined + 1);
+        rest = tail;
+        let payload: Vec<u8> = run
+            .iter()
+            .flat_map(|write| write.bytes.iter().copied())
+            .collect();
+        let mut moved = 0;
+        while moved < payload.len() {
+            let asked = if vectored {
+                payload.len() - moved
+            } else {
+                let mut end = 0;
+                run.iter()
+                    .find_map(|write| {
+                        end += write.bytes.len();
+                        (end > moved).then(|| end - moved)
+                    })
+                    .unwrap()
+            }
+            .min(MAX_TRANSFER);
+            let fault = faults.get(consumed);
+            consumed += usize::from(fault.is_some());
+            let count = match fault {
+                Some(Fault::Interrupt) => {
+                    return (
+                        Err((io::ErrorKind::Interrupted, Some(libc::EINTR))),
+                        bytes,
+                        consumed,
+                    );
+                }
+                Some(Fault::Zero) => 0,
+                Some(Fault::Short(limit)) => asked.min(*limit),
+                None | Some(Fault::Pass) => asked,
+            };
+            if count == 0 {
+                return (Err((io::ErrorKind::WriteZero, None)), bytes, consumed);
+            }
+            let at = first.offset as usize + moved;
+            if bytes.len() < at + count {
+                bytes.resize(at + count, 0);
+            }
+            bytes[at..at + count].copy_from_slice(&payload[moved..moved + count]);
+            moved += count;
+        }
+    }
+    (Ok(()), bytes, consumed)
+}
+
+/// The faulted real file and terminal must match the independent model
+/// exactly, including partial writes, overlapping requests and unused faults.
 fn write_oracle(
     writes: &[OwnedWrite],
     vectored: Option<Vectored>,
@@ -373,49 +439,23 @@ fn write_oracle(
             )
         },
     );
-    let zeroed = faults
-        .get(..consumed)
-        .unwrap_or_default()
-        .iter()
-        .any(|fault| matches!(fault, Fault::Zero | Fault::Short(0)));
     if consumed > trace.len() {
         return Err(format!("{consumed} faults but {} attempts", trace.len()));
     }
-    match &new {
-        Err((io::ErrorKind::WriteZero, None)) if zeroed && old.is_ok() => {
-            // A partial batch can only end between the old end and the baseline end.
-            if !(FILE..=old_bytes.len()).contains(&new_bytes.len()) {
-                return Err(format!(
-                    "WriteZero left {} bytes, outside {FILE}..={}",
-                    new_bytes.len(),
-                    old_bytes.len()
-                ));
-            }
-            let original: Vec<u8> = (0..FILE).map(content).collect();
-            // Overlapping writes may leave an earlier request's byte in place.
-            let written = |index: usize, byte: u8| {
-                writes.iter().any(|write| {
-                    usize::try_from(write.offset)
-                        .ok()
-                        .and_then(|offset| index.checked_sub(offset))
-                        .and_then(|at| write.bytes.get(at))
-                        == Some(&byte)
-                })
-            };
-            let partial = new_bytes.iter().enumerate().all(|(index, &byte)| {
-                let hole = index >= FILE && byte == 0;
-                original.get(index) == Some(&byte) || hole || written(index, byte)
-            });
-            partial
-                .then_some(())
-                .ok_or_else(|| "WriteZero left a byte no request wrote".to_owned())
-        }
-        _ if new == old && new_bytes == old_bytes => Ok(()),
-        _ => Err(format!(
-            "{new:?} vs baseline {old:?}; first byte difference: {:?}",
-            first_difference(&new_bytes, &old_bytes)
-        )),
+    let (expected, expected_bytes, modelled) = modelled_write(writes, vectored.is_some(), faults);
+    if consumed != modelled {
+        return Err(format!("consumed {consumed} faults, model {modelled}"));
     }
+    if new != expected || new_bytes != expected_bytes {
+        return Err(format!(
+            "{new:?} vs model {expected:?}; first byte difference: {:?}",
+            first_difference(&new_bytes, &expected_bytes)
+        ));
+    }
+    if new.is_ok() && (new != old || new_bytes != old_bytes) {
+        return Err("completed write differs from the baseline".to_owned());
+    }
+    Ok(())
 }
 
 /// An independent model of a faulted batch read. Requests form runs of
@@ -423,14 +463,14 @@ fn write_oracle(
 /// than it asked for or the run is complete. An attempt asks for the rest of
 /// the run when vectored, else the rest of the current request. The next
 /// queued fault decides how many of the available bytes it moves: `Pass` all,
-/// `Short(n)` at most n, `Zero` none, and `Interrupt` repeats the attempt.
+/// `Short(n)` at most n, `Zero` none, and `Interrupt` ends the batch.
 /// Returns the exact length of every request and how many faults were consumed.
 fn modelled_lengths(
     ranges: &[(u64, usize)],
     vectored: bool,
     faults: &[Fault],
     file_length: u64,
-) -> (Vec<usize>, usize) {
+) -> (Outcome<Vec<usize>>, usize) {
     let mut queue = faults.iter().copied();
     let mut consumed = 0;
     let mut lengths = Vec::new();
@@ -439,6 +479,7 @@ fn modelled_lengths(
         // Each run is a maximal prefix whose requests abut end to start.
         let joined = rest
             .windows(2)
+            .take(segment_limit().saturating_sub(1))
             .take_while(
                 |pair| matches!(pair, [(at, length), (next, _)] if *next == at + *length as u64),
             )
@@ -463,15 +504,18 @@ fn modelled_lengths(
             };
             let at = first + moved as u64;
             let available = usize::try_from(file_length.saturating_sub(at)).unwrap_or(usize::MAX);
-            let count = loop {
-                let fault = queue.next();
-                consumed += usize::from(fault.is_some());
-                match fault {
-                    Some(Fault::Interrupt) => {}
-                    None | Some(Fault::Pass) => break asked.min(available),
-                    Some(Fault::Short(limit)) => break asked.min(limit).min(available),
-                    Some(Fault::Zero) => break 0,
+            let fault = queue.next();
+            consumed += usize::from(fault.is_some());
+            let count = match fault {
+                Some(Fault::Interrupt) => {
+                    return (
+                        Err((io::ErrorKind::Interrupted, Some(libc::EINTR))),
+                        consumed,
+                    );
                 }
+                None | Some(Fault::Pass) => asked.min(available),
+                Some(Fault::Short(limit)) => asked.min(limit).min(available),
+                Some(Fault::Zero) => 0,
             };
             moved += count;
             if count < asked {
@@ -485,7 +529,7 @@ fn modelled_lengths(
             left -= take;
         }
     }
-    (lengths, consumed)
+    (Ok(lengths), consumed)
 }
 
 /// The read oracle: each buffer has exactly the modelled length for the
@@ -503,15 +547,17 @@ fn read_oracle(
         |file| outcome(baseline_read(file, &requests)),
         |file| outcome(read_batch_with(file, &requests, vectored)),
     );
-    let (old, new) = match (old, new) {
-        (Ok(old), Ok(new)) => (old, new),
-        (old, new) if old == new => return Ok(()),
-        (old, new) => return Err(format!("{new:?} vs baseline {old:?}")),
-    };
-    let (lengths, modelled) = modelled_lengths(ranges, vectored.is_some(), faults, FILE as u64);
+    let (expected, modelled) = modelled_lengths(ranges, vectored.is_some(), faults, FILE as u64);
     if consumed != modelled {
         return Err(format!("consumed {consumed} faults, model {modelled}"));
     }
+    let (old, new, lengths) = match (old, new, expected) {
+        (Ok(old), Ok(new), Ok(lengths)) => (old, new, lengths),
+        (Ok(_), Err(actual), Err(expected)) if actual == expected => return Ok(()),
+        (old, new, expected) => {
+            return Err(format!("{new:?} vs model {expected:?}, baseline {old:?}"));
+        }
+    };
     let actual: Vec<usize> = new.iter().map(Bytes::len).collect();
     if actual != lengths {
         return Err(format!("lengths {actual:?}, model {lengths:?}"));
@@ -608,7 +654,7 @@ proptest! {
 }
 
 #[test]
-fn fault_oracles_reject_a_wrong_segment_resume_and_a_dropped_retry() {
+fn fault_oracles_reject_a_wrong_segment_resume_and_a_reissued_interruption() {
     let writes = owned_writes(&[(0, b"abc"), (3, b"defg")]);
     for vectored in [vectored(Direction::Write), None] {
         let short = [Fault::Short(2)];
@@ -630,7 +676,7 @@ fn fault_oracles_reject_a_wrong_segment_resume_and_a_dropped_retry() {
             write_oracle(&writes, vectored, &interrupt, Mutation::None),
             Ok(())
         );
-        assert!(write_oracle(&writes, vectored, &interrupt, Mutation::DropRetry).is_err());
+        assert!(write_oracle(&writes, vectored, &interrupt, Mutation::ReissueInterrupted).is_err());
     }
     let ranges = [(0, 4096), (4096, 4096), (9000, 100)];
     for vectored in [vectored(Direction::Read), None] {
@@ -639,7 +685,7 @@ fn fault_oracles_reject_a_wrong_segment_resume_and_a_dropped_retry() {
             read_oracle(&ranges, vectored, &interrupt, Mutation::None),
             Ok(())
         );
-        assert!(read_oracle(&ranges, vectored, &interrupt, Mutation::DropRetry).is_err());
+        assert!(read_oracle(&ranges, vectored, &interrupt, Mutation::ReissueInterrupted).is_err());
         // A short read that forgets a transferred byte fails the exact model.
         let short = [Fault::Short(100)];
         assert_eq!(
@@ -658,10 +704,10 @@ fn the_read_model_matches_hand_computed_schedules() {
     // single-request runs read normally, the last stopping at end of file.
     assert_eq!(
         modelled_lengths(&ranges, true, &[Fault::Short(5_000)], FILE as u64),
-        (vec![4096, 904, 100, 50], 1)
+        (Ok(vec![4096, 904, 100, 50]), 1)
     );
-    // Scalar: the first request completes, an interrupt repeats the second,
-    // which then moves nothing and ends the run.
+    // Scalar: the first request completes and the second is interrupted.
+    // The batch ends there, leaving the queued zero-result fault unused.
     assert_eq!(
         modelled_lengths(
             &ranges,
@@ -669,7 +715,7 @@ fn the_read_model_matches_hand_computed_schedules() {
             &[Fault::Pass, Fault::Interrupt, Fault::Zero],
             FILE as u64
         ),
-        (vec![4096, 0, 100, 50], 3)
+        (Err((io::ErrorKind::Interrupted, Some(libc::EINTR))), 2)
     );
 }
 
@@ -701,24 +747,18 @@ fn a_scalar_zero_after_progress_is_write_zero() {
 }
 
 #[test]
-fn every_raw_attempt_is_traced_including_interrupted_retries() {
+fn every_raw_attempt_is_traced_and_the_first_interruption_is_terminal() {
     let requests = reads(&[(0, 4096), (4096, 4096), (8192, 4096)]);
     let cases = [
         (
             vectored(Direction::Read),
             vec![Fault::Interrupt],
-            vec![("preadv", 0, 12_288), ("preadv", 0, 12_288)],
+            vec![("preadv", 0, 12_288)],
         ),
         (
             None,
             vec![Fault::Pass, Fault::Interrupt, Fault::Interrupt],
-            vec![
-                ("pread", 0, 4096),
-                ("pread", 4096, 4096),
-                ("pread", 4096, 4096),
-                ("pread", 4096, 4096),
-                ("pread", 8192, 4096),
-            ],
+            vec![("pread", 0, 4096), ("pread", 4096, 4096)],
         ),
     ];
     for (vectored, faults, expected) in cases {
@@ -728,8 +768,16 @@ fn every_raw_attempt_is_traced_including_interrupted_retries() {
             |file| outcome(baseline_read(file, &requests)),
             |file| outcome(read_batch_with(file, &requests, vectored)),
         );
-        assert_eq!(new, old);
-        assert_eq!(consumed, faults.len());
+        assert!(old.is_ok());
+        assert_eq!(new, Err((io::ErrorKind::Interrupted, Some(libc::EINTR))));
+        assert_eq!(
+            consumed,
+            faults
+                .iter()
+                .position(|fault| matches!(fault, Fault::Interrupt))
+                .unwrap()
+                + 1
+        );
         assert_eq!(trace, expected);
     }
 }
@@ -743,35 +791,40 @@ fn short_writes_resume_at_the_exact_byte_and_zero_progress_is_write_zero() {
             pwritev,
             vec![Fault::Short(2)],
             vec![("pwritev", 0, 7), ("pwritev", 2, 5)],
-            true,
+            Ok(()),
         ),
         (
             pwritev,
             vec![Fault::Short(4)],
             vec![("pwritev", 0, 7), ("pwrite", 4, 3)],
-            true,
+            Ok(()),
         ),
         (
             pwritev,
             vec![Fault::Short(1), Fault::Interrupt, Fault::Short(3)],
-            vec![
-                ("pwritev", 0, 7),
-                ("pwritev", 1, 6),
-                ("pwritev", 1, 6),
-                ("pwrite", 4, 3),
-            ],
-            true,
+            vec![("pwritev", 0, 7), ("pwritev", 1, 6)],
+            Err((io::ErrorKind::Interrupted, Some(libc::EINTR))),
         ),
         (
             None,
             vec![Fault::Short(1)],
             vec![("pwrite", 0, 3), ("pwrite", 1, 2), ("pwrite", 3, 4)],
-            true,
+            Ok(()),
         ),
-        (pwritev, vec![Fault::Zero], vec![("pwritev", 0, 7)], false),
-        (None, vec![Fault::Zero], vec![("pwrite", 0, 3)], false),
+        (
+            pwritev,
+            vec![Fault::Zero],
+            vec![("pwritev", 0, 7)],
+            Err((io::ErrorKind::WriteZero, None)),
+        ),
+        (
+            None,
+            vec![Fault::Zero],
+            vec![("pwrite", 0, 3)],
+            Err((io::ErrorKind::WriteZero, None)),
+        ),
     ];
-    for (vectored, faults, expected, completes) in cases {
+    for (vectored, faults, expected, terminal) in cases {
         let ([((old, old_bytes), _), ((new, new_bytes), trace)], _) = faulted(
             &faults,
             Mutation::None,
@@ -783,11 +836,11 @@ fn short_writes_resume_at_the_exact_byte_and_zero_progress_is_write_zero() {
                 )
             },
         );
-        if completes {
+        if terminal.is_ok() {
             assert_eq!(new, old, "{faults:?}");
             assert_eq!(new_bytes, old_bytes, "{faults:?}");
         } else {
-            assert_eq!(new, Err((io::ErrorKind::WriteZero, None)), "{faults:?}");
+            assert_eq!(new, terminal, "{faults:?}");
         }
         assert_eq!(trace, expected, "{faults:?}");
     }

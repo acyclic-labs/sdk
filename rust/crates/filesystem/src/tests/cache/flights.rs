@@ -53,101 +53,120 @@ async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
 }
 
 #[tokio::test]
-async fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover()
+async fn concurrent_reads_share_one_original_backend_request()
 -> Result<(), Box<dyn std::error::Error>> {
-    let inner = MemoryObjectStore::default();
-    let cancellation = CancellationToken::new();
-    let (object_id, bytes) = object(b"single-flight");
-    (object_work!(inner, put(object_id, bytes.clone()), B, &cancellation)).await?;
-    let gate = Arc::new(Gate::new());
-    let reads = Arc::new(AtomicUsize::new(0));
-    let cached = CachedObjectStore::new(
-        GatedStore {
-            inner: Arc::new(inner),
-            gate: Arc::clone(&gate),
-            reads: Arc::clone(&reads),
-        },
-        options(4, 64),
-    )?;
-    let (first, second) = async {
-        let first = object_work!(cached, read(object_id, 13), B, &cancellation);
-        let second = object_work!(cached, read(object_id, 13), B, &cancellation);
-        let release = async {
-            while reads.load(Ordering::Acquire) == 0 {
-                tokio::task::yield_now().await;
-            }
-            gate.release();
-        };
-        let (first, second, ()) = tokio::join!(first, second, release);
-        (first, second)
-    }
-    .await;
-    let first = first?;
-    let second = second?;
-    assert_eq!(first.value.bytes, bytes);
-    assert_eq!(second.value.bytes, bytes);
-    assert_eq!(reads.load(Ordering::Acquire), 1);
-
-    assert_eq!(cached.stats()?.coalesced_reads, 1);
-    Ok(())
-}
-
-#[tokio::test]
-async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results()
--> Result<(), Box<dyn std::error::Error>> {
-    for (object_id, body) in [object(b"scalar-batch"), object(b"missing-batch")]
-        .into_iter()
-        .enumerate()
-    {
+    for capacity in [64, 1] {
         let inner = MemoryObjectStore::default();
         let cancellation = CancellationToken::new();
-        let (identity, bytes) = body;
-        if object_id == 0 {
-            (object_work!(inner, put(identity, bytes.clone()), B, &cancellation)).await?;
-        }
-        let gate = Arc::new(Gate::new());
+        let (object_id, bytes) = object(b"single-flight");
+        (object_work!(inner, put(object_id, bytes.clone()), B, &cancellation)).await?;
+        let (release, gate) = futures::channel::oneshot::channel();
+        let gate = futures::FutureExt::shared(gate);
         let reads = Arc::new(AtomicUsize::new(0));
         let cached = CachedObjectStore::new(
             GatedStore {
                 inner: Arc::new(inner),
-                gate: Arc::clone(&gate),
+                gate: gate.clone(),
                 reads: Arc::clone(&reads),
             },
-            options(4, 64),
+            options(4, capacity),
         )?;
-        let requests = [ObjectReadRequest {
-            object_id: identity,
-            maximum_bytes: u64::try_from(bytes.len())?,
-        }];
-        let (scalar, batch) = async {
-            let scalar = object_work!(
-                cached,
-                read(identity, u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
-                B,
-                &cancellation
-            );
-            let batch = object_work!(cached, read_many(&requests), B, &cancellation);
-            let release = async {
-                while reads.load(Ordering::Acquire) == 0 {
-                    tokio::task::yield_now().await;
-                }
-                gate.release();
-            };
-            let (scalar, batch, ()) = tokio::join!(scalar, batch, release);
-            (scalar, batch)
-        }
-        .await;
-        if object_id == 0 {
-            assert_eq!(scalar?.value.bytes, bytes);
-            assert_eq!(batch?.value[0].bytes, bytes);
+        let (first, second) = async {
+            let first = object_work!(cached, read(object_id, 13), B, &cancellation);
+            let second = object_work!(cached, read(object_id, 13), B, &cancellation);
+            tokio::pin!(first, second);
+            assert!(futures::poll!(first.as_mut()).is_pending());
+            assert!(futures::poll!(second.as_mut()).is_pending());
             assert_eq!(reads.load(Ordering::Acquire), 1);
-        } else {
-            assert!(scalar.is_err());
-            assert!(batch.is_err());
-            assert_eq!(reads.load(Ordering::Acquire), 2);
+            release
+                .send(())
+                .map_err(|_| "original read receiver closed")?;
+            Ok::<_, Box<dyn std::error::Error>>(tokio::join!(first, second))
         }
-        assert_eq!(cached.stats()?.in_flight, 0);
+        .await?;
+        let first = first?;
+        let second = second?;
+        assert_eq!(first.value.bytes, bytes);
+        assert_eq!(second.value.bytes, bytes);
+        assert_eq!(reads.load(Ordering::Acquire), 1);
+
         assert_eq!(cached.stats()?.coalesced_reads, 1);
+        assert_eq!(cached.stats()?.resident_entries, u64::from(capacity >= 13));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_scalar_and_batch_reads_share_the_original_success_or_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    for scalar_leads in [true, false] {
+        for (object_id, body) in [object(b"scalar-batch"), object(b"missing-batch")]
+            .into_iter()
+            .enumerate()
+        {
+            let inner = MemoryObjectStore::default();
+            let cancellation = CancellationToken::new();
+            let (identity, bytes) = body;
+            if object_id == 0 {
+                (object_work!(inner, put(identity, bytes.clone()), B, &cancellation)).await?;
+            }
+            let (release, gate) = futures::channel::oneshot::channel();
+            let gate = futures::FutureExt::shared(gate);
+            let reads = Arc::new(AtomicUsize::new(0));
+            let cached = CachedObjectStore::new(
+                GatedStore {
+                    inner: Arc::new(inner),
+                    gate: gate.clone(),
+                    reads: Arc::clone(&reads),
+                },
+                options(4, 64),
+            )?;
+            let requests = [ObjectReadRequest {
+                object_id: identity,
+                maximum_bytes: u64::try_from(bytes.len())?,
+            }];
+            let (scalar, batch) = async {
+                let scalar = object_work!(
+                    cached,
+                    read(identity, u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
+                    B,
+                    &cancellation
+                );
+                let batch = object_work!(cached, read_many(&requests), B, &cancellation);
+                tokio::pin!(scalar, batch);
+                if scalar_leads {
+                    assert!(futures::poll!(scalar.as_mut()).is_pending());
+                    assert!(futures::poll!(batch.as_mut()).is_pending());
+                } else {
+                    assert!(futures::poll!(batch.as_mut()).is_pending());
+                    assert!(futures::poll!(scalar.as_mut()).is_pending());
+                }
+                assert_eq!(reads.load(Ordering::Acquire), 1);
+                release
+                    .send(())
+                    .map_err(|_| "original read receiver closed")?;
+                Ok::<_, Box<dyn std::error::Error>>(tokio::join!(scalar, batch))
+            }
+            .await?;
+            if object_id == 0 {
+                assert_eq!(scalar?.value.bytes, bytes);
+                assert_eq!(batch?.value[0].bytes, bytes);
+                assert_eq!(reads.load(Ordering::Acquire), 1);
+            } else {
+                let scalar = scalar.err().ok_or("missing scalar succeeded")?.error;
+                let batch = batch.err().ok_or("missing batch succeeded")?.error;
+                let (leader, follower) = if scalar_leads {
+                    (scalar, batch)
+                } else {
+                    (batch, scalar)
+                };
+                assert!(matches!(leader, ObjectStoreError::Missing));
+                assert!(matches!(follower, ObjectStoreError::SharedReadUnavailable));
+                assert_eq!(reads.load(Ordering::Acquire), 1);
+            }
+            assert_eq!(cached.stats()?.in_flight, 0);
+            assert_eq!(cached.stats()?.coalesced_reads, 1);
+        }
     }
     Ok(())
 }
@@ -155,39 +174,209 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
 #[tokio::test]
 async fn dropped_leaders_release_flights_and_retry_without_a_stale_identity()
 -> Result<(), Box<dyn std::error::Error>> {
+    struct Woken(AtomicUsize);
+    impl std::task::Wake for Woken {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Release);
+        }
+    }
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"drop-safe");
     (object_work!(inner, put(object_id, bytes.clone()), B, &cancellation)).await?;
-    let gate = Arc::new(Gate::new());
+    let (release, gate) = futures::channel::oneshot::channel();
+    let gate = futures::FutureExt::shared(gate);
     let reads = Arc::new(AtomicUsize::new(0));
     let cached = CachedObjectStore::new(
         GatedStore {
             inner: Arc::new(inner),
-            gate: Arc::clone(&gate),
+            gate: gate.clone(),
             reads: Arc::clone(&reads),
         },
         options(4, 64),
     )?;
     async {
+        let follower = object_work!(cached, read(object_id, 9), B, &cancellation);
+        tokio::pin!(follower);
+        let woken = Arc::new(Woken(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&woken));
         {
             let read = object_work!(cached, read(object_id, 9), B, &cancellation);
             tokio::pin!(read);
-            poll_fn(|context| match read.as_mut().poll(context) {
-                Poll::Pending => Poll::Ready(Ok(())),
-                Poll::Ready(_) => Poll::Ready(Err(std::io::Error::other(
-                    "gated leader completed before cancellation",
-                ))),
-            })
-            .await?;
+            assert!(futures::poll!(read.as_mut()).is_pending());
+            assert!(
+                follower
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            assert_eq!(woken.0.load(Ordering::Acquire), 0);
         }
+        assert!(woken.0.load(Ordering::Acquire) > 0);
+        let Poll::Ready(Err(failed)) = follower.as_mut().poll(&mut Context::from_waker(&waker))
+        else {
+            return Err("dropped leader did not end its original follower".into());
+        };
+        assert!(matches!(
+            failed.error,
+            ObjectStoreError::SharedReadUnavailable
+        ));
+        assert_eq!(reads.load(Ordering::Acquire), 1);
         assert_eq!(cached.stats()?.in_flight, 0);
-        gate.release();
+        release
+            .send(())
+            .map_err(|_| "original read receiver closed")?;
         let retry = object_work!(cached, read(object_id, 9), B, &cancellation).await?;
         assert_eq!(retry.value.bytes, bytes);
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await?;
     assert_eq!(reads.load(Ordering::Acquire), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_followers_release_their_wakers_before_the_original_read_finishes()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Woken;
+    impl std::task::Wake for Woken {
+        fn wake(self: Arc<Self>) {}
+    }
+    let inner = MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let (identity, bytes) = object(b"one-original-read");
+    object_work!(inner, put(identity, bytes.clone()), B, &cancellation).await?;
+    let (release, gate) = futures::channel::oneshot::channel();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let cached = CachedObjectStore::new(
+        GatedStore {
+            inner: Arc::new(inner),
+            gate: futures::FutureExt::shared(gate),
+            reads: reads.clone(),
+        },
+        options(4, 64),
+    )?;
+    let mut leader = Box::pin(object_work!(cached, read(identity, 17), B, &cancellation));
+    assert!(futures::poll!(leader.as_mut()).is_pending());
+    for cancel in [false, true, false] {
+        let follower_cancellation = CancellationToken::new();
+        let observer = Arc::new(Woken);
+        let waker = Waker::from(observer.clone());
+        let mut follower = Box::pin(object_work!(
+            cached,
+            read(identity, 17),
+            B,
+            &follower_cancellation
+        ));
+        assert!(
+            follower
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        if cancel {
+            follower_cancellation.cancel();
+            let Poll::Ready(Err(failure)) =
+                follower.as_mut().poll(&mut Context::from_waker(&waker))
+            else {
+                return Err("cancelled follower did not finish at its cancellation event".into());
+            };
+            assert!(matches!(failure.error, ObjectStoreError::Cancelled));
+        }
+        drop(follower);
+        drop(waker);
+        // Dropping the consumer is the settle event. A stale notification
+        // node would retain its callback owner after this point.
+        assert_eq!(Arc::strong_count(&observer), 1);
+        assert_eq!(reads.load(Ordering::Acquire), 1);
+    }
+    release
+        .send(())
+        .map_err(|_| "original producer disappeared")?;
+    assert_eq!(leader.await?.value.bytes, bytes);
+    assert_eq!(reads.load(Ordering::Acquire), 1);
+    assert_eq!(cached.stats()?.in_flight, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn distinct_reads_and_followers_cross_previous_admission_totals()
+-> Result<(), Box<dyn std::error::Error>> {
+    let inner = MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let mut objects = Vec::new();
+    for index in 0..1_025_u64 {
+        let bytes = OwnedBytes::from(index.to_le_bytes().to_vec());
+        let identity = ObjectId {
+            storage: None,
+            kind: ObjectKind::BlobChunk,
+            digest: object_digest(&bytes),
+        };
+        object_work!(inner, put(identity, bytes.clone()), B, &cancellation).await?;
+        objects.push((identity, bytes));
+    }
+    let (release, gate) = futures::channel::oneshot::channel();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let cached = CachedObjectStore::new(
+        GatedStore {
+            inner: Arc::new(inner),
+            gate: futures::FutureExt::shared(gate),
+            reads: reads.clone(),
+        },
+        // Every body exceeds resident capacity. Followers must receive their
+        // original result even when no completed object can remain cached.
+        options(1, 1),
+    )?;
+    let mut leaders = objects
+        .iter()
+        .map(|(identity, _)| {
+            let identity = *identity;
+            let cached = &cached;
+            let cancellation = &cancellation;
+            Box::pin(async move { object_work!(cached, read(identity, 8), B, cancellation).await })
+        })
+        .collect::<Vec<_>>();
+    for leader in &mut leaders {
+        assert!(futures::poll!(leader.as_mut()).is_pending());
+    }
+    assert_eq!(cached.stats()?.in_flight, 1_025);
+    assert_eq!(reads.load(Ordering::Acquire), 1_025);
+    let identity = objects[0].0;
+    let mut followers = (0..1_025)
+        .map(|_| {
+            let cached = &cached;
+            let cancellation = &cancellation;
+            Box::pin(async move { object_work!(cached, read(identity, 8), B, cancellation).await })
+        })
+        .collect::<Vec<_>>();
+    for follower in &mut followers {
+        assert!(futures::poll!(follower.as_mut()).is_pending());
+    }
+    let mut too_small = Box::pin(object_work!(cached, read(identity, 7), B, &cancellation));
+    assert!(futures::poll!(too_small.as_mut()).is_pending());
+    assert_eq!(reads.load(Ordering::Acquire), 1_025);
+    release
+        .send(())
+        .map_err(|_| "original read producer lost")?;
+    for ((_, bytes), leader) in objects.iter().zip(leaders) {
+        assert_eq!(leader.await?.value.bytes, *bytes);
+    }
+    for follower in followers {
+        assert_eq!(follower.await?.value.bytes, objects[0].1);
+    }
+    let failure = too_small
+        .await
+        .err()
+        .ok_or("caller read maximum was ignored")?;
+    assert!(matches!(
+        failure.error,
+        ObjectStoreError::TooLarge {
+            observed: 8,
+            maximum: 7
+        }
+    ));
+    assert_eq!(reads.load(Ordering::Acquire), 1_025);
+    assert_eq!(cached.stats()?.in_flight, 0);
+    assert_eq!(cached.stats()?.resident_entries, 0);
     Ok(())
 }

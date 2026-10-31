@@ -80,17 +80,29 @@ fn public_flush_paths_require_fullfsync_and_detect_fsync_negative_control() -> i
     });
     result?;
     assert_eq!(calls, [libc::F_BARRIERFSYNC]);
+    for flush in [
+        crate::flush_file_all as fn(&File) -> io::Result<()>,
+        crate::flush_file_data,
+    ] {
+        let (result, calls) = observe(&[], false, || flush(&file));
+        result?;
+        assert_eq!(calls, [0, libc::F_FULLFSYNC]);
+        let (result, calls) = observe(&[libc::EINTR], false, || flush(&file));
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
+        assert_eq!(calls, [0]);
+    }
     Ok(())
 }
 
 #[test]
-fn interrupted_flush_retries_once_and_admits_both_attempts() -> io::Result<()> {
+fn interrupted_flush_returns_after_one_admitted_attempt() -> io::Result<()> {
     let file = tempfile::tempfile()?;
-    for (durability, expected) in [
-        (Durability::Full, &[0, 0, libc::F_FULLFSYNC][..]),
+    for (durability, first, expected) in [
+        (Durability::Full, 0, &[0, libc::F_FULLFSYNC][..]),
         (
             Durability::Barrier,
-            &[libc::F_BARRIERFSYNC, libc::F_BARRIERFSYNC][..],
+            libc::F_BARRIERFSYNC,
+            &[libc::F_BARRIERFSYNC][..],
         ),
     ] {
         let mut admissions = 0;
@@ -100,9 +112,12 @@ fn interrupted_flush_retries_once_and_admits_both_attempts() -> io::Result<()> {
                 Ok(())
             })
         });
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
+        assert_eq!(calls, [first]);
+        assert_eq!(admissions, 1);
+        let (result, calls) = observe(&[], false, || sync_once(&file, durability, || Ok(())));
         result?;
         assert_eq!(calls, expected);
-        assert_eq!(admissions, 2);
     }
     Ok(())
 }
@@ -114,7 +129,7 @@ fn held_flush_uses_the_same_native_attempt_without_retry_or_fallback() -> io::Re
     let (result, calls) = observe(&[], false, || crate::sync_descriptor_once(file.as_fd()));
     result?;
     assert_eq!(calls, [0, libc::F_FULLFSYNC]);
-    // An interrupted stage returns before the drain; the caller retries.
+    // An interrupted stage returns its original error before the drain.
     let (result, calls) = observe(&[libc::EINTR], false, || {
         crate::sync_descriptor_once(file.as_fd())
     });

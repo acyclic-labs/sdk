@@ -15,7 +15,7 @@ mod postgres_scale;
 async fn main() {
     if let Err(error) = run().await {
         let recovery = if std::env::args().nth(1).as_deref() == Some("--postgres") {
-            "pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh"
+            "bash scripts/backends/storage-conformance.sh"
         } else if std::env::args().nth(1).as_deref() == Some("--fixture") {
             "node typescript/packages/stream/test/http-provider-conformance.mjs"
         } else {
@@ -77,11 +77,7 @@ async fn http(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?;
     let provider =
         HttpStream::with_ca_certificate(&endpoint, &token, 16 * 1024 * 1024, ca.as_deref())?;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(9),
-        conformance::verify(&acyclic_stream::conformance::Fixture::new(provider.clone())),
-    )
-    .await??;
+    conformance::verify(&acyclic_stream::conformance::Fixture::new(provider.clone())).await?;
     if fixture {
         http_fixture::verify(&endpoint).await?;
     }

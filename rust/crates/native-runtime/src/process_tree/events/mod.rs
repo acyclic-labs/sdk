@@ -11,6 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
@@ -55,24 +56,16 @@ pub(super) enum Source<'a> {
     Pipe(&'a Arc<PipeOperation>),
 }
 
-/// The one-shot state shared by an armed wait and the hub that fires it.
-struct Signal {
-    fired: AtomicBool,
-    waker: Mutex<Option<Waker>>,
-}
+mod outcome;
+mod signal;
+pub use outcome::ProcessWaitOutcome;
+use signal::Signal;
 
-impl Signal {
-    fn fire(&self) {
-        self.fired.store(true, Ordering::Release);
-        let waker = self
-            .waker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some(waker) = waker {
-            waker.wake();
-        }
-    }
+fn copy_error(error: &io::Error) -> io::Error {
+    error.raw_os_error().map_or_else(
+        || io::Error::new(error.kind(), error.to_string()),
+        io::Error::from_raw_os_error,
+    )
 }
 
 struct Armed {
@@ -83,8 +76,26 @@ struct Armed {
 #[derive(Default)]
 struct Registry {
     next: u64,
-    armed: HashMap<u64, Armed>,
+    // A dense live list makes terminal notification proportional only to the
+    // waiters it must settle, independent of cancelled/historical entries.
+    armed: Vec<(u64, Armed)>,
+    positions: HashMap<u64, usize>,
     timers: BTreeSet<(Instant, u64)>,
+    failure: Option<Arc<io::Error>>,
+}
+
+impl Registry {
+    fn remove(&mut self, token: u64) -> Option<Armed> {
+        let position = self.positions.remove(&token)?;
+        let (_, armed) = self.armed.swap_remove(position);
+        if let Some((moved, _)) = self.armed.get(position) {
+            self.positions.insert(*moved, position);
+        }
+        if let Some(at) = armed.wake_at {
+            self.timers.remove(&(at, token));
+        }
+        Some(armed)
+    }
 }
 
 struct Hub {
@@ -131,9 +142,11 @@ impl Events {
 }
 
 fn hub() -> io::Result<&'static Hub> {
-    HUB.as_ref()
-        .copied()
-        .map_err(|error| io::Error::new(error.kind(), error.to_string()))
+    let hub = *HUB.as_ref().map_err(copy_error)?;
+    if let Some(error) = &hub.registry().failure {
+        return Err(copy_error(error));
+    }
+    Ok(hub)
 }
 
 impl Hub {
@@ -141,7 +154,28 @@ impl Hub {
         self.registry.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn fail(&self, error: io::Error) {
+        let (error, armed) = {
+            let mut registry = self.registry();
+            if registry.failure.is_some() {
+                return;
+            }
+            let error = Arc::new(error);
+            registry.failure = Some(Arc::clone(&error));
+            registry.positions = HashMap::new();
+            registry.timers.clear();
+            (error, std::mem::take(&mut registry.armed))
+        };
+        deliver(armed.into_iter().map(|(_, armed)| {
+            (
+                armed.signal,
+                ProcessWaitOutcome::ServiceFailed(Arc::clone(&error)),
+            )
+        }));
+    }
+
     fn run(&self) {
+        let _retirement = Retirement(self);
         let mut ready = Vec::new();
         loop {
             let timeout = self
@@ -150,56 +184,94 @@ impl Hub {
                 .first()
                 .map(|(at, _)| at.saturating_duration_since(Instant::now()));
             ready.clear();
-            // A failed poll fires nothing; every waiter still has its own
-            // wake time, and the next turn retries the same kernel wait.
-            let _ = self.poller.wait(timeout, &mut ready);
+            if let Err(error) = self.poller.wait(timeout, &mut ready) {
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                self.fail(error);
+                return;
+            }
             let now = Instant::now();
             let mut fired = Vec::new();
             {
                 let mut registry = self.registry();
                 for token in ready.drain(..) {
-                    if let Some(armed) = registry.armed.remove(&token) {
-                        if let Some(at) = armed.wake_at {
-                            registry.timers.remove(&(at, token));
-                        }
-                        fired.push(armed.signal);
+                    if let Some(armed) = registry.remove(token) {
+                        fired.push((armed.signal, ProcessWaitOutcome::Ready));
                     }
                 }
                 while let Some(&(at, token)) = registry.timers.first() {
                     if at > now {
                         break;
                     }
-                    registry.timers.remove(&(at, token));
-                    if let Some(armed) = registry.armed.remove(&token) {
-                        fired.push(armed.signal);
+                    if let Some(armed) = registry.remove(token) {
+                        fired.push((armed.signal, ProcessWaitOutcome::Deadline));
+                    } else {
+                        registry.timers.remove(&(at, token));
                     }
                 }
             }
-            for signal in fired {
-                signal.fire();
-            }
+            deliver(fired.into_iter());
         }
     }
 }
 
+// Removed signals retain their terminal outcomes until delivered.
+struct Delivery<I: Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>> {
+    signals: I,
+}
+
+impl<I: Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>> Drop for Delivery<I> {
+    fn drop(&mut self) {
+        for (signal, outcome) in self.signals.by_ref() {
+            signal.settle(outcome);
+        }
+    }
+}
+
+fn deliver(signals: impl Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>) {
+    let mut delivery = Delivery { signals };
+    for (signal, outcome) in delivery.signals.by_ref() {
+        signal.settle(outcome);
+    }
+}
+
+// A producer that unwinds also settles its waits; no replacement is started.
+struct Retirement<'a>(&'a Hub);
+
+impl Drop for Retirement<'_> {
+    fn drop(&mut self) {
+        self.0.fail(io::ErrorKind::BrokenPipe.into());
+    }
+}
+
 /// One armed wait. It completes once, when any of its sources is ready or its
-/// wake time passes; dropping it disarms every registration it still holds.
-pub(super) struct Wait {
-    hub: &'static Hub,
+/// wake time passes, or fails when its OS event producer ends. Dropping it
+/// disarms every registration it still holds.
+pub(super) struct Wait<'a> {
+    hub: &'a Hub,
     token: u64,
     signal: Arc<Signal>,
     _registrations: Vec<platform::Registration>,
 }
 
 /// Arms one wait on `sources`, waking no later than `wake_at`.
-pub(super) fn arm(sources: &[Source<'_>], wake_at: Option<Instant>) -> io::Result<Wait> {
-    let hub = hub()?;
-    let signal = Arc::new(Signal {
-        fired: AtomicBool::new(false),
-        waker: Mutex::new(None),
-    });
-    let (token, earliest) = {
+pub(super) fn arm(sources: &[Source<'_>], wake_at: Option<Instant>) -> io::Result<Wait<'static>> {
+    arm_on(hub()?, sources, wake_at)
+}
+
+fn arm_on<'a>(
+    hub: &'a Hub,
+    sources: &[Source<'_>],
+    wake_at: Option<Instant>,
+) -> io::Result<Wait<'a>> {
+    let signal = Arc::new(Signal::default());
+    let mut registrations = Vec::with_capacity(sources.len());
+    let (token, ready) = {
         let mut registry = hub.registry();
+        if let Some(error) = &registry.failure {
+            return Err(copy_error(error));
+        }
         registry.next = registry.next.wrapping_add(1);
         let token = registry.next;
         let earliest =
@@ -207,43 +279,61 @@ pub(super) fn arm(sources: &[Source<'_>], wake_at: Option<Instant>) -> io::Resul
         if let Some(at) = wake_at {
             registry.timers.insert((at, token));
         }
-        registry.armed.insert(
+        let position = registry.armed.len();
+        registry.positions.insert(token, position);
+        registry.armed.push((
             token,
             Armed {
                 signal: Arc::clone(&signal),
                 wake_at,
             },
-        );
-        (token, earliest)
+        ));
+        // Registration and producer retirement share this lifecycle lock.
+        // No native registration may be dispatched after its producer ends.
+        let registration = (|| {
+            for source in sources {
+                let Some(registration) = hub.poller.register(*source, token)? else {
+                    return Ok(true);
+                };
+                registrations.push(registration);
+            }
+            if earliest.is_some() {
+                hub.poller.notify()?;
+            }
+            Ok(false)
+        })();
+        match registration {
+            Ok(ready) => (token, ready),
+            Err(error) => {
+                registry.remove(token);
+                return Err(error);
+            }
+        }
     };
-    let mut wait = Wait {
+    let wait = Wait {
         hub,
         token,
         signal,
-        _registrations: Vec::with_capacity(sources.len()),
+        _registrations: registrations,
     };
-    for source in sources {
-        let Some(registration) = hub.poller.register(*source, token)? else {
-            // The source is ready already.
-            wait.signal.fired.store(true, Ordering::Release);
-            return Ok(wait);
-        };
-        wait._registrations.push(registration);
-    }
-    if earliest.is_some() {
-        hub.poller.notify()?;
+    // A wake may re-enter registration, so deliver outside the lifecycle lock.
+    if ready {
+        wait.signal.settle(ProcessWaitOutcome::Ready);
     }
     Ok(wait)
 }
 
-impl Wait {
-    /// Whether a source or the wake time has fired.
+impl Wait<'_> {
+    /// Whether a source, the wake time or producer failure has settled.
+    #[cfg(test)]
     pub(super) fn fired(&self) -> bool {
-        self.signal.fired.load(Ordering::Acquire)
+        self.signal
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
     }
 
-    /// Parks the calling thread until the wait fires.
-    pub(super) fn block(self) {
+    /// Parks the calling thread until readiness or its producer's failure.
+    pub(super) fn block(mut self) -> ProcessWaitOutcome {
         struct Unpark(std::thread::Thread);
         impl Wake for Unpark {
             fn wake(self: Arc<Self>) {
@@ -251,45 +341,27 @@ impl Wait {
             }
         }
         let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
-        *self
-            .signal
-            .waker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(waker);
-        while !self.fired() {
+        let mut context = Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(result) = Pin::new(&mut self).poll(&mut context) {
+                return result;
+            }
             std::thread::park();
         }
     }
 }
 
-impl Future for Wait {
-    type Output = ();
+impl Future for Wait<'_> {
+    type Output = ProcessWaitOutcome;
 
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
-        if self.fired() {
-            return Poll::Ready(());
-        }
-        *self
-            .signal
-            .waker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(context.waker().clone());
-        if self.fired() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        self.signal.poll(context)
     }
 }
 
-impl Drop for Wait {
+impl Drop for Wait<'_> {
     fn drop(&mut self) {
-        let mut registry = self.hub.registry();
-        if let Some(armed) = registry.armed.remove(&self.token)
-            && let Some(at) = armed.wake_at
-        {
-            registry.timers.remove(&(at, self.token));
-        }
+        self.hub.registry().remove(self.token);
     }
 }
 

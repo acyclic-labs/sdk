@@ -77,6 +77,8 @@ mod macos_metadata;
 mod metadata;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
 pub(crate) use macos_metadata::*;
+#[cfg(unix)]
+pub(crate) use metadata::set_posix_mode_held;
 mod stat;
 pub(crate) use stat::*;
 #[cfg(test)]

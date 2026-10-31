@@ -14,6 +14,7 @@ use js_sys::Uint8Array;
 use prost::Message;
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     rc::{Rc, Weak},
     sync::Arc,
 };
@@ -54,9 +55,9 @@ extern "C" {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JournalStreamLimits {
     /// Maximum retained accepted commands. Refusals consume no journal entry.
-    pub commands: u32,
+    pub commands: Option<u32>,
     /// Maximum retained bytes, including command clocks and deadlines.
-    pub journal_bytes: u64,
+    pub journal_bytes: Option<u64>,
     /// Capacity of the canonical Stream state machine.
     pub memory: MemoryLimits,
 }
@@ -64,8 +65,8 @@ pub struct JournalStreamLimits {
 impl Default for JournalStreamLimits {
     fn default() -> Self {
         Self {
-            commands: 65_536,
-            journal_bytes: 256 * 1024 * 1024,
+            commands: None,
+            journal_bytes: None,
             memory: MemoryLimits::default(),
         }
     }
@@ -73,19 +74,27 @@ impl Default for JournalStreamLimits {
 
 impl JournalStreamLimits {
     fn configuration(self) -> Vec<u8> {
-        [
-            u64::from(self.commands),
+        let capacities = [
+            self.commands.map(u64::from),
             self.journal_bytes,
-            self.memory.paths as u64,
-            self.memory.path_bytes as u64,
-            self.memory.records as u64,
-            self.memory.payload_bytes as u64,
-            self.memory.commits as u64,
-            self.memory.idempotency_results as u64,
-        ]
-        .into_iter()
-        .flat_map(u64::to_le_bytes)
-        .collect()
+            self.memory.paths.map(|value| value as u64),
+            self.memory.path_bytes.map(|value| value as u64),
+            self.memory.records.map(|value| value as u64),
+            self.memory.payload_bytes.map(|value| value as u64),
+            self.memory.commits.map(|value| value as u64),
+            self.memory.idempotency_results.map(|value| value as u64),
+        ];
+        let mut words = capacities.map(|value| value.unwrap_or_default());
+        // Finite configurations retain their eight original words, including
+        // explicit zero memory capacities. Commands occupy only the low 32
+        // bits; six previously unused high bits distinguish unbounded memory.
+        // Zero commands/bytes are rejected at open, so their zero denotes None.
+        for (index, capacity) in capacities[2..].iter().enumerate() {
+            if capacity.is_none() {
+                words[0] |= 1 << (32 + index);
+            }
+        }
+        words.into_iter().flat_map(u64::to_le_bytes).collect()
     }
 }
 
@@ -96,14 +105,60 @@ const PAGE: usize = 64;
 struct Inner {
     journal: HostJournal,
     limits: JournalStreamLimits,
+    clock: Option<Arc<dyn UnixMillisClock>>,
     cache: tokio::sync::OnceCell<crate::query_sync::Mutex<Replicated<HostPort>>>,
     claims: OperationClaims,
 }
 
+struct OpenJournals {
+    // The private value is an exact wasm32 allocation address, never a public
+    // journal identity. Neither index owns a provider or scans other domains.
+    addresses: js_sys::WeakMap,
+    owners: RefCell<HashMap<usize, Weak<Inner>>>,
+}
+
+impl OpenJournals {
+    fn find(&self, journal: &JsValue) -> Result<Option<Rc<Inner>>, StreamError> {
+        let Some(address) = self.addresses.get_checked(journal.unchecked_ref()) else {
+            return Ok(None);
+        };
+        let address = address.as_f64().ok_or(StreamError::Unavailable)? as usize;
+        self.owners
+            .borrow()
+            .get(&address)
+            .and_then(Weak::upgrade)
+            .map(Some)
+            .ok_or(StreamError::Unavailable)
+    }
+
+    fn insert(&self, inner: &Rc<Inner>) {
+        let address = Rc::as_ptr(inner) as usize;
+        self.owners
+            .borrow_mut()
+            .insert(address, Rc::downgrade(inner));
+        self.addresses.set(
+            inner.journal.unchecked_ref(),
+            &JsValue::from_f64(address as f64),
+        );
+    }
+}
+
 thread_local! {
-    // Weak custody is essential: closing every session really discards replay
-    // state. Retaining the host's journal never retains a provider.
-    static OPEN: RefCell<Vec<Weak<Inner>>> = const { RefCell::new(Vec::new()) };
+    static OPEN: OpenJournals = OpenJournals {
+        addresses: js_sys::WeakMap::new(),
+        owners: RefCell::new(HashMap::new()),
+    };
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        OPEN.with(|open| {
+            open.addresses.delete(self.journal.unchecked_ref());
+            open.owners
+                .borrow_mut()
+                .remove(&(self as *const Self as usize));
+        });
+    }
 }
 
 /// An exclusively owned journal domain inside one event host. Clone a handle
@@ -119,18 +174,36 @@ impl JournalStream {
     /// Opens a host journal with configure, flush, read and append primitives. This
     /// constructor performs no network I/O and starts no detached work.
     pub async fn open(journal: JsValue, limits: JournalStreamLimits) -> Result<Self, StreamError> {
-        if !journal.is_object() || limits.commands == 0 || limits.journal_bytes == 0 {
+        Self::open_with_optional_clock(journal, limits, None).await
+    }
+
+    /// Opens a journal with one retained trusted publication clock. Every opener
+    /// over that journal must supply the same clock owner. Reads, proposals and
+    /// deferred acceptance use that owner; replay uses the persisted stamps.
+    pub async fn open_with_clock(
+        journal: JsValue,
+        limits: JournalStreamLimits,
+        clock: Arc<dyn UnixMillisClock>,
+    ) -> Result<Self, StreamError> {
+        Self::open_with_optional_clock(journal, limits, Some(clock)).await
+    }
+
+    async fn open_with_optional_clock(
+        journal: JsValue,
+        limits: JournalStreamLimits,
+        clock: Option<Arc<dyn UnixMillisClock>>,
+    ) -> Result<Self, StreamError> {
+        if !journal.is_object() || limits.commands == Some(0) || limits.journal_bytes == Some(0) {
             return Err(StreamError::InvalidArgument);
         }
-        let existing = OPEN.with(|open| {
-            let mut open = open.borrow_mut();
-            open.retain(|weak| weak.strong_count() != 0);
-            open.iter()
-                .filter_map(Weak::upgrade)
-                .find(|inner| js_sys::Object::is(inner.journal.as_ref(), &journal))
-        });
+        let existing = OPEN.with(|open| open.find(&journal))?;
         if let Some(inner) = existing {
-            if inner.limits != limits {
+            let same_clock = match (&inner.clock, &clock) {
+                (None, None) => true,
+                (Some(original), Some(clock)) => Arc::ptr_eq(original, clock),
+                _ => false,
+            };
+            if inner.limits != limits || !same_clock {
                 return Err(StreamError::InvalidArgument);
             }
             let stream = Self(inner);
@@ -142,9 +215,10 @@ impl JournalStream {
             cache: tokio::sync::OnceCell::new(),
             journal,
             limits,
+            clock,
             claims: OperationClaims::default(),
         });
-        OPEN.with(|open| open.borrow_mut().push(Rc::downgrade(&inner)));
+        OPEN.with(|open| open.insert(&inner));
         let stream = Self(inner);
         stream.query(async |_| Ok(())).await?;
         Ok(stream)
@@ -195,6 +269,7 @@ impl JournalStream {
                         journal: self.0.journal.clone(),
                         limits: self.0.limits,
                         bytes: 0,
+                        clock: self.0.clock.clone(),
                     },
                     provider,
                     clock,

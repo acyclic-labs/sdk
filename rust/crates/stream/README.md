@@ -17,6 +17,10 @@ loop or connection pool. Forwarding adapters preserve filters, absence policy,
 history fences, deadlines and revisions, including across reconnects. Credentials
 remain transport-owned and never enter record payloads or persisted cursors.
 
+An unexpected provider-follow EOF closes the original session channel with
+`Unavailable`. The server opens that provider follow once; a caller may create
+a new subscription explicitly. A completed caller-bounded range ends cleanly.
+
 The physical connection is independent of an operation's causal context. Rust
 `grpc::Client::with_revisions` and `session::Client::with_revisions` attach an
 explicit `Arc<RevisionTracker>` while reusing the original transport, credentials
@@ -156,11 +160,20 @@ frames)`, `read(from, page)` and an atomically registered `changed(after)` event
 Storage cursors are opaque and strictly increasing within the retained journal;
 they are separate from Stream sequence numbers and applied revision indexes.
 Catch-up pins its first observed journal head and reads bounded pages through
-that cut, so concurrent writers cannot keep a reader chasing the head. Only a
-reported stale proposal is replanned, with its original request identity and
-deadline; an unknown transport outcome closes that replica. Browser, host,
+that cut, so concurrent writers cannot keep a reader chasing the head. A
+reported stale publication cut returns `PrefixNotRetained` after its one
+conditional proposal; it does not replan or resubmit. The caller may explicitly
+submit the same original request and identity again. A stale cached refusal is
+confirmed by one current observation, returning `PrefixNotRetained` if the cut
+moved, or `DeadlineElapsed` if the original deadline elapsed. An unknown
+transport outcome closes that replica. Browser, host,
 PostgreSQL and local storage retain their native durability boundaries. Native
 local completion and prepared ingress retain their original funded guards.
+Guarded native commits run the original admission callback once outside the
+publication locks, then acquire those gates once. If the canonical revision
+changed, they return `PrefixNotRetained` without another callback or publication.
+A caller may explicitly submit a fresh invocation; cached success keeps the
+original receipt without invoking admission again.
 
 `StreamProvider::context()` borrows the session's process claims and reports its
 publication policy without allocating another owner. Clones preserve claim
@@ -179,9 +192,9 @@ snapshot without reading the last record or reconstructing inherited origin.
 The response identifies its projection; mismatched or incomplete observations
 are refused before they reach a consumer.
 
-Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery and total retention are bounded by `BrowserStreamLimits` (default 65,536 commands and 256 MiB of journal bytes) and `MemoryLimits`. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow registers before reading and receives publication notifications over `BroadcastChannel`; subscribers catch up new durable commands on notification. Dropping the cursor releases its subscription. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.
+Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery uses bounded pages; logical retention is unbounded by default. Optional `BrowserStreamLimits` and `MemoryLimits` capacities retain explicit caller policies. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow registers before reading and receives publication notifications over `BroadcastChannel`; subscribers catch up new durable commands on notification. Dropping the cursor releases its subscription. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.
 
-`MemoryStream` and `LocalStream` retain successful retry outcomes and immutable commit envelopes indefinitely within their explicit capacity limits. Replay precedes capacity admission; a new identity fails closed when the store is full. An admitted identity cannot execute again or acquire another digest after a clock advance. `LocalStream` preserves these outcomes through journal replay and snapshots. Recovery enforces the same capacity limits as live admission. Hosted services must provide the same no-reexecution guarantee under their own durable account-wide retry authority; local checks do not qualify that service behavior.
+`MemoryStream` and `LocalStream` retain successful resend outcomes and immutable commit envelopes indefinitely. Memory capacities are optional caller policies and default to `None`, which is unbounded. Exact replay precedes admission against a selected capacity. Local journal bytes and operations trigger compaction without limiting retained history; replay and snapshots preserve the original identities and envelopes. An admitted identity cannot execute again or acquire another digest after a clock advance. Hosted services must provide the same no-reexecution guarantee under their own durable account-wide idempotency authority; local checks do not qualify that service behavior.
 
 The `http` feature provides `http::HttpStream`, implementing the same provider interface over hosted JSON routes. It accepts HTTPS (or loopback HTTP for local tests), a bearer token, a response byte bound, and an optional private CA. Follow uses the canonical multiplexed session, with per-channel credit, checked resume cursors, and one shared connection per route. Browser HTTP clients use its WebSocket transport. Dropping a cursor cancels its logical channel. Mutations are not automatically retried. Canonical successful Commit and committed retry observations include the full immutable `envelope`, so mutation-only credentials need no follow-up commit read. Published compact-only servers still require `commits/read` access for those operations.
 
@@ -195,9 +208,9 @@ Replicated providers can use `request::append_digest`, `request::fork_digest`, a
 
 Use `children_page` to discover large agent or stream hierarchies. Its ordered continuation carries the exact last hierarchy-changing commit ID; a concurrent path creation returns `HierarchyChanged`, so restart the traversal instead of silently missing or duplicating a child. Ancestor paths are materialized lazily when descendants are created; no fork lineage is required for discovery.
 
-`LocalStream` writes one first-party v1 journal/snapshot format. The journal magic is `ACYCLIC-STREAM-LOCAL-V1\0`; the snapshot magic is `ACYCLIC-STREAM-SNAP-V01\0`. Both bind eight little-endian limit words and a journal epoch. A snapshot then holds the canonical `ACYCLIC-STREAM-STATE-V1\0` state and a SHA-256 checksum. A journal frame holds a four-byte little-endian payload length, an eight-byte sampled Unix commit timestamp, the canonical command protobuf and a SHA-256 checksum. There are no expiry fields, format readers or migration branches. Other bytes are incompatible.
+`LocalStream` writes one first-party v1 journal/snapshot format. The journal magic is `ACYCLIC-STREAM-LOCAL-V1\0`; the snapshot magic is `ACYCLIC-STREAM-SNAP-V01\0`. Both encode six optional memory capacities as little-endian `u64` values, with zero representing `None`, then two little-endian `u64` compaction triggers and the journal epoch. A snapshot then holds the canonical `ACYCLIC-STREAM-STATE-V1\0` state and a SHA-256 checksum. A journal frame holds a four-byte little-endian payload length, an eight-byte sampled Unix commit timestamp, the canonical command protobuf and a SHA-256 checksum. There are no expiry fields, format readers or migration branches. Other bytes are incompatible.
 
-Recovery rejects unknown or duplicate protobuf fields, duplicate retained identities, invalid history links and capacity violations. It validates the complete semantic prefix before truncating a torn final frame or restarting a journal covered by the immediately succeeding snapshot epoch. A failed semantic open preserves existing journal/snapshot bytes and releases ownership. Successful recovery synchronizes recovered frames before exposing state. An unfinished snapshot temporary file is inert and is overwritten by the next compaction.
+Recovery rejects unknown or duplicate protobuf fields, duplicate retained identities, invalid history links and violations of an explicitly selected memory capacity. It validates the complete semantic prefix before truncating a torn final frame or restarting a journal covered by the immediately succeeding snapshot epoch. A failed semantic open preserves existing journal/snapshot bytes and releases ownership. Successful recovery synchronizes recovered frames before exposing state. An unfinished snapshot temporary file is inert and is overwritten by the next compaction.
 
 The crash model permits a torn final append or header and a crash between durable snapshot installation and journal restart. A valid checksummed frame after an invalid frame indicates corruption and fails closed. Checksums detect damage; they do not authenticate a hostile storage device or prove arbitrary power-loss behavior.
 

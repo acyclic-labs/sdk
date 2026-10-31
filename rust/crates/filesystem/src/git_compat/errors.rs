@@ -35,7 +35,7 @@ pub enum GitCompatError<E: std::error::Error + 'static> {
         /// Stable explanation of the unsupported capability.
         reason: String,
     },
-    /// Optimistic state contention exceeded the bounded retry policy.
+    /// The conditional publication lost its expected revision.
     #[error("Git compatibility state remained contended")]
     Contended,
     /// Another sequencer transition must be completed or aborted first.

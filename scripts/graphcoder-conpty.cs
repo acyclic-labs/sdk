@@ -149,7 +149,7 @@ public static class GraphcoderConPty {
             IntPtr inputHandle = inWrite, outputHandle = outRead;
             outputThread = new Thread(delegate() {
                 try {
-                    var stdout = Console.OpenStandardOutput(); byte[] bytes = new byte[4096]; uint count; int total = 0;
+                    var stdout = Console.OpenStandardOutput(); byte[] bytes = new byte[4096]; uint count;
                     while (true) {
                         if (!ReadFile(outputHandle, bytes, (uint)bytes.Length, out count, IntPtr.Zero)) {
                             int error = Marshal.GetLastWin32Error();
@@ -157,8 +157,6 @@ public static class GraphcoderConPty {
                             break;
                         }
                         if (count == 0) break;
-                        total = checked(total + (int)count);
-                        if (total > 1048576) throw new IOException("ConPTY captured output exceeds 1 MiB");
                         stdout.Write(bytes, 0, (int)count); stdout.Flush();
                     }
                 } catch (Exception error) { Refuse("output", error); Environment.Exit(125); }
@@ -166,10 +164,8 @@ public static class GraphcoderConPty {
             outputThread.IsBackground = true; outputThread.Start();
             var inputThread = new Thread(delegate() {
                 try {
-                    var stdin = Console.OpenStandardInput(); byte[] bytes = new byte[4096]; int count; int total = 0;
+                    var stdin = Console.OpenStandardInput(); byte[] bytes = new byte[4096]; int count;
                     while ((count = stdin.Read(bytes, 0, bytes.Length)) != 0) {
-                        total = checked(total + count);
-                        if (total > 1048576) throw new IOException("ConPTY input exceeds 1 MiB");
                         uint written; Require(WriteFile(inputHandle, bytes, (uint)count, out written, IntPtr.Zero), "ConPTY WriteFile");
                         if (written != count) throw new IOException("ConPTY partial input write");
                     }

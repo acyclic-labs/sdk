@@ -5,17 +5,48 @@ use acyclic_stream::{BoxProviderFuture, JournalStream, JournalStreamLimits, Stre
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
-/// A delayed journal must decide deadlines at acceptance, including after reopen.
+/// The original journal decides deadlines at acceptance, including after reopen.
 #[wasm_bindgen(js_name = qualifyJournalDeadline)]
 pub async fn qualify_journal_deadline(
-    journal: JsValue,
+    journal: js_sys::Function,
     retry: bool,
 ) -> std::result::Result<(), JsValue> {
     use acyclic_stream::{
         AppendRecord, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
-        IdempotencyKey, StreamError, StreamPath, SystemUnixMillisClock, UnixMillisClock,
+        IdempotencyKey, StreamError, StreamPath, UnixMillisClock,
+    };
+    use std::{
+        cell::Cell,
+        rc::Rc,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    struct Clock(AtomicU64);
+    impl UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    const BEFORE: u64 = 1_000;
+    const DEADLINE: u64 = BEFORE + 1;
+    let clock = Arc::new(Clock(AtomicU64::new(BEFORE)));
+    let expire_next = Rc::new(Cell::new(false));
+    let admissions = Rc::new(Cell::new(0_usize));
+    let acceptance = {
+        let clock = clock.clone();
+        let expire_next = expire_next.clone();
+        let admissions = admissions.clone();
+        Closure::<dyn FnMut()>::new(move || {
+            admissions.set(admissions.get() + 1);
+            if expire_next.replace(false) {
+                clock.0.store(DEADLINE, Ordering::SeqCst);
+            }
+        })
+        .into_js_value()
     };
     let result = async {
+        let journal = journal
+            .call1(&JsValue::NULL, &acceptance)
+            .map_err(|_| StreamError::Unavailable)?;
         let path = StreamPath::new("deadline/acceptance")?;
         let key = IdempotencyKey::new(b"deadline-acceptance".to_vec())?;
         let request = CommitRequest {
@@ -28,9 +59,33 @@ pub async fn qualify_journal_deadline(
             deadline_unix_millis: None,
         };
         let (provider, peer) = futures::try_join!(
-            JournalStream::open(journal.clone(), JournalStreamLimits::default()),
-            JournalStream::open(journal.clone(), JournalStreamLimits::default()),
+            JournalStream::open_with_clock(
+                journal.clone(),
+                JournalStreamLimits::default(),
+                clock.clone()
+            ),
+            JournalStream::open_with_clock(
+                journal.clone(),
+                JournalStreamLimits::default(),
+                clock.clone()
+            ),
         )?;
+        // A second owner with the same value cannot change this live domain's
+        // authority clock, and the system-clock opener cannot replace it either.
+        if !matches!(
+            JournalStream::open_with_clock(
+                journal.clone(),
+                JournalStreamLimits::default(),
+                Arc::new(Clock(AtomicU64::new(BEFORE))),
+            )
+            .await,
+            Err(StreamError::InvalidArgument)
+        ) || !matches!(
+            JournalStream::open(journal.clone(), JournalStreamLimits::default()).await,
+            Err(StreamError::InvalidArgument)
+        ) {
+            return Err(StreamError::InvalidResponse);
+        }
         if peer.tail(path.clone()).await != Err(StreamError::NotFound) {
             return Err(StreamError::InvalidResponse);
         }
@@ -41,19 +96,55 @@ pub async fn qualify_journal_deadline(
             return Err(StreamError::InvalidResponse);
         }
         if !retry {
+            // The same physical acceptance succeeds before expiry. Its distinct
+            // identity leaves the original expired request unspent for restart.
+            let control = StreamPath::new("deadline/control")?;
+            let accepted = provider
+                .commit(CommitRequest {
+                    conditions: vec![CommitCondition::Absent {
+                        path: control.clone(),
+                    }],
+                    mutations: vec![CommitMutation::Append {
+                        path: control.clone(),
+                        records: vec![AppendRecord::from(b"before-expiry".as_slice())],
+                    }],
+                    idempotency_key: IdempotencyKey::new(b"deadline-control".to_vec())?,
+                    deadline_unix_millis: Some(DEADLINE),
+                })
+                .await?;
+            if !matches!(accepted, CommitOutcome::Committed(_))
+                || admissions.get() != 1
+                || clock.now_unix_millis() != BEFORE
+                || provider.tail(control.clone()).await? != 1
+            {
+                return Err(StreamError::InvalidResponse);
+            }
+            expire_next.set(true);
             let result = provider
                 .commit(CommitRequest {
-                    deadline_unix_millis: Some(SystemUnixMillisClock.now_unix_millis() + 20),
+                    deadline_unix_millis: Some(DEADLINE),
                     ..request
                 })
                 .await;
-            if result != Err(StreamError::DeadlineElapsed) {
+            if result != Err(StreamError::DeadlineElapsed)
+                || admissions.get() != 2
+                || expire_next.get()
+                || clock.now_unix_millis() != DEADLINE
+            {
                 return Err(StreamError::InvalidResponse);
             }
             drop(provider);
-            let reopened = JournalStream::open(journal, JournalStreamLimits::default()).await?;
+            // Last-provider retirement releases the registry entry: a fresh
+            // owner may now open the same retained host journal.
+            let reopened = JournalStream::open_with_clock(
+                journal,
+                JournalStreamLimits::default(),
+                Arc::new(Clock(AtomicU64::new(DEADLINE))),
+            )
+            .await?;
             if reopened.tail(path).await != Err(StreamError::NotFound)
                 || reopened.inspect_idempotency(key).await?.is_some()
+                || reopened.tail(control).await? != 1
             {
                 return Err(StreamError::InvalidResponse);
             }
@@ -61,11 +152,11 @@ pub async fn qualify_journal_deadline(
             // The same key was not spent by the expired acceptance before restart.
             let outcome = provider
                 .commit(CommitRequest {
-                    deadline_unix_millis: Some(SystemUnixMillisClock.now_unix_millis() + 10_000),
+                    deadline_unix_millis: Some(DEADLINE),
                     ..request.clone()
                 })
                 .await?;
-            if !matches!(outcome, CommitOutcome::Committed(_)) {
+            if !matches!(outcome, CommitOutcome::Committed(_)) || admissions.get() != 1 {
                 return Err(StreamError::InvalidResponse);
             }
             let CommitOutcome::Committed(receipt) = &outcome else {
@@ -73,7 +164,12 @@ pub async fn qualify_journal_deadline(
             };
             let issued = receipt.revision.clone();
             drop(provider);
-            let reopened = JournalStream::open(journal, JournalStreamLimits::default()).await?;
+            let reopened = JournalStream::open_with_clock(
+                journal,
+                JournalStreamLimits::default(),
+                clock.clone(),
+            )
+            .await?;
             let applied = reopened
                 .wait_applied(&acyclic_stream::RevisionCut::of(issued.clone()))
                 .await?;
@@ -96,6 +192,7 @@ pub async fn qualify_journal_deadline(
                 .await?
                 != outcome
                 || reopened.tail(path).await? != 1
+                || admissions.get() != 1
             {
                 return Err(StreamError::InvalidResponse);
             }

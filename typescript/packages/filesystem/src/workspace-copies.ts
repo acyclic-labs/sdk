@@ -119,7 +119,7 @@ interface RawCommitFields {
 }
 
 const liveStatuses: ReadonlySet<LiveMutationResult["status"]> = new Set([
-  "committed", "already-committed", "conflicted", "retry-limit", "fenced", "idempotency-conflict",
+  "committed", "already-committed", "conflict", "fenced", "idempotency-conflict",
 ]);
 
 export function copyRebaseResult(value: {

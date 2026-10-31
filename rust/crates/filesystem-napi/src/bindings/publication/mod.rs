@@ -123,12 +123,7 @@ impl NativeCheckout {
         &self,
         operations: Vec<NativeTransactionOperation>,
         operation_id: Buffer,
-        maximum_attempts: NapiU32,
-        maximum_conflicts: NapiU32,
     ) -> Result<NativeAuthoredLiveMutationResult> {
-        let maximum_attempts = maximum_attempts.into_inner();
-        let maximum_conflicts = maximum_conflicts.into_inner();
-
         let maximum =
             usize::try_from(self.config.limits.maximum_mutations_per_batch).unwrap_or(usize::MAX);
         if operations.len() > maximum || operations.capacity() > maximum {
@@ -151,8 +146,6 @@ impl NativeCheckout {
             .apply_authored_live(
                 authored,
                 operation_id,
-                maximum_attempts,
-                maximum_conflicts,
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
@@ -192,15 +185,7 @@ impl NativeCheckout {
     }
 
     #[napi]
-    pub async fn resume_live(
-        &self,
-        operation_id: Buffer,
-        maximum_attempts: NapiU32,
-        maximum_conflicts: NapiU32,
-    ) -> Result<NativeLiveMutationResult> {
-        let maximum_attempts = maximum_attempts.into_inner();
-        let maximum_conflicts = maximum_conflicts.into_inner();
-
+    pub async fn resume_live(&self, operation_id: Buffer) -> Result<NativeLiveMutationResult> {
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout
@@ -209,8 +194,6 @@ impl NativeCheckout {
         let receipt = checkout
             .resume_live(
                 operation_id,
-                maximum_attempts,
-                maximum_conflicts,
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
@@ -364,20 +347,8 @@ pub(in crate::bindings) fn live_mutation_result(
                 false,
                 None,
             ),
-            LiveMutationOutcome::Conflicted {
-                conflicts,
-                truncated,
-            } => (
-                "conflicted",
-                None,
-                None,
-                None,
-                u32::try_from(conflicts.len()).unwrap_or(u32::MAX),
-                truncated,
-                None,
-            ),
-            LiveMutationOutcome::RetryLimit { actual } => (
-                "retry-limit",
+            LiveMutationOutcome::Conflict { actual } => (
+                "conflict",
                 None,
                 Some(bigint(actual.epoch.get())),
                 Some(bigint(actual.sequence.get())),
