@@ -287,7 +287,8 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
                 }
                 let claims = work.claims;
                 let live = work.live.get();
-                for key in expected.keys().copied().chain(queries) {
+                let existing: Vec<_> = expected.keys().copied().collect();
+                for key in existing.into_iter().chain(queries) {
                     let before = work.items;
                     let observed = table
                         .seek_after(key, &mut work)
