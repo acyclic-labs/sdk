@@ -135,6 +135,7 @@ where
         key: &'a str,
         event: &'a ExecutionEvent,
         contributions: &'a [indexed_publication::Contribution<'a>],
+        confirmation: Option<&'a mut Option<acyclic_stream::CommitId>>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         if io.is_none() {
@@ -151,6 +152,7 @@ where
                         key,
                         event,
                         contributions,
+                        confirmation,
                         None,
                     ),
                 )
@@ -168,6 +170,7 @@ where
                         key,
                         event,
                         contributions,
+                        confirmation,
                         Some(&local),
                     )
                     .await;
@@ -187,11 +190,53 @@ where
                     key,
                     event,
                     contributions,
+                    confirmation,
                     io,
                 ),
             )
             .await
         })
+    }
+
+    async fn confirm_observation_record(
+        &self,
+        operation: OperationId,
+        sequence: u64,
+        expected: &acyclic_stream::OwnedBytes,
+        io: Option<&PreparationIo>,
+    ) -> Result<acyclic_stream::CommitId> {
+        let path = crate::executor::with_history_io(io, |work| {
+            crate::distributed::execution_path(operation, work)
+        })?;
+        let path_hold = io
+            .map(|io| io.guard_owned(path.as_str().len() as u64))
+            .transpose()?;
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        let position = sequence
+            .checked_sub(1)
+            .ok_or(Error::Indeterminate(operation))?;
+        let record = crate::store::operations::one_record(&self.stream, &path, position, &mut work)
+            .await?
+            .ok_or(Error::Indeterminate(operation))?;
+        let record_hold = io
+            .map(|io| {
+                io.guard_owned(crate::store::operations::sdk_record_retained_bytes(
+                    &record, &work,
+                ))
+            })
+            .transpose()?;
+        if record.sequence != position || record.value != *expected {
+            return Err(Error::Indeterminate(operation));
+        }
+        let commit = record.commit_id;
+        drop(record);
+        drop(record_hold);
+        drop(path);
+        drop(path_hold);
+        Ok(commit)
     }
 
     pub(super) async fn append_validated(
@@ -202,7 +247,7 @@ where
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
-        self.append_contributed(operation_id, expected_tail, claim_id, event, &[], io)
+        self.append_contributed(operation_id, expected_tail, claim_id, event, &[], None, io)
             .await
     }
 
@@ -213,10 +258,11 @@ where
         claim_id: &str,
         event: &ExecutionEvent,
         contributions: &[indexed_publication::Contribution<'_>],
+        confirmation: Option<&mut Option<acyclic_stream::CommitId>>,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
-        // Appending returns no caller-owned payload. Validation decoders and
-        // their scratch must retire on success, refusal and cancellation;
+        // Validation decoders and their scratch retire on success, refusal and
+        // cancellation; the optional receipt is only a fixed-width identity.
         // authenticated caches retain their own independent ownership pools.
         let scope = crate::filesystem::PreparationScope::new(io)?;
         let io = scope.io();
@@ -326,7 +372,18 @@ where
                         "execution journal retry identity reused".into(),
                     ));
                 }
-                return Ok(expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence)));
+                let accepted =
+                    expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence));
+                if accepted && let Some(confirmation) = confirmation {
+                    // The signed retry index already located this exact observation.
+                    // Only callers consuming its receipt need the original commit;
+                    // ordinary retries perform no additional provider read.
+                    *confirmation = Some(
+                        self.confirm_observation_record(operation_id, *sequence, &bytes, io)
+                            .await?,
+                    );
+                }
+                return Ok(accepted);
             }
             if expected_tail.is_some_and(|tail| tail != summary.tail) {
                 return Ok(false);
@@ -362,7 +419,7 @@ where
                     retained_io,
                 )
                 .await?;
-            if let Some(recovery) = committed {
+            if let Some((recovery, commit_id)) = committed {
                 #[cfg(feature = "test-support")]
                 tracing::trace!(target: "acyclic_harness::journal_work",
                     journal_appends = 1_u64, journal_append_bytes = bytes.len() as u64,
@@ -370,6 +427,9 @@ where
                 summary.recovery = Some(recovery);
                 summary.pending_steps.clear();
                 edit.finish();
+                if let Some(confirmation) = confirmation {
+                    *confirmation = Some(commit_id);
+                }
                 drop(bytes);
                 drop(body_hold);
                 drop(retry_digest);

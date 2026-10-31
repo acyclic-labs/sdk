@@ -185,7 +185,7 @@ async fn check_cut(native: Option<bool>) -> Result<()> {
     ] {
         let retry_key = accept(&mut summary, retry, event.clone())?;
         let observation = bytes(operation, retry, &event)?;
-        let recovery = journal
+        let (recovery, _) = journal
             .publish_contributed_observation(
                 &mut summary,
                 retry_key,
@@ -238,7 +238,7 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
         request_digest: [1; 32],
     };
     let retry = accept(&mut summary, "start", first.clone())?;
-    let recovery = journal
+    let (recovery, _) = journal
         .publish_contributed_observation(
             &mut summary,
             retry,

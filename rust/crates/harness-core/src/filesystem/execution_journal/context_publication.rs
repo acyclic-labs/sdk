@@ -1,7 +1,8 @@
 //! Source and epoch checkpoints contribute to the original conversation cut.
 use super::*;
 use crate::context::{
-    SkillPublicationChange, SkillPublicationSource, SkillSourceCheckpoint, SourceCursor,
+    SkillPublicationChange, SkillPublicationCut, SkillPublicationSource, SkillSourceCheckpoint,
+    SourceCursor,
 };
 use crate::conversation::epochs::Snapshot;
 use acyclic_stream::CommitCondition;
@@ -54,6 +55,10 @@ pub struct ContextPublicationReceipt<'a, 'io> {
     checkpoint: &'a mut ContextCheckpoint<'io>,
     cursor: SourceCursor,
     tail: u64,
+    epoch: &'a mut Snapshot,
+    epoch_sequence: u64,
+    commit: acyclic_stream::CommitId,
+    operation: OperationId,
 }
 
 impl ContextPublicationReceipt<'_, '_> {
@@ -67,13 +72,19 @@ impl ContextPublicationReceipt<'_, '_> {
     }
 
     /// Confirms only this receipt's source. After success, the owner exposes its
-    /// already-prepared state without further fallible work. No caller-selected
-    /// cursor, path or closure flag exists.
-    pub fn confirm(self) -> Result<()> {
-        self.source.confirm_publication(self.cursor)?;
+    /// already-prepared state with the returned original payload and custody.
+    /// No caller-selected cursor, path or closure flag exists.
+    pub fn confirm(self) -> Result<SkillPublicationCut> {
+        // The source validates its original policy/cursor before advancing the
+        // exclusively borrowed epoch. After that, only ownership moves remain.
+        let admitted = self.source.confirm_publication(self.cursor, || {
+            self.epoch
+                .confirm(self.epoch_sequence, self.commit)
+                .map_err(|_| Error::Indeterminate(self.operation))
+        })?;
         self.checkpoint.cursor = self.cursor;
         self.checkpoint.tail = Some(self.tail);
-        Ok(())
+        Ok(admitted)
     }
 }
 
@@ -181,7 +192,7 @@ where
         checkpoint: &'a mut ContextCheckpoint<'io>,
         source: &'a mut SkillPublicationSource,
         request: ContextPublicationRequest<'a>,
-        epoch: &'a Snapshot,
+        epoch: &'a mut Snapshot,
         io: &'a PreparationIo,
     ) -> Result<
         crate::conversation::BoundedContentFuture<'a, Option<ContextPublicationReceipt<'a, 'io>>>,
@@ -229,6 +240,11 @@ where
             let identity = crate::model::hash_bytes(&source_record, Some(io))?;
             let encoded_epoch = epoch.encode((*checkpoint.epoch).clone(), io)?;
             let (epoch_condition, epoch_record) = encoded_epoch.parts();
+            let epoch_sequence = match epoch_condition {
+                CommitCondition::Absent { .. } => 0,
+                CommitCondition::Head { expected, .. } => *expected,
+                _ => return Err(invalid(Some(io))),
+            };
             let source_condition = match checkpoint.tail {
                 None => CommitCondition::Absent {
                     path: (*checkpoint.source).clone(),
@@ -260,6 +276,7 @@ where
             // The original source revalidates after preparation and immediately
             // before the only publication; a conditional loser retains its cut.
             source.pending()?.ok_or_else(|| invalid(Some(io)))?;
+            let mut confirmation = None;
             let committed = self
                 .append_conversation_bytes(
                     request.operation,
@@ -268,6 +285,7 @@ where
                     request.step,
                     &bytes,
                     &contributions,
+                    Some(&mut confirmation),
                     io,
                 )
                 .await?;
@@ -277,11 +295,19 @@ where
             drop(encoded_epoch);
             drop(source_record);
             drop(source_hold);
-            Ok(committed.then_some(ContextPublicationReceipt {
+            if !committed {
+                return Ok(None);
+            }
+            let commit = confirmation.ok_or(Error::Indeterminate(request.operation))?;
+            Ok(Some(ContextPublicationReceipt {
                 source,
                 checkpoint,
                 cursor,
                 tail: next_tail,
+                epoch,
+                epoch_sequence,
+                commit,
+                operation: request.operation,
             }))
         })
     }

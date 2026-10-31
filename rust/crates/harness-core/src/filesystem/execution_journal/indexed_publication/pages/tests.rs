@@ -78,7 +78,7 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
                 matches!(confirmed, Err(Error::Indeterminate(operation)) if operation == cut.operation)
             );
         } else {
-            assert!(confirmed?);
+            assert!(confirmed?.is_some());
             let CommitOutcome::Committed(mut receipt) = outcome else {
                 unreachable!()
             };
@@ -97,7 +97,10 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
             racing.idempotency_key = acyclic_stream::IdempotencyKey::unique();
             let refused = provider.commit(racing).await?;
             assert!(matches!(refused, CommitOutcome::Conflict(_)));
-            assert!(!cut.confirm(&refused, 0, &records, &observation, &checkpoint)?);
+            assert!(
+                cut.confirm(&refused, 0, &records, &observation, &checkpoint)?
+                    .is_none()
+            );
         }
         drop(request.1);
     }
@@ -157,7 +160,7 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
                 "partial cut authorized execution"
             );
         } else {
-            assert!(confirmed?);
+            assert!(confirmed?.is_some());
             let CommitOutcome::Committed(mut receipt) = outcome else {
                 panic!("fresh atomic cut refused");
             };
@@ -179,7 +182,10 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
             racing.idempotency_key = acyclic_stream::IdempotencyKey::unique();
             let refused = provider.commit(racing).await?;
             assert!(matches!(refused, CommitOutcome::Conflict(_)));
-            assert!(!cut.confirm(&refused, 0, &records, &observation, &checkpoint)?);
+            assert!(
+                cut.confirm(&refused, 0, &records, &observation, &checkpoint)?
+                    .is_none()
+            );
         }
         drop(request.1);
     }
@@ -263,6 +269,7 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
     assert!(
         cut.publish(&provider, &records, &observation, &checkpoint, &mut work_io)
             .await?
+            .is_some()
     );
     let execution_record =
         crate::store::operations::one_record(&provider, &execution, 0, &mut None)

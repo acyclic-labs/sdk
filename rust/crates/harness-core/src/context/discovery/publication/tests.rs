@@ -78,6 +78,14 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     )?;
     let verifier = issuer.verifier(&mut None)?;
     let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
+    let denied_scope = issuer.bootstrap_scope(
+        "unrelated-directory",
+        &crate::Capabilities::new([volume.directory_read_capability("elsewhere", &mut None)?]),
+        Some(agent),
+        &mut None,
+    )?;
+    let denied_reader =
+        FilesystemContentVerifier::new(host.clone(), &verifier, &denied_scope, 32_768, None)?;
     let resource = acyclic_fs::session::resource(workspace.id().volume_id(), "")?;
     let credential = signed::root(|block| {
         for certificate in block
@@ -203,7 +211,6 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         hex::encode(metadata.source.generation.as_resource().key()),
         original.version()
     );
-    let retained = metadata.clone();
     let ready = pending.cursor();
     let checkpoint = pending.encode_checkpoint(&session)?;
     hidden
@@ -221,6 +228,43 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     workspace
         .write_text("/skills/check/SKILL.md", "malformed replacement")
         .await?;
+    let denied = host
+        .change_provider(streams.clone())?
+        .follow(ResourceFollowRequest {
+            resource: resource.clone(),
+            from: ready.next,
+            preceding: ready.preceding.map(acyclic_stream::CommitId::from_bytes),
+            filter: Default::default(),
+            authorization: acyclic_stream::session::testing::resource_authorization(
+                &credential,
+                &resource,
+            )?,
+        })?;
+    let mut denied = SkillPublicationSource::new(
+        denied,
+        vec![ContextRoot {
+            volume: volume.clone(),
+            directory: "skills".into(),
+        }],
+        workspace.id().volume_id(),
+        workspace.volume_config(),
+        ready,
+    )?;
+    assert!(matches!(
+        denied
+            .prepare(
+                denied_reader.as_ref(),
+                ContextDiscoveryLimits::default(),
+                &session,
+            )
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert_eq!(denied.accepted(), ready);
+    assert!(
+        denied.pending().is_err(),
+        "read refusal became a skippable header rejection"
+    );
     source
         .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
         .await?;
@@ -233,11 +277,26 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     );
     assert!(
         source
-            .confirm_publication(SourceCursor {
-                next: ready.next + 1,
-                ..ready
-            })
+            .confirm_publication(
+                SourceCursor {
+                    next: ready.next + 1,
+                    ..ready
+                },
+                || Ok(())
+            )
             .is_err()
+    );
+    assert!(
+        source
+            .confirm_publication(ready, || Err(StreamError::InvalidArgument.into()))
+            .is_err()
+    );
+    assert_eq!(
+        source
+            .pending()?
+            .ok_or("confirmation refusal lost its payload")?
+            .encode_checkpoint(&session)?,
+        checkpoint
     );
     assert_eq!(source.accepted(), cursor);
     // The actual journal joins this source and epoch with its indexed observation.
@@ -267,7 +326,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         .bind_context_source(&volume, workspace.id().volume_id(), cursor, &session)?
         .await?;
     use crate::conversation::epochs::{Epoch, Snapshot, SummaryKey};
-    let epoch = Snapshot::genesis(Epoch {
+    let mut epoch = Snapshot::genesis(Epoch {
         header: [3; 32],
         profile: [7; 32],
         summary: None,
@@ -290,7 +349,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
                     expected_tail: 1,
                     profile: [8; 32]
                 },
-                &epoch,
+                &mut epoch,
                 &session,
             )?
             .await
@@ -308,7 +367,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
                     expected_tail: 0,
                     profile: [7; 32]
                 },
-                &epoch,
+                &mut epoch,
                 &session,
             )?
             .await?
@@ -326,7 +385,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
                 expected_tail: 1,
                 profile: [7; 32],
             },
-            &epoch,
+            &mut epoch,
             &session,
         )?
         .await?
@@ -354,12 +413,16 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
                 expected_tail: 1,
                 profile: [7; 32],
             },
-            &epoch,
+            &mut epoch,
             &session,
         )?
         .await?
         .ok_or("original publication retry lost")?;
-    receipt.confirm()?;
+    let admitted = receipt.confirm()?;
+    assert!(matches!(
+        admitted.changes(),
+        [SkillPublicationChange::Skill(_)]
+    ));
     let mut observer = None;
     let epoch_record =
         crate::store::operations::one_record(&streams, binding.epoch_path(), 0, &mut observer)
@@ -371,7 +434,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         .ok_or("durable conversation observation missing")?;
     assert_eq!(epoch_record.commit_id, observation.commit_id);
     let restored_epoch = Snapshot::decode(&epoch_record, &epoch.epoch().key.source, 0)?;
-    assert_eq!(restored_epoch.epoch(), epoch.epoch());
+    assert_eq!(restored_epoch, epoch);
     let observations = journal.replay(operation, 0, 3, Some(&session))?.await?;
     assert_eq!(observations.len(), 2, "retry appended another observation");
     let ExecutionEvent::ConversationItem { envelope, .. } = &observations[1].event else {
@@ -401,14 +464,82 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     assert_eq!(changes.len(), 1);
     drop(restored);
     drop(hold);
-    assert!(
-        source
-            .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
-            .await
-            .is_err()
-    );
+    source
+        .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
+        .await?;
+    let rejected = source.pending()?.ok_or("missing rejected member")?;
+    assert!(rejected.rejection().is_some());
+    assert!(rejected.changes().is_empty());
+    let rejected_cursor = rejected.cursor();
     assert_eq!(source.accepted(), ready);
-    assert!(source.pending().is_err());
+    let receipt = journal
+        .publish_context(
+            &mut binding,
+            &mut source,
+            ContextPublicationRequest {
+                operation,
+                key: "rejected-context",
+                step: 0,
+                expected_tail: 2,
+                profile: [7; 32],
+            },
+            &mut epoch,
+            &session,
+        )?
+        .await?
+        .ok_or("rejected checkpoint publication lost")?;
+    assert!(receipt.changes()?.is_empty());
+    let rejected = receipt.confirm()?;
+    assert!(rejected.rejection().is_some());
+    assert_eq!(source.accepted(), rejected_cursor);
+    workspace
+        .write_text(
+            "/skills/check/SKILL.md",
+            "---\nname: check\ndescription: Repaired header\n---\nrepaired body\n",
+        )
+        .await?;
+    source
+        .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
+        .await?;
+    let repair = source.pending()?.ok_or("missing repaired member")?;
+    assert!(repair.rejection().is_none());
+    let [SkillPublicationChange::Skill(metadata)] = repair.changes() else {
+        panic!("one repaired skill expected");
+    };
+    assert_eq!(metadata.description, "Repaired header");
+    let receipt = journal
+        .publish_context(
+            &mut binding,
+            &mut source,
+            ContextPublicationRequest {
+                operation,
+                key: "repaired-context",
+                step: 0,
+                expected_tail: 3,
+                profile: [7; 32],
+            },
+            &mut epoch,
+            &session,
+        )?
+        .await?
+        .ok_or("repaired checkpoint publication lost")?;
+    let repair = receipt.confirm()?;
+    assert!(matches!(
+        repair.changes(),
+        [SkillPublicationChange::Skill(_)]
+    ));
+    assert_eq!(source.accepted(), repair.cursor());
+    let epoch_record =
+        crate::store::operations::one_record(&streams, binding.epoch_path(), 2, &mut observer)
+            .await?
+            .ok_or("repaired durable epoch missing")?;
+    assert_eq!(
+        epoch,
+        Snapshot::decode(&epoch_record, &epoch.epoch().key.source, 0)?
+    );
+    let [SkillPublicationChange::Skill(retained)] = admitted.changes() else {
+        panic!("admission lost original metadata custody");
+    };
     let (_, body) = retained.source.read(reader.as_ref(), 32_768).await?;
     assert!(std::str::from_utf8(&body)?.contains("original body"));
 
