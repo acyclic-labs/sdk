@@ -7,6 +7,9 @@ mod policy_identity;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod phase_claim_tests;
 
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod publication_observation;
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod original_preparation;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
