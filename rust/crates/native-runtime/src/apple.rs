@@ -410,7 +410,7 @@ fn transfer(
         let mut moved = 0;
         for segment in segments {
             let at = offset + moved as u64;
-            let count = retry(|| attempt(fd, direction, std::slice::from_ref(segment), at, None))?;
+            let count = attempt(fd, direction, std::slice::from_ref(segment), at, None)?;
             if count == 0 && matches!(direction, Direction::Write) {
                 return Err(io::ErrorKind::WriteZero.into());
             }
@@ -421,11 +421,11 @@ fn transfer(
         }
         return Ok(moved);
     };
-    retry(|| attempt(fd, direction, segments, offset, Some(call)))
+    attempt(fd, direction, segments, offset, Some(call))
 }
 
 /// One raw positional call: the only place bytes cross the kernel boundary.
-/// Tests record every attempt here, retries included, and can inject faults.
+/// Tests record every attempt here and can inject faults.
 fn attempt(
     fd: RawFd,
     direction: Direction,
@@ -463,7 +463,9 @@ fn attempt(
         usize::try_from(count).map_err(|_| io::Error::last_os_error())
     };
     #[cfg(test)]
-    return faults::attempt(segments, raw);
+    return faults::attempt(segments, raw, || {
+        attempt(fd, direction, segments, offset, call)
+    });
     #[cfg(not(test))]
     raw(segments)
 }
@@ -482,26 +484,6 @@ impl Direction {
 
 fn position(offset: u64) -> io::Result<libc::off_t> {
     libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput.into())
-}
-
-/// Repeats an attempt interrupted by a signal before it moved any bytes.
-fn retry(mut attempt: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
-    loop {
-        let result = attempt();
-        if !matches!(&result, Err(error) if error.kind() == io::ErrorKind::Interrupted)
-            || !retries_interrupts()
-        {
-            return result;
-        }
-    }
-}
-
-fn retries_interrupts() -> bool {
-    #[cfg(test)]
-    let retries = !faults::mutated(faults::Mutation::DropRetry);
-    #[cfg(not(test))]
-    let retries = true;
-    retries
 }
 
 pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
