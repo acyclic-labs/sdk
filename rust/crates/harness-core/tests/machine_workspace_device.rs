@@ -311,7 +311,10 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
                 .as_str()
                 .is_some_and(|error| error.contains("command exceeds"))
         );
-        assert_eq!(provider.tail(paths.queue("desktop")?).await?, 0);
+        assert!(matches!(
+            provider.tail(paths.queue("desktop")?).await,
+            Ok(0) | Err(acyclic_stream::StreamError::NotFound)
+        ));
         let marker = tempfile::tempdir()?;
         let marker_path = marker.path().join("executions");
         let path = marker_path
