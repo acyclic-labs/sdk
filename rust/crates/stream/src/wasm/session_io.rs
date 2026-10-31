@@ -193,13 +193,13 @@ impl Drop for Responses {
     }
 }
 impl Stream for Responses {
-    type Item = Result<wire::SessionFrame, StreamError>;
+    type Item = Result<crate::session::Frame, StreamError>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let result = self.poll(cx);
         if matches!(result, Poll::Ready(None | Some(Err(_)))) {
             self.ended = true;
         }
-        result
+        result.map(|item| item.map(|item| item.map(Into::into)))
     }
 }
 impl transport::Transport for Endpoint {

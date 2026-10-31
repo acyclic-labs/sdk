@@ -23,12 +23,11 @@ impl<S: futures::Stream<Item = Result<Received, StreamError>>> futures::Stream f
         loop {
             return Poll::Ready(
                 match std::task::ready!(this.source.as_mut().poll_next(cx)) {
-                    Some(Ok(Received::Data(data))) => Some(Ok(data)),
                     Some(Ok(Received::Frame(wire::SessionFrame {
                         body: Some(Body::Watermark(_)),
                         ..
                     }))) => continue,
-                    Some(Ok(_)) => Some(Err(StreamError::Unavailable)),
+                    Some(Ok(item)) => Some(item.into_data()),
                     Some(Err(error)) => Some(Err(error)),
                     None => None,
                 },

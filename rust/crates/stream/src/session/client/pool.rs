@@ -170,8 +170,8 @@ impl Pool {
             self.fail(&error);
         }
     }
-    pub(super) fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
-        match self.receive(node, value) {
+    pub(super) fn receive_frame(&mut self, node: &str, value: impl Into<Frame>) -> bool {
+        match self.receive(node, value.into()) {
             Ok(()) => true,
             Err(error) => {
                 // A received frame that fails structural validation is terminal.
@@ -356,7 +356,11 @@ impl Pool {
         }
         self.grant(id)
     }
-    fn receive(&mut self, node: &str, input: wire::SessionFrame) -> Result<(), StreamError> {
+    fn receive(&mut self, node: &str, input: impl Into<Frame>) -> Result<(), StreamError> {
+        let Frame {
+            wire: input,
+            record,
+        } = input.into();
         let id = input.channel_id;
         if id == 0 {
             return self.control(node, input.generation, input.body.as_ref());
@@ -436,7 +440,9 @@ impl Pool {
                     self.grant(id)
                 }
             }
-            Some(Body::Data(data)) => self.data(node, id, input.generation, data, length, epoch),
+            Some(Body::Data(data)) => {
+                self.data(node, id, input.generation, data, length, epoch, record)
+            }
             Some(Body::Closed(closed)) => {
                 let error = Self::closed(route, id, &closed);
                 if route.progress.ended() {
@@ -616,6 +622,7 @@ impl Pool {
         data: wire::SessionData,
         length: u64,
         epoch: u64,
+        record: Option<crate::Record>,
     ) -> Result<(), StreamError> {
         // Pending skipped progress shares the next data envelope in wire order.
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
@@ -635,7 +642,12 @@ impl Pool {
         };
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
-        let item = if route.raw {
+        let item = if let Some(record) = record {
+            Received::Owned {
+                frame: frame(id, generation, Body::Data(data)),
+                record,
+            }
+        } else if route.raw {
             Received::Frame(frame(id, generation, Body::Data(data)))
         } else if matches!(
             route.kind,

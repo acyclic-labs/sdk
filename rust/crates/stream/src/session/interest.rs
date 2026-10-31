@@ -296,7 +296,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             self.pending_bytes -= channel
                 .pending
                 .iter()
-                .map(|p| p.frame.encoded_len())
+                .map(|p| p.frame.wire().encoded_len())
                 .sum::<usize>();
         }
         Ok(())

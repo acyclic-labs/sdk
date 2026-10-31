@@ -73,11 +73,11 @@ proptest! {
             !latest || *attention || !history.iter().skip(index + 1).any(|(later_key, _, later_attention)| later_key == key && !later_attention)
         }).map(|(index, _)| index as u64 + 1).collect();
         let channel = session.channels.get(&1).unwrap();
-        let actual: Vec<_> = channel.pending.iter().filter_map(|pending| match &pending.frame.body {
+        let actual: Vec<_> = channel.pending.iter().filter_map(|pending| match &pending.frame.wire().body {
             Some(Body::Data(data)) => data.after.as_ref().map(|after| after.next), _ => None,
         }).collect();
         prop_assert_eq!(actual, expected);
-        prop_assert_eq!(session.pending_bytes, channel.pending.iter().map(|pending| pending.frame.encoded_len()).sum::<usize>());
+        prop_assert_eq!(session.pending_bytes, channel.pending.iter().map(|pending| pending.frame.wire().encoded_len()).sum::<usize>());
     }
 }
 
@@ -91,9 +91,9 @@ fn check_admission(session: &Session<MemoryStream>) {
                 .front()
                 .filter(|p| {
                     channel.credit.frames > 0
-                        && p.frame.encoded_len() as u64 <= channel.credit.bytes
+                        && p.frame.wire().encoded_len() as u64 <= channel.credit.bytes
                 })
-                .map(|p| (p.frame.encoded_len(), *id))
+                .map(|p| (p.frame.wire().encoded_len(), *id))
         })
         .collect();
     let frames: usize = session.channels.values().map(|c| c.pending.len()).sum();
@@ -101,7 +101,7 @@ fn check_admission(session: &Session<MemoryStream>) {
         .channels
         .values()
         .flat_map(|c| &c.pending)
-        .map(|p| p.frame.encoded_len())
+        .map(|p| p.frame.wire().encoded_len())
         .sum();
     assert_eq!(session.pending_frames, frames);
     assert_eq!(session.pending_bytes, bytes);

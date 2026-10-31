@@ -17,6 +17,7 @@ pub struct ApplicationSubscription {
 #[must_use = "commit or discard after the durable application decision"]
 pub struct ApplicationDelivery {
     frame: wire::SessionFrame,
+    record: Option<crate::Record>,
     checkpoint: wire::SessionSubscription,
     before: Option<wire::SessionFrame>,
     sequence: u64,
@@ -72,8 +73,10 @@ impl ApplicationSubscription {
             generation,
             credit,
         } = delivery;
-        let Received::Frame(frame) = item else {
-            return Err(StreamError::InvalidResponse);
+        let (frame, record) = match item {
+            Received::Frame(frame) => (frame, None),
+            Received::Owned { frame, record } => (frame, Some(record)),
+            _ => return Err(StreamError::InvalidResponse),
         };
         let (after, preceding) = match &frame.body {
             Some(Body::Data(data)) => (
@@ -103,6 +106,7 @@ impl ApplicationSubscription {
         self.completion = Some(completion);
         Ok(Some(ApplicationDelivery {
             frame,
+            record,
             checkpoint,
             before,
             sequence,
@@ -150,6 +154,14 @@ impl ApplicationDelivery {
     #[must_use]
     pub fn frame(&self) -> &wire::SessionFrame {
         &self.frame
+    }
+
+    /// The original provider record retained by in-process publication.
+    /// A wire-only transport supplies no backing metadata. Consumers still
+    /// validate the canonical frame before admitting its payload into a view.
+    #[must_use]
+    pub fn original_record(&self) -> Option<&crate::Record> {
+        self.record.as_ref()
     }
 
     /// A filtered prefix that precedes this frame at the same delivery cut.

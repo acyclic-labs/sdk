@@ -60,7 +60,7 @@ impl transport::Transport for Observed {
                     generation,
                     body: Some(Body::Data(data)),
                     ..
-                }) = &frame
+                }) = frame.as_ref().map(Frame::wire)
                     && let (Some(after), Some(Item::Record(record))) = (&data.after, &data.item)
                 {
                     let commit =

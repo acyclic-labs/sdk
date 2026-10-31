@@ -48,9 +48,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
             if channel.credit.frames > 0
                 && let Some(head) = channel.pending.front()
-                && head.frame.encoded_len() as u64 <= channel.credit.bytes
+                && head.frame.wire().encoded_len() as u64 <= channel.credit.bytes
             {
-                let length = head.frame.encoded_len();
+                let length = head.frame.wire().encoded_len();
                 channel.indexed = Some(length);
                 self.runnable.insert((length, id));
             }

@@ -271,6 +271,7 @@ fn run(mut state: State, old: bool, redundant: bool) -> (Output, usize, Allocati
                         d.generation,
                         match d.item {
                             Received::Frame(frame) => frame.encode_to_vec(),
+                            Received::Owned { frame, .. } => frame.encode_to_vec(),
                             Received::Data(data) => data.encode_to_vec(),
                         },
                     )

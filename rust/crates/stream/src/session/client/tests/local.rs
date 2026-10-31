@@ -5,7 +5,16 @@ use super::*;
 async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult {
     for records in [1, 2, 8] {
         let provider = Arc::new(MemoryStream::default());
-        append(&provider, "events", records).await?;
+        let payload = OwnedBytes::from(b"delta".to_vec());
+        let backing = payload.backing().ok_or("missing original capacity")?;
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new("events")?,
+                records: vec![payload.clone().into(); records],
+                if_tail: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await?;
         let client = Client::in_process(
             provider.clone(),
             crate::session::testing::authority(),
@@ -19,6 +28,77 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             .await?;
         let first = next(&mut ordinary).await?;
         assert_eq!(first.sequence, 0);
+        assert_eq!(
+            first.value.backing(),
+            Some(backing.clone()),
+            "ordinary follow lost original backing custody"
+        );
+        let mut typed = client
+            .follow_records(crate::FollowRequest::new(path.clone(), 0))
+            .await?;
+        assert_eq!(
+            next(&mut typed).await?.value.backing(),
+            Some(backing.clone())
+        );
+        drop(typed);
+        let mut finite = client
+            .read(crate::ReadRequest {
+                key: None,
+                path: path.clone(),
+                from: 0,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?;
+        assert_eq!(
+            next(&mut finite).await?.value.backing(),
+            Some(backing.clone())
+        );
+        assert!(
+            finite.next().await.is_none(),
+            "finite owned read waited beyond its admitted end"
+        );
+        drop(finite);
+        let mut application = client
+            .deliveries(super::application::subscription())
+            .await?;
+        let delivery = super::application::data(&mut application).await?;
+        let original = delivery
+            .original_record()
+            .ok_or("application lost provider record")?;
+        assert_eq!(original.value.backing(), Some(backing));
+        assert_eq!(original.value.as_slice(), first.value.as_slice());
+        assert_eq!(
+            application
+                .checkpoint()?
+                .resume
+                .ok_or("missing initial cut")?
+                .next,
+            0
+        );
+        assert!(delivery.commit()?);
+        assert_eq!(
+            application
+                .checkpoint()?
+                .resume
+                .ok_or("missing committed cut")?
+                .next,
+            1
+        );
+        drop(application);
+        if records == 1 {
+            let fixture = Fixture::open(provider.clone(), "node").await?;
+            let network = fixture.client()?.session_client()?;
+            let mut remote = network
+                .follow_records(crate::FollowRequest::new(path.clone(), 0))
+                .await?;
+            let received = next(&mut remote).await?;
+            assert_eq!(received.value.as_slice(), first.value.as_slice());
+            assert!(
+                received.value.backing().is_none(),
+                "wire transport invented allocation capacity"
+            );
+        }
         assert!(matches!(
             client
                 .follow(crate::FollowRequest {

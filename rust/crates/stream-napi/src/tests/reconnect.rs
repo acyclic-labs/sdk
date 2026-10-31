@@ -185,7 +185,11 @@ impl StreamSessionService for DisconnectingHost {
             input,
         )
         .map_err(|error| Status::invalid_argument(error.code()))?
-        .map(|frame| frame.map_err(|error| Status::failed_precondition(error.code())));
+        .map(|frame| {
+            frame
+                .map(acyclic_stream::session::Frame::into_wire)
+                .map_err(|error| Status::failed_precondition(error.code()))
+        });
         if let Some(pending) = &mut pending {
             pending.answered();
         }

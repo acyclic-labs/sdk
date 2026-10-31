@@ -228,7 +228,8 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
         let lifetime = CountSessionDrop(Arc::clone(&self.counts));
         Ok(Reply::new(
             stream::select(
-                output.map(move |mut item| {
+                output.map(move |item| {
+                    let mut item = item.map(session::Frame::into_wire);
                     if !confirm_checked
                         && let Ok(wire::SessionFrame {
                             body: Some(Body::Opened(opened)),

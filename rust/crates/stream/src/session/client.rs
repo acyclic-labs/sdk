@@ -58,15 +58,7 @@ mod tests;
 type Ready = (String, Link, Response);
 type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
 type Response = transport::Responses;
-type Read = BoxProviderFuture<
-    'static,
-    (
-        String,
-        u64,
-        Response,
-        Option<Result<wire::SessionFrame, StreamError>>,
-    ),
->;
+type Read = BoxProviderFuture<'static, (String, u64, Response, Option<Result<Frame, StreamError>>)>;
 const QUEUE: usize = 2;
 const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 
@@ -131,6 +123,9 @@ impl Delivery {
             Received::Frame(frame) => {
                 consume_frame(progress, self.generation, self.sequence, frame)
             }
+            Received::Owned { frame, .. } => {
+                consume_frame(progress, self.generation, self.sequence, frame)
+            }
         }
     }
 }
@@ -182,6 +177,55 @@ fn consume_data(
 enum Received {
     Data(wire::SessionData),
     Frame(wire::SessionFrame),
+    Owned {
+        frame: wire::SessionFrame,
+        record: crate::Record,
+    },
+}
+impl Received {
+    fn into_data(self) -> Result<wire::SessionData, StreamError> {
+        match self {
+            Self::Data(data)
+            | Self::Owned {
+                frame:
+                    wire::SessionFrame {
+                        body: Some(Body::Data(data)),
+                        ..
+                    },
+                ..
+            } => Ok(data),
+            _ => Err(StreamError::Unavailable),
+        }
+    }
+
+    fn into_record(self, path: &StreamPath) -> Result<crate::Record, StreamError> {
+        let (data, original) = match self {
+            Self::Owned {
+                frame:
+                    wire::SessionFrame {
+                        body: Some(Body::Data(data)),
+                        ..
+                    },
+                record,
+            } => (data, Some(record)),
+            Self::Data(data)
+            | Self::Frame(wire::SessionFrame {
+                body: Some(Body::Data(data)),
+                ..
+            }) => (data, None),
+            _ => return Err(StreamError::Unavailable),
+        };
+        let Some(Item::Record(record)) = data.item else {
+            return Err(StreamError::Unavailable);
+        };
+        // Every physical transport retains the same canonical admission.
+        // The local provider's bytes keep their original allocation custody.
+        let mut decoded = wire_codec::record(record, Some(path))?;
+        if let Some(original) = original {
+            decoded.value = original.value;
+        }
+        Ok(decoded)
+    }
 }
 enum Command {
     Credential { slot: u32, credential: Bytes },
@@ -458,18 +502,17 @@ impl Client {
             ),
             at_least: crate::wire_codec::cut_to_wire(&request.at_least),
         };
+        wire_codec::session::validate_follow(&follow, &cursor(request.from))?;
+        wire_codec::cut_from_wire(follow.at_least.clone())?;
         let mut records = super::runtime::boxed(
-            self.follow_data_with_ack(
-                follow,
+            self.open_kind(
+                Kind::Follow(follow),
                 request.from,
                 acknowledge,
-                crate::FollowFilter::default(),
+                Some(crate::FollowFilter::default().transport_filter()?),
             )
             .await?
-            .map(move |data| match data?.item {
-                Some(Item::Record(record)) => wire_codec::record(record, Some(&path)),
-                _ => Err(StreamError::Unavailable),
-            }),
+            .map(move |item| item?.into_record(&path)),
         );
         // The open resolves the stream as every provider read does: an absent
         // path or a start beyond the tail fails here, not in the stream.
@@ -501,13 +544,7 @@ impl Client {
         Ok(super::runtime::boxed(
             self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
                 .await?
-                .map(move |item| match item? {
-                    Received::Data(data) => match data.item {
-                        Some(Item::Record(record)) => wire_codec::record(record, Some(&path)),
-                        _ => Err(StreamError::Unavailable),
-                    },
-                    _ => Err(StreamError::Unavailable),
-                }),
+                .map(move |item| item?.into_record(&path)),
         ))
     }
     async fn follow_updates(
@@ -532,16 +569,14 @@ impl Client {
             .await?;
         Ok(source.filter_map(move |item| {
             future::ready(match item {
-                Ok(Received::Data(data))
-                | Ok(Received::Frame(wire::SessionFrame {
-                    body: Some(Body::Data(data)),
-                    ..
-                })) => Some(match data.item {
-                    Some(Item::Record(record)) => {
-                        wire_codec::record(record, Some(&path)).map(crate::FollowUpdate::Record)
-                    }
-                    _ => Err(StreamError::Unavailable),
-                }),
+                Ok(
+                    item @ (Received::Data(_)
+                    | Received::Owned { .. }
+                    | Received::Frame(wire::SessionFrame {
+                        body: Some(Body::Data(_)),
+                        ..
+                    })),
+                ) => Some(item.into_record(&path).map(crate::FollowUpdate::Record)),
                 Ok(Received::Frame(wire::SessionFrame {
                     body: Some(Body::Watermark(mark)),
                     ..
@@ -650,7 +685,7 @@ impl Client {
             self.open_subscription(kind, resume, acknowledge, true, filter, credential)
                 .await?
                 .map(|item| match item? {
-                    Received::Frame(frame) => Ok(frame),
+                    Received::Frame(frame) | Received::Owned { frame, .. } => Ok(frame),
                     _ => Err(StreamError::Unavailable),
                 }),
         ))

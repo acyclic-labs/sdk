@@ -474,10 +474,10 @@ async fn handshake(
         .await
         .transpose()?
         .ok_or(StreamError::Unavailable)?;
-    if welcome.channel_id != 0 || welcome.generation != 0 {
+    if welcome.wire().channel_id != 0 || welcome.wire().generation != 0 {
         return Err(StreamError::Unavailable);
     }
-    let Some(Body::Welcome(welcome)) = welcome.body else {
+    let Some(Body::Welcome(welcome)) = welcome.into_wire().body else {
         return Err(StreamError::Unavailable);
     };
     if welcome.version != 1

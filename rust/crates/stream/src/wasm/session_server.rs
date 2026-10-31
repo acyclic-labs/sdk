@@ -125,9 +125,9 @@ fn serve(
         .map(move |frame| {
             frame.and_then(|frame| {
                 if grpc {
-                    wire_codec::session::encode_grpc_frame(&frame)
+                    wire_codec::session::encode_grpc_frame(frame.wire())
                 } else {
-                    Ok(frame.encode_to_vec())
+                    Ok(frame.wire().encode_to_vec())
                 }
             })
         })

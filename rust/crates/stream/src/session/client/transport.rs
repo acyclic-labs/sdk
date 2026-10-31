@@ -3,7 +3,9 @@ use crate::{BoxProviderFuture, BoxProviderStream, ProviderPlatform, StreamError,
 use std::sync::Arc;
 
 /// Canonical inbound frames from one physical platform connection.
-pub type Responses = BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>;
+pub type Responses = BoxProviderStream<'static, Result<super::super::Frame, StreamError>>;
+/// Canonical wire frames, without process-local backing metadata.
+pub type WireResponses = BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>;
 /// Canonical outbound frames; dropping this source cancels the connection.
 pub type Requests = BoxProviderStream<'static, wire::SessionFrame>;
 
