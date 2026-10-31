@@ -10,7 +10,6 @@ mod checkout;
 mod commands;
 #[cfg(any(test, feature = "native-execution"))]
 mod environment;
-mod guidance;
 pub(super) mod skills;
 
 pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
@@ -79,7 +78,6 @@ impl LocalHarness {
     pub(super) fn stage_context_manifest_with<'a>(
         &'a self,
         operation: OperationId,
-        prompt: Option<&'a str>,
         publisher: &'a dyn ContentPublisher,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
@@ -115,9 +113,7 @@ impl LocalHarness {
             let discovery = self
                 .instructions(&policy.instruction_names, publisher, &mut work)
                 .await?;
-            let (goal, plans) = self.file_guidance(prompt.unwrap_or_default())?.await?;
-            let mut manifest =
-                ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
+            let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
             // The agent tools bind per turn, outside the registry; the model
             // sees them through the manifest like every other tool. A turn
             // binds each over any registered tool of its name, so the manifest
@@ -555,14 +551,10 @@ mod tests {
                 local.observe_context_manifest(OperationId::from_bytes([1; 16]), publisher)
             },
         );
-        let guidance =
-            retained_operation_bytes(|local: &'static LocalHarness| local.file_guidance(""));
-        eprintln!("manifest child retained bytes: [{observation}, {guidance}]");
+        eprintln!("manifest observation retained bytes: {observation}");
         assert!(
-            [observation, guidance]
-                .into_iter()
-                .all(|bytes| bytes <= 512),
-            "manifest embeds concrete observation or guidance futures"
+            observation <= 512,
+            "manifest embeds a concrete observation future"
         );
     }
 
@@ -570,7 +562,7 @@ mod tests {
     fn context_boundaries_retain_only_owned_polling_handles() {
         let manifest = retained_operation_bytes(
             |(local, publisher): (&'static LocalHarness, &'static dyn ContentPublisher)| {
-                local.stage_context_manifest_with(OperationId::from_bytes([1; 16]), None, publisher)
+                local.stage_context_manifest_with(OperationId::from_bytes([1; 16]), publisher)
             },
         );
         #[cfg(feature = "native-execution")]
