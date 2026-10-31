@@ -6,7 +6,7 @@ export type * from "./generated/live-update.js";
 export function encodeLiveUpdate(value: unknown): Uint8Array {
   const encoder = new TextEncoder();
   function canonical(input: unknown): string {
-    if (Array.isArray(input)) return `[${input.map(canonical).join(",")}]`;
+    if (Array.isArray(input)) return `[${Array.from(input, canonical).join(",")}]`;
     if (input !== null && typeof input === "object") {
       const entries = Object.entries(input).map(([key, item]) => ({ key, item, bytes: encoder.encode(key) }));
       entries.sort((a, b) => {

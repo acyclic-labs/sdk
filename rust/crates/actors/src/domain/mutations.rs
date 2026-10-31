@@ -52,7 +52,6 @@ impl DeploymentRequest {
         mut self,
         publication: &crate::live_update::Publication,
     ) -> Result<Self, crate::live_update::Error> {
-        publication.version()?;
         self.publication = crate::live_update::encode(publication)?;
         self.validate_from_proto()
             .map_err(|_| crate::live_update::Error::Invalid("publication upload scope"))?;

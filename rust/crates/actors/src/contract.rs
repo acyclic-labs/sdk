@@ -72,7 +72,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
         publication
             .version()
             .map_err(|_| ContractError::InvalidArgument)?;
-        if publication.deployment.account != request.account_id
+        if (!request.account_id.is_empty() && publication.deployment.account != request.account_id)
             || !publication
                 .artifacts
                 .get(&request.name)

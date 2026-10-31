@@ -3,7 +3,7 @@
 //! additionally run the service acceptance specified by Cloud #7868.
 use acyclic_actors::{
     addressing::ActorReference,
-    domain::{ActorLimits, CodeSha256},
+    domain::{ActorLimits, ActorNamespace, CodeSha256, DeploymentRequest, WorkerLimits},
     guest::{
         AlarmChange, CancellationToken, Checkpoint, CodecIdentity, Delivery, Effect, GuestError,
         GuestFuture, Handler, Manifest, Subscription, Transition,
@@ -931,6 +931,46 @@ async fn selection_cut_refuses_late_success_and_failure_without_reentry() -> Res
             fail,
         )
         .await?;
+    }
+    Ok(())
+}
+
+#[test]
+fn publication_upload_uses_authenticated_or_matching_explicit_account() -> Result {
+    let publication = publication(0)?;
+    let code = CodeSha256::try_from(vec![1; 32])?;
+    let namespace = ActorNamespace::new("alpha".into())?;
+    for request in [
+        DeploymentRequest::new(
+            namespace.clone(),
+            code.clone(),
+            Vec::new(),
+            ActorLimits::new(1, 1, 1)?,
+            Vec::new(),
+            "actor-upload".into(),
+        )?,
+        DeploymentRequest::worker(
+            namespace,
+            code,
+            Vec::new(),
+            WorkerLimits::new(1, 1, 1)?,
+            "worker-upload".into(),
+        )?,
+    ] {
+        let uploaded = request.clone().with_publication(&publication)?;
+        let wire: acyclic_actors::wire::DeploymentRequest = uploaded.clone().into();
+        assert!(wire.account_id.is_empty());
+        assert_eq!(DeploymentRequest::try_from(wire.clone())?, uploaded);
+        assert!(
+            uploaded
+                .with_placement(b"account".to_vec(), String::new(), 0)
+                .is_ok()
+        );
+        let foreign = request.with_placement(b"foreign".to_vec(), String::new(), 0)?;
+        assert!(foreign.with_publication(&publication).is_err());
+        let mut foreign = wire;
+        foreign.account_id = b"foreign".to_vec();
+        assert!(DeploymentRequest::try_from(foreign).is_err());
     }
     Ok(())
 }

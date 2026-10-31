@@ -10,7 +10,9 @@ noncanonical bytes and other versions are refused; there are no migrations.
 Upload `Publication` through `DeploymentRequest::with_publication`. Its
 `expectedVersion` is the last allocated publication, independently of the code
 currently selected. Cloud atomically admits the predecessor and immutable
-publication identity. Each namespace artifact binds code, full configuration
+publication identity. An omitted request account uses the authenticated account;
+Cloud binds that account to the publication scope. The SDK refuses an explicit
+account that differs from the publication. Each namespace artifact binds code, full configuration
 and public schema digests. `CompatibilityManifest` declares RPC request/reply
 schemas, message schemas, deployment-scoped peer ranges, readable state and
 original-journal codecs, durable await support, and explicit application adapter
