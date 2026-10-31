@@ -5,6 +5,9 @@
 //! Key widths share insertion, accounting, lookup and constant-space retirement.
 
 pub mod page;
+mod arc;
+pub use arc::arc_allocation_bytes;
+
 mod recent;
 pub use recent::RecentIndex;
 

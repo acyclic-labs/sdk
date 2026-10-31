@@ -15,6 +15,18 @@ pub struct ExecutionClaim<'a> {
     _claim: acyclic_fs::OperationClaim<'a>,
 }
 
+impl ExecutionClaim<'_> {
+    /// Pins the shared operation event before handing custody to model work.
+    pub fn observe(&self) -> acyclic_fs::OperationObservation {
+        self._claim.observe()
+    }
+
+    /// Retires the original shared claim after its result has been committed.
+    pub fn release(self) {
+        self._claim.release();
+    }
+}
+
 impl ExecutionClaims {
     /// Claims an operation before inspecting its replay observations.
     pub fn claim<'a>(
@@ -59,7 +71,8 @@ pub(crate) fn claim<'a>(
                 }
             },
         )?
-        .ok_or_else(|| {
+        .into_owner()
+        .map_err(|_| {
             stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,

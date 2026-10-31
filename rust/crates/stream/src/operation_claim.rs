@@ -1,15 +1,31 @@
 //! Process-local exclusion shared by every adapter of one provider owner.
 
 mod resources;
+mod termination;
+pub use termination::{OperationObservation, OperationTermination};
 
 use acyclic_collections::{FixedIndex, IndexWork};
 
 type Storage = Box<dyn Send + Sync>;
 
+struct Registration {
+    observation: OperationObservation,
+    armed: bool,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        if self.armed {
+            self.observation
+                .publish(OperationTermination::ProducerDropped);
+        }
+    }
+}
+
 /// Live operation ownership independent of persisted crash-recovery records.
 pub struct OperationClaims {
     owner: [u8; 16],
-    active: crate::query_sync::SyncMutex<FixedIndex<(), Storage, 48>>,
+    active: crate::query_sync::SyncMutex<FixedIndex<Registration, Storage, 48>>,
     resources: resources::Resources,
 }
 
@@ -27,6 +43,25 @@ impl Default for OperationClaims {
 pub struct OperationClaim<'a> {
     claims: &'a OperationClaims,
     key: [u8; 48],
+    observation: Option<OperationObservation>,
+}
+
+/// Atomic acquisition or an observation pinned to the existing producer.
+pub enum OperationAttempt<'a> {
+    /// Exclusive producer custody, acquired before replay observation.
+    Owned(OperationClaim<'a>),
+    /// The exact predecessor observed under the same exclusion lock.
+    Observed(OperationObservation),
+}
+
+impl<'a> OperationAttempt<'a> {
+    /// Transfers producer custody, or preserves the occupied generation's event.
+    pub fn into_owner(self) -> Result<OperationClaim<'a>, OperationObservation> {
+        match self {
+            Self::Owned(owner) => Ok(owner),
+            Self::Observed(observation) => Err(observation),
+        }
+    }
 }
 
 // Original admission is borrowed for this traversal. Only its owned allocation
@@ -108,7 +143,7 @@ impl OperationClaims {
         key: [u8; 48],
         visit: impl FnMut() -> Result<(), E>,
         admit: impl FnMut(u64, u64) -> Result<H, E>,
-    ) -> Result<Option<OperationClaim<'_>>, E>
+    ) -> Result<OperationAttempt<'_>, E>
     where
         H: Send + Sync + 'static,
     {
@@ -117,25 +152,68 @@ impl OperationClaims {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut inserted = false;
-        active.get_or_try_insert_with(key, &mut Accounting { visit, admit }, |_| {
-            inserted = true;
-            Ok(())
-        })?;
-        Ok(inserted.then(|| OperationClaim { claims: self, key }))
+        let registration =
+            active.get_or_try_insert_with(key, &mut Accounting { visit, admit }, |work| {
+                inserted = true;
+                Ok(Registration {
+                    observation: OperationObservation::create(&mut work.admit)?,
+                    armed: true,
+                })
+            })?;
+        let observation = registration.observation.clone();
+        Ok(if inserted {
+            OperationAttempt::Owned(OperationClaim {
+                claims: self,
+                key,
+                observation: Some(observation),
+            })
+        } else {
+            OperationAttempt::Observed(observation)
+        })
     }
 }
 
-impl Drop for OperationClaim<'_> {
-    fn drop(&mut self) {
+impl OperationClaim<'_> {
+    /// Pins this producer's exact-generation termination event before handoff.
+    pub fn observe(&self) -> OperationObservation {
+        self.observation
+            .as_ref()
+            .expect("live operation owner")
+            .clone()
+    }
+
+    /// Explicitly retires producer custody. This does not invent a durable result.
+    pub fn release(mut self) {
+        self.retire(OperationTermination::Released);
+    }
+
+    fn retire(&mut self, terminal: OperationTermination) {
+        let Some(observation) = self.observation.take() else {
+            return;
+        };
         let removed = self
             .claims
             .active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove_if(self.key, |()| true);
+            .remove_if(self.key, |registration| {
+                registration.observation.same_generation(&observation)
+            });
         // Destroy the detached node before releasing its original funding.
         // The guard's borrow excludes destruction of the provider owner.
-        assert!(removed.is_some(), "live operation claim disappeared");
+        let (_, mut registration, storage) = removed
+            .expect("live operation claim disappeared")
+            .into_parts();
+        registration.armed = false;
+        drop(registration);
+        drop(storage);
+        observation.publish(terminal);
+    }
+}
+
+impl Drop for OperationClaim<'_> {
+    fn drop(&mut self) {
+        self.retire(OperationTermination::ProducerDropped);
     }
 }
 
@@ -155,6 +233,7 @@ mod tests {
                     claims
                         .claim(key, || Ok::<_, ()>(()), |_, _| Ok(()))
                         .unwrap()
+                        .into_owner()
                         .unwrap()
                 })
                 .collect();
@@ -170,7 +249,8 @@ mod tests {
                         |_, _| -> Result<(), ()> { panic!("duplicate allocated") }
                     )
                     .unwrap()
-                    .is_none()
+                    .into_owner()
+                    .is_err()
             );
             assert!(visits.get() <= 1 + 3 * (48 * 8 + 1) + 2 * 48);
             drop(owners);
@@ -178,7 +258,8 @@ mod tests {
                 claims
                     .claim([0; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                     .unwrap()
-                    .is_some()
+                    .into_owner()
+                    .is_ok()
             );
         }
     }
@@ -189,6 +270,7 @@ mod tests {
         let original = claims
             .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
             .unwrap()
+            .into_owner()
             .unwrap();
         let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = claims.claim(
@@ -202,7 +284,8 @@ mod tests {
             claims
                 .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_none()
+                .into_owner()
+                .is_err()
         );
         assert!(
             claims
@@ -213,14 +296,16 @@ mod tests {
             claims
                 .claim([2; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
         drop(original);
         assert!(
             claims
                 .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
     }
 }
