@@ -35,11 +35,16 @@ Ordinary comparison retains the original captured packet and its provenance;
 it never replaces them with an equivalent ordering. Controls require a changed
 message value or selector to fail. After reviewing an intentional
 format change, run `cargo run --locked --example capture -- --accept-goldens`.
+To add successor frames while refusing changes to existing baselines, use
+`cargo run --locked --example capture -- --extend-goldens`. Both modes retain
+equivalent existing protobuf packets instead of replacing their map order.
 The producer records each path, byte count, SHA-256 and actual producing call in
 `corpus/SOURCES.tsv`. Regenerate the complete protobuf corpus when descriptors
 change: its first eight little-endian bytes select a generated message entry.
 SDK captures come from production encoders and memory-backed operations, rather
 than hosted traffic; cryptographic producers use deterministic test keys.
+Original v1 state-record captures retain their names and bytes as typed-refusal
+inputs; current writers use distinct `state-v2-` names for publication provenance.
 
 Capture also writes `corpus/resource-identity-v1.json` from the actual resource
 encoder and cross-language vector inputs. When admitting an identity format,

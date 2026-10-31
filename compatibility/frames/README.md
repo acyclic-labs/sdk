@@ -30,6 +30,9 @@ the saved seed with both its provenance and this baseline. After reviewing an
 intentional format change, `cargo run --example capture -- --accept-goldens`
 captures new baseline rows through the production encoders. Ordinary capture
 and replay never update the golden file.
+Use `--extend-goldens` to add new names while requiring all existing baselines
+to keep the same bytes or protobuf value. Equivalent protobuf packets retain
+their original bytes in either mode.
 
 The `external/` rows retain real MCP server stdout. Their paths refer to
 `rust/codec-fuzz/corpus/EXTERNAL.tsv`, with request transcripts and installed

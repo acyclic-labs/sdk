@@ -96,19 +96,28 @@ fn save(
     producer: &str,
     manifest: &mut String,
 ) -> Result<(), Box<dyn Error>> {
-    let golden = if std::env::args().any(|arg| arg == "--accept-goldens") {
-        None
-    } else {
-        let frame = format!("corpus/{target}/{name}");
-        let golden = acyclic_proto_build::golden::frame(&frame)
-            .map_err(|error| format!("golden {frame}: {error}"))?;
+    let accept = std::env::args().any(|arg| arg == "--accept-goldens");
+    let extend = std::env::args().any(|arg| arg == "--extend-goldens");
+    let frame = format!("corpus/{target}/{name}");
+    let golden = match acyclic_proto_build::golden::frame(&frame) {
+        Ok(golden) => Some(golden),
+        Err("golden frame is missing") if accept || extend => None,
+        Err(error) => return Err(format!("golden {frame}: {error}").into()),
+    };
+    let golden = if let Some(golden) = golden {
         if !equivalent(target, bytes, &golden)? {
-            return Err(format!("encoder changed golden {frame}; recovery after reviewing the format change: cargo run --example capture -- --accept-goldens").into());
+            if !accept {
+                return Err(format!("encoder changed golden {frame}; recovery after reviewing the format change: cargo run --example capture -- --accept-goldens").into());
+            }
+            None
+        } else {
+            if bytes != golden {
+                println!("fresh {frame}: equal protobuf value with different wire order/spelling");
+            }
+            Some(golden)
         }
-        if bytes != golden {
-            println!("fresh {frame}: equal protobuf value with different wire order/spelling");
-        }
-        Some(golden)
+    } else {
+        None
     };
     match std::panic::catch_unwind(|| acyclic_codec_fuzz::exercise(target, bytes)) {
         Ok(result) => result?,
@@ -320,6 +329,35 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "McpStdioRequest::exchange production initialization write",
         &mut manifest,
     )?;
+    // Preserve actual prior writer output as refusal input; never relabel it v2.
+    for name in [
+        "state-root-false",
+        "state-root-true",
+        "state-context",
+        "state-sparse",
+        "state-refs",
+        "state-outcome",
+    ] {
+        let bytes =
+            acyclic_proto_build::golden::frame(&format!("corpus/filesystem_codecs/{name}"))?;
+        if !matches!(
+            acyclic_fs::distributed::state_record::StateRecord::decode(
+                bytes::Bytes::copy_from_slice(&bytes).into()
+            ),
+            Err(acyclic_fs::AuthorityStoreError::NativeStream(
+                acyclic_stream::StreamError::Unsupported
+            ))
+        ) {
+            return Err(format!("old state record {name} was not refused before fields; recovery: cargo run --example capture").into());
+        }
+        save(
+            "filesystem_codecs",
+            name,
+            &bytes,
+            "AuthorityWork::encode_state",
+            &mut manifest,
+        )?;
+    }
     for (name, bytes) in acyclic_fs::distributed::state_record::codec_fuzz::seeds()? {
         save(
             "filesystem_codecs",
@@ -575,7 +613,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    if std::env::args().any(|arg| arg == "--accept-goldens") {
+    if std::env::args().any(|arg| matches!(arg.as_str(), "--accept-goldens" | "--extend-goldens")) {
         let path = Path::new("../../compatibility/frames/golden.hex");
         let previous = std::fs::read_to_string(path)?;
         let mut frames = previous

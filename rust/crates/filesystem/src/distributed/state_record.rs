@@ -1,10 +1,10 @@
-//! Portable v1 data records. Placement, writer ownership and commit identity
+//! Portable v2 data records. Placement, writer ownership and commit identity
 //! belong to Streams, never to immutable filesystem tree bytes.
 
 use crate::{FileId, ObjectId, ObjectKind};
 use acyclic_stream::OwnedBytes as Bytes;
 
-const DOMAIN: &[u8] = b"acyclic-fs-state-v1\0";
+const DOMAIN: &[u8] = b"acyclic-fs-state-v2\0";
 
 /// Retry identity and typed state retained together in an ordinary record.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,7 +111,7 @@ impl StateRecord {
     pub fn decode(bytes: Bytes) -> Result<RecordedState, crate::AuthorityStoreError> {
         let corrupt =
             || crate::AuthorityStoreError::CorruptStatic("invalid filesystem state record");
-        acyclic_auth::format::header(&bytes, b"acyclic-fs-state-v", b"1\0", corrupt, || {
+        acyclic_auth::format::header(&bytes, b"acyclic-fs-state-v", b"2\0", corrupt, || {
             crate::AuthorityStoreError::NativeStream(acyclic_stream::StreamError::Unsupported)
         })?;
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
@@ -196,7 +196,19 @@ pub mod codec_fuzz {
     /// Records with a canonical publication path have one exact encoding,
     /// including the complete ID. An opaque origin alone grants no path authority.
     pub fn check(bytes: &[u8]) -> bool {
-        let Ok(value) = StateRecord::decode(bytes::Bytes::copy_from_slice(bytes).into()) else {
+        let decoded = StateRecord::decode(bytes::Bytes::copy_from_slice(bytes).into());
+        if bytes
+            .strip_prefix(b"acyclic-fs-state-v")
+            .is_some_and(|body| !body.starts_with(b"2\0"))
+        {
+            return matches!(
+                decoded,
+                Err(crate::AuthorityStoreError::NativeStream(
+                    acyclic_stream::StreamError::Unsupported
+                ))
+            );
+        }
+        let Ok(value) = decoded else {
             return true;
         };
         let Some(path) = std::str::from_utf8(&value.published_at)
@@ -236,15 +248,15 @@ pub mod codec_fuzz {
                 companion: Bytes::default(),
             };
             seeds.push((
-                format!("state-root-{sealed}"),
+                format!("state-v2-root-{sealed}"),
                 work.encode_state(&record, &operation, &path)?.to_vec(),
             ));
         }
         for (name, kind) in [
-            ("state-context", CompanionKind::WorkspaceContext),
-            ("state-sparse", CompanionKind::SparseWorkspace),
-            ("state-refs", CompanionKind::GitRefs),
-            ("state-outcome", CompanionKind::OperationOutcome),
+            ("state-v2-context", CompanionKind::WorkspaceContext),
+            ("state-v2-sparse", CompanionKind::SparseWorkspace),
+            ("state-v2-refs", CompanionKind::GitRefs),
+            ("state-v2-outcome", CompanionKind::OperationOutcome),
         ] {
             let record = StateRecord::Companion {
                 kind,
@@ -255,6 +267,16 @@ pub mod codec_fuzz {
                 work.encode_state(&record, &operation, &path)?.to_vec(),
             ));
         }
+        for (_, bytes) in &seeds {
+            let recorded = StateRecord::decode(bytes::Bytes::copy_from_slice(bytes).into())?;
+            if recorded.operation != operation
+                || recorded.published_at.as_ref() != path.as_str().as_bytes()
+            {
+                return Err(crate::AuthorityStoreError::CorruptStatic(
+                    "state writer lost original publication context",
+                ));
+            }
+        }
         Ok(seeds)
     }
 }
@@ -264,7 +286,7 @@ mod version_tests {
     use super::*;
     #[test]
     fn unsupported_state_version_precedes_body_decode() {
-        for version in [b'0', b'2', u8::MAX] {
+        for version in [b'0', b'1', b'3', u8::MAX] {
             let mut header = DOMAIN.to_vec();
             header[DOMAIN.len() - 2] = version;
             assert!(matches!(
