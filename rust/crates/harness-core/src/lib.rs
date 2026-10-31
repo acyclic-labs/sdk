@@ -98,6 +98,8 @@ pub mod resources;
 pub mod runtime;
 pub mod secrets;
 pub mod source_authorization;
+/// Credited SSE data framing shared by HTTP protocol adapters.
+pub mod sse;
 pub mod store;
 #[doc(hidden)]
 pub mod sync;

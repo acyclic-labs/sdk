@@ -32,7 +32,11 @@ pub(super) async fn response(
             .ok_or(Error::Indeterminate(operation))?;
         Ok(chunk)
     });
-    let events = sse_stream::SseByteStream::new(bounded);
+    let events = crate::sse::frames(
+        bounded,
+        maximum_bytes as usize,
+        crate::sse::Decoder::default(),
+    );
     futures::pin_mut!(events);
     let mut pending = VecDeque::new();
     let mut requests = 0_u32;
@@ -44,7 +48,7 @@ pub(super) async fn response(
             let Some(event) = events.next().await else {
                 return Err(Error::Indeterminate(operation));
             };
-            let Some(value) = decode(event)? else {
+            let Some(value) = decode(event, operation)? else {
                 continue;
             };
             value
@@ -88,7 +92,7 @@ pub(super) async fn response(
                         }
                         continue;
                     };
-                    let Some(value) = decode(event)? else { continue; };
+                    let Some(value) = decode(event, operation)? else { continue; };
                     if value.get("method").and_then(Value::as_str) == Some("notifications/cancelled")
                         && value.pointer("/params/requestId") == callback.message.get("id") {
                         notification(&value, None)?;
@@ -117,19 +121,18 @@ pub(super) async fn response(
     }
 }
 
-fn decode(event: std::result::Result<sse_stream::Sse, sse_stream::Error>) -> Result<Option<Value>> {
+fn decode(event: Result<crate::sse::Frame>, operation: OperationId) -> Result<Option<Value>> {
     let event = event.map_err(|error| match error {
-        sse_stream::Error::Body(error) => error
-            .downcast::<Error>()
-            .map_or_else(|error| Error::Invalid(error.to_string()), |error| *error),
-        error => Error::Invalid(error.to_string()),
+        Error::ModelUnavailable {
+            failure: crate::ModelTransportFailure::Interrupted,
+            ..
+        } => Error::Indeterminate(operation),
+        error => error,
     })?;
-    event
-        .data
-        .filter(|data| !data.trim().is_empty())
-        .map(|data| {
-            crate::contract::json_from_slice(data.as_bytes())
-                .map_err(|error| Error::Invalid(error.to_string()))
-        })
-        .transpose()
+    if event.data().trim().is_empty() {
+        return Ok(None);
+    }
+    crate::contract::json_from_slice(event.data().as_bytes())
+        .map(Some)
+        .map_err(|error| Error::Invalid(error.to_string()))
 }

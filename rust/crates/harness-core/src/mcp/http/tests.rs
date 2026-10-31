@@ -23,7 +23,7 @@ impl McpHttpProvider for Fixture {
                 .push(request);
             let bytes = if self.sse {
                 format!(
-                    "id: cursor\r\ndata:\r\n\r\ndata: {}\r\n\r\n",
+                    "\u{feff}id: cursor\r\ndata\r\n\r\ndata: {}\r\n\r\n",
                     message(operation)
                 )
                 .into_bytes()
