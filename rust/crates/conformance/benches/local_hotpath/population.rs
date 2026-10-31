@@ -22,6 +22,7 @@ use acyclic_stream::testing::{Counted, RequestLedger};
 use acyclic_stream::{
     BoxProviderFuture, CommitRequest, IdempotencyKey, LocalStream, LocalStreamLimits, MemoryLimits,
 };
+use futures::{TryStreamExt as _, stream::FuturesUnordered};
 use std::{
     path::Path,
     sync::{
@@ -89,7 +90,7 @@ impl Fixture {
         })
     }
 
-    pub(super) async fn open(root: &Path, agents: usize) -> Result<Self> {
+    pub(super) async fn open(root: &Path, agents: usize, setup_credit: usize) -> Result<Self> {
         let start = Instant::now();
         let limits = LocalStreamLimits {
             memory: MemoryLimits {
@@ -172,6 +173,7 @@ impl Fixture {
         // Use the same publication owner as session creation. Concatenating
         // independent root requests duplicates their shared activation stream.
         let mut first_request: Option<CommitRequest> = None;
+        let mut publishing = FuturesUnordered::new();
         for index in 0..agents {
             let agent = id(index)?;
             let expected = AgentPath::root(&agent);
@@ -207,9 +209,23 @@ impl Fixture {
                     "agents": agents, "result": "typed invalid argument before submission",
                 }))?;
             }
-            let outcome = Box::pin(fixture.bound.submit_root(prepared)).await?;
-            require_root(&outcome, &expected)?;
+            let fixture = &fixture;
+            publishing.push(async move {
+                let outcome = Box::pin(fixture.bound.submit_root(prepared)).await?;
+                require_root(&outcome, &expected)
+            });
+            if publishing.len() == setup_credit {
+                publishing
+                    .try_next()
+                    .await?
+                    .ok_or("root publication credit lost its producer")?;
+            }
         }
+        // Each original submission retains its own intent, sealed request and
+        // holds. Concurrent submissions can share the provider's group sync;
+        // there is no combined root request or replacement idempotency key.
+        while publishing.try_next().await?.is_some() {}
+        drop(publishing);
         let runtime = fixture.bound.agents().runtime();
         // Registration queues initial replay. Prove that the idle oracle
         // refuses this real unsettled population before consuming that work.
@@ -229,7 +245,7 @@ impl Fixture {
             return Err("dormant population requested model execution".into());
         }
         emit(
-            serde_json::json!({"schema": 1, "kind": "setup", "agents": agents, "elapsed_seconds": start.elapsed().as_secs_f64(), "dormant": agents, "ready": runtime.counts().1, "model_calls": 0, "active": 1}),
+            serde_json::json!({"schema": 1, "kind": "setup", "agents": agents, "elapsed_seconds": start.elapsed().as_secs_f64(), "dormant": agents, "ready": runtime.counts().1, "model_calls": 0, "submission_credit": setup_credit, "executor_threads": 1}),
         )?;
         Ok(fixture)
     }

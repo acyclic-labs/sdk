@@ -22,6 +22,7 @@ struct Options {
     source: String,
     operations: Vec<Operation>,
     populations: Vec<u64>,
+    setup_credit: usize,
 }
 
 impl Options {
@@ -36,10 +37,11 @@ impl Options {
         let mut root = self.root.as_os_str().to_owned();
         root.push(".retry");
         format!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --operations {} --populations {}",
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --setup-credit {} --operations {} --populations {}",
             quoted(&root.to_string_lossy()),
             quoted(&self.source),
             self.samples,
+            self.setup_credit,
             quoted(
                 &self
                     .operations
@@ -66,11 +68,18 @@ impl Options {
         let mut source = None;
         let mut operations = CORE_OPERATIONS.to_vec();
         let mut populations = POPULATIONS.to_vec();
+        let mut setup_credit = 1;
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
                 "--root" => root = arguments.next().map(PathBuf::from),
                 "--samples" => samples = arguments.next().ok_or("missing sample count")?.parse()?,
                 "--source" => source = arguments.next(),
+                "--setup-credit" => {
+                    setup_credit = arguments.next().ok_or("missing setup credit")?.parse()?;
+                    if setup_credit == 0 {
+                        return Err("setup credit must be positive".into());
+                    }
+                }
                 "--operations" => {
                     let names = arguments
                         .next()
@@ -118,6 +127,7 @@ impl Options {
             source: source.ok_or("--source <source revision> is required")?,
             operations,
             populations,
+            setup_credit,
         })
     }
 }
@@ -125,7 +135,7 @@ impl Options {
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations]"
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations]"
         );
         return;
     }
@@ -152,6 +162,7 @@ fn run() -> Result {
         "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
         "root": options.root, "samples": options.samples,
         "runtime_threads": 1, "payload_bytes": 1024, "actor_payload_bytes": 128,
+        "setup_credit": options.setup_credit,
         "actor_checkpoint_bytes": 128,
         "durability": "full", "batch": 1,
         "instrumentation": "original Handler entry timestamp; follow notification waker timestamp; public provider request ledger; current-thread allocator; no tracing subscriber",
@@ -171,7 +182,8 @@ fn run() -> Result {
                 let agents = usize::try_from(*agents)?;
                 let root = options.root.join(agents.to_string());
                 std::fs::create_dir(&root)?;
-                let fixture = population::Fixture::open(&root, agents).await?;
+                let fixture =
+                    population::Fixture::open(&root, agents, options.setup_credit).await?;
                 let (observed, point) = storage::run(
                     &fixture,
                     agents,
