@@ -1,8 +1,14 @@
 use super::*;
 
-/// Media type of an attachment manifest: a canonical JSON list of
+/// Media type of an attachment manifest: a versioned canonical JSON list of
 /// [`Attachment`]s, read whole by its exact version.
 pub const ATTACHMENT_MANIFEST_MEDIA_TYPE: &str = "application/vnd.acyclic.harness.attachments+json";
+
+#[derive(Serialize, Deserialize)]
+enum ManifestVersion {
+    #[serde(rename = "1")]
+    V1,
+}
 
 /// Immutable file plus optional user-visible label.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -36,7 +42,8 @@ pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
     for item in items {
         item.validate(&mut None)?;
     }
-    serde_json::to_vec(items).map_err(|error| Error::Invalid(error.to_string()))
+    serde_json::to_vec(&(ManifestVersion::V1, items))
+        .map_err(|error| Error::Invalid(error.to_string()))
 }
 
 #[cfg(feature = "filesystem")]
@@ -72,12 +79,48 @@ fn guard<T, E: serde::de::Error>(
 }
 #[cfg(feature = "filesystem")]
 struct ManifestSeed<'a> {
+    items: ManifestItemsSeed<'a>,
+}
+#[cfg(feature = "filesystem")]
+impl<'de> serde::de::DeserializeSeed<'de> for ManifestSeed<'_> {
+    type Value = Vec<Attachment>;
+    fn deserialize<D: Deserializer<'de>>(
+        self,
+        decoder: D,
+    ) -> std::result::Result<Self::Value, D::Error> {
+        decoder.deserialize_tuple(2, self)
+    }
+}
+#[cfg(feature = "filesystem")]
+impl<'de> serde::de::Visitor<'de> for ManifestSeed<'_> {
+    type Value = Vec<Attachment>;
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a versioned attachment manifest")
+    }
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(
+        self,
+        mut sequence: S,
+    ) -> std::result::Result<Self::Value, S::Error> {
+        let _: ManifestVersion = sequence
+            .next_element()?
+            .ok_or_else(|| serde::de::Error::custom("missing manifest version"))?;
+        let items = sequence
+            .next_element_seed(self.items)?
+            .ok_or_else(|| serde::de::Error::custom("missing manifest items"))?;
+        if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+            return Err(serde::de::Error::custom("trailing manifest field"));
+        }
+        Ok(items)
+    }
+}
+#[cfg(feature = "filesystem")]
+struct ManifestItemsSeed<'a> {
     maximum: usize,
     io: &'a crate::filesystem::PreparationIo,
     failure: &'a mut Option<Error>,
 }
 #[cfg(feature = "filesystem")]
-impl<'de> serde::de::DeserializeSeed<'de> for ManifestSeed<'_> {
+impl<'de> serde::de::DeserializeSeed<'de> for ManifestItemsSeed<'_> {
     type Value = Vec<Attachment>;
     fn deserialize<D: Deserializer<'de>>(
         self,
@@ -87,7 +130,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for ManifestSeed<'_> {
     }
 }
 #[cfg(feature = "filesystem")]
-impl<'de> serde::de::Visitor<'de> for ManifestSeed<'_> {
+impl<'de> serde::de::Visitor<'de> for ManifestItemsSeed<'_> {
     type Value = Vec<Attachment>;
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("a bounded complete attachment array")
@@ -152,14 +195,24 @@ pub fn decode_attachment_manifest(
         }
         reference.descriptor().verify(bytes, work)
     })?;
+    let unsupported = || {
+        content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "unsupported attachment manifest version",
+        )
+    };
+    acyclic_auth::format::header(bytes, b"[", b"\"1\",", &unsupported, &unsupported)?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut failure = None;
         let result = io.decode(
             ManifestSeed {
-                maximum: item_count.map_or(MAX_PORTABLE_COUNT, |count| count as usize),
-                io,
-                failure: &mut failure,
+                items: ManifestItemsSeed {
+                    maximum: item_count.map_or(MAX_PORTABLE_COUNT, |count| count as usize),
+                    io,
+                    failure: &mut failure,
+                },
             },
             bytes,
             crate::wire::ErrorCode::Invalid,
@@ -170,7 +223,11 @@ pub fn decode_attachment_manifest(
             .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
         decoded.1.substitute(actual)?;
         let encoded_hold;
-        let encoded = io.encode(&decoded.0, io.remaining()?.bytes_encoded, false)?;
+        let encoded = io.encode(
+            &(ManifestVersion::V1, &decoded.0),
+            io.remaining()?.bytes_encoded,
+            false,
+        )?;
         encoded_hold = io.guard_bytes(&encoded)?;
         if encoded.as_ref() != bytes {
             return Err(io.invalid("attachment manifest is not canonical or complete"));
@@ -182,7 +239,7 @@ pub fn decode_attachment_manifest(
         }
         return crate::filesystem::retain_decoded(decoded);
     }
-    let items: Vec<Attachment> = crate::contract::json_from_slice(bytes)
+    let (_, items): (ManifestVersion, Vec<Attachment>) = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("attachment manifest is invalid: {error}")))?;
     if encode_attachment_manifest(&items)? != bytes {
         return Err(content_error(
