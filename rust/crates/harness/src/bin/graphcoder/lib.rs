@@ -13,12 +13,7 @@ mod view;
 
 use acyclic_harness::{
     OperationId,
-    local::{
-        Connection, LocalHarness, LocalHarnessConfig, ModelResolver,
-        agent_conversation::Conversation,
-    },
-    native_settings::SettingsConfig,
-    preset::Preset,
+    local::{Connection, LocalHarness, LocalHarnessConfig, agent_conversation::Conversation},
     server::ServerConfig,
 };
 use acyclic_harness_providers::{Credentials, Registry};
@@ -78,36 +73,20 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
     }
 }
 
-/// The `GraphCoder` preset with argv's overrides for the local harness: the
-/// harness resolves its models through the provider registry and its catalog,
-/// under the workspace's native settings and search.
+/// The shared configured harness and the caller's approval policy.
 fn configure(
     args: &Args,
     credentials: Credentials,
 ) -> Result<LocalHarnessConfig, Box<dyn std::error::Error>> {
-    let mut registry = Registry::new(credentials)?;
-    if let Some(path) = &args.catalog {
-        registry.load_catalog(path)?;
-    }
-    let models = ModelResolver::new(registry.default_model().to_owned(), move |selection| {
-        let provider = Arc::new(registry.resolve(selection)?);
-        Ok((provider.model().clone(), provider as _))
-    });
-    let mut preset = Preset::graphcoder();
-    if let Some(path) = &args.approval_policy {
-        preset.approval_policy = serde_json::from_slice(&std::fs::read(path)?)?;
-    }
-    let mut config =
-        LocalHarnessConfig::resolving(&args.workspace, Arc::new(models), args.model.clone())
-            .working_directory(&std::env::current_dir()?)?;
+    let policy = match &args.approval_policy {
+        Some(path) => Some(serde_json::from_slice(&std::fs::read(path)?)?),
+        None => None,
+    };
+    let mut config = Registry::new(credentials)?.configure(&args.workspace, policy)?;
     if let Some(directory) = &args.directory {
         config = config.active_directory(directory);
     }
-    if let Some(root) = &args.settings_root {
-        config = config
-            .settings(SettingsConfig::new(&args.workspace, root).codex_home(root.join(".codex")));
-    }
-    Ok(config.preset(&preset))
+    Ok(config)
 }
 
 // Own native phase futures separately from the CLI orchestration frame.

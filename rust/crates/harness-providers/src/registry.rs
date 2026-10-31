@@ -101,7 +101,12 @@ impl Registry {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_catalog(&mut self, path: &std::path::Path) -> Result<()> {
         let bytes = std::fs::read(path).map_err(|_| invalid("cannot read provider catalog"))?;
-        let catalog = crate::catalog_document::parse(&bytes)?;
+        self.load_catalog_bytes(&bytes)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn load_catalog_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        let catalog = crate::catalog_document::parse(bytes)?;
         self.update_catalog(Changes::Many(catalog.providers), catalog.default_model)
     }
 

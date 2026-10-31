@@ -115,6 +115,10 @@ pub struct StockExecutors {
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
     profiles: Option<Arc<dyn crate::agent::SpawnProfiles>>,
+    profile_models: Option<(
+        Arc<crate::profile::Profiles>,
+        Arc<dyn crate::profile::ProfileModels>,
+    )>,
     context: Arc<dyn TurnContext>,
 }
 
@@ -203,6 +207,7 @@ impl StockExecutors {
             compaction,
             agent_tools: Vec::new(),
             profiles: None,
+            profile_models: None,
             context,
         }
     }
@@ -224,6 +229,19 @@ impl StockExecutors {
         self.profiles = Some(profiles);
         self
     }
+
+    /// Selects each actor's admitted role model at the original durable turn
+    /// identity. All execution still uses this stock composition.
+    #[must_use]
+    pub fn with_profile_models(
+        mut self,
+        profiles: Arc<crate::profile::Profiles>,
+        models: Arc<dyn crate::profile::ProfileModels>,
+    ) -> Self {
+        self.profiles = Some(profiles.clone());
+        self.profile_models = Some((profiles, models));
+        self
+    }
 }
 
 impl TurnExecutors for StockExecutors {
@@ -235,10 +253,19 @@ impl TurnExecutors for StockExecutors {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
         Box::pin(async move {
-            let provider = self
-                .provider
+            let (model, original_provider) = match &self.profile_models {
+                Some((profiles, models)) => {
+                    let pin = agent.profile.as_ref().ok_or_else(|| {
+                        Error::Invalid("configured actor has no profile pin".into())
+                    })?;
+                    profiles.pinned(pin)?;
+                    models.select(pin, turn, agent.conversation_tail)?
+                }
+                None => (self.model.clone(), self.provider.clone()),
+            };
+            let provider = original_provider
                 .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
-                .unwrap_or_else(|| Arc::clone(&self.provider));
+                .unwrap_or(original_provider);
             // The agent tools act for this turn: their effects commit with it.
             let mut tools = self.tools.clone();
             if let Some(effects) = &authority.effects
@@ -258,18 +285,23 @@ impl TurnExecutors for StockExecutors {
                     (&self.agent_tools, self.profiles.clone()),
                 )?;
             }
-            let executor = StockExecutor::new(
-                self.model.clone(),
-                provider,
-                ContextPipeline::default(),
-                tools,
-            )
-            .with_limits(self.limits)
-            .with_compaction_policy(self.compaction.clone());
+            let executor = StockExecutor::new(model, provider, ContextPipeline::default(), tools)
+                .with_limits(self.limits)
+                .with_compaction_policy(self.compaction.clone());
             let executor = self
                 .context
                 .prepare((executor, self.limits), agent, turn, input, authority)
                 .await?;
+            let executor = if let Some((profiles, _)) = &self.profile_models {
+                executor.with_profile(
+                    profiles.clone(),
+                    agent.profile.clone().ok_or_else(|| {
+                        Error::Invalid("configured actor has no profile pin".into())
+                    })?,
+                )?
+            } else {
+                executor
+            };
             Ok(Arc::new(executor) as Arc<dyn Executor>)
         })
     }

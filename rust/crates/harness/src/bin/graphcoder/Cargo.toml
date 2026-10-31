@@ -17,7 +17,7 @@ path = "../graphcoder.rs"
 
 [dependencies]
 acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
-acyclic-harness-providers = { path = "../../../../harness-providers" }
+acyclic-harness-providers = { path = "../../../../harness-providers", features = ["local"] }
 acyclic-native-runtime = { path = "../../../../native-runtime" }
 acyclic-stream = { path = "../../../../stream", default-features = false }
 clap.workspace = true

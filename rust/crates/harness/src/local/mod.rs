@@ -97,6 +97,10 @@ pub struct LocalHarness {
     approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     /// Absent for passive native-host coordination.
     agent: Option<(Model, Arc<dyn ModelProvider>)>,
+    profiles: Option<(
+        Arc<crate::profile::Profiles>,
+        Arc<dyn crate::profile::ProfileModels>,
+    )>,
     context_manifest: Option<crate::conversation::FileRef>,
     /// The verifier of a served tree's caller and clients; see
     /// [`LocalHarnessConfig::served`].

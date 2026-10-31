@@ -70,6 +70,8 @@ impl StockExecution<'_> {
             executor: &'static str,
             input: &'a TurnInput,
             model: &'a Model,
+            #[cfg(feature = "filesystem")]
+            profile: Option<&'a crate::agent::AgentProfilePin>,
             max_output_tokens: Option<u32>,
             context: &'a [Value],
             tools: &'a [crate::tool::ToolDefinition],
@@ -116,6 +118,8 @@ impl StockExecution<'_> {
                 executor: "acyclic.stock.v7",
                 input,
                 model: &self.stock.model,
+                #[cfg(feature = "filesystem")]
+                profile: self.stock.profile.as_ref().map(|(_, pin, _)| pin),
                 max_output_tokens: self.output_tokens(),
                 context: &contracts,
                 tools: &tools,

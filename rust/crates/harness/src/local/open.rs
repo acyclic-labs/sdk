@@ -422,6 +422,7 @@ impl Opening {
             preset: self.preset,
             approval_models: self.config.approval_models,
             agent: self.config.model,
+            profiles: self.config.profiles,
             context_manifest: self.config.context_manifest,
             served: self.config.served,
             active_directory: self.config.active_directory,

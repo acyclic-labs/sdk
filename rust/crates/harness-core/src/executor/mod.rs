@@ -47,6 +47,8 @@ use accounting::*;
 mod binding;
 mod compaction;
 mod composition;
+#[cfg(feature = "filesystem")]
+mod code_mode;
 mod content;
 mod dispatch;
 mod live_reply;
@@ -510,6 +512,10 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    #[cfg(feature = "filesystem")]
+    profile: Option<(Arc<crate::profile::Profiles>, crate::agent::AgentProfilePin, String)>,
+    #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+    code_runtime: Option<Arc<crate::code_mode::CodeRuntime>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,

@@ -15,7 +15,7 @@ pub enum InputFormat {
 )]
 pub struct Args {
     /// Own workspace files for native coding hosts, without a provider or agent loop.
-    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root"])]
+    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "credentials", "operation"])]
     pub host_workspace: bool,
     /// Explicit durable storage, opened only by this trusted harness owner.
     #[arg(long, requires = "host_workspace")]
@@ -25,14 +25,8 @@ pub struct Args {
     /// Instruction scope relative to the workspace root.
     #[arg(long)]
     pub directory: Option<String>,
-    #[arg(long, env = "GRAPHCODER_MODEL")]
-    pub model: Option<String>,
-    #[arg(long)]
-    pub catalog: Option<PathBuf>,
     #[arg(long)]
     pub credentials: Option<PathBuf>,
-    #[arg(long)]
-    pub settings_root: Option<PathBuf>,
     /// JSON approval policy; defaults to the shipped `GraphCoder` policy data.
     #[arg(long)]
     pub approval_policy: Option<PathBuf>,

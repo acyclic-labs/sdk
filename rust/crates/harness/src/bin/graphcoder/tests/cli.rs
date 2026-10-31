@@ -3,9 +3,8 @@
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
-    io::Write as _,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Output, Stdio},
     sync::{Arc, Mutex},
 };
 
@@ -54,7 +53,7 @@ async fn model(directory: &Path) -> Model {
             .unwrap();
     });
     let catalog = directory.join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
+    std::fs::write(&catalog, serde_json::to_vec(&json!({"default_model":"graphcoder-qual/tiny","graphcoder-qual":{
         "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
         "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
@@ -111,10 +110,57 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Runs the binary to its exit, or kills it after a minute.
+/// Runs the binary to its process-exit event.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
-    let mut command = Command::new(build_metadata::EXECUTABLE);
-    fixture.custody.configure(&mut command);
+    std::fs::create_dir_all(fixture.workspace.join(".harness")).unwrap();
+    std::fs::copy(catalog, fixture.workspace.join(".harness/providers.json")).unwrap();
+    let profiles = fixture.workspace.join(".harness/models/graphcoder-qual");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("_family.md"),
+        "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\ncache: automatic\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        profiles.join("tiny.md"),
+        "---\nversion: 1\nkey: graphcoder-qual/tiny\n---\n",
+    )
+    .unwrap();
+    let roles = fixture.workspace.join(".harness/roles");
+    std::fs::create_dir_all(&roles).unwrap();
+    for (name, source) in [
+        (
+            "orchestrator",
+            include_str!("../../../../../harness-core/src/profile/roles/orchestrator.md"),
+        ),
+        (
+            "advisor",
+            include_str!("../../../../../harness-core/src/profile/roles/advisor.md"),
+        ),
+        (
+            "worker",
+            include_str!("../../../../../harness-core/src/profile/roles/worker.md"),
+        ),
+        (
+            "reviewer",
+            include_str!("../../../../../harness-core/src/profile/roles/reviewer.md"),
+        ),
+    ] {
+        let source = source
+            .lines()
+            .map(|line| {
+                if line.starts_with("model:") {
+                    "model: graphcoder-qual/tiny"
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(roles.join(format!("{name}.md")), source).unwrap();
+    }
+    let mut command = tokio::process::Command::new(build_metadata::EXECUTABLE);
+    fixture.custody.configure(command.as_std_mut());
     command
         .env("CODEX_HOME", fixture.settings.join(".codex"))
         .env("HOME", &fixture.home)
@@ -128,33 +174,19 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .current_dir(&fixture.workspace)
         .arg("--workspace")
         .arg(&fixture.workspace)
-        .arg("--settings-root")
-        .arg(&fixture.settings)
-        .arg("--catalog")
-        .arg(catalog)
-        .args(["--model", "graphcoder-qual/tiny"])
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let stdin = stdin.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let mut child = command.spawn().unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(stdin.as_bytes())
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while child.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let _ = child.kill();
-        child.wait_with_output().unwrap()
-    })
-    .await
-    .unwrap()
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn().unwrap();
+    {
+        use tokio::io::AsyncWriteExt as _;
+        let mut input = child.stdin.take().unwrap();
+        input.write_all(stdin.as_bytes()).await.unwrap();
+        input.shutdown().await.unwrap();
+    }
+    child.wait_with_output().await.unwrap()
 }
 
 fn succeeded(output: &Output) -> String {

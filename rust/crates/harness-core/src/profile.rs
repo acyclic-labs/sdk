@@ -8,6 +8,13 @@ use crate::{Error, Result, approvals::ApprovalGate, context::ModelContextCapacit
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeSet, io::Write};
 
+mod runtime;
+pub use runtime::{ProfileModels, Profiles};
+pub mod models;
+
+mod spawn;
+pub use spawn::{AgentProfilePin, SpawnContext, SpawnProfiles};
+
 #[cfg(test)]
 mod tests;
 
@@ -70,24 +77,14 @@ pub enum Cache {
     Explicit,
 }
 
-/// Context carried by a role. `TopLevel` refuses child admission.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SpawnContext {
-    /// A root role that cannot be admitted as a child.
-    TopLevel,
-    /// Only the self-contained brief and explicitly sent artifacts.
-    Fresh,
-    /// A stream fork at the parent's conversation cut plus the brief.
-    Fork,
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ModelLayer {
     version: u32,
     #[serde(default)]
     key: Option<String>,
+    #[serde(default)]
+    members: Option<Vec<String>>,
     #[serde(default)]
     tools: Option<Vec<ToolRevision>>,
     #[serde(default)]
@@ -147,27 +144,28 @@ impl<T: DeserializeOwned> File<T> {
     }
 }
 
-/// Family and model files plus the original provider-verified hard capacities.
-/// Files are immutable after parsing; edits become a new epoch's input.
-pub struct ModelProfile {
+/// Strictly parsed files, before the original provider admits their selection.
+pub struct ModelFiles {
     family: File<ModelLayer>,
     model: File<ModelLayer>,
-    capacity: ModelContextCapacity,
-    renderer_revision: String,
 }
 
-impl ModelProfile {
-    /// Parses `models/<family>/_family.md` and its selected model file.
-    /// The caller supplies the actual renderer revision and verified capacity;
-    /// profile text cannot advertise a larger provider capacity.
-    pub fn parse(
-        family: &str,
-        model: &str,
-        capacity: ModelContextCapacity,
-        renderer_revision: &str,
-    ) -> Result<Self> {
-        capacity.validate()?;
-        nonempty(renderer_revision)?;
+impl ModelFiles {
+    /// Logical provider/model identity requested by these files.
+    pub fn key(&self) -> &str {
+        self.model
+            .metadata
+            .key
+            .as_deref()
+            .expect("validated model key")
+    }
+    /// Alloy members are model-file data; an ordinary model has none.
+    pub fn members(&self) -> Option<&[String]> {
+        self.model.metadata.members.as_deref()
+    }
+    /// Parses family and model metadata once, using the shared frontmatter
+    /// parser. Discovering an alloy does not reparse either source file.
+    pub fn parse(family: &str, model: &str) -> Result<Self> {
         let family = File::<ModelLayer>::parse(family)?;
         let model = File::<ModelLayer>::parse(model)?;
         version(family.metadata.version)?;
@@ -178,6 +176,12 @@ impl ModelProfile {
             .as_deref()
             .ok_or_else(|| invalid("model key is absent"))?;
         nonempty(key)?;
+        if let Some(members) = &model.metadata.members {
+            if members.is_empty() {
+                return Err(invalid("alloy has no members"));
+            }
+            unique(members)?;
+        }
         for layer in [&family.metadata, &model.metadata] {
             if let Some(tools) = &layer.tools {
                 let mut seen = BTreeSet::new();
@@ -191,12 +195,49 @@ impl ModelProfile {
                 }
             }
         }
-        Ok(Self {
-            family,
-            model,
+        Ok(Self { family, model })
+    }
+
+    /// Binds actual provider hard bounds; profile files cannot invent them.
+    pub fn admit(
+        self,
+        capacity: ModelContextCapacity,
+        renderer_revision: &str,
+    ) -> Result<ModelProfile> {
+        capacity.validate()?;
+        nonempty(renderer_revision)?;
+        Ok(ModelProfile {
+            family: self.family,
+            model: self.model,
             capacity,
             renderer_revision: renderer_revision.into(),
         })
+    }
+}
+
+/// Family and model files plus the original provider-verified hard capacities.
+/// Files are immutable after parsing; edits become a new epoch's input.
+pub struct ModelProfile {
+    family: File<ModelLayer>,
+    model: File<ModelLayer>,
+    capacity: ModelContextCapacity,
+    renderer_revision: String,
+}
+
+impl ModelProfile {
+    /// Alloy members are model-file data; an ordinary model has none.
+    pub fn members(&self) -> Option<&[String]> {
+        self.model.metadata.members.as_deref()
+    }
+
+    /// Parses and admits a selected family/model through the same boundary.
+    pub fn parse(
+        family: &str,
+        model: &str,
+        capacity: ModelContextCapacity,
+        renderer_revision: &str,
+    ) -> Result<Self> {
+        ModelFiles::parse(family, model)?.admit(capacity, renderer_revision)
     }
 }
 
@@ -204,6 +245,10 @@ impl ModelProfile {
 pub struct RoleFile(File<Role>);
 
 impl RoleFile {
+    /// File identity used for lookup and persisted actor custody.
+    pub fn name(&self) -> &str {
+        &self.0.metadata.name
+    }
     /// Parses a versioned role file without resolving or opening its model.
     pub fn parse(source: &str) -> Result<Self> {
         let file = File::<Role>::parse(source)?;
@@ -339,7 +384,12 @@ impl<'a> AgentProfile<'a> {
     }
 }
 
-fn capacity(model: &ModelProfile, project: &Override, agent: &Override) -> Result<Capacity> {
+fn capacity(
+    model: &ModelProfile,
+    project: &Override,
+    agent: &Override,
+    output: u32,
+) -> Result<Capacity> {
     let family = &model.family.metadata;
     let selected = &model.model.metadata;
     let budget = agent
@@ -353,7 +403,7 @@ fn capacity(model: &ModelProfile, project: &Override, agent: &Override) -> Resul
         .or(project.watermark_tokens)
         .or(selected.watermark_tokens)
         .or(family.watermark_tokens)
-        .ok_or_else(|| invalid("profile watermark is absent"))?;
+        .unwrap_or_else(|| budget.saturating_sub(output));
     if budget == 0
         || budget > model.capacity.context_tokens
         || watermark == 0
@@ -379,16 +429,37 @@ pub fn resolve<'a>(
     project: &'a ProjectLayer,
     agent: &'a AgentOverride<'a>,
 ) -> Result<AgentProfile<'a>> {
+    resolve_layers(model, role, project, &agent.file, agent.approvals)
+}
+
+fn resolve_layers<'a>(
+    model: &'a ModelProfile,
+    role: &'a RoleFile,
+    project: &'a ProjectLayer,
+    agent: &'a File<Override>,
+    approvals: &'a ApprovalGate,
+) -> Result<AgentProfile<'a>> {
+    resolve_cached(model, role, project, agent, approvals, None)
+}
+
+fn resolve_cached<'a>(
+    model: &'a ModelProfile,
+    role: &'a RoleFile,
+    project: &'a ProjectLayer,
+    agent: &'a File<Override>,
+    approvals: &'a ApprovalGate,
+    identities: Option<([u8; 32], [u8; 32])>,
+) -> Result<AgentProfile<'a>> {
     let family = &model.family.metadata;
     let selected = &model.model.metadata;
     let role_meta = &role.0.metadata;
-    let capacity = capacity(model, &project.0.metadata, &agent.file.metadata)?;
     let output = role_meta
         .max_output_tokens
         .or(model.capacity.output_tokens)
         .ok_or_else(|| invalid("unknown output capacity requires a role output reservation"))?;
+    let capacity = capacity(model, &project.0.metadata, &agent.metadata, output)?;
     if output >= capacity.budget_tokens
-        || capacity.watermark_tokens >= capacity.budget_tokens - output
+        || capacity.watermark_tokens > capacity.budget_tokens - output
         || !model.capacity.permits_output(output)
     {
         return Err(invalid("role output reservation exceeds capacity"));
@@ -422,34 +493,39 @@ pub fn resolve<'a>(
     };
     // Hash the actual borrowed prefix, without a temporary JSON buffer. Fixed
     // struct fields and ordered vectors have no map-iteration dependency.
-    let mut prefix_hash = HashWriter(blake3::Hasher::new());
-    serde_json::to_writer(&mut prefix_hash, &prefix)
-        .map_err(|error| invalid(&format!("profile encoding failed: {error}")))?;
-    let prefix_digest = *prefix_hash.0.finalize().as_bytes();
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.agent-profile.v1");
-    for digest in [
-        prefix_digest,
-        model.family.digest,
-        model.model.digest,
-        role.0.digest,
-        project.0.digest,
-        agent.file.digest,
-        agent.approvals.identity_ref().digest,
-    ] {
-        hash.update(&digest);
-    }
+    let (digest, prefix_digest) = if let Some(identities) = identities {
+        identities
+    } else {
+        let mut prefix_hash = HashWriter(blake3::Hasher::new());
+        serde_json::to_writer(&mut prefix_hash, &prefix)
+            .map_err(|error| invalid(&format!("profile encoding failed: {error}")))?;
+        let prefix_digest = *prefix_hash.0.finalize().as_bytes();
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic.agent-profile.v1");
+        for digest in [
+            prefix_digest,
+            model.family.digest,
+            model.model.digest,
+            role.0.digest,
+            project.0.digest,
+            agent.digest,
+            approvals.identity_ref().digest,
+        ] {
+            hash.update(&digest);
+        }
+        (*hash.finalize().as_bytes(), prefix_digest)
+    };
     Ok(AgentProfile {
-        digest: *hash.finalize().as_bytes(),
+        digest,
         prefix_digest,
         prefix,
         overlay: RoleOverlay {
             name: &role_meta.name,
-            directives: [&role.0.body, &agent.file.body],
+            directives: [&role.0.body, &agent.body],
             allowed_tools: role_meta.allowed_tools.as_deref(),
             effort: role_meta.effort,
             max_output_tokens: role_meta.max_output_tokens,
-            approval_policy: agent.approvals,
+            approval_policy: approvals,
         },
     })
 }

@@ -13,6 +13,7 @@ crate-type = ["rlib", "cdylib"]
 
 [features]
 endpoint-presets = []
+local = ["dep:acyclic-harness", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-harness/search-http"]
 # The browser content reader lives in the facade's wasm bindings.
 browser = ["acyclic-harness-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
 wasm-journal = ["browser", "acyclic-harness/wasm-journal"]
@@ -33,6 +34,7 @@ serde_json.workspace = true
 url = "2.5.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, optional = true }
 acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }
 serde_path_to_error = "0.1.20"
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["filesystem"] }

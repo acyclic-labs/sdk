@@ -7,6 +7,10 @@ use crate::{Error, Result};
 /// Unknown keys require explicit files instead of a guessed family or model.
 pub fn sources(key: &str) -> Result<(&'static str, &'static str)> {
     let sources = match key {
+        "alloy/advisor" => (
+            include_str!("alloy/_family.md"),
+            include_str!("alloy/advisor.md"),
+        ),
         "openai/gpt-6.1-sol" => (OPENAI, include_str!("openai/gpt-6.1-sol.md")),
         "openai/gpt-6-astra" => (OPENAI, include_str!("openai/gpt-6-astra.md")),
         "openai/gpt-6.1-terra" => (OPENAI, include_str!("openai/gpt-6.1-terra.md")),

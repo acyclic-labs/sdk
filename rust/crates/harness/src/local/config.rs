@@ -43,6 +43,10 @@ pub struct LocalHarnessConfig {
     /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
+    pub(super) profiles: Option<(
+        Arc<crate::profile::Profiles>,
+        Arc<dyn crate::profile::ProfileModels>,
+    )>,
     /// Resolves the model selection, approver models and search at open.
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     pub(super) models: Option<(Arc<ModelResolver>, Option<String>)>,
@@ -94,6 +98,21 @@ impl LocalHarnessConfig {
         Self::configuration(workspace.into(), Some(model))
     }
 
+    /// Uses the shared file-resolved profiles and their original provider
+    /// registry. Roles choose models at each durable turn, never through a
+    /// binary-specific model or tool override.
+    pub fn configured(
+        workspace: impl Into<PathBuf>,
+        profiles: Arc<crate::profile::Profiles>,
+        models: Arc<dyn crate::profile::ProfileModels>,
+    ) -> Result<Self> {
+        let root = profiles.root()?;
+        let binding = models.select(&root, crate::OperationId::from_bytes([0; 16]), 0)?;
+        let mut config = Self::configuration(workspace.into(), Some(binding));
+        config.profiles = Some((profiles, models));
+        Ok(config)
+    }
+
     /// Selects a checkout whose model resolves at open through `models`: `selection`, else the
     /// native settings' configured model, else the resolver's default. Approver
     /// models resolve through `models` too; the settings' search provider backs the preset's
@@ -118,19 +137,18 @@ impl LocalHarnessConfig {
         settings: &crate::native_settings::SettingsConfig,
         injected: bool,
     ) -> Result<Self> {
-        let Some((models, selection)) = self.models.take() else {
-            return Ok(self);
-        };
-        let selection = match selection {
-            Some(selection) => selection,
-            None => settings
-                .configured_model()?
-                .unwrap_or_else(|| models.default.clone()),
-        };
-        self.model = Some(models.resolve(&selection)?);
-        for model in self.approval_policy.models() {
-            self.approval_models
-                .insert(model.into(), models.resolve(model)?);
+        if let Some((models, selection)) = self.models.take() {
+            let selection = match selection {
+                Some(selection) => selection,
+                None => settings
+                    .configured_model()?
+                    .unwrap_or_else(|| models.default.clone()),
+            };
+            self.model = Some(models.resolve(&selection)?);
+            for model in self.approval_policy.models() {
+                self.approval_models
+                    .insert(model.into(), models.resolve(model)?);
+            }
         }
         #[cfg(feature = "search-http")]
         {
@@ -172,6 +190,7 @@ impl LocalHarnessConfig {
             hermetic: false,
             test_state: None,
             model,
+            profiles: None,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             models: None,
             context_manifest: None,

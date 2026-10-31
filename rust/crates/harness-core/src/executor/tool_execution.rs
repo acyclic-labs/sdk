@@ -408,6 +408,25 @@ impl StockExecution<'_> {
         tool: &crate::tool::Tool,
         started: bool,
     ) -> Result<Option<PolicyStop>> {
+        #[cfg(feature = "filesystem")]
+        if let Some((profiles, pin, model)) = &self.stock.profile
+            && !profiles.tool_available(
+                pin,
+                model,
+                &tool.definition.name,
+                &tool.definition.revision,
+            )?
+        {
+            return if started {
+                Err(Error::Indeterminate(invocation.operation_id))
+            } else {
+                Ok(Some(PolicyStop::Failed(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "role does not permit this tool capability",
+                ))))
+            };
+        }
         // Every call, ordinary or native, passes the one pinned policy. A
         // call reaching here without one has no tool authority, so it is
         // refused: there is no ungated state.
