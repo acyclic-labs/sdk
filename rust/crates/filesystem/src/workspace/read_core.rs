@@ -18,36 +18,55 @@ pub(super) async fn read_selected<
         let (mut checkout, path) = workspace
             .open_read_path(selector, path, &mut accounting, cancellation)
             .await?;
-        let lookup = {
-            let (lookup, _allocation) = checkout
-                .value
-                .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true)
-                .await?;
-            lookup
-        };
-        let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
-        if record.kind != FileKind::Regular {
-            return Err(WorkspaceError::NotRegularFile);
-        }
-        let length = regular_file_bytes(record)?;
-        if length > maximum_bytes {
-            return Err(WorkspaceError::ReadLimitExceeded);
-        }
-        if length > checkout.value.volume_config().limits.maximum_read_bytes {
-            return Err(
-                crate::FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into(),
-            );
-        }
-        let range = crate::ByteRange { offset: 0, length };
-        checkout
-            .value
-            .read_record_range_with_accounting(record, range, range, &mut accounting, cancellation)
-            .await
-            .map(|read| read.bytes)
-            .map_err(WorkspaceError::from)
+        read_checkout(
+            &mut checkout.value,
+            &path.value,
+            maximum_bytes,
+            &mut accounting,
+            cancellation,
+        )
+        .await
     }
     .await;
     finish(workspace, &work, result, &mut accounting, cancellation).await
+}
+
+/// Shared read body for selected generations and unpublished transactions.
+pub(super) async fn read_checkout<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    checkout: &mut Checkout<A, O>,
+    path: &NamespacePath,
+    maximum_bytes: u64,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<acyclic_stream::OwnedBytes, WorkspaceError> {
+    let lookup = {
+        let (lookup, _allocation) = checkout
+            .lookup_no_follow_with_accounting(path, accounting, cancellation, true)
+            .await?;
+        lookup
+    };
+    let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
+    if record.kind != FileKind::Regular {
+        return Err(WorkspaceError::NotRegularFile);
+    }
+    let length = regular_file_bytes(record)?;
+    if length > maximum_bytes {
+        return Err(WorkspaceError::ReadLimitExceeded);
+    }
+    if length > checkout.volume_config().limits.maximum_read_bytes {
+        return Err(
+            crate::FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into(),
+        );
+    }
+    let range = crate::ByteRange { offset: 0, length };
+    checkout
+        .read_record_range_with_accounting(record, range, range, accounting, cancellation)
+        .await
+        .map(|read| read.bytes)
+        .map_err(WorkspaceError::from)
 }
 
 pub(super) async fn read_range<
@@ -368,7 +387,7 @@ pub(super) async fn plan<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         .map_err(|failure| failure.error)
 }
 
-async fn finish<
+pub(super) async fn finish<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
     W: crate::facade::FsWork,

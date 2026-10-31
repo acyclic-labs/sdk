@@ -1,5 +1,38 @@
 use super::*;
 
+#[cfg(any(test, feature = "distributed"))]
+impl<P, O> Transaction<crate::StreamAuthorityStore<P>, O>
+where
+    P: crate::distributed::AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// Transfers this authored transaction to the caller's atomic publication.
+    /// Its original operation identity, evidence and permit remain unchanged.
+    /// A stale transaction must be explicitly rebased before composition;
+    /// companion actor state cannot be independently rebased or submitted.
+    pub async fn contribute_publication<W: crate::facade::FsWork>(
+        self,
+        intent: crate::kernel::PublicationIntent,
+        commit: &mut crate::FilesystemCommit,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<crate::PublicationContribution, FsError> {
+        if self.requires_rebase {
+            let accounting = work.accounting(cancellation);
+            return work.finish(Err(FsError::SourceSnapshotStale), &accounting);
+        }
+        self.checkout
+            .contribute_publication(
+                self.idempotency_key.operation_id(),
+                intent,
+                commit,
+                work,
+                cancellation,
+            )
+            .await
+    }
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
     /// Publishes this private candidate under the supplied limits and seal.
     /// An unchanged candidate still seals this transaction's idempotency key.

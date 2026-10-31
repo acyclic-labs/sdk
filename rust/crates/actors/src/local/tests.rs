@@ -1158,3 +1158,85 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
     assert!(binding.read_journal(3, 1).await.is_err());
     Ok(())
 }
+
+/// The original actor fence and activation survive transfer to an outer owner.
+/// Neither preparation nor a refused companion may publish a partial alarm.
+#[tokio::test]
+async fn prepared_state_flush_composes_without_consuming_or_submitting() -> TestResult {
+    use acyclic_stream::testing::Counted;
+    for conflict in [None, Some("companion"), Some("epoch")] {
+        let provider = Arc::new(Counted::new(MemoryStream::default()));
+        let store = Store::new(provider.clone(), state_root()?);
+        let address = actor("composed-alarm")?;
+        place(&store, &address).await?;
+        let initial = store.load(&address).await?;
+        let cursor = initial.state().ok_or("missing state")?.cursor("inbox");
+        let mut binding = store.bind_state(initial, 1)?;
+        binding.transaction(|state| state.alarm(Some(42)))?;
+        let before = provider.requests();
+        let mut prepared = binding
+            .prepare_flush(key("composed-alarm")?)?
+            .ok_or("missing prepared alarm")?;
+        assert_eq!(provider.requests().since(before).data(), 0);
+        assert_eq!(provider.requests().since(before).control(), 0);
+        let companion = StreamPath::new("files/schedule")?;
+        prepared.join(Effect {
+            conditions: vec![acyclic_stream::CommitCondition::Absent {
+                path: companion.clone(),
+            }],
+            mutation: acyclic_stream::CommitMutation::Append {
+                path: companion.clone(),
+                records: vec![acyclic_stream::AppendRecord::from(
+                    acyclic_stream::OwnedBytes::from_static(b"schedule"),
+                )],
+            },
+        })?;
+        let request = prepared.into_request()?;
+        assert_eq!(
+            store
+                .load(&address)
+                .await?
+                .state()
+                .ok_or("missing state")?
+                .alarm()
+                .deadline_unix_ms(),
+            None
+        );
+        if conflict == Some("companion") {
+            provider
+                .append(acyclic_stream::AppendRequest {
+                    path: companion.clone(),
+                    records: vec![acyclic_stream::OwnedBytes::from_static(b"concurrent")],
+                    if_tail: None,
+                    idempotency_key: key("companion-race")?,
+                })
+                .await?;
+        } else if conflict == Some("epoch") {
+            let current = store.load(&address).await?;
+            store.claim(&current, 2, key("epoch-race")?).await?;
+        }
+        let outcome = provider.commit(request).await?;
+        assert_eq!(
+            matches!(outcome, acyclic_stream::CommitOutcome::Committed(_)),
+            conflict.is_none()
+        );
+        let observed = store.load(&address).await?;
+        let state = observed.state().ok_or("missing state")?;
+        assert_eq!(
+            state.cursor("inbox"),
+            cursor,
+            "state-only publication cannot consume input"
+        );
+        assert_eq!(
+            state.alarm().deadline_unix_ms(),
+            conflict.is_none().then_some(42)
+        );
+        if conflict == Some("epoch") {
+            assert!(matches!(
+                provider.tail(companion).await,
+                Err(StreamError::NotFound)
+            ));
+        }
+    }
+    Ok(())
+}

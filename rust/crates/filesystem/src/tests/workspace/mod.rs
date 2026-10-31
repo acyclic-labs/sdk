@@ -76,6 +76,7 @@ mod append_segments;
 mod change_sets;
 mod content_equality;
 mod projection_policy;
+mod transaction_reads;
 
 mod discovery;
 

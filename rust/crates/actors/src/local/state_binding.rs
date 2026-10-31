@@ -272,16 +272,9 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
     /// alarm. No input cursor is consumed. The host supplies the invocation's
     /// stable key and must retain this returned cut for its next checkpoint.
     pub async fn flush(&mut self, key: IdempotencyKey) -> Result<(), Error> {
-        if self.fenced {
-            return Err(Error::Conflict);
-        }
-        if !self.dirty {
+        let Some(prepared) = self.prepare_pending(key)? else {
             return Ok(());
-        }
-        self.fenced = true;
-        let effects = self.effects(AlarmChange::Keep)?;
-        let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
-        let prepared = self.store.prepare(&self.snapshot, state, effects, key)?;
+        };
         self.snapshot = self
             .store
             .submit_retained(prepared)
@@ -293,6 +286,37 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         self.dirty = false;
         self.fenced = false;
         Ok(())
+    }
+
+    /// Transfers staged state, journal and alarm to an outer commit owner.
+    /// No input is consumed and nothing is submitted. The publication uses
+    /// this binding's original exact-head/epoch fence and activation effect.
+    /// Use `PreparedPublish::into_request` to compose it with filesystem
+    /// mutations; the outer owner retains and resubmits Unknown unchanged.
+    /// Consuming the binding prevents a second publication of its staged cut.
+    pub fn prepare_flush(
+        mut self,
+        key: IdempotencyKey,
+    ) -> Result<Option<super::PreparedPublish>, Error> {
+        self.prepare_pending(key)
+    }
+
+    fn prepare_pending(
+        &mut self,
+        key: IdempotencyKey,
+    ) -> Result<Option<super::PreparedPublish>, Error> {
+        if self.fenced {
+            return Err(Error::Conflict);
+        }
+        if !self.dirty {
+            return Ok(None);
+        }
+        self.fenced = true;
+        let effects = self.effects(AlarmChange::Keep)?;
+        let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
+        self.store
+            .prepare(&self.snapshot, state, effects, key)
+            .map(Some)
     }
 
     /// Join staged metadata, journal and alarm with the delivery's checkpoint,
