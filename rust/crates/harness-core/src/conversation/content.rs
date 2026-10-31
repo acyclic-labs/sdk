@@ -387,10 +387,13 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             "operation-bound file publication is unavailable",
         ))
     }
-    /// Observes the original once-publication without substituting a mutable head.
+    /// Observes the original publication without substituting a mutable head.
+    /// A replacement supplies its destination volume and relative path;
+    /// `None` selects the operation's original `stage_once` publication.
     fn observe_staged_once<'a>(
         &'a self,
         _operation_id: OperationId,
+        _replacement: Option<(&'a VolumeRef, &'a str)>,
         _maximum_bytes: u64,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {

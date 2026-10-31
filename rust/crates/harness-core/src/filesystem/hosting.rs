@@ -858,7 +858,12 @@ where
         .map_err(turn)?;
         let Some(text) = text else {
             let (staged, _) = publisher
-                .observe_staged_once(operation, self.maximum_bytes, ContentAccess::default())
+                .observe_staged_once(
+                    operation,
+                    None,
+                    self.maximum_bytes,
+                    ContentAccess::default(),
+                )
                 .map_err(turn)?
                 .await
                 .map_err(turn)?;

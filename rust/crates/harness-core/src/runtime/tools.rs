@@ -430,14 +430,25 @@ impl ToolContext {
         &self,
         operation_id: OperationId,
         source: Option<&FileRef>,
+        replacement_path: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        self.observe_once(
-            self.task().tool_content(source.map(FileRef::volume)),
-            operation_id,
-            io,
-        )
-        .await
+        let binding = self.task().tool_content(source.map(FileRef::volume));
+        let writer = super::content_write::content_writer(binding, io)?;
+        let destination = replacement_path
+            .map(|path| writer.destination(source.map(FileRef::volume), path, io))
+            .transpose()?;
+        self.task()
+            .observe_bound_file_once(
+                binding,
+                operation_id,
+                destination
+                    .as_ref()
+                    .map(|(volume, path)| (*volume, path.as_ref())),
+                io,
+                self.effective_scope(),
+            )
+            .await
     }
 
     async fn observe_once(
@@ -447,7 +458,7 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, u64)> {
         self.task()
-            .observe_bound_file_once(binding, operation_id, io, self.effective_scope())
+            .observe_bound_file_once(binding, operation_id, None, io, self.effective_scope())
             .await
     }
 

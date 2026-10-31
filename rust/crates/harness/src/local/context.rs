@@ -69,6 +69,7 @@ impl LocalHarness {
         let (reference, _) = publisher
             .observe_staged_once(
                 manifest_operation(operation),
+                None,
                 // The manifest is a harness record bounded by what it
                 // renders, not admitted content under the file bound.
                 crate::conversation::MAX_EXACT_JS_INTEGER,
@@ -378,6 +379,7 @@ impl LocalHarness {
         let (manifest, _) = publisher
             .observe_staged_once(
                 operation,
+                None,
                 crate::conversation::MAX_EXACT_JS_INTEGER,
                 crate::conversation::ContentAccess::default(),
             )?

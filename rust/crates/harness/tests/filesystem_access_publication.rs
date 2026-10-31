@@ -80,7 +80,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         .await?;
     assert_eq!(
         writer
-            .observe_staged_once(unknown, 4096, ContentAccess::default())?
+            .observe_staged_once(unknown, None, 4096, ContentAccess::default())?
             .await
             .err()
             .ok_or("metadata discovery unexpectedly succeeded")?
@@ -243,6 +243,7 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
             let result = writer
                 .observe_staged_once(
                     operation,
+                    None,
                     4096,
                     acyclic_harness::conversation::ContentAccess {
                         ceiling: None,

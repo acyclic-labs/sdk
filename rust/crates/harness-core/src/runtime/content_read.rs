@@ -391,8 +391,14 @@ impl TaskContext {
         operation_id: OperationId,
         io: Option<&ContentIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        self.observe_bound_file_once(self.content_binding(None), operation_id, io, &self.scope)
-            .await
+        self.observe_bound_file_once(
+            self.content_binding(None),
+            operation_id,
+            None,
+            io,
+            &self.scope,
+        )
+        .await
     }
 
     /// Observes the original once-publication, never a refreshed source/head.
@@ -400,6 +406,7 @@ impl TaskContext {
         &self,
         binding: Option<&ContentBindings>,
         operation_id: OperationId,
+        replacement: Option<(&VolumeRef, &str)>,
         io: Option<&ContentIo>,
         scope: &RuntimeScope,
     ) -> Result<(Option<FileRef>, u64)> {
@@ -407,6 +414,7 @@ impl TaskContext {
         let (file, hold) = writer
             .observe_staged_once(
                 operation_id,
+                replacement,
                 scope.limits.file_bytes,
                 crate::conversation::ContentAccess {
                     ceiling: Some(scope.grants()),
