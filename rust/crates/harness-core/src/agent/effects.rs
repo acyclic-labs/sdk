@@ -116,6 +116,22 @@ pub trait TurnEffects: acyclic_stream::ProviderPlatform {
     /// Every effect the turn recorded since its last commit, ordered by call key.
     fn recorded(&self) -> BoxProviderFuture<'_, crate::Result<Vec<TurnEffect>>>;
 
+    /// The same pending-effect observation under the original work and cancellation.
+    fn holds_with_io<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> crate::Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        if io.is_some() {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "original-work pending agent effects are unavailable",
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || self.holds(operation))
+    }
+
     /// Whether a call other than `operation` recorded an effect that has not
     /// committed yet. Such effects commit before `operation` dispatches, so
     /// the call reaches every child, message and archive they make.
@@ -132,8 +148,18 @@ pub fn call_key(step: u32, operation: OperationId) -> String {
 /// Whether `call` is the key [`call_key`] gives `operation`.
 #[must_use]
 pub fn is_call_of(call: &str, operation: OperationId) -> bool {
-    call.rsplit_once('-')
-        .is_some_and(|(_, key)| key == operation_key(operation))
+    let Some((_, key)) = call.rsplit_once('-') else {
+        return false;
+    };
+    if key.len() != 32 {
+        return false;
+    }
+    let mut encoded = [0; 32];
+    for (index, byte) in operation.into_bytes().iter().enumerate() {
+        encoded[2 * index] = b"0123456789abcdef"[(byte >> 4) as usize];
+        encoded[2 * index + 1] = b"0123456789abcdef"[(byte & 15) as usize];
+    }
+    key.as_bytes() == encoded
 }
 
 /// Lower-case hex of `operation`, as agent tool keys and intents name it.

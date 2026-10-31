@@ -44,6 +44,7 @@ mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
 use accounting::*;
+pub(crate) use accounting::{stock_context_capacity, stock_count_tokens};
 mod binding;
 #[cfg(feature = "filesystem")]
 mod code_mode;

@@ -22,6 +22,7 @@ pub use image::image_media_type;
 mod prefix;
 mod preparation;
 mod profile;
+pub(crate) use preparation::clone_model;
 mod provider;
 mod reasoning;
 mod request;

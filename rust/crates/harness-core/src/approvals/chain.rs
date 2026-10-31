@@ -28,16 +28,33 @@ pub async fn next_stage<'a>(
     files: &dyn ApprovalFiles,
     start: usize,
 ) -> Result<NextStage<'a>> {
-    use crate::runtime::ToolPolicy as _;
-    let parent = parent.map(|parent| format!("parent:{parent}"));
-    if policy.bind()?.identity().digest != digest {
-        return Err(Error::Conflict("approval policy digest changed".into()));
+    next_stage_with_io(policy, digest, parent.as_ref(), request, files, start, None).await
+}
+
+pub(super) async fn next_stage_with_io<'a>(
+    policy: &'a ApprovalPolicy,
+    digest: [u8; 32],
+    parent: Option<&AgentId>,
+    request: &ApprovalRequest<'_>,
+    files: &dyn ApprovalFiles,
+    start: usize,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<NextStage<'a>> {
+    super::io::step(io, 1)?;
+    let parent = parent
+        .map(|parent| super::io::text(format_args!("parent:{parent}"), io))
+        .transpose()?;
+    // This owner pinned and validated the policy at construction. Public callers
+    // still authenticate their supplied digest at the same boundary.
+    if io.is_none() {
+        use crate::runtime::ToolPolicy as _;
+        if policy.bind()?.identity().digest != digest {
+            return Err(Error::Conflict("approval policy digest changed".into()));
+        }
     }
     static HUMAN_POLICY: std::sync::LazyLock<ApprovalPolicy> =
         std::sync::LazyLock::new(ApprovalPolicy::default);
-    let interaction: crate::interaction::Interaction =
-        crate::contract::json_from_slice(request.bytes())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let interaction: crate::interaction::Interaction = super::io::decode(request.bytes(), io)?;
     let policy = match interaction {
         crate::interaction::Interaction::Approval {
             subject:
@@ -48,55 +65,62 @@ pub async fn next_stage<'a>(
             ..
         } => &*HUMAN_POLICY,
         crate::interaction::Interaction::Approval { .. } => policy,
-        _ => return Err(Error::Invalid("not an approval request".into())),
+        _ => {
+            return Err(super::io::error(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "not an approval request",
+            ));
+        }
     };
-    let hash = fingerprint(request.bytes())?;
+    let hash = fingerprint_with_io(request.bytes(), io)?;
     for (stage, approver) in policy.approvers.iter().enumerate().skip(start) {
+        super::io::step(io, 1)?;
         let principal = match approver {
             Approver::Rules { principal, .. }
             | Approver::Llm { principal, .. }
-            | Approver::Human { principal } => principal.clone(),
+            | Approver::Human { principal } => super::io::copy(principal, io)?,
             Approver::Parent => match &parent {
-                Some(parent) => parent.to_owned(),
+                Some(parent) => super::io::copy(parent, io)?,
                 None => {
                     return Ok(NextStage::Decided(ApprovalReviewFile {
-                        principal: "policy:exhausted".into(),
+                        principal: super::io::copy("policy:exhausted", io)?,
                         request_sha256: hash,
                         policy_digest: digest,
                         stage,
                         verdict: RuleVerdict::Deny,
-                        reason: Some("approval parent is unavailable".into()),
+                        reason: Some(super::io::copy("approval parent is unavailable", io)?),
                     }));
                 }
             },
         };
         let expected = ApprovalReviewFile {
             principal,
-            request_sha256: hash.clone(),
+            request_sha256: super::io::copy(&hash, io)?,
             policy_digest: digest,
             stage,
             verdict: RuleVerdict::Ask,
             reason: None,
         };
+        let path = request.review_path_with_io(&expected.principal, io)?;
         let retained_bytes = files
-            .read(
-                &request.review_path(&expected.principal),
-                request.maximum_bytes(),
-            )
+            .read_with_io(&path, request.maximum_bytes(), io)?
             .await?;
         let retained = retained_review(
             retained_bytes.as_deref(),
             &expected,
             request.maximum_bytes(),
+            io,
         )?;
-        if !matches!(approver, Approver::Human { .. } | Approver::Parent)
-            && let Some(review) = &retained
-        {
-            if review.verdict == RuleVerdict::Ask {
-                continue;
+        let retained = if !matches!(approver, Approver::Human { .. } | Approver::Parent) {
+            match retained {
+                Some(review) if review.verdict == RuleVerdict::Ask => continue,
+                Some(review) => return Ok(NextStage::Decided(review)),
+                None => None,
             }
-            return Ok(NextStage::Decided(review.clone()));
-        }
+        } else {
+            retained
+        };
         return Ok(NextStage::Review {
             approver,
             expected,
@@ -104,12 +128,15 @@ pub async fn next_stage<'a>(
         });
     }
     Ok(NextStage::Decided(ApprovalReviewFile {
-        principal: "policy:exhausted".into(),
+        principal: super::io::copy("policy:exhausted", io)?,
         request_sha256: hash,
         policy_digest: digest,
         stage: policy.approvers.len(),
         verdict: RuleVerdict::Deny,
-        reason: Some("approval chain exhausted without permission".into()),
+        reason: Some(super::io::copy(
+            "approval chain exhausted without permission",
+            io,
+        )?),
     }))
 }
 
@@ -198,26 +225,44 @@ pub async fn validate_agent_decision(
 
 /// Digest binding to the exact immutable request bytes.
 pub fn fingerprint(bytes: &[u8]) -> Result<String> {
-    let descriptor =
-        crate::conversation::FileDescriptor::from_bytes(bytes, "application/json", &mut None)?;
-    Ok(ApprovalDecisionFile::new("binding", descriptor.sha256(), 1, false, None)?.request_sha256)
+    fingerprint_with_io(bytes, None)
 }
+
+pub(super) fn fingerprint_with_io(
+    bytes: &[u8],
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<String> {
+    let descriptor = crate::executor::with_history_io(io, |work| {
+        crate::conversation::FileDescriptor::from_bytes(bytes, "application/json", work)
+    })?;
+    let mut encoded = [0; 64];
+    for (index, byte) in descriptor.sha256().iter().enumerate() {
+        encoded[2 * index] = b"0123456789abcdef"[(byte >> 4) as usize];
+        encoded[2 * index + 1] = b"0123456789abcdef"[(byte & 15) as usize];
+    }
+    super::io::copy(std::str::from_utf8(&encoded).expect("hex"), io)
+}
+
 fn retained_review(
     bytes: Option<&[u8]>,
     expected: &ApprovalReviewFile,
     maximum_bytes: u64,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Option<ApprovalReviewFile>> {
     bytes
         .map(|bytes| {
-            super::files::check_bound(bytes.len(), maximum_bytes)?;
-            let review: ApprovalReviewFile = crate::contract::json_from_slice(bytes)
-                .map_err(|error| Error::Storage(error.to_string()))?;
+            super::files::check_bound_with_io(bytes.len(), maximum_bytes, io)?;
+            let review: ApprovalReviewFile = super::io::decode(bytes, io)?;
             if review.principal != expected.principal
                 || review.request_sha256 != expected.request_sha256
                 || review.policy_digest != expected.policy_digest
                 || review.stage != expected.stage
             {
-                return Err(Error::Conflict("approval review binding changed".into()));
+                return Err(super::io::error(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "approval review binding changed",
+                ));
             }
             Ok(review)
         })

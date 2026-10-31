@@ -69,6 +69,17 @@ impl ApprovalDecisionFile {
 
     /// Rejects bodies that name no exact request, version or principal.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_work(&mut None)
+    }
+
+    /// Validates on the original operation without allocating a replacement error.
+    pub(crate) fn validate_with_work(
+        &self,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(work) = work.as_deref_mut() {
+            work.check_cancellation()?;
+        }
         if self.expected_version == 0
             || self.principal.is_empty()
             || self.principal.len() > 255
@@ -79,8 +90,10 @@ impl ApprovalDecisionFile {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             || self.request_sha256.bytes().all(|byte| byte == b'0')
         {
-            return Err(Error::Invalid(
-                "approval decision has no exact request binding".into(),
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "approval decision has no exact request binding",
             ));
         }
         Ok(())
@@ -103,6 +116,26 @@ impl ApprovalDecisionFile {
     #[must_use]
     pub fn principal_file(principal: &str) -> String {
         principal_hex(&Self::principal_digest(principal))
+    }
+
+    pub(crate) fn principal_file_with_work(
+        principal: &str,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<String> {
+        if let Some(work) = work.as_deref_mut() {
+            work.check_cancellation()?;
+            work.hashed_bytes((b"harness/approval-principal\0".len() + principal.len()) as u64)?;
+        }
+        let digest = Self::principal_digest(principal);
+        let mut hex = [0; 32];
+        for (index, byte) in digest.iter().enumerate() {
+            hex[2 * index] = b"0123456789abcdef"[(byte >> 4) as usize];
+            hex[2 * index + 1] = b"0123456789abcdef"[(byte & 15) as usize];
+        }
+        crate::executor::preparation_format(
+            format_args!("{}", std::str::from_utf8(&hex).expect("hex")),
+            work,
+        )
     }
 
     pub(super) fn principal_digest(principal: &str) -> [u8; 16] {

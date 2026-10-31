@@ -8,7 +8,7 @@
 //! [`TurnEffects::holds`]), so a child spawned by one call runs, and is
 //! reachable by name, from the next call on. `wait` records nothing and holds
 //! nothing: until the named children settle, its call does not dispatch (see
-//! [`awaited`]) and the turn commits [`crate::agent::Wait::Children`], which
+//! [`awaited_with_io`]) and the turn commits [`crate::agent::Wait::Children`], which
 //! each child's settlement wakes; dispatched, it reads each child's status
 //! once (see [`crate::agent::settled`]) and returns each one's last answer.
 //!
@@ -166,14 +166,6 @@ struct Turn {
 struct AgentTool {
     name: &'static str,
     turn: Arc<Turn>,
-}
-
-fn rejected(reason: impl Into<String>) -> ToolResult {
-    super::rejected_input(Error::Invalid(reason.into()))
-}
-
-fn decode<T: for<'de> Deserialize<'de>>(arguments: Value) -> std::result::Result<T, ToolResult> {
-    serde_json::from_value(arguments).map_err(|error| rejected(error.to_string()))
 }
 
 /// Prefix of every tool spawn's intent; the rest is the child's name.
@@ -598,40 +590,6 @@ impl AgentTool {
     }
 }
 
-/// The child of `agent` that `reference` names: a spawn name, or the agent
-/// path of one of its children, open or settled.
-fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
-    if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
-        return (path.parent().as_ref() == Some(agent)).then_some(path);
-    }
-    spawned_child(agent, reference).ok()
-}
-
-/// The distinct children a `wait` of `agent` names, each with the reference
-/// naming it, and whether it waits for any rather than all; the model's
-/// error when the input names none or names a non-child.
-fn waited(
-    agent: &AgentPath,
-    arguments: Value,
-) -> std::result::Result<(Vec<(String, AgentPath)>, bool), ToolResult> {
-    let input: WaitAgentInput = decode(arguments)?;
-    let mut children: Vec<(String, AgentPath)> = Vec::with_capacity(input.agents.len());
-    for reference in input.agents {
-        let Some(child) = named_child(agent, &reference) else {
-            return Err(rejected(format!(
-                "{reference} names no child of this agent"
-            )));
-        };
-        if !children.iter().any(|(_, known)| *known == child) {
-            children.push((reference, child));
-        }
-    }
-    if children.is_empty() {
-        return Err(rejected("wait names no child"));
-    }
-    Ok((children, input.mode.unwrap_or_default() == WaitMode::Any))
-}
-
 /// What a call of `tool` with `arguments` waits for before it dispatches: for
 /// a `wait` whose children have not settled (every one, or with `any` the
 /// first), those still unsettled and whether any one suffices. Each child's
@@ -641,25 +599,69 @@ fn waited(
 ///
 /// # Errors
 /// Stream failures reading a child's status.
-pub(crate) async fn awaited(
+pub(crate) async fn awaited_with_io(
     children: &dyn TurnChildren,
     tool: &str,
     arguments: &Value,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Option<(BTreeSet<AgentPath>, bool)>> {
     if tool != "wait" {
         return Ok(None);
     }
-    // A malformed wait dispatches to receive its error.
-    let Ok((named, any)) = waited(children.agent(), arguments.clone()) else {
-        return Ok(None);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let work = if let Some(io) = io {
+        Some(io.original_native_work().ok_or_else(|| {
+            crate::executor::stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unsupported,
+                "child wait requires original native work",
+            )
+        })?)
+    } else {
+        None
     };
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let work: crate::NativeWork<'_> = None;
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    if io.is_some() {
+        return Err(crate::executor::stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "native child wait observation is unavailable",
+        ));
+    }
+    // Invalid model arguments dispatch to the tool's normal refusal. Resource,
+    // cancellation and provider faults retain their original terminal causes.
+    let input =
+        match crate::tool::decode::<WaitAgentInput>(arguments, work).map_err(Error::tool_input) {
+            Ok(input) => input,
+            Err(Error::Invalid(_) | Error::ToolRejected { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+    if input.0.agents.is_empty() {
+        return Ok(None);
+    }
+    let any = input.0.mode.unwrap_or_default() == WaitMode::Any;
     let mut unsettled = BTreeSet::new();
-    for (_, child) in named {
-        match children.settled(&child).await {
+    // Fund the original result tree before std creates its nodes. Its size is
+    // bounded by the explicitly supplied references, never by the agent tree.
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        crate::core::admit_tree_storage::<AgentPath>(input.0.agents.len(), io)?;
+    }
+    for reference in &input.0.agents {
+        let child = match named_child_with_io(children.agent(), reference, io) {
+            Ok(child) => child,
+            Err(Error::ToolRejected { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if unsettled.contains(&child) {
+            continue;
+        }
+        match children.settled_with_io(&child, io)?.await {
             Ok(Some(_)) if any => return Ok(None),
             Ok(Some(_)) => {}
-            // A wait naming no child dispatches to receive its error.
-            Err(Error::NotFound(_)) => return Ok(None),
+            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => return Ok(None),
             Ok(None) => {
                 unsettled.insert(child);
             }

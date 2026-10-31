@@ -400,6 +400,39 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn read_with_io<'a>(
+        &'a self,
+        path: &'a str,
+        maximum_bytes: u64,
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<acyclic_stream::OwnedBytes>>>
+    {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            match io {
+                Some(io) => Self::read_with_io(self, path, maximum_bytes, io).await,
+                None => Ok(Self::read(self, path, maximum_bytes).await?.map(Into::into)),
+            }
+        })
+    }
+
+    fn create_with_io<'a>(
+        &'a self,
+        path: &'a str,
+        bytes: &'a [u8],
+        maximum_bytes: u64,
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<acyclic_stream::OwnedBytes>>>
+    {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            match io {
+                Some(io) => Self::create_with_io(self, path, bytes, maximum_bytes, io).await,
+                None => Ok(Self::create(self, path, bytes, maximum_bytes)
+                    .await?
+                    .map(Into::into)),
+            }
+        })
+    }
+
     fn read<'a>(
         &'a self,
         path: &'a str,

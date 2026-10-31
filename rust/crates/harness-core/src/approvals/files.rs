@@ -1,5 +1,5 @@
 //! Storage contract over paths relative to one agent's private volume.
-use crate::{Error, Result};
+use crate::Result;
 use acyclic_stream::BoxProviderFuture;
 
 /// Result of a durable, atomic create-if-absent operation.
@@ -32,6 +32,52 @@ pub trait ApprovalFiles: acyclic_stream::ProviderPlatform {
         bytes: Vec<u8>,
         maximum_bytes: u64,
     ) -> BoxProviderFuture<'a, Result<ApprovalCreate>>;
+    /// Reads through the same authenticated owner and original operation ledger.
+    fn read_with_io<'a>(
+        &'a self,
+        path: &'a str,
+        maximum_bytes: u64,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<acyclic_stream::OwnedBytes>>>
+    {
+        if io.is_some() {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "original-work approval reads are unavailable",
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            Ok(self.read(path, maximum_bytes).await?.map(Into::into))
+        })
+    }
+
+    /// Publishes the same immutable file, without copying the caller's bytes.
+    /// `None` means created; an existing file returns its original owned bytes.
+    fn create_with_io<'a>(
+        &'a self,
+        path: &'a str,
+        bytes: &'a [u8],
+        maximum_bytes: u64,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<acyclic_stream::OwnedBytes>>>
+    {
+        if io.is_some() {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "original-work approval publication is unavailable",
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            Ok(
+                match self.create(path, bytes.to_vec(), maximum_bytes).await? {
+                    ApprovalCreate::Created => None,
+                    ApprovalCreate::Existing(bytes) => Some(bytes.into()),
+                },
+            )
+        })
+    }
 }
 
 /// Borrowed original request bytes, with a canonical single-component identity.
@@ -47,7 +93,16 @@ pub struct ApprovalRequest<'a> {
 impl<'a> ApprovalRequest<'a> {
     /// Checks the file bound and prevents aliases outside the request directory.
     pub fn new(id: &'a str, bytes: &'a [u8], maximum_bytes: u64) -> Result<Self> {
-        check_bound(bytes.len(), maximum_bytes)?;
+        Self::new_with_io(id, bytes, maximum_bytes, None)
+    }
+
+    pub(super) fn new_with_io(
+        id: &'a str,
+        bytes: &'a [u8],
+        maximum_bytes: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Self> {
+        check_bound_with_io(bytes.len(), maximum_bytes, io)?;
         if id.is_empty()
             || id.len() > 255
             || id == "."
@@ -56,8 +111,10 @@ impl<'a> ApprovalRequest<'a> {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
         {
-            return Err(Error::Invalid(
-                "approval request identity is not canonical".into(),
+            return Err(super::io::error(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "approval request identity is not canonical",
             ));
         }
         Ok(Self {
@@ -86,12 +143,37 @@ impl<'a> ApprovalRequest<'a> {
             crate::interaction::ApprovalDecisionFile::principal_file(principal)
         )
     }
+
+    pub(super) fn review_path_with_io(
+        &self,
+        principal: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<String> {
+        super::io::text(
+            format_args!(
+                "approvals/{}/reviews/{}.json",
+                self.id,
+                super::io::principal_file(principal, io)?
+            ),
+            io,
+        )
+    }
 }
 
 pub(super) fn check_bound(length: usize, maximum_bytes: u64) -> Result<()> {
+    check_bound_with_io(length, maximum_bytes, None)
+}
+
+pub(super) fn check_bound_with_io(
+    length: usize,
+    maximum_bytes: u64,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
     if maximum_bytes == 0 || maximum_bytes == u64::MAX || length as u64 > maximum_bytes {
-        return Err(Error::Invalid(
-            "approval file exceeds its finite byte bound".into(),
+        return Err(super::io::error(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "approval file exceeds its finite byte bound",
         ));
     }
     Ok(())
@@ -103,13 +185,30 @@ pub(super) async fn create_exact(
     bytes: Vec<u8>,
     maximum_bytes: u64,
 ) -> Result<bool> {
-    check_bound(bytes.len(), maximum_bytes)?;
-    match files.create(path, bytes.clone(), maximum_bytes).await? {
-        ApprovalCreate::Created => Ok(true),
-        ApprovalCreate::Existing(existing) => {
-            check_bound(existing.len(), maximum_bytes)?;
-            if existing != bytes {
-                return Err(Error::Conflict("approval file binding changed".into()));
+    create_exact_with_io(files, path, &bytes, maximum_bytes, None).await
+}
+
+pub(super) async fn create_exact_with_io(
+    files: &dyn ApprovalFiles,
+    path: &str,
+    bytes: &[u8],
+    maximum_bytes: u64,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<bool> {
+    check_bound_with_io(bytes.len(), maximum_bytes, io)?;
+    match files
+        .create_with_io(path, bytes, maximum_bytes, io)?
+        .await?
+    {
+        None => Ok(true),
+        Some(existing) => {
+            check_bound_with_io(existing.len(), maximum_bytes, io)?;
+            if existing.as_ref() != bytes {
+                return Err(super::io::error(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "approval file binding changed",
+                ));
             }
             Ok(false)
         }
