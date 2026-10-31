@@ -457,6 +457,7 @@ impl PreparationRecord for Observation {
                 "started",
                 "conversation_item",
                 "envelope",
+                "publication",
                 "context_prepared",
                 "context_compacted",
                 "model_started",

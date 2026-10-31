@@ -6,6 +6,8 @@ use acyclic_stream::{
 use checkpoint::{IndexState, Recovery};
 
 mod pages;
+pub(in crate::filesystem) use pages::Contribution;
+pub(super) use pages::contribution_identity;
 
 async fn condition<P: crate::store::JournalProvider + ?Sized>(
     provider: &Arc<P>,
@@ -69,12 +71,13 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn publish_indexed_observation(
+    pub(super) async fn publish_contributed_observation(
         &self,
         summary: &mut ExecutionSummary,
         retry: [u8; 32],
         event: &ExecutionEvent,
         bytes: &OwnedBytes,
+        contributions: &[Contribution<'_>],
         io: Option<&PreparationIo>,
     ) -> Result<Option<Recovery>> {
         let operation = summary.operation.ok_or_else(|| invalid(io))?;
@@ -138,7 +141,7 @@ where
             head_tail,
             base,
             digest,
-            contributions: &[],
+            contributions,
         };
         let committed = cut
             .publish(

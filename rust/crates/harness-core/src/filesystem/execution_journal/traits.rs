@@ -212,40 +212,7 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
-        if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!(
-                    "acyclic.harness.journal.append_if_tail",
-                    rev = expected_tail
-                );
-                crate::obs::traced_future(
-                    span,
-                    self.append_validated(operation, Some(expected_tail), key, event, None),
-                )
-                .await
-            });
-        }
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                let local = PreparationIo::from_native_work(work)?;
-                let result = self
-                    .append_validated(operation, Some(expected_tail), key, event, Some(&local))
-                    .await;
-                let retained = local.owned_bytes()?;
-                drop(local.into_native_custody(retained)?);
-                return result;
-            }
-            let span = obs_span!(
-                "acyclic.harness.journal.append_if_tail",
-                rev = expected_tail
-            );
-            traced(
-                span,
-                self.append_validated(operation, Some(expected_tail), key, event, io),
-            )
-            .await
-        })
+        self.append_contributed_if_tail(operation, expected_tail, key, event, &[], io)
     }
 
     fn append_envelope_if_tail<'a>(

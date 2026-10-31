@@ -89,9 +89,14 @@ impl ExecutionEvent {
             Started { request_digest } => Started {
                 request_digest: *request_digest,
             },
-            ConversationItem { step, envelope } => ConversationItem {
+            ConversationItem {
+                step,
+                envelope,
+                publication,
+            } => ConversationItem {
                 step: *step,
                 envelope: file(envelope)?,
+                publication: *publication,
             },
             ContextPrepared { step, projection } => ContextPrepared {
                 step: *step,

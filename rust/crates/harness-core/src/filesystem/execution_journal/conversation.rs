@@ -22,6 +22,20 @@ where
         envelope: &'a Envelope,
         io: &'a PreparationIo,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        self.append_contributed_conversation(expected_tail, key, step, envelope, &[], io)
+    }
+
+    /// Joins authorized producers' encoded records to the original journal cut.
+    /// Only the successful cut advances their original publication fences.
+    pub(in crate::filesystem) fn append_contributed_conversation<'a>(
+        &'a self,
+        expected_tail: u64,
+        key: &'a str,
+        step: u32,
+        envelope: &'a Envelope,
+        contributions: &'a [indexed_publication::Contribution<'a>],
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             self.authorize_envelope(envelope, Some(io))?;
             // Canonicalize the envelope only. Its native body remains an exact
@@ -41,16 +55,18 @@ where
             let event = ExecutionEvent::ConversationItem {
                 step,
                 envelope: reference,
+                publication: indexed_publication::contribution_identity(contributions, Some(io))?,
             };
-            let result = <Self as ExecutionJournal>::append_if_tail(
-                self,
-                envelope.intent(),
-                expected_tail,
-                key,
-                &event,
-                Some(io),
-            )?
-            .await;
+            let result = self
+                .append_contributed_if_tail(
+                    envelope.intent(),
+                    expected_tail,
+                    key,
+                    &event,
+                    contributions,
+                    Some(io),
+                )?
+                .await;
             drop(event);
             drop(reference_hold);
             drop(bytes);

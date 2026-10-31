@@ -279,19 +279,47 @@ fn records_hash_bytes(records: &[AppendRecord]) -> u64 {
     8 + records.iter().map(AppendRecord::hash_bytes).sum::<u64>()
 }
 
+/// Binds an original publication fence to one borrowed record with empty headers.
+/// Admits the exact hash work without constructing or publishing another request.
+/// This identity establishes neither authority nor record admission.
+pub fn conditioned_record_digest_with<E>(
+    condition: &CommitCondition,
+    value: &[u8],
+    admit: impl FnOnce(u64) -> Result<(), E>,
+) -> Result<[u8; 32], E> {
+    let domain = b"conditioned-record";
+    let headers = crate::RecordHeaders::default();
+    admit(
+        b"acyclic.stream.request.v1\0".len() as u64
+            + domain.len() as u64
+            + condition_hash_bytes(condition)
+            + 8
+            + value.len() as u64
+            + headers.hash_bytes(),
+    )?;
+    let mut hash = request_hasher(domain);
+    hash_conditions(&mut hash, std::slice::from_ref(condition));
+    hash_record(&mut hash, value, &headers);
+    Ok(hash.finalize().into())
+}
+
+fn condition_hash_bytes(condition: &CommitCondition) -> u64 {
+    match condition {
+        CommitCondition::Head { path, .. } => 1 + path_hash_bytes(path) + 8 + 32,
+        CommitCondition::Tail { path, .. } => 1 + path_hash_bytes(path) + 8,
+        CommitCondition::Absent { path } | CommitCondition::Present { path } => {
+            1 + path_hash_bytes(path)
+        }
+    }
+}
+
 pub(crate) fn commit_hash_bytes(request: &CommitRequest) -> u64 {
     b"acyclic.stream.request.v1\0".len() as u64
         + b"commit".len() as u64
         + request
             .conditions
             .iter()
-            .map(|condition| match condition {
-                CommitCondition::Head { path, .. } => 1 + path_hash_bytes(path) + 8 + 32,
-                CommitCondition::Tail { path, .. } => 1 + path_hash_bytes(path) + 8,
-                CommitCondition::Absent { path } | CommitCondition::Present { path } => {
-                    1 + path_hash_bytes(path)
-                }
-            })
+            .map(condition_hash_bytes)
             .sum::<u64>()
         + request
             .mutations
