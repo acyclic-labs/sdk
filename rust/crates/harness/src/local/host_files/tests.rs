@@ -699,6 +699,9 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     ));
     assert!(local.agent.is_none());
     assert!(local.tools().definitions(None)?.is_empty());
+    // Retirement requires the caller to release its harness handle before
+    // the original owner joins physical view cleanup and disconnects it.
+    drop(local);
     // A rejected projection that cannot be unlinked has no withdrawal
     // producer. Its error must retire the original owner and end the call.
     let (directory, endpoint) = discover(&cwd)?;
@@ -716,9 +719,12 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .map_err(storage)?
         .unwrap_err()
         .to_string();
-    assert!(failure.contains(&format!(
-        "step=withdraw rejected native request {operation}:"
-    )));
+    assert!(
+        failure.contains(&format!(
+            "step=withdraw rejected native request {operation}:"
+        )),
+        "the original rejection cause must survive retirement: {failure}"
+    );
     assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
     assert!(matches!(
         response
@@ -733,10 +739,6 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         blocked.wait(operation, delivery),
         Err(Error::NotFound(_))
     ));
-    Arc::try_unwrap(local)
-        .map_err(|_| Error::Conflict("workspace owner retained after shutdown".into()))?
-        .disconnect()
-        .await?;
     Ok(())
 }
 
