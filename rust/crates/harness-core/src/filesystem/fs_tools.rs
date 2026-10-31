@@ -9,6 +9,24 @@ use acyclic_fs::distributed::AuthorityProvider;
 use acyclic_fs::{StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph, WorkspaceResolver};
 use acyclic_stream::BoxProviderFuture;
 
+// This boundary is only for reads that own no admitted publication. The
+// command future itself must retain an accepted or unresolved commit.
+pub(super) async fn read_before_effect<T>(
+    cancellation: &mut BoxProviderFuture<'_, Result<()>>,
+    read: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    futures::pin_mut!(read);
+    match futures::future::select(cancellation, read).await {
+        futures::future::Either::Left((stopped, _)) => {
+            stopped?;
+            Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            ))
+        }
+        futures::future::Either::Right((result, _)) => result,
+    }
+}
+
 /// Filesystem commands over the remote placement itself, without a machine.
 pub struct FilesystemTools<P: ?Sized + 'static, O: 'static> {
     host: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
@@ -92,6 +110,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         reconcile: bool,
     ) -> Result<Option<ToolResult>> {
         self.authorize(None, Some(&context), &invocation, None)?;
+        let mut cancellation = context.model_cancellation(None)?;
         let command = invocation
             .arguments
             .get("command")
@@ -101,28 +120,31 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         let volume = self.target(&parsed, &context)?;
         let reference =
             super::workspace_ref(self.host.provider.clone(), &volume.storage_name(&mut None)?)?;
-        let root = self.host.open(&reference, None).await?;
+        let root = read_before_effect(&mut cancellation, self.host.open(&reference, None)).await?;
         let access = WorkspaceAccess::new(
             &self.verifier,
             &self.scope,
             context.effective_scope().grants(),
             Some(volume),
         )?;
-        access.require(&root).await?;
+        read_before_effect(&mut cancellation, access.require(&root)).await?;
         let request = acyclic_fs::GitRequest {
             operation: acyclic_fs::OperationId::from_bytes(context.operation_id().into_bytes()),
             unanswered: Arc::new(|_| true),
         };
         let repository = acyclic_fs::GitCompatRepository::new(root.id(), self.store.clone())
             .for_request(request.clone());
-        if let Some(output) = (crate::tools::git::RepositoryAccess {
-            access: &access,
-            filesystem: &self.host.filesystem,
-            store: &self.store,
-            current: &root,
-            repository: root.id(),
+        if let Some(output) = read_before_effect(&mut cancellation, async {
+            (crate::tools::git::RepositoryAccess {
+                access: &access,
+                filesystem: &self.host.filesystem,
+                store: &self.store,
+                current: &root,
+                repository: root.id(),
+            })
+            .request_result(request.operation)
+            .await
         })
-        .request_result(request.operation)
         .await?
         {
             return Ok(Some(ToolResult {
@@ -137,10 +159,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             .register_root(&root)
             .await
             .map_err(<StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error)?;
-        let (selected, pending) = repository
-            .checkout_selection()
-            .await
-            .map_err(crate::tools::git::compat_error::<StreamGitCompatStore<P>>)?;
+        let (selected, pending) = read_before_effect(&mut cancellation, async {
+            repository
+                .checkout_selection()
+                .await
+                .map_err(crate::tools::git::compat_error::<StreamGitCompatStore<P>>)
+        })
+        .await?;
         if pending.is_some() {
             return Err(Error::Conflict(
                 "filesystem checkout requires its original publication reconciliation".into(),
@@ -149,18 +174,22 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         let workspace = if selected == root.id() {
             root.clone()
         } else {
-            graph
-                .authorize_descendant(selected, root.id())
-                .await
-                .map_err(
-                    <StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error,
-                )?;
-            WorkspaceResolver::resolve(&(self.host.filesystem.clone(), graph), selected)
-                .await
-                .map_err(
-                    <StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error,
-                )?
+            read_before_effect(&mut cancellation, async {
+                graph
+                    .authorize_descendant(selected, root.id())
+                    .await
+                    .map_err(
+                        <StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error,
+                    )?;
+                WorkspaceResolver::resolve(&(self.host.filesystem.clone(), graph), selected)
+                    .await
+                    .map_err(
+                        <StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error,
+                    )
+            })
+            .await?
         };
+        drop(cancellation);
         let output = crate::tools::git::run_volume_with_guard(
             crate::tools::git::Workspace {
                 access: &access,
@@ -183,7 +212,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                 request: Some(request),
             },
             &parsed.arguments,
-            || access.require(&root),
+            || async {
+                read_before_effect(
+                    &mut context.model_cancellation(None)?,
+                    access.require(&root),
+                )
+                .await
+            },
         )
         .await?;
         let command = output.command.ok_or_else(|| {
