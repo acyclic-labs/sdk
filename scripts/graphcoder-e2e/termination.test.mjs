@@ -79,19 +79,33 @@ test("selected owner exit cannot discard its already written acknowledgement", {
   for (const [mode, expected] of [["1", "empty"], ["live", "report"]]) for (const late of [0, 1]) {
     const scope = new Processes();
     const running = launch(scope, false, mode);
+    const channel = running.child.stdio[3];
+    const emit = channel.emit;
+    const buffered = [];
+    let drained;
+    const drain = new Promise(resolve => { drained = resolve; });
+    const hold = function (event, ...args) {
+      if (["data", "end", "close"].includes(event)) {
+        buffered.push([event, ...args]);
+        if (event === "end") drained();
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    };
     try {
+      // Readiness must flow before holding the response and its EOF.
       await ready(running);
-      const channel = running.child.stdio[3];
-      channel.pause();
+      channel.emit = hold;
       const deadline = Date.now() + 500;
       const acknowledged = running.requestReport(deadline);
-      await running.exited;
+      await Promise.all([running.exited, drain]);
       // Gate the actual native writer's bytes, then move only the receiver's
       // clock across the original deadline. No sleep or fabricated frame is
       // needed to expose a late delivery racing its timer callback.
       const clock = t.mock.method(Date, "now", () => deadline + late);
       try {
-        channel.resume();
+        channel.emit = emit;
+        for (const event of buffered.splice(0)) emit.apply(channel, event);
         await acknowledged;
       } finally { clock.mock.restore(); }
       const result = await running.closed;
@@ -102,7 +116,11 @@ test("selected owner exit cannot discard its already written acknowledgement", {
       if (late) assert.deepEqual(result.termination.stuck_on, []);
       await scope.close();
       assert.equal(scope.children.size, 0, "late delivery cannot replace physical retirement");
-    } finally { await scope.close(); }
+    } finally {
+      channel.emit = emit;
+      for (const event of buffered.splice(0)) emit.apply(channel, event);
+      await scope.close();
+    }
   }
 });
 
