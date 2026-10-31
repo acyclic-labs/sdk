@@ -190,7 +190,9 @@ it reads no login files and supplies no API keys. The report preserves raw
 shipping output, so secret-scan it before exporting or publishing. Every failed
 case makes the command fail. Shell and collaboration checks require actual
 filesystem effects and completed tool hooks. Collaboration keeps stdin open
-across turns and observes the recorded `UserPromptSubmit` child result through
-filesystem notifications. The text oracle follows `-p`;
+across turns, commits the spawn, and calls public `wait` with that spawn's exact
+canonical agent path. Completed tool hooks must show the same child settled
+idle with the exact expected answer and no running child. Fork/merge also
+requires the real merge and the resulting parent file bytes. The text oracle follows `-p`;
 JSONL replay compares the committed `{id,inbox,text}` answer and rejects repeated
 tool calls. This tier complements the installed-host matrix.
