@@ -1,4 +1,5 @@
 use super::{ModelEvent, Result, State, Value, invalid, string, text};
+use crate::protocol::present;
 
 #[derive(serde::Deserialize)]
 struct Envelope<'a> {
@@ -18,10 +19,10 @@ struct Content<'a> {
 
 pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<ModelEvent>> {
     state.usage(&value["usageMetadata"])?;
-    if let Some(id) = value.get("responseId") {
+    if let Some(id) = present(value.get("responseId")) {
         state.budget.member(&mut state.metadata, "id", id)?;
     }
-    if value["promptFeedback"].get("blockReason").is_some() {
+    if present(value["promptFeedback"].get("blockReason")).is_some() {
         return Err(invalid("Gemini prompt blocked"));
     }
     let Some(candidate) = value["candidates"]
@@ -44,13 +45,9 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             .ok_or_else(|| invalid("missing Gemini content"))?
             .parts;
         for (part, raw) in parts.iter().zip(raw) {
-            if part
-                .get("thought")
-                .is_some_and(|value| !value.is_null() && !value.is_boolean())
-                || part
-                    .get("thoughtSignature")
-                    .is_some_and(|value| !value.is_null() && !value.is_string())
-                || (part["text"].is_string() && part.get("functionCall").is_some())
+            if present(part.get("thought")).is_some_and(|value| !value.is_boolean())
+                || present(part.get("thoughtSignature")).is_some_and(|value| !value.is_string())
+                || (part["text"].is_string() && present(part.get("functionCall")).is_some())
             {
                 return Err(invalid("invalid Gemini content part"));
             }
@@ -66,14 +63,14 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             } else if let Some(text) = part["text"].as_str() {
                 state.visible_text(text)?;
             }
-            if let Some(function) = part.get("functionCall") {
+            if let Some(function) = present(part.get("functionCall")) {
                 let index = (state.calls.len() + state.thinking.len()) as u64;
                 let (call, budget) = state.call(index)?;
                 if let Some(id) = function["id"].as_str() {
                     budget.string(&mut call.id, id)?;
                 }
                 budget.string(&mut call.name, string(&function["name"])?)?;
-                match function.get("args") {
+                match present(function.get("args")) {
                     None => budget.string(&mut call.arguments, "{}")?,
                     Some(args) if args.is_object() => budget.encoded(&mut call.arguments, args)?,
                     Some(_) => return Err(invalid("tool arguments must be a JSON object")),
