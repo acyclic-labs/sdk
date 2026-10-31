@@ -70,14 +70,25 @@ impl Work {
             &meter,
             acyclic_native_runtime::arc_allocation_bytes::<Self>(),
         )?;
-        Ok(Arc::new(Self {
+        Ok(Arc::new(Self::with_allocation(meter, allocation)))
+    }
+
+    /// Read-only work stays in its already funded provider frame. Only work
+    /// shared with a detached producer needs the separately admitted Arc.
+    pub(crate) fn inline(meter: Arc<dyn NativeReadMeter>) -> Self {
+        let allocation = ReadAllocation::empty(&meter);
+        Self::with_allocation(meter, allocation)
+    }
+
+    fn with_allocation(meter: Arc<dyn NativeReadMeter>, allocation: ReadAllocation) -> Self {
+        Self {
             meter,
             error: std::sync::Mutex::new(None),
             write: std::sync::Mutex::new(None),
             #[cfg(feature = "local")]
             durability: std::sync::Mutex::new(None),
             _allocation: allocation,
-        }))
+        }
     }
 
     pub(crate) fn record<T>(&self, result: std::io::Result<T>) -> Result<T, StreamError> {

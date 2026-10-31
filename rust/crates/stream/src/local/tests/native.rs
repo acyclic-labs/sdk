@@ -1,6 +1,7 @@
 use super::*;
 
 mod headers;
+mod heads;
 
 #[tokio::test]
 async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_work()

@@ -248,6 +248,39 @@ impl StreamProvider for LocalStream {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::NativeStreamProvider for LocalStream {
+    fn native_heads(
+        &self,
+        request: crate::HeadsRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, crate::Heads> {
+        if let Err(error) = MemoryStream::validate_native_heads(&request) {
+            return crate::NativeProviderFuture::ready_observed(
+                crate::native::span!("acyclic.stream.heads"),
+                Ok(Err(error)),
+                StreamError::code,
+            );
+        }
+        let original = Arc::clone(&meter);
+        crate::NativeProviderFuture::observed(
+            &original,
+            crate::native::span!("acyclic.stream.heads"),
+            async move {
+                let work = crate::native::Work::inline(meter);
+                let result = async {
+                    self.inner
+                        .provider
+                        .revisions
+                        .wait(&request.at_least)
+                        .await?;
+                    self.accepted(self.inner.provider.capture_native_heads(&request, &work))
+                        .await?
+                }
+                .await;
+                work.finish(result)
+            },
+            |result| crate::native::outcome(result, StreamError::code),
+        )
+    }
     fn native_durability_barrier(
         &self,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,

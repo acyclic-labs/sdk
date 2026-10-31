@@ -61,6 +61,14 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<P: crate::NativeStreamProvider> crate::ExplicitNativeStreamProvider for Counted<P> {
+    fn native_heads(
+        &self,
+        request: HeadsRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, Heads> {
+        self.record(RequestClass::Head);
+        self.inner().native_heads(request, meter)
+    }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_durability_barrier(
         &self,
