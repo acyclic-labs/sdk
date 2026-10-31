@@ -35,13 +35,14 @@ pub struct State {
     pending: Option<Pending>,
 }
 
-/// Action at the hard budget. Waiting subscribes to this exact summary's stream
-/// result; it grants no right to launch another producer.
+/// Action at the hard budget. Waiting retains this exact summary's producer
+/// observation; retirement requires reading its committed result, never launching
+/// another producer. Physical retirement alone does not establish success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Demand {
     /// No compaction was prepared at the soft watermark.
     Unprepared,
-    /// The summary's committed result is the sole wake event.
+    /// Wait for the exact producer, then consume its committed terminal result.
     Await(SummaryId),
     /// The epoch can be swapped by conditional commit.
     Swap(SummaryId),

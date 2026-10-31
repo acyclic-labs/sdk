@@ -52,17 +52,17 @@ where
         self.prepare_phase_seal(io)
     }
 
-    fn claim_execution<'a>(
+    fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::executor::ExecutionClaim<'a>> {
+    ) -> Result<crate::executor::ExecutionAttempt<'a>> {
         self.require_operation(operation, io)?;
         let namespace = crate::executor::with_history_io(io, |work| {
             self.volume
                 .identity_digest(super::MAXIMUM_PAYLOAD_BYTES, work)
         })?;
-        crate::executor::execution_claim::claim(
+        crate::executor::execution_claim::acquire(
             self.host.filesystem.operation_claims(),
             namespace,
             operation,

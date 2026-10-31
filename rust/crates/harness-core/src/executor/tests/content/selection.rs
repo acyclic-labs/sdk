@@ -15,12 +15,12 @@ impl ExecutionJournal for Checks {
         self.files.cache_identity()
     }
 
-    fn claim_execution<'a>(
+    fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::executor::ExecutionClaim<'a>> {
-        self.files.claim_execution(operation, io)
+    ) -> Result<crate::executor::ExecutionAttempt<'a>> {
+        self.files.acquire_execution(operation, io)
     }
 
     fn replay<'a>(
