@@ -8,7 +8,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
 
 const MODE: &str = "ACYCLIC_CUSTODY_TEST_MODE";
 const ROOT: &str = "ACYCLIC_CUSTODY_TEST_ROOT";
@@ -16,7 +15,7 @@ const ROOT: &str = "ACYCLIC_CUSTODY_TEST_ROOT";
 /// A shell program that publishes its descendant's PID at the path given as
 /// its first argument, then waits; paths are arguments, never script text.
 #[cfg(unix)]
-const PUBLISHING_PROGRAM: &str = r#"sleep 3600 & echo $! > "$1.tmp"; mv "$1.tmp" "$1"; wait"#;
+const PUBLISHING_PROGRAM: &str = r#"sleep 3600 >/dev/null & child=$!; echo "$child" > "$1.tmp"; mv "$1.tmp" "$1"; echo ACYCLIC_CHILD_PID="$child"; wait"#;
 
 // Exercise the same resolved shell as native host tools, with a real
 // grandchild. A directly spawned ping cannot detect packaged-shell breakaway.
@@ -39,7 +38,7 @@ fn program(root: &Path) -> Command {
             .arg("sh")
             .arg(pid)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null());
         command
     }
@@ -55,7 +54,7 @@ fn program(root: &Path) -> Command {
                 std::env::current_exe().expect("test executable"),
             )
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null());
         command
     }
@@ -84,10 +83,14 @@ fn custody_owner_helper() {
         return;
     };
     let root = PathBuf::from(std::env::var_os(ROOT).expect("owner root"));
+    if mode == "exit-before-publish" {
+        return;
+    }
     #[cfg(windows)]
     if mode == "member" {
         fs::write(root.join("pid.tmp"), std::process::id().to_string()).expect("pid");
         fs::rename(root.join("pid.tmp"), root.join("pid")).expect("publish grandchild pid");
+        publish_pid(std::process::id());
         loop {
             thread::park();
         }
@@ -99,17 +102,23 @@ fn custody_owner_helper() {
     let mut command = program(&root);
     let lease = (mode == "leased")
         .then(|| ProcessCustodyLease::acquire(&root.join("fleet")).expect("native lease"));
-    let tree = if let Some(lease) = &lease {
+    let mut uncontained = None;
+    let mut tree = if let Some(lease) = &lease {
         Some(ProcessTree::spawn_in_custody(&mut command, lease.custody()).expect("leased spawn"))
     } else if mode == "custodied" {
         let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
         Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
     } else {
-        let child = command.spawn().expect("uncontained spawn");
-        drop(child);
+        uncontained = Some(command.spawn().expect("uncontained spawn"));
         None
     };
-    fs::write(root.join("owner-ready"), b"ready").expect("ready");
+    let output = tree
+        .as_mut()
+        .and_then(ProcessTree::take_stdout)
+        .or_else(|| uncontained.as_mut()?.stdout.take())
+        .expect("original program publication pipe");
+    let pid = read_published_pid(output).expect("original program PID publication");
+    publish_pid(pid);
     let _tree = tree;
     loop {
         thread::park();
@@ -126,26 +135,38 @@ fn owner(mode: &str, root: &Path) -> std::process::Child {
         .env(MODE, mode)
         .env(ROOT, root)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("owner")
 }
 
-/// Waits for the owner's readiness, then reads the program's PID.
-fn published(root: &Path, owner: &mut std::process::Child) -> u32 {
-    while !(root.join("owner-ready").exists() && root.join("pid").exists()) {
-        assert!(
-            owner.try_wait().expect("owner").is_none(),
-            "owner exited early"
-        );
-        thread::sleep(Duration::from_millis(5));
+/// Publication follows both original spawn admission and descendant creation.
+fn published(owner: &mut std::process::Child) -> u32 {
+    read_published_pid(owner.stdout.take().expect("owner publication pipe"))
+        .expect("original owner's descendant publication")
+}
+
+fn publish_pid(pid: u32) {
+    use std::io::Write as _;
+    println!("\nACYCLIC_CHILD_PID={pid}");
+    std::io::stdout().flush().expect("publish original PID");
+}
+
+fn read_published_pid(output: impl std::io::Read) -> std::io::Result<u32> {
+    use std::io::{BufRead as _, Error, ErrorKind};
+    for line in std::io::BufReader::new(output).lines() {
+        let line = line?;
+        if let Some(pid) = line.strip_prefix("ACYCLIC_CHILD_PID=") {
+            return pid
+                .parse()
+                .map_err(|error| Error::new(ErrorKind::InvalidData, error));
+        }
     }
-    fs::read_to_string(root.join("pid"))
-        .expect("pid")
-        .trim()
-        .parse()
-        .expect("numeric pid")
+    Err(Error::new(
+        ErrorKind::UnexpectedEof,
+        "original child PID producer exited before publication",
+    ))
 }
 
 /// An exit watch on one process, independent of its parentage.
@@ -295,7 +316,7 @@ impl Drop for Watch {
 fn killed_owner_leaves(mode: &str) -> (tempfile::TempDir, Watch) {
     let root = tempfile::tempdir().expect("root");
     let mut owner = owner(mode, root.path());
-    let pid = published(root.path(), &mut owner);
+    let pid = published(&mut owner);
     let watch = Watch::new(pid).expect("the published program is running");
     owner.kill().expect("kill owner");
     owner.wait().expect("reap owner");
@@ -304,6 +325,17 @@ fn killed_owner_leaves(mode: &str) -> (tempfile::TempDir, Watch) {
 
 #[test]
 fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
+    let root = tempfile::tempdir().expect("unpublished owner root");
+    let mut unpublished = owner("exit-before-publish", root.path());
+    let error = read_published_pid(unpublished.stdout.take().expect("publication pipe"))
+        .expect_err("missing owner published a PID");
+    assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    assert!(
+        unpublished
+            .wait()
+            .expect("reap unpublished owner")
+            .success()
+    );
     let (root, watch) = killed_owner_leaves("custodied");
     let processes = root.path().join("processes");
     ProcessCustody::open(&processes)
@@ -322,7 +354,7 @@ fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
 fn leased_successor_fences_the_killed_native_owner_before_admission() {
     let root = tempfile::tempdir().expect("root");
     let mut owner = owner("leased", root.path());
-    let watch = Watch::new(published(root.path(), &mut owner)).expect("running program");
+    let watch = Watch::new(published(&mut owner)).expect("running program");
     #[cfg(windows)]
     let records = root.path().join("fleet/trees");
     #[cfg(windows)]
@@ -389,7 +421,14 @@ const CHURNED: u32 = 100;
 /// marks that it has, and then lives until killed. Each is this executable
 /// started as a custodian with no owner to read, which exits before `main`.
 #[cfg(windows)]
-fn churn(root: &Path) {
+fn churn(_root: &Path) {
+    use std::io::{Read as _, Write as _};
+    println!("\nACYCLIC_CHURN_READY");
+    std::io::stdout().flush().expect("publish churn admission");
+    let mut start = [0];
+    std::io::stdin()
+        .read_exact(&mut start)
+        .expect("original churn caller");
     for _ in 0..CHURNED {
         let status = Command::new(std::env::current_exe().expect("test executable"))
             .env("ACYCLIC_PROCESS_CUSTODIAN", "1")
@@ -400,10 +439,26 @@ fn churn(root: &Path) {
             .expect("member");
         assert!(!status.success(), "an ownerless custodian ran");
     }
-    fs::write(root.join("churned"), b"churned").expect("churned");
+    println!("ACYCLIC_CHURN_DONE");
+    std::io::stdout()
+        .flush()
+        .expect("publish completed members");
     loop {
         thread::park();
     }
+}
+
+#[cfg(windows)]
+fn churn_event(output: &mut impl std::io::BufRead, expected: &str) -> std::io::Result<()> {
+    for line in output.lines() {
+        if line? == expected {
+            return Ok(());
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "original member producer exited before publication",
+    ))
 }
 
 /// A custodian holds state for live members only: a tree that starts and
@@ -414,28 +469,31 @@ fn a_custodians_handles_track_live_members_not_every_member() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let custody = ProcessCustody::acquire(&processes).expect("custody");
-    let churned = root.path().join("churned");
     let mut command = Command::new(std::env::current_exe().expect("test executable"));
     command
         .args([
             "--exact",
             "process_tree::custody_tests::custody_owner_helper",
+            "--nocapture",
         ])
         .env(MODE, "churn")
         .env(ROOT, root.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
     let custodian = custodian_of(&processes);
+    let mut output = std::io::BufReader::new(tree.take_stdout().expect("churn publication pipe"));
+    churn_event(&mut output, "ACYCLIC_CHURN_READY").expect("original member admission");
     let before = handle_count(custodian);
-    while !churned.exists() {
-        assert!(
-            tree.try_wait(None).expect("tree").is_none(),
-            "tree exited early"
-        );
-        thread::sleep(Duration::from_millis(5));
+    {
+        use std::io::Write as _;
+        tree.take_stdin()
+            .expect("churn start pipe")
+            .write_all(&[1])
+            .expect("start original members");
     }
+    churn_event(&mut output, "ACYCLIC_CHURN_DONE").expect("original member completion");
     let after = handle_count(custodian);
     eprintln!("custodian handles: {before} before, {after} after {CHURNED} members");
     tree.terminate(None).expect("terminate");
@@ -454,7 +512,7 @@ fn a_killed_custodians_tree_dies_with_its_owner() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let mut owner = owner("custodied", root.path());
-    let watch = Watch::new(published(root.path(), &mut owner)).expect("running program");
+    let watch = Watch::new(published(&mut owner)).expect("running program");
     let custodian = Watch::new(custodian_of(&processes)).expect("the custodian is running");
     custodian.kill();
     custodian.wait();
@@ -644,18 +702,12 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
     command.arg("sh").arg(&pid);
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
-    while !pid.exists() {
-        thread::sleep(Duration::from_millis(5));
-    }
     let descendant = Watch::new(
-        fs::read_to_string(&pid)
-            .expect("pid")
-            .trim()
-            .parse()
-            .expect("numeric pid"),
+        read_published_pid(tree.take_stdout().expect("descendant publication pipe"))
+            .expect("original descendant publication"),
     )
     .expect("running descendant");
     let warden = libc::pid_t::try_from(tree_pid(&tree)).expect("warden pid");
@@ -679,14 +731,14 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
 #[cfg(target_os = "linux")]
 fn escaping_program(pid: &Path) -> Command {
     let mut command = crate::shell_command(
-        r#"setsid sh -c 'echo $$ > "$1.tmp"; mv "$1.tmp" "$1"; exec sleep 3600' sh "$1" & wait"#,
+        r#"setsid sh -c 'echo $$ > "$1.tmp"; mv "$1.tmp" "$1"; echo ACYCLIC_CHILD_PID=$$; exec sleep 3600 >/dev/null' sh "$1" & wait"#,
         Some("sh"),
     )
     .expect("resolve fixture shell");
     command.arg("sh").arg(pid);
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     command
 }
@@ -694,20 +746,10 @@ fn escaping_program(pid: &Path) -> Command {
 /// Starts `command`, waits for its escaped descendant, and cancels the tree.
 /// Returns the descendant's watch once cancellation has returned.
 #[cfg(target_os = "linux")]
-fn cancel_after_escape(mut tree: ProcessTree, pid: &Path) -> Watch {
-    while !pid.exists() {
-        assert!(
-            tree.try_wait(None).expect("try_wait").is_none(),
-            "the tree exited before its descendant escaped"
-        );
-        thread::sleep(Duration::from_millis(5));
-    }
+fn cancel_after_escape(mut tree: ProcessTree) -> Watch {
     let escaped = Watch::new(
-        fs::read_to_string(pid)
-            .expect("pid")
-            .trim()
-            .parse()
-            .expect("numeric pid"),
+        read_published_pid(tree.take_stdout().expect("escape publication pipe"))
+            .expect("original escaped descendant publication"),
     )
     .expect("running descendant");
     tree.terminate(None).expect("terminate");
@@ -725,7 +767,7 @@ fn cancelled_custodied_tree_leaves_no_descendant_outside_its_group() {
     let custody = ProcessCustody::open(&processes).expect("custody");
     let pid = root.path().join("pid");
     let tree = ProcessTree::spawn_in_custody(&mut escaping_program(&pid), &custody).expect("spawn");
-    let escaped = cancel_after_escape(tree, &pid);
+    let escaped = cancel_after_escape(tree);
     let survived = !escaped.exited();
     escaped.kill();
     assert!(!survived, "a cancelled tree's escaped descendant survived");
@@ -740,7 +782,7 @@ fn a_cancelled_uncustodied_tree_leaves_its_escaped_descendant() {
     let root = tempfile::tempdir().expect("root");
     let pid = root.path().join("pid");
     let tree = ProcessTree::spawn(&mut escaping_program(&pid)).expect("spawn");
-    let escaped = cancel_after_escape(tree, &pid);
+    let escaped = cancel_after_escape(tree);
     let survived = !escaped.exited();
     escaped.kill();
     assert!(survived, "the oracle cannot observe an escaped descendant");
@@ -842,25 +884,13 @@ fn record_free_after_killed_parent(mode: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn published_child(parent: &mut std::process::Child) -> std::io::Result<u32> {
-    use std::io::{BufRead as _, Error, ErrorKind};
     let output = parent.stdout.take().ok_or_else(|| {
-        Error::new(
-            ErrorKind::BrokenPipe,
+        std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
             "child PID publication pipe is missing",
         )
     })?;
-    for line in std::io::BufReader::new(output).lines() {
-        let line = line?;
-        if let Some(pid) = line.strip_prefix("ACYCLIC_CHILD_PID=") {
-            return pid
-                .parse()
-                .map_err(|error| Error::new(ErrorKind::InvalidData, error));
-        }
-    }
-    Err(Error::new(
-        ErrorKind::UnexpectedEof,
-        "original child PID producer exited before publication",
-    ))
+    read_published_pid(output)
 }
 
 /// A warden killed while its group anchor lives leaves no holder of its
