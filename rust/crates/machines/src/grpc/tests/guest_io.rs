@@ -567,7 +567,7 @@ async fn combined_capture_allowance_refuses_without_draining_or_redispatch() {
     stop(shutdown, task).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
     let (machine, io, shutdown, task) = fixture().await;
     let mut output = machine.exec(command(1)).await.unwrap();
@@ -598,8 +598,8 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
         output.next().await.unwrap().unwrap(),
         ExecOutput::ExitCode(-1)
     );
-    tokio::time::sleep(Duration::from_millis(1010)).await;
-    assert!(output.next().await.is_none());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert_eq!(futures::poll!(output.next()), std::task::Poll::Ready(None));
     {
         let commands = io.commands.lock().unwrap();
         assert_eq!(commands.len(), 1);
@@ -611,6 +611,51 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
         assert_eq!(command.start.protocol, Some(protocol()));
     }
     drop(output);
+
+    // A silent admitted command ends at the caller's original budget, without
+    // a grace period or another dispatch. Before that event it remains pending.
+    let mut output = machine.exec(command(1)).await.unwrap();
+    let sender = io.sender();
+    assert!(futures::poll!(output.next()).is_pending());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert_eq!(
+        futures::poll!(output.next()),
+        std::task::Poll::Ready(Some(Err(ProviderError::CommandIndeterminate(machine.id()))))
+    );
+    assert_eq!(futures::poll!(output.next()), std::task::Poll::Ready(None));
+    sender.closed().await;
+    drop(output);
+
+    // No caller deadline means the same original stream survives that cut.
+    let mut output = machine
+        .exec(ExecCommand::new(vec!["printf".into(), "hello".into()], None).unwrap())
+        .await
+        .unwrap();
+    let sender = io.sender();
+    tokio::time::advance(Duration::from_millis(1_001)).await;
+    assert!(futures::poll!(output.next()).is_pending());
+    sender
+        .send(Ok(frame(
+            machine.id(),
+            wire::exec_output::Output::ExitCode(0),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(
+        output.next().await.unwrap().unwrap(),
+        ExecOutput::ExitCode(0)
+    );
+    assert_eq!(futures::poll!(output.next()), std::task::Poll::Ready(None));
+    {
+        let commands = io.commands.lock().unwrap();
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[1].start.timeout_ms, Some(1));
+        assert!(commands[1].has_deadline);
+        assert_eq!(commands[2].start.timeout_ms, None);
+        assert!(!commands[2].has_deadline);
+    }
+    drop(output);
+    sender.closed().await;
     stop(shutdown, task).await;
 }
 
