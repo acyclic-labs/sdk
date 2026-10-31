@@ -20,6 +20,10 @@ use std::{
     process::Command,
 };
 
+mod entry;
+mod sys;
+use entry::Instruction;
+
 const READ: u64 = (1 << 0) | (1 << 2) | (1 << 3);
 const WRITE: u64 = (1 << 1)
     | (1 << 4)
@@ -75,20 +79,6 @@ pub(super) fn open_beneath(root: &File, relative: &Path) -> io::Result<File> {
 }
 
 #[repr(C)]
-struct CapabilityHeader {
-    version: u32,
-    pid: i32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Capabilities {
-    effective: u32,
-    permitted: u32,
-    inheritable: u32,
-}
-
-#[repr(C)]
 struct Ruleset {
     filesystem: u64,
     network: u64,
@@ -112,7 +102,7 @@ pub(super) struct Prepared {
     // These verified bindings remain open through spawn. The immutable grant
     // separately pins the original objects to prevent identity reuse.
     roots: Vec<File>,
-    filter: Vec<libc::sock_filter>,
+    filter: Vec<Instruction>,
 }
 
 impl Prepared {
@@ -234,62 +224,7 @@ impl Prepared {
     }
 
     fn enter(&self) -> io::Result<()> {
-        // Preserve Rust's exec-error pipe until exec while closing every
-        // nonstdio host descriptor on exec, including inherited network fds.
-        // SAFETY: close_range with CLOEXEC changes descriptor flags only.
-        child_status(unsafe { libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 4_u32) })?;
-        for fd in 0..3 {
-            // SAFETY: fstat initializes this plain ABI output on success.
-            let mut status: libc::stat = unsafe { std::mem::zeroed() };
-            // SAFETY: valid stdio descriptor and exclusively owned ABI output.
-            if unsafe { libc::fstat(fd, &raw mut status) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let kind = status.st_mode & libc::S_IFMT;
-            // Only pipes and /dev/null may cross the boundary as stdio.
-            if kind != libc::S_IFIFO
-                && !(kind == libc::S_IFCHR
-                    && libc::major(status.st_rdev) == 1
-                    && libc::minor(status.st_rdev) == 3)
-            {
-                return Err(io::Error::from_raw_os_error(libc::EPERM));
-            }
-        }
-        // SAFETY: clear all ambient and effective/permitted capabilities before
-        // admitting guest code, including when the launcher itself is root.
-        // no_new_privs then prevents exec from reacquiring them.
-        child_status(unsafe { libc::prctl(libc::PR_CAP_AMBIENT, 4, 0, 0, 0).into() })?;
-        let header = CapabilityHeader {
-            version: 0x2008_0522,
-            pid: 0,
-        };
-        let capabilities = [Capabilities {
-            effective: 0,
-            permitted: 0,
-            inheritable: 0,
-        }; 2];
-        // SAFETY: version 3 uses precisely two initialized capability words.
-        child_status(unsafe {
-            libc::syscall(libc::SYS_capset, &raw const header, capabilities.as_ptr())
-        })?;
-        // SAFETY: irreversible privilege and filesystem attenuation of this
-        // child only. No other thread exists in the post-fork child.
-        child_status(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0).into() })?;
-        // SAFETY: the live owned ruleset is applied irreversibly to this child.
-        child_status(unsafe {
-            libc::syscall(
-                libc::SYS_landlock_restrict_self,
-                self.ruleset.as_raw_fd(),
-                0,
-            )
-        })?;
-        let program = libc::sock_fprog {
-            len: u16::try_from(self.filter.len()).map_err(|_| io::ErrorKind::InvalidInput)?,
-            filter: self.filter.as_ptr().cast_mut(),
-        };
-        // SAFETY: the kernel copies the complete immutable BPF program here.
-        child_status(unsafe { libc::syscall(libc::SYS_seccomp, 1, 0, &raw const program) })?;
-        Ok(())
+        entry::enter(self.ruleset.as_raw_fd(), &self.filter).map_err(io::Error::from_raw_os_error)
     }
 }
 
@@ -304,14 +239,6 @@ fn syscall(call: impl FnOnce() -> libc::c_long) -> io::Result<libc::c_long> {
     }
 }
 
-fn child_status(result: libc::c_long) -> io::Result<()> {
-    if result < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
 const LOAD: u16 = 0x20;
 const EQUAL: u16 = 0x15;
 const AND: u16 = 0x54;
@@ -319,11 +246,11 @@ const RETURN: u16 = 0x06;
 const DENY: u32 = 0x0005_0000 | libc::EPERM as u32;
 const ALLOW: u32 = 0x7fff_0000;
 
-const fn instruction(code: u16, jt: u8, jf: u8, k: u32) -> libc::sock_filter {
-    libc::sock_filter { code, jt, jf, k }
+const fn instruction(code: u16, jt: u8, jf: u8, k: u32) -> Instruction {
+    Instruction { code, jt, jf, k }
 }
 
-fn filter(network: &ExecutionNetwork) -> io::Result<Vec<libc::sock_filter>> {
+fn filter(network: &ExecutionNetwork) -> io::Result<Vec<Instruction>> {
     #[cfg(target_arch = "x86_64")]
     let arch = 0xc000_003e;
     #[cfg(target_arch = "aarch64")]
@@ -369,7 +296,7 @@ fn filter(network: &ExecutionNetwork) -> io::Result<Vec<libc::sock_filter>> {
     }
 }
 
-fn socket_filter(code: &mut Vec<libc::sock_filter>, network: &ExecutionNetwork) -> io::Result<()> {
+fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io::Result<()> {
     if matches!(network, ExecutionNetwork::Off)
         || matches!(network, ExecutionNetwork::TcpPorts(ports) if ports.is_empty())
     {
@@ -430,7 +357,7 @@ fn number(value: libc::c_long) -> io::Result<u32> {
     u32::try_from(value).map_err(|_| refused("invalid syscall number"))
 }
 
-fn deny(code: &mut Vec<libc::sock_filter>, call: libc::c_long, result: u32) -> io::Result<()> {
+fn deny(code: &mut Vec<Instruction>, call: libc::c_long, result: u32) -> io::Result<()> {
     code.extend([
         instruction(EQUAL, 0, 1, number(call)?),
         instruction(RETURN, 0, 0, result),
@@ -505,3 +432,6 @@ fn denied_syscalls() -> Vec<libc::c_long> {
     ]);
     calls
 }
+
+#[cfg(all(test, any(target_arch = "x86_64", target_arch = "aarch64")))]
+mod checks;

@@ -1,0 +1,70 @@
+//! One allocation-free final-child boundary, also usable by a static image.
+//! The parent prepares the policy; the launch owner calls this only after
+//! custody, identity and standard-stream installation, immediately before exec.
+
+use super::sys;
+
+#[repr(C)]
+pub(super) struct CapabilityHeader {
+    pub(super) version: u32,
+    pub(super) pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct Capabilities {
+    pub(super) effective: u32,
+    pub(super) permitted: u32,
+    pub(super) inheritable: u32,
+}
+
+/// Native classic-BPF instruction. Preparation and application borrow the
+/// same buffer; entering a child never translates or copies its policy.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct Instruction {
+    pub(super) code: u16,
+    pub(super) jt: u8,
+    pub(super) jf: u8,
+    pub(super) k: u32,
+}
+
+#[repr(C)]
+pub(super) struct Program {
+    pub(super) len: u16,
+    pub(super) filter: *const Instruction,
+}
+
+/// Irreversibly confines only the final guest child. Every failure stops the
+/// launch before exec; there is no fallback, allocation, wait or host callback.
+pub(super) fn enter(ruleset: i32, filter: &[Instruction]) -> Result<(), i32> {
+    let program = Program {
+        len: u16::try_from(filter.len()).map_err(|_| sys::EINVAL)?,
+        filter: filter.as_ptr(),
+    };
+    // Keep the launch owner's error pipe until exec while preventing every
+    // nonstdio host capability, including sockets, from crossing exec.
+    sys::seal_descriptors()?;
+    for fd in 0..3 {
+        if !sys::computation_stdio(fd)? {
+            return Err(sys::EPERM);
+        }
+    }
+    // Drop ambient, effective, permitted and inheritable capabilities before
+    // making the no-new-privileges promise and admitting guest code.
+    sys::clear_ambient_capabilities()?;
+    sys::capset(
+        &CapabilityHeader {
+            version: 0x2008_0522,
+            pid: 0,
+        },
+        &[Capabilities {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2],
+    )?;
+    sys::no_new_privileges()?;
+    sys::restrict_filesystem(ruleset)?;
+    sys::restrict_syscalls(&program)
+}
