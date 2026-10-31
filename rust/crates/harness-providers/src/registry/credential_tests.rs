@@ -1,6 +1,7 @@
 use super::*;
 use crate::credentials::{KeychainDecode, Source};
 use proptest::prelude::*;
+use serde_json::json;
 use std::sync::Mutex;
 
 #[derive(Default)]

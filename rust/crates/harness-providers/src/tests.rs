@@ -60,7 +60,7 @@ mod ordered_parts_tests;
 
 use crate::fixtures::{CHAT, fixtures};
 
-fn chunks(
+pub(crate) fn chunks(
     input: impl AsRef<[u8]>,
     width: usize,
 ) -> acyclic_stream::BoxProviderStream<'static, Result<Bytes>> {
