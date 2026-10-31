@@ -113,9 +113,10 @@ name the requested operation set, and a subset never claims full core coverage.
 the same setup and drivers. The default is `1,1000,100000`. Reports retain the
 selected population set; incomplete sets cannot qualify the three-population
 counting obligation.
-`--setup-credit` bounds concurrent original root submissions during population
-setup (default1). Each root retains its own intent, sealed request and publication
-holds; independent submissions can share the provider's existing group sync.
+`--setup-credit` bounds concurrent original root preparation and submission
+during population setup (default1). Each root retains its own intent, sealed
+request and publication holds; independent lifecycles can share the provider's
+existing group sync. Root-publication completion is reported before replay.
 All submissions and initial replay settle before serial operation samples begin.
 
 The native floor report also retains a timer-only observation control. Ratios
