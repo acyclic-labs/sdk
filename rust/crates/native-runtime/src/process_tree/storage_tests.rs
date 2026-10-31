@@ -66,7 +66,11 @@ fn stderr_tail_is_bounded_and_drained_after_stdout_closes() {
             break;
         }
         if drain.read_bytes == 0 {
-            io.readiness().unwrap().0.block();
+            io.readiness()
+                .unwrap()
+                .0
+                .block()
+                .expect("original native event succeeded");
         }
     }
     let status = slot
@@ -186,7 +190,8 @@ fn native_session_events_retain_the_original_meter_and_process_owner() {
             .stdin_readiness()
             .unwrap()
             .0
-            .block();
+            .block()
+            .expect("original native event succeeded");
     }
     slot.require_stdin_complete().unwrap();
     assert!(

@@ -260,7 +260,7 @@ fn a_thread_per_wait_starves_the_bounded_pool() -> io::Result<()> {
         Poll::Ready(())
     }));
     drop(release);
-    runtime.block_on(exited);
+    runtime.block_on(exited)?;
     assert!(
         matches!(
             entry.try_recv(),

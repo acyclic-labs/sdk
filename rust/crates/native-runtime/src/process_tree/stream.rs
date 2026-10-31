@@ -182,9 +182,10 @@ impl ProcessTree {
                         Err(error) => break 'capture Err(error),
                     };
                     match control_first(control, sender.reserve()).await {
-                        Some(Ok(permit)) => break permit,
-                        Some(Err(_)) => break 'capture Err(receiver_lost()),
-                        None => {
+                        Ok(Some(Ok(permit))) => break permit,
+                        Ok(Some(Err(_))) => break 'capture Err(receiver_lost()),
+                        Err(error) => break 'capture Err(error),
+                        Ok(None) => {
                             let (checked, returned) =
                                 crate::run_blocking_io(move || capture.check(), None)?.await?;
                             capture = returned;
@@ -225,11 +226,25 @@ impl ProcessTree {
                         Err(error) => break Err(error),
                     };
                     if let Some(sender) = sender.as_ref() {
-                        if control_first(sender.closed(), wait).await.is_none() {
-                            break Err(receiver_lost());
+                        match control_first(
+                            async {
+                                sender.closed().await;
+                                Ok(())
+                            },
+                            wait,
+                        )
+                        .await
+                        {
+                            Ok(Some(result)) => {
+                                if let Err(error) = result {
+                                    break Err(error);
+                                }
+                            }
+                            Ok(None) => break Err(receiver_lost()),
+                            Err(error) => break Err(error),
                         }
-                    } else {
-                        wait.await;
+                    } else if let Err(error) = wait.await {
+                        break Err(error);
                     }
                 }
             }
@@ -243,17 +258,17 @@ fn receiver_lost() -> io::Error {
 }
 
 // The stop source wins a simultaneous credit/readiness notification.
-async fn control_first<C: Future<Output = ()>, F: Future>(
+async fn control_first<C: Future<Output = io::Result<()>>, F: Future>(
     control: C,
     work: F,
-) -> Option<F::Output> {
+) -> io::Result<Option<F::Output>> {
     let mut control = pin!(control);
     let mut work = pin!(work);
     poll_fn(|context| {
-        if control.as_mut().poll(context).is_ready() {
-            return Poll::Ready(None);
+        if let Poll::Ready(result) = control.as_mut().poll(context) {
+            return Poll::Ready(result.map(|()| None));
         }
-        work.as_mut().poll(context).map(Some)
+        work.as_mut().poll(context).map(|output| Ok(Some(output)))
     })
     .await
 }

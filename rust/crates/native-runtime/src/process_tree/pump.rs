@@ -254,7 +254,7 @@ impl<'a> Pump<'a> {
 
     /// While output credit is withheld, only owner control or the deadline
     /// can advance capture. Readable output must not wake this wait.
-    pub(super) fn arm_control(&self, wakes: &[ProcessWake]) -> io::Result<events::Wait> {
+    pub(super) fn arm_control(&self, wakes: &[ProcessWake]) -> io::Result<events::Wait<'static>> {
         let sources = wakes
             .iter()
             .map(|wake| {
@@ -405,7 +405,7 @@ impl<'a> Pump<'a> {
         &self,
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
-    ) -> io::Result<events::Wait> {
+    ) -> io::Result<events::Wait<'static>> {
         let wake_at = self.wake_at();
         let writing = self.input.as_ref().is_some_and(PendingStdin::writing);
         #[cfg(unix)]

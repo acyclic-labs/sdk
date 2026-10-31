@@ -599,7 +599,8 @@ fn owned_streaming_stdout_rejects_empty_reads_and_reaches_eof() {
                 .readiness()
                 .expect("arm original stdout or exit")
                 .0
-                .block(),
+                .block()
+                .expect("original native event succeeded"),
         }
     }
     tree.terminate(None).expect("clean streaming tree");
@@ -760,7 +761,8 @@ fn queued_stdin_delivers_exact_bytes_and_eof_through_the_capture_pump() {
         tree.stdin_readiness()
             .expect("arm original stdin or exit")
             .0
-            .block();
+            .block()
+            .expect("original native event succeeded");
     }
     tree.require_stdin_complete().expect("prompt delivered");
     assert_eq!(
@@ -852,7 +854,11 @@ fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn early exit");
         // No output pipes or queued input are armed: this is the original
         // child's exit event, retaining stdin for the subsequent closed-peer write.
-        tree.readiness().expect("arm original child exit").0.block();
+        tree.readiness()
+            .expect("arm original child exit")
+            .0
+            .block()
+            .expect("original native event succeeded");
         assert!(
             tree.try_wait(None)
                 .expect("observe original exit")
