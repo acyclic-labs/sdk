@@ -72,7 +72,6 @@ use allocations::append_context_messages;
 use allocations::context_contract;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use allocations::reserve_context_vec_native;
-pub(crate) use validation::verify_file;
 use validation::{validate_context_refs, validate_source_messages};
 use value::{BorrowedContext, ContextMessages};
 #[cfg(test)]
