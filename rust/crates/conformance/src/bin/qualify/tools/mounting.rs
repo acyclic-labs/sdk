@@ -223,7 +223,12 @@ pub(super) fn mount_hold(args: &[String]) -> Result<(), Failure> {
 
     let source = PathBuf::from(args.first().ok_or("mount-hold: missing <src>")?).canonicalize()?;
     let work = PathBuf::from(args.get(1).ok_or("mount-hold: missing <work>")?);
-    let seconds: u64 = args.get(2).map_or(Ok(60), |value| value.parse())?;
+    let seconds: u64 = args
+        .get(2)
+        .ok_or(
+            "mount-hold: missing <seconds>; recovery: qualify mount-hold <src> <work> <seconds>",
+        )?
+        .parse()?;
     let store_dir = work.join("store");
     let mount_dir = work.join("mnt");
     fs::create_dir_all(&store_dir)?;
