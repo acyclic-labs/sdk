@@ -1,5 +1,5 @@
 use super::super::native_reasoning::replay_responses_with;
-use crate::fuzzing::{assert_response_sequence, response_repair_violation};
+use crate::fuzzing::{assert_response_sequence, response_sequence_violation};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -23,7 +23,7 @@ fn body(kinds: &[u8], text: &str) -> Vec<u8> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn structured_sequences_are_repaired_minimally(
+    fn complete_sequences_replay_and_incomplete_pairs_refuse(
         kinds in prop::collection::vec(0u8..6, 0..24), text in ".{0,48}",
     ) {
         assert_response_sequence(&body(&kinds, &text));
@@ -38,19 +38,19 @@ proptest! {
 #[test]
 fn negative_controls_fault_the_production_successor_rule() {
     for successor in [0, 3, 4, 5] {
-        let items = [item(0, ""), item(successor, "interrupt")];
+        let items = [item(0, ""), item(successor, "interrupt"), item(1, "answer")];
         assert_response_sequence(&body(&[0, successor], "interrupt"));
         let never = replay_responses_with(&items, |_, _| true);
         assert_eq!(
-            response_repair_violation(&items, &never),
+            response_sequence_violation(&items, &never),
             Some("unanswered reasoning")
         );
     }
     let answered = [item(0, ""), item(1, "answer")];
     let always = replay_responses_with(&answered, |_, _| false);
     assert_eq!(
-        response_repair_violation(&answered, &always),
-        Some("unrequired repair")
+        response_sequence_violation(&answered, &always),
+        Some("complete exchange refused")
     );
 }
 

@@ -6,9 +6,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         Some("response.output_text.delta" | "response.refusal.delta") => {
             text(&mut events, &value["delta"], false)
         }
-        Some("response.reasoning_summary_text.delta" | "response.reasoning_text.delta") => {
-            text(&mut events, &value["delta"], true)
-        }
+        Some("response.reasoning_summary_text.delta") => text(&mut events, &value["delta"], true),
         Some("response.output_item.added" | "response.output_item.done") => {
             let item = &value["item"];
             if value["type"] == "response.output_item.done" && item["type"] == "message" {

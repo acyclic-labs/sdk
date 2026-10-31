@@ -90,7 +90,7 @@ pub(crate) fn assert_normalization(fragments: &[String]) {
             };
             super::sequence::push(adapter, &mut messages, message).unwrap();
         }
-        super::sequence::finish(adapter, &mut messages);
+        super::sequence::finish(adapter, &mut messages).unwrap();
         let joined: String = messages
             .iter()
             .flat_map(|message| match message {

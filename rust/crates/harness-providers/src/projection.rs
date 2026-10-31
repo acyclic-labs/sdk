@@ -167,7 +167,7 @@ pub(crate) fn body_named<'a>(
             }
         }
     }
-    sequence::finish(adapter, &mut messages);
+    sequence::finish(adapter, &mut messages)?;
     let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
         Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
         Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
@@ -303,7 +303,7 @@ fn project_message<'a>(
     let mut results = Vec::new();
     let mut ordered = Vec::new();
     gemini.begin(message.role);
-    let mut chat_reasoning = String::new();
+    let mut chat_reasoning = None;
     if let ModelContent::Text(text) = &message.content {
         project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
     }
@@ -372,18 +372,9 @@ fn project_message<'a>(
                     ProjectedReasoning::Native { continuity, .. }
                         if matches!(adapter, Adapter::Responses | Adapter::Anthropic) =>
                     {
-                        // Invalid native shapes fall back to ordinary readable context.
-                        if let Some(raw) = native_reasoning::validated(adapter, continuity) {
-                            ordered.push(Item::Native(raw));
-                        } else if let Some(text) = block.text.as_deref() {
-                            project_text(
-                                adapter,
-                                role,
-                                foreign_text(&block.origin, text),
-                                &mut texts,
-                                &mut ordered,
-                            );
-                        }
+                        let raw = native_reasoning::validated(adapter, continuity)
+                            .ok_or_else(|| invalid("invalid retained native reasoning"))?;
+                        ordered.push(Item::Native(raw));
                     }
                     ProjectedReasoning::Native { continuity, .. } if adapter == Adapter::Gemini => {
                         if let Some(part) = gemini.native(
@@ -394,19 +385,12 @@ fn project_message<'a>(
                             ordered.push(part);
                         }
                     }
-                    ProjectedReasoning::Native { .. } => {
-                        if let Some(text) = &block.text {
-                            chat_reasoning.push_str(text);
+                    ProjectedReasoning::Native { continuity, .. } => {
+                        let raw = native_reasoning::chat(continuity)
+                            .ok_or_else(|| invalid("invalid retained native Chat reasoning"))?;
+                        if chat_reasoning.replace(raw).is_some() {
+                            return Err(invalid("multiple native Chat reasoning fields"));
                         }
-                    }
-                    ProjectedReasoning::Readable { text, origin, .. } => {
-                        project_text(
-                            adapter,
-                            role,
-                            foreign_text(origin, text),
-                            &mut texts,
-                            &mut ordered,
-                        );
                     }
                     ProjectedReasoning::Dropped { .. } => {}
                 }
@@ -454,7 +438,7 @@ fn project_message<'a>(
                     json!({"role":role,"content":ordered}),
                 )));
             }
-            if !texts.is_empty() || !calls.is_empty() || !chat_reasoning.is_empty() {
+            if !texts.is_empty() || !calls.is_empty() || chat_reasoning.is_some() {
                 output.push(Message::Chat(wire::Chat {
                     role,
                     content: if texts.is_empty() {
@@ -463,7 +447,7 @@ fn project_message<'a>(
                         Some(texts.concat())
                     },
                     tool_calls: calls,
-                    reasoning_content: (!chat_reasoning.is_empty()).then_some(chat_reasoning),
+                    reasoning_content: chat_reasoning,
                 }));
             }
             output.extend(
@@ -564,11 +548,4 @@ fn text_content(content: &ModelContent, files: &mut FileText) -> Result<String> 
         })
         .collect::<Result<Vec<_>>>()
         .map(|parts| parts.join("\n"))
-}
-
-fn foreign_text(origin: &acyclic_harness_core::model::ReasoningOrigin, text: &str) -> String {
-    format!(
-        "<prior-reasoning provider={:?} model={:?}>\n{text}\n</prior-reasoning>",
-        origin.provider, origin.model
-    )
 }

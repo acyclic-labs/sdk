@@ -27,7 +27,7 @@ pub(super) fn push_with_successor<'a>(
             .last()
             .is_some_and(|last| !allows(response_item(last), response_item(&next)))
     {
-        messages.push(reasoning_output());
+        return Err(crate::invalid("reasoning item has no paired output"));
     }
     match (messages.last_mut(), &mut next) {
         (
@@ -45,13 +45,16 @@ pub(super) fn push_with_successor<'a>(
             },
         ) if old == new => parts.append(more),
         (Some(Message::Chat(old)), Message::Chat(new))
-            if old.role == "assistant" && new.role == "assistant" =>
+            if old.role == "assistant"
+                && new.role == "assistant"
+                && (old.reasoning_content.is_none() || new.reasoning_content.is_none()) =>
         {
+            // The current executor emits a block and its calls separately.
+            // Keep their owning container together, but never concatenate two
+            // native reasoning tokens. Durable item admission owns grouping.
             old.tool_calls.append(&mut new.tool_calls);
-            if let Some(more) = new.reasoning_content.take() {
-                old.reasoning_content
-                    .get_or_insert_with(String::new)
-                    .push_str(&more);
+            if old.reasoning_content.is_none() {
+                old.reasoning_content = new.reasoning_content.take();
             }
             if let Some(more) = new.content.take() {
                 match &mut old.content {
@@ -80,11 +83,15 @@ pub(super) const RULES: Rules = Rules {
     normalize: super::text::normalize,
 };
 
-pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) {
+pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) -> Result<()> {
     finish_with(adapter, messages, RULES)
 }
 
-pub(super) fn finish_with(adapter: Adapter, messages: &mut Vec<Message<'_>>, rules: Rules) {
+pub(super) fn finish_with(
+    adapter: Adapter,
+    messages: &mut Vec<Message<'_>>,
+    rules: Rules,
+) -> Result<()> {
     match adapter {
         Adapter::Anthropic | Adapter::Gemini => {
             // N-01: role merging establishes the whole text run. Native parts
@@ -143,10 +150,11 @@ pub(super) fn finish_with(adapter: Adapter, messages: &mut Vec<Message<'_>>, rul
                 .last()
                 .is_some_and(|last| !response_item(last).allows(ResponseItem::End)) =>
         {
-            messages.push(reasoning_output())
+            return Err(crate::invalid("reasoning item has no paired output"));
         }
         _ => {}
     }
+    Ok(())
 }
 /// ANT-TOOL-05 and GEM-TOOL-05/06: results answer their calls ahead of any
 /// other content in the turn. Anthropic results move to the front, keeping
@@ -190,11 +198,6 @@ fn continuation<'a>(adapter: Adapter) -> Message<'a> {
             parts: vec![Item::Json(json!({"text":"(continue)"}))],
         },
     }
-}
-fn reasoning_output<'a>() -> Message<'a> {
-    Message::Item(Item::Json(
-        json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"(no visible response)","annotations":[]}]}),
-    ))
 }
 
 #[cfg(test)]
