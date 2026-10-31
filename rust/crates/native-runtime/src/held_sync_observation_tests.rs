@@ -4,6 +4,8 @@ use crate::{
     obs::{Metrics, Operations},
 };
 use acyclic_grpc_observability::tests::Capture;
+use acyclic_observability::{DurabilityRequest, DurabilitySyscall, Export, Outcome};
+use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 #[test]
@@ -22,14 +24,27 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("durable-record");
     let file = std::fs::File::create(&path)?;
+    let credit = Arc::new(tokio::sync::Semaphore::new(64));
+    let (export, mut receiver) = Export::channel(Arc::clone(&credit), false);
     let capture = Capture::default();
     let metrics = Metrics::default();
     let query = metrics.query("acyclic.runtime.durability");
     let dispatch = tracing::Dispatch::new(
         tracing_subscriber::registry()
             .with(capture.clone())
-            .with(Operations(metrics)),
+            .with(Operations((metrics, export.clone()))),
     );
+    #[cfg(unix)]
+    let descriptor = {
+        use std::os::fd::AsRawFd as _;
+        file.as_raw_fd() as u64
+    };
+    #[cfg(windows)]
+    let descriptor = {
+        use std::os::windows::io::AsRawHandle as _;
+        file.as_raw_handle() as usize as u64
+    };
+    let mut native_error = None;
     tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
         crate::persistence_syscall(|| {
             crate::persistence_syscall(|| crate::sync_file(&file, Durability::Full, None))
@@ -60,18 +75,8 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
             let readonly = std::fs::File::open(&path)?;
             sync_descriptor_once(readonly.as_handle()).expect_err("read-only handle cannot flush")
         };
-        {
-            let evidence = capture
-                .0
-                .lock()
-                .map_err(|_| io::Error::other("capture poisoned"))?;
-            let last = evidence.spans.last().expect("actual failed flush span");
-            assert_eq!(
-                last.fields.get("error.os"),
-                error.raw_os_error().map(|code| code.to_string()).as_ref()
-            );
-            assert_eq!(last.fields.get("outcome").map(String::as_str), Some("err"));
-        }
+        native_error = error.raw_os_error();
+        assert!(native_error.is_some());
         // Injected Interrupted outcomes exercise the same per-attempt observer.
         // They are synthetic controls, separate from the real descriptor calls.
         let before = query.snapshot().err;
@@ -126,28 +131,82 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
     assert_eq!(query.snapshot().ok, 5);
     #[cfg(not(any(windows, target_os = "linux")))]
     assert_eq!(query.snapshot().ok, 3);
+    assert_eq!(export.stats().full, Some(0));
+    drop(dispatch);
+    drop(export);
+    // The original collector is the channel producer. Its retirement ends this
+    // event wait; each returned record keeps its own output credit until drop.
+    let records = runtime.block_on(async {
+        let mut records = Vec::new();
+        while let Some(record) = receiver.recv().await {
+            records.push(record);
+        }
+        records
+    });
+    let attempts: Vec<_> = records
+        .iter()
+        .map(|record| record.sample())
+        .filter(|sample| sample.metadata.name() == "acyclic.runtime.durability")
+        .collect();
+    let first = attempts.first().expect("original full flush");
+    let full = first.durability.expect("typed full flush");
+    assert_eq!(full.requested, Some(DurabilityRequest::Full));
+    #[cfg(target_os = "linux")]
+    assert_eq!(full.syscall, Some(DurabilitySyscall::Fsync));
+    #[cfg(target_vendor = "apple")]
+    assert_eq!(full.syscall, Some(DurabilitySyscall::FullFsync));
+    #[cfg(windows)]
+    assert_eq!(full.syscall, Some(DurabilitySyscall::FlushFileBuffers));
+    assert_eq!(full.descriptor, Some(descriptor));
+    assert_eq!(full.os_error, None);
+    let data = attempts.get(1).expect("original data flush");
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        data.durability.unwrap().syscall,
+        Some(DurabilitySyscall::Fdatasync)
+    );
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(data.durability.unwrap().syscall, full.syscall);
+    let failed = attempts.get(2).expect("actual failed native attempt");
+    assert_eq!(failed.outcome, Outcome::Err);
+    assert_eq!(failed.durability.unwrap().os_error, native_error);
+    assert!(failed.error_kind.is_none(), "failure detail was disabled");
+    for injected in attempts
+        .get(3..5)
+        .expect("two injected Interrupted attempts")
+    {
+        let evidence = injected.durability.unwrap();
+        assert_eq!(injected.outcome, Outcome::Err);
+        assert_eq!(
+            evidence.syscall, None,
+            "synthetic attempt claimed an OS call"
+        );
+        assert_eq!(evidence.os_error, None);
+        assert_eq!(evidence.descriptor, Some(0));
+    }
+    let worker = attempts.last().expect("original worker attempt");
+    assert_eq!(worker.durability, Some(full));
     let evidence = capture
         .0
         .lock()
         .map_err(|_| io::Error::other("capture poisoned"))?;
-    let last = evidence.spans.last().expect("worker physical attempt");
-    assert_eq!(last.name, "acyclic.runtime.durability");
+    let original = evidence
+        .spans
+        .iter()
+        .rfind(|span| span.id == worker.span_id.into_u64())
+        .expect("original worker attempt");
     assert_eq!(
-        last.fields.get("requested").map(String::as_str),
-        Some("full")
+        worker.parent_id.map(tracing::Id::into_u64),
+        original.parent_id
     );
-    assert!(last.fields.contains_key("descriptor"));
-    assert!(last.closed);
-    let mut parent = last.parent;
-    let mut original_owner = false;
-    while let Some(index) = parent {
-        let span = &evidence.spans[index];
-        if span.name == "original-durability-owner" {
-            original_owner = true;
-            break;
-        }
-        parent = span.parent;
-    }
-    assert!(original_owner, "worker leaf lost its original causal owner");
+    let parent = &evidence.spans[original.parent.expect("original worker parent")];
+    assert_eq!(parent.name, "waiting");
+    let owner = &evidence.spans[parent.parent.expect("original worker owner")];
+    assert_eq!(owner.name, "original-durability-owner");
+    assert!(original.closed && parent.closed && owner.closed);
+    drop(attempts);
+    assert_eq!(credit.available_permits() + records.len(), 64);
+    drop(records);
+    assert_eq!(credit.available_permits(), 64);
     Ok(())
 }
