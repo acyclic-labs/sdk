@@ -7,6 +7,27 @@ const ENTRIES: u64 = 256;
 const HEADER: usize = 16;
 const BYTES: usize = HEADER + ENTRIES as usize * 8;
 
+#[derive(Clone, Copy)]
+pub(super) enum Projection {
+    Lines,
+    Cells,
+}
+
+impl Projection {
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Lines => "lines",
+            Self::Cells => "cells",
+        }
+    }
+    fn domain(self) -> &'static [u8] {
+        match self {
+            Self::Lines => b"file-projection/line-index/v1\0",
+            Self::Cells => b"file-projection/cell-index/v1\0",
+        }
+    }
+}
+
 struct Page {
     bytes: [u8; BYTES],
     count: usize,
@@ -113,6 +134,9 @@ pub(super) struct OrdinalIndex<'a> {
     destination: PrivateContent<'a>,
     identity: blake3::Hasher,
     source_length: u64,
+    projection: Projection,
+    origin: u64,
+    logical_end: u64,
     page: Page,
     _hold: crate::NativeCustody,
 }
@@ -128,12 +152,19 @@ impl<'a> OrdinalIndex<'a> {
     fn path(&self, operation: OperationId) -> Result<(String, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(hold) = &self._hold {
-            let (path, hold) = hold
-                .work()
-                .display(&format_args!("projections/v1/lines/{operation}.bin"))?;
+            let (path, hold) = hold.work().display(&format_args!(
+                "projections/v1/{}/{operation}.bin",
+                self.projection.directory()
+            ))?;
             return Ok((path, Some(hold)));
         }
-        Ok((format!("projections/v1/lines/{operation}.bin"), None))
+        Ok((
+            format!(
+                "projections/v1/{}/{operation}.bin",
+                self.projection.directory()
+            ),
+            None,
+        ))
     }
 
     pub fn destination(
@@ -151,19 +182,20 @@ impl<'a> OrdinalIndex<'a> {
         destination: PrivateContent<'a>,
         version: &str,
         source_length: u64,
+        projection: Projection,
         work: crate::NativeWork<'_>,
     ) -> Result<Self> {
-        const DOMAIN: &[u8] = b"file-projection/line-index/v1\0";
+        let domain = projection.domain();
         let hold = edit::allocation(work, std::mem::size_of::<Self>())?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             work.charge(acyclic_fs::WorkCounters {
-                bytes_hashed: DOMAIN.len() as u64 + version.len() as u64,
+                bytes_hashed: domain.len() as u64 + version.len() as u64,
                 ..Default::default()
             })?;
         }
         let mut identity = blake3::Hasher::new();
-        identity.update(DOMAIN);
+        identity.update(domain);
         identity.update(version.as_bytes());
         let mut page = Page::new(0);
         page.append(0, 0, source_length == 0);
@@ -172,6 +204,9 @@ impl<'a> OrdinalIndex<'a> {
             destination,
             identity,
             source_length,
+            projection,
+            origin: 0,
+            logical_end: source_length,
             page,
             _hold: hold,
         })
@@ -199,24 +234,107 @@ impl<'a> OrdinalIndex<'a> {
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<(u64, u64)>> {
+        let Some(bytes) = self
+            .observe(self.operation(first)?, BYTES as u64, io)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let selected = cursor(&bytes, first, ordinal, self.logical_end, work)?;
+        if selected.1 < self.origin {
+            return Err(executor::rejection(
+                work,
+                "ordinal index precedes its source array",
+            ));
+        }
+        Ok(Some(selected))
+    }
+
+    async fn observe(
+        &self,
+        operation: OperationId,
+        maximum: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let _file_hold;
         let (file, retained) = self
             .task
-            .observe_private_file_once(self.destination, self.operation(first)?, io)
+            .observe_private_file_once(self.destination, operation, io)
             .await?;
         _file_hold = super::window::custody(io, retained)?;
         let Some(file) = file else {
             return Ok(None);
         };
-        if file.descriptor().byte_length() > BYTES as u64 {
+        let _path_hold;
+        let (path, hold) = self.path(operation)?;
+        _path_hold = hold;
+        if file.path() != path
+            || file.descriptor().media_type() != "application/octet-stream"
+            || file.display_name() != "ordinal-index.bin"
+        {
             return Err(executor::rejection(
-                work,
+                self.work(),
+                "projection receipt belongs to another publication",
+            ));
+        }
+        if file.descriptor().byte_length() > maximum {
+            return Err(executor::rejection(
+                self.work(),
                 "ordinal index page exceeds its framing",
             ));
         }
         let bytes = self.task.read_file(&file, io).await?;
         edit::charge(&self._hold, 0, bytes.len() as u64)?;
-        cursor(&bytes, first, ordinal, self.source_length, work).map(Some)
+        Ok(Some(bytes))
+    }
+
+    fn metadata_operation(&self) -> Result<OperationId> {
+        edit::charge(&self._hold, 0, 1)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(hold) = &self._hold {
+            hold.work().charge(acyclic_fs::WorkCounters {
+                bytes_hashed: 4,
+                ..Default::default()
+            })?;
+        }
+        let mut identity = self.identity.clone();
+        identity.update(b"root");
+        let mut bytes = [0; 16];
+        bytes.copy_from_slice(&identity.finalize().as_bytes()[..16]);
+        Ok(OperationId::from_bytes(bytes))
+    }
+
+    pub async fn metadata(
+        &self,
+        maximum: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+        self.observe(self.metadata_operation()?, maximum, io).await
+    }
+
+    pub async fn publish_metadata(
+        &self,
+        bytes: &[u8],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        self.stage(self.metadata_operation()?, bytes, io).await
+    }
+
+    pub fn origin(&mut self, position: u64) -> Result<()> {
+        if self.page.first() != 0 || self.page.count != 1 || position > self.source_length {
+            return Err(executor::rejection(self.work(), "invalid ordinal origin"));
+        }
+        self.page.bytes[HEADER..HEADER + 8].copy_from_slice(&position.to_le_bytes());
+        self.origin = position;
+        Ok(())
+    }
+
+    pub fn end(&mut self, position: u64) -> Result<()> {
+        if position < self.origin || position > self.source_length {
+            return Err(executor::rejection(self.work(), "invalid ordinal end"));
+        }
+        self.logical_end = position;
+        Ok(())
     }
 
     /// At most two direct lookups. A missing page never walks a directory or
@@ -228,7 +346,7 @@ impl<'a> OrdinalIndex<'a> {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(u64, u64)> {
         if ordinal == 0 {
-            return Ok((0, 0));
+            return Ok((0, self.origin));
         }
         let first = ordinal / ENTRIES * ENTRIES;
         let found = match self.get(first, ordinal, work, io).await? {
@@ -245,7 +363,7 @@ impl<'a> OrdinalIndex<'a> {
             self.page.reset(next);
             return Ok(cursor);
         }
-        Ok((0, 0))
+        Ok((0, self.origin))
     }
 
     pub fn record(&mut self, ordinal: u64, position: u64) -> Result<bool> {
@@ -262,9 +380,22 @@ impl<'a> OrdinalIndex<'a> {
             ));
         }
         edit::charge(&self._hold, 8, 1)?;
-        Ok(self
-            .page
-            .append(ordinal, position, position == self.source_length))
+        Ok(self.page.append(
+            ordinal,
+            position,
+            matches!(self.projection, Projection::Lines) && position == self.source_length,
+        ))
+    }
+
+    pub fn finish(&mut self, ordinal: u64, position: u64) -> Result<()> {
+        self.end(position)?;
+        if ordinal == 0 && self.page.first() == 0 && self.page.count == 1 {
+            self.page.bytes[HEADER..HEADER + 8].copy_from_slice(&position.to_le_bytes());
+        } else {
+            self.record(ordinal, position)?;
+        }
+        self.page.bytes[8] = 1;
+        Ok(())
     }
 
     pub async fn publish(&mut self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
@@ -272,6 +403,21 @@ impl<'a> OrdinalIndex<'a> {
             return Ok(());
         }
         let operation = self.operation(self.page.first())?;
+        self.stage(operation, self.page.encoded(), io).await?;
+        let next =
+            self.page.first().checked_add(ENTRIES).ok_or_else(|| {
+                executor::rejection(self.work(), "ordinal index position overflow")
+            })?;
+        self.page.reset(next);
+        Ok(())
+    }
+
+    async fn stage(
+        &self,
+        operation: OperationId,
+        bytes: &[u8],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
         let _path_hold;
         let (path, hold) = self.path(operation)?;
         _path_hold = hold;
@@ -282,18 +428,13 @@ impl<'a> OrdinalIndex<'a> {
                 self.destination,
                 operation,
                 &path,
-                self.page.encoded(),
+                bytes,
                 ("application/octet-stream", "ordinal-index.bin"),
                 io,
             )
             .await?;
         _file_hold = super::window::custody(io, retained)?;
         drop(file);
-        let next =
-            self.page.first().checked_add(ENTRIES).ok_or_else(|| {
-                executor::rejection(self.work(), "ordinal index position overflow")
-            })?;
-        self.page.reset(next);
         Ok(())
     }
 }

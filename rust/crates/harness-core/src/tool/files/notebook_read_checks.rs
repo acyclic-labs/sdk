@@ -57,6 +57,37 @@ proptest! {
             prop_assert!(expected.is_empty());
         }
         prop_assert_eq!(selected.next_cell, offset + expected_count);
+        let document = Document { origin:selected.array_origin.unwrap(),end:selected.array_end.unwrap(),count:selected.count };
+        let mut encoded = document.encode(source.len() as u64);
+        prop_assert!(Document::decode(&encoded, source.len() as u64 + 1, None).is_err());
+        encoded[0] ^= 1;
+        prop_assert!(Document::decode(&encoded, source.len() as u64, None).is_err());
+        if offset <= cells.len() as u64 {
+            let origin = selected.array_origin.unwrap();
+            let end = selected.array_end.unwrap();
+            let start = selected.empty.unwrap_or(end);
+            let mut cursor = JsonSpans::array_at(start, origin - 1);
+            let mut warm = Selection::new(offset, limit, u64::MAX);
+            warm.warm = true;
+            warm.cells = true;
+            warm.count = offset;
+            warm.element_depth = 1;
+            warm.total = Some(cells.len() as u64);
+            warm.array_end = Some(end);
+            let bounds = JsonBounds { maximum_bytes:source.len() as u64,maximum_items:u64::MAX,maximum_depth:128 };
+            for bytes in source.as_bytes()[start as usize..].chunks(chunk) {
+                let mut consumed = 0;
+                while consumed < bytes.len() && !warm.done {
+                    let count = cursor.feed(&bytes[consumed..], bounds, None, &mut |_| Ok(()), &mut |event| warm.event(event,None)).unwrap();
+                    prop_assert!(count > 0);
+                    consumed += count;
+                }
+                if warm.done { break; }
+            }
+            prop_assert!(warm.done);
+            prop_assert_eq!(warm.interval, selected.interval);
+            prop_assert_eq!(warm.next_cell, selected.next_cell);
+        }
     }
 }
 

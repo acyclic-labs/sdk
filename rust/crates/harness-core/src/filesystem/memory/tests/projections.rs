@@ -9,14 +9,18 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
     let storage = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 131_072))?;
+    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 4096))?;
     let selected = json!({"id":"selected", "cell_type":"code", "source":["λ\n"],
         "outputs":[{"output_type":"stream","name":"stdout","text":["kept\n"]}],
         "execution_count":4,"metadata":{"retain":true}});
-    let notebook = json!({"cells":[
-        {"id":"large","cell_type":"code","source":[],"outputs":[{"data":{"text/plain":"αβ".repeat(4000)}}]},
-        selected,
-        {"id":"last","cell_type":"markdown","source":["after"]}
-    ], "metadata":{"nested":{"cells":[]}}, "nbformat":4, "nbformat_minor":5});
+    let mut cells = vec![
+        json!({"id":"large","cell_type":"code","source":[],"outputs":[{"data":{"text/plain":"αβ".repeat(4000)}}]}),
+        selected.clone(),
+    ];
+    cells.extend((0..300).map(
+        |index| json!({"id":format!("later-{index}"),"cell_type":"markdown","source":["after"]}),
+    ));
+    let notebook = json!({"cells":cells, "metadata":{"nested":{"cells":[]}}, "nbformat":4, "nbformat_minor":5});
     let source = serde_json::to_string_pretty(&notebook)
         .unwrap()
         .replace("\"cells\"", "\"ce\\u006cls\"");
@@ -34,13 +38,23 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
     };
     let task = Bindings {
         scope: RuntimeScope::new(
-            Capabilities::new([storage.read_capability.clone(), "tool:call:read".into()]),
+            Capabilities::new([
+                storage.read_capability.clone(),
+                private.read_capability.clone(),
+                private.write_capability.clone(),
+                "tool:call:read".into(),
+            ]),
             limits,
         )?,
         content: Some(storage.content_bindings()),
+        artifacts: Some(private.content_bindings()),
         ..Bindings::local()
     }
-    .build()?;
+    .build()?
+    .agent_context(
+        &Capabilities::new(Vec::<String>::new()),
+        private.content_bindings(),
+    )?;
     let tool = crate::tool::files::read()?;
     let mut invocation = ToolInvocation {
         operation_id: OperationId::new(),
@@ -85,6 +99,102 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         .validate_projection(&projection, limits, None)?;
     assert!(serde_json::to_vec(&projection).unwrap().len() as u64 <= limits.render_bytes);
 
+    let (warm, warm_ranges) =
+        acyclic_test_support::differential::observe::<_, _, (&'static str, u64, u64)>(
+            || context.clone(),
+            |context| runtime.block_on(tool.executor.execute(invocation.clone(), Some(context))),
+        );
+    assert_eq!(warm?.value, result.value);
+    let warm_ranges: Vec<_> = warm_ranges
+        .into_iter()
+        .filter(|(kind, _, length)| *kind == "generation-bound range" && *length != 0)
+        .collect();
+    assert_eq!(warm_ranges.len(), 1);
+    assert_eq!(warm_ranges[0].1, start as u64);
+    assert!(warm_ranges[0].2 <= limits.file_bytes);
+    invocation.arguments["selection"]["offset"] = json!(257);
+    let (later, later_ranges) =
+        acyclic_test_support::differential::observe::<_, _, (&'static str, u64, u64)>(
+            || context.clone(),
+            |context| runtime.block_on(tool.executor.execute(invocation.clone(), Some(context))),
+        );
+    let later = later?;
+    assert_eq!(
+        serde_json::from_str::<Value>(later.value["text"].as_str().unwrap()).unwrap(),
+        notebook["cells"][257]
+    );
+    let later_ranges: Vec<_> = later_ranges
+        .into_iter()
+        .filter(|(kind, _, length)| *kind == "generation-bound range" && *length != 0)
+        .collect();
+    assert_eq!(later_ranges.len(), 1);
+    assert_eq!(
+        later_ranges[0].1,
+        later.value["page"]["start"].as_u64().unwrap()
+    );
+    invocation.arguments["selection"]["offset"] = json!(1);
+    let uncached = task.scoped(
+        Capabilities::new([storage.read_capability.clone(), "tool:call:read".into()]),
+        limits,
+    )?;
+    let uncached_context = ToolContext::new(
+        Arc::new(uncached),
+        invocation.operation_id,
+        &invocation.call_id,
+    )?;
+    let (uncached, uncached_ranges) =
+        acyclic_test_support::differential::observe::<_, _, (&'static str, u64, u64)>(
+            || uncached_context,
+            |context| runtime.block_on(tool.executor.execute(invocation.clone(), Some(context))),
+        );
+    assert_eq!(uncached?.value, result.value);
+    assert!(
+        uncached_ranges
+            .iter()
+            .any(|(kind, offset, length)| *kind == "generation-bound range"
+                && *offset == 0
+                && *length != 0)
+    );
+
+    // Cache-head substitution cannot replace the original metadata/page receipts.
+    let cached = runtime.block_on(task.list_private_directory(
+        &private.volume,
+        "",
+        "projections/v1/cells",
+        None,
+        None,
+        8,
+    ))?;
+    assert_eq!(cached.entries.len(), 3);
+    let private_workspace = super::super::super::bounded_io::content_workspace(
+        &private.host.provider,
+        &private.volume,
+        None,
+    )?;
+    let mutations: Vec<_> = cached
+        .entries
+        .into_iter()
+        .map(|entry| crate::filesystem::WorkspaceMutation::PutFile {
+            path: format!("/projections/v1/cells/{}", entry.name),
+            bytes: bytes::Bytes::from_static(b"changed cache head").into(),
+        })
+        .collect();
+    runtime.block_on(private.host.apply(
+        &private_workspace,
+        None,
+        &mutations,
+        &crate::IdempotencyKey::new("substituted-notebook-cache-heads")?,
+    ))?;
+    assert_eq!(
+        runtime
+            .block_on(
+                tool.executor
+                    .execute(invocation.clone(), Some(context.clone()))
+            )?
+            .value,
+        result.value
+    );
+
     // The original complete descriptor selects the same cell even when its
     // source body exceeds file credit. The ordinary complete read still fails.
     invocation.arguments["version"] = json!(serde_json::to_string(&file).unwrap());
@@ -101,7 +211,7 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
             .code(),
         crate::wire::ErrorCode::Invalid
     );
-    invocation.arguments["selection"]["offset"] = json!(99);
+    invocation.arguments["selection"]["offset"] = json!(999);
     assert!(
         runtime
             .block_on(

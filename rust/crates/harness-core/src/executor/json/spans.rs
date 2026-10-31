@@ -225,6 +225,21 @@ pub(crate) struct JsonSpans {
 }
 
 impl JsonSpans {
+    /// Resume a validated immutable array at an indexed element boundary.
+    /// Its producer has already validated the document and retained its bounds.
+    pub fn array_at(position: u64, opening: u64) -> Self {
+        let mut cursor = Self::default();
+        cursor.position = position;
+        cursor.root_started = true;
+        cursor.lexical.depth = 1;
+        cursor.frames.push(Frame {
+            kind: SpanKind::Array,
+            start: opening,
+            expect: Expect::ValueOrEnd,
+        });
+        cursor
+    }
+
     fn invalid(code: Option<crate::wire::ErrorCode>) -> Error {
         input_error(JsonInputError::Shape, code)
     }

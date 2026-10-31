@@ -113,6 +113,7 @@ pub(super) async fn read(
                 destination,
                 &version,
                 window.source.byte_length(),
+                super::index::Projection::Lines,
                 work,
             )
         })
