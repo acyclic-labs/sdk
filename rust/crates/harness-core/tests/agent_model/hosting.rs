@@ -210,7 +210,7 @@ fn root(agent: AgentId, fresh: Vec<VolumeBinding>) -> RootRequest {
 }
 
 #[tokio::test]
-async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly() -> Result {
+async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
     let stream = Arc::new(MemoryStream::default());
     let bound = Bound::local_root(
         AuthorityRoot::new(
@@ -241,8 +241,8 @@ async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly(
         bound.agents().state(&created).await?.volumes,
         vec![private.clone()]
     );
-    // The Unknown path: the identical prepared commit resubmits as the same
-    // creation, and creating again under the intent replays it.
+    // The identical prepared commit and the original intent both replay the
+    // same creation.
     assert!(matches!(
         bound.submit_root(again).await?,
         RootSubmission::Created(replayed) if replayed == child
@@ -305,7 +305,7 @@ async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly(
 
 /// A provider that admits a write only with valid evidence: it counts
 /// publications, records each presented attestation, and can lose the
-/// first commit's acknowledgement before applying it.
+/// first commit's acknowledgement after applying it.
 #[derive(Default)]
 struct Evidence {
     inner: MemoryStream,
@@ -376,11 +376,12 @@ impl StreamProvider for Evidence {
             acyclic_stream::WriteRequest::Commit(request) => {
                 Box::pin(futures::TryFutureExt::map_ok(
                     async move {
+                        self.published.fetch_add(1, Ordering::SeqCst);
+                        let outcome = self.inner.commit(request).await?;
                         if self.unknown_first.swap(false, Ordering::SeqCst) {
                             return Err(StreamError::Unavailable);
                         }
-                        self.published.fetch_add(1, Ordering::SeqCst);
-                        self.inner.commit(request).await
+                        Ok(outcome)
                     },
                     acyclic_stream::WriteOutcome::Commit,
                 ))
@@ -468,17 +469,68 @@ async fn every_sealed_write_is_attested_and_an_unknown_retry_presents_the_same_e
     let bound = attested(&stream, &attestor)?;
     let private = volume(PRIVATE_VOLUME, id(2))?;
     let prepared = bound
-        .prepare_root(&intent("root"), root(id(2), vec![private]))
+        .prepare_root(&intent("root"), root(id(2), vec![private.clone()]))
         .await?;
-    // The acknowledgement is lost: the commit, still holding its objects,
-    // comes back and resubmits exactly.
+    let request = prepared.request().clone();
+    // The original provider applies the whole sealed commit before losing
+    // its reply. The uncertain owner comes back with the identical request.
     let RootSubmission::Unknown(held) = bound.submit_root(prepared).await? else {
         return Err("the lost acknowledgement was not uncertain".into());
     };
+    assert_eq!(held.request(), &request);
+    let original = stream
+        .inner
+        .inspect_idempotency(request.idempotency_key.clone())
+        .await?
+        .ok_or("the unknown result must already be committed")?;
+    let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &original.outcome else {
+        return Err("the original result is not the root commit".into());
+    };
+    assert_eq!(
+        stream.inner.read_commit(envelope.commit_id).await?,
+        *envelope
+    );
+    assert_eq!(
+        bound.agents().state(held.child()).await?.volumes,
+        vec![private],
+        "the root and its selected volume exist before retry"
+    );
+    let paths = request
+        .mutations
+        .iter()
+        .map(|mutation| match mutation {
+            acyclic_stream::CommitMutation::Append { path, .. } => path.clone(),
+            acyclic_stream::CommitMutation::Fork { destination, .. } => destination.clone(),
+        })
+        .collect::<acyclic_stream::HeadSet<_>>();
+    let heads = acyclic_stream::HeadsRequest {
+        limit: u32::try_from(paths.len())?,
+        paths,
+        retained: Default::default(),
+        durable_through: None,
+        projection: Default::default(),
+        children: None,
+        at_least: Default::default(),
+    };
+    let before = stream.inner.heads(heads.clone()).await?;
+    assert!(before.heads.iter().all(Option::is_some));
     assert!(matches!(
         bound.submit_root(held).await?,
         RootSubmission::Created(created) if created == AgentPath::root(&id(2))
     ));
+    assert_eq!(
+        stream
+            .inner
+            .inspect_idempotency(request.idempotency_key)
+            .await?,
+        Some(original),
+        "retry retains the original terminal envelope"
+    );
+    assert_eq!(
+        stream.inner.heads(heads).await?.heads,
+        before.heads,
+        "retry appends no second volume, adoption, actor state or activation"
+    );
     let digests = attestor.0.lock().map_err(|_| "poisoned")?.clone();
     let presented = stream.presented.lock().map_err(|_| "poisoned")?.clone();
     // Every write presented exactly the evidence attested for its request.
@@ -492,7 +544,7 @@ async fn every_sealed_write_is_attested_and_an_unknown_retry_presents_the_same_e
     }
     // The root's lost attempt and its exact retry are the same sealed
     // request, so they present the identical attestation.
-    assert!(presented.len() >= 2);
+    assert_eq!(presented.len(), 2);
     assert_eq!(
         presented[0], presented[1],
         "the uncertain retry presents the identical attestation"
