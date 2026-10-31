@@ -1039,7 +1039,71 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
     // The child's brief turn, then the parent's own.
     let turns = ["child", "parent"].map(|text| super::ScriptedTurn::Text(text.into()));
-    let (_directory, harness, provider) = checkout_scripted(&[], super::scripted(turns)).await?;
+    let recorded = Arc::new(std::sync::OnceLock::<std::sync::Weak<ScriptedModelProvider>>::new());
+    let parent_cwd = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
+    let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (source, parent, observed) = (recorded.clone(), parent_cwd.clone(), checked.clone());
+    let provider = Arc::new(
+        ScriptedModelProvider::new(turns)
+            .with_context_capacity(super::capacity())
+            .with_dispatch_observer(move |_| {
+                let provider = source
+                    .get()
+                    .and_then(std::sync::Weak::upgrade)
+                    .expect("live provider");
+                if provider.request_count() != 1 {
+                    return;
+                }
+                let request = provider.last_request().expect("child request");
+                let cwd = request
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.parts())
+                    .find_map(|part| match part {
+                        crate::model::ModelContentPart::Text { text } => text
+                            .split_once("<cwd>")
+                            .and_then(|(_, tail)| tail.split_once("</cwd>"))
+                            .map(|(cwd, _)| cwd.to_owned()),
+                        _ => None,
+                    })
+                    .expect("child environment cwd");
+                // Inspect the live binding while the turn still owns its mount.
+                let cwd = std::path::Path::new(&cwd)
+                    .canonicalize()
+                    .expect("live child cwd");
+                assert_ne!(
+                    cwd,
+                    parent
+                        .get()
+                        .expect("parent cwd")
+                        .canonicalize()
+                        .expect("live parent cwd")
+                );
+                assert_eq!(
+                    std::fs::read(cwd.join("context-sentinel")).expect("child fork source"),
+                    b"inherited"
+                );
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            }),
+    );
+    recorded
+        .set(Arc::downgrade(&provider))
+        .expect("one provider binding");
+    let (_directory, harness, provider) = checkout_scripted(
+        &[("context-sentinel".into(), b"inherited".to_vec())],
+        provider,
+    )
+    .await?;
+    parent_cwd
+        .set(
+            harness
+                .workspace
+                .as_ref()
+                .expect("root workspace")
+                .path
+                .clone(),
+        )
+        .expect("one parent binding");
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
@@ -1062,42 +1126,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     assert!(context.contains(&format!("working for parent {root}")));
     assert!(context.contains("final message is your report"));
     assert!(context.contains(&format!("Use send with agent {root}")));
-    let child_state = agents.state(&child).await.map_err(agent)?;
-    let child_project = &child_state
-        .volumes
-        .iter()
-        .find(|binding| binding.name == "project")
-        .ok_or_else(|| Error::NotFound("child project".into()))?
-        .volume;
-    let root_workspace = harness
-        .workspace
-        .as_ref()
-        .ok_or_else(|| Error::NotFound("root workspace".into()))?;
-    let fork = root_workspace.spawned_project_view(child_project).await?;
-    let scratch = child_state
-        .volumes
-        .iter()
-        .find(|binding| binding.name == "scratch")
-        .ok_or_else(|| Error::NotFound("child scratch".into()))?
-        .volume
-        .clone();
-    let authority = crate::filesystem::NativeMountAuthority::admitted(
-        harness.verifier.clone(),
-        harness.signed.copy(&mut None)?,
-    );
-    let (fork, _) = root_workspace
-        .bound_task_view(
-            fork,
-            child_project,
-            scratch,
-            &super::super::workspace::owner::AgentOwner(child.clone()),
-            &authority,
-        )
-        .await?;
-    // The request records the child's admitted mount, not the parent's cwd.
-    let cwd = serde_json::to_string(&fork.path.to_string_lossy()).map_err(agent)?;
-    assert!(context.contains(cwd.trim_matches('"')));
-    assert_ne!(fork.path, root_workspace.path);
+    assert!(checked.load(std::sync::atomic::Ordering::SeqCst));
     assert!(context.contains("git_status"));
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Brief { brief: file } = entry.input else {

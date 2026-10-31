@@ -63,8 +63,14 @@ pub(super) async fn gather(
     } else {
         None
     };
-    let mut facts: crate::context::EnvironmentFacts =
-        crate::native_environment::checkout(cwd, now_unix_millis, model, platform, git).into();
+    let mut facts: crate::context::EnvironmentFacts = crate::native_environment::checkout(
+        cwd,
+        now_unix_millis,
+        model,
+        platform,
+        Some(git.unwrap_or_else(|| "unavailable for this workspace".into())),
+    )
+    .into();
     if let (Some(cwd), crate::native_environment::PlatformPolicy::Native) = (cwd, platform) {
         let environment =
             crate::native_environment::tool_environment().map_err(crate::Error::process_io)?;
