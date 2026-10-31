@@ -1,7 +1,7 @@
 // Acyclic native workspace shim. Pi's CLI owns sessions, providers and tools.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface } from "node:readline";
+import { McpClient } from "../shared/mcp-client.mjs";
 import { Type } from "typebox";
 
 const executable = "__ACYCLIC_EXECUTABLE__";
@@ -23,72 +23,20 @@ export default function acyclic(pi: ExtensionAPI) {
   let selected: Location | undefined;
   let bridge: ChildProcessWithoutNullStreams | undefined;
   let ended: Promise<void> | undefined;
-  let initialized = false;
-  let failure: Error | undefined;
-  let sequence = 0;
-  const pending = new Map<number, {yes: (value: Response) => void; no: (error: Error) => void; dispatch: () => void}>();
+  let client: McpClient | undefined;
   const task = () => { if (!selected) throw new Error("Acyclic workspace owner is unavailable"); return selected; };
-  const stop = (error: Error) => {
-    if (failure) return;
-    failure = new Error(`step=serve Pi coordination: ${error.message}; recovery=pi`);
-    for (const entry of pending.values()) entry.no(failure);
-    pending.clear(); bridge?.stdin.end();
-  };
 
   function call(name: string, args: Action, signal?: AbortSignal): Promise<Response> {
-    if (failure) return Promise.reject(failure);
-    if (signal?.aborted) return Promise.reject(new Error("step=dispatch Pi coordination: cancelled; recovery=pi"));
-    if (!bridge) {
+    if (!client) {
+      if (signal?.aborted) return Promise.reject(new Error("step=dispatch Pi coordination: cancelled; recovery=pi"));
       const location = task();
       bridge = spawn(executable, ["__mcp", "pi"], {cwd: location.cwd, windowsHide: true,
         env: {...process.env, ACYCLIC_WORKSPACE: location.cwd, ACYCLIC_TASK: location.task}});
       bridge.stderr.resume();
-      createInterface({input: bridge.stdout}).on("line", line => {
-        try {
-          const message = JSON.parse(line);
-          if (message.error && message.id == null) {
-            stop(new Error(JSON.stringify(message.error)));
-            return;
-          }
-          if (message.id === 0) {
-            if (message.error) throw new Error(JSON.stringify(message.error));
-            if (initialized || message.result?.protocolVersion !== "2025-06-18")
-              throw new Error("step=initialize Pi coordination: invalid negotiated response; recovery=acyclic install pi");
-            bridge!.stdin.write(JSON.stringify({jsonrpc: "2.0", method: "notifications/initialized"}) + "\n");
-            initialized = true;
-            for (const entry of pending.values()) entry.dispatch();
-            return;
-          }
-          const entry = pending.get(message.id);
-          if (!entry) return;
-          pending.delete(message.id);
-          if (message.error) entry.no(new Error(`step=complete Pi coordination: ${JSON.stringify(message.error)}; recovery=pi`)); else entry.yes(message.result);
-        } catch (error) { stop(error instanceof Error ? error : new Error(String(error))); }
-      }).on("close", () => stop(new Error("Acyclic coordination output closed")));
-      bridge.on("error", stop);
-      bridge.stdin.on("error", stop);
-      ended = new Promise(resolve => bridge!.once("close", () => {stop(new Error("Acyclic coordination session ended")); bridge = undefined; resolve();}));
-      bridge.stdin.write(JSON.stringify({jsonrpc: "2.0", id: 0, method: "initialize", params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: "acyclic-pi", version: "0.2.0"}}}) + "\n");
+      client = new McpClient(bridge, {name: "acyclic-pi", version: "0.2.0", recovery: "pi"});
+      ended = client.closed;
     }
-    const id = ++sequence;
-    return new Promise<Response>((yes, no) => {
-      let dispatched = false;
-      const cancel = () => {
-        if (dispatched) bridge?.stdin.write(JSON.stringify({jsonrpc: "2.0", method: "notifications/cancelled", params: {requestId: id}}) + "\n");
-        pending.delete(id); no(new Error("step=dispatch Pi coordination: cancelled; recovery=pi"));
-      };
-      if (signal?.aborted) { cancel(); return; }
-      signal?.addEventListener("abort", cancel, {once: true});
-      const dispatch = () => {
-        try {
-          dispatched = true;
-          bridge!.stdin.write(JSON.stringify({jsonrpc: "2.0", id, method: "tools/call", params: {name, arguments: args}}) + "\n");
-        } catch (error) { stop(error instanceof Error ? error : new Error(String(error))); }
-      };
-      pending.set(id, {yes: value => {signal?.removeEventListener("abort", cancel); yes(value);},
-        no: error => {signal?.removeEventListener("abort", cancel); no(error);}, dispatch});
-      if (initialized) dispatch();
-    });
+    return client.request(name, args, signal) as Promise<Response>;
   }
 
   pi.on("session_start", async (_event, ctx) => {

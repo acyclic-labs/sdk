@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import * as childProcess from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mock, test } from "bun:test";
@@ -8,6 +8,15 @@ import { mock, test } from "bun:test";
 // Run this file in its own Bun process: only the harness request boundary is
 // stubbed. The child and its failed-spawn/pipe event ordering are native Node APIs.
 const native = { ...childProcess };
+
+function extension(directory: string): string {
+  for (const asset of ["pi/index.ts", "shared/mcp-client.mjs"]) {
+    const [parent, leaf] = asset.split("/");
+    mkdirSync(join(directory, parent), {recursive: true});
+    writeFileSync(join(directory, parent, leaf), readFileSync(new URL(`../../${asset}`, import.meta.url)));
+  }
+  return join(directory, "pi/index.ts");
+}
 
 test("Pi failed spawn closes custody and shutdown without an exit event", async () => {
   const directory = mkdtempSync(join(import.meta.dir, ".pi-bridge-"));
@@ -32,8 +41,7 @@ test("Pi failed spawn closes custody and shutdown without an exit event", async 
     },
   }));
   try {
-    const path = join(directory, "index.ts");
-    writeFileSync(path, readFileSync(new URL("../../pi/index.ts", import.meta.url)));
+    const path = extension(directory);
     const { default: acyclic } = await import(pathToFileURL(path).href);
     acyclic({ on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool: (tool: any) => tools.set(tool.name, tool) });
@@ -87,8 +95,7 @@ test("Pi boundaries leave managed capture to the physical process owner", async 
     }),
   }));
   try {
-    const path = join(directory, "index.ts");
-    writeFileSync(path, readFileSync(new URL("../../pi/index.ts", import.meta.url)));
+    const path = extension(directory);
     const { default: acyclic } = await import(pathToFileURL(path).href);
     acyclic({on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool() {}});

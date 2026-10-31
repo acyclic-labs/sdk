@@ -4,6 +4,8 @@ import { createInterface } from "node:readline";
 // Queue entries retain logical messages. Only the writable frontier is encoded;
 // its full UTF-8 frame remains resident until sent, independently of pipe credit.
 export class McpClient {
+  /** @type {Promise<void>} Original child close, independently of pipe EOF. */
+  closed;
   #input;
   #pending = new Map();
   #head;
@@ -18,6 +20,11 @@ export class McpClient {
   #onInitialized;
   #onFailure;
 
+  /**
+   * @param {import("node:child_process").ChildProcessWithoutNullStreams} child
+   * @param {{name: string, version: string, recovery: string,
+   * onInitialized?: (response: unknown) => void, onFailure?: (error: Error) => void}} options
+   */
   constructor(child, { name, version, recovery, onInitialized, onFailure }) {
     this.#input = child.stdin;
     this.#recovery = recovery;
@@ -27,7 +34,10 @@ export class McpClient {
     this.#input.on("error", error => this.#stop(error));
     this.#input.on("close", () => this.#stop(new Error("native coordination input closed")));
     child.on("error", error => this.#stop(error));
-    child.on("close", () => this.#stop(new Error("native coordination process closed")));
+    this.closed = new Promise(resolve => child.once("close", () => {
+      this.#stop(new Error("native coordination process closed"));
+      resolve();
+    }));
     child.stdout.on("error", error => this.#stop(error));
     createInterface({ input: child.stdout })
       .on("line", line => {
