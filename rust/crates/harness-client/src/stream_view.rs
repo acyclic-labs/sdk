@@ -1,5 +1,5 @@
 use crate::reader::backing::{BackingPool, RecordBytes};
-use acyclic_stream::{StreamError, StreamPath, StreamWatermarks, wire, wire_codec};
+use acyclic_stream::{StreamError, StreamPath, StreamWatermarks, wire};
 use bytes::Bytes;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -284,14 +284,12 @@ impl StreamView {
                 }
                 // Use the canonical record/header validator, including its size
                 // bounds, before retaining anything from the delivery.
-                let decoded = wire_codec::record(record.clone(), self.followed.as_ref())?;
+                let decoded = frame.decode_record(self.followed.as_ref())?;
                 let charge = record_charge(record)?;
                 if charge > self.policy.bytes {
                     return Err(StreamError::LimitExceeded);
                 }
-                let payload = frame
-                    .original_record()
-                    .map_or(decoded.value, |record| record.value.clone());
+                let payload = decoded.value;
                 let metadata = charge - record.value.len();
                 let payload = self.backings.retain(payload, self.policy.bytes - metadata);
                 let capacity = payload.backing().capacity();

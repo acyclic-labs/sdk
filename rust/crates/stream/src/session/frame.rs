@@ -34,6 +34,25 @@ impl Frame {
         self.record.as_ref()
     }
 
+    /// Validates a record in its original read/follow context. In-process
+    /// frames reuse their immutable headers and allocation owners; wire-only
+    /// frames pass through the canonical decoder.
+    pub fn decode_record(&self, followed: Option<&StreamPath>) -> Result<Record, StreamError> {
+        let Some(wire::session_frame::Body::Data(data)) = &self.wire.body else {
+            return Err(StreamError::Unavailable);
+        };
+        let Some(wire::session_data::Item::Record(record)) = &data.item else {
+            return Err(StreamError::Unavailable);
+        };
+        match &self.record {
+            Some(original) => {
+                validate_original(original, record, followed)?;
+                Ok(original.clone())
+            }
+            None => wire_codec::record(record.clone(), followed),
+        }
+    }
+
     pub(super) fn into_data(self) -> Result<wire::SessionData, StreamError> {
         match self.wire.body {
             Some(wire::session_frame::Body::Data(data)) => Ok(data),
@@ -49,14 +68,38 @@ impl Frame {
         let Some(wire::session_data::Item::Record(record)) = data.item else {
             return Err(StreamError::Unavailable);
         };
-        // Keep canonical validation and derived headers on every transport.
-        // Transfer only the exact original publication's payload owner.
-        let mut decoded = wire_codec::record(record, Some(path))?;
         if let Some(original) = original {
-            decoded.value = original.value;
+            validate_original(&original, &record, Some(path))?;
+            return Ok(original);
         }
-        Ok(decoded)
+        wire_codec::record(record, Some(path))
     }
+}
+
+fn validate_original(
+    original: &Record,
+    wire: &wire::Record,
+    followed: Option<&StreamPath>,
+) -> Result<(), StreamError> {
+    // Only Session publication constructs this immutable pair. RecordHeaders
+    // already proves canonical metadata; its public producer can still change
+    // the body, so validate the body/header relation before exposing the record.
+    if original
+        .value
+        .len()
+        .saturating_add(original.headers.payload_bytes())
+        > crate::MAX_RECORD_BYTES
+    {
+        return Err(StreamError::LimitExceeded);
+    }
+    crate::changes::validate(&original.value, &original.headers)?;
+    // Custody does not authorize a different read context. Use the encoder's
+    // same origin rule, including elision and redundant spelling refusal.
+    let origin = wire_codec::spelled_origin(original, followed).map_or("", StreamPath::as_str);
+    if wire.origin != origin {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(())
 }
 
 impl From<wire::SessionFrame> for Frame {
