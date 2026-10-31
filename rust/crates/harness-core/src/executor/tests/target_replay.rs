@@ -213,7 +213,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             None,
         )?
         .await?;
-    for filesystem in [Some(replacement), None, Some(foreign), Some(original)] {
+    for filesystem in [Some(replacement), None, Some(foreign)] {
         let bound = base
             .clone()
             .with_task_context(&bind(filesystem)?, operation)?;
@@ -228,6 +228,45 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             RecordedCall::Started(_)
         ));
     }
+    let bound = base.with_task_context(&bind(Some(original))?, operation)?;
+    let recovery = bound.clone().into_reconciliation();
+    assert!(
+        matches!(StockExecution::ordinary(&recovery).settle_tool_call(&*journal, operation, 0, invocation.clone(), 0, &mut Vec::new(), &mut Vec::new()).await, Err(Error::Indeterminate(id)) if id == operation)
+    );
+    let (_, records) = StockExecution::ordinary(&bound)
+        .tool_records(&*journal, operation, 0, "status")
+        .await?;
+    assert!(matches!(
+        RecordedCall::classify(&records).expect("valid claim"),
+        RecordedCall::Started(_)
+    ));
+    // Ordinary recovery keeps the existing terminal interruption policy; a
+    // matching binding never turns the unanswered start into a fresh dispatch.
+    assert!(matches!(
+        StockExecution::ordinary(&bound)
+            .settle_tool_call(
+                &*journal,
+                operation,
+                0,
+                invocation,
+                0,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .await?,
+        ExecutionProgress::Failed(ToolFailureKind::Interrupted)
+    ));
+    let (_, records) = StockExecution::ordinary(&bound)
+        .tool_records(&*journal, operation, 0, "status")
+        .await?;
+    assert!(matches!(
+        RecordedCall::classify(&records).expect("valid claim"),
+        RecordedCall::Failed {
+            started: Some(_),
+            reason: ToolFailureKind::Interrupted,
+            ..
+        }
+    ));
     Ok(())
 }
 
