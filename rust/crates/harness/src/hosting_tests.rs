@@ -878,3 +878,6 @@ fn a_children_cursor_carries_its_hierarchy_version_and_last_path() -> Result {
     assert!(parse_children_cursor("agents/root/children/a").is_err());
     Ok(())
 }
+
+#[path = "hosting_tests/editor_input.rs"]
+mod editor_input;

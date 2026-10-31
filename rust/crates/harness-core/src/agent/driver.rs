@@ -59,6 +59,18 @@ pub struct OpenTurn {
     pub roster: Option<(FileRef, [u8; 32])>,
 }
 
+/// Media type of a version-one ordered user input, staged on the original
+/// private volume. The inbox retains its immutable file, never an inline body.
+pub const USER_INPUT_MEDIA_TYPE: &str = "application/vnd.acyclic.harness.user-input.v1+json";
+
+/// Encodes ordered user content for the original input publisher. Validation
+/// rejects model/tool/configuration content before any publication.
+pub fn encode_user_input(content: &ModelContent) -> crate::Result<Vec<u8>> {
+    content.validate_user_input(&mut None)?;
+    crate::contract::canonical_json_bytes(content)
+        .map_err(|error| crate::Error::Invalid(error.to_string()))
+}
+
 fn is_manifest(part: &ModelContentPart) -> bool {
     matches!(
         part,
@@ -77,6 +89,22 @@ pub async fn expand_attachments(
     content: ModelContent,
     reader: &dyn crate::conversation::ContentResidencyVerifier,
 ) -> crate::Result<ModelContent> {
+    let content = if let ModelContent::Part(ModelContentPart::File { file, .. }) = &content
+        && file.descriptor().media_type() == USER_INPUT_MEDIA_TYPE
+    {
+        let bytes = reader
+            .read(file, file.descriptor().byte_length(), None, None)?
+            .await?;
+        file.descriptor().verify(&bytes, &mut None)?;
+        let input: ModelContent = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        input.validate_user_input(&mut None)?;
+        // Only this original envelope is expanded. An attached file with the
+        // same media type remains an ordinary file, never a recursive input.
+        return Ok(input);
+    } else {
+        content
+    };
     let ModelContent::Parts(parts) = content else {
         return Ok(content);
     };

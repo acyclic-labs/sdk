@@ -453,38 +453,43 @@ where
             }
             AgentCommand::Prompt { agent, id, body } => {
                 let agent = self.within_tree(agent)?;
-                let source = text(body)?;
-                // The message's own identity, as the inbox keys it: its
-                // recipient, sender and intent.
-                let key = crate::contract::canonical_json_bytes(&(agent, by, id))
-                    .map_err(|_| Error::Record("message identity does not encode"))?;
-                let turn = |error| Error::Turn(Box::new(error));
-                // A replay is answered from what its first delivery pinned:
-                // its staged body, and the manifest staged before it. Only a
-                // new delivery reads the project's commands, skills and files.
-                let (body, attachments) = match self
-                    .bound
-                    .staged_text(agent, "message", by, id, source)
-                    .await?
-                {
-                    Some(body) => (
-                        body,
-                        self.platform.attachments(&key, None).await.map_err(turn)?,
-                    ),
-                    None => {
-                        let expanded = self.platform.prompt_command(source).await.map_err(turn)?;
-                        let text = expanded.as_deref().unwrap_or(source);
-                        let attachments = self
-                            .platform
-                            .attachments(&key, Some(text))
-                            .await
-                            .map_err(turn)?;
-                        let body = self
-                            .bound
-                            .stage_text(agent, "message", by, id, (source, text))
-                            .await?;
-                        (body, attachments)
-                    }
+                let (body, attachments) = if let ModelContent::Text(source) = body {
+                    // The message's own identity, as the inbox keys it: its
+                    // recipient, sender and intent.
+                    let key = crate::contract::canonical_json_bytes(&(agent, by, id))
+                        .map_err(|_| Error::Record("message identity does not encode"))?;
+                    let turn = |error| Error::Turn(Box::new(error));
+                    // A replay is answered from what its first delivery pinned:
+                    // its staged body, and the manifest staged before it. Only a
+                    // new delivery reads the project's commands, skills and files.
+                    let (body, attachments) = match self
+                        .bound
+                        .staged_text(agent, "message", by, id, source)
+                        .await?
+                    {
+                        Some(body) => (
+                            body,
+                            self.platform.attachments(&key, None).await.map_err(turn)?,
+                        ),
+                        None => {
+                            let expanded =
+                                self.platform.prompt_command(source).await.map_err(turn)?;
+                            let text = expanded.as_deref().unwrap_or(source);
+                            let attachments = self
+                                .platform
+                                .attachments(&key, Some(text))
+                                .await
+                                .map_err(turn)?;
+                            let body = self
+                                .bound
+                                .stage_text(agent, "message", by, id, (source, text))
+                                .await?;
+                            (body, attachments)
+                        }
+                    };
+                    (body, attachments)
+                } else {
+                    (self.bound.stage_prompt(agent, by, id, body).await?, None)
                 };
                 let record = InboxRecord::Message(Message {
                     from: by.clone(),
