@@ -49,7 +49,8 @@ can change the verdict; the view never claims precision the histogram lacks.
 Version mismatches and a query naming another operation are typed refusals.
 Operations have no count or duration cap. If the fixed-width metric counters
 lose precision, the snapshot marks `overflowed` and SLO verdicts stay unknown
-for that cohort. Export sinks still receive every terminal sample.
+for that cohort. The layer still calls its sink for each terminal sample;
+output delivery remains subject to the host's credit.
 
 `Export::channel` supplies the nonblocking output adapter for a host's existing
 export loop. Its caller provides a `tokio::sync::Semaphore` containing admitted
@@ -72,6 +73,8 @@ The host must retain `ExportRecord` until its own output completes, then drop it
 to release credit. Dropping the receiver refuses later output immediately;
 dropping all exporters ends the receiver's channel wait. There is no telemetry
 worker or per-agent timer, and no observer can retain the original operation.
+This delivery channel does not acknowledge a diagnostic report request. Hosts
+retain the original ReportPort owner, generation and acknowledgement contract.
 
 On a volume-query file replacement, construct the replacement `SloQuery` from
 the newly authorized bytes. Select its completion event alongside the volume's
