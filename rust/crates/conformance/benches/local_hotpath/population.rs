@@ -3,19 +3,16 @@ use super::{
     report::{Result, emit},
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
-use acyclic_fs::{
-    CancellationToken, EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore,
-    WorkBudget,
-};
+use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
 use acyclic_harness_core::{
     OperationId,
-    agent::{AgentId, AgentState, ForkAdopted, IntentId, VolumeBinding},
+    agent::{AgentId, AgentPath, AgentState, IntentId, VolumeBinding},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
     executor::Executor,
     filesystem::{
         PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
-        hosting::{Bound, Placement, Turns},
+        hosting::{Bound, Placement, RootRequest, RootSubmission, Turns},
     },
     model::ModelContent,
     resources::ProviderRef,
@@ -172,10 +169,50 @@ impl Fixture {
             entries,
             model_calls: model_calls.clone(),
         };
-        // Chunking bounds setup memory and command size; it never bounds the
-        // population. Each root is an actual actor, inbox subtree and volume.
-        for first in (0..agents).step_by(256) {
-            fixture.chunk(first, (agents - first).min(256)).await?;
+        // Use the same publication owner as session creation. Concatenating
+        // independent root requests duplicates their shared activation stream.
+        let mut first_request: Option<CommitRequest> = None;
+        for index in 0..agents {
+            let agent = id(index)?;
+            let expected = AgentPath::root(&agent);
+            let fresh = vec![fixture.volume(&agent)?];
+            let prepared = Box::pin(fixture.bound.prepare_root(
+                &IntentId::try_from(format!("population-{index}").as_str())?,
+                RootRequest {
+                    agent,
+                    fresh,
+                    retained: Vec::new(),
+                    brief: None,
+                    policy: None,
+                },
+            ))
+            .await?;
+            if index == 0 && agents > 1 {
+                first_request = Some(prepared.request().clone());
+            } else if let Some(mut invalid) = first_request.take() {
+                invalid
+                    .conditions
+                    .extend(prepared.request().conditions.iter().cloned());
+                invalid
+                    .mutations
+                    .extend(prepared.request().mutations.iter().cloned());
+                if acyclic_stream::validate_commit(&mut invalid)
+                    != Err(acyclic_stream::StreamError::InvalidArgument)
+                {
+                    return Err("root composition oracle accepted concatenated publications".into());
+                }
+                emit(serde_json::json!({
+                    "schema": 1, "kind": "negative_control",
+                    "control": "concatenated real root publications",
+                    "agents": agents, "result": "typed invalid argument before submission",
+                }))?;
+            }
+            match Box::pin(fixture.bound.submit_root(prepared)).await? {
+                RootSubmission::Created(child) if child == expected => {}
+                outcome => {
+                    return Err(format!("population root {index} publication: {outcome:?}").into());
+                }
+            }
         }
         let runtime = fixture.bound.agents().runtime();
         // Registration queues initial replay. Prove that the idle oracle
@@ -199,84 +236,6 @@ impl Fixture {
             serde_json::json!({"schema": 1, "kind": "setup", "agents": agents, "elapsed_seconds": start.elapsed().as_secs_f64(), "dormant": agents, "ready": runtime.counts().1, "model_calls": 0, "active": 1}),
         )?;
         Ok(fixture)
-    }
-
-    async fn chunk(&self, first: usize, count: usize) -> Result {
-        use acyclic_fs::{
-            CreateSpec, CreationOperation, Lifecycle, VolumeConfig, VolumeInitialization,
-            WorkspaceName,
-            distributed::{FilesystemCommit, FilesystemCommitOutcome},
-        };
-        let cancellation = CancellationToken::new();
-        let mut request = CommitRequest {
-            deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: Vec::new(),
-            idempotency_key: key(format!("population/{first}"))?,
-        };
-        let mut creations = Vec::with_capacity(count);
-        let mut children = Vec::with_capacity(count);
-        for index in first..first + count {
-            let agent = id(index)?;
-            let volume = self.volume(&agent)?;
-            let name = volume.volume.storage_name(&mut None)?;
-            let created = self.bound.agents().prepare_root(
-                &IntentId::try_from(format!("population-{index}").as_str())?,
-                ForkAdopted {
-                    agent,
-                    parent: None,
-                    forked_at: 0,
-                    conversation_tail: 0,
-                    checkpoint: None,
-                    volumes: vec![volume],
-                    brief: None,
-                    policy: None,
-                },
-            )?;
-            request.conditions.extend(created.request.conditions);
-            request.mutations.extend(created.request.mutations);
-            children.push(created.child);
-            creations.push(CreateSpec {
-                name: WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &cancellation)
-                    .map_err(|failure| failure.error)?
-                    .value,
-                initialization: VolumeInitialization::new(
-                    VolumeConfig::portable(Lifecycle::Durable),
-                    Some(acyclic_fs::access::INITIAL_POLICY),
-                ),
-                creation: CreationOperation::populated(
-                    acyclic_fs::OperationId::from_bytes(u128::try_from(index)?.to_le_bytes()),
-                    &[],
-                ),
-            });
-        }
-        let mut commit = FilesystemCommit::new(request);
-        Box::pin(self.fs.prepare_create_many(
-            &creations,
-            &mut commit,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await
-        .map_err(|failure| failure.error)?;
-        self.fs
-            .seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|failure| failure.error)?;
-        let committed = Box::pin(self.fs.submit_commit(
-            commit,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await
-        .map_err(|failure| failure.error)?
-        .value;
-        if !matches!(committed, FilesystemCommitOutcome::Committed(_)) {
-            return Err("population creation was not committed".into());
-        }
-        for child in children {
-            self.bound.agents().host(&child)?;
-        }
-        Ok(())
     }
 }
 
