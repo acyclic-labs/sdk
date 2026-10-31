@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// Persisted filter projection; execution uses Streams' one filter implementation.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct MonitorFilter {
     /// Provider-indexed half-open key ranges; empty accepts every key.
@@ -18,7 +18,7 @@ pub struct MonitorFilter {
 }
 
 /// One half-open source key range, interpreted by Streams.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct MonitorKeyRange {
     /// Inclusive key bytes.
@@ -53,7 +53,7 @@ impl MonitorFilter {
 }
 
 /// Replay fence retained with a delivered event, never a sender-side acknowledgement.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct MonitorCursor {
     /// Exclusive source sequence.
@@ -64,7 +64,7 @@ pub struct MonitorCursor {
 
 /// `monitors/<deadline>-<id>.json`: one authorized follow, with no event-count
 /// ceiling. Bounded and unbounded declarations occupy separate indexed folders.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Monitor {
     /// Persisted format; this build accepts only v1.
@@ -100,6 +100,33 @@ pub struct MonitorFollow {
 }
 
 impl Monitor {
+    /// Validate the declaration without opening or copying its source.
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.version != 1 || self.deadline_unix_ms == Some(0) {
+            return Err(invalid("invalid monitor v1 definition"));
+        }
+        StreamPath::validate(&self.source).map_err(Error::Stream)?;
+        if (self.cursor.next == 0) != self.cursor.preceding.is_none() {
+            return Err(invalid("monitor cursor requires its preceding commit"));
+        }
+        Ok(())
+    }
+
+    /// Admit the original indexed name without allocating another path.
+    /// The admitted source provider still owns follow authorization and filtering.
+    pub fn validate_file(&self, path: &str) -> Result<(), Error> {
+        self.validate()?;
+        let directory = if self.deadline_unix_ms.is_some() {
+            "monitors/bounded/"
+        } else {
+            "monitors/unbounded/"
+        };
+        if !super::index::matches(path, directory, self.deadline_unix_ms, &self.id) {
+            return Err(invalid("monitor deadline index differs"));
+        }
+        Ok(())
+    }
+
     /// The directory index is also the deadline index. Reading the first
     /// bounded declaration never traverses the unbounded monitors.
     #[must_use]
@@ -117,12 +144,7 @@ impl Monitor {
         &self,
         provider: &P,
     ) -> Result<MonitorFollow, Error> {
-        if self.version != 1 || self.source.is_empty() {
-            return Err(invalid("invalid monitor v1 definition"));
-        }
-        if (self.cursor.next == 0) != self.cursor.preceding.is_none() {
-            return Err(invalid("monitor cursor requires its preceding commit"));
-        }
+        self.validate()?;
         let mut request = FollowRequest::new(
             StreamPath::new(&self.source).map_err(Error::Stream)?,
             self.cursor.next,

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Explicit schedule ownership; no implicit expiry is applied.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Lifetime {
     /// Ends when its owning session is closed.
@@ -14,7 +14,7 @@ pub enum Lifetime {
 }
 
 /// Restart policy, stated in the schedule rather than hidden in the timer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum Missed {
     /// Deliver every occurrence, in bounded actor-delivery pages.
@@ -24,7 +24,7 @@ pub enum Missed {
 }
 
 /// Recurrence shares the same alarm as a one-shot or self-paced pause.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Recurrence {
     /// Fixed cadence anchored to the preceding due time.
@@ -41,7 +41,7 @@ pub enum Recurrence {
 
 /// `schedules/<next_due:020>-<id>.json`, ordered by the volume's directory index.
 /// Editing/moving a file and rearming the owner's alarm is one publication.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Schedule {
     /// Persisted format; only v1 is accepted.
@@ -106,6 +106,19 @@ impl Schedule {
                 Cron::parse(expression)?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Admit this declaration under its original owning agent and indexed name.
+    /// A document cannot use a different filename to conceal an earlier due time.
+    /// This checks data; the caller retains the original volume authority.
+    pub fn validate_file(&self, path: &str, owner: &AgentPath) -> Result<(), Error> {
+        self.validate()?;
+        if &self.owner != owner
+            || !super::index::matches(path, "schedules/", Some(self.next_due_unix_ms), &self.id)
+        {
+            return Err(invalid("schedule owner or due index differs"));
         }
         Ok(())
     }

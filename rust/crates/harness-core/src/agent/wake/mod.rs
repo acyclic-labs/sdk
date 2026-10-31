@@ -5,6 +5,7 @@
 //! request: only the Notice's `wake` policy does that.
 
 mod cron;
+mod index;
 mod monitor;
 mod schedule;
 

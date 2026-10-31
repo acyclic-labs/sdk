@@ -140,9 +140,13 @@ impl<'de> Deserialize<'de> for Header<'de> {
 }
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(try_from = "String", into = "String")]
+#[heap_layout(as = String)]
 pub struct IntentId(String);
+crate::core::ownership::owned_tuple!(IntentId, (text));
 
 impl IntentId {
     /// Canonical text.
