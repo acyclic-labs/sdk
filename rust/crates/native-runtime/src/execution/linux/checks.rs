@@ -81,7 +81,11 @@ proptest! {
     }
 
     #[test]
-    fn port_grants_refuse_implicit_fast_open_connections(flags in any::<u32>()) {
+    fn port_grants_refuse_implicit_fast_open_connections(
+        flags in any::<u32>(),
+        level in any::<u32>(),
+        option in any::<u32>(),
+    ) {
         let code = filter(&ExecutionNetwork::TcpPorts(
             std::collections::BTreeSet::from([443]))).unwrap();
         for (call, argument) in [(libc::SYS_sendto, 3), (libc::SYS_sendmsg, 2),
@@ -91,6 +95,24 @@ proptest! {
             prop_assert_eq!(evaluate(&code, ARCH, call as u32, arguments),
                 if flags & libc::MSG_FASTOPEN as u32 == 0 { ALLOW } else { DENY });
         }
+        let mut arguments = [0; 6];
+        arguments[1] = u64::from(level) | (u64::from(flags) << 32);
+        arguments[2] = u64::from(option) | (u64::from(flags.rotate_left(16)) << 32);
+        prop_assert_eq!(evaluate(&code, ARCH, libc::SYS_setsockopt as u32, arguments),
+            if level == libc::IPPROTO_TCP as u32 && option == libc::TCP_FASTOPEN_CONNECT as u32 {
+                DENY
+            } else {
+                ALLOW
+            });
+        arguments[1] = libc::IPPROTO_TCP as u64;
+        arguments[2] = libc::TCP_FASTOPEN_CONNECT as u64;
+        prop_assert_eq!(evaluate(&code, ARCH, libc::SYS_setsockopt as u32, arguments), DENY);
+        // The same real filter generator retains this option without a port
+        // ceiling; a blanket setsockopt refusal would also reject NODELAY.
+        let unrestricted = filter(&ExecutionNetwork::On).unwrap();
+        prop_assert_eq!(evaluate(&unrestricted, ARCH, libc::SYS_setsockopt as u32, arguments), ALLOW);
+        arguments[2] = libc::TCP_NODELAY as u64;
+        prop_assert_eq!(evaluate(&code, ARCH, libc::SYS_setsockopt as u32, arguments), ALLOW);
     }
 
     // Generated programs must not admit a second syscall ABI, x32 numbers,

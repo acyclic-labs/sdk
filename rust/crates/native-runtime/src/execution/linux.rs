@@ -407,6 +407,18 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
     ];
     match network {
         ExecutionNetwork::TcpPorts(_) => {
+            // Deferred Fast Open reaches that same implicit-connect path on
+            // ordinary write, without MSG_FASTOPEN. No socket crosses exec,
+            // and guests cannot create this deferred state through setsockopt.
+            code.extend([
+                instruction(EQUAL, 0, 6, number(libc::SYS_setsockopt)?),
+                instruction(LOAD, 0, 0, 24),
+                instruction(EQUAL, 0, 3, libc::IPPROTO_TCP as u32),
+                instruction(LOAD, 0, 0, 32),
+                instruction(EQUAL, 0, 1, libc::TCP_FASTOPEN_CONNECT as u32),
+                instruction(RETURN, 0, 0, DENY),
+                instruction(LOAD, 0, 0, 0),
+            ]);
             // Older Landlock implementations do not mediate Fast Open's
             // implicit connect. Read only by-value flags, never a guest pointer.
             for (call, flags) in [

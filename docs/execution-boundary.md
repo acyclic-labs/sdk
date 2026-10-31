@@ -77,6 +77,12 @@ state and file locking, and resource-limit changes name only the current
 process. Common reads and writes return before the control checks. Port grants
 reject `MSG_FASTOPEN` in each send API, including on kernels whose Landlock
 implementation does not check that implicit connection path.
+They also reject the `TCP_FASTOPEN_CONNECT` socket option: the
+[kernel TCP path](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/tcp.c)
+can enter Fast Open from deferred socket state during ordinary writes.
+No socket survives the initial exec fence, so blocking creation of that state
+and explicit Fast Open sends seals both entry paths. Ordinary TCP options
+such as `TCP_NODELAY` remain available.
 The [kernel's Fast Open fix](https://kernel.googlesource.com/pub/scm/linux/kernel/git/david/linux/+/33cb713db0161b54f04fe830e062c9e102c29a04)
 documents why a reported Landlock ABI alone does not establish that check.
 Metadata changes are conservatively denied even in writable workspaces.
