@@ -36,7 +36,7 @@ const ANSWER_LIMIT: usize = 4096;
 struct Running {
     process: HostSessionProcess,
     claim: TurnClaim,
-    /// A spawn or stdin failure, settled as the turn's failure.
+    /// The first spawn, stdin or readiness failure, settled as the turn's failure.
     failure: Option<String>,
     events: acyclic_native_runtime::lines::LineBuffer,
     answer: Outcome<String>,
@@ -47,6 +47,24 @@ struct Running {
     wake: Waker,
     /// The armed readiness wait, held until it fires or the child settles.
     armed: Option<acyclic_native_runtime::ProcessReadiness>,
+}
+
+impl Running {
+    /// Consumes the same armed result before attempting another child pass.
+    fn poll_readiness(&mut self) -> Poll<()> {
+        let Some(wait) = self.armed.as_mut() else {
+            return Poll::Ready(());
+        };
+        let mut context = Context::from_waker(&self.wake);
+        let Poll::Ready(result) = std::pin::Pin::new(wait).poll(&mut context) else {
+            return Poll::Pending;
+        };
+        self.armed = None;
+        if let Err(error) = result {
+            self.failure.get_or_insert_with(|| error.to_string());
+        }
+        Poll::Ready(())
+    }
 }
 
 /// One child's accepted context and newest accepted prompt.
@@ -389,15 +407,16 @@ impl NativeChildren {
     }
 
     /// Arms one readiness wait for a running child, under its registered key.
-    fn arm(&self, reference: &str, running: &mut Running) -> Result<()> {
-        let mut wait = running.process.readiness()?;
-        let mut context = Context::from_waker(&running.wake);
-        if std::pin::Pin::new(&mut wait).poll(&mut context).is_ready() {
-            self.ready.push(reference);
-        } else {
-            running.armed = Some(wait);
+    fn arm(&self, reference: &str, running: &mut Running) {
+        match running.process.readiness() {
+            Ok(wait) => running.armed = Some(wait),
+            Err(error) => {
+                running.failure.get_or_insert_with(|| error.to_string());
+            }
         }
-        Ok(())
+        if running.poll_readiness().is_ready() {
+            self.ready.push(reference);
+        }
     }
 
     /// Advances only the children whose readiness fired, by one bounded pass
@@ -409,18 +428,20 @@ impl NativeChildren {
             let Some(mut running) = self.children.remove(&reference) else {
                 continue;
             };
-            running.armed = None;
+            if running.poll_readiness().is_pending() {
+                self.children.insert(reference, running);
+                continue;
+            }
             let result = match self.refresh(&reference, &mut running) {
                 Ok(Some(mut settled)) => self.launch(&reference, &mut settled),
                 Ok(None) => {
-                    let armed = if running.process.take_output_progress() {
+                    if running.process.take_output_progress() {
                         self.ready.push(&reference);
-                        Ok(())
                     } else {
-                        self.arm(&reference, &mut running)
-                    };
+                        self.arm(&reference, &mut running);
+                    }
                     self.children.insert(reference.clone(), running);
-                    armed
+                    Ok(())
                 }
                 Err(error) => {
                     self.children.insert(reference.clone(), running);
