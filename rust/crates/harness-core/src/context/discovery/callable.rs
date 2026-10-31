@@ -34,6 +34,7 @@ impl SkillMetadata {
                 tool.skill_source
                     .as_ref()
                     .map_or(Ok(0), |source| source.logical_owned_bytes())?,
+                crate::executor::filesystem_skill_marker_bytes(),
             ])?;
             Some(io.into_native_custody(retained)?)
         } else {
