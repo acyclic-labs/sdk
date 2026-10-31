@@ -92,6 +92,21 @@ impl FilesystemCommit {
         }
     }
 
+    /// Moves the caller's already funded request into this publication owner.
+    /// The allocation must retain that request's original construction work;
+    /// this constructor neither admits capacity nor substitutes a new ledger.
+    /// Later contributions absorb their capacity into this same guard, refusing
+    /// a different accounting context before replacing the original request.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_native_custody(
+        request: CommitRequest,
+        allocation: crate::NativeAllocation,
+    ) -> Self {
+        let mut commit = Self::new(request);
+        commit.allocation = Some(allocation);
+        commit
+    }
+
     /// The composed request. Call [`StreamAuthorityStore::seal`] before
     /// submitting it through an external provider.
     #[must_use]

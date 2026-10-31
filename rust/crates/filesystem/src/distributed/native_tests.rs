@@ -5,6 +5,69 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
 #[test]
+fn caller_construction_stays_funded_through_composition_and_foreign_refusal() -> TestResult {
+    use acyclic_stream::{
+        CommitCondition, CommitMutation, CommitRequest, IdempotencyKey, StreamPath,
+    };
+    let cancellation = CancellationToken::new();
+    let original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let other = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let baseline = original.live_allocation_bytes();
+    let other_baseline = other.live_allocation_bytes();
+    let store = StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default()));
+    let path = StreamPath::new("caller/conditional-state")?;
+    let request = CommitRequest {
+        conditions: vec![CommitCondition::Absent { path: path.clone() }],
+        mutations: vec![CommitMutation::Append {
+            path,
+            records: vec!["state".into()],
+        }],
+        idempotency_key: IdempotencyKey::new("original-construction")?,
+        deadline_unix_millis: None,
+    };
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    let request = work.copy_commit(&request)?;
+    let mut retained = None;
+    work.retain_request_custody(&mut retained)?;
+    let funded = original.receipt();
+    let mut commit = crate::FilesystemCommit::with_native_custody(
+        request,
+        retained.ok_or("original construction lost its funding")?,
+    );
+    assert_eq!(
+        original.receipt(),
+        funded,
+        "ownership transfer adds no allocation or copy"
+    );
+    let original_request = commit.request().clone();
+    let mut foreign = AuthorityWork::native(&other, &cancellation);
+    assert!(matches!(
+        store.seal(&mut commit, &mut foreign),
+        Err(AuthorityStoreError::NativeOriginal(
+            crate::NativeTreeMaterializationError::InvalidLayout
+        ))
+    ));
+    assert_eq!(commit.request(), &original_request);
+    assert!(
+        commit.request_mut().is_some(),
+        "foreign refusal must not seal the caller's request"
+    );
+    drop(foreign);
+    assert_eq!(other.live_allocation_bytes(), other_baseline);
+    store.seal(&mut commit, &mut work)?;
+    assert!(commit.request_mut().is_none());
+    drop(original_request);
+    drop(work);
+    assert!(
+        original.live_allocation_bytes() > baseline,
+        "the original caller cannot refund a still-owned sealed request"
+    );
+    drop(commit);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[test]
 fn request_cleanup_cannot_retire_a_persistent_owner() -> TestResult {
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(BUDGET, &cancellation);
