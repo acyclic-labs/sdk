@@ -4,7 +4,9 @@ use super::*;
 pub(crate) enum FileTool {
     Read,
     Write,
+    Create,
     Edit,
+    Insert,
     Patch {
         maximum_work: u64,
         maximum_hunks: u32,
@@ -71,7 +73,25 @@ impl FileTool {
                     )
                     .await?
             }
+            Self::Create => {
+                let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
+                let (volume, path) = context.tool_path_selection(&input.0.path)?;
+                let changes = [crate::conversation::ContentChange::CreateAbsent {
+                    path,
+                    bytes: input.0.content.as_bytes(),
+                    media_type: "text/plain",
+                    display_name: path.rsplit('/').next().unwrap_or(path),
+                }];
+                let (mut files, retained) = context
+                    .stage_tool_changes(invocation.operation_id, volume, &changes, io)
+                    .await?;
+                let file = files
+                    .pop()
+                    .ok_or_else(|| rejection(work, "create receipt omitted its file"))?;
+                (file, retained)
+            }
             Self::Edit => self.edit(context, invocation, work, io).await?,
+            Self::Insert => self.insert(context, invocation, work, io).await?,
             Self::Patch {
                 maximum_work,
                 maximum_hunks,
@@ -265,7 +285,7 @@ impl FileTool {
         crate::NativeCustody,
     )> {
         if let Some(version) = version {
-            let (file, custody) = super::version::decode_version(path, version, work)?;
+            let (file, custody) = context.decode_tool_version(path, version, work)?;
             return Ok((file, None, custody));
         }
         let (file, bytes, retained) = context.read_tool_path(path, io).await?;
@@ -313,6 +333,36 @@ impl FileTool {
             .stage_file_at(invocation.operation_id, &file, edited.as_bytes(), io)
             .await
     }
+
+    async fn insert(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, u64)> {
+        let input = decode::<InsertFileInput>(&invocation.arguments, work)?;
+        let (file, resolved, _source_custody) = self
+            .source(context, &input.0.path, input.0.version.as_deref(), work, io)
+            .await?;
+        let bytes = match resolved {
+            Some(bytes) => bytes,
+            None => context.read_file(&file, io).await?,
+        };
+        let source = std::str::from_utf8(bytes.as_ref())
+            .map_err(|_| rejection(work, "line insertion requires UTF-8 content"))?;
+        let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
+        let edited = super::edit::insert_lines(
+            source,
+            input.0.insert_line,
+            &input.0.new_text,
+            context.effective_scope().limits().file_bytes,
+            &mut allocation,
+        )?;
+        context
+            .stage_file_at(invocation.operation_id, &file, edited.as_bytes(), io)
+            .await
+    }
 }
 
 impl ToolExecutor for FileTool {
@@ -343,14 +393,15 @@ impl ToolExecutor for FileTool {
         }) {
             return Err(unauthorized());
         }
-        let (file, _custody) = self.preflight(scope, invocation, work)?;
-        let path = file
-            .as_ref()
-            .map(FileRef::path)
-            .or_else(|| invocation.arguments.get("path").and_then(Value::as_str))
+        let (file, _custody) = self.preflight_with_context(scope, invocation, work, context)?;
+        let path = invocation
+            .arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .or_else(|| file.as_ref().map(FileRef::path))
             .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
-        if file.is_none() && matches!(self, Self::Read | Self::Edit) {
+        if file.is_none() && matches!(self, Self::Read | Self::Edit | Self::Insert) {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let owned_io = work
                 .map(crate::executor::PreparationIo::from_native_work)
@@ -381,12 +432,7 @@ impl ToolExecutor for FileTool {
         if self.is_read() {
             Ok(())
         } else {
-            context.task().authorize_content_publication(
-                path,
-                file.as_ref(),
-                context.effective_scope(),
-                None,
-            )
+            context.authorize_tool_path_publication(path, file.as_ref(), None)
         }
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -443,10 +489,35 @@ impl ToolExecutor for FileTool {
             }
             // Observe uncertain publications without redispatch.
             let io = crate::executor::PreparationIo::from_native_work(work)?;
+            if matches!(self, Self::Create) {
+                let input = decode::<WriteFileInput>(&invocation.arguments, Some(work))?;
+                let (volume, _) = context.tool_path_selection(&input.0.path)?;
+                let receipt = context
+                    .observe_tool_changes(invocation.operation_id, volume, Some(&io))
+                    .await?;
+                let file = receipt.0.and_then(|mut files| files.pop());
+                let encoded = file
+                    .map(|file| super::value(&FileResult { file }, u64::MAX, Some(work)))
+                    .transpose()?;
+                return match encoded {
+                    Some((value, custody)) => Ok((
+                        Some(ToolResult { value }),
+                        custody.ok_or_else(|| {
+                            rejection(Some(work), "native create result lacks custody")
+                        })?,
+                    )),
+                    None => Ok((None, io.take_native_custody(receipt.1)?)),
+                };
+            }
             let source = if matches!(self, Self::Write) {
                 (None, None)
             } else {
-                self.preflight(context.effective_scope(), invocation, Some(work))?
+                self.preflight_with_context(
+                    context.effective_scope(),
+                    invocation,
+                    Some(work),
+                    Some(context),
+                )?
             };
             let receipt = context
                 .observe_tool_source_file_once(
@@ -504,9 +575,30 @@ impl ToolExecutor for FileTool {
         };
 
         Box::pin(async move {
+            if matches!(self, Self::Create) {
+                self.authorize(
+                    Some(context.effective_scope()),
+                    Some(&context),
+                    &invocation,
+                    None,
+                )?;
+                let input = decode::<WriteFileInput>(&invocation.arguments, None)?;
+                let (volume, _) = context.tool_path_selection(&input.0.path)?;
+                let receipt = context
+                    .observe_tool_changes(invocation.operation_id, volume, None)
+                    .await?;
+                return receipt
+                    .0
+                    .and_then(|mut files| files.pop())
+                    .map(|file| {
+                        super::value(&FileResult { file }, u64::MAX, None)
+                            .map(|encoded| ToolResult { value: encoded.0 })
+                    })
+                    .transpose();
+            }
             // The stock journal has authenticated the full original invocation.
             // Resolving an unversioned path again could select a later source.
-            if matches!(self, Self::Edit)
+            if matches!(self, Self::Edit | Self::Insert)
                 && invocation
                     .arguments
                     .get("version")
@@ -518,7 +610,12 @@ impl ToolExecutor for FileTool {
                     &invocation,
                     None,
                 )?;
-                let source = self.preflight(context.effective_scope(), &invocation, None)?;
+                let source = self.preflight_with_context(
+                    context.effective_scope(),
+                    &invocation,
+                    None,
+                    Some(context),
+                )?;
                 let receipt = context
                     .observe_tool_source_file_once(invocation.operation_id, source.0.as_ref(), None)
                     .await?;

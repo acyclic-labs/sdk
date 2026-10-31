@@ -73,6 +73,7 @@ impl ToolSpec {
 
     pub(crate) fn bind_with_projection(&self, mode: ProjectionMode) -> Result<Tool> {
         Ok(Tool {
+            skill_source: None,
             definition: self.definition_with_projection(mode)?,
             hook_names: self.hook_names,
             executor: (self.executor)(self.name),

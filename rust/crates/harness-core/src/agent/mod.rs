@@ -23,12 +23,16 @@ mod input;
 pub(crate) use input::input as turn_input;
 pub mod kernel;
 mod layout;
+#[cfg(feature = "filesystem")]
+pub(crate) use layout::stream_parts_with_io;
 mod lower;
 mod machine;
 pub(crate) mod records;
 mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
+#[cfg(feature = "filesystem")]
+pub(crate) use settled::{answer_with_io, settled_with_io};
 mod slots;
 mod volumes;
 pub use volumes::SpawnVolumes;

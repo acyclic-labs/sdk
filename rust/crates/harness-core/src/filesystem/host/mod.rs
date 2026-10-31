@@ -161,6 +161,7 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 mod content;
+mod content_changes;
 mod publication;
 pub(in crate::filesystem) use publication::{PublicationLookup, PublicationPurpose};
 mod directory;

@@ -318,10 +318,75 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 }
 
+/// One member of a conditional atomic content publication. Sources retain their
+/// immutable descriptor and version; paths are relative to the bound volume.
+pub enum ContentChange<'a> {
+    /// Creates a path only while it remains absent.
+    CreateAbsent {
+        path: &'a str,
+        bytes: &'a [u8],
+        media_type: &'a str,
+        display_name: &'a str,
+    },
+    /// Replaces exactly the source version, refusing a concurrent publication.
+    UpdateExpected {
+        source: &'a FileRef,
+        bytes: &'a [u8],
+    },
+    /// Removes exactly the source version.
+    DeleteExpected { source: &'a FileRef },
+}
+
+impl ContentChange<'_> {
+    /// Exact destination path covered by the publication.
+    pub fn path(&self) -> &str {
+        match self {
+            Self::CreateAbsent { path, .. } => path,
+            Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => source.path(),
+        }
+    }
+    /// Original immutable source, when this change replaces or removes a file.
+    pub fn source(&self) -> Option<&FileRef> {
+        match self {
+            Self::CreateAbsent { .. } => None,
+            Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => Some(source),
+        }
+    }
+}
+
 /// Owner-bound, bounded publication on the caller's existing ledger.
 /// A supplied caller ceiling only restricts the authenticated writer. Filesystem
 /// providers intersect it with persisted policy through their shared decision.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
+    /// Observes only the successful request at its original publication cut.
+    /// Callers authenticate the original complete invocation before recovery.
+    fn observe_changes<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _maximum_receipt_bytes: u64,
+        access: ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (Option<Vec<FileRef>>, Option<ContentHold<'a>>)>> {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "conditional publication observation is unavailable",
+        ))
+    }
+    /// Atomically publishes conditional changes under one original operation.
+    /// The operation receipt binds the complete ordered request. A replay
+    /// returns its original files; a changed request refuses before publication.
+    fn stage_changes<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _changes: &'a [ContentChange<'a>],
+        access: ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (Vec<FileRef>, Option<ContentHold<'a>>)>> {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "conditional content publication is unavailable",
+        ))
+    }
     /// Resolves the exact destination before the caller checks write authority.
     /// Paths remain relative to the selected volume in returned file references.
     fn destination<'a>(

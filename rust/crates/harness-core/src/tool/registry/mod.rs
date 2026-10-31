@@ -3,6 +3,8 @@ use super::*;
 /// One tool assembled from three independently replaceable values.
 #[derive(Clone)]
 pub struct Tool {
+    /// Admitted skill provenance, retained on this same pinned registry entry.
+    pub skill_source: Option<super::SkillSource>,
     /// Additional lifecycle-hook names declared by this tool's implementation.
     pub hook_names: &'static [&'static str],
     /// Model-visible contract.

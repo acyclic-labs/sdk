@@ -249,16 +249,30 @@ impl Profiles {
 
 impl SpawnProfiles for Profiles {
     fn child(&self, parent: &AgentProfilePin, role: &str) -> Result<AgentProfilePin> {
-        self.check_pin(parent)?;
+        self.child_ref(parent, role).cloned()
+    }
+
+    fn child_ref(&self, parent: &AgentProfilePin, role: &str) -> Result<&AgentProfilePin> {
+        if self.pins.get(&parent.role) != Some(parent) {
+            return Err(Error::tool_rejected(
+                "actor profile differs from its pinned epoch",
+            ));
+        }
         let parent = self
             .roles
             .get(&parent.role)
-            .ok_or_else(|| invalid("parent role is absent"))?;
+            .ok_or_else(|| Error::tool_rejected("parent role is absent"))?;
         let child = self
             .roles
             .get(role)
-            .ok_or_else(|| invalid("child role is absent"))?;
-        parent.admit_child(child)?;
-        self.role_pin(role)
+            .ok_or_else(|| Error::tool_rejected("child role is absent"))?;
+        if child.context() == SpawnContext::TopLevel
+            || !parent.0.metadata.may_spawn.contains(&child.0.metadata.name)
+        {
+            return Err(Error::tool_rejected("role refuses this spawn"));
+        }
+        self.pins
+            .get(role)
+            .ok_or_else(|| Error::tool_rejected("child profile pin is absent"))
     }
 }

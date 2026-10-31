@@ -129,6 +129,28 @@ impl RuntimeAuthority {
         }
     }
 
+    /// The same audience join under the original invocation's work admission.
+    pub(crate) fn with_audience_with_work(
+        &self,
+        audience: Authority,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        match &self.custody {
+            Custody::Native(root) => Ok(Self::from(root.with_audience_with_work(audience, work)?)),
+            Custody::Platform { authority, .. } => {
+                authority.check()?;
+                if authority.caller().0 != &audience {
+                    return Err(crate::store::guarded_boundary(
+                        work,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "platform authority belongs to another audience",
+                    ));
+                }
+                Ok(self.clone())
+            }
+        }
+    }
+
     /// Issue only at the trusted runtime boundary. The platform producer checks
     /// the actual resource or acting agent before returning sealed evidence.
     pub async fn issue(
@@ -138,15 +160,35 @@ impl RuntimeAuthority {
         capabilities: &Capabilities,
         agent: Option<AgentId>,
     ) -> Result<Scope> {
+        self.issue_with_work(parent, id, capabilities, agent, &mut None)
+            .await
+    }
+
+    /// Issues the original attestation with the original codec/work ledger.
+    pub(crate) async fn issue_with_work(
+        &self,
+        parent: Option<&Scope>,
+        id: &str,
+        capabilities: &Capabilities,
+        agent: Option<AgentId>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Scope> {
         match &self.custody {
             Custody::Native(root) => match parent {
-                Some(parent) => root.issue_derived(parent, id, capabilities, agent, &mut None),
-                None => root.bootstrap_scope(id, capabilities, agent, &mut None),
+                Some(parent) => root.issue_derived(parent, id, capabilities, agent, work),
+                None => root.bootstrap_scope(id, capabilities, agent, work),
             },
             Custody::Platform {
                 authority,
                 operation,
             } => {
+                if work.is_some() {
+                    return Err(crate::store::guarded_boundary(
+                        work,
+                        crate::wire::ErrorCode::Unsupported,
+                        "platform authority has no original-work derivation port",
+                    ));
+                }
                 authority
                     .derive(
                         &authority.context,

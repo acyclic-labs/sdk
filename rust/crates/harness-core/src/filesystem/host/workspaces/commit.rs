@@ -140,7 +140,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await
     }
 
-    async fn commit_publication(
+    pub(in crate::filesystem) async fn commit_publication(
         transaction: acyclic_fs::Transaction<A, O>,
         io: &PreparationIo,
         publication: FilePublication<'_>,

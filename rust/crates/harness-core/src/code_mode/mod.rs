@@ -52,6 +52,24 @@ pub trait CodeMemory: Send + Sync {
 pub trait CodeCredit: Send + Sync {}
 impl<T: Send + Sync> CodeCredit for T {}
 
+/// Canonical host result and the original reservation funding its live bytes.
+/// The reservation retires only after those bytes have been delivered to JS.
+pub struct CodeHostResult {
+    /// Original tool result, without a second projection or response ledger.
+    pub result: ToolResult,
+    /// Original allocation custody, when the dispatch uses accounted memory.
+    pub credit: Option<Box<dyn CodeCredit>>,
+}
+
+impl From<ToolResult> for CodeHostResult {
+    fn from(result: ToolResult) -> Self {
+        Self {
+            result,
+            credit: None,
+        }
+    }
+}
+
 /// The normal approval, validation, execution and journal boundary.
 ///
 /// Implementations dispatch the complete invocation through that boundary,
@@ -60,8 +78,27 @@ impl<T: Send + Sync> CodeCredit for T {}
 /// An uncertain error must remain the original error, with its request retained
 /// by the ordinary journal; code mode never retries or acknowledges it.
 pub trait CodeHost: Send + Sync {
+    /// Derives the nested identity on the same original accounting path. Native
+    /// dispatchers override this with their retained hash/work authority.
+    fn invocation(
+        &self,
+        outer: &ToolInvocation,
+        ordinal: u64,
+        name: String,
+        arguments: Value,
+    ) -> Result<ToolInvocation> {
+        ToolInvocation::for_model_call(
+            outer.operation_id,
+            0,
+            format!("code-{ordinal}"),
+            name,
+            arguments,
+            None,
+        )
+    }
     /// Executes or replays one stable nested call through the ordinary dispatcher.
-    fn dispatch(&self, invocation: ToolInvocation) -> BoxProviderFuture<'_, Result<ToolResult>>;
+    fn dispatch(&self, invocation: ToolInvocation)
+    -> BoxProviderFuture<'_, Result<CodeHostResult>>;
 }
 
 /// One interpreter shared by the harness, with event-driven execution credit.
@@ -104,7 +141,7 @@ impl CodeRuntime {
         outer: &ToolInvocation,
         source: &str,
         tools: &[ToolDefinition],
-        host: Arc<dyn CodeHost>,
+        host: Arc<dyn CodeHost + '_>,
         control: Arc<dyn CodeControl>,
     ) -> Result<Value> {
         control.check()?;
@@ -175,7 +212,7 @@ async fn run(
     outer: &ToolInvocation,
     javascript: &str,
     tools: &[ToolDefinition],
-    host: Arc<dyn CodeHost>,
+    host: Arc<dyn CodeHost + '_>,
     control: Arc<dyn CodeControl>,
 ) -> Result<Value> {
     let queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -196,7 +233,13 @@ async fn run(
         control.check()?;
         let queued = std::mem::take(&mut *lock(&queue));
         for call in queued {
-            let invocation = nested_invocation(outer, &call)?;
+            let invocation = host.invocation(
+                outer,
+                call.ordinal,
+                call.name,
+                serde_json::from_str(&call.arguments)
+                    .map_err(|_| rejected("code host arguments are not JSON"))?,
+            )?;
             let host = Arc::clone(&host);
             calls.push_back(async move { (call.ordinal, host.dispatch(invocation).await) });
         }
@@ -219,7 +262,7 @@ async fn run(
         // Preserve the original storage/uncertain/refusal error. JavaScript
         // cannot catch it and turn an unacknowledged effect into success.
         let result = result?;
-        let json = serde_json::to_string(&result.value)
+        let json = serde_json::to_string(&result.result.value)
             .map_err(|_| rejected("host result is not JSON"))?;
         engine
             .phase(&control, |_| {
@@ -234,19 +277,6 @@ async fn run(
     }
 }
 
-fn nested_invocation(outer: &ToolInvocation, call: &QueuedCall) -> Result<ToolInvocation> {
-    let arguments = serde_json::from_str(&call.arguments)
-        .map_err(|_| rejected("code host-call arguments are not JSON"))?;
-    ToolInvocation::for_model_call(
-        outer.operation_id,
-        0,
-        format!("code-{}", call.ordinal),
-        call.name.clone(),
-        arguments,
-        None,
-    )
-}
-
 fn install(
     context: &Context,
     outer: &ToolInvocation,
@@ -258,9 +288,9 @@ fn install(
     if allowed.len() != names.len() {
         return Err(rejected("code tool names are duplicated"));
     }
-    let seed = blake3::hash(&outer.operation_id.into_bytes());
+    let seed = outer.operation_id.into_bytes();
     let seed = u32::from_le_bytes(
-        seed.as_bytes()[..4]
+        seed[..4]
             .try_into()
             .map_err(|_| rejected("code seed is malformed"))?,
     );

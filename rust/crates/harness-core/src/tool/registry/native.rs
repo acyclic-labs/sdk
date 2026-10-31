@@ -6,10 +6,17 @@ impl ToolRegistry {
         let mut bytes = REGISTRY_BYTES as u64;
         for ((name, revision), tool) in &self.data.versions {
             let definition_deep = tool.definition.logical_owned_bytes()?;
+            let source_deep = tool
+                .skill_source
+                .as_ref()
+                .map(|source| source.file().logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0);
             let row = ((VERSION_SLOT_BYTES + std::mem::size_of::<ToolDefinition>()) as u64)
                 .checked_add(name.capacity() as u64)
                 .and_then(|bytes| bytes.checked_add(revision.capacity() as u64))
-                .and_then(|bytes| bytes.checked_add(definition_deep));
+                .and_then(|bytes| bytes.checked_add(definition_deep))
+                .and_then(|bytes| bytes.checked_add(source_deep));
             bytes = bytes
                 .checked_add(row.ok_or(OWNERSHIP_OVERFLOW)?)
                 .ok_or(OWNERSHIP_OVERFLOW)?;
@@ -54,6 +61,11 @@ impl ToolRegistry {
             data.versions.insert(
                 key,
                 Arc::new(Tool {
+                    skill_source: tool
+                        .skill_source
+                        .as_ref()
+                        .map(|source| source.copy(Some(&io)))
+                        .transpose()?,
                     hook_names: tool.hook_names,
                     definition,
                     executor: tool.executor.clone(),

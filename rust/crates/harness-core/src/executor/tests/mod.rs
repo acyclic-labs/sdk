@@ -796,6 +796,7 @@ fn echo_tools(
     tools.register(
         (
             crate::tool::Tool {
+                skill_source: None,
                 hook_names: &[],
                 definition: crate::tool::ToolDefinition {
                     name: "example.echo".into(),

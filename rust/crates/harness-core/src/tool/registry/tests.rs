@@ -166,6 +166,7 @@ fn checked<T, E: std::fmt::Debug>(
 
 fn prototype() -> Result<Tool> {
     Ok(Tool {
+        skill_source: None,
         hook_names: &[],
         definition: ToolDefinition {
             name: "example.tool".into(),

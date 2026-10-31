@@ -178,6 +178,7 @@ fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
     }
     let schema = serde_json::json!({"type":"object"});
     Tool {
+        skill_source: None,
         hook_names: &[],
         definition: ToolDefinition {
             name: name.into(),

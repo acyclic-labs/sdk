@@ -515,6 +515,23 @@ impl AuthorityRoot {
         }
     }
 
+    /// Rebinds the trusted local audience while funding its copied issuer ID.
+    pub(crate) fn with_audience_with_work(
+        &self,
+        audience: Authority,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        let mut quota = CodecQuota::new(work, 0)?;
+        let id = copying::copy_text(&self.id, &mut quota)?;
+        let root = Self {
+            id,
+            runtime: self.runtime.clone(),
+            audience,
+        };
+        quota.transfer();
+        Ok(root)
+    }
+
     /// Gives a workload a delegation handle containing no runtime signing key.
     pub fn issuer(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<AuthorityIssuer> {
         Ok(AuthorityIssuer {

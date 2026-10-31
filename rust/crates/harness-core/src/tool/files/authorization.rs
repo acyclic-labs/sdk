@@ -7,6 +7,16 @@ impl FileTool {
         invocation: &ToolInvocation,
         work: crate::NativeWork<'_>,
     ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
+        self.preflight_with_context(scope, invocation, work, None)
+    }
+
+    pub(in crate::tool) fn preflight_with_context(
+        &self,
+        scope: &RuntimeScope,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
+        context: Option<&ToolContext>,
+    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
@@ -34,7 +44,7 @@ impl FileTool {
             scope.limits().file_bytes,
             &mut None,
         )?;
-        let (file, custody) = self.decode_source(scope, invocation, work, io)?;
+        let (file, custody) = self.decode_source(scope, invocation, work, io, context)?;
         let Some(file) = file else {
             return Ok((None, custody));
         };
@@ -78,6 +88,7 @@ impl FileTool {
         invocation: &ToolInvocation,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
+        context: Option<&ToolContext>,
     ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
         let error = |code, reason| {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -91,8 +102,14 @@ impl FileTool {
         let (file, custody) = match *self {
             Self::Read => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-                let source =
-                    self.path_source(scope, &input.0.path, input.0.version.as_deref(), work, io)?;
+                let source = self.path_source(
+                    scope,
+                    &input.0.path,
+                    input.0.version.as_deref(),
+                    work,
+                    io,
+                    context,
+                )?;
                 let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
                 let length = match input.0.range {
                     Some(range)
@@ -125,9 +142,21 @@ impl FileTool {
                     input.0.version.as_deref(),
                     work,
                     io,
+                    context,
                 );
             }
-            Self::Write => {
+            Self::Insert => {
+                let input = decode::<InsertFileInput>(&invocation.arguments, work)?;
+                return self.path_source(
+                    scope,
+                    &input.0.path,
+                    input.0.version.as_deref(),
+                    work,
+                    io,
+                    context,
+                );
+            }
+            Self::Write | Self::Create => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 self.public_path(&input.0.path, io)?;
                 if input.0.path.len() > scope.limits().path_bytes {
@@ -179,6 +208,7 @@ impl FileTool {
         version: Option<&str>,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
+        context: Option<&ToolContext>,
     ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
         self.public_path(path, io)?;
         if path.len() > scope.limits().path_bytes {
@@ -188,7 +218,10 @@ impl FileTool {
             ));
         }
         version.map_or(Ok((None, None)), |version| {
-            let (file, custody) = super::version::decode_version(path, version, work)?;
+            let (file, custody) = match context {
+                Some(context) => context.decode_tool_version(path, version, work)?,
+                None => super::version::decode_version(path, version, work)?,
+            };
             Ok((Some(file), custody))
         })
     }

@@ -33,6 +33,7 @@ impl WebExecutor {
                 (
                     crate::tool::Tool {
                         definition,
+                        skill_source: None,
                         hook_names: &[],
                         executor: executor.clone(),
                         projection: Arc::new(crate::tool::JsonToolProjection),

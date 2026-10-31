@@ -161,6 +161,7 @@ impl<
             observed: tokio::sync::Mutex::new(BTreeMap::new()),
         });
         Ok(Tool {
+            skill_source: None,
             hook_names: &[],
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),
