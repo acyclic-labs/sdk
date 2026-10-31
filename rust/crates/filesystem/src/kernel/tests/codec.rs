@@ -129,7 +129,10 @@ fn decoder_rejects_version_and_bounded_field_overclaims_before_allocation()
             ()
         ))
         .err(),
-        Some(CanonicalDecodeError::UnsupportedVersion(8))
+        Some(CanonicalDecodeError::UnsupportedVersion {
+            found: 8,
+            expected: 7
+        })
     );
 
     let mut oversized = Encoder::new(domain, 7);

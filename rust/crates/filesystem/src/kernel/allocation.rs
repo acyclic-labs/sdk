@@ -722,6 +722,30 @@ impl VisitedObjectSet {
         ))
     }
 
+    /// Whether `object` was inserted, charging one item per probe.
+    pub(crate) fn contains_with_accounting(
+        &self,
+        object: ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, crate::FsError> {
+        let Some(mask) = self.slots.len().checked_sub(1) else {
+            return Ok(false);
+        };
+        let mut index = object_hash(object) & mask;
+        for _ in 0..self.slots.len() {
+            accounting.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            match self.slots.get(index).ok_or(WorkError::Overflow)? {
+                Some(existing) if *existing == object => return Ok(true),
+                Some(_) => index = (index + 1) & mask,
+                None => return Ok(false),
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn insert_with_accounting(
         set: &mut super::persistent_point::Owned<Self>,
         object: ObjectId,

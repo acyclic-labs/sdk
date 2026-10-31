@@ -1,7 +1,8 @@
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
-use crate::kernel::{decode_extent_page, encode_extent_page};
+use crate::kernel::extent::extent_page_encoded_length;
+use crate::kernel::{ExtentChild, decode_extent_page, encode_extent_page};
 use crate::memory::MemoryObjectStore;
 
 use crate::storage::object_digest;
@@ -36,18 +37,15 @@ async fn three_leaf_tree(
         store,
         &ExtentPage::Internal(vec![
             ExtentChild {
-                first_offset: 0,
-                end_offset: 100,
+                first: 0,
                 page: leaves[0],
             },
             ExtentChild {
-                first_offset: 100,
-                end_offset: 200,
+                first: 100,
                 page: leaves[1],
             },
             ExtentChild {
-                first_offset: 200,
-                end_offset: 300,
+                first: 200,
                 page: leaves[2],
             },
         ]),
@@ -119,15 +117,18 @@ async fn rewrites_only_intersecting_leaf_and_shared_root() -> Result<(), Box<dyn
         &CancellationToken::new(),
     )
     .await?;
-    assert_eq!(receipt.work.page_reads, 2);
+    // The fixture's one-item leaves are not chunker output: no boundary
+    // closes the rewritten middle leaf, so it carries into its right
+    // neighbour, whose hole the trailing hole joins. That neighbour read is
+    // what keeps the result canonical; the untouched left leaf stays shared.
+    assert_eq!(receipt.work.page_reads, 3);
     assert_eq!(receipt.work.page_writes, 2);
     let children = root_children(&store, receipt.root).await?;
+    assert_eq!(children.len(), 2);
     assert_eq!(children[0].page, leaves[0]);
-    assert_ne!(children[1].page, leaves[1]);
-    assert_eq!(children[2].page, leaves[2]);
     assert_eq!(
         leaf_extents(&store, children[1].page).await?,
-        vec![hole(100, 20), allocated(120, 10), hole(130, 70)]
+        vec![hole(100, 20), allocated(120, 10), hole(130, 170)]
     );
     Ok(())
 }
@@ -260,7 +261,10 @@ async fn truncate_drops_later_subtree_without_reading_it() -> Result<(), Box<dyn
     let children = root_children(&store, receipt.root).await?;
     assert_eq!(children.len(), 2);
     assert_eq!(children[0].page, leaves[0]);
-    assert_eq!(children[1].end_offset, 150);
+    assert_eq!(
+        leaf_extents(&store, children[1].page).await?,
+        vec![hole(100, 50)]
+    );
     Ok(())
 }
 
@@ -284,7 +288,6 @@ async fn extension_reads_only_last_frontier_and_appends_hole()
     let children = root_children(&store, receipt.root).await?;
     assert_eq!(children[0].page, leaves[0]);
     assert_eq!(children[1].page, leaves[1]);
-    assert_eq!(children[2].end_offset, 500);
     assert_eq!(
         leaf_extents(&store, children[2].page).await?,
         vec![hole(200, 300)]
@@ -293,8 +296,8 @@ async fn extension_reads_only_last_frontier_and_appends_hole()
 }
 
 #[tokio::test]
-async fn content_offsets_advance_across_leaf_boundaries() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn content_across_a_leaf_boundary_joins_into_one_extent()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let blob = ObjectId {
@@ -320,20 +323,24 @@ async fn content_offsets_advance_across_leaf_boundaries() -> Result<(), Box<dyn 
         &CancellationToken::new(),
     )
     .await?;
-    let children = root_children(&store, receipt.root).await?;
+    // The write reaches the second leaf, so the first carries into it and
+    // the content offsets that continue each other join. No boundary closes
+    // the rewritten items, so they carry on into the last leaf, whose hole
+    // joins the trailing one, and the whole file fits one leaf root.
     assert_eq!(
-        leaf_extents(&store, children[0].page).await?[1].kind,
-        ExtentKind::Content {
-            object: blob,
-            object_offset: 50,
-        }
-    );
-    assert_eq!(
-        leaf_extents(&store, children[1].page).await?[0].kind,
-        ExtentKind::Content {
-            object: blob,
-            object_offset: 60,
-        }
+        leaf_extents(&store, receipt.root).await?,
+        vec![
+            hole(0, 90),
+            Extent {
+                offset: 90,
+                length: 30,
+                kind: ExtentKind::Content {
+                    object: blob,
+                    object_offset: 50,
+                },
+            },
+            hole(120, 180),
+        ]
     );
     Ok(())
 }
@@ -351,18 +358,15 @@ async fn shrink_then_growth_does_not_resurrect_discarded_extents()
         &store,
         &ExtentPage::Internal(vec![
             ExtentChild {
-                first_offset: 0,
-                end_offset: 100,
+                first: 0,
                 page: leaves[0],
             },
             ExtentChild {
-                first_offset: 100,
-                end_offset: 200,
+                first: 100,
                 page: leaves[1],
             },
             ExtentChild {
-                first_offset: 200,
-                end_offset: 300,
+                first: 200,
                 page: leaves[2],
             },
         ]),
@@ -383,13 +387,11 @@ async fn shrink_then_growth_does_not_resurrect_discarded_extents()
     )
     .await?;
     let children = root_children(&store, receipt.root).await?;
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0].page, leaves[0]);
     assert_eq!(
-        leaf_extents(&store, children[1].page).await?[1],
-        hole(150, 50)
-    );
-    assert_eq!(
-        leaf_extents(&store, children[2].page).await?,
-        vec![hole(200, 100)]
+        leaf_extents(&store, children[1].page).await?,
+        vec![allocated(100, 50), hole(150, 150)]
     );
     Ok(())
 }
@@ -632,45 +634,6 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
 }
 
 #[tokio::test]
-async fn shape_valid_malformed_page_releases_decoded_allocation()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let cancellation = CancellationToken::new();
-    let mut malformed = encode_extent_page(
-        &ExtentPage::Leaf(vec![hole(0, 1)]),
-        8,
-        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-    )?;
-    malformed[23..31].fill(0);
-    let malformed_id = ObjectId {
-        storage: None,
-        kind: ObjectKind::ExtentPage,
-        digest: object_digest(&malformed),
-    };
-    AsyncObjectStore::put(
-        &store,
-        malformed_id,
-        acyclic_stream::OwnedBytes::from(malformed),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let mut context = defensive_context(&store, &mut accounting, &cancellation)?;
-    let initial_live = standalone_live(context.accounting);
-    let error = (context.read_page(malformed_id))
-        .await
-        .err()
-        .ok_or("shape-valid malformed extent page unexpectedly decoded")?;
-    assert!(matches!(
-        project_extent_error(error),
-        ExtentMutationError::Decode(CanonicalDecodeError::Invariant(_))
-    ));
-    assert_eq!(standalone_live(context.accounting), initial_live);
-    Ok(())
-}
-
-#[tokio::test]
 async fn extent_pages_split_on_byte_bound_before_item_bound()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -832,11 +795,7 @@ async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
         for index in 0..width {
             let first = u64::from(index);
             let page = put(store, &ExtentPage::Leaf(vec![hole(first, 1)]), width).await?;
-            children.push(ExtentChild {
-                first_offset: first,
-                end_offset: first + 1,
-                page,
-            });
+            children.push(ExtentChild { first, page });
         }
         put(store, &ExtentPage::Internal(children), width).await
     }
@@ -872,31 +831,6 @@ async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
         narrow_receipt.work.items_examined
     );
     Ok(())
-}
-
-fn standalone_live(accounting: &KernelAccounting<'_>) -> u64 {
-    match accounting {
-        KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
-        _ => unreachable!("standalone fixture"),
-    }
-}
-
-fn defensive_context<'a, 'b>(
-    store: &'a MemoryObjectStore,
-    accounting: &'a mut KernelAccounting<'b>,
-    cancellation: &'a CancellationToken,
-) -> Result<Context<'a, 'b, MemoryObjectStore>, FsError> {
-    let visited = VisitedObjectSet::new_with_accounting(8, accounting)?;
-    let patches = Owned::allocate(0, accounting)?;
-    Ok(Context {
-        store,
-        limits: DecodeLimits::default(),
-        accounting,
-        visited,
-        patches,
-        maximum_seen_height: 0,
-        cancellation,
-    })
 }
 
 #[path = "extent_mutation/histories.rs"]

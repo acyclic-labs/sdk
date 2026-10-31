@@ -113,11 +113,13 @@ async fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
         .objects
         .write()
         .map_err(|_| "memory object lock poisoned")?;
-    let index = state
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    *state
         .objects
-        .binary_search_by_key(&object_id, |(id, _)| *id)
-        .map_err(|_| "resident object missing")?;
-    state.objects[index].1 = OwnedBytes::from_static(b"corrupted");
+        .get_or_try_insert_with(object_id.index_key(), &mut accounting, |_| {
+            Err(ObjectStoreError::Missing.into())
+        })? = OwnedBytes::from_static(b"corrupted");
     drop(state);
     assert!(matches!(
         provider_receipt!(store, read(object_id, 64), WorkBudget::UNBOUNDED),

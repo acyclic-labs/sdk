@@ -38,6 +38,11 @@ impl Cursor {
         }
     }
 
+    /// The exact unconsumed mutation positions, without scanning.
+    pub fn remaining(&self) -> Range<usize> {
+        self.mutation_cursor..self.mutation_end
+    }
+
     /// Selects one child, charging before each original frontier comparison.
     ///
     /// Success consumes one child. Across the page, each assigned mutation is
@@ -47,11 +52,18 @@ impl Cursor {
         &mut self,
         children: &'a [Child<K, P>],
         mut mutation_key: impl FnMut(usize) -> Result<&'m K, E>,
+        mut reaches: impl FnMut(usize, &K) -> Result<bool, E>,
+        removed_from: Option<&K>,
         mut charge_item: impl FnMut() -> Result<(), E>,
     ) -> Result<Option<Selected<'a, K, P>>, E> {
         let Some(child) = children.get(self.next_child) else {
             return Ok(None);
         };
+        if removed_from.is_some_and(|removed| &child.first >= removed) {
+            self.next_child = children.len();
+            self.mutation_cursor = self.mutation_end;
+            return Ok(None);
+        }
         let index = self.next_child;
         self.next_child += 1;
         let start = self.mutation_cursor;
@@ -67,6 +79,7 @@ impl Cursor {
         } else {
             self.mutation_cursor = self.mutation_end;
         }
+        let end = self.mutation_cursor;
         let following_first_changes = if let Some(upper) = upper {
             if self.mutation_cursor < self.mutation_end {
                 charge_item()?;
@@ -77,12 +90,21 @@ impl Cursor {
         } else {
             false
         };
+        if let Some(upper) = upper {
+            while self.mutation_cursor > start {
+                charge_item()?;
+                if !reaches(self.mutation_cursor - 1, upper)? {
+                    break;
+                }
+                self.mutation_cursor -= 1;
+            }
+        }
         charge_item()?;
         Ok(Some(Selected {
             index,
             child,
             upper,
-            mutations: start..self.mutation_cursor,
+            mutations: start..end,
             following_first_changes,
         }))
     }

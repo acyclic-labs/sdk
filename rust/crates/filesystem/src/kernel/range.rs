@@ -398,24 +398,28 @@ impl RangeMachine {
                 }
             }
             ExtentPage::Internal(children) => {
-                if children.first().map(|child| child.first_offset) != Some(expected.first_offset)
-                    || children.last().map(|child| child.end_offset) != Some(expected.end_offset)
+                if children.first().map(|child| child.first) != Some(expected.first_offset)
+                    || children
+                        .last()
+                        .is_none_or(|child| child.first >= expected.end_offset)
                 {
                     return Err(range_failure(ExtentReadError::ChildBoundsMismatch));
                 }
-                for child in children.iter().rev() {
+                for (index, child) in children.iter().enumerate().rev() {
                     accounting.charge(WorkCounters {
                         items_examined: 1,
                         ..WorkCounters::UNCHARGED
                     })?;
-                    if child.first_offset < self.range_end
-                        && child.end_offset > self.input.range.offset
-                    {
+                    // A child ends where its successor begins, or where its parent ends.
+                    let end_offset = children
+                        .get(index + 1)
+                        .map_or(expected.end_offset, |next| next.first);
+                    if child.first < self.range_end && end_offset > self.input.range.offset {
                         self.push_page(
                             PendingPage {
                                 page: child.page,
-                                first_offset: child.first_offset,
-                                end_offset: child.end_offset,
+                                first_offset: child.first,
+                                end_offset,
                                 height: expected.height.checked_add(1).ok_or_else(|| {
                                     range_failure(ExtentReadError::HeightExceeded)
                                 })?,
@@ -423,13 +427,13 @@ impl RangeMachine {
                             accounting,
                         )?;
                     } else if self.input.range.length != 0
-                        && child.first_offset >= self.range_end
+                        && child.first >= self.range_end
                         && self
                             .successor_page
-                            .is_none_or(|(offset, _)| child.first_offset < offset)
+                            .is_none_or(|(offset, _)| child.first < offset)
                     {
                         self.successor_page = Some((
-                            child.first_offset,
+                            child.first,
                             ResidencyHint {
                                 request: ObjectReadRequest {
                                     object_id: child.page,

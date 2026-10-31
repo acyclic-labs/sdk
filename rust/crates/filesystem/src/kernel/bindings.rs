@@ -176,7 +176,7 @@ where
     Ok(
         super::persistent_btree::apply_optional_root_with_accounting::<S, BindingFormat, M>(
             store,
-            root,
+            (root, None, None),
             mutations,
             maximum_mutations,
             limits,

@@ -1,5 +1,7 @@
 use super::*;
 use crate::async_storage::{AsyncObjectStore, object_error};
+use crate::kernel::Owned;
+use crate::kernel::allocation::fixed_index::FixedIndex;
 
 /// In-memory immutable objects with an optional caller-selected size policy.
 #[derive(Default)]
@@ -8,26 +10,18 @@ pub struct MemoryObjectStore {
     pub(super) objects: RwLock<MemoryObjectState>,
 }
 
+#[derive(Default)]
 pub(super) struct MemoryObjectState {
-    pub(super) objects: Vec<(ObjectId, OwnedBytes)>,
-    table_custody: KernelOwnedAllocation,
-}
-
-impl Default for MemoryObjectState {
-    fn default() -> Self {
-        Self {
-            objects: Vec::new(),
-            table_custody: KernelOwnedAllocation::Standalone,
-        }
-    }
+    pub(super) objects: FixedIndex<OwnedBytes, { ObjectId::ENCODED_LEN }>,
 }
 
 impl MemoryObjectState {
-    fn get(&self, id: &ObjectId) -> Option<&OwnedBytes> {
-        self.objects
-            .binary_search_by_key(id, |(id, _)| *id)
-            .ok()
-            .map(|index| &self.objects[index].1)
+    fn get(
+        &self,
+        id: ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<&OwnedBytes>, FsError> {
+        self.objects.get(id.index_key(), accounting)
     }
 }
 
@@ -102,114 +96,59 @@ impl MemoryObjectStore {
             .objects
             .write()
             .map_err(|_| ObjectStoreError::Corrupt)?;
-        let mut missing = 0_usize;
-        let mut written = 0_u64;
-        for (index, write) in writes.iter().enumerate() {
+        // A batch keeps its newly installed identities for allocation-free
+        // rollback under this same exclusive lock. A single put needs no log.
+        let mut installed =
+            Owned::allocate(if writes.len() > 1 { writes.len() } else { 0 }, accounting)?;
+        let result = (|| {
             accounting.charge(WorkCounters {
-                object_probes: 1,
+                backend_write_operations: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            if let Some(existing) = state.get(&write.object_id) {
-                if existing != &write.bytes {
-                    return Err(ObjectStoreError::Corrupt.into());
-                }
-                continue;
-            }
-            let mut duplicate = false;
-            for earlier in &writes[..index] {
+            for entry in writes {
                 accounting.charge(WorkCounters {
-                    items_examined: 1,
+                    object_probes: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                if earlier.object_id == write.object_id {
-                    if earlier.bytes != write.bytes {
-                        return Err(ObjectStoreError::Corrupt.into());
-                    }
-                    duplicate = true;
-                    break;
+                let mut inserted = false;
+                let existing = state.objects.get_or_try_insert_with(
+                    entry.object_id.index_key(),
+                    accounting,
+                    |accounting| {
+                        let copied = if writes.len() > 1 {
+                            size_of::<ObjectId>() as u64
+                        } else {
+                            0
+                        };
+                        let delta = WorkCounters {
+                            object_bytes_written: entry.bytes.len() as u64,
+                            bytes_copied: copied,
+                            ..WorkCounters::UNCHARGED
+                        };
+                        accounting.admit(delta)?;
+                        let value = entry.bytes.clone();
+                        accounting.record_completed(delta)?;
+                        inserted = true;
+                        Ok(value)
+                    },
+                )?;
+                if inserted && writes.len() > 1 {
+                    installed.value.push(entry.object_id);
+                }
+                if existing != &entry.bytes {
+                    return Err(ObjectStoreError::Corrupt.into());
                 }
             }
-            if !duplicate {
-                missing = missing.checked_add(1).ok_or(WorkError::Overflow)?;
-                written = written
-                    .checked_add(write.bytes.len() as u64)
-                    .ok_or(WorkError::Overflow)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            for id in &installed.value {
+                state.objects.retire_if(id.index_key(), |_| true);
             }
         }
-        let needed = state
-            .objects
-            .len()
-            .checked_add(missing)
-            .ok_or(WorkError::Overflow)?;
-        let replacement = if needed > state.objects.capacity() {
-            let capacity = needed.max(
-                state
-                    .objects
-                    .capacity()
-                    .checked_mul(2)
-                    .ok_or(WorkError::Overflow)?,
-            );
-            Some(allocate(capacity, accounting, |error| {
-                ObjectStoreError::MemoryTableAllocationFailed(error).into()
-            })?)
-        } else {
-            None
-        };
-        let copy = WorkCounters {
-            bytes_copied: if replacement.is_some() {
-                state
-                    .objects
-                    .len()
-                    .checked_mul(size_of::<(ObjectId, OwnedBytes)>())
-                    .and_then(|bytes| u64::try_from(bytes).ok())
-                    .ok_or(WorkError::Overflow)?
-            } else {
-                0
-            },
-            ..WorkCounters::UNCHARGED
-        };
-        accounting.admit(WorkCounters {
-            backend_write_operations: 1,
-            object_bytes_written: written,
-            ..copy
-        })?;
-        accounting.record_completed(WorkCounters {
-            backend_write_operations: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        if let Some((mut table, custody)) = replacement {
-            table.append(&mut state.objects);
-            drop(std::mem::replace(&mut state.objects, table));
-            state.table_custody = custody;
-        }
-        accounting.record_completed(copy)?;
-        for entry in writes {
-            if let Err(index) = state
-                .objects
-                .binary_search_by_key(&entry.object_id, |(id, _)| *id)
-            {
-                let shifted = state
-                    .objects
-                    .len()
-                    .checked_sub(index)
-                    .and_then(|count| count.checked_mul(size_of::<(ObjectId, OwnedBytes)>()))
-                    .and_then(|bytes| u64::try_from(bytes).ok())
-                    .ok_or(WorkError::Overflow)?;
-                let delta = WorkCounters {
-                    bytes_copied: shifted,
-                    object_bytes_written: entry.bytes.len() as u64,
-                    ..WorkCounters::UNCHARGED
-                };
-                accounting.admit(delta)?;
-                state
-                    .objects
-                    .insert(index, (entry.object_id, entry.bytes.clone()));
-                accounting.record_completed(delta)?;
-            }
-        }
-        accounting.check()
+        installed.retire(accounting)?;
+        result
     }
-
     fn read_value(
         &self,
         object_id: ObjectId,
@@ -231,7 +170,9 @@ impl MemoryObjectStore {
         maximum_bytes: u64,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<ObjectRead, FsError> {
-        let bytes = state.get(&object_id).ok_or(ObjectStoreError::Missing)?;
+        let bytes = state
+            .get(object_id, accounting)?
+            .ok_or(ObjectStoreError::Missing)?;
         let length = bytes.len() as u64;
         if length > maximum_bytes {
             return Err(ObjectStoreError::TooLarge {
