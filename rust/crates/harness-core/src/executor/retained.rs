@@ -13,6 +13,7 @@ pub(crate) async fn completed_tool_projection(
     let crate::tool::RecordedInvocation {
         invocation: expected,
         metadata,
+        target: _,
     } = expected;
     let invocation = records
         .iter()

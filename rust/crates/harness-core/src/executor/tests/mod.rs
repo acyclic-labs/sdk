@@ -776,6 +776,7 @@ mod request_continuation;
 mod request_ownership;
 #[cfg(feature = "filesystem")]
 mod summary_authorization;
+mod target_replay;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;
 mod tools_1;

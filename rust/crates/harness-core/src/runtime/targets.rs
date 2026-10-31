@@ -108,10 +108,7 @@ pub(crate) fn call_target(
     targets: &dyn TargetResolver,
     invocation: &crate::tool::ToolInvocation,
 ) -> Option<Result<Arc<Target>>> {
-    let workspace = crate::tools::catalog().any(|spec| {
-        spec.name == invocation.name && spec.binding == crate::tools::ToolBinding::Workspace
-    });
-    if !workspace {
+    if !is_workspace_call(invocation) {
         return None;
     }
     let named = (invocation.name == crate::tools::shell::PLATFORM.name)
@@ -119,6 +116,12 @@ pub(crate) fn call_target(
         .flatten()
         .and_then(serde_json::Value::as_str);
     Some(targets.resolve(named))
+}
+
+pub(crate) fn is_workspace_call(invocation: &crate::tool::ToolInvocation) -> bool {
+    crate::tools::catalog().any(|spec| {
+        spec.name == invocation.name && spec.binding == crate::tools::ToolBinding::Workspace
+    })
 }
 
 #[cfg(test)]

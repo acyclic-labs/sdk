@@ -6,6 +6,7 @@ use super::*;
 pub(crate) struct RecordedInvocation<I = ToolInvocation, M = Value> {
     pub invocation: I,
     pub metadata: M,
+    pub target: Option<String>,
 }
 
 #[cfg(feature = "filesystem")]
@@ -26,6 +27,13 @@ impl crate::filesystem::UploadRecord for RecordedInvocation {
             .checked_add(crate::executor::json::json_value_logical_owned_bytes(
                 &self.metadata,
             )?)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.target
+                        .as_ref()
+                        .map_or(0, |name| name.capacity() as u64),
+                )
+            })
             .ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "recorded invocation ownership overflow",
@@ -100,6 +108,7 @@ fn validate<I: Serialize>(
             &RecordedInvocation {
                 invocation,
                 metadata,
+                target: None,
             },
             limits.file_bytes.min(limits.render_bytes),
             crate::executor::json::RECORD_MAXIMUM_DEPTH,

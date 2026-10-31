@@ -19,6 +19,9 @@ fn target(
     invocation: &ToolInvocation,
     work: crate::NativeWork<'_>,
 ) -> Result<Arc<Target>> {
+    if let Some(target) = &context.execution_target {
+        return Ok(Arc::clone(target));
+    }
     let unbound = || {
         boundary(
             work,
@@ -141,6 +144,9 @@ impl ToolExecutor for WorkspaceExecutor {
                     "workspace tool requires its task context",
                 )
             })?;
+            if context.execution_target.is_none() {
+                return Err(Error::Indeterminate(invocation.operation_id));
+            }
             self.authorize(None, Some(&context), &invocation, None)?;
             let target = target(&context, &invocation, None)?;
             let maximum = super::bounds::limits(&context).0;
@@ -192,6 +198,9 @@ impl ToolExecutor for WorkspaceExecutor {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
     {
+        if context.execution_target.is_none() {
+            return Err(Error::Indeterminate(invocation.operation_id));
+        }
         self.authorize(None, Some(context), invocation, Some(work))?;
         let target = target(context, invocation, Some(work))?;
         let name = self.name;

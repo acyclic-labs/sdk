@@ -43,6 +43,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
         let saved = crate::tool::RecordedInvocation {
             invocation: &invocation,
             metadata: &metadata,
+            target: None,
         };
         assert!(
             serde_json::to_vec(&saved).expect("fixture encoding").len()

@@ -302,6 +302,7 @@ pub struct ToolContext {
     pub(super) call_id: String,
     #[doc(hidden)]
     pub model_turn: (OperationId, u32),
+    pub(crate) execution_target: Option<Arc<Target>>,
 }
 
 impl ToolContext {
@@ -317,6 +318,7 @@ impl ToolContext {
             // A directly issued call owns a standalone turn. The stock executor
             // binds model-issued calls to their enclosing execution and step.
             model_turn: (operation_id, 0),
+            execution_target: None,
         })
     }
 

@@ -989,6 +989,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
             &crate::tool::RecordedInvocation {
                 invocation: &invocation,
                 metadata: &Value::Null,
+                target: None,
             },
             None,
         )
@@ -1035,6 +1036,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
             crate::tool::RecordedInvocation {
                 invocation: &invocation,
                 metadata: &Value::Null,
+                target: None,
             },
             std::slice::from_ref(&definition),
             Limits::default(),
