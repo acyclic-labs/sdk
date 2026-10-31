@@ -1,5 +1,108 @@
 use super::*;
 
+#[path = "../../examples/explicit-image-conversion.rs"]
+mod image_conversion;
+
+#[tokio::test]
+async fn image_conversion_authorizes_the_pinned_source_before_reading() -> Result<()> {
+    use acyclic_harness::{
+        conversation::ContentAccess,
+        filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
+        runtime::ToolContext,
+        tool::ToolInvocation,
+    };
+    let provider = ProviderRef::new("images".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let agent = AgentId::new();
+    let volume = VolumeRef::new(
+        provider,
+        "images".into(),
+        VolumeClass::Project,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    host.create_volume(&volume).await?;
+    let issuer = AuthorityRoot::new(
+        "images",
+        [19; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "images".into(),
+        },
+    );
+    let read = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write = volume.capability(VolumeOperation::Write, &mut None)?;
+    let grants = Capabilities::new([read, write.clone()]);
+    let scope = issuer.bootstrap_scope("owner", &grants, Some(agent), &mut None)?;
+    let verifier = issuer.verifier(&mut None)?;
+    let writer =
+        FilesystemContentPublisher::new(host.clone(), &volume, &verifier, &scope, 4096, None)?;
+    let reader = FilesystemContentVerifier::new(host, &verifier, &scope, 4096, None)?;
+    let mut bytes = b"IMG1".to_vec();
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&[0x80, 0xff]);
+    let source = writer
+        .stage(
+            OperationId::new(),
+            "source.img1",
+            &bytes,
+            "application/x-harness-native-fixture",
+            "source.img1",
+            ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    let tool = image_conversion::conversion_tool()?;
+    let operation = OperationId::new();
+    let invocation = ToolInvocation {
+        operation_id: operation,
+        call_id: "convert".into(),
+        name: tool.definition.name.clone(),
+        arguments: serde_json::to_value(image_conversion::ConvertImage {
+            source: source.clone(),
+            destination: "derived.img1".into(),
+            mask: 0x5a,
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?,
+    };
+    let denied = ToolContext::new(
+        content_context(
+            reader.clone(),
+            Some(writer.clone()),
+            Capabilities::new([write]),
+        )
+        .await?,
+        operation,
+        "convert",
+    )?;
+    assert!(
+        tool.executor
+            .authorize(None, Some(&denied), &invocation, None)
+            .is_err()
+    );
+    let context = ToolContext::new(
+        content_context(reader, Some(writer), grants).await?,
+        operation,
+        "convert",
+    )?;
+    tool.executor
+        .authorize(None, Some(&context), &invocation, None)?;
+    let result = tool
+        .executor
+        .execute(invocation, Some(context.clone()))
+        .await?;
+    let converted: image_conversion::ConvertedImage =
+        serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(converted.source, source);
+    bytes[8] ^= 0x5a;
+    bytes[9] ^= 0x5a;
+    assert_eq!(
+        context.read_file(&converted.derived, None).await?.as_ref(),
+        bytes
+    );
+    Ok(())
+}
+
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,

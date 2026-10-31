@@ -147,7 +147,11 @@ impl ToolExecutor for ImageConversion {
                     ));
                 }
                 let read = ToolInvocation {
-                    arguments: json!({"file":input.source}),
+                    arguments: json!({
+                        "path": input.source.path(),
+                        "version": serde_json::to_string(&input.source)
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                    }),
                     ..invocation.clone()
                 };
                 let write = ToolInvocation {
