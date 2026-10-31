@@ -83,6 +83,10 @@ struct Entry {
     used: u64,
 }
 
+// Cached pages sort before pass-through pages, matching `listings` when an
+// old and a refreshed page both contain the same child.
+type ChildLocation = (StreamPath, StreamPath, bool, u32);
+
 /// Per-stream facts learned from committed history. Bounded with the entries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Meta {
@@ -115,6 +119,7 @@ pub struct RecordCache {
     meta: BTreeMap<StreamPath, Meta>,
     /// Values served uncached, with their charge, while a want covers them.
     passed: BTreeMap<Key, (Value, usize)>,
+    children: BTreeSet<ChildLocation>,
     passed_bytes: usize,
     bytes: usize,
     /// Payload capacity present in cached entries, charged once per backing.
@@ -140,6 +145,7 @@ impl RecordCache {
             lru: BTreeMap::new(),
             meta: BTreeMap::new(),
             passed: BTreeMap::new(),
+            children: BTreeSet::new(),
             passed_bytes: 0,
             bytes: 0,
             cached_payload: 0,
@@ -160,6 +166,7 @@ impl RecordCache {
         self.lru.clear();
         self.meta.clear();
         self.passed.clear();
+        self.children.clear();
         self.passed_bytes = 0;
         self.bytes = 0;
         self.cached_payload = 0;
@@ -414,7 +421,8 @@ impl RecordCache {
             if !matches!(entry.key(), Key::Listing(..)) {
                 break;
             }
-            let (_, entry) = entry.remove_entry();
+            let (key, entry) = entry.remove_entry();
+            index_listing(&mut self.children, &key, &entry.value, false, false);
             self.lru.remove(&entry.used);
             self.bytes -= entry.charge;
             #[cfg(test)]
@@ -424,7 +432,8 @@ impl RecordCache {
             if !matches!(entry.key(), Key::Listing(..)) {
                 break;
             }
-            let (_, (_, charge)) = entry.remove_entry();
+            let (key, (value, charge)) = entry.remove_entry();
+            index_listing(&mut self.children, &key, &value, true, false);
             self.passed_bytes -= charge;
             #[cfg(test)]
             self.listing_visits.set(self.listing_visits.get() + 1);
@@ -573,6 +582,11 @@ impl RecordCache {
         self.listing_visits.replace(0)
     }
 
+    #[cfg(test)]
+    pub(crate) fn indexed_children(&self) -> usize {
+        self.children.len()
+    }
+
     /// Retained pages of one parent, including displayed pass-through pages.
     /// Work is proportional to cached pages, never the requested page index.
     pub fn listings<'a>(
@@ -590,6 +604,34 @@ impl RecordCache {
             )
             .filter(|_| self.access.allows())
             .filter_map(|(key, value)| self.listing_entry(key, value))
+    }
+
+    /// The first retained page containing `child`, in cached-then-pass-through
+    /// order. One location seek inspects one page regardless of other parents
+    /// or retained history. The index shares the owning pages' residency.
+    #[must_use]
+    pub fn listing_containing(
+        &self,
+        parent: &StreamPath,
+        child: &StreamPath,
+    ) -> Option<(u32, &Listing)> {
+        if !self.access.allows() {
+            return None;
+        }
+        let (_, _, passed, page) = self
+            .children
+            .range(
+                (parent.clone(), child.clone(), false, 0)
+                    ..=(parent.clone(), child.clone(), true, u32::MAX),
+            )
+            .next()?;
+        let key = Key::Listing(parent.clone(), *page);
+        let value = if *passed {
+            &self.passed.get(&key)?.0
+        } else {
+            &self.entries.get(&key)?.value
+        };
+        self.listing_entry(&key, value)
     }
 
     fn listing_entry<'a>(&self, key: &Key, value: &'a Value) -> Option<(u32, &'a Listing)> {
@@ -687,7 +729,7 @@ impl RecordCache {
         let charge = listing
             .children
             .iter()
-            .map(|child| child.as_str().len() + 24)
+            .map(|child| child.as_str().len() + 24 + size_of::<ChildLocation>() + ENTRY_OVERHEAD)
             .sum::<usize>()
             + listing
                 .after
@@ -697,7 +739,16 @@ impl RecordCache {
             + path_len(&key)
             + ENTRY_OVERHEAD;
         self.remove(&key);
-        self.insert(key, Value::Listing(listing), charge, protect)
+        let cached = self.insert(key.clone(), Value::Listing(listing), charge, protect);
+        let retained = self
+            .entries
+            .get(&key)
+            .map(|entry| (&entry.value, false))
+            .or_else(|| self.passed.get(&key).map(|(value, _)| (value, true)));
+        if let Some((value, passed)) = retained {
+            index_listing(&mut self.children, &key, value, passed, true);
+        }
+        cached
     }
 
     fn insert(&mut self, key: Key, mut value: Value, charge: usize, protect: Option<u64>) -> bool {
@@ -757,13 +808,15 @@ impl RecordCache {
     }
 
     fn unpass(&mut self, key: &Key) {
-        if let Some((_, charge)) = self.passed.remove(key) {
+        if let Some((value, charge)) = self.passed.remove(key) {
+            index_listing(&mut self.children, key, &value, true, false);
             self.passed_bytes -= charge;
         }
     }
 
     fn remove(&mut self, key: &Key) {
         if let Some(entry) = self.entries.remove(key) {
+            index_listing(&mut self.children, key, &entry.value, false, false);
             self.lru.remove(&entry.used);
             self.bytes -= entry.charge;
             self.release_backing(&entry.value);
@@ -1053,6 +1106,26 @@ impl RecordCache {
         }
         *self = restored;
         Ok(())
+    }
+}
+
+fn index_listing(
+    locations: &mut BTreeSet<ChildLocation>,
+    key: &Key,
+    value: &Value,
+    passed: bool,
+    insert: bool,
+) {
+    let (Key::Listing(parent, page), Value::Listing(listing)) = (key, value) else {
+        return;
+    };
+    for child in &listing.children {
+        let location = (parent.clone(), child.clone(), passed, *page);
+        if insert {
+            locations.insert(location);
+        } else {
+            locations.remove(&location);
+        }
     }
 }
 
