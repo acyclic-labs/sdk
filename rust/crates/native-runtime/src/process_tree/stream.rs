@@ -181,9 +181,14 @@ impl ProcessTree {
                         Ok(control) => control,
                         Err(error) => break 'capture Err(error),
                     };
-                    match control_first(async { control.await.into_result() }, sender.reserve())
-                        .await
-                    {
+                    let reserved = match control {
+                        Some(control) => {
+                            control_first(async { control.await.into_result() }, sender.reserve())
+                                .await
+                        }
+                        None => Ok(Some(sender.reserve().await)),
+                    };
+                    match reserved {
                         Ok(Some(Ok(permit))) => break permit,
                         Ok(Some(Err(_))) => break 'capture Err(receiver_lost()),
                         Err(error) => break 'capture Err(error),

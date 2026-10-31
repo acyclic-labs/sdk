@@ -314,8 +314,15 @@ impl<'a> Pump<'a> {
     }
 
     /// While output credit is withheld, only owner control or the deadline
-    /// can advance capture. Readable output must not wake this wait.
-    pub(super) fn arm_control(&self, wakes: &[ProcessWake]) -> io::Result<events::Wait<'static>> {
+    /// can advance capture. Readable output must not wake this wait. With
+    /// neither producer, the caller waits only for its original output credit.
+    pub(super) fn arm_control(
+        &self,
+        wakes: &[ProcessWake],
+    ) -> io::Result<Option<events::Wait<'static>>> {
+        if wakes.is_empty() && self.deadline.is_none() {
+            return Ok(None);
+        }
         let sources = wakes
             .iter()
             .map(|wake| {
@@ -333,7 +340,7 @@ impl<'a> Pump<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        events::arm(&sources, self.wake_at())
+        events::arm(&sources, self.wake_at()).map(Some)
     }
 
     pub(super) fn check_deadline(&self) -> io::Result<()> {
