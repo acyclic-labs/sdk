@@ -46,3 +46,10 @@ test("installed-host entry points receive the same prebuilt plugin and fixture p
   await assert.rejects(qualification(processes, { ...input, fixture_binary_env: "ABSENT" }, fixture, () => {}), /prebuilt plugin/);
   assert.equal(calls, 1, "missing fixture must fail before launching a host");
 });
+
+test("installed hosts are refused before launch without an admitted host executable", async () => {
+  const processes = { async runOwned() { assert.fail("a refused host launched a process"); } };
+  const fixture = { workspace: "/fixture/workspace", env: { E2E_PI: "relative/pi" } };
+  await assert.rejects(qualification(processes, { format: "installed-host", host: "pi" }, fixture, () => {}), /step=admit E2E_PI/);
+  await assert.rejects(qualification(processes, { format: "installed-host", host: "shell" }, fixture, () => {}), /step=admit native host/);
+});

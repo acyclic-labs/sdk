@@ -230,7 +230,7 @@
         "installed-codex"
       ],
       "gaps": [
-        "Run actual_codex_binary_executes_the_scripted_scenario through the installed host, with fixture CODEX_HOME."
+        "Mock-model child round trip only; real-login model-session parity remains outside this matrix."
       ]
     },
     "A22": {
@@ -240,7 +240,7 @@
         "installed-claude"
       ],
       "gaps": [
-        "Run actual_claude_binary_executes_the_scripted_scenario through the installed host with isolated settings."
+        "Mock-model child round trip only; real-login model-session parity remains outside this matrix."
       ]
     },
     "A23": {
@@ -260,7 +260,7 @@
         "installed-pi-recursive"
       ],
       "gaps": [
-        "Pinned Pi root/recursive child, compaction, isolated checkout, cancellation and merge through the shared harness."
+        "Root/recursive child round trip only; compaction, isolated checkout, cancellation and merge through the shared harness remain."
       ]
     },
     "A25": {

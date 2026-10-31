@@ -50,6 +50,12 @@ export async function qualification(processes, input, fixture, capture) {
       `step=qualify ${input.scenario}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
     return;
   }
+  if (input.format === "installed-host") {
+    const { installedHost } = await import("../../plugin/tests/hosts/native-model.mjs");
+    await installedHost({ host: input.host, processes, fixture, capture,
+      tools: input.tools, prompt: input.prompt, answer: input.answer });
+    return;
+  }
   const binary = fixture.env[input.binary_env];
   assert.ok(binary && isAbsolute(binary), `${input.binary_env} must name a prebuilt absolute executable`);
   const env = { ...fixture.env, RUST_TEST_THREADS: "1",

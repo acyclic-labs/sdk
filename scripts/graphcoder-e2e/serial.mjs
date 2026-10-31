@@ -10,6 +10,7 @@ import { inventory, readCoverage } from "./coverage.mjs";
 import { Processes } from "./process.mjs";
 import { publishReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
+import { nativeHost } from "../../plugin/tests/hosts/native-host.mjs";
 
 export function collect(cases, receipts, platform, coverage) {
   assert.equal(receipts.length, cases.length, "every case needs a suite receipt");
@@ -132,9 +133,19 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
   await sources(join(directory,'../graphcoder-pty'),'graphcoder-pty/');
   const executables={ NODE: await executable(process.execPath) };
   for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST',
-    'E2E_PLUGIN_BINARY','E2E_CODEX','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY'])
+    'E2E_PLUGIN_BINARY','E2E_CODEX','E2E_CLAUDE','E2E_PI','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY'])
     if(env[name])executables[name]=await executable(env[name]);
-  return { binary: await executable(binary), mock: await executable(mock), source,executables,
+  const hosts={};let closure;
+  for(const test of cases)for(const input of test.inputs??[]) {
+    if(input.format!=='installed-host'||hosts[input.host])continue;
+    const native=await nativeHost(input.host,env,join(directory,'../../plugin/tests/hosts'));
+    hosts[input.host]={program:await executable(native.program),entry:await executable(native.entry),args:native.args.length};
+    closure??=native.closure;
+  }
+  // Admission binds the installed transitive JS/native closure once, outside
+  // every host turn. A lockfile alone cannot identify the installed bytes.
+  if(closure)await sources(closure,'installed-hosts/');
+  return { binary: await executable(binary), mock: await executable(mock), source,executables,hosts,
     cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex") };
 }
 

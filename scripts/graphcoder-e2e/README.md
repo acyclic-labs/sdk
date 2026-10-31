@@ -126,18 +126,26 @@ request-count and final project-byte assertions.
 
 | Environment variable | Artifact |
 | --- | --- |
-| `E2E_PLUGIN_TEST_BINARY` | `acyclic-plugin` integration test executable for `plugin/tests/e2e.rs` |
 | `E2E_PLUGIN_BINARY` | Matching normal `acyclic` executable |
 | `E2E_PROVIDER_TEST_BINARY` | `acyclic-harness-providers` library test executable |
-| `E2E_BUN` | Absolute Bun executable, with the pinned Pi test dependencies prepared |
+| `E2E_CODEX`, `E2E_CLAUDE`, `E2E_PI` | Optional host executables; default `plugin/tests/hosts/node_modules/.bin/` |
 
-The installed Codex and Claude tests select their actual hosts using their
-existing fixture contracts (`ACYCLIC_E2E_CODEX` / `ACYCLIC_E2E_CLAUDE`, or PATH).
-They must use fixture settings. The runner supplies isolated HOME, USERPROFILE,
-CODEX_HOME and application-data directories and removes provider API key
-variables. Do not supply real credentials. Missing binaries, empty selections,
-ignored tests and skipped tests fail acceptance. The alloy component case does
-not qualify mixed-provider shipping reasoning; that gap remains in the manifest.
+`installed-codex`, `installed-claude` and `installed-pi-recursive` share one
+driver, `plugin/tests/hosts/native-model.mjs`, under the matrix's process owner,
+mock and ten-second budget. Each stages the production package, installs it
+through the shipping CLI (Codex, Pi) or the native plugin directory (Claude
+Code), starts the shipping workspace owner and opens the root through the
+workspace API. The actual pinned host (`npm ci --prefix plugin/tests/hosts`)
+then spawns a managed child and waits for its committed result. The case's
+script and request oracle are the same for every host; only native tool names
+and keyless provider selection differ. Codex and Pi use a keyless localhost
+provider; Claude Code uses its Foundry gateway mode without authentication.
+No key, token or account header is sent. The runner supplies isolated HOME,
+USERPROFILE, CODEX_HOME and application-data directories and removes provider
+API key variables. Do not supply real credentials. Missing executables, empty
+selections, ignored tests and skipped tests fail acceptance. The alloy component
+case does not qualify mixed-provider shipping reasoning; that gap remains in the
+manifest.
 
 For each build job, select executables from that job's Cargo JSON and stage them
 before running cases:

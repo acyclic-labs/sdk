@@ -2,10 +2,39 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { collect, runSuites, partition, collectPartitions,acceptanceBinding } from "./serial.mjs";
-import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
-import {join} from 'node:path';
+import {mkdtemp,mkdir,readFile,writeFile,rename,rm} from 'node:fs/promises';
+import {dirname,join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
+import {Processes} from './process.mjs';
 import {tmpdir} from 'node:os';
 import { schedule } from "./process.mjs";
+
+test('installed host admission launches package entries and binds their actual closure',async()=>{
+ const directory=dirname(fileURLToPath(import.meta.url)),scope=new Processes();
+ const cases=['codex','claude-code','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));
+ let entry,original;
+ try {
+  for(const {inputs:[{host}]} of cases) {
+   const native=await nativeHost(host,{});
+   const result=await scope.run(native.program,[...native.args,'--version']);
+   assert.equal(result.code,0,result.stderr);
+   assert.ok(result.stdout.trim(),'actual host version must be nonempty');
+  }
+  const before=await acceptanceBinding(directory,process.execPath,process.execPath,cases,{});
+  ({entry}=await nativeHost('pi',{}));original=await readFile(entry);
+  await writeFile(entry,Buffer.concat([original,Buffer.from('\n')]));
+  const changed=await acceptanceBinding(directory,process.execPath,process.execPath,cases,{});
+  assert.notDeepEqual(changed,before,'changed default host bytes must fence partition composition');
+  await rename(entry,entry+'.withdrawn');
+  try {await assert.rejects(nativeHost('pi',{}),/step=admit E2E_PI/);}
+  finally {await rename(entry+'.withdrawn',entry);}
+  assert.equal((await nativeHost('pi',{E2E_PI:process.execPath})).program,process.execPath);
+ } finally {
+  if(original)await writeFile(entry,original);
+  await scope.close();
+ }
+});
 
 test('partition provenance includes plugin executables and host helper source',async()=>{
  const root=await mkdtemp(join(tmpdir(),'acceptance-binding-'));

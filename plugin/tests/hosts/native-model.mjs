@@ -1,116 +1,96 @@
-// Installed real native hosts against the shipping mock; no authentication fixture.
+// Installed real native hosts against the shipping mock; no authentication
+// fixture and no login. The acceptance matrix owns the process scope, mock,
+// deadline and request oracle; this module only drives one installed host.
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {mkdir,readFile,realpath,writeFile} from 'node:fs/promises';
-import {dirname,delimiter,join,resolve,toNamespacedPath} from 'node:path';
+import {readFile,realpath,writeFile} from 'node:fs/promises';
+import {dirname,delimiter,isAbsolute,join,toNamespacedPath} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
-import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
-import {environment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
+import {nativeHost} from './native-host.mjs';
 
-export async function assertInstalledBinary(settings,executable) {
- const canonical=toNamespacedPath(await realpath(executable));
- assert.ok((await readFile(settings,'utf8')).includes(JSON.stringify(canonical)),
-  'native extension does not bind admitted shipping binary');
+// Native policy arguments the root runs under and every managed child inherits
+// (ACYCLIC_HOST_ARGS), plus each host's own keyless provider selection. Only
+// the coordination tools the case calls are approved, by each host's native
+// per-tool approval; sandbox and approval policy stay unchanged.
+async function launch(host,{url,root,packageRoot,workspace,env,tools,prompt}) {
+ if(host==='codex') {
+  const policy=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
+   '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
+   '--config','model_providers.mock.requires_openai_auth=false','--model','tiny',
+   ...tools.flatMap(name=>['--config',`plugins."acyclic@acyclic".mcp_servers."acyclic-sessions".tools.${name}.approval_mode="approve"`]),
+   '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
+  return {policy,args:[...policy,'exec','--json',prompt]};
+ }
+ if(host==='claude-code') {
+  // Foundry's Messages endpoint with its documented gateway mode: no key,
+  // token or account header reaches the localhost mock.
+  Object.assign(env,{CLAUDE_CODE_USE_FOUNDRY:'1',CLAUDE_CODE_SKIP_FOUNDRY_AUTH:'1',
+   ANTHROPIC_FOUNDRY_BASE_URL:url.replace(/\/v1$/,''),CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'});
+  const settings=join(root,'claude-policy.json');
+  await writeFile(settings,JSON.stringify({permissions:{allow:tools.map(name=>'mcp__plugin_acyclic_acyclic-sessions__'+name)}}));
+  const policy=['--model','claude-haiku-5-5','--settings',settings,'--permission-mode','default',
+   '--plugin-dir',join(packageRoot,'claude'),'--add-dir',workspace];
+  return {policy,args:['-p',prompt,'--output-format','stream-json','--verbose',...policy]};
+ }
+ env.ACYCLIC_E2E_MODEL_URL=url;
+ const policy=['--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),'--provider','fixture','--model','tiny'];
+ return {policy,args:['--mode','json','--print','--no-skills','--no-prompt-templates','--no-themes',...policy,prompt]};
 }
 
-export function assertCodexChildRoundTrip(requests,childMarker='NATIVE_PLUGIN_CHILD_DONE') {
- const generations=requests.filter(row=>row.path==='responses');
- assert.ok(generations.every(row=>row.status===200),'unexpected native generation refusal');
- assert.deepEqual(generations.map(row=>row.step).sort(),[0,1,2,3],'native parent/child generation coverage');
- const consumed=generations.find(row=>row.step===2).body.input.find(item=>
-  item.type==='function_call_output'&&item.call_id==='native_wait');
- assert.ok(consumed,'parent did not consume the plugin wait result');
- assert.ok(JSON.stringify(consumed).includes(childMarker),'native child answer missing from parent tool result');
- assert.ok(JSON.stringify(consumed).includes('Succeeded'),'native child did not settle successfully');
-}
-
-export async function nativeModel({host,binary,graphcoder,mock,native,output,packageSource}) {
- assert.ok(['codex','pi'].includes(host),'step=admit native host; recovery=select codex or pi');
- output=resolve(output);await mkdir(output);
- const root=scratchDirectory('installed-native-model-'),env=environment(join(root,'profile'));
- env.PATH=dirname(native)+delimiter+env.PATH;
- const workspace=join(root,'workspace');await mkdir(workspace);
- const scope=new Processes(),captures=[];const started=performance.now();let step='stage native package',result;
- const run=async(program,args,options={})=>{
+// One installed host session under the caller's process scope: stage the
+// production package, install through the shipping CLI or the host's native
+// plugin directory, open the root through the workspace API, then run the
+// actual host once against the caller's mock endpoint.
+export async function installedHost({host,processes,fixture,capture,tools,prompt,answer}) {
+ const native=await nativeHost(host,fixture.env);
+ const binary=fixture.env.E2E_PLUGIN_BINARY;
+ assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
+ assert.ok(fixture.env.E2E_MOCK_URL,'step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs');
+ const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
+ env.PATH=[dirname(native.entry),native.path,env.PATH].join(delimiter);
+ let step='stage native package';
+ const run=async(program,args,input)=>{
   // The long-lived workspace owner holds the one mount lease. Commands retain
   // process-tree custody without attempting another lease over its live views.
-  const record={program,args,...await scope.runOwned(program,args,{cwd:workspace,env,...options})};
-  captures.push(record);return record;
+  // Owned external commands receive empty stdin; the one workspace-API request
+  // with a body runs inside the same scope through its ordinary process path.
+  const record={program,args,...await (input===undefined?processes.runOwned(program,args,{cwd:workspace,env})
+   :processes.run(program,args,{cwd:workspace,env},input))};
+  capture(record);return record;
  };
  try {
-  const receipt=await withOwnedCase({processes:scope,run:async()=>{
-   const packageRoot=join(root,'package'),executable=await stagePlugin(packageSource,binary,packageRoot);
-   step='install through shipping plugin';
-   const settings=join(env.PI_CODING_AGENT_DIR,'extensions/acyclic.ts');
-   const installation=await run(executable,['install',host,'--plugin-root',packageRoot,...(host==='pi'?['--settings',settings]:[])]);
+  const packageRoot=join(root,'package');
+  const executable=await stagePlugin(fileURLToPath(new URL('../../',import.meta.url)),binary,packageRoot);
+  step='install through shipping plugin';
+  if(host==='codex') {
+   const installation=await run(executable,['install',host,'--plugin-root',packageRoot]);
    assert.equal(installation.code,0,installation.stderr);
-   if(host==='codex') {
-    const listed=await run(native,['plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
-    assert.ok(JSON.parse(listed.stdout).installed.some(row=>row.pluginId==='acyclic@acyclic'&&row.enabled));
-   } else await assertInstalledBinary(settings,executable);
-   step='start shipping workspace owner';
-   await startWorkspaceOwner({scope,binary:graphcoder,workspace,state:join(root,'state'),env,root,
-    capture:record=>captures.push({role:'owner',...record})});
-   step='start shipping mock model';
-   const marker='NATIVE_PLUGIN_MODEL_DONE',script=join(output,'script.json');
-   const childMarker='NATIVE_PLUGIN_CHILD_DONE';
-   const tool=(name,args)=>({id:'native_'+name,namespace:'mcp__acyclic_sessions',name,arguments:args});
-   const steps=host==='codex'?[
-    {when:{user:'NATIVE_PLUGIN_MODEL'},tools:[tool('spawn',{reference:'native-child',prompt:'NATIVE_PLUGIN_CHILD'})]},
-    {when:{tool_result:'inbox'},tools:[tool('wait',{reference:'native-child'})]},
-    {when:{tool_result:childMarker},text:[marker]},
-    {when:{user:'NATIVE_PLUGIN_CHILD'},text:[childMarker]},
-   ]:[{when:{user:'NATIVE_PLUGIN_MODEL'},text:[marker]}];
-   await writeFile(script,JSON.stringify({cases:{native:{steps}}}));
-   const model=scope.start(mock,['--script',script,'--record',join(output,'requests.jsonl')],{env});model.child.stdin.end();
-   const events=new Spool(model.child.stdout,model.closed,{key:event=>event.event==='ready'?['ready']:[]});
-   const {port}=await events.keyed('ready');
-   step='complete installed native model request';let args;
-   if(host==='codex') {
-    const initialized=await scope.run(env.E2E_GIT_BINARY??'git',['init','--quiet'],{cwd:workspace,env});
-    captures.push({role:'initialize-workspace',...initialized});assert.equal(initialized.code,0,initialized.stderr);
-    // Open through the same workspace API as the native launcher. The runtime
-    // supplies the task; the fixture never invents an agent or execution claim.
-    const opened=await scope.run(executable,['__workspace'],{cwd:workspace,env},
-     JSON.stringify({kind:'open',host:'codex',session:randomUUID()}));
-    captures.push({role:'open-native-root',...opened});assert.equal(opened.code,0,opened.stderr);
-    env.ACYCLIC_WORKSPACE=workspace;env.ACYCLIC_TASK=JSON.parse(opened.stdout).task;
-    const policy=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
-    '--config',`model_providers.mock.base_url="http://127.0.0.1:${port}/native/v1"`,'--config','model_providers.mock.wire_api="responses"',
-    '--config','model_providers.mock.requires_openai_auth=false','--model','tiny',
-    ...['spawn','wait'].flatMap(name=>['--config',
-     `plugins."acyclic@acyclic".mcp_servers."acyclic-sessions".tools.${name}.approval_mode="approve"`]),
-    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
-    env.ACYCLIC_HOST_ARGS=JSON.stringify(policy);
-    args=[...policy,'exec','--json','NATIVE_PLUGIN_MODEL'];
-   }
-   else {
-    env.ACYCLIC_E2E_MODEL_URL=`http://127.0.0.1:${port}/native/v1`;
-    args=['--mode','json','--print','--no-session','--no-skills','--no-prompt-templates','--no-themes',
-     '--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),
-     '--provider','fixture','--model','tiny','NATIVE_PLUGIN_MODEL'];
-   }
-   const completed=await run(native,args);assert.equal(completed.code,0,completed.stderr);
-   assert.ok(completed.stdout.includes(marker),'native model answer missing');
-   const requests=(await readFile(join(output,'requests.jsonl'),'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
-   const generation=requests.find(row=>row.path==='responses'&&row.status===200);assert.ok(generation,'missing actual model request');
-   const tools=generation.body.tools;
-   if(host==='codex') assert.ok(JSON.stringify(tools).includes('acyclic'),'installed Acyclic MCP tools not advertised');
-   else for(const name of ['spawn','send','wait','archive','cancel','resume']) assert.ok(tools.some(t=>(t.name??t.function?.name)===name&&JSON.stringify(t).includes('separate native Pi process in an admitted workspace view')),'missing installed Pi coordination tool '+name);
-   if(host==='codex') assertCodexChildRoundTrip(requests,childMarker);
-   result={host,plugin_installed:true,native_model_answer:true,plugin_child_round_trip:host==='codex',advertised_tools:tools.map(t=>t.name??t.function?.name)};
-  }});
-  assert.equal(receipt.expired,false,'installed native host deadline');result={...result,status:'pass',seconds:receipt.seconds};
- } catch(error) {result={host,status:'fail',step,seconds:(performance.now()-started)/1000,error:error.message,recovery:'inspect original native model result and captures; run a changed-source diagnostic only'};}
- await writeFile(join(output,'captures.json'),JSON.stringify(captures,null,2));
- await writeFile(join(output,'result.json'),JSON.stringify(result,null,2));return result;
-}
-
-if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
- const [host,binary,graphcoder,mock,native,output,packageSource]=process.argv.slice(2);
- try {const result=await nativeModel({host,binary,graphcoder,mock,native,output,packageSource});console.log(JSON.stringify(result));process.exitCode=result.status==='pass'?0:1;}
- catch(error){console.error('step=admit native model case: '+error.message+'; recovery=node plugin/tests/hosts/native-model.mjs HOST PLUGIN GRAPHCODER MOCK NATIVE FRESH_OUTPUT PACKAGE');process.exitCode=1;}
+    const listed=await run(native.program,[...native.args,'plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
+   assert.ok(JSON.parse(listed.stdout).installed.some(row=>row.pluginId==='acyclic@acyclic'&&row.enabled),'native plugin manager lacks acyclic@acyclic');
+  } else if(host==='pi') {
+   const extension=join(env.PI_CODING_AGENT_DIR,'extensions/acyclic.ts');
+   const installation=await run(executable,['install',host,'--plugin-root',packageRoot,'--settings',extension]);
+   assert.equal(installation.code,0,installation.stderr);
+   assert.ok((await readFile(extension,'utf8')).includes(JSON.stringify(toNamespacedPath(await realpath(executable)))),'native extension does not bind admitted shipping binary');
+  }
+  step='start shipping workspace owner';
+  await startWorkspaceOwner({scope:processes,binary:fixture.binary,workspace,state:join(root,'state'),env,root,
+   capture:record=>capture({role:'owner',...record})});
+  step='initialize workspace Git';
+  const initialized=await run(env.E2E_GIT_BINARY??'git',['init','--quiet']);
+  assert.equal(initialized.code,0,initialized.stderr);
+  step='open native root through the workspace API';
+  const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
+  assert.equal(opened.code,0,opened.stderr);
+  const {policy,args}=await launch(host,{url:fixture.env.E2E_MOCK_URL,root,packageRoot,workspace,env,tools,prompt});
+  Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
+  step='complete installed native session';
+  const completed=await run(native.program,[...native.args,...args]);
+  assert.equal(completed.code,0,completed.stderr);
+  assert.ok(completed.stdout.includes(answer),'native answer missing');
+ } catch(error) {
+  throw new Error(`step=${host} ${step}: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`,{cause:error});
+ }
 }

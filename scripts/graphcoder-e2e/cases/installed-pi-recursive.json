@@ -5,26 +5,72 @@
   },
   "inputs": [
     {
-      "args": [
-        "test",
-        "{{repository}}/plugin/tests/hosts/pi-native-recursive.test.ts",
-        "--test-name-pattern",
-        "required pinned Pi recursively launches original native effects and reopens without repeating work",
-        "--timeout",
-        "9000"
-      ],
       "mode": "qualification",
-      "format": "bun",
-      "binary_env": "E2E_BUN",
-      "fixture_binary_env": "E2E_PLUGIN_BINARY",
-      "minimum_tests": 1
+      "format": "installed-host",
+      "host": "pi",
+      "tools": [
+        "spawn",
+        "wait"
+      ],
+      "prompt": "NATIVE_PLUGIN_MODEL",
+      "answer": "NATIVE_PLUGIN_MODEL_DONE"
     }
   ],
   "model": {
-    "steps": []
+    "steps": [
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL"
+        },
+        "tools": [
+          {
+            "id": "native_spawn",
+            "name": "spawn",
+            "arguments": {
+              "reference": "native-child",
+              "prompt": "NATIVE_PLUGIN_CHILD"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "inbox"
+        },
+        "tools": [
+          {
+            "id": "native_wait",
+            "name": "wait",
+            "arguments": {
+              "reference": "native-child"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "NATIVE_PLUGIN_CHILD_DONE"
+        },
+        "text": [
+          "NATIVE_PLUGIN_MODEL_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_CHILD"
+        },
+        "text": [
+          "NATIVE_PLUGIN_CHILD_DONE"
+        ]
+      }
+    ]
   },
   "id": "installed-pi-recursive",
   "assert": {
-    "requests": 0
+    "requests": 4,
+    "tool_contains": [
+      "NATIVE_PLUGIN_CHILD_DONE",
+      "Succeeded"
+    ]
   }
 }
