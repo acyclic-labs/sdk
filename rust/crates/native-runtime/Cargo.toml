@@ -112,3 +112,8 @@ required-features = ["model-checking"]
 name = "device_flush_loom"
 path = "tests/device_flush_loom.rs"
 required-features = ["model-checking"]
+
+[[test]]
+name = "process_signal_loom"
+path = "tests/process_signal_loom.rs"
+required-features = ["model-checking"]

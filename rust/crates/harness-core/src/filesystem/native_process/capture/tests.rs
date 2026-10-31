@@ -32,7 +32,7 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         .build()?;
     let root = tempfile::tempdir()?;
     for (schedule, stopped) in [
-        (acyclic_native_runtime::CaptureSchedule::unbounded(), None),
+        (acyclic_native_runtime::CaptureSchedule::Unbounded, None),
         (
             acyclic_native_runtime::CaptureSchedule::until(std::time::Instant::now()),
             Some(NativeProcessStopKind::Timeout),
@@ -153,8 +153,10 @@ mod simulation {
                         request.command.get_args().collect::<Vec<_>>(),
                         ["-c", "printf dst"]
                     );
-                    assert!(request.schedule.deadline.is_none());
-                    assert!(request.schedule.check_every.is_none());
+                    assert_eq!(
+                        request.schedule,
+                        acyclic_native_runtime::CaptureSchedule::Unbounded
+                    );
                     assert_eq!(request.maximum, 3);
                     assert!(request.input.is_none());
                     check().expect("script ownership check");
@@ -180,7 +182,7 @@ mod simulation {
                 cwd: "/".into(),
                 environment: Default::default(),
                 inherit_environment: false,
-                schedule: acyclic_native_runtime::CaptureSchedule::unbounded(),
+                schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
                 control_timeout_ms: 1000,
                 maximum_output_bytes: 3,
                 process_custody: None,

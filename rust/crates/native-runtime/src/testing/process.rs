@@ -94,7 +94,7 @@ mod tests {
             let command = ProcessCommand::new("must-not-spawn");
             let capture = || ProcessCapture {
                 command: &command,
-                schedule: crate::CaptureSchedule::unbounded(),
+                schedule: crate::CaptureSchedule::Unbounded,
                 maximum: 8,
                 input: None,
             };

@@ -163,7 +163,7 @@ async fn interactive_input_wakes_quiet_children_and_retires_each_transfer() -> i
         };
         let mut output = tree.stream_capture(
             &crate::TaskSpawner::current(),
-            CaptureSchedule::unbounded(),
+            CaptureSchedule::Unbounded,
             usize::MAX,
             Some(OwnedCaptureInput::Interactive {
                 initial: Vec::new(),

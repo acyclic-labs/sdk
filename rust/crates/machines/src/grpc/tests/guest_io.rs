@@ -322,9 +322,21 @@ async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
     assert_eq!(request.start.maximum_output_bytes, Some(4));
     assert_eq!(request.start.timeout_ms, None);
     assert!(
-        !request.relative_timeout,
-        "an omitted lifetime gained a transport timeout"
+        request.relative_timeout,
+        "the original authority expiry lost its transport deadline"
     );
+    let output = machine
+        .exec(ExecCommand::new(vec!["cat".into()], None).unwrap())
+        .await
+        .unwrap();
+    let request = io.commands.lock().unwrap().last().unwrap().clone();
+    assert_eq!(request.start.timeout_ms, None);
+    assert_eq!(request.start.expiry_unix_ms, None);
+    assert!(
+        !request.relative_timeout,
+        "an unbounded command without authority expiry gained a transport deadline"
+    );
+    drop(output);
     stop(shutdown, task).await;
 }
 
