@@ -235,7 +235,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
             .await,
         Err(crate::Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
-            ..
+            reason: "skill discovery requires native YAML allocation admission",
         })
     ));
     assert_eq!(
