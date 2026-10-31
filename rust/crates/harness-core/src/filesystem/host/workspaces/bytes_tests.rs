@@ -208,6 +208,173 @@ async fn publication_case(payload: &[u8], prefix: usize, suffix: usize) -> Resul
     Ok(())
 }
 
+#[tokio::test]
+async fn removal_and_replacement_share_the_original_publication() -> Result<()> {
+    for adapter in 0..3 {
+        let (host, reference) = fixture().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = match adapter {
+            0 => None,
+            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+            _ => Some(PreparationIo::from_native_work(&native)?),
+        };
+        let initial = host
+            .apply_generation(
+                &reference,
+                None,
+                &[
+                    WorkspaceMutation::CreateDirectory {
+                        path: "/schedules".into(),
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: "/schedules/first".into(),
+                        bytes: b"original".as_slice().into(),
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: "/unrelated".into(),
+                        bytes: b"retained".as_slice().into(),
+                    },
+                ],
+                IdempotencyKey::new("before-removal")?,
+                io.as_ref(),
+            )?
+            .await?;
+        let initial = host.generation_ref_id(initial.id(), io.as_ref())?;
+        let replacement = host
+            .apply_generation(
+                &reference,
+                Some(&initial),
+                &[
+                    WorkspaceMutation::Remove {
+                        path: "/schedules/first".into(),
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: "/schedules/next".into(),
+                        bytes: b"replacement".as_slice().into(),
+                    },
+                ],
+                IdempotencyKey::new("remove-and-replace")?,
+                io.as_ref(),
+            )?
+            .await?;
+        let replacement = host.generation_ref_id(replacement.id(), io.as_ref())?;
+        assert_eq!(
+            host.read(
+                &reference,
+                Some(&initial),
+                "/schedules/first",
+                64,
+                io.as_ref()
+            )
+            .await?
+            .as_ref(),
+            b"original"
+        );
+        assert_eq!(
+            host.read(
+                &reference,
+                Some(&replacement),
+                "/schedules/next",
+                64,
+                io.as_ref()
+            )
+            .await?
+            .as_ref(),
+            b"replacement"
+        );
+        assert_eq!(
+            host.read(
+                &reference,
+                Some(&replacement),
+                "/unrelated",
+                64,
+                io.as_ref()
+            )
+            .await?
+            .as_ref(),
+            b"retained"
+        );
+        assert_eq!(
+            host.read(
+                &reference,
+                Some(&replacement),
+                "/schedules/first",
+                64,
+                io.as_ref()
+            )
+            .await
+            .unwrap_err()
+            .code(),
+            crate::wire::ErrorCode::NotFound
+        );
+
+        // Earlier private edits must not escape when a later removal fails.
+        let refused = host
+            .apply_generation(
+                &reference,
+                Some(&replacement),
+                &[
+                    WorkspaceMutation::Remove {
+                        path: "/schedules/next".into(),
+                    },
+                    WorkspaceMutation::Remove {
+                        path: "/schedules/missing".into(),
+                    },
+                ],
+                IdempotencyKey::new("refused-removal")?,
+                io.as_ref(),
+            )?
+            .await;
+        assert!(matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::NotFound));
+        assert_eq!(
+            host.resolve(&reference, io.as_ref()).await?.generation,
+            replacement
+        );
+
+        let stale = host
+            .apply_generation(
+                &reference,
+                Some(&initial),
+                &[WorkspaceMutation::Remove {
+                    path: "/schedules/first".into(),
+                }],
+                IdempotencyKey::new("stale-removal")?,
+                io.as_ref(),
+            )?
+            .await;
+        assert!(matches!(stale, Err(error) if error.code() == crate::wire::ErrorCode::Conflict));
+
+        // A cancelled original work context terminates without publication.
+        cancellation.cancel();
+        let mutations = [WorkspaceMutation::Remove {
+            path: "/schedules/next".into(),
+        }];
+        if let Some(io) = &io {
+            let refused = match host.apply_generation(
+                &reference,
+                Some(&replacement),
+                &mutations,
+                IdempotencyKey::new("cancelled-removal")?,
+                Some(io),
+            ) {
+                Ok(operation) => operation.await,
+                Err(error) => Err(error),
+            };
+            assert!(
+                matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Cancelled)
+            );
+        }
+        assert_eq!(
+            host.resolve(&reference, None).await?.generation,
+            replacement
+        );
+    }
+    Ok(())
+}
+
 fn retained_operation_bytes<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
     std::mem::size_of::<T>()
 }

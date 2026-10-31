@@ -154,12 +154,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .write(path, bytes.clone(), io, io.cancellation())
                             .await,
                     )?,
-                    WorkspaceMutation::Remove { .. } => {
-                        return Err(stock_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "bounded publication does not remove content",
-                        ));
+                    WorkspaceMutation::Remove { path } => {
+                        io.sdk(transaction.remove(path, io, io.cancellation()).await)?
                     }
                 }
             }
