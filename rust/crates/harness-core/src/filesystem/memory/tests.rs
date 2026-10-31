@@ -518,8 +518,13 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
                     let projected = read.projection.project(&invocation, &result, Some(&work))?;
                     assert!(projected.0["value"]["version"].as_str().is_some());
                     eprintln!("range projection live={} custody={}", work.live_allocation_bytes(), projected.1.as_ref().map_or(0, |custody| custody.bytes()));
+                    read.definition.validate_projection(&projected.0, limits, None)?;
                 }
                 eprintln!("range projection dropped live={}", work.live_allocation_bytes());
+                let reference = crate::tools::catalog::READ.bind_with_projection(crate::tool::schema::ProjectionMode::Reference)?;
+                let projected = reference.projection.project(&invocation, &result, Some(&work))?;
+                reference.definition.validate_projection(&projected.0, limits, None)?;
+                assert!(projected.0["value"].get("text").is_none());
             }
             assert!(work.receipt().source_bytes_read < 64 * 1024);
             assert!(work.receipt().bytes_copied < 64 * 1024);

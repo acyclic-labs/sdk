@@ -14,6 +14,23 @@ pub enum FileProjection {
 }
 
 impl FileProjection {
+    /// Exact model envelope, including a bounded source without a body digest.
+    pub fn schema(self) -> Result<Value> {
+        match self {
+            Self::Read(ProjectionMode::Reference) => {
+                let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+                    .for_serialize()
+                    .into_generator();
+                let content = generator.subschema_for::<schema::ReferenceProjection<'_>>();
+                let authored = generator.subschema_for::<schema::JsonProjection<FileView<'_>>>();
+                Ok(json!({"oneOf":[content,authored],"$defs":generator.take_definitions(true)}))
+            }
+            Self::Read(ProjectionMode::Full) => ProjectionMode::Full.schema::<FileView<'_>>(),
+            Self::Publication(mode) => Self::model_schema(mode),
+            Self::Search(mode) => mode.schema::<SearchResult>(),
+        }
+    }
+
     pub(crate) fn model_schema(mode: ProjectionMode) -> Result<Value> {
         mode.schema::<FileView<'_>>()
     }

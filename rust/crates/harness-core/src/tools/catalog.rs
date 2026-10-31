@@ -126,7 +126,7 @@ pub(crate) static READ: ToolSpec = ToolSpec {
     binding: ToolBinding::Volume,
     input: schema::input::<ReadFileInput>,
     output: schema::output::<ReadFileResult>,
-    projection_schema: FileProjection::model_schema,
+    projection_schema: |mode| FileProjection::Read(mode).schema(),
     executor: |_| Arc::new(FileTool::Read),
     projection: |mode| Arc::new(FileProjection::Read(mode)),
 };

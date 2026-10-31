@@ -47,7 +47,7 @@ fn invocation(name: &str, arguments: Value) -> ToolInvocation {
 fn definitions() -> Result<Vec<Value>> {
     let mut reference_read = files::read()?;
     let read_projector = FileProjection::Read(ProjectionMode::Reference);
-    reference_read.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
+    reference_read.definition.projection_schema = read_projector.schema()?;
     reference_read.projection = std::sync::Arc::new(read_projector);
     let mut reference_write = files::write()?;
     let reference_projector = FileProjection::Publication(ProjectionMode::Reference);
