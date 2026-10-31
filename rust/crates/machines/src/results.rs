@@ -164,13 +164,7 @@ pub fn record(machine: &MachineObservation) -> Result<AppendRecord, ProviderErro
 }
 
 fn decode(bytes: &[u8]) -> Result<MachineObservation, ProviderError> {
-    acyclic_auth::format::header(
-        bytes,
-        b"{\"version\":",
-        b"\"1\",\"machine\":",
-        unsupported,
-        unsupported,
-    )?;
+    acyclic_auth::format::header(bytes, b"{\"version\":", b"\"1\"", unsupported, unsupported)?;
     let value: Observation<MachineObservation> = serde_json::from_slice(bytes).map_err(encoding)?;
     Ok(value.machine)
 }
@@ -385,10 +379,19 @@ pub mod codec_fuzz {
                 return false;
             }
         }
-        matches!(
-            decode(b"{\"version\":\"1\",\"machine\":"),
-            Err(ProviderError::Rejected(_))
-        )
+        for end in [offset + 2, offset + 3] {
+            if !matches!(
+                decode(&encoded.value[..end]),
+                Err(ProviderError::Rejected(_))
+            ) {
+                return false;
+            }
+        }
+        let mut foreign_field = encoded.value.to_vec();
+        // Mutate only the actual writer's next field, retaining its admitted
+        // version. A missing required machine is a payload refusal.
+        foreign_field[offset + 4] = b'x';
+        matches!(decode(&foreign_field), Err(ProviderError::Rejected(_)))
     }
 }
 
