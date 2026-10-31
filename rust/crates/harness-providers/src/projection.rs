@@ -168,14 +168,20 @@ pub(crate) fn body_named<'a>(
         }
     }
     sequence::finish(adapter, &mut messages)?;
-    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
-        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
-        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
-            "parameters":tool.input_schema,"strict":false}),
-        Adapter::Chat => json!({"type":"function","function":{"name":name,
-            "description":tool.description,"parameters":tool.input_schema}}),
-        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
-    }) }).collect::<Result<_>>()?;
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| {
+            Ok(acyclic_model_render::ToolDeclaration::Function {
+                name: names.wire(&tool.name)?,
+                description: &tool.description,
+                parameters: wire::Parameters(&tool.input_schema),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let tools = acyclic_model_render::ToolDeclarations::new(adapter, tools)
+        .map_err(|error| invalid(error.to_string()))?;
+    let tools = (!tools.is_empty() || adapter == Adapter::Responses).then_some(tools);
     system.retain(|text| !text.trim().is_empty());
     let max = request
         .max_output_tokens
@@ -188,6 +194,8 @@ pub(crate) fn body_named<'a>(
     let map = body
         .as_object_mut()
         .ok_or_else(|| invalid("model options must be an object"))?;
+    // Only the admitted declarations can populate this field.
+    map.remove("tools");
     let model = request.model.name.as_str();
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let model =
@@ -202,9 +210,6 @@ pub(crate) fn body_named<'a>(
             map.insert("stream".into(), json!(true));
             map.insert("stream_options".into(), json!({"include_usage":true}));
             map.insert("max_completion_tokens".into(), json!(max));
-            if !tools.is_empty() {
-                map.insert("tools".into(), json!(tools));
-            }
         }
         Adapter::Responses => {
             let include = map
@@ -222,7 +227,6 @@ pub(crate) fn body_named<'a>(
             map.insert("stream".into(), json!(true));
             map.insert("store".into(), json!(false));
             map.insert("max_output_tokens".into(), json!(max));
-            map.insert("tools".into(), json!(tools));
             #[cfg(not(target_arch = "wasm32"))]
             if provider.codex_login.is_some() {
                 map.remove("max_output_tokens");
@@ -241,9 +245,6 @@ pub(crate) fn body_named<'a>(
             if !system.is_empty() {
                 map.insert("system".into(), json!(system.join("\n\n")));
             }
-            if !tools.is_empty() {
-                map.insert("tools".into(), json!(tools));
-            }
         }
         Adapter::Gemini => {
             map.remove("model");
@@ -258,9 +259,6 @@ pub(crate) fn body_named<'a>(
                     "systemInstruction".into(),
                     json!({"parts":[{"text":system.join("\n\n")}]}),
                 );
-            }
-            if !tools.is_empty() {
-                map.insert("tools".into(), json!([{"functionDeclarations":tools}]));
             }
         }
     }
@@ -278,6 +276,7 @@ pub(crate) fn body_named<'a>(
     }
     Ok(Body {
         fields: std::mem::take(fields),
+        tools,
         messages_field,
         messages,
     })
