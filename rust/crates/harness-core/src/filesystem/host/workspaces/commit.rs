@@ -20,19 +20,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     pub(in crate::filesystem) fn apply_authorized_generation<'a>(
         &'a self,
-        reference: &'a WorkspaceRef,
-        authorization: (acyclic_fs::access::PolicyFence, &'a ContentGrant),
+        workspace: &'a Workspace<A, O>,
+        authorization: (
+            acyclic_fs::access::PolicyFence,
+            &'a ContentGrant,
+            Option<acyclic_fs::access::PolicyFence>,
+        ),
+        root_cut: Option<acyclic_fs::PolicyCut>,
         mutations: &'a [WorkspaceMutation],
         key: IdempotencyKey,
-        io: Option<&'a PreparationIo>,
+        io: &'a PreparationIo,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
-        self.publish_generation(
-            reference,
-            mutations,
-            key,
-            io,
-            FilePublication::Authorized(authorization.0, authorization.1),
-        )
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            let publication = self.publish_selected_generation(
+                workspace,
+                mutations,
+                key,
+                io,
+                FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
+            );
+            match root_cut {
+                Some(cut) => cut.scope(publication).await,
+                None => publication.await,
+            }
+        })
     }
 
     fn publish_generation<'a>(
@@ -62,38 +73,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let workspace = self.open(reference, Some(io)).await?;
-            let operation = bounded_io::operation_key(&key, Some(io))?;
-            let mut transaction = if matches!(publication, FilePublication::Replace(_)) {
-                let pinned = match expected {
-                    Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
-                    None => io.sdk(workspace.head(io, io.cancellation()).await)?,
-                };
-                io.sdk(
-                    workspace
-                        .begin_transaction_at(&pinned, operation, io, io.cancellation())
-                        .await,
-                )?
-            } else {
-                io.sdk(
-                    workspace
-                        .begin_transaction(operation, io, io.cancellation())
-                        .await,
-                )?
-            };
-            if let Some(fence) = publication.fence() {
-                io.sdk(
-                    transaction
-                        .observe_policy_fence(fence, io, io.cancellation())
-                        .await,
-                )?;
-            }
-            #[cfg(test)]
-            if let Some(pause) = &self.publication_pause {
-                pause().await;
-            }
-            Self::publish_mutations(&mut transaction, mutations, io).await?;
-            Self::commit_publication(transaction, io, publication).await
+            self.publish_selected_generation(&workspace, mutations, key, io, publication)
+                .await
         })
+    }
+
+    async fn publish_selected_generation(
+        &self,
+        workspace: &Workspace<A, O>,
+        mutations: &[WorkspaceMutation],
+        key: IdempotencyKey,
+        io: &PreparationIo,
+        publication: FilePublication<'_>,
+    ) -> Result<Generation<A, O>> {
+        let expected = match publication {
+            FilePublication::Replace(expected) => expected,
+            FilePublication::Authorized(..) => None,
+        };
+        let operation = bounded_io::operation_key(&key, Some(io))?;
+        let mut transaction = if matches!(publication, FilePublication::Replace(_)) {
+            let pinned = match expected {
+                Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
+                None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+            };
+            io.sdk(
+                workspace
+                    .begin_transaction_at(&pinned, operation, io, io.cancellation())
+                    .await,
+            )?
+        } else {
+            io.sdk(
+                workspace
+                    .begin_transaction(operation, io, io.cancellation())
+                    .await,
+            )?
+        };
+        if let Some(fence) = publication.fence() {
+            io.sdk(
+                transaction
+                    .observe_policy_fence(fence, io, io.cancellation())
+                    .await,
+            )?;
+        }
+        #[cfg(test)]
+        if let Some(pause) = &self.publication_pause {
+            pause().await;
+        }
+        Self::publish_mutations(&mut transaction, mutations, io).await?;
+        Self::commit_publication(transaction, io, publication).await
     }
     async fn publish_mutations(
         transaction: &mut acyclic_fs::Transaction<A, O>,
@@ -163,7 +190,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(work) = io.original_native_work() {
                     let fence = publication.fence();
-                    let authority = if let FilePublication::Authorized(_, grant) = publication {
+                    let root_fence = match publication {
+                        FilePublication::Authorized(_, _, root) => root,
+                        FilePublication::Replace(_) => None,
+                    };
+                    let authority = if let FilePublication::Authorized(_, grant, _) = publication {
                         let before = io.owned_bytes()?;
                         let verifier = grant.copy_verifier(&mut Some(&mut io.history_io()))?;
                         let scope = grant.policy_scope().copy(&mut Some(&mut io.history_io()))?;
@@ -186,6 +217,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         async move {
                             let check = || -> Result<()> {
                                 require_publication_fence(fence)?;
+                                require_publication_fence(root_fence)?;
                                 if let Some(authority) = &authority {
                                     let io = PreparationIo::from_native_work(&work)?;
                                     authority

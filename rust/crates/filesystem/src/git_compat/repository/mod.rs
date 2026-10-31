@@ -120,7 +120,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .map_err(|_| GitCompatError::InvalidState)
     }
 
-    async fn load(&self) -> Result<GitCompatState, GitCompatError<S::Error>> {
+    /// Loads one validated repository state, or its initial unborn branch.
+    /// Consumers must use this boundary before disclosing persisted metadata.
+    pub async fn load(&self) -> Result<GitCompatState, GitCompatError<S::Error>> {
         let state = self
             .store
             .load(self.workspace_id)

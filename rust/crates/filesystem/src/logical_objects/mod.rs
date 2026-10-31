@@ -174,19 +174,11 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
         Ok(prepared)
     }
 
-    fn decoded_cache_get(
+    fn decoded_cache_lookup(
         &self,
         key: crate::async_storage::DecodedCacheKey,
-    ) -> Result<Option<crate::async_storage::DecodedCacheValue>, ObjectStoreError> {
-        self.decoded.decoded_get(key)
-    }
-
-    fn decoded_cache_admit(
-        &self,
-        key: crate::async_storage::DecodedCacheKey,
-        value: crate::async_storage::DecodedCacheValue,
-    ) -> Result<crate::async_storage::DecodedCacheAdmission, ObjectStoreError> {
-        self.decoded.decoded_admit(key, value)
+    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
+        self.decoded.decoded_lookup(key)
     }
 
     async fn put(

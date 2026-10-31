@@ -17,18 +17,10 @@ mod command;
 mod fs_command;
 mod workspace_executor;
 pub use command::parse_command;
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub use fs_command::{FsCommand, parse_fs_command};
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(feature = "filesystem")]
 pub mod git;
 
 #[doc(hidden)]

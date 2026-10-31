@@ -77,6 +77,8 @@ pub struct TurnAuthority {
     pub journal: Arc<dyn crate::executor::ExecutionJournal>,
     /// What the turn's `wait` observes of the agent's children.
     pub children: Option<Arc<dyn crate::agent::TurnChildren>>,
+    /// Commands bound to the original filesystem placement, if supplied.
+    pub workspace_tools: Option<Arc<dyn crate::runtime::FilesystemExecutor>>,
 }
 
 /// The conversation authority of one agent over its bound volumes.
@@ -405,11 +407,22 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     executors: Arc<dyn TurnExecutors>,
+    workspace_tools: Option<WorkspaceToolsFactory>,
     limits: TurnLimits,
     approvers: crate::approvals::ApproverModels,
     goals: Option<crate::goal::GoalContinuationPolicy>,
     policy: crate::approvals::ApprovalPolicy,
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::filesystem) type WorkspaceToolsFactory = Arc<
+    dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::runtime::FilesystemExecutor>>
+        + Send
+        + Sync,
+>;
+#[cfg(target_arch = "wasm32")]
+pub(in crate::filesystem) type WorkspaceToolsFactory =
+    Arc<dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::runtime::FilesystemExecutor>>>;
 
 /// A turn's bindings before its approval gate is resolved.
 struct Bindings {
@@ -417,6 +430,26 @@ struct Bindings {
     scope: Scope,
     grants: Capabilities,
     content: ContentBindings,
+}
+
+impl<P, O> FilesystemTurnHost<P, acyclic_fs::StreamAuthorityStore<P>, O>
+where
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// Binds filesystem commands to each turn's original placement and authority.
+    #[must_use]
+    pub fn with_filesystem_tools(mut self) -> Self {
+        let host = Arc::clone(&self.host);
+        self.workspace_tools = Some(Arc::new(move |agent, authority| {
+            Ok(Arc::new(super::FilesystemTools::new(
+                Arc::clone(&host),
+                agent,
+                authority,
+            )?))
+        }));
+        self
+    }
 }
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
@@ -446,6 +479,7 @@ where
             issuer: issuer.into(),
             admission,
             executors,
+            workspace_tools: None,
             limits,
             approvers: Default::default(),
             goals: Some(Default::default()),
@@ -1119,7 +1153,7 @@ where
                 .await?;
             let journal = journal.with_bound_selection(selected.clone());
             let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
-            let authority = TurnAuthority {
+            let mut authority = TurnAuthority {
                 issuer: bindings.issuer,
                 scope: bindings.scope,
                 grants: bindings.grants,
@@ -1128,7 +1162,11 @@ where
                 effects: Some(Arc::clone(&effects)),
                 journal: Arc::clone(&journal),
                 children: Some(children),
+                workspace_tools: None,
             };
+            if let Some(factory) = &self.workspace_tools {
+                authority.workspace_tools = Some(factory(agent, &authority)?);
+            }
             Ok(OpenTurn {
                 executor: self
                     .executors

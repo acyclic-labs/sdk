@@ -61,7 +61,7 @@ fn check_owned<const LEGACY: bool>(
     let before = accounting.spent();
     // Forcing the default cache hooks replays the old allocate-and-share path.
     let result = if LEGACY {
-        admit_decoded_with_accounting(
+        admit_page(
             &OwnedReadObjectStore::default(),
             key(),
             input,
@@ -69,7 +69,7 @@ fn check_owned<const LEGACY: bool>(
             None,
         )
     } else {
-        admit_decoded_with_accounting(
+        admit_page(
             &MemoryObjectStore::default(),
             key(),
             input,
@@ -181,7 +181,7 @@ fn standalone_handoff_keeps_the_existing_cancellation_checkpoints() {
         let input = page(2, &mut accounting);
         cancellation.cancel();
         let (page, allocation) = if legacy {
-            admit_decoded_with_accounting(
+            admit_page(
                 &OwnedReadObjectStore::default(),
                 key(),
                 input,
@@ -189,7 +189,7 @@ fn standalone_handoff_keeps_the_existing_cancellation_checkpoints() {
                 None,
             )
         } else {
-            admit_decoded_with_accounting(
+            admit_page(
                 &MemoryObjectStore::default(),
                 key(),
                 input,
@@ -224,7 +224,7 @@ fn uncached_admission_rechecks_a_tightened_budget_before_handoff() {
         peak_allocation_bytes: input.0.logical_bytes - 1,
         ..WorkBudget::UNBOUNDED
     };
-    let result = admit_decoded_with_accounting(
+    let result = admit_page(
         &MemoryObjectStore::default(),
         key(),
         input,
@@ -250,7 +250,7 @@ fn uncached_native_admission_keeps_identity_and_cancellation_checks() {
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
     let baseline = original.live_allocation_bytes();
     let input = page(2, &mut KernelAccounting::native(&original, &cancellation));
-    let result = admit_decoded_with_accounting(
+    let result = admit_page(
         &MemoryObjectStore::default(),
         key(),
         input,
@@ -267,7 +267,7 @@ fn uncached_native_admission_keeps_identity_and_cancellation_checks() {
     let input = page(2, &mut KernelAccounting::native(&original, &cancellation));
     cancellation.cancel();
     assert!(
-        admit_decoded_with_accounting(
+        admit_page(
             &MemoryObjectStore::default(),
             key(),
             input,
@@ -289,7 +289,7 @@ fn uncached_native_handoff_cannot_change_the_allocation_resource() {
     let baseline = original.live_allocation_bytes();
     for (source, destination) in [(&original, &resource), (&resource, &original)] {
         let input = page(2, &mut KernelAccounting::native(source, &cancellation));
-        let result = admit_decoded_with_accounting(
+        let result = admit_page(
             &MemoryObjectStore::default(),
             key(),
             input,
@@ -308,7 +308,7 @@ fn uncached_native_handoff_cannot_change_the_allocation_resource() {
     let explicit = CancellationToken::new();
     explicit.cancel();
     assert!(
-        admit_decoded_with_accounting(
+        admit_page(
             &MemoryObjectStore::default(),
             key(),
             input,
@@ -318,4 +318,25 @@ fn uncached_native_handoff_cannot_change_the_allocation_resource() {
         .is_err()
     );
     assert_eq!(original.live_allocation_bytes(), baseline);
+}
+
+fn admit_page<S: AsyncObjectStore, F: Format>(
+    store: &S,
+    key: DecodedCacheKey,
+    decoded: (OwnedPage<F>, KernelOwnedAllocation),
+    accounting: &mut KernelAccounting<'_>,
+    data_custody: Option<&crate::kernel::ProofDataCustody>,
+) -> Result<(OwnedPage<F>, KernelOwnedAllocation), FsError> {
+    let crate::async_storage::DecodedCacheLookup::Miss(miss) =
+        store.decoded_cache_lookup(key).map_err(read_store_error)?
+    else {
+        return Err(read_store_error(ObjectStoreError::Corrupt));
+    };
+    crate::kernel::persistent_io::admit_decoded_with_accounting(
+        store,
+        miss,
+        decoded,
+        accounting,
+        data_custody,
+    )
 }

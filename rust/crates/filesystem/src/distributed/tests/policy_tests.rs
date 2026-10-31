@@ -300,6 +300,7 @@ async fn policy_cut_admission_preserves_cancellation_and_budget() -> TestResult 
     let invoked = std::cell::Cell::new(false);
     let mut budget = WorkBudget::UNBOUNDED;
     budget.authority_records_read = 0;
+    assert!(source.capture_policy_cut(budget, &token).await.is_err());
     let result = source
         .with_stable_policy(budget, &token, || async {
             invoked.set(true);
@@ -308,6 +309,12 @@ async fn policy_cut_admission_preserves_cancellation_and_budget() -> TestResult 
     assert!(result.is_err());
     assert!(!invoked.get());
     token.cancel();
+    assert!(
+        source
+            .capture_policy_cut(WorkBudget::UNBOUNDED, &token)
+            .await
+            .is_err()
+    );
     let result = source
         .with_stable_policy(WorkBudget::UNBOUNDED, &token, || async {
             invoked.set(true);

@@ -14,6 +14,7 @@ pub(crate) async fn completed_tool_projection(
         invocation: expected,
         metadata,
         target: _,
+        filesystem: _,
     } = expected;
     let invocation = records
         .iter()

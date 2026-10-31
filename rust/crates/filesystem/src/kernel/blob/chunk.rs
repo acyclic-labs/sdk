@@ -34,26 +34,28 @@ pub(crate) async fn chunk_at<S: AsyncObjectStore>(
             original.remaining()?;
         }
         let cached = store
-            .decoded_cache_get(key)
+            .decoded_cache_lookup(key)
             .map_err(crate::kernel::file_read::read_store_error)?;
-        let (cached, allocated) = if let Some(cached) = cached {
-            (cached, 0)
-        } else {
-            let (read, retained) = read_object_with_accounting(
-                store,
-                root,
-                limits.maximum_page_object_bytes(),
-                accounting,
-                cancellation,
-            )
-            .await?;
-            let decoded =
-                ReadOwned::decoded(decode_blob_page_with_accounting(&read, limits, accounting)?);
-            let decoded =
-                crate::kernel::file_read::cache_decoded_read(store, key, decoded, accounting)?;
-            drop(read);
-            crate::kernel::file_read::release_standalone_read_bytes(retained, accounting)?;
-            decoded
+        let (cached, allocated) = match cached {
+            crate::async_storage::DecodedCacheLookup::Hit(cached) => (cached, 0),
+            crate::async_storage::DecodedCacheLookup::Miss(miss) => {
+                let (read, retained) = read_object_with_accounting(
+                    store,
+                    root,
+                    limits.maximum_page_object_bytes(),
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+                let decoded = ReadOwned::decoded(decode_blob_page_with_accounting(
+                    &read, limits, accounting,
+                )?);
+                let decoded =
+                    crate::kernel::file_read::cache_decoded_read(miss, decoded, accounting)?;
+                drop(read);
+                crate::kernel::file_read::release_standalone_read_bytes(retained, accounting)?;
+                decoded
+            }
         };
         let result = (|| {
             let page = cached

@@ -82,19 +82,8 @@ load lazily from the same account-scoped Objects provider.
 
 ## fs
 
-Versioned filesystem workspaces and generations. This example opens an existing workspace through the hosted filesystem provider.
-
-```rust,no_run
-use acyclic_fs::{HostedFs, HostedFsOptions};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let filesystem = HostedFs::connect(HostedFsOptions::new(
-        std::env::var("FS_ENDPOINT")?,
-        std::env::var("ACYCLIC_API_KEY")?,
-    )).await?;
-    let workspace = filesystem.open_workspace(&std::env::var("FS_WORKSPACE")?).await?;
-    println!("{}: {:?}", workspace.name(), workspace.head().await?.id());
-    Ok(())
-}
-```
+Versioned workspaces and generations run in the client. Compose
+`acyclic_fs::StreamAuthorityStore` with `acyclic_fs::LogicalObjectStore` using the
+client's scoped Streams and Objects providers. Metadata publication uses Streams
+commits; immutable bytes travel directly to Objects. The same library serves
+embedded clients and agent tools without a filesystem service.

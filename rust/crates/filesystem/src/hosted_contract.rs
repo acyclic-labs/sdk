@@ -16,6 +16,11 @@ use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 
+/// Smallest encoded response that can contain the protocol handshake.
+pub const MINIMUM_HANDSHAKE_RESPONSE_BYTES: usize = 512;
+/// Largest encoded byte-bearing protocol envelope around its contents.
+pub const MAX_BYTE_RESPONSE_ENVELOPE_BYTES: u64 = 10 + 35 + 11 + 2;
+
 /// One typed wire enum value and its optional public representation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostedEnumEntry<E> {

@@ -4,11 +4,342 @@ use crate::{AgentId, conversation::VolumeOwner};
 use acyclic_fs::access::{Capability, Generations, Grant, ResourcePattern};
 use proptest::prelude::*;
 
+#[tokio::test]
+async fn inherited_directory_intersects_current_root_and_data_policy()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (host, volume, grant, writer) = fixture([true; 8]).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let reference = bounded_io::content_workspace(&host.provider, &volume, None)?;
+    let root = host.open(&reference, None).await?;
+    let store = acyclic_fs::StreamGitCompatStore::new(acyclic_fs::StreamAuthorityStore::new(
+        host.filesystem.stream_provider(),
+    ));
+    let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
+    graph.register_root(&root).await?;
+    let child = graph
+        .fork(&root, "directory-branch", acyclic_fs::IdempotencyKey::new())
+        .await?;
+    let pinned = child
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    let generation = host.generation_ref_id(pinned.id(), None)?;
+    let repository = acyclic_fs::GitCompatRepository::new(root.id(), store.clone());
+    repository
+        .register_branch_workspace("directory-branch", child.id(), None, true)
+        .await?;
+    let mut host = host.with_project_families(store)?;
+    let options = DirectoryOptions {
+        generation: Some(&generation),
+        after: None,
+        maximum_entries: 8,
+        ceiling: None,
+    };
+    let (_, before) = host
+        .list_private_directory(&volume, &grant, "rows", options)
+        .await?;
+    assert_eq!(before.entries.len(), 8);
+    let (current, _) = host
+        .list_private_directory(
+            &volume,
+            &grant,
+            "rows",
+            DirectoryOptions {
+                generation: None,
+                ..options
+            },
+        )
+        .await?;
+    assert_eq!(current, generation);
+    host.put_content(
+        &volume,
+        &writer,
+        "rows/02",
+        b"branch row",
+        "text/plain",
+        "02",
+        4096,
+        &IdempotencyKey::new("selected-branch-write")?,
+        None,
+        crate::conversation::ContentAccess::default(),
+    )
+    .await?;
+    assert_eq!(
+        host.read(&reference, None, "/rows/02", 4096, None)
+            .await?
+            .as_ref(),
+        b"branch row"
+    );
+    assert_eq!(
+        host.read(&reference, Some(&generation), "/rows/02", 4096, None)
+            .await?
+            .as_ref(),
+        b"row"
+    );
+    assert_eq!(
+        root.read(
+            "/rows/02",
+            4096,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation
+        )
+        .await?
+        .value
+        .as_ref(),
+        b"row",
+        "a branch publication must not change the original root"
+    );
+    assert_eq!(
+        host.stat(&reference, None, "/rows/02").await?.logical_bytes,
+        Some(10)
+    );
+    assert_eq!(
+        host.stat(&reference, Some(&generation), "/rows/02")
+            .await?
+            .logical_bytes,
+        Some(3)
+    );
+    host.put_content(
+        &volume,
+        &writer,
+        "branch-only",
+        b"branch",
+        "text/plain",
+        "branch-only",
+        4096,
+        &IdempotencyKey::new("selected-branch-directory-entry")?,
+        None,
+        crate::conversation::ContentAccess::default(),
+    )
+    .await?;
+    let current_page = host.list(&reference, None, "/", 8).await?;
+    assert!(
+        current_page
+            .entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"branch-only")
+    );
+    let pinned_page = host.list(&reference, Some(&generation), "/", 8).await?;
+    assert!(
+        !pinned_page
+            .entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"branch-only")
+    );
+    assert!(
+        host.stat(&reference, Some(&generation), "/branch-only")
+            .await
+            .is_err()
+    );
+    let before_policy_change = child
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value
+        .id();
+    let policy_root = root.clone();
+    Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
+        let policy_root = policy_root.clone();
+        Box::pin(async move {
+            let mut policy: acyclic_fs::access::Policy =
+                serde_json::from_slice(access::INITIAL_POLICY).unwrap();
+            policy.version = 2;
+            write_policy(&policy_root, &policy).await.unwrap();
+        })
+    }));
+    let stale = host
+        .put_content(
+            &volume,
+            &writer,
+            "rows/02",
+            b"stale",
+            "text/plain",
+            "02",
+            4096,
+            &IdempotencyKey::new("root-policy-changed-during-branch-write")?,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await;
+    assert!(
+        matches!(stale, Err(Error::Conflict(_))),
+        "a changed root policy must fence the descendant commit: {stale:?}"
+    );
+    Arc::get_mut(&mut host).unwrap().publication_pause = None;
+    assert_eq!(
+        child
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .id(),
+        before_policy_change
+    );
+    for (workspace, hidden) in [(&child, "rows/00"), (&root, "rows/01")] {
+        let mut policy: acyclic_fs::access::Policy =
+            serde_json::from_slice(access::INITIAL_POLICY)?;
+        policy.version = 2;
+        let mut deny = policy.layers[0][0].clone();
+        deny.id = "inherited-list-denial".into();
+        deny.effect = acyclic_fs::access::Effect::Deny;
+        deny.actions = [Action::List, Action::Write].into_iter().collect();
+        deny.resource.path = hidden.into();
+        policy.layers[0].push(deny);
+        write_policy(workspace, &policy).await?;
+        let (_, page) = host
+            .list_private_directory(&volume, &grant, "rows", options)
+            .await?;
+        assert!(!page.entries.iter().any(|entry| entry.name.as_bytes() == hidden.rsplit('/').next().unwrap().as_bytes()));
+        assert!(
+            !page
+                .entries
+                .iter()
+                .any(|entry| entry.name.as_bytes() == b"00"),
+            "a root policy update must not restore names hidden by the data owner"
+        );
+        let (_, current) = host
+            .list_private_directory(
+                &volume,
+                &grant,
+                "rows",
+                DirectoryOptions {
+                    generation: None,
+                    ..options
+                },
+            )
+            .await?;
+        assert_eq!(current.entries.len(), page.entries.len());
+    }
+    let before_refusal = child
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    for (path, key) in [
+        ("rows/00", "child-denied-write"),
+        ("rows/01", "root-denied-write"),
+    ] {
+        assert!(
+            matches!(
+                host.put_content(
+                    &volume,
+                    &writer,
+                    path,
+                    b"denied",
+                    "text/plain",
+                    "row",
+                    4096,
+                    &IdempotencyKey::new(key)?,
+                    None,
+                    crate::conversation::ContentAccess::default()
+                )
+                .await,
+                Err(Error::Unauthorized(_))
+            ),
+            "both current policy owners must authorize publication"
+        );
+    }
+    assert_eq!(
+        child
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .id(),
+        before_refusal.id()
+    );
+    repository
+        .register_branch_workspace("main", root.id(), None, true)
+        .await?;
+    assert_eq!(
+        host.stat(&reference, None, "/rows/02").await?.logical_bytes,
+        Some(3)
+    );
+    assert!(host.stat(&reference, None, "/branch-only").await.is_err());
+    assert!(
+        !host
+            .list(&reference, None, "/", 8)
+            .await?
+            .entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"branch-only")
+    );
+    let (_, current) = host
+        .list_private_directory(
+            &volume,
+            &grant,
+            "rows",
+            DirectoryOptions {
+                generation: None,
+                ..options
+            },
+        )
+        .await?;
+    assert_eq!(
+        current.entries.len(),
+        7,
+        "current reads must follow the durable branch switch"
+    );
+    let (selected, page) = host
+        .list_private_directory(&volume, &grant, "rows", options)
+        .await?;
+    assert_eq!(
+        selected, generation,
+        "policy changes must not replace the pinned data cut"
+    );
+    assert_eq!(page.entries.len(), 6);
+    Ok(())
+}
+
+async fn write_policy(
+    workspace: &Workspace<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
+    policy: &acyclic_fs::access::Policy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut checkout = workspace
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    checkout
+        .write_access_policy(
+            &serde_json::to_vec(&policy)?,
+            acyclic_fs::NamedAttributeWriteMode::Replace,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    let outcome = checkout
+        .commit::<acyclic_fs::FsError, _, _>(
+            acyclic_fs::OperationId::new(),
+            None,
+            None,
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?
+        .value;
+    assert!(matches!(
+        outcome,
+        acyclic_fs::LivePublicationObservation::Committed { .. }
+    ));
+    Ok(())
+}
+
 async fn fixture(
     mask: [bool; 8],
 ) -> Result<(
     Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
     VolumeRef,
+    ContentGrant,
     ContentGrant,
 )> {
     let provider = ProviderRef::new(
@@ -99,7 +430,7 @@ async fn fixture(
         &mut None,
     )?;
     let read = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "rows", &mut None)?;
-    Ok((host, volume, read))
+    Ok((host, volume, read, writer))
 }
 
 proptest! {
@@ -110,7 +441,7 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         runtime.block_on(async {
-            let (host, volume, grant) = fixture(mask).await?;
+            let (host, volume, grant, _) = fixture(mask).await?;
             let caller = crate::Capabilities::new([Capability {
                 layers: vec![std::iter::once("rows".into())
                     .chain(caller_mask.into_iter().enumerate().filter(|(_, keep)| *keep)

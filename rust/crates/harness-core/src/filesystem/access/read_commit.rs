@@ -38,22 +38,12 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         scope: &Scope,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<()> {
-        let workspace = self.generation.workspace();
-        let label = crate::core::filesystem_scope_label(
-            scope.capabilities(),
-            &mut Some(&mut self.io.history_io()),
-        )?;
-        let compiled = access_view(
-            &workspace,
-            scope,
-            Some(self.generation.id()),
-            capability_payload(label, VolumeOperation::Read, self.io)?,
-            ceiling,
-            self.io,
-        )
-        .await?;
-        require(&compiled.0, Action::Read, self.reference.path(), self.io)?;
-        self.data_access = Some((workspace, compiled));
+        self.data_access =
+            selected_data_access(&self.workspace, &self.generation, scope, ceiling, self.io)
+                .await?;
+        if let Some((_, compiled)) = &self.data_access {
+            require(&compiled.0, Action::Read, self.reference.path(), self.io)?;
+        }
         Ok(())
     }
 
@@ -119,18 +109,21 @@ pub(in crate::filesystem) async fn require_current<A: AsyncAuthorityStore, O: As
     io: &PreparationIo,
 ) -> Result<()> {
     crate::conversation::BoundedContentFuture::new(Some(io), || async move {
-        // A concurrent data publication can overtake the policy observation.
-        // Retry only that accounted observation, retaining the original bytes
-        // and decision. Each attempt still checks cancellation and its budget.
-        let (generation, revision) = loop {
-            if let Some(current) = io.sdk(
+        // A publication overtaking this finite observation invalidates the
+        // disclosure. Do not poll a busy workspace until a quiet cut appears.
+        let (generation, revision) = io
+            .sdk(
                 workspace
                     .current_access_policy_revision(io, io.cancellation())
                     .await,
-            )? {
-                break current;
-            }
-        };
+            )?
+            .ok_or_else(|| {
+                stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Conflict,
+                    "filesystem publication overtook the policy observation",
+                )
+            })?;
         let now = access_now()?;
         if !view.matches_policy_revision(generation, revision)
             || view.valid_until().is_some_and(|end| now >= end)

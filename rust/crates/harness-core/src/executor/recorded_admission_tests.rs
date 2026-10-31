@@ -11,7 +11,7 @@ proptest! {
     ) {
         let invocation = ToolInvocation { operation_id:OperationId::from_bytes(id), call_id:"call".into(), name:"echo".into(), arguments:json!({"payload":arguments}) };
         let metadata = json!({"signature":signature});
-        let size = serde_json::to_vec(&crate::tool::RecordedInvocation { invocation:&invocation, metadata:&metadata, target:None }).unwrap().len() as u64;
+        let size = serde_json::to_vec(&crate::tool::RecordedInvocation { invocation:&invocation, metadata:&metadata, target:None, filesystem:None }).unwrap().len() as u64;
         let maximum = size + offset - 1;
         let event = ModelEvent::ToolCall(ToolCall::new(invocation.call_id, invocation.name, invocation.arguments).with_metadata(metadata));
         let limits = Limits { file_bytes:maximum, render_bytes:maximum, ..Limits::default() };

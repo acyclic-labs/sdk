@@ -524,23 +524,26 @@ async fn run_range_async<S: AsyncObjectStore>(
                     .1
                     .remaining()
                     .map_err(crate::ObjectStoreError::from)
-                    .and_then(|_| store.decoded_cache_get(__decoded_args.0))
+                    .and_then(|_| store.decoded_cache_lookup(__decoded_args.0))
             }
         } else {
-            store.decoded_cache_get(key)
+            store.decoded_cache_lookup(key)
         };
         #[cfg(target_arch = "wasm32")]
-        let cached = store.decoded_cache_get(key);
-        if let Some(cached) = cached.map_err(crate::kernel::file_read::read_store_error)? {
-            let page = cached
-                .value
-                .downcast_ref::<ExtentPage>()
-                .ok_or_else(|| range_failure(ObjectStoreError::Corrupt.into()))?;
-            machine.accept_decoded(page, &expected, accounting)?;
+        let cached = store.decoded_cache_lookup(key);
+        let miss = match cached.map_err(crate::kernel::file_read::read_store_error)? {
+            crate::async_storage::DecodedCacheLookup::Miss(miss) => miss,
+            crate::async_storage::DecodedCacheLookup::Hit(cached) => {
+                let page = cached
+                    .value
+                    .downcast_ref::<ExtentPage>()
+                    .ok_or_else(|| range_failure(ObjectStoreError::Corrupt.into()))?;
+                machine.accept_decoded(page, &expected, accounting)?;
 
-            drop(cached);
-            continue;
-        }
+                drop(cached);
+                continue;
+            }
+        };
         let (read, retained) = super::file_read::read_object_with_accounting(
             store,
             expected.page,
@@ -554,8 +557,7 @@ async fn run_range_async<S: AsyncObjectStore>(
             request.limits,
             accounting,
         )?);
-        let (value, allocated) =
-            super::file_read::cache_decoded_read(store, key, decoded, accounting)?;
+        let (value, allocated) = super::file_read::cache_decoded_read(miss, decoded, accounting)?;
         let page = value
             .value
             .downcast_ref::<ExtentPage>()

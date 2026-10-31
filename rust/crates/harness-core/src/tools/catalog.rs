@@ -20,6 +20,8 @@ pub enum ToolBinding {
     Volume,
     /// An executor bound to the task's composed workspace.
     Workspace,
+    /// Commands on stream-backed generations; no physical checkout is required.
+    Filesystem,
 }
 
 /// Immutable builtin data. Bindings allocate implementations only when selected.
@@ -104,7 +106,7 @@ static FS: ToolSpec = ToolSpec {
     revision: "2",
     description: "Inspect or merge a child's fork: diff agents/<name> or merge agents/<name>. --volume <name> selects a mounted volume. Use shell for other git commands",
     hook_names: &[],
-    binding: ToolBinding::Workspace,
+    binding: ToolBinding::Filesystem,
     input: || {
         Ok(json!({
             "type":"object", "required":["command"],
