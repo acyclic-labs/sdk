@@ -53,16 +53,14 @@ fn add_records(
 
 /// The receipt assigns exactly `records` to `path`, starting at `start`.
 fn confirms(
-    receipt: &acyclic_stream::CommitReceipt,
+    append: &acyclic_stream::AppendRange,
     path: &StreamPath,
     start: u64,
     records: &[OwnedBytes],
 ) -> bool {
-    receipt.appends.iter().any(|append| {
-        append.path == *path
-            && append.start == start
-            && start.checked_add(records.len() as u64) == Some(append.tail)
-    })
+    append.path == *path
+        && append.start == start
+        && start.checked_add(records.len() as u64) == Some(append.tail)
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
