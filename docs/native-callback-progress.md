@@ -7,6 +7,20 @@ queued callback item before returning when Node supplies no live environment
 or callback. The shared dependency selects this source directly; generated
 bindings do not implement a second callback owner.
 
+The source override is necessary because the affected `call_js_cb` function is
+private to NAPI. Cargo's dependency overrides replace packages, not individual
+source files, so a smaller `[patch]` declaration would still require a complete
+crate source. A wrapper cannot reclaim the item after Node disposes the queue.
+As checked on 2026-10-31, the published
+[`napi` 3.16.1 archive](https://static.crates.io/crates/napi/napi-3.16.1.crate)
+and upstream main still return on a missing environment before reclaiming the
+item. Updating to that release would retain the missing-completion defect.
+Only `src/threadsafe_function.rs` differs in runtime behavior from the pinned
+3.15.0 source; the manifest additionally disables publication. All other
+imported files retain their original bytes and formatting. Once upstream
+reclaims this data, the registry dependency can replace this source after the
+same shutdown and original-source negative controls qualify it.
+
 Safety requires exactly one destruction of each admitted queue item, using
 the original error-first or direct allocation layout. The shutdown branch
 does not dereference the finalized callback context or call Node APIs.
