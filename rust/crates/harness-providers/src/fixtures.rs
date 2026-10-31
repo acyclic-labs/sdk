@@ -1,8 +1,10 @@
-use crate::Adapter;
+use crate::{Adapter, Result};
 
 /// Model redelivery backoff completes on the fixture's explicit exchange step.
-pub(crate) fn delay(_: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-    Box::pin(async {})
+pub(crate) fn delay(
+    _: std::time::Duration,
+) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
+    Box::pin(async { Ok(()) })
 }
 
 /// The frozen fixture clock: it never advances, so no deadline measured on it elapses.

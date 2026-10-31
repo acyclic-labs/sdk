@@ -25,7 +25,7 @@ impl HttpTransport for FailingTransport {
     fn now(&self) -> std::time::Duration {
         crate::fixtures::now()
     }
-    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
         crate::fixtures::delay(wait)
     }
     fn send_with_native_work<'a>(

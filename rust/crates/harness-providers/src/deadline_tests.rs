@@ -13,6 +13,23 @@ enum Timer {
     Clock,
     Starved,
     Early,
+    ProducerDropped,
+}
+
+async fn timer_event(timer: Timer, wait: Duration) -> Result<()> {
+    match timer {
+        Timer::Clock => tokio::time::sleep(wait).await,
+        Timer::Starved => futures::future::pending().await,
+        Timer::Early => {}
+        Timer::ProducerDropped => {
+            let (producer, event) = oneshot::channel::<()>();
+            drop(producer);
+            event
+                .await
+                .map_err(|_| crate::invalid("timer producer disappeared"))?;
+        }
+    }
+    Ok(())
 }
 
 struct Script {
@@ -42,16 +59,9 @@ impl HttpTransport for Script {
         })
     }
 
-    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, ()> {
+    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
         self.arms.fetch_add(1, Ordering::SeqCst);
-        let timer = self.timer;
-        Box::pin(async move {
-            match timer {
-                Timer::Clock => tokio::time::sleep(wait).await,
-                Timer::Starved => futures::future::pending().await,
-                Timer::Early => {}
-            }
-        })
+        Box::pin(timer_event(self.timer, wait))
     }
 
     fn now(&self) -> Duration {
@@ -68,14 +78,7 @@ impl HttpTransport for Script {
         let arms = Arc::clone(&self.arms);
         acyclic_harness_core::NativeFutureBundle::new(work, move || {
             arms.fetch_add(1, Ordering::SeqCst);
-            async move {
-                match timer {
-                    Timer::Clock => tokio::time::sleep(wait).await,
-                    Timer::Starved => futures::future::pending().await,
-                    Timer::Early => {}
-                }
-                Ok(())
-            }
+            timer_event(timer, wait)
         })
     }
 
@@ -263,22 +266,24 @@ fn unbounded_request_waits_only_on_its_producers() {
 }
 
 #[test]
-fn an_early_timer_is_terminal_instead_of_rearmed() {
+fn a_failed_or_early_timer_is_terminal_instead_of_rearmed() {
     runtime().block_on(async {
-        let (script, headers) = script(Timer::Early);
-        let transport = Bounded::new(
-            script.clone(),
-            TimeoutSpec {
-                total_ms: Some(100),
-            },
-        );
-        let (chunks, body) = mpsc::unbounded();
-        assert!(headers.send(Ok(response(Box::pin(body)))).is_ok());
-        let mut body = transport.send(request()).await.unwrap().body;
-        assert!(matches!(body.next().await, Some(Err(Error::Invalid(_)))));
-        assert!(body.next().await.is_none());
-        assert_eq!(script.arms.load(Ordering::SeqCst), 1);
-        assert!(chunks.unbounded_send(Ok(Bytes::new())).is_err());
+        for timer in [Timer::Early, Timer::ProducerDropped] {
+            let (script, headers) = script(timer);
+            let transport = Bounded::new(
+                script.clone(),
+                TimeoutSpec {
+                    total_ms: Some(100),
+                },
+            );
+            let (chunks, body) = mpsc::unbounded();
+            assert!(headers.send(Ok(response(Box::pin(body)))).is_ok());
+            let mut body = transport.send(request()).await.unwrap().body;
+            assert!(matches!(body.next().await, Some(Err(Error::Invalid(_)))));
+            assert!(body.next().await.is_none());
+            assert_eq!(script.arms.load(Ordering::SeqCst), 1);
+            assert!(chunks.unbounded_send(Ok(Bytes::new())).is_err());
+        }
     });
 }
 
