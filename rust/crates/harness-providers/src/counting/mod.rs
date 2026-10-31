@@ -25,6 +25,30 @@ fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
     crate::invalid(reason)
 }
 
+pub(crate) fn specification<'a>(
+    config: &'a crate::ProviderSpec,
+    work: NativeWork<'_>,
+) -> Result<&'a wire::TokenCounterSpec> {
+    let spec = config.token_counter.as_ref().ok_or_else(|| {
+        let reason = "configure a verified input token counter for this endpoint";
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.is_some() {
+            return Error::NativeBoundary {
+                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
+                reason,
+            };
+        }
+        Error::Unsupported(reason.into())
+    })?;
+    if spec.adapter != config.adapter {
+        return Err(boundary(
+            work,
+            "token counter dialect differs from generation",
+        ));
+    }
+    Ok(spec)
+}
+
 pub(crate) async fn count(
     provider: &ResolvedModel,
     request: &acyclic_harness_core::model::PreparedModelRequest,
@@ -63,17 +87,7 @@ pub(crate) async fn count(
         };
         return Ok((result?, custody));
     }
-    let spec = provider.config.token_counter.as_ref().ok_or_else(|| {
-        let reason = "configure a verified input token counter for this endpoint";
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.is_some() {
-            return Error::NativeBoundary {
-                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
-                reason,
-            };
-        }
-        Error::Unsupported(reason.into())
-    })?;
+    let spec = specification(&provider.config, work)?;
     #[cfg(not(target_arch = "wasm32"))]
     let mut auth_custody = work
         .map(|work| work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED))

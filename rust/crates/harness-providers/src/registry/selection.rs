@@ -116,7 +116,8 @@ pub(super) fn counts_input(
         // Resolution replaces the inherited remote counter with local counting.
         return Ok(());
     }
-    if let Some(counter) = &config.token_counter {
+    if config.token_counter.is_some() {
+        let counter = crate::counting::specification(config, None)?;
         return crate::counting::wire::endpoint(&config.base_url, model, counter).map(|_| ());
     }
     #[cfg(not(target_arch = "wasm32"))]

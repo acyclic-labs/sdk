@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct TokenCounterSpec {
     /// Relative path; {model} expands to the selected model name.
     pub path: String,
-    /// Input dialect understood by the count endpoint.
+    /// Input dialect understood by the count endpoint. Must match generation:
+    /// counting borrows that exact projected input rather than translating it.
     #[cfg_attr(
         all(target_arch = "wasm32", feature = "browser"),
         tsify(type = "Family")
