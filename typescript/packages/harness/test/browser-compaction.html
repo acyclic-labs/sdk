@@ -62,7 +62,7 @@ try {
     { ...capacity, context_tokens: 32_768 }, undefined), "impossible selected capacity");
   rejects(() => contracts.validateThresholdCompaction(policy.config, capacity, 1.5), "fractional output");
   const request = {
-    model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
+    model: { provider: "synthetic", name: "byte-counter", revision: "1" },
     messages: [{ role: "user", content: "é🦀" }], tools: [], max_output_tokens: 1_024,
   };
   // This host's declared token units are UTF-8 bytes plus fixed framing.

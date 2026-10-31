@@ -12,7 +12,7 @@ export async function agentsFixture(id, reply, initialize = init) {
   const owner = new WasmAgentAuthority(authority.capability);
   const registry = new WasmAgentRegistry();
   const requests = [];
-  registry.configureModel({ provider: "browser-test", name: "scripted", revision: "1", options: {} },
+  registry.configureModel({ provider: "browser-test", name: "scripted", revision: "1" },
     async function* (bytes, dispatch, signal, files) {
       const request = JSON.parse(new TextDecoder().decode(bytes));
       const texts = files.map(file => new TextDecoder().decode(file));
@@ -29,7 +29,7 @@ export async function agentsFixture(id, reply, initialize = init) {
       model_steps: 16n, model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
     principal: "browser-user",
     // The fixture host explicitly accepts every action its agents take.
-    preset: { tools: [], web_tools: false, approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },
+    preset: { approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },
   };
   const failures = [];
   let rejectFailure;
