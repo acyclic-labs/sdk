@@ -136,8 +136,8 @@ impl Sink for Export {
             span_id: sample.span_id.clone(),
             parent_id: sample.parent_id.cloned(),
             durability: sample.durability,
-            work: sample.work,
-            binding: sample.binding.cloned(),
+            work: self.details.then_some(sample.work).flatten(),
+            binding: self.details.then(|| sample.binding.cloned()).flatten(),
             metadata: sample.metadata,
             rpc: sample.rpc.map(str::to_owned),
             error_kind: if self.details {

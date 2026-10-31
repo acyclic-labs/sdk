@@ -698,11 +698,14 @@ pub(crate) fn attach_binding(
             .ok_or(BindingError::RegistryUnavailable)?;
         let span = registry.span(id).ok_or(BindingError::SpanUnavailable)?;
         let mut extensions = span.extensions_mut();
-        if extensions.get::<Operation>().is_some_and(|op| op.completed) {
+        if extensions
+            .get_mut::<Operation>()
+            .is_some_and(|op| op.completed)
+        {
             return Err(BindingError::Completed);
         }
         if extensions
-            .get::<crate::Binding>()
+            .get_mut::<crate::Binding>()
             .is_some_and(|binding| binding.root_id() == id)
         {
             return Err(BindingError::AlreadyBound);
@@ -882,7 +885,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let binding = self
             .0
             .binding_details()
-            .then(|| extensions.get::<crate::Binding>().cloned())
+            .then(|| extensions.get_mut::<crate::Binding>().cloned())
             .flatten();
         let Some(operation) = extensions.get_mut::<Operation>() else {
             return;
