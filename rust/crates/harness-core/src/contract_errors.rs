@@ -68,6 +68,9 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// The original exact-edit matcher rejected missing or ambiguous text.
+    #[error(transparent)]
+    ExactEdit(crate::tool::edit::EditRejection),
     /// A task reached a terminal failed outcome.
     #[error("task {task} failed: {message}")]
     TaskFailed {
@@ -463,7 +466,7 @@ impl Error {
         use crate::wire::ErrorCode;
         match self {
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) => ErrorCode::Conflict,
+            Self::Conflict(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::GoalBlocked(_)
@@ -668,6 +671,7 @@ impl Error {
             Self::ModelContextOverflow
             | Self::NotFound(_)
             | Self::Conflict(_)
+            | Self::ExactEdit(_)
             | Self::TaskFailed { .. }
             | Self::GoalBlocked(_)
             | Self::ModelUnavailable { .. }

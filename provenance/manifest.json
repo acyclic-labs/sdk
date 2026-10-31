@@ -4,6 +4,15 @@
     {
       "sourceRepository": "https://github.com/google-gemini/gemini-cli",
       "sourceCommit": "6814e00d6b148c3a1d57244d5d7040f7c541009d",
+      "sourcePath": "packages/core/src/tools/edit.ts (getErrorReplaceResult diagnostic contract)",
+      "destinationPath": "rust/crates/harness-core/src/tools/native/adapter.rs",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs public native tool contract review"
+    },
+    {
+      "sourceRepository": "https://github.com/google-gemini/gemini-cli",
+      "sourceCommit": "6814e00d6b148c3a1d57244d5d7040f7c541009d",
       "sourcePath": "packages/core/src/tools/definitions",
       "destinationPath": "rust/crates/harness-core/src/tools/native/google.json",
       "license": "Apache-2.0",

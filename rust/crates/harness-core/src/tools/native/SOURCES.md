@@ -22,6 +22,12 @@ root NOTICE. The JSON files are extracted declarations, not captured model
 responses. Adversarial protocol tests generate their own data and do not claim
 provider-fixture provenance.
 
+Missing-text and occurrence-count edit errors follow `getErrorReplaceResult`
+in Gemini CLI's `packages/core/src/tools/edit.ts` at the same pinned revision.
+Only its public diagnostic contract is adapted; matching and publication use
+the shared exact edit engine. Overlapping matches remain refused by that
+engine's stronger unique-match contract.
+
 The `golden/` lists are deterministic protocol projections of those extracted
 public declarations, with recursively sorted schema keys. They are declaration
 goldens, not observations of a provider stream or a private harness prompt.

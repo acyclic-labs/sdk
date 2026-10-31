@@ -81,7 +81,14 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
             let ambiguous = if cc {
                 json!({"file_path":path,"old_string":"after","new_string":"wrong"})
             } else {json!({"file_path":path,"instruction":"Ambiguous replacement","old_string":"after","new_string":"wrong"})};
-            assert!(call(&task,&tools[2],ambiguous).await.is_err());
+            let error = call(&task,&tools[2],ambiguous).await.unwrap_err();
+            assert_eq!(error.code(), crate::wire::ErrorCode::Conflict);
+            if !cc {
+                assert_eq!(error.to_string(), format!("Failed to edit, Expected 1 occurrence but found 2 for old_string in file: {path}. If you intended to replace multiple occurrences, set 'allow_multiple' to true."));
+                let missing = json!({"file_path":path,"instruction":"Missing text","old_string":"absent","new_string":"wrong"});
+                let error = call(&task,&tools[2],missing).await.unwrap_err();
+                assert_eq!(error.to_string(), format!("Could not find an exact match for 'old_string' in '{path}'. If previous edits modified the file or you are modifying lines outside your recent read window, please use ReadFile to inspect the target lines before retrying with an exact 'old_string'."));
+            }
             assert_eq!(call(&task,&tools[0],read_args.clone()).await?.1.value["text"],"after after\n");
             call(&task,&tools[1],json!({"file_path":path,"content":"later\n"})).await?;
             let context = crate::runtime::ToolContext::new(Arc::new(task.clone()),edited.operation_id,&edited.call_id)?;

@@ -3,6 +3,57 @@
 use crate::wire::ErrorCode::{Conflict, Invalid};
 use crate::{Error, NativeCustody, Result};
 
+/// A definitive exact-match refusal from the shared edit engine.
+/// Native presentation retains the original cause rather than interpreting
+/// diagnostic text or repeating the edit against a later source.
+#[derive(Debug)]
+pub struct EditRejection {
+    occurrences: usize,
+    presentation: Option<(String, EditPresentation)>,
+    _custody: NativeCustody,
+}
+
+pub(crate) type EditPresentation =
+    fn(usize, &str, &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+
+impl EditRejection {
+    fn error(occurrences: usize) -> Error {
+        Error::ExactEdit(Self {
+            occurrences,
+            presentation: None,
+            _custody: None,
+        })
+    }
+
+    pub(crate) fn present(
+        mut self,
+        path: &str,
+        format: EditPresentation,
+        work: crate::NativeWork<'_>,
+    ) -> Result<Self> {
+        let mut custody = allocation(work, 0)?;
+        let mut owned = String::new();
+        reserve_string(&mut custody, &mut owned, path.len())?;
+        charge(&custody, path.len() as u64, 0)?;
+        owned.push_str(path);
+        self.presentation = Some((owned, format));
+        self._custody = custody;
+        Ok(self)
+    }
+}
+
+impl std::fmt::Display for EditRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.presentation {
+            Some((path, format)) => format(self.occurrences, path, formatter),
+            None if self.occurrences == 0 => formatter.write_str("exact edit text is missing"),
+            None => formatter.write_str("exact edit text is ambiguous"),
+        }
+    }
+}
+
+impl std::error::Error for EditRejection {}
+
 #[doc(hidden)]
 pub fn allocation(work: crate::NativeWork<'_>, bytes: usize) -> Result<NativeCustody> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -256,20 +307,28 @@ fn replace_into(
     charge(work, 0, source.len() as u64)?;
     let (start, count) = if replace_all {
         let mut matches = source.match_indices(old_text);
-        let (start, _) = matches
-            .next()
-            .ok_or_else(|| conflict(work, "exact edit text is missing"))?;
+        let (start, _) = matches.next().ok_or_else(|| EditRejection::error(0))?;
         (start, 1 + matches.count())
     } else {
         let start = source
             .find(old_text)
-            .ok_or_else(|| conflict(work, "exact edit text is missing"))?;
+            .ok_or_else(|| EditRejection::error(0))?;
         // Unique replacement rejects overlapping matches too. Advancing one
         // complete character preserves UTF-8 and finds every later start.
         let next_start = start + old_text.chars().next().map_or(0, char::len_utf8);
         charge(work, 0, (source.len() - next_start) as u64)?;
         if source[next_start..].contains(old_text) {
-            return Err(conflict(work, "exact edit text is ambiguous"));
+            // Only the refusal path counts all non-overlapping occurrences,
+            // for the native harness's exact diagnostic. Successful edits keep
+            // their original search/copy work. Overlap-only ambiguity retains
+            // the stronger shared unique-match contract.
+            charge(work, 0, source.len() as u64)?;
+            let occurrences = source.match_indices(old_text).count();
+            return Err(if occurrences > 1 {
+                EditRejection::error(occurrences)
+            } else {
+                conflict(work, "exact edit text has overlapping matches")
+            });
         }
         (start, 1)
     };
@@ -430,7 +489,10 @@ mod tests {
                             if matches.len() == 1 {
                                 assert_eq!(result.ok(), Some(source.replacen(&needle, "X", 1)));
                             } else {
-                                assert!(matches!(result, Err(Error::Conflict(_))));
+                                assert_eq!(
+                                    result.unwrap_err().code(),
+                                    crate::wire::ErrorCode::Conflict
+                                );
                             }
                         }
                     }
