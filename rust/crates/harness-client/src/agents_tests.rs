@@ -225,41 +225,71 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
     drop(clone);
     assert_eq!(observed.retained_bytes(), 0);
 
-    // A real committed tiny slice of a much larger owner must detach at the
-    // retention boundary, while its full frame keeps the original owner.
-    let giant = acyclic_stream::OwnedBytes::from(vec![b'x'; 64 * 1024]);
-    let tiny = giant.slice(0..7);
-    let mut source = pool.subscribe(subscription(&path, 1, 0, false)).await?;
-    append(&memory, path.clone(), vec![tiny.clone().into()]).await?;
-    let frame = loop {
-        let frame = source.next().await.ok_or("tiny interest ended")??;
-        if matches!(frame.wire().body, Some(wire::session_frame::Body::Data(_))) {
-            break frame;
+    // An owner equal to the whole display budget still cannot fit beside row
+    // metadata. Both delivery modes detach it, just as for a larger owner.
+    for capacity in [1024, 64 * 1024] {
+        for latest in [false, true] {
+            let owner = acyclic_stream::OwnedBytes::from(vec![b'x'; capacity]);
+            let tiny = owner.slice(0..7);
+            let path = StreamPath::new(format!("reader/tiny-value-{capacity}-{latest}"))?;
+            append(
+                &memory,
+                path.clone(),
+                vec![AppendRecord::latest(tiny.clone(), "status", true)?],
+            )
+            .await?;
+            let mut source = pool.subscribe(subscription(&path, 0, 0, latest)).await?;
+            let frame = loop {
+                let frame = source.next().await.ok_or("tiny interest ended")??;
+                match frame.wire().body.as_ref() {
+                    Some(wire::session_frame::Body::Data(_)) => break frame,
+                    Some(wire::session_frame::Body::Closed(_)) => {
+                        return Err("tiny interest closed before its value".into());
+                    }
+                    _ => {}
+                }
+            };
+            assert_eq!(
+                frame
+                    .original_record()
+                    .ok_or("missing original tiny record")?
+                    .value
+                    .as_slice()
+                    .as_ptr(),
+                tiny.as_slice().as_ptr(),
+            );
+            let mut tiny_view = StreamView::new(
+                crate::StreamViewPolicy::new(1, 1024)?,
+                0,
+                0,
+                latest,
+                Some(path),
+                backings.clone(),
+            );
+            tiny_view
+                .apply(&frame, 1)
+                .expect("tiny slice failed display admission");
+            let retained = if latest {
+                &tiny_view
+                    .latest_value(b"status")
+                    .ok_or("missing tiny value")?
+                    .value
+            } else {
+                &tiny_view.record(0).ok_or("missing tiny row")?.value
+            };
+            assert_eq!(retained.as_ref(), tiny.as_slice());
+            assert_ne!(
+                retained.as_ptr(),
+                tiny.as_slice().as_ptr(),
+                "tiny view pinned a giant allocation"
+            );
+            assert_eq!(tiny_view.next_sequence(), 1);
+            assert!(tiny_view.retained_bytes() <= 1024);
+            assert_eq!(backings.bytes(), 7, "tiny view charged a giant allocation");
+            drop(tiny_view);
+            assert_eq!(backings.bytes(), 0);
         }
-    };
-    let mut tiny_view = StreamView::new(
-        crate::StreamViewPolicy::new(1, 1024)?,
-        1,
-        0,
-        false,
-        Some(path),
-        backings.clone(),
-    );
-    tiny_view
-        .apply(&frame, 1)
-        .expect("tiny slice failed display admission");
-    assert_ne!(
-        tiny_view
-            .record(0)
-            .ok_or("missing tiny row")?
-            .value
-            .as_ptr(),
-        tiny.as_slice().as_ptr(),
-        "tiny view pinned a giant allocation"
-    );
-    assert_eq!(backings.bytes(), 7, "tiny view charged a giant allocation");
-    drop(tiny_view);
-    assert_eq!(backings.bytes(), 0);
+    }
     Ok(())
 }
 

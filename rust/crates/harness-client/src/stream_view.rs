@@ -210,9 +210,10 @@ impl StreamView {
                         || acyclic_stream::OwnedBytes::from(value.value.clone()),
                         |record| record.value.clone(),
                     );
-                    let payload = self.backings.retain(payload, self.policy.bytes);
+                    let metadata = charge - value.value.len();
+                    let payload = self.backings.retain(payload, self.policy.bytes - metadata);
                     let capacity = payload.backing().capacity();
-                    let charge = (charge - value.value.len())
+                    let charge = metadata
                         .checked_add(capacity)
                         .ok_or(StreamError::LimitExceeded)?;
                     if charge > self.policy.bytes {
@@ -291,9 +292,10 @@ impl StreamView {
                 let payload = frame
                     .original_record()
                     .map_or(decoded.value, |record| record.value.clone());
-                let payload = self.backings.retain(payload, self.policy.bytes);
+                let metadata = charge - record.value.len();
+                let payload = self.backings.retain(payload, self.policy.bytes - metadata);
                 let capacity = payload.backing().capacity();
-                let charge = (charge - record.value.len())
+                let charge = metadata
                     .checked_add(capacity)
                     .ok_or(StreamError::LimitExceeded)?;
                 if charge > self.policy.bytes {
