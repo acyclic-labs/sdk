@@ -72,7 +72,7 @@ export async function test(endpoint: string) {
   if (firstRecord.done || firstRecord.value.sequence !== 0n || firstRecord.value.value.length !== payload.length) throw new Error("finite session read lost its first record");
   if (cursorReads !== 1) throw new Error("finite read captured its cursor more than once");
   if (firstRecord.value.committedAtMicros !== records[0]!.committedAtMicros || firstRecord.value.commitId.some((byte, index) => byte !== records[0]!.commitId[index])) throw new Error("finite session read changed record identity");
-  if (firstRecord.value.origin !== records[0]!.origin) throw new Error("finite session read changed its appending stream");
+  if (firstRecord.value.origin !== (records[0]!.origin || "browser/history")) throw new Error("finite session read changed its appending stream");
   firstRecord.value.value.fill(99);
   await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, {
     path: "browser/history", records: [{ value: payload }], idempotencyKey: key(),
