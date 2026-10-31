@@ -221,10 +221,10 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         root: &metadata.source.root,
         io: Some(&blocked),
     };
-    let refused =
-        discovery.skill_prefix(&metadata.source.path, &metadata.source.generation, 32_768);
     assert!(
-        refused.is_err(),
+        discovery
+            .skill_prefix(&metadata.source.path, &metadata.source.generation, 32_768)
+            .is_err(),
         "prefix escaped its original allocation owner"
     );
     assert_eq!(
