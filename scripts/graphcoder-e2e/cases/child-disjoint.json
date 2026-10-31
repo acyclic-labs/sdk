@@ -31,9 +31,7 @@
             "name": "write",
             "arguments": {
               "path": "child.txt",
-              "text": "child\n",
-              "media_type": "text/plain",
-              "display_name": "child.txt"
+              "content": "child\n"
             }
           }
         ]
@@ -57,9 +55,7 @@
             "name": "write",
             "arguments": {
               "path": "parent.txt",
-              "text": "parent\n",
-              "media_type": "text/plain",
-              "display_name": "parent.txt"
+              "content": "parent\n"
             }
           }
         ]
@@ -76,6 +72,21 @@
               "agents": [
                 "worker"
               ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "child finished"
+        },
+        "tools": [
+          {
+            "id": "child-merge",
+            "name": "fs",
+            "arguments": {
+              "command": "merge {{tool_result:/settled/0/branch}}"
             }
           }
         ]
@@ -128,20 +139,6 @@
         "when": {
           "user": "PARENT_E2E_TASK"
         },
-        "tools": [
-          {
-            "id": "child-final",
-            "name": "fs",
-            "arguments": {
-              "command": "merge agents/worker"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "PARENT_E2E_TASK"
-        },
         "text": [
           "done"
         ]
@@ -160,7 +157,18 @@
     "files": {
       "child.txt": "child\n",
       "parent.txt": "parent\n"
-    }
+    },
+    "tool_results": [
+      {
+        "settled": [
+          {
+            "name": "worker",
+            "branch": "agents/worker",
+            "answer": "child finished"
+          }
+        ]
+      }
+    ]
   },
   "ntfs": true
 }

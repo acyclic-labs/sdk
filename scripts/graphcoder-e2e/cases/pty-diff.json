@@ -14,9 +14,7 @@
             "name": "write",
             "arguments": {
               "path": "diff.txt",
-              "text": "DIFF_E2E_CONTENT\n",
-              "media_type": "text/plain",
-              "display_name": "diff.txt"
+              "content": "DIFF_E2E_CONTENT\n"
             }
           }
         ]

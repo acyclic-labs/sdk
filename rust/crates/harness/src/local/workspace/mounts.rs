@@ -124,7 +124,7 @@ mod tests {
                 prop_assert_eq!(&relative, &entry);
                 let (routed_again, same_path) = mounts.file(Some(&routed.view.volume), &relative).unwrap();
                 prop_assert_eq!(&routed_again.view.volume, &mount.view.volume);
-                prop_assert_eq!(same_path, relative);
+                prop_assert_eq!(same_path.as_ref(), relative.as_ref());
             }
             prop_assert!(mounts.file(Some(&volume("project")), ".volumes/data/entry").is_err());
             prop_assert!(mounts.file(None, "../entry").is_err());

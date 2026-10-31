@@ -73,7 +73,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     bytes: content,
                     metadata,
                 } => {
-                    let file_id = self.authored_file_id(FileKind::Regular, &path, accounting)?;
+                    let file_id = self.authored_file_id(
+                        FileKind::Regular,
+                        &path,
+                        operations.value.len(),
+                        accounting,
+                    )?;
                     return self
                         .compile_create_file_with_accounting(
                             path,
@@ -106,7 +111,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                         .await?;
                     let file_id = match file_id {
                         Some(file_id) => file_id,
-                        None => self.authored_file_id(FileKind::Regular, &path, accounting)?,
+                        None => self.authored_file_id(
+                            FileKind::Regular,
+                            &path,
+                            operations.value.len(),
+                            accounting,
+                        )?,
                     };
                     self.compile_regular_content_with_accounting(
                         path,

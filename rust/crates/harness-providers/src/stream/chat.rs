@@ -1,4 +1,5 @@
 use super::{ModelEvent, Result, State, Value, index, invalid, string, text};
+use crate::protocol::present;
 
 pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>> {
     state.identity(value)?;
@@ -19,9 +20,8 @@ pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>>
     let delta = &choice["delta"];
     let mut events = Vec::new();
     text(&mut events, &delta["content"], false);
-    let reasoning = delta
-        .get("reasoning_content")
-        .or_else(|| delta.get("reasoning"));
+    let reasoning =
+        present(delta.get("reasoning_content")).or_else(|| present(delta.get("reasoning")));
     if let Some(reasoning) = reasoning {
         text(&mut events, reasoning, true);
         state.thinking_delta(0, "text", reasoning)?;
@@ -29,18 +29,18 @@ pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>>
     if let Some(calls) = delta["tool_calls"].as_array() {
         for raw in calls {
             let index = index(raw, "index")?;
-            if raw.get("type").is_some_and(|kind| kind != "function") {
+            if present(raw.get("type")).is_some_and(|kind| kind != "function") {
                 return Err(invalid("unsupported chat tool type"));
             }
             let (call, budget) = state.call(index)?;
-            if let Some(id) = raw.get("id") {
+            if let Some(id) = present(raw.get("id")) {
                 let id = string(id)?;
                 if !call.id.is_empty() && call.id != id {
                     return Err(invalid("tool call ID changed"));
                 }
                 budget.string(&mut call.id, id)?;
             }
-            if let Some(function) = raw.get("function") {
+            if let Some(function) = present(raw.get("function")) {
                 if !function.is_object() {
                     return Err(invalid("tool function must be an object"));
                 }
@@ -51,3 +51,7 @@ pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>>
     }
     Ok(events)
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "chat_properties.rs"]
+mod properties;

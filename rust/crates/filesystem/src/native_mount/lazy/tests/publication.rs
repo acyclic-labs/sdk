@@ -74,6 +74,43 @@ async fn publication_rebases_authored_records_but_rejects_overlapping_callbacks(
     Ok(())
 }
 
+/// Git's `index.lock` -> `index` -> `index.lock` inside a source directory:
+/// the name renamed away is created again under the operation its promotion
+/// bound, and the new file never takes the renamed file's identity.
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_name_renamed_away_in_a_source_directory_is_created_again()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let source_root = tempfile::tempdir()?;
+    std::fs::create_dir(source_root.path().join("sub"))?;
+    std::fs::write(source_root.path().join("sub").join("keep"), b"keep")?;
+    let view = mounted_view(source_root.path(), "mounted-recreated-name").await?;
+    let lazy = Arc::clone(&view.lazy);
+    let lock = mounted(&["sub", "lock"]);
+    let index = mounted(&["sub", "index"]);
+    view.create_file(&lock, FileMetadata::default(), None, &work)?;
+    view.write_range(&lock, 0, Bytes::from_static(b"first"))?;
+    view.rename(&lock, &index, false, &work)?;
+    view.create_file(&lock, FileMetadata::default(), None, &work)?;
+    view.write_range(&lock, 0, Bytes::from_static(b"second"))?;
+    let renamed = view.lookup(&index)?.ok_or("index")?.node.file_id;
+    let recreated = view.lookup(&lock)?.ok_or("lock")?.node.file_id;
+    assert_ne!(renamed, recreated);
+    view.sync_async().await?;
+    for (path, bytes) in [("/sub/index", &b"first"[..]), ("/sub/lock", &b"second"[..])] {
+        let read = lazy
+            .read_range(path, 0, bytes.len() as u64, &mut accounting)
+            .await?;
+        assert_eq!(read.bytes.as_ref(), bytes, "{path}");
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn rebound_does_not_publish_a_stale_removed_identity()

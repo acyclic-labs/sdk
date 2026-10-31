@@ -3,8 +3,13 @@ use std::sync::Arc;
 
 #[test]
 fn started_capture_handoff_does_not_retain_an_inline_process_tree() {
+    type TestHandler = Handler<
+        (),
+        fn(&mut (), acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>,
+        fn() -> std::io::Result<()>,
+    >;
     assert!(
-        std::mem::size_of::<Started<(), ()>>()
+        std::mem::size_of::<Started<(), TestHandler>>()
             < std::mem::size_of::<acyclic_native_runtime::ProcessTree>(),
         "the old handoff retains the whole physical process tree in every completion slot"
     );
@@ -68,10 +73,11 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         || Ok(()),
         (),
         None,
+        OutputRetention::Observe,
     ))?;
     let output = output.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
     assert!(output.success, "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("captured"));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
     assert!(observed.load(Ordering::SeqCst) > 0);
     Ok(())
 }
@@ -187,6 +193,7 @@ mod simulation {
                 },
                 Vec::new(),
                 None,
+                OutputRetention::Collect,
             );
             type Capture<'a> =
                 Pin<Box<dyn Future<Output = Result<(Option<NativeProcessResult>, Vec<u8>)>> + 'a>>;

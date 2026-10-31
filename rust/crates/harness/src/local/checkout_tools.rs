@@ -241,8 +241,15 @@ impl CheckoutTools {
             let mounts = Arc::clone(&state.mounts);
             let (result, mut state, mut files) =
                 workspace::volumes::native_scope(&mounts, async |claims| {
-                    let (result, state, files, claims) =
-                        self.shell(input, maximum, state, files, claims).await?;
+                    let (result, state, files, claims) = self
+                        .shell(
+                            (input, invocation.operation_id),
+                            maximum,
+                            state,
+                            files,
+                            claims,
+                        )
+                        .await?;
                     if !result.as_ref().is_ok_and(|result| {
                         result
                             .value
@@ -275,6 +282,20 @@ impl CheckoutTools {
 }
 
 impl ToolExecutor for CheckoutTools {
+    fn read_path<'a>(
+        &'a self,
+        path: &'a str,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let (mount, relative) = self.workspace.mounts.file_with_work(None, path, work)?;
+        mount.check_with_work(
+            acyclic_fs::access::Action::Read,
+            &relative,
+            self.clock.now_unix_millis() / 1000,
+            work,
+        )?;
+        Ok((&mount.view.volume, relative))
+    }
     // A cancelled turn drops its call: the command's stop guard stops the
     // process tree, the spawned capture keeps the workspace guard until the
     // tree is reaped, and the next call reconciles from the durable capture.

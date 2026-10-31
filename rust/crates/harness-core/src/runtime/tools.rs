@@ -426,6 +426,20 @@ impl ToolContext {
             .await
     }
 
+    pub(crate) async fn observe_tool_source_file_once(
+        &self,
+        operation_id: OperationId,
+        source: Option<&FileRef>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        self.observe_once(
+            self.task().tool_content(source.map(FileRef::volume)),
+            operation_id,
+            io,
+        )
+        .await
+    }
+
     async fn observe_once(
         &self,
         binding: Option<&ContentBindings>,
@@ -535,6 +549,93 @@ impl ToolContext {
             io,
         )
         .await
+    }
+
+    /// Resolves one public path through the exact workspace's read policy.
+    pub(crate) fn tool_path_selection<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        crate::executor::with_history_io(io, |history| {
+            crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
+            if path.len() > self.effective_scope().limits().path_bytes
+                || crate::conversation::is_internal_path(path)
+            {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "tool path is outside the original public path bound",
+                )
+                .tool_input());
+            }
+            Ok(())
+        })?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let work = io.and_then(crate::executor::PreparationIo::original_native_work);
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let work = None;
+        if let Some(workspace) = self.task().harness.workspace_tools.as_ref() {
+            return workspace.read_path(path, work).map_err(Error::tool_input);
+        }
+        Ok((
+            &self.task().tool_read_content().volume,
+            std::borrow::Cow::Borrowed(path),
+        ))
+    }
+
+    /// Checks original directory authority for the selected mounted path.
+    pub(crate) fn authorize_tool_path_read<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let (volume, relative) = self.tool_path_selection(path, io)?;
+        crate::executor::with_history_io(io, |history| {
+            crate::conversation::validate_content_path(&relative, history)
+                .map_err(Error::tool_input)?;
+            if crate::conversation::is_internal_path(&relative)
+                || !crate::core::directory_read_granted_with_work(
+                    self.effective_scope().grants(),
+                    volume,
+                    relative.rsplit_once('/').map_or("", |(parent, _)| parent),
+                    history,
+                )?
+            {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "path read requires the original directory read grant",
+                )
+                .tool_input());
+            }
+            Ok(())
+        })?;
+        Ok((volume, relative))
+    }
+
+    /// Resolves and reads one current workspace path through its original bound
+    /// reader, without broadening this invocation's effective grants.
+    pub(crate) async fn read_tool_path(
+        &self,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
+        let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        let content = self.task().tool_read_content();
+        self.task()
+            .read_bound_path(
+                content,
+                (
+                    volume,
+                    relative.rsplit_once('/').map_or("", |(parent, _)| parent),
+                    &relative,
+                    None,
+                ),
+                self.effective_scope(),
+                io,
+            )
+            .await
     }
 
     /// Reads immutable content under the effective tool scope and caller IO limits.

@@ -50,8 +50,6 @@ pub struct LocalHarnessConfig {
     pub(super) tools: Vec<Tool>,
     /// Standard tools enabled, by name.
     pub(super) default_tools: Vec<String>,
-    /// System prompt of every agent turn.
-    pub(super) prompt: Option<String>,
     /// Open children each agent may have at once.
     pub(super) max_children: Option<u32>,
     /// Hosts the agents for [`crate::server::serve`].
@@ -99,7 +97,7 @@ impl LocalHarnessConfig {
     }
 
     /// Selects a checkout whose model resolves at open through `models`: `selection`, else the
-    /// preset's, else the native settings' configured model, else the resolver's default. Approver
+    /// native settings' configured model, else the resolver's default. Approver
     /// models resolve through `models` too; the settings' search provider backs the preset's
     /// web tools.
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -181,7 +179,6 @@ impl LocalHarnessConfig {
             context_manifest: None,
             tools: Vec::new(),
             default_tools: crate::tools::default_names(),
-            prompt: None,
             max_children: None,
             served: None,
             approval_policy: Default::default(),
@@ -348,40 +345,28 @@ impl LocalHarnessConfig {
         self.served = Some(verifier);
         self
     }
-    /// Applies `preset`'s prompt, tool selection, limits and approval policy. Its model is
-    /// the fallback selection of a [`Self::resolving`] composition; [`Self::new`] binds its own.
+    /// Applies `preset`'s tool selection and approval policy.
     /// Web tools need the `search-http` feature.
     #[must_use]
     pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
-        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-        if let Some((_, selection @ None)) = &mut self.models {
-            selection.clone_from(&preset.model);
-        }
         self.default_tools.clone_from(&preset.tools);
-        self.prompt.clone_from(&preset.prompt);
         self.max_children = preset.max_children;
         #[cfg(feature = "search-http")]
         {
             self.web_tools = preset.web_tools;
         }
-        self.limits = preset.execution_limits(self.limits);
         self.approval_policy = preset.approval_policy.clone();
         self
     }
-    /// The preset this configuration applies: its prompt, tool selection,
-    /// open-children bound and approval policy, its step limit already in
-    /// [`Limits`].
+    /// The host-backed tools and approvals this configuration applies.
     pub(super) fn preset_value(&self) -> crate::preset::Preset {
         crate::preset::Preset {
-            model: None,
-            prompt: self.prompt.clone(),
             tools: self.default_tools.clone(),
+            max_children: self.max_children,
             #[cfg(feature = "search-http")]
             web_tools: self.web_tools,
             #[cfg(not(feature = "search-http"))]
             web_tools: false,
-            max_steps: None,
-            max_children: self.max_children,
             approval_policy: self.approval_policy.clone(),
         }
     }

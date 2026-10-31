@@ -2,6 +2,27 @@ use super::*;
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Resolves an already validated content path in this exact workspace.
+    /// Selection and read policy do not require a publication binding. The
+    /// task's original reader still authenticates the selected volume/grants.
+    fn read_path<'a>(
+        &'a self,
+        _path: &'a str,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(
+        &'a crate::conversation::VolumeRef,
+        std::borrow::Cow<'a, str>,
+    )> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "workspace read-path resolution is unavailable; recovery: bind the original workspace path resolver",
+            });
+        }
+        let _ = work;
+        Err(Error::Unsupported("workspace read-path resolution is unavailable; recovery: bind the original workspace path resolver".into()))
+    }
     /// Runs configured hooks inside this executor's selected, owner-fenced workspace.
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
     fn run_hooks<'a>(
@@ -58,6 +79,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<ToolResult>>;
 
     /// Reconciles a previously started invocation without executing it again.
+    /// The caller must authenticate the complete invocation against its original
+    /// start record; an operation ID alone does not admit replacement arguments.
     fn reconcile<'a>(
         &'a self,
         invocation: ToolInvocation,
@@ -91,6 +114,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     }
 
     /// Observes the already-dispatched effect; never calls ordinary execution.
+    /// The caller authenticates the complete invocation against its start record,
+    /// as for portable reconciliation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_context<'a>(
         &'a self,

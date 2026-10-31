@@ -137,6 +137,110 @@ fn terminal_view_refuses_later_kernel_packets_without_readmitting_source()
     Ok(())
 }
 
+#[test]
+fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let capture: KernelCapture = serde_json::from_str(include_str!(
+        "../../../../fixtures/fuse/linux-kernel-packets.json"
+    ))?;
+    let packet = |opcode| {
+        capture
+            .packets
+            .iter()
+            .find(|packet| {
+                PacketRequest::parse(&packet.request).is_ok_and(|request| request.opcode == opcode)
+            })
+            .ok_or("recorded real kernel packet missing")
+    };
+    let work = fuse_fixture_work();
+    let views = super::super::shared::SharedViews::new(0, 0);
+    let mut entries = Vec::new();
+    for name in [b"parent".as_slice(), b"child".as_slice()] {
+        let (source, _) = shared_sources(posix_config())?;
+        seed(&source)?;
+        entries.push(views.insert(name, |inode_base| {
+            projection_core_at(
+                Arc::new(source),
+                crate::WorkBudget::UNBOUNDED,
+                work.cancellation(),
+                inode_base,
+            )
+        })?);
+    }
+    let parent = entries[0].core();
+    let child = entries[1].core();
+    let _parent_active = NativeMountWorkScope::new(parent, &work)?;
+    let _child_active = NativeMountWorkScope::new(child, &work)?;
+    let protocol = PacketSession::new(
+        PacketRouter::Shared(views),
+        MAXIMUM_WRITE,
+        std::num::NonZeroU32::new(4096).ok_or("nonzero packet page size")?,
+    )?;
+    let mut response = super::super::fuse_vec(4096, &work)?;
+    response.resize(4096, 0);
+    protocol
+        .publish(
+            &PacketRequest::parse(&packet(26)?.request)
+                .map_err(std::io::Error::from_raw_os_error)?,
+            &mut response,
+            |_| Ok(()),
+        )
+        .map_err(super::super::packet_dispatch::PacketFailure::into_native_error)?;
+    let failure = child.request::<()>(|_| {
+        Err(NativeMountError::Materialization(
+            crate::NativeTreeMaterializationError::MissingCustody,
+        ))
+    });
+    assert_eq!(child.finish(failure), Err(libc::EIO));
+    for (core, errno) in [
+        (child, libc::EIO),
+        (parent, 0),
+        (child, libc::EIO),
+        (parent, 0),
+    ] {
+        let prefix = work.receipt();
+        let mut request =
+            PacketRequest::parse(&packet(1)?.request).map_err(std::io::Error::from_raw_os_error)?;
+        request.inode = core.state_to_finish().root_inode;
+        assert!(
+            protocol
+                .publish(&request, &mut response, |bytes| {
+                    let mut reply = PacketInput::new(bytes.contiguous().ok_or(libc::EPROTO)?);
+                    reply.u32()?;
+                    assert_eq!(reply.u32()? as i32, -errno);
+                    Ok(())
+                })
+                .map_err(super::super::packet_dispatch::PacketFailure::into_native_error)?,
+            "a child's retained source failure must not stop the shared transport"
+        );
+        if errno != 0 {
+            assert_eq!(
+                work.receipt(),
+                prefix,
+                "the failed view admits no source work"
+            );
+        }
+    }
+    // A physical reply failure has session scope: neither view can safely reuse it.
+    let mut request =
+        PacketRequest::parse(&packet(1)?.request).map_err(std::io::Error::from_raw_os_error)?;
+    request.inode = child.state_to_finish().root_inode;
+    assert!(
+        protocol
+            .publish(&request, &mut response, |_| Err(libc::EPIPE.into()))
+            .is_err()
+    );
+    request.inode = parent.state_to_finish().root_inode;
+    assert_eq!(
+        protocol
+            .publish(&request, &mut response, |_| Ok(()))
+            .err()
+            .map(|error| error.errno()),
+        Some(libc::ENODEV)
+    );
+    Ok(())
+}
+
 impl Capture {
     pub(in crate::native_mount::fuse) fn current() -> Option<Arc<Self>> {
         RECORDING.with_borrow(Clone::clone)

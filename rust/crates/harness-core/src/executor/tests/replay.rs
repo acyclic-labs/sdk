@@ -478,7 +478,7 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         operation_id: OperationId::new(),
         call_id: "publication".into(),
         name: "write".into(),
-        arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
+        arguments: json!({"path":"destination.txt","content":"body"}),
     };
     let base = StockExecutor::new(
         Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
@@ -703,6 +703,8 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
                 cwd: Some("d".repeat(4_000)),
                 os: "fixture".into(),
                 shell: "bash".into(),
+                tool_path: None,
+                tooling: None,
                 current_date: "2026-10-22".into(),
                 timezone: "UTC".into(),
                 git_status: None,

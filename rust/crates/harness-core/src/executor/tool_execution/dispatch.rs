@@ -40,7 +40,6 @@ impl StockExecution<'_> {
         );
         let result = match execution {
             Ok(Some(result)) => result,
-            Err(error) if error.is_native_failure() => return Err(error),
             // A resumed driver settles an unreconcilable effect as a typed
             // failure instead of running it again; reconciliation records nothing.
             Ok(None) | Err(Error::Indeterminate(_))

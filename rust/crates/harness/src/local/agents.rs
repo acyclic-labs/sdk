@@ -110,6 +110,12 @@ impl crate::hosting::Platform for LocalUser {
 /// the turn's task context and tool authority, and its hooks.
 struct LocalContext(Weak<LocalHarness>);
 
+struct TurnBindings {
+    harness: Arc<crate::runtime::AgentHarness>,
+    #[cfg(any(test, feature = "native-execution"))]
+    workspace: Option<Arc<super::LocalWorkspace>>,
+}
+
 impl TurnContext for LocalContext {
     fn prepare<'a>(
         &'a self,
@@ -250,10 +256,11 @@ impl LocalHarness {
                 harness: self.harness.with_workspace(
                     Some(home(tools)?),
                     crate::runtime::ContentBindings {
+                        volume: project.clone(),
                         reader: Arc::clone(&authority.content.reader),
                         writer: Some(writer),
                     },
-                ),
+                )?,
             });
         }
         let writer = crate::filesystem::FilesystemContentPublisher::new(
@@ -269,10 +276,11 @@ impl LocalHarness {
             harness: self.harness.with_workspace(
                 None,
                 crate::runtime::ContentBindings {
+                    volume: project.clone(),
                     reader: Arc::clone(&authority.content.reader),
                     writer: Some(writer),
                 },
-            ),
+            )?,
         })
     }
 }
@@ -441,7 +449,6 @@ impl LocalHarness {
             turns
                 .with_approvers(self.approval_models.clone())
                 .with_goals(self.goal_continuations)
-                .with_prompt(self.preset.prompt.as_deref())
         };
         // A checkout's spawned children fork its retained lazy cut, so each
         // child's project is a related fork the parent can diff and merge.

@@ -18,7 +18,14 @@ impl CheckoutTools {
         command: &str,
         scope: &RuntimeScope,
     ) -> Result<crate::tools::FsCommand> {
-        self.commands().fs_arguments(command, scope)
+        let parsed = self.commands().fs_arguments(command, scope)?;
+        if !matches!(parsed.arguments.as_slice(), [operation, branch]
+            if matches!(operation.as_str(), "diff" | "merge")
+                && branch.strip_prefix("agents/").is_some_and(|name| !name.is_empty()))
+        {
+            return Err(Error::Invalid("fs supports child diff and merge only; recovery: use fs with diff agents/<name> or merge agents/<name>, or use shell for other git commands".into()));
+        }
+        Ok(parsed)
     }
 
     pub(super) async fn fs(

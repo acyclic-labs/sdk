@@ -35,15 +35,15 @@ proptest::proptest! {
     ) {
         use acyclic_harness::{model::{ModelEvent, ToolCall}, test_support::{ScriptedEvent, ScriptedTurn}};
         use serde_json::json;
-        let name = if pinned { "read@portable-6" } else { "read" };
+        let name = if pinned { "read@portable-7" } else { "read" };
         let script = vec![ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::ToolCall(
-            ToolCall::new("call".into(), name.into(), json!({"file":"seed","range":{"start":2,"end":4},"text":text})),
+            ToolCall::new("call".into(), name.into(), json!({"path":"seed","version":"seed","range":{"start":2,"end":4},"text":text})),
         ))]), ScriptedTurn::Text(text.clone())];
         let reference = json!({"immutable":"generation", "path":"seed", "text":text});
         let references = std::collections::BTreeMap::from([("seed".into(), reference.clone())]);
         let bound = super::local_case::bind_seed_files(script.clone(), &references).unwrap();
         let mut expected = serde_json::to_value(&script)?;
-        expected[0][0]["arguments"]["file"] = reference;
+        expected[0][0]["arguments"]["version"] = serde_json::to_string(&reference)?.into();
         proptest::prop_assert_eq!(serde_json::to_value(bound)?, expected);
         proptest::prop_assert!(super::local_case::bind_seed_files(script, &Default::default()).is_err());
     }

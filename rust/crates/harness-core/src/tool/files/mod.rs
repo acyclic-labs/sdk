@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-/// Reads exact UTF-8 from a pinned ref using the task's authenticated reader.
+/// Reads a project path using the task's authenticated reader. An optional
+/// opaque version pins the source returned by an earlier read or publication.
 pub fn read() -> Result<Tool> {
     FileTool::Read.assemble(super::schema::ProjectionMode::Full)
 }
@@ -23,7 +24,8 @@ pub fn write() -> Result<Tool> {
     FileTool::Write.assemble(super::schema::ProjectionMode::Full)
 }
 
-/// Replaces one exact, unambiguous match at the source's pinned generation.
+/// Replaces one exact, unambiguous match at a project path. An optional opaque
+/// version rejects publication if that source generation is no longer current.
 pub fn edit() -> Result<Tool> {
     FileTool::Edit.assemble(super::schema::ProjectionMode::Full)
 }
@@ -44,8 +46,12 @@ pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
 }
 
 mod inputs;
-pub use inputs::{EditFileInput, FileResult, PatchFileInput, ReadFileInput, WriteFileInput};
+pub(crate) use inputs::FileView;
+pub use inputs::{
+    EditFileInput, FileResult, PatchFileInput, ReadFileInput, ReadFileResult, WriteFileInput,
+};
 mod executor;
+mod version;
 pub(crate) use executor::FileTool;
 mod assembly;
 mod authorization;

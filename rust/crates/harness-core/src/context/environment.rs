@@ -14,6 +14,10 @@ pub struct EnvironmentFacts {
     pub os: String,
     /// Shell used by the bound command tool.
     pub shell: String,
+    /// PATH admitted to the shell, without credentials or process settings.
+    pub tool_path: Option<String>,
+    /// Common command availability on that PATH, checked at admission.
+    pub tooling: Option<String>,
     /// Admission date in UTC.
     pub current_date: String,
     /// Time zone of the recorded date.
@@ -29,6 +33,8 @@ impl EnvironmentFacts {
         let fields = [
             ("cwd", self.cwd.as_deref()),
             ("shell", Some(self.shell.as_str())),
+            ("tool_path", self.tool_path.as_deref()),
+            ("tooling", self.tooling.as_deref()),
             ("os", Some(self.os.as_str())),
             ("current_date", Some(self.current_date.as_str())),
             ("timezone", Some(self.timezone.as_str())),
@@ -164,6 +170,8 @@ impl From<crate::native_environment::CheckoutFacts> for EnvironmentFacts {
             cwd: facts.cwd,
             os: facts.os,
             shell: facts.shell,
+            tool_path: None,
+            tooling: None,
             current_date: facts.current_date,
             timezone: facts.timezone,
             git_status: facts.git_status,
@@ -182,6 +190,8 @@ mod tests {
             cwd: Some(cwd),
             os: "fixture".into(),
             shell: "bash".into(),
+            tool_path: None,
+            tooling: None,
             current_date: "2026-10-22".into(),
             timezone: "UTC".into(),
             git_status: None,

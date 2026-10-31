@@ -11,6 +11,12 @@
 //! [`awaited`]) and the turn commits [`crate::agent::Wait::Children`], which
 //! each child's settlement wakes; dispatched, it reads each child's status
 //! once (see [`crate::agent::settled`]) and returns each one's last answer.
+//!
+//! A child works on its own fork of its parent's project. Neither settling
+//! nor `wait` joins that fork into the parent: the parent merges it
+//! explicitly, as a reviewed step it can also skip, with the `fs` facade's
+//! `merge agents/<name>` (inspect with `diff`). `wait`
+//! names that branch for each settled child it was given by spawn name.
 
 use crate::{
     Error, Result,
@@ -39,7 +45,7 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
-    /// The child's task, staged as a file the child's adoption names.
+    /// Self-contained task brief, including the child's file ownership.
     pub task: String,
     /// Optional child name, unique under this agent; it names the child's path.
     pub name: Option<String>,
@@ -311,13 +317,20 @@ impl AgentTool {
                 }
                 Err(error) => return Err(error),
             };
-            settled.push(json!({
+            let mut entry = json!({
                 "name": name,
                 "agent": child.as_str(),
                 "phase": serde_json::to_value(&phase)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
                 "answer": observer.answer(child).await?,
-            }));
+            });
+            // The fork's branch: its changes reach this agent's project
+            // only through `fs merge` of it. A spawn name names it; an agent
+            // path does not.
+            if AgentPath::try_from(name.clone()).is_err() {
+                entry["branch"] = json!(format!("agents/{name}"));
+            }
+            settled.push(entry);
         }
         Ok(ToolResult {
             value: json!({"settled": settled, "running": running}),
@@ -498,7 +511,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a named child agent on a fork of your volumes and conversation; returns its name and agent path. It starts before your next tool call runs and stays open to your messages until you archive it",
+                "Spawn a named child in a fork of your volumes and settled conversation. Give it a self-contained task and file ownership. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
             )?,
         ),
         (
@@ -519,7 +532,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait until the named children settle: each has handled everything sent to it and is idle or done. Your turn pauses without running until they do. Returns each settled child's phase and last answer; mode all (default) waits for every child, any for the first",
+                "Wait for children to finish their current work and messages. Returns each child's phase and last answer, plus its branch when addressed by spawn name. mode all (default) waits for every child; any waits for the first. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
             )?,
         ),
     ] {

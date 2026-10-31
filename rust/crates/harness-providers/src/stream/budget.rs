@@ -101,7 +101,9 @@ impl<'work> Budget<'work> {
         Ok(())
     }
     pub fn append(&mut self, target: &mut String, value: Option<&Value>) -> Result<()> {
-        let Some(value) = value else { return Ok(()) };
+        let Some(value) = crate::protocol::present(value) else {
+            return Ok(());
+        };
         let delta = value
             .as_str()
             .ok_or_else(|| invalid("tool delta must be a string"))?;

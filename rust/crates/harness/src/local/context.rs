@@ -131,6 +131,19 @@ impl LocalHarness {
                 .instructions(binding, &policy.instruction_names, publisher, &mut work)
                 .await?;
             let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+            let mode = match self.preset.approval_policy.approvers.as_slice() {
+                [
+                    crate::approvals::Approver::Rules {
+                        rules,
+                        fallback: crate::approvals::RuleVerdict::Allow,
+                        ..
+                    },
+                ] if rules.is_empty() => "all admitted actions allowed",
+                _ => "policy-controlled approvals",
+            };
+            manifest.conventions.push(format!(
+                "Approval mode: {mode}. Shell commands have no OS sandbox. A refusal returns a tool failure; adapt or report the block, never assume the action ran. .volumes/scratch is your private retained scratch volume and is never merged into the project."
+            ));
             // The agent tools bind per turn, outside the registry; the model
             // sees them through the manifest like every other tool. A turn
             // binds each over any registered tool of its name, so the manifest
@@ -149,35 +162,60 @@ impl LocalHarness {
                     #[cfg(test)]
                     self.environment_reads
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    // A switched native mount is selected during tool
-                    // execution, so it cannot truthfully advertise this path.
-                    let cwd = if !(workspace.mounted.is_some()
-                        && workspace.selected_view().await?.0.is_some())
+                    let (selected, _) = workspace.selected_view().await?;
+                    let view = selected.as_ref().unwrap_or_else(|| workspace.view());
+                    // A selected branch can use a separate physical mount. Reuse
+                    // that admitted handle; never report the base mount for it.
+                    let selected_mount = if let Some(view) = &selected
+                        && workspace.mounted.is_some()
                     {
-                        Some(workspace.path.as_path())
+                        workspace
+                            .state
+                            .lock()
+                            .await
+                            .workspace
+                            .as_ref()
+                            .filter(|(id, _)| *id == view.workspace().id())
+                            .map(|(_, mounted)| Arc::clone(mounted))
                     } else {
                         None
                     };
-                    let physical_git = cwd.is_some()
-                        && matches!(
-                            acyclic_fs::GitCompatStore::load(
-                                &workspace.store,
-                                workspace.view().workspace().id(),
-                            )
-                            .await,
-                            Ok(None)
-                        );
+                    let cwd = if selected.is_none() || workspace.mounted.is_none() {
+                        Some(workspace.path.as_path())
+                    } else {
+                        selected_mount
+                            .as_ref()
+                            .map(|mounted| mounted.path.as_path())
+                    };
+                    let compatibility = acyclic_fs::GitCompatStore::load(
+                        &workspace.store,
+                        workspace.view().workspace().id(),
+                    )
+                    .await
+                    .map_err(storage)?;
                     let (model, _) = self.agent()?;
-                    manifest.environment = Some(
-                        environment::gather(
-                            cwd,
-                            self.clock.now_unix_millis(),
-                            &model.name,
-                            &self.environment_platform,
-                            physical_git,
-                        )
-                        .await,
-                    );
+                    let mut facts = environment::gather(
+                        cwd,
+                        self.clock.now_unix_millis(),
+                        &model.name,
+                        &self.environment_platform,
+                        compatibility.is_none(),
+                    )
+                    .await?;
+                    if let Some(compatibility) = compatibility {
+                        use acyclic_fs::facade::FsWork as _;
+                        let cancellation = acyclic_fs::CancellationToken::new();
+                        let snapshot = view
+                            .snapshot(
+                                &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+                            )
+                            .await?;
+                        facts.git_status = Some(environment::sdk_status(
+                            &compatibility,
+                            acyclic_fs::GitTreeRef::Lazy(snapshot),
+                        )?);
+                    }
+                    manifest.environment = Some(facts);
                 }
             }
             #[cfg(any(test, feature = "hooks"))]

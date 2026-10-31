@@ -195,7 +195,6 @@ where
                     turns
                         .with_approvers(execution.approvers)
                         .with_goals(execution.goals)
-                        .with_prompt(self.preset.prompt.as_deref())
                 },
             )
             .map_err(super::failed)?;
