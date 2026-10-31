@@ -185,3 +185,72 @@ fn allowance_products_only_shrink_and_bound_requests() {
     assert!(permits(&fs_only, &read, PolicyDecision::Allow, Scope::Exact).is_ok());
     assert!(permits(&narrowed, &read, PolicyDecision::Allow, Scope::Exact).is_err());
 }
+
+fn plain(name: &str, prefix: bool, action: &str) -> Grant {
+    Grant {
+        kind: GrantKind::Resource(ResourceGrant {
+            resource: ResourcePattern {
+                name: name.into(),
+                prefix,
+            },
+            actions: vec![action.into()],
+        }),
+    }
+}
+
+fn socket(host: &str, ports: &[(u32, u32)]) -> Grant {
+    Grant {
+        kind: GrantKind::WebsocketConnect(WebsocketConnectGrant {
+            rules: vec![SocketHostRule {
+                host: host.into(),
+                ports: ports
+                    .iter()
+                    .map(|&(first, last)| SocketPortRange { first, last })
+                    .collect(),
+            }],
+        }),
+    }
+}
+
+#[test]
+fn plain_resource_and_socket_grants_narrow_too() {
+    let leaf = chain(vec![
+        plain("fs:/v/", true, "fs/read"),
+        socket("*.example.com", &[(1000, 2000)]),
+        socket("10.0.0.0/8", &[]),
+    ]);
+    for narrowed in [
+        plain("fs:/v/dir/", true, "fs/read"),
+        plain("fs:/v/file", false, "fs/read"),
+        mount("fs:/v~2/", Some(1), None),
+        socket("a.example.com", &[(1500, 1600)]),
+        socket("*.b.example.com", &[(1000, 2000)]),
+        socket("10.1.0.0/16", &[]),
+        socket("10.2.3.4", &[]),
+    ] {
+        assert!(
+            append(&leaf, granting(vec![narrowed.clone()])).is_some(),
+            "{narrowed:?}"
+        );
+    }
+    // Negative controls: a wider resource, a new action, a prefix over an
+    // exact name, a sibling host, a wider port range, a wider network.
+    for widened in [
+        plain("fs:/", true, "fs/read"),
+        plain("fs:/v/", true, "fs/write"),
+        plain("fs:/w/", true, "fs/read"),
+        socket("example.com", &[(1000, 2000)]),
+        socket("a.example.org", &[(1000, 2000)]),
+        socket("a.example.com", &[(999, 2000)]),
+        socket("a.example.com", &[]),
+        socket("10.0.0.0/7", &[]),
+        socket("11.0.0.1", &[]),
+    ] {
+        assert!(
+            append(&leaf, granting(vec![widened.clone()])).is_none(),
+            "{widened:?}"
+        );
+    }
+    let exact = append(&leaf, granting(vec![plain("fs:/v/file", false, "fs/read")])).unwrap();
+    assert!(append(&exact, granting(vec![plain("fs:/v/file", true, "fs/read")])).is_none());
+}
