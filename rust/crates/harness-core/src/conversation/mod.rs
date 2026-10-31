@@ -202,6 +202,7 @@ mod buffers;
 mod clone;
 mod content;
 mod directory;
+pub mod epochs;
 mod files;
 mod history;
 mod message;
