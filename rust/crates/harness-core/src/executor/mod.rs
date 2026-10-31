@@ -45,10 +45,10 @@ pub(crate) use replay::replay_execution;
 mod accounting;
 use accounting::*;
 mod binding;
-mod compaction;
-mod composition;
 #[cfg(feature = "filesystem")]
 mod code_mode;
+mod compaction;
+mod composition;
 #[cfg(feature = "filesystem")]
 pub use code_mode::{CODE_REVISION, call_tool, code_tool};
 mod content;
@@ -527,7 +527,11 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 pub struct StockExecutor {
     model: Model,
     #[cfg(feature = "filesystem")]
-    profile: Option<(Arc<crate::profile::Profiles>, crate::agent::AgentProfilePin, String)>,
+    profile: Option<(
+        Arc<crate::profile::Profiles>,
+        crate::agent::AgentProfilePin,
+        String,
+    )>,
     #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
     code_runtime: Option<Arc<crate::code_mode::CodeRuntime>>,
     max_output_tokens: Option<u32>,
