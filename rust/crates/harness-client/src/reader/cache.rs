@@ -1851,7 +1851,22 @@ mod tests {
                 }),
             );
         }
-        cyclic.insert_record(&root, 0, records[0].value.clone(), None);
+        cyclic.insert_record(&root, 0, records[0].value.clone(), Some(0));
+        assert_eq!(
+            cyclic
+                .record(&root, 0)
+                .expect("cycle lost its retained record")
+                .as_ref(),
+            records[0].value.as_ref()
+        );
+        assert!(cyclic.record(&leaf, 0).is_none());
+        assert_eq!(
+            cyclic
+                .records(&root, 0, 3)
+                .map(|(_, value)| value.is_some())
+                .collect::<Vec<_>>(),
+            [true, false, false]
+        );
         for path in [&root, &leaf] {
             for (sequence, value) in cyclic.records(path, 0, 3) {
                 assert_eq!(value, cyclic.record(path, sequence));
