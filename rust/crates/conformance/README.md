@@ -32,7 +32,8 @@ dirty in-place flush, cross-thread rendezvous delivery, an uncontended call,
 1 KiB copy and BLAKE3 throughput, and a warm 1 KiB read. A separate new-file,
 write, flush and directory measurement distinguishes publication from an
 in-place barrier. Setup composes actual agent actors, inbox subtrees and volumes
-in bounded batches at populations of 1, 1,000 and 100,000; it is excluded from timing.
+through the shared root publisher at populations of 1, 1,000 and 100,000;
+it is excluded from timing.
 The workload explicitly admits this population rather than using the provider's
 default capacity ceilings. The shared runtime settles each root's initial
 replay before sampling, and setup checks the exact registration count and an
@@ -63,7 +64,9 @@ The delivery scope closes the observing channel on completion, error or
 cancellation. A dropped scope must return typed producer loss, and a real
 entry checked against another input cursor must be rejected. Entry-prefix work
 counts remain missing because whole-drain work cannot be attributed to it.
-Warm Actor reads retain a `Bytes` handle and charge no payload-copy floor.
+Warm Actor reads borrow the admitted value through `ActorStateBinding::get`,
+without a transaction or handle clone, and charge no payload-copy floor.
+Their `borrowed-resident-read` label distinguishes them from transaction reads.
 The durable Actor row publishes a 128-byte metadata mutation, a 128-byte
 checkpoint and the original committed input cursor together, with preparation
 and encoding inside its interval. Input publication is excluded. Its floor

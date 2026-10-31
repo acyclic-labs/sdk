@@ -216,7 +216,11 @@ impl Measurements {
             let timer = floors.timer();
             emit(serde_json::json!({
                 "schema": 1, "kind": "operation", "operation": operation.name(),
-                "measurement_label": if operation == Operation::ActorWake { "event-drain-to-handler-entry" } else { operation.name() },
+                "measurement_label": match operation {
+                    Operation::ActorWake => "event-drain-to-handler-entry",
+                    Operation::ActorWarmRead => "borrowed-resident-read",
+                    _ => operation.name(),
+                },
                 "agents": self.agents, "active": 1, "quantiles": quantiles,
                 "floor": terms, "floor_ns": floor_ns,
                 "p50_ratio": quantiles.p50_ns / floor_ns,

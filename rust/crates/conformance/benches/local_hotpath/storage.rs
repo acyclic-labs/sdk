@@ -468,10 +468,10 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
         if store.load(&address).await?.state() != cut.state() {
             return Err("confirmed Actor tuple differs from durable readback".into());
         }
-        let mut binding = store.bind_state(cut, 1)?;
-        // Cloning Bytes retains a handle; it does not copy the payload.
+        let binding = store.bind_state(cut, 1)?;
+        // Borrow the admitted value without mutation bookkeeping or a handle clone.
         let value = timed!(rows, Operation::ActorWarmRead, read(0), async {
-            binding.transaction(|transaction| Ok(transaction.get("value").cloned()))
+            binding.get("value")
         })?;
         require_bytes(value.ok_or("actor metadata missing")?.as_ref(), &payload)?;
         cut = binding.finish()?;
