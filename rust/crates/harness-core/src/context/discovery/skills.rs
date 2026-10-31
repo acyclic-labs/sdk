@@ -221,12 +221,68 @@ pub(super) fn discovery_error(
     }
 }
 
-#[derive(Deserialize, crate::HeapLayout)]
 struct Frontmatter {
     name: String,
     description: String,
-    #[serde(flatten)]
     fields: BTreeMap<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for Frontmatter {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Header;
+        impl<'de> serde::de::Visitor<'de> for Header {
+            type Value = Frontmatter;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("skill frontmatter mapping")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> std::result::Result<Self::Value, M::Error> {
+                use serde::de::Error;
+                let mut name = None;
+                let mut description = None;
+                let mut fields = BTreeMap::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "name" => {
+                            if name.is_some() {
+                                return Err(M::Error::duplicate_field("name"));
+                            }
+                            name = Some(map.next_value()?);
+                        }
+                        "description" => {
+                            if description.is_some() {
+                                return Err(M::Error::duplicate_field("description"));
+                            }
+                            description = Some(map.next_value()?);
+                        }
+                        _ => match fields.entry(key) {
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                entry.insert(map.next_value()?);
+                            }
+                            std::collections::btree_map::Entry::Occupied(_) => {
+                                return Err(M::Error::custom("duplicate skill field"));
+                            }
+                        },
+                    }
+                }
+                Ok(Frontmatter {
+                    name: name.ok_or_else(|| M::Error::missing_field("name"))?,
+                    description: description
+                        .ok_or_else(|| M::Error::missing_field("description"))?,
+                    fields,
+                })
+            }
+        }
+        // Decode unknown fields directly into their retained JSON values. A
+        // flattened derive first buffers and then decodes every unknown value.
+        deserializer.deserialize_map(Header)
+    }
 }
 
 /// Parses a bounded prefix.
@@ -334,4 +390,81 @@ pub(super) fn skill_text_native(
         reason: "discovered skill serialization is not UTF-8",
     })?;
     Ok((text, observer.into_custody()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_values_decode_once_without_flattened_buffering() -> Result<()> {
+        // The previous decoder is the negative control: it produces the same
+        // metadata but must fail the retained decoder's allocation oracle.
+        #[derive(Deserialize)]
+        struct Buffered {
+            name: String,
+            description: String,
+            #[serde(flatten)]
+            fields: BTreeMap<String, serde_json::Value>,
+        }
+
+        for entries in [32, 128] {
+            let header = serde_json::json!({
+                "name": "inspect",
+                "description": "Inspect the selected files",
+                "input_schema": {"enum": (0..entries).map(|index| {
+                    serde_json::json!({"label": format!("field-{index}"), "value": "x".repeat(1024)})
+                }).collect::<Vec<_>>()},
+                "runtime": {"kind": "code", "script": "inspect.ts"},
+            });
+            let prefix = format!("---\n{}\n---\nBODY", serde_saphyr::to_string(&header)?);
+            let mut direct = None;
+            let direct_allocations = acyclic_test_support::measure(|| {
+                direct = Some(parse_frontmatter::<Frontmatter>(prefix.as_bytes()));
+            });
+            let mut buffered = None;
+            let buffered_allocations = acyclic_test_support::measure(|| {
+                buffered = Some(parse_frontmatter::<Buffered>(prefix.as_bytes()));
+            });
+            let direct = direct.expect("decoder ran")?;
+            let buffered = buffered.expect("negative decoder ran")?;
+            assert_eq!(direct.name, buffered.name);
+            assert_eq!(direct.description, buffered.description);
+            assert_eq!(direct.fields, buffered.fields);
+            assert!(direct_allocations.bytes_total < buffered_allocations.bytes_total);
+            assert!(direct_allocations.bytes_max < buffered_allocations.bytes_max);
+            println!(
+                "header entries={entries} direct_total={} buffered_total={} direct_peak={} buffered_peak={}",
+                direct_allocations.bytes_total,
+                buffered_allocations.bytes_total,
+                direct_allocations.bytes_max,
+                buffered_allocations.bytes_max,
+            );
+        }
+
+        for header in [
+            "name: 123\ndescription: 456\nextra: [null, true, 42, {key: value}]\n",
+            "extra: {key: [one, two]}\ndescription: |\n  first\n  second\nname: inspect\n",
+        ] {
+            let prefix = format!("---\n{header}---\nBODY");
+            let direct: Frontmatter = parse_frontmatter(prefix.as_bytes())?;
+            let buffered: Buffered = parse_frontmatter(prefix.as_bytes())?;
+            assert_eq!(direct.name, buffered.name);
+            assert_eq!(direct.description, buffered.description);
+            assert_eq!(direct.fields, buffered.fields);
+        }
+        for header in [
+            "name: inspect\n",
+            "description: inspect\n",
+            "name: [inspect]\ndescription: inspect\n",
+            "name: inspect\nname: other\ndescription: inspect\n",
+            "name: inspect\ndescription: inspect\nextra: 1\nextra: 2\n",
+            "name: inspect\ndescription: &anchor inspect\nextra: *anchor\n",
+        ] {
+            let prefix = format!("---\n{header}---\nBODY");
+            assert!(parse_frontmatter::<Frontmatter>(prefix.as_bytes()).is_err());
+            assert!(parse_frontmatter::<Buffered>(prefix.as_bytes()).is_err());
+        }
+        Ok(())
+    }
 }
