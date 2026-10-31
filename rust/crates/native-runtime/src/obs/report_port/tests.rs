@@ -82,6 +82,135 @@ async fn withdrawn_request_and_broken_sink_end_with_the_original_transport_cause
 
 #[cfg(unix)]
 #[test]
+fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completion() {
+    use std::future::{Future as _, poll_fn};
+    use std::io::Write as _;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::task::Poll;
+    use tokio::io::AsyncReadExt as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let runtime = crate::coordination_runtime().unwrap();
+    let report = WaitReport::default();
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+    let _subscriber = tracing::dispatcher::set_default(&dispatch);
+    runtime.block_on(async {
+        for close_sink in [false, true] {
+            let (owner, child) = std::os::unix::net::UnixStream::pair().unwrap();
+            owner.set_nonblocking(true).unwrap();
+            child.set_nonblocking(true).unwrap();
+            let mut filler = child.try_clone().unwrap();
+            let mut port = ReportPort::new(
+                GENERATION.into(),
+                tokio::net::UnixStream::from_std(child).unwrap(),
+            )
+            .unwrap();
+            let mut owner = BufReader::new(tokio::net::UnixStream::from_std(owner).unwrap());
+            port.ready().await.unwrap();
+            let mut line = String::new();
+            owner.read_line(&mut line).await.unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&line).unwrap()["generation"],
+                GENERATION
+            );
+            let request = ReportRequest {
+                request_id: GENERATION.into(),
+                generation: GENERATION.into(),
+                deadline_unix_ms: u64::MAX,
+            };
+            let mut bytes = serde_json::to_vec(&request).unwrap();
+            bytes.push(b'\n');
+            owner.get_mut().write_all(&bytes).await.unwrap();
+            let received = port.request().await.unwrap().unwrap();
+            let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
+            let wait = crate::obs::waiting("channel-close", "kernel-credit", completion);
+            let ack = port.snapshot(received, &report);
+            assert_eq!(ack.waits.len(), 1);
+
+            // Exhaust actual kernel credit before the original ACK is submitted.
+            // Each successful iteration transfers bytes; WouldBlock is the cut,
+            // never a readiness retry or an inferred quiet interval.
+            let chunk = [b'x'; 8192];
+            let mut filled = 0;
+            loop {
+                match filler.write(&chunk) {
+                    Ok(0) => panic!("the live report socket accepted no bytes"),
+                    Ok(written) => filled += written,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("fill report socket: {error}"),
+                }
+            }
+            assert!(filled > 0);
+            let owner = {
+                let delivery = port.acknowledge(&ack);
+                tokio::pin!(delivery);
+                assert!(poll_fn(|cx| Poll::Ready(delivery.as_mut().poll(cx).is_pending())).await);
+
+                let physical = Arc::new(AtomicUsize::new(0));
+                let completed = Arc::clone(&physical);
+                let position = u64::from(close_sink);
+                let result = crate::spawn_persistence(
+                    "report",
+                    "unrelated",
+                    crate::PersistenceKey::new(Arc::as_ptr(&physical) as usize, position),
+                    move || {
+                        completed.fetch_add(1, Ordering::SeqCst);
+                        position
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(result, position);
+                assert_eq!(physical.load(Ordering::SeqCst), 1);
+                assert!(poll_fn(|cx| Poll::Ready(delivery.as_mut().poll(cx).is_pending())).await);
+
+                if close_sink {
+                    drop(owner);
+                    assert_eq!(
+                        delivery.await.unwrap_err().kind(),
+                        io::ErrorKind::BrokenPipe
+                    );
+                    None
+                } else {
+                    let mut drain = [0; 8192];
+                    while filled > 0 {
+                        let count = filled.min(drain.len());
+                        owner.read_exact(&mut drain[..count]).await.unwrap();
+                        assert!(drain[..count].iter().all(|byte| *byte == b'x'));
+                        filled -= count;
+                    }
+                    line.clear();
+                    let (delivered, read) = tokio::join!(delivery, owner.read_line(&mut line));
+                    delivered.unwrap();
+                    assert_ne!(read.unwrap(), 0);
+                    let delivered: ReportAck = serde_json::from_str(&line).unwrap();
+                    assert_eq!(delivered.request_id, ack.request_id);
+                    assert_eq!(delivered.generation, ack.generation);
+                    assert_eq!(delivered.outcome, ReportOutcome::Report);
+                    assert_eq!(delivered.waits.len(), 1);
+                    assert_eq!(delivered.waits[0].primitive, "channel-close");
+                    assert_eq!(delivered.waits[0].key, "kernel-credit");
+                    Some(owner)
+                }
+            };
+            drop(port);
+            drop(filler);
+            if let Some(mut owner) = owner {
+                line.clear();
+                assert_eq!(owner.read_line(&mut line).await.unwrap(), 0);
+            }
+            drop(wait);
+            assert!(report.snapshot().is_empty());
+        }
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn inherited_report_port_joins_the_selected_real_process() {
     use std::io::{BufRead as _, Write as _};
     use std::os::{fd::AsRawFd as _, unix::process::CommandExt as _};
