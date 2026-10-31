@@ -103,6 +103,10 @@ fn source_watch_retires_epochs_and_reports_last_producer_loss_without_waiting() 
             revision: Some(revision(1)),
         },
     );
+    // Record the atomic lease slots' thread initialization separately from
+    // steady-state notification work; no event has a subscriber yet.
+    let cold = acyclic_test_support::measure(|| source.invalidate().unwrap());
+    eprintln!("cold invalidation allocations={}", cold.count_total);
     for count in [1, 100, 1000] {
         let idle = acyclic_test_support::measure(|| {
             for _ in 0..count {
