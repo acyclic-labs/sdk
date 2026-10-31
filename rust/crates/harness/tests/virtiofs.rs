@@ -12,12 +12,14 @@ use acyclic_harness::{
     local::host_owner::HostWorkspaceOwner,
     resources::ProviderRef,
 };
-use acyclic_native_runtime::{ProcessInput, ProcessTree};
+use acyclic_native_runtime::{
+    ProcessInput, ProcessTree, SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceStartOutcome,
+};
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -102,6 +104,47 @@ async fn local_owner_bound_produces_the_public_mount_free_packet_entry() -> Resu
 }
 
 #[test]
+fn standalone_daemon_reports_bind_refusal_on_its_original_ready_channel() -> Result {
+    let temporary = tempfile::tempdir()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (config, _) = runtime.block_on(config(temporary.path()))?;
+    let socket = temporary.path().join("occupied.sock");
+    let original = b"the existing socket path belongs to another owner";
+    std::fs::write(&socket, original)?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_acyclic-virtiofsd"));
+    command
+        .arg(SERVICE_READY_ARGUMENT)
+        .arg("--socket")
+        .arg(&socket)
+        .arg("--config")
+        .arg(config)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut daemon = ProcessTree::spawn(&mut command)?;
+    let startup = (|| {
+        let stdout = daemon.take_stdout().ok_or("step=take original daemon readiness channel; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test virtiofs standalone_daemon_reports_bind_refusal_on_its_original_ready_channel -- --exact")?;
+        Ok::<_, Box<dyn std::error::Error>>(ServiceReadiness::from(stdout).wait()?)
+    })();
+    let retired = daemon.terminate(None);
+    let outcome = startup?;
+    retired?;
+    assert!(
+        matches!(outcome, ServiceStartOutcome::Failed(reason) if !reason.is_empty()),
+        "a refused listener must report its original failure, never readiness or unreported EOF"
+    );
+    assert_eq!(
+        std::fs::read(socket)?,
+        original,
+        "refusal must preserve the other owner's path"
+    );
+    assert!(daemon.is_reaped());
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires prepared Linux guest artifacts, KVM, QEMU and cloud-hypervisor"]
 fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
     let artifacts = PathBuf::from(std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS").ok_or("step=select guest artifacts; recovery: python3 scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest; ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test virtiofs -- --include-ignored --nocapture")?);
@@ -122,17 +165,16 @@ fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
             .arg(&socket)
             .arg("--config")
             .arg(config)
+            .arg(SERVICE_READY_ARGUMENT)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut daemon = ProcessTree::spawn(&mut daemon_command)?;
         let result = (|| {
-            let start = Instant::now();
-            while !socket.exists() {
-                if start.elapsed() >= Duration::from_secs(5) {
-                    return Err("step=wait for admitted daemon socket; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test virtiofs -- --include-ignored --nocapture".into());
-                }
-                std::thread::sleep(Duration::from_millis(1));
+            let stdout = daemon.take_stdout().ok_or("step=take original daemon readiness channel; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test virtiofs -- --include-ignored --nocapture")?;
+            match ServiceReadiness::from(stdout).wait()? {
+                ServiceStartOutcome::Ready => {}
+                outcome => return Err(format!("step=wait for admitted daemon listener; outcome={outcome:?}; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test virtiofs -- --include-ignored --nocapture").into()),
             }
             use std::os::unix::fs::MetadataExt as _;
             assert_eq!(

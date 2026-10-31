@@ -142,7 +142,7 @@ impl ServiceReadySignal {
 /// Takes the readiness channel and redirects subsequent standard output to discard.
 pub fn take_service_ready_signal() -> io::Result<Option<ServiceReadySignal>> {
     if !std::env::args_os()
-        .skip(2)
+        .skip(1)
         .any(|argument| argument == SERVICE_READY_ARGUMENT)
     {
         return Ok(None);
