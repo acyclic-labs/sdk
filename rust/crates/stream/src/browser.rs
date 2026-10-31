@@ -28,7 +28,7 @@ const METADATA: &str = "metadata";
 /// database itself, so every opener shares one identity and a deleted or
 /// cleared database mints a new one.
 const INCARNATION: &str = "incarnation";
-const METADATA_WORDS: usize = 18;
+const METADATA_WORDS: usize = 10;
 
 /// Caller-selected durable recovery and canonical state capacities; omission is unbounded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -303,16 +303,9 @@ impl BrowserStreamLimits {
         ]
     }
 
-    fn words(self) -> [u64; 16] {
-        let mut words = [0; 16];
-        for (word, encoded) in words.iter_mut().zip(
-            self.capacities()
-                .into_iter()
-                .flat_map(|value| [u64::from(value.is_some()), value.unwrap_or_default()]),
-        ) {
-            *word = encoded;
-        }
-        words
+    fn words(self) -> [u64; 8] {
+        // Open rejects Some(0), leaving zero for the unbounded encoding.
+        self.capacities().map(|value| value.unwrap_or_default())
     }
 }
 

@@ -26,7 +26,7 @@ fn encode_limits(limits: LocalStreamLimits) -> Result<Vec<u8>, LocalStreamError>
         limits.memory.commits,
         limits.memory.idempotency_results,
     ] {
-        encoded.push(u8::from(value.is_some()));
+        // Zero is outside the admitted finite capacities and denotes None.
         encoded.extend_from_slice(
             &value
                 .map(u64::try_from)
