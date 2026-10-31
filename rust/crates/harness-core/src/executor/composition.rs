@@ -237,7 +237,7 @@ mod tests {
             let before = tools.definitions(None)?;
             let expected = crate::Capabilities::new(grants.iter().filter(|grant| !grant.starts_with("tool:call:")).cloned());
             let executor = StockExecutor::new(
-                Model::new("test".into(), "sampling".into(), "1".into(), Value::Null)?,
+                Model::new("test".into(), "sampling".into(), "1".into())?,
                 Arc::new(crate::test_support::ScriptedModelProvider::new([])),
                 ContextPipeline::default(), tools,
             ).with_tool_authority(RuntimeScope::new(crate::Capabilities::new(grants), Limits::default())?, Arc::new(crate::test_support::FixedToolPolicy::new(crate::runtime::ToolPolicyDecision::Allow)?))?

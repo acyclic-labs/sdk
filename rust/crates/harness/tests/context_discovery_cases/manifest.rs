@@ -10,7 +10,6 @@ use acyclic_harness::{
     tool::{ToolRegistry, files},
 };
 use acyclic_stream::MemoryStream;
-use serde_json::Value;
 
 fn tools() -> Result<ToolRegistry> {
     let mut tools = ToolRegistry::default();
@@ -57,7 +56,7 @@ fn stock(
             .map(|tool| format!("tool:call:{}", tool.name)),
     );
     StockExecutor::new(
-        Model::new("test".into(), "manifest".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "manifest".into(), "1".into())?,
         provider,
         ContextPipeline::default(),
         tools,

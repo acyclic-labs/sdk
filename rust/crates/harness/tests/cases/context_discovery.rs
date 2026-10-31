@@ -217,12 +217,7 @@ fn executor(
     provider: Arc<ScriptedModelProvider>,
 ) -> Result<acyclic_harness::executor::StockExecutor> {
     Ok(acyclic_harness::executor::StockExecutor::new(
-        acyclic_harness::model::Model::new(
-            "test".into(),
-            "model".into(),
-            "1".into(),
-            serde_json::Value::Null,
-        )?,
+        acyclic_harness::model::Model::new("test".into(), "model".into(), "1".into())?,
         provider,
         ContextPipeline::default().with(Arc::new(snapshot.stage(ContextPlacement::Prepend)?)),
         acyclic_harness::tool::ToolRegistry::default(),

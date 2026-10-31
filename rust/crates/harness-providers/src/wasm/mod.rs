@@ -147,24 +147,9 @@ impl WasmProviderRegistry {
             .map_err(model_error)
     }
 
-    pub fn resolve(
-        &self,
-        selection: &str,
-        #[wasm_bindgen(unchecked_optional_param_type = "unknown")] options: Option<JsValue>,
-    ) -> Result<WasmModelProvider, JsValue> {
-        let options = match options {
-            None => serde_json::json!({}),
-            Some(options) => acyclic_harness_core::deserialize_json_value(
-                serde_wasm_bindgen::Deserializer::from(options),
-            )
-            .map_err(error)?,
-        };
+    pub fn resolve(&self, selection: &str) -> Result<WasmModelProvider, JsValue> {
         Ok(WasmModelProvider {
-            provider: Arc::new(
-                self.registry
-                    .resolve_with_options(selection, options)
-                    .map_err(model_error)?,
-            ),
+            provider: Arc::new(self.registry.resolve(selection).map_err(model_error)?),
             limits: self.limits,
         })
     }

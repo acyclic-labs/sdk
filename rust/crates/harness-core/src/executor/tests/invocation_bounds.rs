@@ -56,7 +56,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
             crate::tool::json_projection_schema(json!({})),
         )?;
         let mut executor = uncompacted_executor(
-            Model::new("fixture".into(), "exact".into(), "1".into(), json!({}))?,
+            Model::new("fixture".into(), "exact".into(), "1".into())?,
             Arc::new(scripted_model()),
             ContextPipeline::default(),
             tools,

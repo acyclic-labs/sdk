@@ -15,11 +15,12 @@ crate-type = ["rlib", "cdylib"]
 endpoint-presets = []
 local = ["dep:acyclic-harness", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-harness/search-http"]
 # The browser content reader lives in the facade's wasm bindings.
-browser = ["acyclic-harness-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
+browser = ["acyclic-model-render/browser", "acyclic-harness-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
 wasm-journal = ["browser", "acyclic-harness/wasm-journal"]
 fuzzing = []
 
 [dependencies]
+acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
 acyclic-actors = { path = "../actors", version = "=0.2.0", default-features = false }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }

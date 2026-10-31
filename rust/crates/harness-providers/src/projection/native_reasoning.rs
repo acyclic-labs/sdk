@@ -3,6 +3,25 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 
+/// Borrows the original JSON string token; readable display text is never a
+/// substitute for native Chat continuity, including its original escapes.
+pub(crate) fn chat(bytes: &[u8]) -> Option<&RawValue> {
+    #[derive(Deserialize)]
+    struct Chat<'a> {
+        #[serde(borrow)]
+        reasoning_content: &'a RawValue,
+    }
+    let raw: &RawValue = serde_json::from_slice(bytes).ok()?;
+    if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
+        return None;
+    }
+    let chat: Chat<'_> = serde_json::from_str(raw.get()).ok()?;
+    chat.reasoning_content
+        .get()
+        .starts_with('"')
+        .then_some(chat.reasoning_content)
+}
+
 #[derive(Deserialize)]
 struct Native<'a> {
     #[serde(rename = "type", borrow)]
@@ -51,7 +70,9 @@ pub(crate) fn validated(adapter: Adapter, bytes: &[u8]) -> Option<&RawValue> {
 /// Replays Responses transcript items through the production sequence fold,
 /// admitting native reasoning exactly as request projection does.
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-pub(crate) fn replay_responses(items: &[serde_json::Value]) -> Vec<serde_json::Value> {
+pub(crate) fn replay_responses(
+    items: &[serde_json::Value],
+) -> acyclic_harness_core::Result<Vec<serde_json::Value>> {
     replay_responses_with(items, crate::protocol::sequence::ResponseItem::allows)
 }
 
@@ -62,7 +83,7 @@ pub(super) fn replay_responses_with(
         crate::protocol::sequence::ResponseItem,
         crate::protocol::sequence::ResponseItem,
     ) -> bool,
-) -> Vec<serde_json::Value> {
+) -> acyclic_harness_core::Result<Vec<serde_json::Value>> {
     use super::wire::{Item, Message};
     let raw: Vec<_> = items
         .iter()
@@ -79,13 +100,12 @@ pub(super) fn replay_responses_with(
             &mut messages,
             Message::Item(next),
             &allows,
-        )
-        .unwrap();
+        )?;
     }
-    super::sequence::finish(Adapter::Responses, &mut messages);
+    super::sequence::finish(Adapter::Responses, &mut messages)?;
     let encoded = serde_json::to_vec(&messages).unwrap();
     match crate::json(&encoded).unwrap() {
-        serde_json::Value::Array(output) => output,
+        serde_json::Value::Array(output) => Ok(output),
         _ => unreachable!("a message list encodes as an array"),
     }
 }

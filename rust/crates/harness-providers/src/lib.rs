@@ -3,7 +3,6 @@
 acyclic_test_support::counting_allocator!();
 
 mod accounting;
-mod adapter;
 mod alloy;
 mod alloy_spec;
 mod authorization;
@@ -67,7 +66,7 @@ mod tool_names;
 #[cfg(all(target_arch = "wasm32", feature = "browser"))]
 mod wasm;
 
-pub use adapter::Adapter;
+pub use acyclic_model_render::Family as Adapter;
 pub use alloy::ResolvedAlloy;
 pub use alloy_spec::{AlloySelection, AlloySpec, AlloyTurn};
 pub use authorization::{

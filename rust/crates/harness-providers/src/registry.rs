@@ -1,6 +1,5 @@
 use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid};
 use acyclic_harness_core::{Result, model::Model};
-use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 mod catalog_update;
 mod selection;
@@ -112,18 +111,6 @@ impl Registry {
 
     /// Resolves a model without doing network I/O. Remaining slashes belong to the model.
     pub fn resolve(&self, selection: &str) -> Result<ResolvedModel> {
-        self.resolve_with_options(selection, json!({}))
-    }
-
-    /// Binds options into the resolved immutable model identity before dispatch.
-    pub fn resolve_with_options(
-        &self,
-        selection: &str,
-        options: serde_json::Value,
-    ) -> Result<ResolvedModel> {
-        if !options.is_object() {
-            return Err(invalid("model options must be an object"));
-        }
         let (provider, name) = selection
             .split_once('/')
             .ok_or_else(|| invalid("expected provider/model"))?;
@@ -137,7 +124,7 @@ impl Registry {
             .get(name)
             .map(|entry| entry.capacity)
             .ok_or_else(|| invalid("register the selected model context capacity"))?;
-        let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
+        let model = Model::new(provider.into(), name.into(), "provider-v1".into())?;
         let credential = self.selected_credential(provider, &config)?;
         let key = match &credential {
             Credential::Key(key) => Some(key.clone()),
@@ -181,6 +168,7 @@ impl Registry {
             files: self.files.clone(),
             estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(config.adapter)),
             model,
+            profile: None,
             config,
             capacity,
             key,

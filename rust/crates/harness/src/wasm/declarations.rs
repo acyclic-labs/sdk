@@ -2,7 +2,7 @@ use super::*;
 
 #[wasm_bindgen(typescript_custom_section)]
 pub(super) const ADMISSION_WIRE_TYPES: &'static str = r#"
-export type PublicModel = Readonly<Omit<Model, 'options'> & {options: unknown}>;
+export type PublicModel = Readonly<Model>;
 type PublicEvent<Event> =
     Event extends Readonly<{kind: 'tool_call'}> ? Readonly<Omit<Event, 'call_id' | 'arguments'> & {callId: string; arguments: unknown}>
     : Event extends Readonly<{kind: 'completed'}> ? Readonly<Omit<Event, 'metadata'> & {metadata: unknown}>

@@ -1,7 +1,6 @@
 use super::*;
 use crate::executor::ModelPurpose;
 use crate::model::{Model, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest};
-use serde_json::Value;
 
 type Journal = FilesystemExecutionJournal<
     acyclic_stream::MemoryStream,
@@ -42,7 +41,7 @@ async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
 fn request() -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new("test".into(), "inline".into(), "1".into(), Value::Null)?,
+            model: Model::new("test".into(), "inline".into(), "1".into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("input".into()),

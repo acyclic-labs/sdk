@@ -45,7 +45,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
         .with_token_counter(fixture_token_count),
     );
     let base = StockExecutor::new(
-        Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
+        Model::new("fixture".into(), "exact".into(), "1".into())?,
         model.clone(),
         ContextPipeline::default(),
         tools,
@@ -187,7 +187,7 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
             crate::tool::json_projection_schema(json!({"type": "object"})),
         )?;
         let executor = uncompacted_executor(
-            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into())?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -351,7 +351,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let executor = uncompacted_executor(
-        Model::new("example".into(), "batch".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "batch".into(), "1".into())?,
         model.clone(),
         ContextPipeline::default(),
         tools,
@@ -534,7 +534,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         model.clone(),
         ContextPipeline::default(),
         tools,
@@ -740,7 +740,7 @@ async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
         crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         Arc::new(scripted_model()),
         ContextPipeline::default(),
         tools,
@@ -788,7 +788,7 @@ async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> 
         crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         model.clone(),
         ContextPipeline::default(),
         tools,
@@ -853,7 +853,7 @@ async fn malformed_tool_arguments_return_to_the_model_without_dispatch() -> Resu
         crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         model.clone(),
         ContextPipeline::default(),
         tools,
@@ -908,7 +908,7 @@ async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Resul
         crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         model.clone(),
         ContextPipeline::default(),
         tools,
@@ -1094,7 +1094,7 @@ async fn stock_tool_validation_failure_returns_to_the_model_and_replays_without_
             None,
         )?;
         let executor = uncompacted_executor(
-            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into())?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -1163,7 +1163,7 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
             );
             let operation = OperationId::new();
             let executor = StockExecutor::new(
-                Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
+                Model::new("fixture".into(), "exact".into(), "1".into())?,
                 model,
                 ContextPipeline::default(),
                 tools,

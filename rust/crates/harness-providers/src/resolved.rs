@@ -16,6 +16,8 @@ pub struct ResolvedModel {
     pub(crate) estimator: Arc<crate::accounting::TokenEstimator>,
     /// Immutable harness model identity.
     pub(crate) model: Model,
+    /// Sealed settings derived from the parsed profile, never a root option map.
+    pub(crate) profile: Option<acyclic_harness_core::model::ModelProfileBinding>,
     pub(crate) config: Arc<ProviderSpec>,
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<Arc<str>>,
@@ -29,6 +31,33 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    /// Joins the original registry selection to its admitted epoch profile.
+    /// Credentials, endpoint and token counting retain their original owners.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]
+    pub fn with_profile(
+        mut self,
+        profile: &acyclic_harness_core::profile::AgentProfile<'_>,
+    ) -> Result<Self> {
+        if self.profile.is_some() {
+            return Err(invalid(
+                "a resolved model profile is immutable; resolve the next epoch",
+            ));
+        }
+        let binding = profile.bind_model(&self.model, self.capacity)?;
+        crate::projection::validate_profile(self.config.adapter, &binding)?;
+        self.model.revision = format!(
+            "profile-v1:{}",
+            blake3::Hash::from(binding.digest()).to_hex()
+        );
+        self.profile = Some(binding);
+        Ok(self)
+    }
+
+    /// Pinned profile and prefix identity for the original epoch publication.
+    pub fn profile_binding(&self) -> Option<&acyclic_harness_core::model::ModelProfileBinding> {
+        self.profile.as_ref()
+    }
+
     /// Borrows the immutable identity used to bind this provider into the harness.
     pub fn model(&self) -> &Model {
         &self.model
@@ -82,6 +111,11 @@ impl ResolvedModel {
     pub(crate) fn default_output_budget(&self) -> u32 {
         self.capacity.default_output_budget()
     }
+    fn admitted_capacity(&self) -> ModelContextCapacity {
+        self.profile
+            .as_ref()
+            .map_or(self.capacity, |profile| profile.capacity())
+    }
     pub(crate) fn validate(&self, model: &Model) -> Result<()> {
         if model != &self.model {
             return Err(invalid("request model differs from resolved selection"));
@@ -103,6 +137,7 @@ impl ModelProvider for ResolvedModel {
             },
             estimator: Arc::clone(&self.estimator),
             model: self.model.clone(),
+            profile: self.profile,
             config: self.config.clone(),
             capacity: self.capacity,
             key: self.key.clone(),
@@ -133,7 +168,7 @@ impl ModelProvider for ResolvedModel {
                 reason: "request model differs from resolved selection",
             });
         }
-        Ok(self.capacity)
+        Ok(self.admitted_capacity())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -204,7 +239,7 @@ impl ModelProvider for ResolvedModel {
 
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.validate(model)?;
-        Ok(self.capacity)
+        Ok(self.admitted_capacity())
     }
 
     fn count_tokens<'a>(

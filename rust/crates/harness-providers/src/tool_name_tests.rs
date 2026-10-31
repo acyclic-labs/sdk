@@ -76,45 +76,7 @@ proptest! {
         input in prop::collection::vec(".{0,128}", 0..24)
     ) { assert_names(input); }
 
-    #[test]
-    fn every_named_control_matches_its_projected_declaration(name in ".{1,96}") {
-        for canonical in [name.as_str(), "harness_tool_0", "acyclic.read_file"] {
-            for (adapter, _) in fixtures() {
-                let (provider, _) = provider(adapter, 200);
-                let (prepared, _) = request(&provider).unwrap();
-                let mut request = prepared.request().clone();
-                request.tools.push(definition(canonical.into()));
-                if canonical != "A_anchor" {
-                    request.tools.push(definition("A_anchor".into()));
-                }
-                let choices = match adapter {
-                    Adapter::Anthropic => vec![json!({"tool_choice":{"type":"tool","name":canonical}})],
-                    Adapter::Responses => vec![json!({"tool_choice":{"type":"function","name":canonical}}),
-                        json!({"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":canonical}]}})],
-                    Adapter::Chat => vec![json!({"tool_choice":{"type":"function","function":{"name":canonical}}}),
-                        json!({"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","function":{"name":canonical}}]}})],
-                    Adapter::Gemini => vec![json!({"toolConfig":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":[canonical]}}})],
-                };
-                let names = Names::new(&request);
-                let expected = names.wire(canonical).unwrap().into_owned();
-                for options in choices {
-                    let mut request = request.clone();
-                    request.model.options = options;
-                    let body = projection::body(&provider, &request).unwrap();
-                    let (declaration, controls) = match adapter {
-                        Adapter::Anthropic => (&body["tools"][0]["name"], vec![&body["tool_choice"]["name"]]),
-                        Adapter::Responses => (&body["tools"][0]["name"], vec![if body["tool_choice"]["type"] == "allowed_tools" {
-                            &body["tool_choice"]["tools"][0]["name"] } else { &body["tool_choice"]["name"] }]),
-                        Adapter::Chat => (&body["tools"][0]["function"]["name"], vec![if body["tool_choice"]["type"] == "allowed_tools" {
-                            &body["tool_choice"]["tools"][0]["function"]["name"] } else { &body["tool_choice"]["function"]["name"] }]),
-                        Adapter::Gemini => (&body["tools"][0]["functionDeclarations"][0]["name"], vec![&body["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"][0]]),
-                    };
-                    prop_assert_eq!(declaration, &expected);
-                    for selected in controls { prop_assert_eq!(selected, declaration); }
-                }
-            }
-        }
-    }
+
 }
 
 #[test]

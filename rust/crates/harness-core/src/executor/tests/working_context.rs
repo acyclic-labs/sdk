@@ -37,12 +37,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
         ..Default::default()
     };
     let executor = StockExecutor::new(
-        Model::new(
-            "synthetic".into(),
-            "counter".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("synthetic".into(), "counter".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
             "instructions",

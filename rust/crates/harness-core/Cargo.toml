@@ -72,6 +72,7 @@ grpc = ["acyclic-stream/grpc"]
 [dependencies]
 jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["rust_crypto"], optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+acyclic-model-render = { version = "=0.2.0", path = "../model-render" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 ed25519-dalek = { version = "3.0.0", features = ["zeroize"] }
 zeroize.workspace = true

@@ -447,7 +447,6 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         provider: "fixture".into(),
         name: "model".into(),
         revision: "1".into(),
-        options: value.clone(),
     });
     round_trip(acyclic_harness_core::tool::ToolInvocation {
         operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
@@ -469,8 +468,8 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
 }
 
 /// OAR-RSN-02 from raw bytes. Validation agrees with an independent
-/// input-derived reference, and the production sequence fold repairs exactly
-/// the unanswered reasoning items without dropping or reordering any item.
+/// input-derived reference. Incomplete pairs refuse; complete sequences retain
+/// every original item without inserting, dropping or reordering content.
 pub fn assert_response_sequence(input: &[u8]) {
     use crate::projection::native_reasoning::replay_responses;
     let Ok(body) = crate::json(input) else { return };
@@ -485,28 +484,21 @@ pub fn assert_response_sequence(input: &[u8]) {
         errors.contains(&"OAR-RSN-02"),
         unanswered_reasoning(items) > 0
     );
-    let output = replay_responses(items);
-    assert_eq!(response_repair_violation(items, &output), None);
-    assert_eq!(
-        replay_responses(&output),
-        output,
-        "repair is not idempotent"
-    );
+    let result = replay_responses(items);
+    assert_eq!(response_sequence_violation(items, &result), None);
 }
 
 /// The structured detector shared by the fuzz oracle and its negative controls.
-pub(crate) fn response_repair_violation(
+pub(crate) fn response_sequence_violation(
     items: &[serde_json::Value],
-    output: &[serde_json::Value],
+    result: &acyclic_harness_core::Result<Vec<serde_json::Value>>,
 ) -> Option<&'static str> {
-    if unanswered_reasoning(output) > 0 {
-        return Some("unanswered reasoning");
+    match (unanswered_reasoning(items) > 0, result) {
+        (true, Ok(_)) => Some("unanswered reasoning"),
+        (false, Err(_)) => Some("complete exchange refused"),
+        (false, Ok(output)) if output != items => Some("changed item"),
+        _ => None,
     }
-    if output.len() != items.len() + unanswered_reasoning(items) {
-        return Some("unrequired repair");
-    }
-    let mut rest = output.iter();
-    (!items.iter().all(|item| rest.any(|next| next == item))).then_some("lost item")
 }
 
 /// Independent reference, deliberately not `ResponseItem`: each reasoning item

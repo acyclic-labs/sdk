@@ -149,7 +149,7 @@ impl<K: OwnedBytes> OwnedBytes for BTreeSet<K> {
         sequence_heap(tree_nodes::<K>(self.len())?, self.iter())
     }
 }
-fn tree_nodes<T>(len: usize) -> Result<u64> {
+pub(crate) fn tree_nodes<T>(len: usize) -> Result<u64> {
     // Current std B-trees have eleven slots, a two-word header, and twelve
     // child pointers in internal nodes. Non-root nodes have >= five entries.
     // The public API cannot distinguish a fresh empty tree from an empty

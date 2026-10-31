@@ -24,7 +24,7 @@ fn executor(
     policy: Option<CompactionPolicy>,
 ) -> Result<StockExecutor> {
     let executor = StockExecutor::new(
-        Model::new("test".into(), "resolver".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "resolver".into(), "1".into())?,
         Arc::new(ScriptedModelProvider::new([])),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -282,7 +282,7 @@ async fn writerless_summary_reports_one_error_without_repeating_resolution() -> 
 async fn compaction_resolves_once_with_original_work() -> Result<()> {
     // Initialize the process-wide default before measuring.
     let unbound = StockExecutor::new(
-        Model::new("test".into(), "resolver".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "resolver".into(), "1".into())?,
         Arc::new(ScriptedModelProvider::new([])),
         ContextPipeline::default(),
         ToolRegistry::default(),

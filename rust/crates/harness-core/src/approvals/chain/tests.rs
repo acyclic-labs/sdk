@@ -79,7 +79,6 @@ async fn agent_reviews_escalate_in_order_and_external_files_never_grant_authorit
             Approver::Llm {
                 principal: "model".into(),
                 model: "independent".into(),
-                prompt: "review".into(),
             },
             Approver::Parent,
             Approver::Human {

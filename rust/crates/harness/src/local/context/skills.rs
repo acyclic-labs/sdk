@@ -27,7 +27,7 @@ pub(in crate::local) async fn seed(files: &LocalFilesystem, scratch: &VolumeRef)
     files
         .seed_once(
             &workspace,
-            &crate::IdempotencyKey::new("builtin-skills-v1")?,
+            &crate::IdempotencyKey::new("builtin-skills-v2")?,
             || {
                 Ok(crate::context::BUILTIN_SKILLS
                     .iter()

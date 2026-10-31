@@ -68,12 +68,7 @@ fn executors_with_scope(
     model: Arc<ScriptedModelProvider>,
     matching_limits: bool,
 ) -> Result<Arc<dyn TurnExecutors>> {
-    let selection = Model::new(
-        "test".into(),
-        "text".into(),
-        "1".into(),
-        serde_json::Value::Null,
-    )?;
+    let selection = Model::new("test".into(), "text".into(), "1".into())?;
     let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
     preset.tools.clear();
     preset.max_steps = Some(usize::try_from(LIMITS.max_steps)?);

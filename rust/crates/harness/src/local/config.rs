@@ -589,12 +589,7 @@ mod resolver_tests {
             let provider: Arc<dyn ModelProvider> =
                 Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
             Ok((
-                Model::new(
-                    "test".into(),
-                    selection.into(),
-                    "1".into(),
-                    serde_json::Value::Null,
-                )?,
+                Model::new("test".into(), selection.into(), "1".into())?,
                 provider,
             ))
         }));

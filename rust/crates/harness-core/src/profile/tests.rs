@@ -19,6 +19,68 @@ const ORCHESTRATOR: &str = include_str!("roles/orchestrator.md");
 const REVIEWER: &str = include_str!("roles/reviewer.md");
 const ADVISOR: &str = include_str!("roles/advisor.md");
 
+#[test]
+fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Result<()> {
+    use crate::{
+        model::{Model, ModelRequest},
+        tool::ToolRegistry,
+    };
+    let mut registry = ToolRegistry::default();
+    for name in ["first", "second"] {
+        let mut tool = crate::tool::files::read()?;
+        tool.definition.name = name.into();
+        tool.definition.revision = "v1".into();
+        registry.register((tool, None), &mut None, None)?;
+    }
+    let family = "---\nversion: 1\ntools:\n  - {capability: read, variant: second, revision: v1}\n  - {capability: edit, variant: first, revision: v1}\nreasoning: {mode: disabled}\ncache: automatic\nwatermark_tokens: 700\n---\n";
+    let model = profile(family, Some(200))?;
+    let project = ProjectLayer::parse(EMPTY)?;
+    let approvals = crate::approvals::ApprovalPolicy::default().bind()?;
+    let agent = AgentOverride::parse(EMPTY, &approvals)?;
+    let role = RoleFile::parse(
+        "---\nversion: 1\nname: worker\nmodel: test/model\ncontext: fork\nmay_spawn: []\nallowed_tools: [read]\n---\n",
+    )?;
+    let resolved = resolve(&model, &role, &project, &agent)?;
+    let bound = resolved.bind_tools(&registry, None)?;
+    let declarations = bound.declarations();
+    assert!(std::ptr::eq(
+        declarations[0].tool(),
+        registry.get("second", Some("v1"), None)?.unwrap()
+    ));
+    assert_eq!(declarations[1].tool().definition.name, "first");
+    assert!(declarations[0].available());
+    assert!(!declarations[1].available());
+    let mut request = ModelRequest {
+        model: Model {
+            provider: "test".into(),
+            name: "model".into(),
+            revision: "v1".into(),
+        },
+        messages: Vec::new(),
+        tools: declarations
+            .iter()
+            .map(|binding| binding.tool().definition.clone())
+            .collect(),
+        max_output_tokens: None,
+    };
+    bound.validate_request(&request)?;
+    request.tools.swap(0, 1);
+    assert!(bound.validate_request(&request).is_err());
+    request.tools.swap(0, 1);
+    request.tools[0].revision = "stale".into();
+    assert!(bound.validate_request(&request).is_err());
+    request.tools[0].revision = "v1".into();
+    request.model.name = "another-model".into();
+    assert!(bound.validate_request(&request).is_err());
+    let missing = profile(
+        &family.replace("revision: v1", "revision: missing"),
+        Some(200),
+    )?;
+    let missing = resolve(&missing, &role, &project, &agent)?;
+    assert!(missing.bind_tools(&registry, None).is_err());
+    Ok(())
+}
+
 fn profile(family: &str, output_tokens: Option<u32>) -> Result<ModelProfile> {
     ModelProfile::parse(
         family,

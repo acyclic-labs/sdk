@@ -3,13 +3,7 @@ use super::*;
 #[test]
 fn base_and_stages_reuse_the_same_input_without_a_history_copy() {
     let executor = uncompacted_executor(
-        Model::new(
-            "test".into(),
-            "context-input".into(),
-            "1".into(),
-            Value::Null,
-        )
-        .unwrap(),
+        Model::new("test".into(), "context-input".into(), "1".into()).unwrap(),
         Arc::new(ScriptedModelProvider::new([])),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -72,12 +66,7 @@ fn base_and_stages_reuse_the_same_input_without_a_history_copy() {
 #[tokio::test]
 async fn base_assembly_restores_the_stage_checkpoint_before_returning_an_error() -> Result<()> {
     let executor = uncompacted_executor(
-        Model::new(
-            "test".into(),
-            "context-input".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("test".into(), "context-input".into(), "1".into())?,
         Arc::new(ScriptedModelProvider::new([])),
         ContextPipeline::default(),
         ToolRegistry::default(),

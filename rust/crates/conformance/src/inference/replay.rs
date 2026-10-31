@@ -53,6 +53,7 @@ struct FileCapture {
 
 /// Provenance and expectations accompany captured bytes; they never replace the response.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// Capture origin, required for every fixture family.
     pub source: String,
@@ -66,9 +67,6 @@ pub struct Manifest {
     pub endpoint: ProviderSpec,
     /// Selected model name.
     pub model: String,
-    /// Exact model options used for the captures, excluding credentials.
-    #[serde(default = "options")]
-    pub options: Value,
     /// Independent expected token counters for the text step.
     pub usage: ExpectedUsage,
     /// Independent expected counters for tool and result completions.
@@ -76,9 +74,6 @@ pub struct Manifest {
     /// Original input that actually exceeded this model's context capacity.
     pub context_input: String,
     captures: BTreeMap<String, FileCapture>,
-}
-fn options() -> Value {
-    json!({})
 }
 struct Replay {
     responses: Mutex<VecDeque<Capture>>,
@@ -279,10 +274,7 @@ fn provider(
     )?;
     config.retry.attempts = 0;
     registry.register(manifest.provider_id.clone(), config)?;
-    let provider = registry.resolve_with_options(
-        &format!("{}/{}", manifest.provider_id, manifest.model),
-        manifest.options.clone(),
-    )?;
+    let provider = registry.resolve(&format!("{}/{}", manifest.provider_id, manifest.model))?;
     Ok((provider, transport))
 }
 
@@ -417,10 +409,7 @@ impl Backend for Local {
             },
         );
         registry.register("local".into(), spec)?;
-        let provider = registry.resolve_with_options(
-            &format!("local/{}", manifest.model),
-            manifest.options.clone(),
-        )?;
+        let provider = registry.resolve(&format!("local/{}", manifest.model))?;
         let (request, dispatch) = prepare(&provider, scenario, &manifest.context_input)?;
         let provider = counted(provider);
         let requests = provider.ledger();

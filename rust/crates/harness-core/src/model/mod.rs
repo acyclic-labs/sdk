@@ -21,6 +21,7 @@ mod media;
 pub use image::image_media_type;
 mod prefix;
 mod preparation;
+mod profile;
 mod provider;
 mod reasoning;
 mod request;
@@ -55,6 +56,7 @@ pub(crate) use preparation::{
     charge_items, clone_content, clone_file, clone_messages, clone_model, clone_tool_definition,
     clone_value, hash_bytes, vec_with_capacity,
 };
+pub use profile::ModelProfileBinding;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use provider::NativeModelStream;
 pub use provider::{ModelDispatch, ModelEvent, ModelProvider};
@@ -85,6 +87,7 @@ use serde_json::Value;
 /// Immutable provider-owned model selection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
 pub struct Model {
     /// Application-selected provider.
     pub provider: String,
@@ -92,20 +95,14 @@ pub struct Model {
     pub name: String,
     /// Immutable revision or digest.
     pub revision: String,
-    /// Provider-specific options.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
-    #[serde(deserialize_with = "crate::deserialize_json_value")]
-    #[heap_layout(as = serde_json::Value)]
-    pub options: Value,
 }
 impl Model {
     /// Constructs a validated model selection.
-    pub fn new(provider: String, name: String, revision: String, options: Value) -> Result<Self> {
+    pub fn new(provider: String, name: String, revision: String) -> Result<Self> {
         let value = Self {
             provider,
             name,
             revision,
-            options,
         };
         value.validate()?;
         Ok(value)

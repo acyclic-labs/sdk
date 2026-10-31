@@ -262,12 +262,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
     ));
 
     let (model, _counts) = summary_model(1);
-    let snapshot_model = Model::new(
-        "synthetic".into(),
-        "snapshot-admission".into(),
-        "1".into(),
-        serde_json::json!({}),
-    )?;
+    let snapshot_model = Model::new("synthetic".into(), "snapshot-admission".into(), "1".into())?;
     let build = |pipeline| {
         StockExecutor::new(
             snapshot_model.clone(),
