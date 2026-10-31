@@ -109,6 +109,29 @@ impl Registry {
         self.update_catalog(Changes::Many(catalog.providers), catalog.default_model)
     }
 
+    /// Checkout data cannot authorize a new destination for host credentials.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    pub(crate) fn load_checkout_catalog_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        let catalog = crate::catalog_document::parse(bytes)?;
+        for (provider, config) in &catalog.providers {
+            if config.authentication == Authentication::Anonymous {
+                continue;
+            }
+            let origin = validate_url(&config.base_url)?.origin();
+            let trusted = self
+                .providers
+                .get(provider)
+                .map(|config| validate_url(&config.base_url).map(|url| url.origin()))
+                .transpose()?;
+            if trusted.as_ref() != Some(&origin) {
+                return Err(acyclic_harness_core::Error::Unauthorized(
+                    "checkout provider credentials require a host-admitted origin; use anonymous authentication or register the endpoint through the host".into(),
+                ));
+            }
+        }
+        self.update_catalog(Changes::Many(catalog.providers), catalog.default_model)
+    }
+
     /// Resolves a model without doing network I/O. Remaining slashes belong to the model.
     pub fn resolve(&self, selection: &str) -> Result<ResolvedModel> {
         let (provider, name) = selection
@@ -159,7 +182,12 @@ impl Registry {
         let authenticated = key.is_some() || credential_scope.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         let authenticated = authenticated || codex_login.is_some();
-        if !authenticated && config.authentication != Authentication::Optional {
+        if !authenticated
+            && !matches!(
+                config.authentication,
+                Authentication::Optional | Authentication::Anonymous
+            )
+        {
             return Err(invalid("model provider API key is unavailable"));
         }
         // Bind the effective selected route, not the whole catalog. An edit to

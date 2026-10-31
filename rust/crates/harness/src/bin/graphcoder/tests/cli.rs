@@ -54,7 +54,7 @@ async fn model(directory: &Path) -> Model {
     });
     let catalog = directory.join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({"default_model":"graphcoder-qual/tiny","graphcoder-qual":{
-        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+        "adapter":"responses","authentication":"anonymous","base_url":format!("http://{address}"),
         "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();

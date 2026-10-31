@@ -70,8 +70,8 @@ impl ProfileModels for Providers {
 
 impl Registry {
     /// Binds the single native harness composition. Ordinary files under
-    /// `.harness` select roles, model profiles, project capacity and endpoints;
-    /// the caller supplies only credentials and the owner's approval policy.
+    /// `.harness` select roles, model profiles, project capacity and anonymous
+    /// endpoints. Credential destinations are admitted by the caller's registry.
     pub fn configure(
         mut self,
         workspace: &Path,
@@ -79,7 +79,7 @@ impl Registry {
     ) -> Result<LocalHarnessConfig> {
         let root = workspace.join(".harness");
         if let Some(catalog) = read_optional(&root.join("providers.json"))? {
-            self.load_catalog_bytes(catalog.as_bytes())?;
+            self.load_checkout_catalog_bytes(catalog.as_bytes())?;
         }
         let mut roles = Vec::with_capacity(ROLES.len());
         for (name, builtin) in ROLES {
@@ -220,4 +220,64 @@ fn load_files(root: &Path, key: &str, files: &mut HashMap<String, ModelFiles>) -
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Authentication, Credentials};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn checkout_endpoints_cannot_redirect_host_credentials() -> Result<()> {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().join(".harness");
+        std::fs::create_dir(&root).unwrap();
+        let mut endpoint = crate::default_catalog()["openai"].clone();
+        endpoint.base_url = "https://checkout.example/v1".into();
+        let document = serde_json::to_vec(&serde_json::json!({"openai": &endpoint})).unwrap();
+        std::fs::write(root.join("providers.json"), &document).unwrap();
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let credentials = || {
+            let mut credentials = Credentials::default();
+            let reads = reads.clone();
+            credentials.source = Some(Arc::new(move |_, _| {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(Some("credential-boundary-control".into()))
+            }));
+            credentials
+        };
+        let refused = Registry::new(credentials())?.configure(workspace.path(), None);
+        assert!(matches!(refused, Err(Error::Unauthorized(_))));
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+
+        // Explicit host registration, unlike checkout content, admits the origin.
+        let mut trusted = Registry::new(credentials())?;
+        trusted.register("openai".into(), endpoint.clone())?;
+        trusted.configure(workspace.path(), None)?;
+        assert!(reads.load(Ordering::SeqCst) > 0);
+
+        // Anonymous selection must not even observe an available saved key.
+        reads.store(0, Ordering::SeqCst);
+        endpoint.authentication = Authentication::Anonymous;
+        endpoint.token_counter = Some(crate::TokenCounterSpec {
+            path: "count".into(),
+            adapter: endpoint.adapter,
+            response_field: crate::TokenCountField::InputTokens,
+            framing_tokens: 0,
+        });
+        let document = serde_json::to_vec(&serde_json::json!({
+            "default_model": "openai/gpt-6.1-sol", "openai": &endpoint,
+        }))
+        .unwrap();
+        let mut anonymous = Registry::new(credentials())?;
+        anonymous.load_checkout_catalog_bytes(&document)?;
+        let selected = anonymous.resolve("openai/gpt-6.1-sol")?;
+        assert!(selected.key.is_none());
+        assert!(selected.codex_login.is_none());
+        assert_eq!(selected.config.base_url, endpoint.base_url);
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
 }
