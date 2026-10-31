@@ -589,7 +589,7 @@ impl SkillReader for ProjectCatalog<'_> {
         relative: &'a str,
         cut: &'a Self::Revision,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>> {
+    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
         Box::pin(async move {
             let path = format!("/{relative}");
             let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
@@ -645,7 +645,7 @@ impl SkillReader for ProjectCatalog<'_> {
                     &mut accounting,
                 )
                 .await?;
-            Ok((prefix.bytes.to_vec(), pinned))
+            Ok((prefix.bytes, pinned))
         })
     }
 }
@@ -722,7 +722,7 @@ impl SkillReader for UserCatalogSource<'_> {
         path: &'a str,
         reference: &'a SourceReference,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>> {
+    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
         Box::pin(async move {
             let cancellation = self.work.cancellation();
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
@@ -766,7 +766,7 @@ impl SkillReader for UserCatalogSource<'_> {
             let pinned = self
                 .sources
                 .retain(self.records, self.source, self.root, &path, node)?;
-            Ok((prefix.bytes.to_vec(), pinned))
+            Ok((prefix.bytes, pinned))
         })
     }
 }
