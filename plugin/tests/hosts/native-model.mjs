@@ -15,7 +15,7 @@ import {nativeHost} from './native-host.mjs';
 // Sandbox and approval policy stay unchanged. Codex asks the plugin's
 // permission hook, which the owner's approval policy answers; Claude Code
 // approves the same coordination tools by its native allow list.
-async function launch(host,{url,root,packageRoot,workspace,env,tools,prompt}) {
+async function launch(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt}) {
  if(host==='codex') {
   const policy=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
@@ -29,7 +29,7 @@ async function launch(host,{url,root,packageRoot,workspace,env,tools,prompt}) {
   Object.assign(env,{CLAUDE_CODE_USE_FOUNDRY:'1',CLAUDE_CODE_SKIP_FOUNDRY_AUTH:'1',
    ANTHROPIC_FOUNDRY_BASE_URL:url.replace(/\/v1$/,''),CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'});
   const settings=join(root,'claude-policy.json');
-  await writeFile(settings,JSON.stringify({permissions:{allow:tools.map(name=>'mcp__plugin_acyclic_acyclic-sessions__'+name)}}));
+  await writeFile(settings,JSON.stringify({permissions:{allow:[...tools.map(name=>'mcp__plugin_acyclic_acyclic-sessions__'+name),...nativePermissions]}}));
   const policy=['--model','claude-haiku-5-5','--settings',settings,'--permission-mode','default',
    '--plugin-dir',join(packageRoot,'claude'),'--add-dir',workspace];
   return {policy,args:['-p',prompt,'--output-format','stream-json','--verbose',...policy]};
@@ -43,7 +43,7 @@ async function launch(host,{url,root,packageRoot,workspace,env,tools,prompt}) {
 // production package, install through the shipping CLI or the host's native
 // plugin directory, open the root through the workspace API, then run the
 // actual host once against the caller's mock endpoint.
-export async function installedHost({host,processes,fixture,capture,tools,prompt,answer}) {
+export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer}) {
  const native=await nativeHost(host,fixture.env);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
@@ -89,7 +89,7 @@ export async function installedHost({host,processes,fixture,capture,tools,prompt
   step='open native root through the workspace API';
   const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
   assert.equal(opened.code,0,opened.stderr);
-  const {policy,args}=await launch(host,{url:fixture.env.E2E_MOCK_URL,root,packageRoot,workspace,env,tools,prompt});
+  const {policy,args}=await launch(host,{url:fixture.env.E2E_MOCK_URL,root,packageRoot,workspace,env,tools,nativePermissions,prompt});
   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
   const completed=await run(native.program,[...native.args,...args]);
