@@ -1,0 +1,9 @@
+{
+  "name": "@acyclic/typescript-bundle-source",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "esbuild": "0.28.2",
+    "sucrase": "3.35.1"
+  }
+}

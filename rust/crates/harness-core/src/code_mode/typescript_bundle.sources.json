@@ -1,0 +1,246 @@
+{
+  "format": 1,
+  "upstream": "https://github.com/alangpierce/sucrase",
+  "package": {
+    "name": "sucrase",
+    "version": "3.35.1",
+    "resolved": "https://registry.npmjs.org/sucrase/-/sucrase-3.35.1.tgz",
+    "integrity": "sha512-DhuTmvZWux4H1UOnWMB3sk0sbaCVOoQZjv8u1rDoTV0HTdGem9hkAZtl4JZy8P2z4Bg0nT+YMeOFyVr4zcG5Tw==",
+    "license": "MIT",
+    "dependencies": {
+      "@jridgewell/gen-mapping": "^0.3.2",
+      "commander": "^4.0.0",
+      "lines-and-columns": "^1.1.6",
+      "mz": "^2.7.0",
+      "pirates": "^4.0.1",
+      "tinyglobby": "^0.2.11",
+      "ts-interface-checker": "^0.1.9"
+    },
+    "bin": {
+      "sucrase": "bin/sucrase",
+      "sucrase-node": "bin/sucrase-node"
+    },
+    "engines": {
+      "node": ">=16 || 14 >=14.17"
+    }
+  },
+  "generator": {
+    "name": "esbuild",
+    "version": "0.28.2",
+    "integrity": "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA=="
+  },
+  "exports": {
+    "global": "__harness_typescript",
+    "method": "transform",
+    "input": "string",
+    "output": "string"
+  },
+  "transforms": [
+    "typescript"
+  ],
+  "disableESTransforms": true,
+  "keepUnusedImports": true,
+  "entrySha256": "1b8151432ccde10fb42ac074b3ac8c884c0ccad2a35f9175699c5e0efba17f8e",
+  "lockSha256": "0f16e7c1b6548a1f70c293622694d2c7e465fa07a9f9272407de7504a9f7a9f5",
+  "licenseSha256": "c43b99fc682391ced47fee2bf964bc387ab5e65ba7b626b39cd6d1facd24e6a5",
+  "bundleSha256": "a8bf9904faf47276743723f6ee5e4e097fe0c558c1b8f912cfe8287cc2bb723f",
+  "bundleBytes": 172126,
+  "inputs": [
+    {
+      "path": "node_modules/sucrase/dist/esm/HelperManager.js",
+      "sha256": "40e1a4d3affd2d6508578027bd5bc1402dca3661346ca33840e2b8c892e89e82"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/NameManager.js",
+      "sha256": "425f39b83e823e90a2e1ba1f10ae118b38bb0e0125c5524aea465d4d6efac7b7"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/TokenProcessor.js",
+      "sha256": "1c7cc5e9889cc05ca017a7d810a0f7e2092e0e6fabb243b2514c45af37018f27"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/index.js",
+      "sha256": "7a45c9fdec108be7ef7a7b56d1a9c3ce0a1f05ccb47ea2add22653f3a263fc31"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/plugins/flow.js",
+      "sha256": "9b8d43cd0a89275fa6d8b117506d708f3a246a5a4146f5786e4e39eefe96a093"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/plugins/jsx/index.js",
+      "sha256": "d7708a7d247f481847e410f9fba020cfc929a0989e321f913596f24f7557f541"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/plugins/jsx/xhtml.js",
+      "sha256": "c6b7812f8909469c029ab3eeb65bc0c727819c2ae374e3ef582a64a63ba0afed"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/plugins/types.js",
+      "sha256": "85c51351f603fcf296b2eb8655b6af4456b90bf71669d392ec3229109bac023e"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/plugins/typescript.js",
+      "sha256": "6a970c22b986c51f38e8e744c821ae828d8910408c258f914f7503ef2d746d75"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/tokenizer/index.js",
+      "sha256": "bfb18d0576ad2931d15ab0945144f8de9c7672a945d5a7e566276d7b2f689a19"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/tokenizer/keywords.js",
+      "sha256": "99ff836c64a5f5a2db44d6f168267046343b44ead7e4322652de20e232d802af"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/tokenizer/readWord.js",
+      "sha256": "e6eb78033bd65771510b5e8d9f4452624a76ff8350b0c13e820a6cea8eacbed7"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/tokenizer/readWordTree.js",
+      "sha256": "3d4c06ef437a6e462d2f980b86ee8cd59a4e21daf20797d0a45b1156af65f197"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/tokenizer/state.js",
+      "sha256": "eda46439d56823809dbf44bcf4647eb6b2519c937356f5c81279f73dbe59169e"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/tokenizer/types.js",
+      "sha256": "f0c35cbd76f36bafe60993da68c4566bfc10440c1c517a3baf6bebb2cabdbc1d"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/traverser/base.js",
+      "sha256": "540718e5236bc4febc4d811b2bc184fd6ffabc7860f0465dda94ade646024d39"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/traverser/expression.js",
+      "sha256": "8178e7c3c840e6925b5faf164ba76a9b6e094178a4516e8806a641aa9a63e270"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/traverser/index.js",
+      "sha256": "5bde8156b9c70d6e276208b90460c7a5d405e1b87c42c84a0ebd74ff65d62cf4"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/traverser/lval.js",
+      "sha256": "4cefc59e670c07a6f3ea413ba3e1f529d4ae4b057dba0647a84ab7eafa55469d"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/traverser/statement.js",
+      "sha256": "e3b9989da18fef2c628c1d55e805b97511fc3feb338aa883a9c596be49f06072"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/traverser/util.js",
+      "sha256": "bc94bbadc13af2035732efaf8df834557a92fd3224b46cd5f9592c67af73f8ec"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/util/charcodes.js",
+      "sha256": "22746c8ce81157514b884a3765e056516cd83ead919dd440d5cafd5933f27266"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/util/identifier.js",
+      "sha256": "364148c9f08eddbeba4cacc2c0e282a1a9bd5ef0324922de0258c47225fcc6cf"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/parser/util/whitespace.js",
+      "sha256": "2a3176644abac21cf4d3014eb684f414fa5eb3819d56536cbaf2f8cfb27170a3"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/CJSImportTransformer.js",
+      "sha256": "268dc8808b44df3998607af493df325e1b7773b70158a6b8c9f4f9fb8f9c953c"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/ESMImportTransformer.js",
+      "sha256": "8db2e4c5d7fba7342be48ffe27e61b359de493d31fdfe9eefd584b3f2c420c07"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/FlowTransformer.js",
+      "sha256": "3913cc12b38d6626f567aeaea13f439c248550d0b47cf0eda7fd428c8d571608"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/JSXTransformer.js",
+      "sha256": "a0e577c2923d69170f176585c3424e39b0bec8e07a68a62ad714196b064712a1"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/JestHoistTransformer.js",
+      "sha256": "3eb46b07e3d7daa7cccc61eed1bf60a6558fac92caa84ae3ff96845ba4620dbf"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/NumericSeparatorTransformer.js",
+      "sha256": "09e20c28d7929b43d31d22ab195c33b0fa77ec0d8a7e3c374600e1ed0da15f09"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/OptionalCatchBindingTransformer.js",
+      "sha256": "1dc037e3ca10affb1547eedfa776a23be4c9b974c5a74f0afe3e78921377ae58"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/OptionalChainingNullishTransformer.js",
+      "sha256": "6995ead4265a95fb99b17d5e9ff6df83f9a325d785e3b323332b0b9ffdf5bf47"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/ReactDisplayNameTransformer.js",
+      "sha256": "9aad52e8860bb46b02a42c1bbae6f685f2977d31b290c506dad1c1038010e3c7"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/ReactHotLoaderTransformer.js",
+      "sha256": "c3f855a290ad8a48e79fef1aa9a576c2d10a3f67f058172a9b38ccb28bba58ef"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/RootTransformer.js",
+      "sha256": "131f5202c795d325e52a9b0775ecee56a88fd9ffaab97b2a8aaa4b10ea9d201e"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/Transformer.js",
+      "sha256": "a46f119f74c96a28a1d828e056decdd910c356dcd133dfaba5e5258afdc007d4"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/transformers/TypeScriptTransformer.js",
+      "sha256": "581b1c506a06dcfea72f0dad024793e7c6ca6fc13c036e40ba4019485dbf777c"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/elideImportEquals.js",
+      "sha256": "a5f4e01d7bb660d37a6429dc172a968eaaec02cfaf3ed18cf903a72226c67b37"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/getClassInfo.js",
+      "sha256": "6aa22e0eb8c213182c2f6eb63596bc14f93c10539e2bf8a517666069ea4fe43d"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/getDeclarationInfo.js",
+      "sha256": "f1b0dcccab7fb76bcf976ac31ccff8800e4fda32efd0fe80775207948296f351"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/getIdentifierNames.js",
+      "sha256": "981a8f5cdf36494c740090525fe1be2c0d8db7eaff157ecf2232b0f25191f4a8"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/getImportExportSpecifierInfo.js",
+      "sha256": "14d4ae78a42c00e2351954c9390bed37a6692d0c6adf5a74af26ec73fdecddfc"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/getJSXPragmaInfo.js",
+      "sha256": "d797c101edd561edf9af7c7fea9a848f9100f6646e26da850e524fedb7882c4e"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/getNonTypeIdentifiers.js",
+      "sha256": "1ff9c9004ba2553133bbf28ea28adc507c1b7ffbb760d822a5ec10c078c75b9b"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/isAsyncOperation.js",
+      "sha256": "3e31f9f9c3df70dc025709c96a38fef6ff3c19b3baced43ea54b120cd744879e"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/isExportFrom.js",
+      "sha256": "c3c484c8b26ef2b543a7cc1c4af4ea332a47f5d50b48648ca031d850a14b3af6"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/isIdentifier.js",
+      "sha256": "5e8df41f33e8eb2228323dcc8f614a2682254cb4cfd151e4944c4944d3891d4f"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/removeMaybeImportAttributes.js",
+      "sha256": "f659e3ed399d0056e7b5a65ed8b3088e15b8a6dad1b84ab8320bb6d08cba8760"
+    },
+    {
+      "path": "node_modules/sucrase/dist/esm/util/shouldElideDefaultExport.js",
+      "sha256": "11afb90ac4e0b1b149576afd6dac9d15fffffe4f5ce13625c08c9a6ba06bc777"
+    }
+  ]
+}
