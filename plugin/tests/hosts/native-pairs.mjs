@@ -23,7 +23,7 @@ export async function nativePair({host,binary,mock,plugin,output,source}) {
  await mkdir(workspace,{recursive:true});await mkdir(join(output,'transcripts'));
  const env=environment(settings),fixture={id:'native-process-pair',binary,workspace,env,output};
  env.E2E_PLUGIN_BINARY=plugin;
- let collector,server,events,pair;
+ let collector,server,events,pair,setupSeconds;
  const scope=new Processes({transcripts:join(output,'transcripts'),onProgress:event=>collector?.observe(event)});
  const captures=[],samples=[];
  const json=(path,value)=>writeFile(path,JSON.stringify(value,null,2)+'\n');
@@ -34,7 +34,7 @@ export async function nativePair({host,binary,mock,plugin,output,source}) {
   ?{id:'paired_shell',name:'exec_command',namespace:'functions',arguments:{cmd:command}}
   :{id:'paired_shell',name:'Bash',arguments:{command}}]},
   {when:{user:prompt,tool_result:'NATIVE_EFFECT_PARENT'},text:[answer]}];
- const scenario={input_tokens:64,steps};
+ const scenario={input_tokens:64,steps},setupOrigin=performance.now();
  try {
   const result=await withOwnedCase({processes:scope,prepare:async()=>{
    await json(join(output,'script.json'),{cases:{bare:scenario,installed:scenario}});
@@ -43,13 +43,16 @@ export async function nativePair({host,binary,mock,plugin,output,source}) {
     key:event=>event.event==='ready'?['ready']:[]});
    env.E2E_MOCK_URL=`http://127.0.0.1:${(await events.keyed('ready')).port}/installed/v1`;
   },run:()=>installedHost({host,processes:scope,fixture,capture:record=>captures.push(record),tools:[],
-   nativePermissions:['Bash'],prompt,answer,execute:async({native,configuration})=>{
+   nativePermissions:['Bash'],prompt,answer,execute:async({native,configuration,run})=>{
+    const version=await run(native.program,[...native.args,'--version']);assert.equal(version.code,0,version.stderr);
     const binding={source,host,host_entry_sha256:await digest(native.entry),
+     host_version:version.stdout.trim(),
      host_lock_sha256:await digest(fileURLToPath(new URL('./package-lock.json',import.meta.url))),
      artifacts:{graphcoder:await digest(binary),mock:await digest(mock),plugin:await digest(plugin)},
      workspace,profile:settings,prompt_sha256:createHash('sha256').update(prompt).digest('hex'),
      policy:host==='codex'?'never/workspace-write':'default/Bash',effect:'PARENT',scenario_sha256:createHash('sha256').update(JSON.stringify(scenario)).digest('hex')};
     await json(join(output,'binding.json'),binding);
+    setupSeconds=(performance.now()-setupOrigin)/1000;
     for(const mode of ['bare','installed']) {
      await rm(join(workspace,'parent.txt'),{force:true});
      const operation=randomUUID();collector=new ProcessPhases(operation);
@@ -75,8 +78,11 @@ export async function nativePair({host,binary,mock,plugin,output,source}) {
   server.child.kill('SIGTERM');await server.closed;
   const records=await recordedRequests(events,join(output,'requests.jsonl'));
   for(const mode of ['bare','installed'])requests({assert:{requests:2},model:{steps}},records.filter(row=>row.case===mode));
+  const namespace=host==='codex'?'mcp__acyclic_sessions':'mcp__plugin_acyclic_acyclic-sessions__';
+  assert.ok(JSON.stringify(records.filter(row=>row.case==='installed')).includes(namespace),'installed native model never observed original coordination namespace');
+  assert.ok(!JSON.stringify(records.filter(row=>row.case==='bare')).includes(namespace),'bare native model still observed plugin coordination');
   await json(join(output,'pair.json'),{...pair,case:result,physical_custody:'requires enclosing original completion receipt',
-   setup_and_case_seconds:result.total_seconds,requests:records});
+   fixture_setup_seconds:setupSeconds,setup_and_case_seconds:result.total_seconds,requests:records});
   return pair;
  } finally {await scope.close();await json(join(output,'captures.json'),captures);}
 }
