@@ -264,14 +264,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     "source belongs to another writer volume",
                 ));
             }
-            let version = source.version();
-            if version.len() != 64 || !version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "file version is not a Filesystem generation",
-                ));
-            }
         }
         let owned_generation = source
             .map(|source| self.host.file_generation(source, io))

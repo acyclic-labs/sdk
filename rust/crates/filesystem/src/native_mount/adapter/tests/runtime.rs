@@ -145,7 +145,7 @@ fn callback_driver_thread_cases() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_place_callback_outlasts_its_callers_cooperative_budget()
 -> Result<(), Box<dyn std::error::Error>> {
     let runtime = CallbackRuntime::create()?;
@@ -206,7 +206,7 @@ fn abandoning_a_blocked_change_never_applies_and_leaves_other_callers_live()
 }
 
 #[test]
-fn callback_runtime_is_safe_inside_multi_and_current_thread_runtimes()
+fn callback_runtime_completes_ready_work_without_parking_current_thread()
 -> Result<(), Box<dyn std::error::Error>> {
     let callback = CallbackRuntime::create()?;
     let multi = tokio::runtime::Builder::new_multi_thread()
@@ -218,21 +218,24 @@ fn callback_runtime_is_safe_inside_multi_and_current_thread_runtimes()
     } else {
         FilesystemProfile::Posix
     };
-    for runtime in [&multi, &current] {
+    multi.block_on(async {
+        let value = callback
+            .block_on(
+                || async {
+                    // This future is deliberately non-Send across a real reactor wait.
+                    let local = std::rc::Rc::new(42_u8);
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    *local
+                },
+                None,
+            )
+            .map_err(capture_io_error)?;
+        assert_eq!(value, 42);
+        Ok::<(), MountSourceError>(())
+    })?;
+    for executor in [&multi, &current] {
         let source = source(profile)?;
-        runtime.block_on(async {
-            let value = callback
-                .block_on(
-                    || async {
-                        // This future is deliberately non-Send across a real reactor wait.
-                        let local = std::rc::Rc::new(42_u8);
-                        tokio::time::sleep(Duration::from_millis(1)).await;
-                        *local
-                    },
-                    None,
-                )
-                .map_err(capture_io_error)?;
-            assert_eq!(value, 42);
+        executor.block_on(async {
             let path = native_test_path("runtime.bin");
             source.volume_id()?;
             let created = boundary(source.cancellation(), |work| {
@@ -252,5 +255,43 @@ fn callback_runtime_is_safe_inside_multi_and_current_thread_runtimes()
             Ok::<(), MountSourceError>(())
         })?;
     }
+    current.block_on(async {
+        let (sent, mut received) = tokio::sync::oneshot::channel();
+        let sibling = tokio::spawn(async move { sent.send(()).unwrap() });
+        // Removing the refusal fails at the park boundary, without hanging.
+        super::runtime::BEFORE_PARK.with_borrow_mut(|hook| {
+            *hook = Some(Box::new(|| {
+                panic!("current-thread bridge parked its producer")
+            }));
+        });
+        let error = callback.block_on(|| &mut received, None).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        boundary(&CancellationToken::new(), |work| {
+            fn refused(result: Result<(), MountSourceError>) {
+                assert!(matches!(
+                    result,
+                    Err(MountSourceError::NativeWork(
+                        crate::NativeTreeMaterializationError::Io(error)
+                    )) if error.kind() == std::io::ErrorKind::WouldBlock
+                ));
+            }
+            let prepared = callback.prepare_native_wait(work)?;
+            refused(callback.wait_prepared(prepared, || async {
+                (&mut received).await.map_err(|_| MountSourceError::Stale)
+            }));
+            let prepared = callback.prepare_native_wait(work)?;
+            let future = std::pin::pin!(async {
+                (&mut received).await.map_err(|_| MountSourceError::Stale)
+            });
+            refused(callback.poll_prepared(prepared, future));
+            Ok(())
+        })?;
+        super::runtime::BEFORE_PARK.with_borrow_mut(|hook| {
+            assert!(hook.take().is_some());
+        });
+        received.await?;
+        sibling.await?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })?;
     Ok(())
 }
