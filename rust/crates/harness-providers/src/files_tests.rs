@@ -124,7 +124,7 @@ fn with_parts(
 #[tokio::test]
 async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> Result<()> {
     for (adapter, _) in fixtures() {
-        let (provider, _) = provider(adapter, 200);
+        let (mut provider, _) = provider(adapter, 200);
         let original = file(b"child result", "text/plain")?;
         let notice = ModelContentPart::Notices {
             notices: vec![acyclic_harness_core::conversation::wire::Notice {
@@ -163,9 +163,12 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             data: b"child result".to_vec(),
             reads: AtomicUsize::new(0),
         });
-        let bound = provider.bind_content(reader.clone(), 4096)?;
-        let mut files = crate::files::resolve(&bound.files, prepared.request(), None).await?;
-        let actual = projection::body_with_files(&bound, prepared.request(), &mut files)?;
+        provider.files = crate::files::Files {
+            reader: Some(reader.clone()),
+            maximum_bytes: 4096,
+        };
+        let mut files = crate::files::resolve(&provider.files, prepared.request(), None).await?;
+        let actual = projection::body_with_files(&provider, prepared.request(), &mut files)?;
         assert!(
             files.0.next().is_none(),
             "the original file is consumed once"
@@ -175,13 +178,13 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             crate::files::FileText(vec![String::from("child result").into()].into_iter());
         assert_eq!(
             actual,
-            projection::body_with_files(&bound, split.request(), &mut expected_files)?
+            projection::body_with_files(&provider, split.request(), &mut expected_files)?
         );
         // Event metadata cannot turn arbitrary text into an admitted event
         // attachment. JSON references alone retain no file read authority.
         assert!(
             with_parts(
-                &bound,
+                &provider,
                 vec![
                     notice.clone(),
                     ModelContentPart::Text {
@@ -191,7 +194,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             )
             .is_err()
         );
-        let metadata_only = with_parts(&bound, vec![notice])?;
+        let metadata_only = with_parts(&provider, vec![notice])?;
         assert_eq!(
             metadata_only.request().messages[0]
                 .content
