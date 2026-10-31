@@ -564,14 +564,7 @@ impl RecordCache {
         ]
         .into_iter()
         .flatten()
-        .filter_map(|(key, value)| {
-            #[cfg(test)]
-            self.listing_visits.set(self.listing_visits.get() + 1);
-            match (key, value) {
-                (Key::Listing(_, index), Value::Listing(listing)) => Some((*index, listing)),
-                _ => None,
-            }
-        })
+        .filter_map(|(key, value)| self.listing_entry(key, value))
         .max_by_key(|(index, _)| *index)
     }
 
@@ -596,10 +589,16 @@ impl RecordCache {
                     .map(|(key, (value, _))| (key, value)),
             )
             .filter(|_| self.access.allows())
-            .filter_map(|(key, value)| match (key, value) {
-                (Key::Listing(_, index), Value::Listing(listing)) => Some((*index, listing)),
-                _ => None,
-            })
+            .filter_map(|(key, value)| self.listing_entry(key, value))
+    }
+
+    fn listing_entry<'a>(&self, key: &Key, value: &'a Value) -> Option<(u32, &'a Listing)> {
+        #[cfg(test)]
+        self.listing_visits.set(self.listing_visits.get() + 1);
+        match (key, value) {
+            (Key::Listing(_, index), Value::Listing(listing)) => Some((*index, listing)),
+            _ => None,
+        }
     }
 
     /// Mark displayed entries most recently used.
@@ -613,7 +612,6 @@ impl RecordCache {
     /// facts (and the records they own) are in use too. The walk visits only
     /// cached entries, so an unbounded window costs what is cached.
     pub fn touch_range(&mut self, stream: &StreamPath, from: u64, to: u64) {
-        let mut keys = Vec::new();
         let mut path = stream.clone();
         let mut end = to;
         for _ in 0..=self.meta.len() {
@@ -623,11 +621,12 @@ impl RecordCache {
                 .as_ref()
                 .map_or(from, |origin| from.max(origin.forked_at));
             if own < end {
-                keys.extend(
-                    self.entries
-                        .range(Key::Record(path.clone(), own)..Key::Record(path.clone(), end))
-                        .map(|(key, _)| key.clone()),
-                );
+                for (key, entry) in self
+                    .entries
+                    .range_mut(Key::Record(path.clone(), own)..Key::Record(path.clone(), end))
+                {
+                    touch_entry(&mut self.lru, &mut self.clock, key, entry);
+                }
             }
             match fork {
                 Some(origin) if from < origin.forked_at && from < end => {
@@ -637,9 +636,6 @@ impl RecordCache {
                 _ => break,
             }
         }
-        for key in keys {
-            self.touch(&key);
-        }
     }
 
     /// Mark a displayed listing page most recently used.
@@ -648,12 +644,8 @@ impl RecordCache {
     }
 
     fn touch(&mut self, key: &Key) {
-        let clock = self.clock + 1;
         if let Some(entry) = self.entries.get_mut(key) {
-            self.lru.remove(&entry.used);
-            entry.used = clock;
-            self.lru.insert(clock, key.clone());
-            self.clock = clock;
+            touch_entry(&mut self.lru, &mut self.clock, key, entry);
         }
     }
 
@@ -1062,6 +1054,13 @@ impl RecordCache {
         *self = restored;
         Ok(())
     }
+}
+
+fn touch_entry(lru: &mut BTreeMap<u64, Key>, clock: &mut u64, key: &Key, entry: &mut Entry) {
+    lru.remove(&entry.used);
+    *clock += 1;
+    entry.used = *clock;
+    lru.insert(*clock, key.clone());
 }
 
 fn path_len(key: &Key) -> usize {
