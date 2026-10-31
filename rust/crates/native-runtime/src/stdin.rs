@@ -5,7 +5,6 @@
 //! blocking slot runs only work that completes on its own. One reader thread
 //! per process owns the descriptor and hands each chunk over a one-slot
 //! channel, which is its backpressure.
-use bytes::Bytes;
 use std::{
     io::{self, Read},
     pin::Pin,
@@ -16,13 +15,18 @@ use tokio::{
     io::{AsyncRead, ReadBuf},
     sync::mpsc,
 };
+use zeroize::{Zeroize, Zeroizing};
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
 
-/// Input read on its own thread; end of input is a zero-byte read.
+/// Input read on its own process-owned thread; end of input is a zero-byte read.
+/// Queued and unread bytes are scrubbed on destruction, consumed bytes immediately.
+/// An unexpected reader loss is `BrokenPipe`, rather than a successful EOF.
 pub struct Stdin {
-    chunks: mpsc::Receiver<io::Result<Bytes>>,
-    current: Bytes,
+    chunks: mpsc::Receiver<io::Result<Zeroizing<Vec<u8>>>>,
+    current: Zeroizing<Vec<u8>>,
+    consumed: usize,
+    eof: bool,
 }
 
 /// This process's stdin. It has one reader, so a second call is refused.
@@ -45,13 +49,20 @@ fn reader(mut input: impl Read + Send + 'static) -> io::Result<Stdin> {
     std::thread::Builder::new()
         .name("acyclic-stdin".into())
         .spawn(move || {
-            let mut buffer = vec![0; 64 * 1024];
+            let mut buffer = Zeroizing::new(vec![0; 64 * 1024]);
             loop {
                 let chunk = match input.read(&mut buffer) {
-                    Ok(0) => return,
+                    Ok(0) => {
+                        let _closed = sender.blocking_send(Ok(Zeroizing::new(Vec::new())));
+                        return;
+                    }
                     Ok(read) => buffer
-                        .get(..read)
-                        .map(Bytes::copy_from_slice)
+                        .get_mut(..read)
+                        .map(|bytes| {
+                            let chunk = Zeroizing::new(bytes.to_vec());
+                            bytes.zeroize();
+                            chunk
+                        })
                         .ok_or_else(|| {
                             io::Error::new(
                                 io::ErrorKind::InvalidData,
@@ -70,7 +81,9 @@ fn reader(mut input: impl Read + Send + 'static) -> io::Result<Stdin> {
         })?;
     Ok(Stdin {
         chunks,
-        current: Bytes::new(),
+        current: Zeroizing::new(Vec::new()),
+        consumed: 0,
+        eof: false,
     })
 }
 
@@ -81,15 +94,25 @@ impl AsyncRead for Stdin {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        if this.current.is_empty() {
+        if buf.remaining() == 0 || this.eof {
+            return Poll::Ready(Ok(()));
+        }
+        if this.consumed == this.current.len() {
             match ready!(this.chunks.poll_recv(cx)) {
-                Some(Ok(chunk)) => this.current = chunk,
+                Some(Ok(chunk)) => {
+                    this.eof = chunk.is_empty();
+                    this.current = chunk;
+                    this.consumed = 0;
+                }
                 Some(Err(error)) => return Poll::Ready(Err(error)),
-                None => return Poll::Ready(Ok(())),
+                None => return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
             }
         }
-        let read = this.current.len().min(buf.remaining());
-        buf.put_slice(&this.current.split_to(read));
+        let read = (this.current.len() - this.consumed).min(buf.remaining());
+        let chunk = &mut this.current[this.consumed..this.consumed + read];
+        buf.put_slice(chunk);
+        chunk.zeroize();
+        this.consumed += read;
         Poll::Ready(Ok(()))
     }
 }

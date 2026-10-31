@@ -6,7 +6,7 @@ use acyclic_auth::{
     secrets::{Client, HttpTransport},
 };
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Operation {
@@ -137,10 +137,19 @@ fn input_error() -> Error {
 pub(super) async fn execute(arguments: &[String]) -> Result<Value, Error> {
     let options = Options::parse(arguments)?;
     let transport = HttpTransport::new(&options.endpoint).map_err(client_error)?;
-    let bytes = private_file::read(
-        &options.bearer_file,
-        acyclic_auth::credential::MAX_CREDENTIAL_BYTES as u64,
+    let bearer_file = options.bearer_file;
+    let bytes = acyclic_native_runtime::run_blocking_io(
+        move || {
+            private_file::read(
+                &bearer_file,
+                acyclic_auth::credential::MAX_CREDENTIAL_BYTES as u64,
+            )
+        },
+        None,
     )
+    .map_err(|_| input_error())?
+    .await
+    .map_err(|_| input_error())?
     .map_err(|_| input_error())?;
     let token = std::str::from_utf8(&bytes.0)
         .map_err(|_| input_error())?
@@ -172,9 +181,12 @@ pub(super) async fn execute(arguments: &[String]) -> Result<Value, Error> {
         Operation::Put => {
             let mut value = match options.value_file {
                 Some(file) => {
-                    read_value(&mut std::fs::File::open(file).map_err(|_| input_error())?)?
+                    acyclic_native_runtime::run_blocking_io(move || read_value_file(&file), None)
+                        .map_err(|_| input_error())?
+                        .await
+                        .map_err(|_| input_error())??
                 }
-                None => read_value(&mut std::io::stdin().lock())?,
+                None => read_stdin_value().await?,
             };
             let request = Zeroizing::new(SecretPutRequest {
                 scope: options.scope,
@@ -200,6 +212,51 @@ pub(super) async fn execute(arguments: &[String]) -> Result<Value, Error> {
                 .map_err(|_| client_error(acyclic_auth::secrets::Error::InvalidResponse))
         }
     }
+}
+
+async fn read_stdin_value() -> Result<Zeroizing<String>, Error> {
+    use tokio::io::AsyncReadExt as _;
+    let mut input = acyclic_native_runtime::stdin().map_err(|_| input_error())?;
+    let mut value = Zeroizing::new(Vec::new());
+    let mut chunk = Zeroizing::new([0; 8192]);
+    loop {
+        let read = input.read(&mut *chunk).await.map_err(|_| input_error())?;
+        if read == 0 {
+            break;
+        }
+        value.extend_from_slice(&chunk[..read]);
+        chunk[..read].zeroize();
+    }
+    match String::from_utf8(std::mem::take(&mut *value)) {
+        Ok(value) => Ok(Zeroizing::new(value)),
+        Err(error) => {
+            let _bytes = Zeroizing::new(error.into_bytes());
+            Err(input_error())
+        }
+    }
+}
+
+fn read_value_file(path: &std::path::Path) -> Result<Zeroizing<String>, Error> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // Reject an open FIFO without waiting for its writer.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    if !std::fs::metadata(path)
+        .map_err(|_| input_error())?
+        .is_file()
+    {
+        return Err(input_error());
+    }
+    let mut file = options.open(path).map_err(|_| input_error())?;
+    if !file.metadata().map_err(|_| input_error())?.is_file() {
+        return Err(input_error());
+    }
+    read_value(&mut file)
 }
 
 fn read_value(input: &mut impl std::io::Read) -> Result<Zeroizing<String>, Error> {
@@ -240,6 +297,68 @@ mod tests {
     #[tokio::test]
     async fn secrets_cli_value_file_uses_private_bearer_and_shared_http_with_redacted_failures()
     -> Result<(), Box<dyn std::error::Error>> {
+        const OPEN_INPUT: &str = "ACYCLIC_SECRETS_OPEN_INPUT_CONTROL";
+        if let Some(mode) = std::env::var_os(OPEN_INPUT) {
+            if mode == "value" {
+                assert_eq!(*read_stdin_value().await?, "λ\n".repeat(30_000));
+                return Ok(());
+            }
+            if mode == "invalid" {
+                let Err(error) = read_stdin_value().await else {
+                    return Err("invalid UTF-8 input admitted".into());
+                };
+                assert_eq!(error.code, "secrets_input_error");
+                return Ok(());
+            }
+            let input = read_stdin_value();
+            tokio::pin!(input);
+            tokio::select! {
+                biased;
+                _ = &mut input => return Err("open empty stdin completed before EOF".into()),
+                completion = acyclic_native_runtime::run_blocking_io(|| 7, None)? => {
+                    assert_eq!(completion?, 7);
+                }
+            }
+            // Cancel the EOF wait while the original parent still owns its writer.
+            return Ok(());
+        }
+        for mode in ["open", "value", "invalid"] {
+            let executable = std::env::current_exe()?;
+            let output = acyclic_native_runtime::run_blocking_io(
+            move || {
+                let mut child = std::process::Command::new(executable)
+                    .args([
+                        "--exact",
+                        "secrets::tests::secrets_cli_value_file_uses_private_bearer_and_shared_http_with_redacted_failures",
+                        "--nocapture",
+                    ])
+                    .env(OPEN_INPUT, mode)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()?;
+                let mut writer = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+                if mode != "open" {
+                    use std::io::Write as _;
+                    match mode {
+                        "value" => writer.write_all("λ\n".repeat(30_000).as_bytes())?,
+                        _ => writer.write_all(&[0xff])?,
+                    }
+                    drop(writer);
+                    return child.wait_with_output();
+                }
+                let result = child.wait_with_output();
+                drop(writer);
+                result
+            },
+            None,
+        )?
+        .await??;
+            assert!(
+                output.status.success(),
+                "{mode} input child failed: {output:?}"
+            );
+        }
         use axum::{
             Router,
             body::Bytes,
