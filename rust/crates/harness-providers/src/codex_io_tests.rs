@@ -38,10 +38,12 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
     let mut parent = work.claim(0, 0, WorkCounters::UNCHARGED)?;
     let mut io = CredentialIo::new(Some(&mut parent))?;
     let mut permit = Some(login.refresh.acquire().await.ok().unwrap());
-    let original = read(&path, &mut io)?;
+    let (_, original) = load(&path, &mut io)?;
     let replacement = jwt(now + 7200);
-    let mut updated = document(&original, &mut io)?;
-    updated["tokens"]["access_token"] = json!(replacement);
+    let updated = RefreshUpdate {
+        tokens: json!({"access_token":replacement}),
+        last_refresh: original["last_refresh"].clone(),
+    };
     let (entered, entering) = futures::channel::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
     let publication = io
@@ -107,9 +109,11 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
     let mut io = CredentialIo::new(None)?;
     let mut permit = Some(login.refresh.acquire().await.ok().unwrap());
     let path = root.path().join("auth.json");
-    let original = read(&path, &mut io)?;
-    let mut updated = document(&original, &mut io)?;
-    updated["tokens"]["access_token"] = json!(jwt(now + 10_800));
+    let (_, original) = load(&path, &mut io)?;
+    let updated = RefreshUpdate {
+        tokens: json!({"access_token":jwt(now + 10_800)}),
+        last_refresh: original["last_refresh"].clone(),
+    };
     let (producer, event) = std::sync::mpsc::channel::<()>();
     drop(producer);
     let error = io

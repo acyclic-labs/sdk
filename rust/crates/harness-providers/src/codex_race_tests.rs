@@ -6,7 +6,7 @@ fn cli_write_after_staging_before_final_comparison_is_adopted() -> Result<()> {
     for account_switch in [false, true] {
         let (root, login, _) = fixture(&jwt(0), 200)?;
         let path = root.path().join("auth.json");
-        let (original, _) = load(&path, &mut CredentialIo::new(None)?)?;
+        let (_, original) = load(&path, &mut CredentialIo::new(None)?)?;
         let mut cli = auth("cli-access");
         cli["tokens"]["refresh_token"] = json!("cli-rotated");
         if account_switch {
@@ -14,10 +14,14 @@ fn cli_write_after_staging_before_final_comparison_is_adopted() -> Result<()> {
         }
         let cli_bytes = serde_json::to_vec(&cli).expect("fixture encoding");
         login.check_account(&auth("original"))?;
+        let mut updated = auth("provider-access");
         let adopted = persist_with(
             &path,
             &original,
-            auth("provider-access"),
+            RefreshUpdate {
+                tokens: updated["tokens"].take(),
+                last_refresh: updated["last_refresh"].take(),
+            },
             || {
                 // The initial comparison has succeeded, but the final re-read is still ahead.
                 let staged: Vec<_> = std::fs::read_dir(root.path())
@@ -287,12 +291,24 @@ async fn metadata_only_cli_edit_keeps_rotated_tokens_and_unrelated_fields() -> R
 
 #[test]
 fn publication_distinguishes_merged_metadata_from_concurrent_credentials() -> Result<()> {
-    for credentials_changed in [false, true] {
+    for (credentials_changed, partial_update) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
         let (root, _, _) = fixture(&jwt(0), 200)?;
         let path = root.path().join("auth.json");
-        let original = std::fs::read(&path).unwrap();
+        let (_, original) = load(&path, &mut CredentialIo::new(None)?)?;
         let mut refreshed = auth("rotated-access");
         refreshed["tokens"]["refresh_token"] = json!("rotated-refresh");
+        if partial_update {
+            refreshed["tokens"]
+                .as_object_mut()
+                .unwrap()
+                .remove("refresh_token");
+            refreshed["tokens"]
+                .as_object_mut()
+                .unwrap()
+                .remove("id_token");
+        }
         let mut cli = auth(&jwt(0));
         cli["agent_identity"] = json!({"metadata":"after-staging"});
         if credentials_changed {
@@ -301,7 +317,10 @@ fn publication_distinguishes_merged_metadata_from_concurrent_credentials() -> Re
         let merged = persist_with(
             &path,
             &original,
-            refreshed,
+            RefreshUpdate {
+                tokens: refreshed["tokens"].take(),
+                last_refresh: refreshed["last_refresh"].take(),
+            },
             || {
                 std::fs::write(&path, serde_json::to_vec_pretty(&cli).unwrap())
                     .map_err(|_| invalid("fixture write"))
@@ -324,7 +343,19 @@ fn publication_distinguishes_merged_metadata_from_concurrent_credentials() -> Re
             }
         };
         assert_eq!(merged["tokens"]["access_token"], "rotated-access");
-        assert_eq!(merged["tokens"]["refresh_token"], "rotated-refresh");
+        assert_eq!(
+            merged["tokens"]["refresh_token"],
+            if partial_update {
+                original["tokens"]["refresh_token"].clone()
+            } else {
+                json!("rotated-refresh")
+            }
+        );
+        assert_eq!(merged["tokens"]["id_token"], original["tokens"]["id_token"]);
+        assert_eq!(
+            merged["tokens"]["account_id"],
+            original["tokens"]["account_id"]
+        );
         assert_eq!(merged["agent_identity"], cli["agent_identity"]);
         assert_eq!(decode_auth(&std::fs::read(path).unwrap())?, merged);
     }
@@ -354,13 +385,14 @@ proptest! {
         let mut refreshed = original.clone();
         refreshed["tokens"]["access_token"] = json!(access);
         refreshed["tokens"]["refresh_token"] = json!(refresh);
+        let refreshed = RefreshUpdate { tokens: refreshed["tokens"].take(), last_refresh: refreshed["last_refresh"].take() };
         let merged = merge_refresh(&original, &serde_json::to_vec(&current).unwrap(), &current, &refreshed, &mut CredentialIo::new(None).unwrap()).unwrap();
         prop_assert_eq!(merged.is_none(), changed.is_some());
         if let Some(merged) = merged {
             prop_assert_eq!(&merged["agent_identity"], &current["agent_identity"]);
             prop_assert_eq!(&merged["tokens"]["extra"], &current["tokens"]["extra"]);
-            prop_assert_eq!(&merged["tokens"]["access_token"], &refreshed["tokens"]["access_token"]);
-            prop_assert_eq!(&merged["tokens"]["refresh_token"], &refreshed["tokens"]["refresh_token"]);
+            prop_assert_eq!(&merged["tokens"]["access_token"], &refreshed.tokens["access_token"]);
+            prop_assert_eq!(&merged["tokens"]["refresh_token"], &refreshed.tokens["refresh_token"]);
         }
     }
 }
@@ -372,6 +404,10 @@ fn explicit_chatgpt_mode_is_metadata_when_the_original_mode_was_implicit() -> Re
     let current = auth("original");
     let mut refreshed = original.clone();
     refreshed["tokens"]["refresh_token"] = json!("rotated-single-use");
+    let refreshed = RefreshUpdate {
+        tokens: refreshed["tokens"].take(),
+        last_refresh: refreshed["last_refresh"].take(),
+    };
     let merged = merge_refresh(
         &original,
         &serde_json::to_vec(&current).unwrap(),
