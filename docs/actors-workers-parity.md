@@ -127,7 +127,9 @@ No entries, skips, timeout increases or retry-based test outcomes are introduced
    at 2s and permits six retries (the supplied 1s/six-failure description differs).
 9. Implement actual WebSocket upgrade/hibernation, runtime-held connection
    ownership, tags/attachments/auto-response and lifecycle dispatch; existing
-   SDK socket declarations alone do not implement the engine.
+   SDK socket declarations alone do not implement the engine. The local runtime's
+   engine (`local::Sockets`) passes the shared `conformance::sockets` suite, which
+   a Cloud socket backend runs unchanged.
 10. Match SDK route grammar/specificity/negation vectors at Edge and retain custom
     domain proof checks. Parse default hosts using the exact configured suffix,
     exactly two identity labels and byte-exact hostname() re-rendering.

@@ -65,7 +65,12 @@ message SessionSubscription {
   reserved "children", "fs_publications";
   oneof kind {
     SessionFollow follow = 10;
-    bytes actor_socket = 13; // RESERVED FOR actor-sockets: encoded Actors message
+    // Encoded Actors socket open request, admitted as actors/invoke on the
+    // actor's resource. resume is {0, empty} and filter is absent. Never
+    // replayed on reconnect. The peer sends its frames as SessionData
+    // actor_socket on this channel; removing the channel, credential loss or
+    // the end of the session ends the socket.
+    bytes actor_socket = 13;
     bytes actor_call = 14; // canonical encoded Actors invocation; never auto-replayed
     // One finite page of direct children, answered on the session exactly as
     // StreamService.ChildrenPage answers it. resume is {0, empty} and filter is
@@ -136,6 +141,9 @@ message SessionData {
   reserved "child", "fs_publication";
   oneof item {
     Record record = 10;
+    // One whole encoded Actors socket frame, at most MAX_RECORD_BYTES. From
+    // the host, after.next counts frames from 1 and after.opaque is empty;
+    // from the peer, after is absent and frames apply in order.
     bytes actor_socket = 13;
     // Consecutive fragments of ONE encoded Actors response, each at most
     // MAX_RECORD_BYTES. after.next counts chunks starting at 1; after.opaque

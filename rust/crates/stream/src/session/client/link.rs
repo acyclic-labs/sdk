@@ -118,6 +118,16 @@ impl Pool {
         node: &str,
         value: wire::SessionFrame,
     ) -> Result<(), StreamError> {
+        // A refused frame has already evicted its node's session.
+        self.queue(node, value).map(|_refused| ())
+    }
+    /// Queue one frame for `node`; the inner result says whether it was
+    /// queued. The outer error means `node` has no link.
+    pub(super) fn queue(
+        &mut self,
+        node: &str,
+        value: wire::SessionFrame,
+    ) -> Result<Result<(), StreamError>, StreamError> {
         let link = self.links.get_mut(node).ok_or(StreamError::Unavailable)?;
         if value.channel_id == 0
             && let Some(Body::Window(grant)) = &value.body
@@ -125,12 +135,13 @@ impl Pool {
             wire_codec::session::grant_credit(&mut link.credit, grant)?;
         }
         let bytes = value.encoded_len();
-        if let Err(error) = link.sender.push(value, bytes) {
+        let queued = link.sender.push(value, bytes);
+        if let Err(error) = &queued {
             // A full control queue cannot safely retain remote interests after
             // cancellation. Evict this node's session, never the shared pool.
-            self.fail_link(node, &error);
+            self.fail_link(node, error);
         }
-        Ok(())
+        Ok(queued)
     }
     pub(super) fn subscribe(&mut self, id: u64) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
