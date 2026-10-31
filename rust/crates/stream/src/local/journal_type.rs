@@ -1,4 +1,6 @@
 struct Journal {
+    #[cfg(test)]
+    append_admissions: u64,
     /// Holds a descriptor only while recently used; flushes that run
     /// without holding the journal lease it.
     file: acyclic_native_runtime::CachedFile,

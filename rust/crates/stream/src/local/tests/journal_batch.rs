@@ -31,6 +31,11 @@ async fn owned_frame_batches_reopen_in_order_and_release_original_work()
         let visibility = stream.inner.visibility.write().await;
         let publication = stream.inner.publication.write().await;
         let cursor = stream.persist_frames(frames.into_iter()).await?;
+        assert_eq!(
+            stream.inner.journal.lock().unwrap().append_admissions,
+            1,
+            "one proposal must not repeat offset admission for each frame"
+        );
         assert_eq!(stream.inner.required()?, count);
         stream.await_publication(count).await?;
         drop(publication);

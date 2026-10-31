@@ -374,33 +374,42 @@ impl LocalStream {
                 {
                     return Err(stream.cut_crash(cut.as_ref(), fail_cut_truncation));
                 }
-                let offset = {
-                    let mut journal = stream
-                        .inner
-                        .journal
-                        .lock()
-                        .map_err(|_| stream.inner.poison())?;
-                    if frame.deadline.is_some_and(|deadline| {
-                        stream.inner.commit_clock.source.now_unix_millis() >= deadline
-                    }) {
-                        return Err(if written {
-                            // Earlier frames may already be durable. Only reopen
-                            // and replay can resolve this partially published proposal.
-                            stream.inner.fail(LocalStreamFailure::new(
-                                "append",
-                                "partial_proposal_deadline",
-                            ))
-                        } else {
-                            StreamError::DeadlineElapsed
-                        });
-                    }
-                    journal.begin_append(required).map_err(|error| {
+                let initial = if written {
+                    None
+                } else {
+                    Some(
+                        stream
+                            .inner
+                            .journal
+                            .lock()
+                            .map_err(|_| stream.inner.poison())?,
+                    )
+                };
+                if frame.deadline.is_some_and(|deadline| {
+                    stream.inner.commit_clock.source.now_unix_millis() >= deadline
+                }) {
+                    return Err(if written {
+                        // Earlier frames may already be durable. Only reopen
+                        // and replay can resolve this partially published proposal.
+                        stream.inner.fail(LocalStreamFailure::new(
+                            "append",
+                            "partial_proposal_deadline",
+                        ))
+                    } else {
+                        StreamError::DeadlineElapsed
+                    });
+                }
+                let offset = match initial {
+                    Some(mut journal) => journal.begin_append(required).map_err(|error| {
                         stream.inner.fail(LocalStreamFailure::local(
                             "begin_append",
                             &error,
                             stream.work.as_deref(),
                         ))
-                    })?
+                    })?,
+                    // The original completion owns the next offset under the
+                    // publication fence; the initial guard ends before I/O.
+                    None => *cursor,
                 };
                 // Publication owns this offset through completion. Journal
                 // metadata and earlier flush cuts remain available during I/O.

@@ -65,6 +65,8 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let header = encode_header(limits, 0)?;
     file.write_all(&header)?;
     let journal = Journal {
+        #[cfg(test)]
+        append_admissions: 0,
         claim: acyclic_native_runtime::StoreClaim::acquire(&claims.path().join(LOCK_FILE))?,
         file: acyclic_native_runtime::CachedFile::new(file, &path, true, true)?,
         epoch: 0,
