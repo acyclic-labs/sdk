@@ -30,6 +30,3 @@ path = "fuzz_targets/metadata_output.rs"
 test = false
 doc = false
 bench = false
-
-# Retain the pinned documentation and generator dependency graph.
-[workspace]

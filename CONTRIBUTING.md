@@ -45,12 +45,11 @@ The product workspace shares its root `Cargo.lock` with compatible fuzzers,
 proofs and tools. Root commands select the SDK's original default members;
 explicitly select additional packages with `-p PACKAGE`. `--workspace` also
 includes compiler-negative fixtures, so use it only for that intended scope.
-Documentation producers retain separate locks because their exact schema
-dependency differs from the product graph. Historical captured source and
+Documentation and generation packages, their file-identity helper and both fuzz
+packages are workspace members using the root lock. They stay outside
+`default-members`; select them with `cargo test --locked -p sdk-docs` or
+`cargo test --locked -p sdk-generation`. Historical captured source and
 vendored upstream packages retain their original dependency inputs.
-Run the isolated producers with `cargo test --manifest-path
-rust/crates/sdk-docs/Cargo.toml --locked` or `cargo test --manifest-path
-rust/crates/sdk-generation/Cargo.toml --locked`.
 
 Rust-only workspace tests also need the ignored Actors authoring contracts.
 Generate them with the existing locked Rust producer before running Cargo tests;

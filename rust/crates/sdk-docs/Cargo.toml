@@ -15,8 +15,8 @@ sdk-file-identity = { path = "file-identity" }
 cargo_metadata = "=0.23.1"
 public-api = "=0.52.2"
 rustdoc-types = "=0.60.0"
-schemars = "=1.2.2"
-semver = "=1.0.27"
+schemars = { workspace = true }
+semver = "1.0.27"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 ring = "=0.17.14"
@@ -24,11 +24,8 @@ tempfile = "=3.27.0"
 
 [dev-dependencies]
 sha2 = "0.10.9"
-proptest = "=1.11.0"
+proptest = "1.11.0"
 
 [lints.rust]
 unsafe_code = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
-
-# Retain the pinned documentation and generator dependency graph.
-[workspace]
