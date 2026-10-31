@@ -35,6 +35,13 @@ pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usiz
 pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<ToolResult> {
     if name == super::shell::PLATFORM.name {
         if let Value::Object(fields) = result.value {
+            if let Some(text) = fields.get("text").and_then(Value::as_str)
+                && text_projection_len(text) as u64 <= maximum
+            {
+                return Ok(ToolResult {
+                    value: Value::Object(fields),
+                });
+            }
             return shell(fields, usize::try_from(maximum).unwrap_or(usize::MAX))
                 .map(|value| ToolResult { value });
         }
@@ -81,8 +88,7 @@ fn shell(mut fields: Map<String, Value>, maximum: usize) -> Result<Value> {
     // text projection rather than a second JSON rendering of canonical fields.
     fields.insert("omitted_bytes".into(), Value::from(u64::MAX));
     let base = super::shell::presentation(&fields);
-    let overhead =
-        encoded_len(&serde_json::json!({"kind":"parts", "parts":[{"kind":"text", "text":base}]}))?;
+    let overhead = text_projection_len(&base);
     let budget = maximum
         .checked_sub(overhead)
         .ok_or_else(|| bound_too_small(super::shell::PLATFORM.name))?;
@@ -112,6 +118,10 @@ fn suffix(text: &str, budget: usize) -> &str {
         }
     }
     text
+}
+
+fn text_projection_len(text: &str) -> usize {
+    br#"{"kind":"parts","parts":[{"kind":"text","text":""}]}"#.len() + escaped_len(text)
 }
 
 fn bound_too_small(name: &str) -> Error {

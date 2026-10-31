@@ -5,6 +5,16 @@ use std::path::{Component, Path};
 
 pub use acyclic_host_platform::shell::{PLATFORM, ShellSpec};
 
+/// Prepares the bounded model presentation before a backend commits its output.
+/// A streaming backend uses the resulting omission count to retain a complete
+/// spill even when the wire encoding, rather than the raw tail, needs truncation.
+pub fn bounded_result(
+    result: crate::tool::ToolResult,
+    maximum: u64,
+) -> Result<crate::tool::ToolResult> {
+    super::bounds::result(PLATFORM.name, result, maximum)
+}
+
 pub(crate) struct ShellProjection;
 
 impl crate::tool::ToolProjection for ShellProjection {

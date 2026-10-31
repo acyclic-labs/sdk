@@ -102,18 +102,19 @@ impl CheckoutTools {
                 native_process::capture::OutputRetention::Observe,
             )
             .await?;
-        let (stdout, stderr, omitted, spilled) = retained.finish();
         let result = output
             .ok_or_else(|| Error::Conflict("process capture was interrupted".into()))
-            .map(|output| ToolResult {
-                value: serde_json::json!({
-                    "success": output.success, "exit_code": output.exit_code,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "omitted_bytes": omitted,
-                    "spill": spilled.then(|| format!(".volumes/scratch/{spill_name}")),
-                    "stop": output.stop,
-                }),
+            .and_then(|output| {
+                retained.settle(
+                    ToolResult {
+                        value: serde_json::json!({
+                            "success": output.success, "exit_code": output.exit_code,
+                            "spill": format!(".volumes/scratch/{spill_name}"),
+                            "stop": output.stop,
+                        }),
+                    },
+                    maximum_output as u64,
+                )
             });
         Ok((result, state, files, claims))
     }
