@@ -31,7 +31,15 @@ pub fn frontmatter_end(prefix: &[u8]) -> Result<(usize, usize, usize)> {
 
 #[doc(hidden)]
 pub fn parse_frontmatter<T: serde::de::DeserializeOwned>(prefix: &[u8]) -> Result<T> {
-    let (start, end, _) = frontmatter_end(prefix)?;
+    Ok(parse_frontmatter_with_body(prefix)?.0)
+}
+
+/// Parses one header and returns the validated body offset in the same pass.
+#[doc(hidden)]
+pub fn parse_frontmatter_with_body<T: serde::de::DeserializeOwned>(
+    prefix: &[u8],
+) -> Result<(T, usize)> {
+    let (start, end, body) = frontmatter_end(prefix)?;
     let header = prefix
         .get(start..end)
         .ok_or_else(|| Error::Invalid("invalid skill header".into()))?;
@@ -48,5 +56,6 @@ pub fn parse_frontmatter<T: serde::de::DeserializeOwned>(prefix: &[u8]) -> Resul
         with_snippet: false,
     };
     serde_saphyr::from_slice_with_options(header, options)
+        .map(|metadata| (metadata, body))
         .map_err(|error| Error::Invalid(format!("invalid frontmatter: {error}")))
 }
