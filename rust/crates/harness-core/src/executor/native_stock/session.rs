@@ -138,12 +138,14 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
-        let _execution = journal.claim_execution(operation, None)?;
+        let execution = journal.claim_execution(operation, None)?;
         let phase = &mut DispatchPhase::new();
-        StockExecution::ordinary(self)
+        let result = StockExecution::ordinary(self)
             .summarize(journal, None, operation, 0, (source, instruction), phase)
             .await
-            .map(|(summary, _)| summary)
+            .map(|(summary, _)| summary)?;
+        execution.release();
+        Ok(result)
     }
     /// Summarizes inside the parent's existing execution journal.
     pub async fn summarize_in_turn(
@@ -154,11 +156,11 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
-        let _ownership = journal.claim_execution(input.operation_id, None)?;
+        let ownership = journal.claim_execution(input.operation_id, None)?;
         let phase = &mut DispatchPhase::new();
         let execution = StockExecution::ordinary(self);
         execution.validate_turn_input(journal, input).await?;
-        execution
+        let result = execution
             .summarize(
                 journal,
                 Some(input),
@@ -168,7 +170,9 @@ impl StockExecutor {
                 phase,
             )
             .await
-            .map(|(summary, _)| summary)
+            .map(|(summary, _)| summary)?;
+        ownership.release();
+        Ok(result)
     }
     /// Executes a retained/reconciled/admitted model step through the stock engine.
     pub async fn model_step(

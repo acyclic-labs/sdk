@@ -90,20 +90,13 @@ struct Frontmatter {
     reason: Option<String>,
 }
 
-/// Finite allowance for one goal loop; edits do not reset the allowance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+/// Optional allowance for one goal loop; edits do not reset the allowance.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(default, deny_unknown_fields)]
 pub struct GoalContinuationPolicy {
-    /// Maximum unique automatic admissions; zero blocks at the first settle.
-    pub max_continuations: u32,
-}
-
-impl Default for GoalContinuationPolicy {
-    fn default() -> Self {
-        Self {
-            max_continuations: 32,
-        }
-    }
+    /// Selected maximum unique automatic admissions. None continues without an
+    /// allowance; Some(0) blocks at the first settle.
+    pub max_continuations: Option<u32>,
 }
 
 /// Action to publish through the existing task stream or ordinary file writer.
@@ -128,23 +121,31 @@ impl GoalContinuationPolicy {
         admitted_continuations: u32,
     ) -> Option<GoalContinuation> {
         let operation = goal.continuation_operation(task, settled_turn)?;
-        Some(if admitted_continuations >= self.max_continuations {
-            GoalContinuation::Block(self.blocked(goal))
+        if self
+            .max_continuations
+            .is_some_and(|maximum| admitted_continuations >= maximum)
+        {
+            self.blocked(goal).map(GoalContinuation::Block)
         } else {
-            GoalContinuation::Continue(operation)
-        })
+            Some(GoalContinuation::Continue(operation))
+        }
     }
 
     /// GOAL.md contents once this loop's allowance is spent: `goal`'s body,
-    /// blocked with the allowance as its reason.
+    /// blocked with the allowance as its reason. None has no exhausted allowance.
     #[must_use]
-    pub fn blocked(&self, goal: &GoalView) -> String {
+    pub fn blocked(&self, goal: &GoalView) -> Option<String> {
+        let maximum = self.max_continuations?;
         // This fixed ASCII reason, even at u32::MAX, fits GOAL_REASON_BYTES.
         let reason = format!(
             "\"Maximum goal continuations reached (limit {}).\"",
-            self.max_continuations,
+            maximum,
         );
-        status_contents(GoalStatus::Blocked, Some(&reason), &goal.markdown)
+        Some(status_contents(
+            GoalStatus::Blocked,
+            Some(&reason),
+            &goal.markdown,
+        ))
     }
 }
 

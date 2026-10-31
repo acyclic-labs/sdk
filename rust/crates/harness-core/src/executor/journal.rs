@@ -96,13 +96,23 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         0
     }
 
+    /// Acquires original custody or pins the exact occupied producer under the
+    /// same claim lock. Aliases must share this one ownership registry.
+    fn acquire_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<ExecutionAttempt<'a>>;
+
     /// Excludes live attempts before replay can mistake them for crashed work.
-    /// All aliases of an operation must use the same ownership registry.
+    /// The ordinary execution policy is shared by every journal adapter.
     fn claim_execution<'a>(
         &'a self,
         operation: OperationId,
         io: Option<&'a PreparationIo>,
-    ) -> Result<ExecutionClaim<'a>>;
+    ) -> Result<ExecutionClaim<'a>> {
+        self.acquire_execution(operation, io)?.into_owner(io)
+    }
 
     /// Follows an authorized cancellation while awaiting a model, approval or
     /// tool invocation whose executor guarantees cancellation on future drop.

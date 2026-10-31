@@ -1,17 +1,31 @@
 //! Process-local exclusion shared by every adapter of one provider owner.
 
 mod resources;
+mod termination;
+pub use termination::{OperationObservation, OperationTermination};
 
-struct Node {
-    key: [u8; 48],
-    next: Option<Box<Node>>,
+use acyclic_collections::{FixedIndex, IndexWork};
+
+type Storage = Box<dyn Send + Sync>;
+
+struct Registration {
+    observation: OperationObservation,
+    armed: bool,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        if self.armed {
+            self.observation
+                .publish(OperationTermination::ProducerDropped);
+        }
+    }
 }
 
 /// Live operation ownership independent of persisted crash-recovery records.
 pub struct OperationClaims {
     owner: [u8; 16],
-    active: crate::query_sync::SyncMutex<Option<Box<Node>>>,
-    released: crate::query_sync::watch::Sender<()>,
+    active: crate::query_sync::SyncMutex<FixedIndex<Registration, Storage, 48>>,
     resources: resources::Resources,
 }
 
@@ -19,18 +33,71 @@ impl Default for OperationClaims {
     fn default() -> Self {
         Self {
             owner: crate::new_identity(),
-            active: crate::query_sync::SyncMutex::new(None),
-            released: crate::query_sync::watch::channel(()).0,
+            active: crate::query_sync::SyncMutex::new(FixedIndex::default()),
             resources: resources::Resources::default(),
         }
     }
 }
 
-/// An operation and its caller-admitted storage, released together on drop.
-pub struct OperationClaim<'a, H> {
+/// Exclusive ownership of one exact operation until physical guard retirement.
+pub struct OperationClaim<'a> {
     claims: &'a OperationClaims,
     key: [u8; 48],
-    _storage: H,
+    observation: Option<OperationObservation>,
+}
+
+/// Atomic acquisition or an observation pinned to the existing producer.
+pub enum OperationAttempt<'a> {
+    /// Exclusive producer custody, acquired before replay observation.
+    Owned(OperationClaim<'a>),
+    /// The exact predecessor observed under the same exclusion lock.
+    Observed(OperationObservation),
+}
+
+impl<'a> OperationAttempt<'a> {
+    /// Transfers producer custody, or preserves the occupied generation's event.
+    pub fn into_owner(self) -> Result<OperationClaim<'a>, OperationObservation> {
+        match self {
+            Self::Owned(owner) => Ok(owner),
+            Self::Observed(observation) => Err(observation),
+        }
+    }
+}
+
+// Original admission is borrowed for this traversal. Only its owned allocation
+// tokens enter the index; no copied allowance or replacement ledger is created.
+struct Accounting<V, A> {
+    visit: V,
+    admit: A,
+}
+
+impl<H, E, V, A> IndexWork for Accounting<V, A>
+where
+    H: Send + Sync + 'static,
+    V: FnMut() -> Result<(), E>,
+    A: FnMut(u64, u64) -> Result<H, E>,
+{
+    type Error = E;
+    type Allocation = Storage;
+
+    fn check(&mut self) -> Result<(), E> {
+        (self.visit)()
+    }
+
+    fn charge_items(&mut self, items: u64) -> Result<(), E> {
+        for _ in 0..items {
+            (self.visit)()?;
+        }
+        Ok(())
+    }
+
+    fn claim(&mut self, bytes: u64) -> Result<Storage, E> {
+        // Fund both the index node and the erased original token before either
+        // allocation. A zero-sized token has no physical Box allocation.
+        let token_bytes = std::mem::size_of::<H>() as u64;
+        let token = (self.admit)(bytes + token_bytes, 1 + u64::from(token_bytes != 0))?;
+        Ok(Box::new(token))
+    }
 }
 
 impl OperationClaims {
@@ -66,181 +133,180 @@ impl OperationClaims {
         self.owner
     }
 
-    /// Visits each active claim before inspecting it, then admits the exact
-    /// node allocation before construction. Returns `None` for a live duplicate.
-    /// The caller retains its own accounting error type and storage custody.
+    /// Claims a full-width operation key, with work bounded by key width.
+    /// A duplicate visits only its fixed-depth path and allocates nothing.
+    /// `admit(bytes, allocations)` retains the original owned funding for the
+    /// exact index node and its erased token, and the producer's retained event.
+    /// Insertion funds at most two index nodes and one event allocation.
+    /// Refusal or unwinding publishes no partial registration.
     pub fn claim<H, E>(
         &self,
         key: [u8; 48],
-        mut visit: impl FnMut() -> Result<(), E>,
-        admit: impl FnOnce(u64) -> Result<H, E>,
-    ) -> Result<Option<OperationClaim<'_, H>>, E> {
-        // Admission and visit callbacks run before list mutation; unwinding
-        // cannot leave a partially linked node. Retain live claims on poison.
+        visit: impl FnMut() -> Result<(), E>,
+        admit: impl FnMut(u64, u64) -> Result<H, E>,
+    ) -> Result<OperationAttempt<'_>, E>
+    where
+        H: Send + Sync + 'static,
+    {
         let mut active = self
             .active
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut cursor = active.as_deref();
-        while let Some(node) = cursor {
-            visit()?;
-            if node.key == key {
-                return Ok(None);
-            }
-            cursor = node.next.as_deref();
-        }
-        let storage = admit(std::mem::size_of::<Node>() as u64)?;
-        let node = Box::new(Node {
-            key,
-            next: active.take(),
-        });
-        *active = Some(node);
-        Ok(Some(OperationClaim {
-            claims: self,
-            key,
-            _storage: storage,
-        }))
-    }
-
-    /// Waits for a matching live owner to release its claim, including when its
-    /// future is dropped without publishing. Callers retry `claim` after waking.
-    pub async fn wait_until_released(&self, key: [u8; 48]) {
-        // Subscribe before inspecting ownership: a release between that check
-        // and parking remains visible even when it publishes no stream record.
-        let mut released = self.released.subscribe();
-        loop {
-            let held = {
-                let active = self
-                    .active
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let mut cursor = active.as_deref();
-                let mut held = false;
-                while let Some(node) = cursor {
-                    if node.key == key {
-                        held = true;
-                        break;
-                    }
-                    cursor = node.next.as_deref();
-                }
-                held
-            };
-            if !held || released.changed().await.is_err() {
-                return;
-            }
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inserted = false;
+        let registration =
+            active.get_or_try_insert_with(key, &mut Accounting { visit, admit }, |work| {
+                inserted = true;
+                Ok(Registration {
+                    observation: OperationObservation::create(&mut work.admit)?,
+                    armed: true,
+                })
+            })?;
+        let observation = registration.observation.clone();
+        Ok(if inserted {
+            OperationAttempt::Owned(OperationClaim {
+                claims: self,
+                key,
+                observation: Some(observation),
+            })
+        } else {
+            OperationAttempt::Observed(observation)
+        })
     }
 }
 
-impl Drop for OperationClaims {
-    fn drop(&mut self) {
-        // A caller may forget a guard in safe Rust. Drain the remaining nodes
-        // iteratively so registry destruction never recurses with claim count.
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while let Some(mut node) = active.take() {
-            *active = node.next.take();
-        }
+impl OperationClaim<'_> {
+    /// Pins this producer's exact-generation termination event before handoff.
+    pub fn observe(&self) -> OperationObservation {
+        self.observation
+            .as_ref()
+            .expect("live operation owner")
+            .clone()
     }
-}
 
-impl<H> Drop for OperationClaim<'_, H> {
-    fn drop(&mut self) {
-        let mut active = self
+    /// Explicitly retires producer custody. This does not invent a durable result.
+    pub fn release(mut self) {
+        self.retire(OperationTermination::Released);
+    }
+
+    fn retire(&mut self, terminal: OperationTermination) {
+        let Some(observation) = self.observation.take() else {
+            return;
+        };
+        let removed = self
             .claims
             .active
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut cursor = &mut *active;
-        loop {
-            match cursor {
-                Some(node) if node.key == self.key => {
-                    *cursor = node.next.take();
-                    drop(active);
-                    self.claims.released.send_replace(());
-                    return;
-                }
-                Some(node) => cursor = &mut node.next,
-                None => unreachable!("live operation claim disappeared"),
-            }
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove_if(self.key, |registration| {
+                registration.observation.same_generation(&observation)
+            });
+        // Destroy the detached node before releasing its original funding.
+        // The guard's borrow excludes destruction of the provider owner.
+        let (_, mut registration, storage) = removed
+            .expect("live operation claim disappeared")
+            .into_parts();
+        registration.armed = false;
+        drop(registration);
+        drop(storage);
+        observation.publish(terminal);
     }
 }
 
-#[cfg(test)]
-#[cfg(not(loom))]
+impl Drop for OperationClaim<'_> {
+    fn drop(&mut self) {
+        self.retire(OperationTermination::ProducerDropped);
+    }
+}
+
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
-    fn release_wakes_a_registered_waiter_without_a_provider_publication() {
-        use std::{
-            future::Future,
-            sync::{
-                Arc,
-                atomic::{AtomicUsize, Ordering},
-            },
-            task::Context,
-        };
-        struct Wake(AtomicUsize);
-        impl futures::task::ArcWake for Wake {
-            fn wake_by_ref(this: &Arc<Self>) {
-                this.0.fetch_add(1, Ordering::SeqCst);
-            }
+    fn duplicate_claim_work_is_bounded_by_key_width_and_never_allocates() {
+        for population in [1_u32, 4096] {
+            let claims = OperationClaims::default();
+            let owners: Vec<_> = (0..population)
+                .map(|value| {
+                    let mut key = [0; 48];
+                    key[44..].copy_from_slice(&value.to_be_bytes());
+                    claims
+                        .claim(key, || Ok::<_, ()>(()), |_, _| Ok(()))
+                        .unwrap()
+                        .into_owner()
+                        .unwrap()
+                })
+                .collect();
+            let visits = Cell::new(0_u64);
+            assert!(
+                claims
+                    .claim(
+                        [0; 48],
+                        || {
+                            visits.set(visits.get() + 1);
+                            Ok::<_, ()>(())
+                        },
+                        |_, _| -> Result<(), ()> { panic!("duplicate allocated") }
+                    )
+                    .unwrap()
+                    .into_owner()
+                    .is_err()
+            );
+            assert!(visits.get() <= 1 + 3 * (48 * 8 + 1) + 2 * 48);
+            drop(owners);
+            assert!(
+                claims
+                    .claim([0; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
+                    .unwrap()
+                    .into_owner()
+                    .is_ok()
+            );
         }
-        let claims = OperationClaims::default();
-        let owner = claims
-            .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
-            .unwrap()
-            .unwrap();
-        let wake = Arc::new(Wake(AtomicUsize::new(0)));
-        let waker = futures::task::waker(wake.clone());
-        let mut context = Context::from_waker(&waker);
-        let mut wait = Box::pin(claims.wait_until_released([1; 48]));
-        assert!(wait.as_mut().poll(&mut context).is_pending());
-        drop(owner);
-        assert!(wake.0.load(Ordering::SeqCst) > 0);
-        assert!(wait.as_mut().poll(&mut context).is_ready());
-        // A release before the first poll must not be lost either.
-        let mut after_release = Box::pin(claims.wait_until_released([1; 48]));
-        assert!(after_release.as_mut().poll(&mut context).is_ready());
     }
 
     #[test]
-    fn panicking_admission_preserves_live_ownership_and_retirement() {
+    fn panicking_or_refused_admission_preserves_original_ownership() {
         let claims = OperationClaims::default();
         let original = claims
-            .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
+            .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
             .unwrap()
+            .into_owner()
             .unwrap();
         let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = claims.claim(
                 [2; 48],
                 || Ok::<_, ()>(()),
-                |_| -> Result<(), ()> { panic!("admission failed") },
+                |_, _| -> Result<(), ()> { panic!("admission failed") },
             );
         }));
         assert!(failed.is_err());
         assert!(
             claims
-                .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_none()
+                .into_owner()
+                .is_err()
         );
         assert!(
             claims
-                .claim([2; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                .claim([2; 48], || Ok::<_, ()>(()), |_, _| Err::<(), _>(()))
+                .is_err()
+        );
+        assert!(
+            claims
+                .claim([2; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
         drop(original);
         assert!(
             claims
-                .claim([1; 48], || Ok::<_, ()>(()), |_| Ok(()))
+                .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
     }
 }

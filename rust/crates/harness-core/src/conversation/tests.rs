@@ -32,7 +32,7 @@ fn message(content: &FileRef, sequence: u64) -> ConversationMessage {
     }
 }
 
-fn file(agent: AgentId, path: &str) -> Result<FileRef> {
+pub(super) fn file(agent: AgentId, path: &str) -> Result<FileRef> {
     FileRef::new(
         VolumeRef::new(
             ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,

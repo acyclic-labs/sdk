@@ -10,7 +10,6 @@ mod checkout;
 mod commands;
 #[cfg(any(test, feature = "native-execution"))]
 mod environment;
-mod guidance;
 pub(super) mod skills;
 
 pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
@@ -79,7 +78,6 @@ impl LocalHarness {
     pub(super) fn stage_context_manifest_with<'a>(
         &'a self,
         operation: OperationId,
-        prompt: Option<&'a str>,
         publisher: &'a dyn ContentPublisher,
         #[cfg(any(test, feature = "native-execution"))] workspace: Option<&'a LocalWorkspace>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
@@ -113,19 +111,10 @@ impl LocalHarness {
                 },
                 ..Default::default()
             };
-            let mut manifest = if let Some(source) = &self.context_manifest {
-                let reader = self.context_reader()?;
-                let bytes = reader
-                    .read(source, self.limits.render_bytes, None, None)?
-                    .await?;
-                ContextManifest::decode(&bytes, self.limits)?
-            } else {
-                let discovery = self
-                    .instructions(&policy.instruction_names, publisher, &mut work)
-                    .await?;
-                let (goal, plans) = self.file_guidance(prompt.unwrap_or_default())?.await?;
-                ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?
-            };
+            let discovery = self
+                .instructions(&policy.instruction_names, publisher, &mut work)
+                .await?;
+            let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
             let mode = match self.preset.approval_policy.approvers.as_slice() {
                 [
                     crate::approvals::Approver::Rules {
@@ -601,14 +590,10 @@ mod tests {
                 local.observe_context_manifest(OperationId::from_bytes([1; 16]), publisher)
             },
         );
-        let guidance =
-            retained_operation_bytes(|local: &'static LocalHarness| local.file_guidance(""));
-        eprintln!("manifest child retained bytes: [{observation}, {guidance}]");
+        eprintln!("manifest observation retained bytes: {observation}");
         assert!(
-            [observation, guidance]
-                .into_iter()
-                .all(|bytes| bytes <= 512),
-            "manifest embeds concrete observation or guidance futures"
+            observation <= 512,
+            "manifest embeds a concrete observation future"
         );
     }
 
@@ -618,7 +603,6 @@ mod tests {
             |(local, publisher): (&'static LocalHarness, &'static dyn ContentPublisher)| {
                 local.stage_context_manifest_with(
                     OperationId::from_bytes([1; 16]),
-                    None,
                     publisher,
                     local.workspace.as_deref(),
                 )

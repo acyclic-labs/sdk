@@ -221,6 +221,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-collections"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
@@ -244,6 +251,7 @@ name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-fs-base",
  "acyclic-fs-wire",
  "acyclic-grpc-observability",
@@ -878,6 +886,7 @@ version = "0.2.0"
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections",
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-test-support",
@@ -1041,6 +1050,7 @@ dependencies = [
 name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections",
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
