@@ -4,7 +4,7 @@
 by the pinned Rust/protoc pipeline:
 
 ```
-cargo run --locked -p sdk-proto-codegen -- descriptors . OUTPUT actors
+cargo run --locked -p sdk-proto-codegen -- descriptors . OUTPUT
 ```
 
 `actors-buf-v1.bin` is independently captured from the pinned `@bufbuild/buf`
@@ -59,13 +59,21 @@ cargo run --locked -p sdk-proto-codegen -- canonicalize actors actors-observatio
 `actors-pre-secrets.bin` retains the unmodified actual
 predecessor descriptor; its separate provenance file identifies that capture.
 
-The 2026-10-31 captures at source b52985ed1e combine the canonical shared
-SecretRef import with the current Actor fork and selected-entry fields.
-The Rust and independent Buf pipelines above were run on that source; the
-Rust capture was copied to both Rust descriptor paths. No descriptor bytes
-were combined by hand.
-The current source composition also includes fork admission fields introduced
-by `4228d02213`. The three retained main captures above still require canonical
-regeneration for that schema with the retry counter removed. The earlier
-2026-10-31 capture receipt describes its predecessor schema; it does not
-qualify these composed fixtures.
+The composed 2026-10-31 capture at `f56588ca65` includes the original fork
+admission fields and removes the subscription retry counter. The Rust fixture
+uses the shared pinned compiler and canonicalizer directly:
+
+```
+cargo run --locked -p sdk-proto-codegen -- descriptors . target/actor-composed-descriptors
+```
+
+Its `actors-v1.bin` is copied to both Rust descriptor paths above. The
+independent Buf capture and canonicalization used:
+
+```
+node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin
+cargo run --locked -p sdk-proto-codegen -- canonicalize actors rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin
+```
+
+The Buf image remains independently generated, including its unknown file
+metadata. Earlier capture receipts qualify only their original schemas.
