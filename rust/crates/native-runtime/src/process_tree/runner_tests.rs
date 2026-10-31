@@ -64,6 +64,10 @@ fn a_custodied_program_receives_exactly_its_environment_and_directory() {
 
 #[test]
 fn a_runner_clones_each_warden_as_the_owners_child() {
+    owner("parent");
+}
+
+fn parent_owner() {
     let (root, custody) = custody();
     let mut command = ProcessCommand::new("/bin/sleep");
     command
@@ -256,6 +260,10 @@ fn runner_owner_helper() {
     match std::env::var(MODE).as_deref() {
         Ok("hammer") => hammered_owner(),
         Ok("security") => security_owner(),
+        Ok("filters") => filtered_owners(),
+        Ok("filter-probe") => filter_probe(),
+        Ok("overlap") => overlapping_owners(),
+        Ok("parent") => parent_owner(),
         Ok(_) => killed_runner_owner(),
         Err(_) => {}
     }
@@ -363,15 +371,24 @@ fn security_owner() {
                 let observed = status(&first_custody);
                 assert_ne!(field(&direct, "SigBlk:"), field(&before, "SigBlk:"));
                 assert_eq!(field(&observed, "SigBlk:"), field(&direct, "SigBlk:"));
-                assert_eq!(
-                    runner_pid(),
-                    Some(first_runner),
-                    "a signal mask needs no replacement runner"
-                );
+                if field(&before, "Seccomp:").ends_with('0') {
+                    assert_eq!(
+                        runner_pid(),
+                        Some(first_runner),
+                        "a signal mask needs no replacement runner"
+                    );
+                } else {
+                    assert_ne!(
+                        runner_pid(),
+                        Some(first_runner),
+                        "another filtered thread has no shared policy attestation"
+                    );
+                }
             })
             .join()
             .expect("launching thread");
     });
+    let before_ignored = runner_pid().expect("runner before ignored signal change");
     // Ignored dispositions survive exec, unlike installed handlers. A
     // long-lived runner must not preserve the owner's earlier disposition.
     // SAFETY: this isolated owner has no other signal users; save and restore
@@ -394,7 +411,7 @@ fn security_owner() {
         assert_ne!(field(&direct, "SigIgn:"), field(&before, "SigIgn:"));
         assert_eq!(field(&observed, "SigIgn:"), field(&direct, "SigIgn:"));
         let ignoring_runner = runner_pid().expect("runner with current ignored signals");
-        assert_ne!(ignoring_runner, first_runner);
+        assert_ne!(ignoring_runner, before_ignored);
         assert_eq!(
             libc::sigaction(libc::SIGUSR1, &raw const original, std::ptr::null_mut()),
             0
@@ -448,6 +465,184 @@ fn security_owner() {
 #[test]
 fn launch_admission_preserves_current_security_and_signal_state() {
     owner("security");
+    owner("filters");
+    owner("overlap");
+}
+
+/// Installs one real thread-local filter, retaining all other syscall rules.
+fn deny_syscall(number: libc::c_long) {
+    let instructions = [
+        libc::sock_filter {
+            code: u16::try_from(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS).expect("BPF load"),
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        libc::sock_filter {
+            code: u16::try_from(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K).expect("BPF compare"),
+            jt: 0,
+            jf: 1,
+            k: u32::try_from(number).expect("syscall number"),
+        },
+        libc::sock_filter {
+            code: u16::try_from(libc::BPF_RET | libc::BPF_K).expect("BPF refusal"),
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ERRNO | u32::try_from(libc::EPERM).expect("errno"),
+        },
+        libc::sock_filter {
+            code: u16::try_from(libc::BPF_RET | libc::BPF_K).expect("BPF allow"),
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ALLOW,
+        },
+    ];
+    let filter = libc::sock_fprog {
+        len: u16::try_from(instructions.len()).expect("filter length"),
+        filter: instructions.as_ptr().cast_mut(),
+    };
+    // SAFETY: this isolated helper thread installs a readable fixed BPF
+    // program after setting NoNewPrivs; neither operation affects its siblings.
+    unsafe {
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        assert_eq!(
+            libc::prctl(
+                libc::PR_SET_SECCOMP,
+                libc::SECCOMP_MODE_FILTER,
+                &raw const filter
+            ),
+            0
+        );
+    }
+}
+
+fn filter_probe() {
+    // SAFETY: valid scalar arguments for two read-only process queries.
+    let priority = unsafe { libc::syscall(libc::SYS_getpriority, libc::PRIO_PROCESS, 0) };
+    if priority < 0 {
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM)
+        );
+    }
+    // SAFETY: queries this process's session with no pointer argument.
+    let session = unsafe { libc::syscall(libc::SYS_getsid, 0) };
+    if session < 0 {
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM)
+        );
+    }
+    println!("filter-probe {} {}", priority < 0, session < 0);
+}
+
+fn filtered_owners() {
+    fn probe(custody: &ProcessCustody) -> String {
+        let mut command = ProcessCommand::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "process_tree::runner::tests::runner_owner_helper",
+                "--nocapture",
+            ])
+            .env(MODE, "filter-probe");
+        output(&mut command, custody)
+    }
+    let (ready, observed) = std::sync::mpsc::channel();
+    let (finish, release) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let finish = finish;
+        let first = scope.spawn(move || {
+            deny_syscall(libc::SYS_getpriority);
+            let (_root, custody) = custody();
+            assert!(probe(&custody).contains("filter-probe true false"));
+            let status =
+                fs::read_to_string("/proc/thread-self/status").expect("first thread policy");
+            let summary: Vec<_> = status
+                .lines()
+                .filter(|line| line.starts_with("Seccomp"))
+                .map(str::to_owned)
+                .collect();
+            ready.send(summary).expect("first policy installed");
+            release.recv().expect("second policy inspected");
+        });
+        let original_summary = observed.recv().expect("first runner exists");
+        let second = scope.spawn(|| {
+            deny_syscall(libc::SYS_getsid);
+            let status =
+                fs::read_to_string("/proc/thread-self/status").expect("second thread policy");
+            let summary: Vec<_> = status
+                .lines()
+                .filter(|line| line.starts_with("Seccomp"))
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(
+                summary, original_summary,
+                "the status summaries cannot distinguish these actual filters"
+            );
+            let (_root, custody) = custody();
+            assert!(
+                probe(&custody).contains("filter-probe false true"),
+                "the second child inherited the first thread's filter"
+            );
+        });
+        let result = second.join();
+        finish.send(()).expect("release first owner");
+        first.join().expect("first filtered owner");
+        result.expect("second filtered owner");
+    });
+    retire_runner();
+}
+
+/// Pauses the actual runner before a request, then replaces the current
+/// security binding while that original request is still waiting to be read.
+fn overlapping_owners() {
+    let (sent, queued) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            let (_root, custody) = custody();
+            let mut warm = ProcessCommand::new("/bin/true");
+            output(&mut warm, &custody);
+            let pid = libc::pid_t::try_from(runner_pid().expect("first runner")).expect("pid");
+            // SAFETY: this owner's original unreaped runner; wait for the OS's
+            // stopped event before sending its next real launch request.
+            unsafe {
+                assert_eq!(libc::kill(pid, libc::SIGSTOP), 0);
+                let mut status = 0;
+                assert_eq!(libc::waitpid(pid, &raw mut status, libc::WUNTRACED), pid);
+                assert!(libc::WIFSTOPPED(status));
+            }
+            super::LAUNCH_SENT.with(|notice| *notice.borrow_mut() = Some(sent));
+            let mut pending = ProcessCommand::new("/bin/echo");
+            pending.arg("original launch");
+            output(&mut pending, &custody)
+        });
+        let pid = queued
+            .recv()
+            .expect("original request sent before replacement");
+        struct Resume(libc::pid_t);
+        impl Drop for Resume {
+            fn drop(&mut self) {
+                // SAFETY: the original runner PID stays owned by this launch.
+                unsafe { libc::kill(self.0, libc::SIGCONT) };
+            }
+        }
+        let resume = Resume(pid);
+        // A real additional filter forces a distinct binding even when the
+        // enclosing process already had NoNewPrivs set before this fixture.
+        deny_syscall(libc::SYS_getpriority);
+        let (_root, custody) = custody();
+        let mut replacement = ProcessCommand::new("/bin/echo");
+        replacement.arg("replacement launch");
+        assert_eq!(output(&mut replacement, &custody), "replacement launch\n");
+        assert_ne!(runner_pid(), u32::try_from(pid).ok());
+        drop(resume);
+        assert_eq!(
+            first.join().expect("original launch completes"),
+            "original launch\n"
+        );
+    });
+    retire_runner();
 }
 
 #[test]
