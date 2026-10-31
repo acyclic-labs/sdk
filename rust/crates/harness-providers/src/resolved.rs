@@ -108,10 +108,7 @@ impl ResolvedModel {
         Ok(())
     }
 
-    pub(crate) fn default_output_budget(&self) -> u32 {
-        self.capacity.default_output_budget()
-    }
-    fn admitted_capacity(&self) -> ModelContextCapacity {
+    pub(crate) fn admitted_capacity(&self) -> ModelContextCapacity {
         self.profile
             .as_ref()
             .map_or(self.capacity, |profile| profile.capacity())

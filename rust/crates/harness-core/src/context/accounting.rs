@@ -17,11 +17,18 @@ pub struct ModelContextCapacity {
 }
 
 impl ModelContextCapacity {
-    /// A request budget for callers that did not choose one, not an output capacity.
-    #[must_use]
-    pub fn default_output_budget(self) -> u32 {
-        self.output_tokens
-            .unwrap_or(16_384.min(self.context_tokens / 2).max(1))
+    /// Resolves a role reservation against the selected model's hard bounds.
+    /// Absence means its verified output capacity, never a guessed fallback.
+    pub fn output_reservation(self, requested: Option<u32>) -> Result<u32> {
+        let output = requested.or(self.output_tokens).ok_or_else(|| {
+            Error::Invalid("unknown output capacity requires a role reservation".into())
+        })?;
+        if !self.permits_output(output) {
+            return Err(Error::Invalid(
+                "requested output exceeds selected model capacity".into(),
+            ));
+        }
+        Ok(output)
     }
 
     /// Checks a request budget against every known hard bound.

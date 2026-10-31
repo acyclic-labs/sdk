@@ -144,6 +144,15 @@ mod tests {
             let mut wrong_request = prepared.request().clone();
             wrong_request.max_output_tokens = Some(65);
             assert!(crate::projection::body(&provider, &wrong_request).is_err());
+            let (mut unknown, _) = crate::tests::provider(adapter, 200);
+            unknown.capacity.output_tokens = None;
+            let (request, _) = crate::tests::request(&unknown)?;
+            let mut request = request.request().clone();
+            // An explicit admitted reservation works without an advertised
+            // output limit; omitting it cannot invent a provider capacity.
+            assert!(crate::projection::body(&unknown, &request).is_ok());
+            request.max_output_tokens = None;
+            assert!(crate::projection::body(&unknown, &request).is_err());
             let ephemeral = family.replace("cache: automatic", "cache: ephemeral");
             let ephemeral = ModelProfile::parse(
                 &ephemeral,
