@@ -66,7 +66,7 @@ pub fn session(bytes: &[u8]) -> bool {
     };
     let output = futures::executor::block_on(output.collect::<Vec<_>>());
     if version.is_some_and(|version| version != session::VERSION) {
-        return output.len() == 1 && output.first() == Some(&Err(StreamError::Unsupported));
+        return matches!(output.as_slice(), [Err(StreamError::Unsupported)]);
     }
     true
 }
