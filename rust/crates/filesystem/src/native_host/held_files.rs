@@ -55,9 +55,9 @@ impl HostRoot {
             }
             Err(error) => return Err(error),
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let sync = !publish_probe::skip_reader_sync();
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         let sync = true;
         if sync {
             sync_directory_held(&self.directory, work)?;
@@ -213,13 +213,13 @@ impl HostRoot {
                 return Err(W::invalid_request());
             };
             let directory = held.as_ref().unwrap_or(&self.directory);
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             let duplicate = if publish_probe::duplicate_parents() {
                 Some(clone_directory(directory, work)?)
             } else {
                 None
             };
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             let directory = duplicate.as_ref().unwrap_or(directory);
             work.started_io(ITEM)?;
             #[cfg(unix)]
@@ -231,9 +231,9 @@ impl HostRoot {
             // Even an existing child may have just been created by another
             // opener. Persist its name before returning a capability whose
             // records callers may use as durable identity.
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             let sync = !publish_probe::skip_parent_sync();
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "test-support")))]
             let sync = true;
             if sync && durability == NativeDurability::Durable {
                 sync_directory_held(directory, work)?;
@@ -260,7 +260,7 @@ impl HostRoot {
         mut candidate: impl FnMut() -> Result<[u8; N], DemandError>,
         work: &mut W,
     ) -> Result<[u8; N], DemandError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if publish_probe::eager_candidates() {
             candidate()?;
         }
@@ -270,9 +270,9 @@ impl HostRoot {
                 Ok(record) => {
                     // The winner may have renamed but not synced yet. A
                     // reader must establish durability before using the token.
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     let sync = !publish_probe::skip_reader_sync();
-                    #[cfg(not(test))]
+                    #[cfg(not(any(test, feature = "test-support")))]
                     let sync = true;
                     if sync {
                         sync_directory_held(&self.directory, work)?;
@@ -326,7 +326,7 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
     durability: NativeDurability,
     work: &mut W,
 ) -> Result<(), DemandError> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let temporary = if publish_probe::torn() {
         leaf
     } else {
@@ -335,9 +335,9 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
     let file = open_leaf(directory, temporary, &NativeOpenOptions::CreateNew, work)?;
     let result = (|| -> Result<(), DemandError> {
         let mut file = file;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         publish_probe::step(0)?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let bytes = {
             let (first, rest) = bytes.split_at(bytes.len() / 2);
             file.write_all(first)?;
@@ -350,23 +350,23 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
         }
         // Closed before the rename, which a host may refuse for an open file.
         drop(file);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         publish_probe::step(2)?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if publish_probe::torn() {
             return Ok(());
         }
         rename_no_replace(directory, temporary, leaf, work)?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         publish_probe::after_rename();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         publish_probe::step(3)?;
         match durability {
             NativeDurability::Visibility => Ok(()),
             NativeDurability::Durable => sync_directory_held(directory, work),
         }
     })();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if publish_probe::killed(&result) {
         // A killed process runs no cleanup.
         return result;
@@ -406,12 +406,12 @@ fn rename_no_replace<W: NativeHostWork>(
     result
 }
 
-/// Simulated kills at each durable step of a record publication.
-#[cfg(test)]
+/// Simulated kills at each physical step of a record publication.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod publish_probe {
     use std::cell::Cell;
 
-    /// The steps a kill can follow: created, half written, synced, renamed.
+    /// The steps a kill can follow: created, half written, closed, renamed.
     #[cfg(target_os = "linux")]
     pub(crate) const STEPS: usize = 4;
     const KILLED: &str = "killed during record publication";
@@ -495,7 +495,113 @@ pub(crate) mod publish_probe {
         Ok(())
     }
 
+    /// Run one synchronous original publication with thread-local probes.
+    #[cfg(all(
+        feature = "test-support",
+        feature = "native-mount",
+        target_os = "linux"
+    ))]
+    pub(super) fn scoped<R>(
+        config: super::publication_test_support::Configuration,
+        after_rename: Option<Box<dyn FnOnce()>>,
+        operation: impl FnOnce() -> R,
+    ) -> R {
+        struct Restore {
+            kill_at: Option<usize>,
+            torn: bool,
+            skip_parent_sync: bool,
+            skip_reader_sync: bool,
+            duplicate_parents: bool,
+            eager_candidates: bool,
+            after_rename: Option<Box<dyn FnOnce()>>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                KILL_AT.set(self.kill_at);
+                TORN.set(self.torn);
+                SKIP_PARENT_SYNC.set(self.skip_parent_sync);
+                SKIP_READER_SYNC.set(self.skip_reader_sync);
+                DUPLICATE_PARENTS.set(self.duplicate_parents);
+                EAGER_CANDIDATES.set(self.eager_candidates);
+                AFTER_RENAME.set(self.after_rename.take());
+            }
+        }
+        let _restore = Restore {
+            kill_at: KILL_AT.replace(config.kill_after.map(|step| step.index())),
+            torn: TORN.replace(config.tear),
+            skip_parent_sync: SKIP_PARENT_SYNC.replace(config.omit_parent_sync),
+            skip_reader_sync: SKIP_READER_SYNC.replace(config.omit_reader_sync),
+            duplicate_parents: DUPLICATE_PARENTS.replace(config.duplicate_parent_handles),
+            eager_candidates: EAGER_CANDIDATES.replace(config.generate_candidates_eagerly),
+            after_rename: AFTER_RENAME.replace(after_rename),
+        };
+        operation()
+    }
+
     pub(super) fn killed(result: &Result<(), crate::demand::DemandError>) -> bool {
         matches!(result, Err(crate::demand::DemandError::Io(error)) if error.to_string() == KILLED)
+    }
+}
+
+/// Scoped access to the original held-root publication fault hooks.
+#[cfg(all(
+    feature = "test-support",
+    feature = "native-mount",
+    target_os = "linux"
+))]
+pub mod publication_test_support {
+    pub use super::NativeDurability;
+    pub use crate::native_capture::{HeldRoot, hold_root};
+
+    /// Existing publication cuts; no cut implies a persistence barrier.
+    #[derive(Clone, Copy, Debug)]
+    pub enum PublicationStep {
+        /// The exclusive candidate was created, before its first write.
+        Created,
+        /// The first half of the original record was written.
+        PartialWrite,
+        /// The candidate was closed; only Durable requests sync its contents.
+        FileClosed,
+        /// The complete candidate was renamed, before the parent sync.
+        Renamed,
+    }
+
+    impl PublicationStep {
+        pub(super) const fn index(self) -> usize {
+            match self {
+                Self::Created => 0,
+                Self::PartialWrite => 1,
+                Self::FileClosed => 2,
+                Self::Renamed => 3,
+            }
+        }
+    }
+
+    /// The original probe settings, isolated to one synchronous operation.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Configuration {
+        /// Refuse at the selected original cut without cleanup, as after a kill.
+        pub kill_after: Option<PublicationStep>,
+        /// Write the final leaf in place to expose torn-publication failures.
+        pub tear: bool,
+        /// Omit the original directory-admission parent barrier.
+        pub omit_parent_sync: bool,
+        /// Omit the original reader's directory barrier.
+        pub omit_reader_sync: bool,
+        /// Duplicate each original parent handle before directory admission.
+        pub duplicate_parent_handles: bool,
+        /// Generate an unnecessary candidate before checking the existing record.
+        pub generate_candidates_eagerly: bool,
+    }
+
+    /// Run on this thread; restore every original setting on return or unwind.
+    /// The callback is the original post-rename hook. An asynchronous operation
+    /// must not escape the closure: it would execute outside this probe scope.
+    pub fn with_probe<R>(
+        configuration: Configuration,
+        after_rename: Option<Box<dyn FnOnce()>>,
+        operation: impl FnOnce() -> R,
+    ) -> R {
+        super::publish_probe::scoped(configuration, after_rename, operation)
     }
 }
