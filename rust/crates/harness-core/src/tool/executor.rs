@@ -4,9 +4,10 @@ use super::*;
 /// ([`ToolExecutor::dispatch`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dispatch {
-    /// Original delivery and primitive wake records. Each value fits one
-    /// protective Stream record; they are never published separately.
-    pub records: Vec<(acyclic_stream::StreamPath, acyclic_stream::OwnedBytes)>,
+    /// The original command, fitting one protective Stream record.
+    pub delivery: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
+    /// The owning Actor's activation, committed with its input and tool claim.
+    pub activation: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
 }
 
 /// Replaceable execution behavior for a tool.

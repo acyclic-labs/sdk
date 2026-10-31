@@ -79,11 +79,11 @@ impl Drop for Presence<'_> {
 /// device under one root, as their presence records list them.
 ///
 /// [`Self::follow`] keeps the roster current from the shared presence
-/// stream. The directory retains one agent's original authority; share its
-/// resolved executors within that agent's turns.
+/// stream; [`Self::for_agent`] shares that same subscription and roster while
+/// retaining each agent's own grant and home workspace.
 pub struct TargetDirectory<P: StreamProvider + ?Sized + 'static> {
     provider: Arc<P>,
-    store: acyclic_actors::local::Store<P>,
+    store: Arc<acyclic_actors::local::Store<P>>,
     paths: TargetPaths,
     home: Arc<Target>,
     grant: Arc<DeviceGrant>,
@@ -121,12 +121,30 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
         };
         Ok(Self {
             provider: Arc::clone(store.provider()),
-            store,
+            store: Arc::new(store),
             paths,
             home: Arc::new(home),
             grant: Arc::new(grant),
             devices: watch::Sender::new(devices),
         })
+    }
+
+    /// Binds another agent without another presence follow or roster copy.
+    /// The host supplies that agent's original home workspace and grant; no
+    /// child inherits the parent's selected volume or revocation identity.
+    #[must_use]
+    pub fn for_agent(&self, grant: DeviceGrant, home: Arc<dyn ToolExecutor>) -> Self {
+        Self {
+            provider: Arc::clone(&self.provider),
+            store: Arc::clone(&self.store),
+            paths: self.paths.clone(),
+            home: Arc::new(Target {
+                record: self.home.record.clone(),
+                executor: home,
+            }),
+            grant: Arc::new(grant),
+            devices: self.devices.clone(),
+        }
     }
 
     /// Follows every device's presence, keeping the roster current. It
@@ -255,8 +273,8 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         loop {
             let update = tokio::select! {
                 biased;
-                end = async { ended.as_mut().expect("guarded session follow").next().await }, if ended.is_some() => {
-                    let end = end.ok_or_else(|| Error::Storage("device session producer ended".into()))??;
+                end = futures::future::OptionFuture::from(ended.as_mut().map(futures::StreamExt::next)), if ended.is_some() => {
+                    let end = end.flatten().ok_or_else(|| Error::Storage("device session producer ended".into()))??;
                     if let FollowUpdate::Record(record) = end {
                         let RunRecord { event: RunEvent::Lost { .. }, .. } = decode(&record.value)? else {
                             return Err(Error::Invalid("device session has no terminal marker".into()));
@@ -434,10 +452,8 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             ));
         }
         Ok(Some(Dispatch {
-            records: vec![
-                (self.paths.queue(&self.name)?, record.into()),
-                self.wake.clone(),
-            ],
+            delivery: (self.paths.queue(&self.name)?, record.into()),
+            activation: self.wake.clone(),
         }))
     }
 
