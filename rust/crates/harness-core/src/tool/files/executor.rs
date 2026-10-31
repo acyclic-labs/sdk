@@ -656,7 +656,7 @@ fn read_result(
         file: FileReadSource,
         text: &'a str,
     }
-    let encoded = super::value(&Read { file, text }, u64::MAX, work)?;
+    let encoded = super::value(&Read { file, text }, None, work)?;
     Ok((ToolResult { value: encoded.0 }, encoded.1))
 }
 

@@ -390,7 +390,10 @@ where
             let grant_hold = io
                 .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
                 .transpose()?;
-            if range.length > self.maximum_bytes {
+            if self
+                .maximum_bytes
+                .is_some_and(|maximum| range.length > maximum)
+            {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
