@@ -14,10 +14,13 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
         arguments: Value::Null,
     };
     for (tool, arguments) in [
-        (read()?, json!({"file":file})),
+        (
+            read()?,
+            json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()}),
+        ),
         (
             edit()?,
-            json!({"file":file,"old_text":"exact","new_text":"changed"}),
+            json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"old_text":"exact","new_text":"changed"}),
         ),
         (
             patch_file(4096, 16)?,
@@ -34,7 +37,8 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
         }
     }
     invocation.name = "read".into();
-    invocation.arguments = json!({"file":file});
+    invocation.arguments =
+        json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()});
     let narrow = RuntimeScope::new(
         grants,
         Limits {

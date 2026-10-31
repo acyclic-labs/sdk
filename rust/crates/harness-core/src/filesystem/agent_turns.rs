@@ -683,6 +683,7 @@ where
                 scope,
                 grants: capabilities,
                 content: ContentBindings {
+                    volume: private.volume.clone(),
                     reader,
                     writer: Some(writer),
                 },

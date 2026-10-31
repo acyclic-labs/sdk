@@ -206,13 +206,14 @@ impl LocalHarness {
                     &verifier,
                 )
                 .await?;
-            return Ok(self.harness.with_workspace(
+            return self.harness.with_workspace(
                 Some(tools),
                 crate::runtime::ContentBindings {
+                    volume: project.clone(),
                     reader: Arc::clone(&authority.content.reader),
                     writer: Some(writer),
                 },
-            ));
+            );
         }
         let writer = crate::filesystem::FilesystemContentPublisher::new(
             Arc::clone(&self.files),
@@ -222,13 +223,14 @@ impl LocalHarness {
             self.limits.file_bytes,
             None,
         )?;
-        Ok(self.harness.with_workspace(
+        self.harness.with_workspace(
             None,
             crate::runtime::ContentBindings {
+                volume: project.clone(),
                 reader: Arc::clone(&authority.content.reader),
                 writer: Some(writer),
             },
-        ))
+        )
     }
 }
 
