@@ -579,7 +579,7 @@ impl DiscoverySource for ProjectCatalog<'_> {
         directory: &'a str,
         revision: Option<&'a Self::Revision>,
         cursor: Option<Self::Cursor>,
-        maximum: u64,
+        maximum: u32,
     ) -> BoxProviderFuture<'a, Result<DiscoveryPage<Self::Revision, Self::Cursor>>> {
         self.directory.page(directory, revision, cursor, maximum)
     }
@@ -671,7 +671,7 @@ impl DiscoverySource for UserCatalogSource<'_> {
         directory: &'a str,
         revision: Option<&'a SourceReference>,
         cursor: Option<Self::Cursor>,
-        maximum: u64,
+        maximum: u32,
     ) -> BoxProviderFuture<'a, Result<DiscoveryPage<SourceReference, Self::Cursor>>> {
         Box::pin(async move {
             let reference = revision.copied().unwrap_or_else(|| self.source.reference());
