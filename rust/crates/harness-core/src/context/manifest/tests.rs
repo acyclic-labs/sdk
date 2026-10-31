@@ -68,7 +68,7 @@ proptest! {
             discovery: DiscoveredContext { instructions: Vec::new(), skills: vec![declared] },
             ..Default::default()
         };
-        let limits = Limits { render_bytes: 32_768, ..Default::default() };
+        let limits = Limits { render_bytes: Some(32_768), ..Default::default() };
         let encoded = manifest.encode(limits)?;
         let restored = ContextManifest::decode(&encoded, limits)?;
         prop_assert_eq!(&restored, &manifest);
