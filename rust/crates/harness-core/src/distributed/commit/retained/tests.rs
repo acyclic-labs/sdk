@@ -19,34 +19,33 @@ async fn check(mode: u8) -> Result<()> {
     let baseline = original.live_allocation_bytes();
     let provider = Arc::new(acyclic_stream::MemoryStream::default());
     let path = StreamPath::new("retained/publication")?;
-    let io = PreparationIo::from_native_work(&original)?;
-    let mut history = Some(io.history_io());
-    let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
-    let (key, held) = crate::distributed::digest_key(&[mode; 32], &mut work)?;
-    let mut request = commit_request(key, held, &mut work);
-    add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
-    let mut records = Vec::new();
-    request.1.reserve(1, &mut records)?;
-    records.push(OwnedBytes::from_static(b"original immutable record").into());
-    request.1.reserve(1, &mut request.0.mutations)?;
-    request
-        .0
-        .mutations
-        .push(CommitMutation::Append { path, records });
-    request.0.deadline_unix_millis = Some(u64::MAX - 1);
-    let (pending, producer) = NativeCommit::prepare(
-        request.0,
-        &mut request.1,
-        Arc::clone(&provider),
-        Some(u64::MAX),
-    )?;
-    assert_eq!(
-        pending.pending.request().deadline_unix_millis,
-        Some(u64::MAX - 1)
-    );
-    assert_eq!(request.1.retained(), 0);
-    drop(request.1);
-    drop(io);
+    let (pending, producer) = {
+        let io = PreparationIo::from_native_work(&original)?;
+        let mut history = Some(io.history_io());
+        let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
+        let (key, held) = crate::distributed::digest_key(&[mode; 32], &mut work)?;
+        let mut request = commit_request(key, held, &mut work);
+        add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
+        let mut records = Vec::new();
+        request.1.reserve(1, &mut records)?;
+        records.push(OwnedBytes::from_static(b"original immutable record").into());
+        request.1.reserve(1, &mut request.0.mutations)?;
+        request
+            .0
+            .mutations
+            .push(CommitMutation::Append { path, records });
+        request.0.deadline_unix_millis = Some(u64::MAX - 1);
+        let (body, mut quota) = request;
+        let (pending, producer) =
+            NativeCommit::prepare(body, &mut quota, Arc::clone(&provider), Some(u64::MAX))?;
+        assert_eq!(
+            pending.pending.request().deadline_unix_millis,
+            Some(u64::MAX - 1)
+        );
+        assert_eq!(quota.retained(), 0);
+        drop(quota);
+        (pending, producer)
+    };
     assert!(original.live_allocation_bytes() > baseline);
     if mode == 1 {
         drop(producer);

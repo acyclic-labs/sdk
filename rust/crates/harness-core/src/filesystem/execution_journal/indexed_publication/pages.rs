@@ -37,7 +37,7 @@ impl Contribution<'_> {
 }
 
 impl Cut<'_> {
-    fn request<'a, 'b>(
+    pub(super) fn request<'a, 'b>(
         &self,
         page_condition: CommitCondition,
         records: &[OwnedBytes],
@@ -205,7 +205,7 @@ impl Cut<'_> {
         }
     }
 
-    fn confirm(
+    pub(super) fn confirm(
         &self,
         outcome: &CommitOutcome,
         pages_tail: u64,
