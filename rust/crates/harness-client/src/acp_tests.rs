@@ -188,7 +188,77 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
         .await?;
     assert_eq!(status(&mut editor).await?, next);
 
+    pending_context(&mut editor, &memory, &agent).await?;
     rejected_context(&editor, &agent, uri).await?;
+    Ok(())
+}
+
+async fn pending_context(
+    editor: &mut AttachedSession,
+    memory: &MemoryStream,
+    agent: &AgentPath,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (producer, completion) = futures::channel::oneshot::channel::<FileRef>();
+    let mut completion = Some(completion);
+    let prepared = editor.prepare_prompt(
+        IntentId::try_from("pending-context")?,
+        PromptRequest {
+            session_id: agent.to_string(),
+            prompt: vec![
+                ContentBlock::Text {
+                    text: "retained input".into(),
+                },
+                ContentBlock::ResourceLink {
+                    uri: "editor://pending".into(),
+                    name: "pending".into(),
+                },
+            ],
+        },
+        |_| {
+            let completion = completion.take();
+            async move {
+                completion
+                    .ok_or_else(|| io::Error::other("publisher completion already consumed"))?
+                    .await
+                    .map_err(io::Error::other)
+            }
+        },
+    );
+    futures::pin_mut!(prepared);
+    assert!(futures::poll!(&mut prepared).is_pending());
+    let running = StatusRecord {
+        phase: Phase::Running,
+        cursor: 3,
+        conversation: 0,
+    };
+    memory
+        .append(AppendRequest {
+            path: agent.status()?,
+            records: vec![running.append_record()?],
+            if_tail: Some(2),
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+        })
+        .await?;
+    // The original observer progresses while the same preparation remains
+    // pending. No select branch drops it or restarts the publisher's work.
+    assert_eq!(status(editor).await?, running);
+    assert!(futures::poll!(&mut prepared).is_pending());
+    let file = snapshot()?;
+    producer
+        .send(file.clone())
+        .map_err(|_| io::Error::other("preparation lost its publisher"))?;
+    let prepared = prepared.await?;
+    let [invocation] = prepared.invocations() else {
+        return Err("pending editor prompt lost its original invocation".into());
+    };
+    let call = AgentCall::decode(invocation)?;
+    assert!(
+        matches!(call.command(), AgentCommand::Prompt { agent: target, body: ModelContent::Parts(parts), .. }
+        if target == agent && parts == &vec![
+            ModelContentPart::Text { text: "retained input".into() },
+            ModelContentPart::File { file, policy: FileProjectionPolicy::BoundedFull },
+        ])
+    );
     Ok(())
 }
 

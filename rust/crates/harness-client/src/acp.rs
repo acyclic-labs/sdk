@@ -137,37 +137,43 @@ impl AttachedSession {
     /// invocation remains with the caller across every execute outcome. Resolve
     /// failure sends no command. Work and temporary storage scale with supplied
     /// content bytes only, never open documents, agents or conversation history.
-    pub async fn prepare_prompt<E, F, R>(
+    /// The future owns its input handles: keep and poll it alongside the original
+    /// observer when publication is pending; observing events cannot cancel it.
+    pub fn prepare_prompt<E, F, R>(
         &self,
         id: IntentId,
         request: PromptRequest,
         mut resolve: F,
-    ) -> Result<PreparedAgentInvocation<'static>, InputError<E>>
+    ) -> impl Future<Output = Result<PreparedAgentInvocation<'static>, InputError<E>>> + use<E, F, R>
     where
         F: FnMut(String) -> R,
         R: Future<Output = Result<FileRef, E>>,
     {
-        if request.session_id != self.agent().as_str() {
-            return Err(InputError::SessionMismatch);
+        let agent = self.agent.clone();
+        let controls = self.controls.clone();
+        async move {
+            if request.session_id != agent.as_str() {
+                return Err(InputError::SessionMismatch);
+            }
+            let mut parts = Vec::with_capacity(request.prompt.len());
+            for block in request.prompt {
+                parts.push(match block {
+                    ContentBlock::Text { text } => ModelContentPart::Text { text },
+                    ContentBlock::ResourceLink { uri, .. } => {
+                        let file = resolve(uri).await.map_err(InputError::Context)?;
+                        let policy = FileProjectionPolicy::for_attachment(&file);
+                        ModelContentPart::File { file, policy }
+                    }
+                });
+            }
+            Ok(
+                controls.prepare(PreparedCommand::new(&AgentCommand::Prompt {
+                    agent,
+                    id,
+                    body: ModelContent::Parts(parts),
+                })?)?,
+            )
         }
-        let mut parts = Vec::with_capacity(request.prompt.len());
-        for block in request.prompt {
-            parts.push(match block {
-                ContentBlock::Text { text } => ModelContentPart::Text { text },
-                ContentBlock::ResourceLink { uri, .. } => {
-                    let file = resolve(uri).await.map_err(InputError::Context)?;
-                    let policy = FileProjectionPolicy::for_attachment(&file);
-                    ModelContentPart::File { file, policy }
-                }
-            });
-        }
-        Ok(self
-            .controls
-            .prepare(PreparedCommand::new(&AgentCommand::Prompt {
-                agent: self.agent().clone(),
-                id,
-                body: ModelContent::Parts(parts),
-            })?)?)
     }
 
     /// Prepare cancellation through the original command and authorization
