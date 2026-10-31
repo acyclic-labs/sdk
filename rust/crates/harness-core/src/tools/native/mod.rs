@@ -114,7 +114,7 @@ impl NativeDeclarations {
             capability: &revision.capability,
         };
         let input_schema = match io {
-            Some(io) => io.value_json(&input, u64::MAX)?,
+            Some(io) => io.value_json(&input, io.remaining()?.bytes_encoded)?,
             None => {
                 serde_json::to_value(&input).map_err(|error| Error::Invalid(error.to_string()))?
             }
@@ -130,7 +130,6 @@ impl NativeDeclarations {
             output_schema,
             projection_schema,
         };
-        crate::executor::with_history_io(io, |history| definition.validate(history))?;
         drop(parameters);
         drop(entry);
         let mut custody = crate::tool::edit::allocation(

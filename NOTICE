@@ -6,5 +6,5 @@ This product includes software developed by Acyclic Labs.
 The native Gemini tool declarations are derived from Gemini CLI,
 Copyright 2025 Google LLC, licensed under the Apache License, Version 2.0.
 
-The native Codex shell declaration and apply_patch grammar are derived from
+The native Codex shell declaration, apply_patch grammar and result format are derived from
 Codex, Copyright OpenAI, licensed under the Apache License, Version 2.0.

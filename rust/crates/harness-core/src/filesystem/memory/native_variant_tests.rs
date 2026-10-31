@@ -99,3 +99,51 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
         Ok(())
     }).await
 }
+
+#[tokio::test]
+async fn native_patch_publishes_all_members_once_or_leaves_every_file_unchanged() -> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    run_admitted_file_case(&storage, Limits::default(), |task| async move {
+        let profile = NativeToolProfile::Openai;
+        let revision = profile.tools()?.into_iter().find(|tool| tool.capability == "edit").unwrap();
+        let original = Arc::new(crate::tools::variants::apply_patch()?);
+        let mut contracts = NativeDeclarations::new(profile, None)?;
+        let patch = contracts.bind_variant(&revision, original.clone())?.0;
+        let read = crate::tool::files::read()?;
+        let initial = "*** Begin Patch\n*** Add File: first\n+old\n*** Add File: deleted\n+remove\n*** End Patch\n";
+        call(&task, &patch, json!({"input":initial})).await?;
+        // A valid early member cannot publish when a later exact edit fails.
+        let invalid = "*** Begin Patch\n*** Add File: must-stay-absent\n+partial\n*** Update File: first\n-wrong\n+bad\n*** End Patch\n";
+        assert!(call(&task, &patch, json!({"input":invalid})).await.is_err());
+        assert!(call(&task, &read, json!({"path":"must-stay-absent"})).await.is_err());
+        assert_eq!(call(&task, &read, json!({"path":"first"})).await?.1.value["text"], "old\n");
+
+        let complete = "*** Begin Patch\n*** Update File: first\n*** Move to: moved\n-old\n+new\n*** Delete File: deleted\n*** Add File: added\n+created\n*** End Patch\n";
+        let (invocation, result) = call(&task, &patch, json!({"input":complete})).await?;
+        assert!(call(&task, &read, json!({"path":"first"})).await.is_err());
+        assert!(call(&task, &read, json!({"path":"deleted"})).await.is_err());
+        assert_eq!(call(&task, &read, json!({"path":"moved"})).await?.1.value["text"], "new\n");
+        assert_eq!(call(&task, &read, json!({"path":"added"})).await?.1.value["text"], "created\n");
+        let files = result.value["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["version"], files[1]["version"]);
+        let projected = patch.projection.project(&invocation, &result, None)?.0;
+        assert_eq!(projected, json!({"kind":"parts","parts":[{"kind":"text","text":"Success. Updated the following files:\nA added\nM moved\nD deleted\n"}]}));
+        let write = crate::tool::files::write()?;
+        call(&task, &write, json!({"path":"moved","content":"later\n"})).await?;
+        let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
+        assert_eq!(patch.executor.reconcile(invocation, Some(context)).await?, Some(result));
+        assert_eq!(call(&task, &read, json!({"path":"moved"})).await?.1.value["text"], "later\n");
+
+        // Refusing the retained original producer must refuse the native call;
+        // there is no schema-specific publisher to fall back to.
+        let mut refusing = (*original).clone();
+        refusing.executor = Arc::new(Refuses);
+        let mut contracts = NativeDeclarations::new(profile, None)?;
+        let refusing = contracts.bind_variant(&revision, Arc::new(refusing))?.0;
+        assert!(matches!(call(&task, &refusing, json!({"input":"*** Begin Patch\n*** Add File: forbidden\n+wrong\n*** End Patch\n"})).await,
+            Err(Error::Conflict(reason)) if reason == "original producer refused"));
+        assert!(call(&task, &read, json!({"path":"forbidden"})).await.is_err());
+        Ok(())
+    }).await
+}

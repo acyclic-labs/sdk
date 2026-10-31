@@ -41,3 +41,9 @@ pub fn rejected_input(error: crate::Error) -> crate::tool::ToolResult {
         value: serde_json::json!({"error": error.to_string()}),
     }
 }
+
+/// Trained edit variants using the original shared content publisher.
+pub mod variants {
+    mod patch;
+    pub use patch::apply_patch;
+}

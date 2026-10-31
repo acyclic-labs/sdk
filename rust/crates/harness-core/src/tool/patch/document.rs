@@ -209,9 +209,9 @@ mod tests {
                 maximum_bytes: 4096, maximum_work: 4096, maximum_hunks: 4,
             }, &mut meter).unwrap();
             prop_assert_eq!(actual, format!("{new}\n"));
-            prop_assert_eq!(changes[0].materialize("", 4096, &mut meter)?, Some(format!("{new}\n")));
-            prop_assert_eq!(changes[1].materialize(&format!("{old}\n"), 4096, &mut meter)?, Some(format!("{new}\n")));
-            prop_assert_eq!(changes[2].materialize("", 4096, &mut meter)?, None);
+            prop_assert_eq!(changes[0].materialize("", 4096, &mut meter).unwrap(), Some(format!("{new}\n")));
+            prop_assert_eq!(changes[1].materialize(&format!("{old}\n"), 4096, &mut meter).unwrap(), Some(format!("{new}\n")));
+            prop_assert_eq!(changes[2].materialize("", 4096, &mut meter).unwrap(), None);
             // Omit the final delimiter: no prefix of a multi-file document may
             // be admitted as a complete batch.
             prop_assert!(parse_document(patch.strip_suffix("*** End Patch\n").unwrap(), &mut meter).is_err());

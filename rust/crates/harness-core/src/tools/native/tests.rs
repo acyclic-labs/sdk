@@ -29,10 +29,14 @@ fn pinned_family_tool_lists_preserve_public_contract_bytes() -> Result<()> {
                 "glob" | "search" => "shell",
                 name => name,
             };
-            let original = originals
-                .get_shared(core, None, None)?
-                .expect("stock capability")
-                .clone();
+            let original = if profile == NativeToolProfile::Openai && core == "edit" {
+                std::sync::Arc::new(crate::tools::variants::apply_patch()?)
+            } else {
+                originals
+                    .get_shared(core, None, None)?
+                    .expect("stock capability")
+                    .clone()
+            };
             tools.push(contracts.bind_variant(revision, original)?.0);
         }
         let render = |tools: &[Tool]| -> Result<Vec<u8>> {
