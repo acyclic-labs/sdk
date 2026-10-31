@@ -229,6 +229,24 @@ impl ProcessTree {
         custody.ok_or_else(|| io::ErrorKind::NotFound.into())
     }
 
+    /// Consumes an authenticated execution grant and command at this same
+    /// process owner. No reusable command can retain a consumed boundary or
+    /// launch after a refusal without that boundary.
+    pub fn spawn_granted(
+        mut command: ProcessCommand,
+        grant: &crate::execution::ExecutionGrant,
+        custody: Option<&ProcessCustody>,
+    ) -> io::Result<Self> {
+        let boundary = grant.prepare()?;
+        boundary.validate_cwd(command.get_current_dir())?;
+        command.boundary = Some(boundary);
+        let result = match custody {
+            Some(custody) => Self::spawn_in_custody(&mut command, custody),
+            None => Self::spawn(&mut command),
+        };
+        result.map_err(crate::execution::failure)
+    }
+
     /// Starts a child whose whole tree is tied to this host process and
     /// recorded in `custody` until this owner observes it gone. If the host
     /// dies first, the tree is killed, and a reopened owner's
@@ -302,7 +320,14 @@ impl ProcessTree {
     ) -> io::Result<()> {
         Self::spawn_metered(command, meter, custody, |command, slot| {
             #[cfg(unix)]
-            return platform::spawn_controlled(&mut command.to_std()?, meter, slot);
+            {
+                let boundary = command.boundary.take();
+                let mut native = command.to_std()?;
+                if let Some(boundary) = boundary {
+                    boundary.install(&mut native)?;
+                }
+                return platform::spawn_controlled(&mut native, meter, slot);
+            }
             #[cfg(windows)]
             platform::spawn_controlled(command, meter, slot)
         })

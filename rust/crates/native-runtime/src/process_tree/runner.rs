@@ -52,6 +52,7 @@ const CLOSED: u8 = 2;
 const HAS_CWD: u8 = 1;
 const HAS_UID: u8 = 2;
 const HAS_GID: u8 = 4;
+const HAS_BOUNDARY: u8 = 8;
 
 /// Resource limits a request carries: every Linux limit, 0..`RLIM_NLIMITS`.
 const LIMITS: u32 = 16;
@@ -152,12 +153,14 @@ fn encode(
     body: &mut Vec<u8>,
     command: &ProcessCommand,
     environment: &BTreeMap<&OsStr, &OsStr>,
+    descriptors: &mut Vec<RawFd>,
 ) -> io::Result<()> {
     let identity = &command.unix;
     let flags = [
         (command.cwd.is_some(), HAS_CWD),
         (identity.uid.is_some(), HAS_UID),
         (identity.gid.is_some(), HAS_GID),
+        (command.boundary.is_some(), HAS_BOUNDARY),
     ]
     .iter()
     .filter(|(set, _)| *set)
@@ -169,6 +172,9 @@ fn encode(
     put_settings(body)?;
     put_count(body, 1 + command.args.len());
     put_count(body, environment.len());
+    if let Some(boundary) = &command.boundary {
+        boundary.encode_linux(descriptors, body)?;
+    }
     put_string(body, &[command.program.as_bytes()])?;
     if let Some(cwd) = &command.cwd {
         put_string(body, &[cwd.as_os_str().as_bytes()])?;
@@ -244,7 +250,7 @@ pub(super) fn start(
     ];
     let mut body = Vec::new();
     let (theirs, ours) = slots(command, open_streams, &mut descriptors, &mut body)?;
-    encode(&mut body, command, &environment)?;
+    encode(&mut body, command, &environment, &mut descriptors)?;
     let mut message = Vec::with_capacity(8 + body.len());
     put_count(&mut message, body.len());
     message.extend_from_slice(&body);

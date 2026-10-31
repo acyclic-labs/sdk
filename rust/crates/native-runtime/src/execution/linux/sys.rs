@@ -25,16 +25,12 @@ pub(super) fn seal_descriptors() -> Result<(), i32> {
     status(unsafe { libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 4_u32) })
 }
 
-pub(super) fn computation_stdio(fd: i32) -> Result<bool, i32> {
+pub(super) fn stdio_metadata(fd: i32) -> Result<(u32, u64), i32> {
     // SAFETY: all-zero stat is valid output storage for fstat.
     let mut metadata: libc::stat = unsafe { core::mem::zeroed() };
     // SAFETY: fstat accepts any descriptor number and initializes its output.
     status(unsafe { libc::fstat(fd, &raw mut metadata) }.into())?;
-    let kind = metadata.st_mode & libc::S_IFMT;
-    Ok(kind == libc::S_IFIFO
-        || (kind == libc::S_IFCHR
-            && libc::major(metadata.st_rdev) == 1
-            && libc::minor(metadata.st_rdev) == 3))
+    Ok((metadata.st_mode, metadata.st_rdev))
 }
 
 pub(super) fn clear_ambient_capabilities() -> Result<(), i32> {

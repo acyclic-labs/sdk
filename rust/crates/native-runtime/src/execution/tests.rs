@@ -80,7 +80,7 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
 #[test]
 fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     use crate::ProcessTree;
-    use std::process::{Command, Stdio};
+    use crate::{ProcessCommand as Command, ProcessStdio as Stdio};
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     let external = root.path().join("external");
@@ -94,14 +94,18 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
         .map(PathBuf::from)
         .filter(|path| path.exists())
         .collect::<Vec<_>>();
-    for access in [ExecutionAccess::WorkspaceWrite, ExecutionAccess::ReadOnly] {
+    let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    for (access, custody) in [ExecutionAccess::WorkspaceWrite, ExecutionAccess::ReadOnly]
+        .into_iter()
+        .flat_map(|access| [None, Some(&custody)].map(|custody| (access, custody)))
+    {
         let grant =
             ExecutionGrant::new(&workspace, access, read.clone(), ExecutionNetwork::Off).unwrap();
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "(printf changed > escape) 2>/dev/null; (printf created > new) 2>/dev/null; cat escape 2>/dev/null; true"])
             .current_dir(&workspace).env_clear().stdin(Stdio::null())
             .stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut tree = match ProcessTree::spawn_granted(command, &grant, None) {
+        let mut tree = match ProcessTree::spawn_granted(command, &grant, custody) {
             Ok(tree) => tree,
             Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
                 // An unavailable boundary must return a concrete refusal and
@@ -126,6 +130,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
         assert!(output.is_ok(), "{output:?}");
         assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
         let output = output.unwrap();
+        assert!(output.status.success(), "{output:?}");
         assert!(output.stdout.is_empty(), "outside reads escaped Landlock");
         match access {
             ExecutionAccess::WorkspaceWrite => {
@@ -142,7 +147,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     std::fs::write(&sentinel, "host").unwrap();
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 #[test]
 fn replaced_grant_root_refuses_before_guest_execution() {
     let root = tempfile::tempdir().unwrap();
@@ -203,7 +208,7 @@ fn native_attenuation_resolution_cannot_follow_a_replaced_ancestor() {
 #[test]
 fn kernel_network_grants_attenuate_without_a_network_service() {
     use crate::ProcessTree;
-    use std::process::{Command, Stdio};
+    use crate::{ProcessCommand as Command, ProcessStdio as Stdio};
     let root = tempfile::tempdir().unwrap();
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -217,7 +222,8 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
         .filter(|path| path.exists())
         .collect::<Vec<_>>();
     read.push(executable.clone());
-    for (network, allowed) in [
+    let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    for (network, allowed, custody) in [
         (ExecutionNetwork::Off, false),
         (ExecutionNetwork::On, true),
         (
@@ -228,7 +234,11 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
             ExecutionNetwork::TcpPorts(BTreeSet::from([other_port])),
             false,
         ),
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|(network, allowed)| {
+        [None, Some(&custody)].map(move |custody| (network.clone(), allowed, custody))
+    }) {
         let grant = ExecutionGrant::new(
             root.path(),
             ExecutionAccess::ReadOnly,
@@ -252,7 +262,7 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut tree = match ProcessTree::spawn_granted(command, &grant, None) {
+        let mut tree = match ProcessTree::spawn_granted(command, &grant, custody) {
             Ok(tree) => tree,
             Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
                 assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
@@ -281,7 +291,87 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        if allowed {
+            listener.accept().unwrap();
+        } else {
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
+    use crate::{ProcessCommand, ProcessStdio, ProcessTree};
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let sentinel = root.path().join("outside");
+    std::fs::write(&sentinel, "original").unwrap();
+    let read = ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
+    let grant = ExecutionGrant::new(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        read,
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    let command = || {
+        let mut command = ProcessCommand::new("/bin/sh");
+        command
+            .args(["-c", "printf escaped"])
+            .current_dir(&workspace)
+            .env_clear()
+            .stdin(ProcessStdio::null())
+            .stderr(ProcessStdio::null())
+            .stdout(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&sentinel)
+                    .unwrap(),
+            );
+        command
+    };
+    let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    for custody in [None, Some(&custody)] {
+        let error = match ProcessTree::spawn_granted(command(), &grant, custody) {
+            Ok(_) => panic!("an outside writable stdio descriptor entered the guest"),
+            Err(error) => error,
+        };
+        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+        ));
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
+    }
+    // Real negative control: the identical trusted command writes through
+    // this descriptor without the boundary, even though it names no path.
+    let mut tree = ProcessTree::spawn(&mut command()).unwrap();
+    let output = tree
+        .wait_with_output(
+            std::time::Duration::from_secs(5),
+            65536,
+            None,
+            || Ok(()),
+            |_| Ok(Default::default()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).unwrap(),
+        "originalescaped"
+    );
 }
 
 // The same compiled test executable is the real native child, so the probe

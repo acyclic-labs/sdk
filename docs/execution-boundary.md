@@ -19,6 +19,14 @@ refuse subtree attenuation until an equivalent native operation is available;
 retaining the same verified roots can still remove writes or network authority.
 `ProcessTree::spawn_granted` prepares active enforcement and enters the same
 process creation, custody, capture, cancellation and retirement implementation.
+It consumes the original `ProcessCommand`; ordinary command conversion refuses
+to discard an attached boundary. Linux custodied launches carry the prepared
+ruleset descriptor and native filter in their original launch request. Both
+direct and custodied children call one allocation-free enforcement entry after
+identity and standard-stream setup. Custodied enforcement runs only after the
+warden has forked and admitted the final guest; the warden retains its original
+custody authority. The child borrows filter bytes from the original request
+mapping, with no extra policy allocation or copy.
 Enforcement is inherited by descendants. A preparation or launch refusal is
 `tool execution failed: <reason>`; it never retries without confinement.
 Refusals have a concrete native error type. The shared capture completion
@@ -49,12 +57,10 @@ Missing native facilities return a typed unsupported refusal before execution.
 Conformance checks verify that refusal and the absence of guest effects on
 unsupported kernels; kernel enforcement requires a supported kernel.
 
-macOS compiles a deny-by-default Seatbelt profile before fork, then applies
-the compiled policy after the original custody hook in the final child.
-Workspace writes and read-only grants are separate profile rules; network
-port selectors preserve the shared grant meaning. Mach services, external
-process signaling and arbitrary local IPC are not granted. The Seatbelt SPI
-must be validated against the supported macOS runtime before publication.
+macOS and Windows currently return a typed unsupported refusal before creating
+a confined process. A path-based Seatbelt profile alone does not establish the
+object-bound grant or fence inherited descriptors. No partial macOS adapter is
+exposed as an enforced boundary.
 
 Outstanding acceptance work: Windows AppContainer integration at the native
 launch seam; macOS/Windows inherited-handle and root-identity race fencing;
@@ -69,5 +75,4 @@ The handles pin object identities across deletion and numeric identity reuse;
 cloning a grant adds no handles. Enforcement objects exist for active
 executions, with no per-agent process, mount, timer, watcher, thread or daemon.
 Landlock rule construction and seccomp installation buy filesystem, network
-and escape enforcement. Seatbelt compilation/application buys the equivalent
-native confinement. Custody remains the existing host-loss/retirement owner.
+and escape enforcement. Custody remains the existing host-loss/retirement owner.

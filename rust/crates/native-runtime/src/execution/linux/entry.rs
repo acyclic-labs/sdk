@@ -29,6 +29,8 @@ pub(super) struct Instruction {
     pub(super) k: u32,
 }
 
+const _: () = assert!(core::mem::size_of::<Instruction>() == 8);
+
 #[repr(C)]
 pub(super) struct Program {
     pub(super) len: u16,
@@ -46,7 +48,10 @@ pub(super) fn enter(ruleset: i32, filter: &[Instruction]) -> Result<(), i32> {
     // nonstdio host capability, including sockets, from crossing exec.
     sys::seal_descriptors()?;
     for fd in 0..3 {
-        if !sys::computation_stdio(fd)? {
+        let (mode, device) = sys::stdio_metadata(fd)?;
+        let kind = mode & 0o170_000;
+        // Pipes or Linux's null character device (major 1, minor 3).
+        if kind != 0o010_000 && !(kind == 0o020_000 && device == 0x103) {
             return Err(sys::EPERM);
         }
     }

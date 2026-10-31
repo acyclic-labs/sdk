@@ -106,6 +106,28 @@ pub(super) struct Prepared {
 }
 
 impl Prepared {
+    pub(super) fn encode(
+        &self,
+        descriptors: &mut Vec<std::os::fd::RawFd>,
+        body: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        // The original request carries one extra descriptor and its native
+        // BPF bytes. Both images share Instruction; the child borrows these
+        // bytes after decoding, with no policy allocation or translation.
+        body.extend_from_slice(
+            &u32::try_from(self.filter.len())
+                .map_err(|_| refused("invalid execution filter length"))?
+                .to_ne_bytes(),
+        );
+        for instruction in &self.filter {
+            body.extend_from_slice(&instruction.code.to_ne_bytes());
+            body.extend_from_slice(&[instruction.jt, instruction.jf]);
+            body.extend_from_slice(&instruction.k.to_ne_bytes());
+        }
+        descriptors.push(self.ruleset.as_raw_fd());
+        Ok(())
+    }
+
     pub(super) fn new(grant: &Grant, roots: Vec<File>) -> io::Result<Self> {
         // ABI 6 supplies signal and abstract-UNIX scoping; earlier ABIs cannot
         // prove this contract. Never silently discard an unsupported right.

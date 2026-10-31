@@ -18,6 +18,8 @@
 #![no_std]
 #![no_main]
 
+#[path = "../src/execution/linux/entry.rs"]
+mod entry;
 #[path = "../src/process_tree/record.rs"]
 mod record;
 mod sys;
@@ -28,8 +30,8 @@ use core::ffi::{CStr, c_char, c_void};
 use sys::{Errno, Fd, Pid};
 
 /// Descriptors one request carries: custody directory, reply, the owner's
-/// working directory and up to three streams.
-const DESCRIPTORS: usize = 6;
+/// working directory, up to three streams and one optional boundary ruleset.
+const DESCRIPTORS: usize = 7;
 /// Reply frame tags, each followed by a native-endian 32-bit value.
 const STARTED: u8 = b'P';
 const FAILED: u8 = b'E';
@@ -41,12 +43,15 @@ const CLOSED: u8 = 2;
 const HAS_CWD: u8 = 1;
 const HAS_UID: u8 = 2;
 const HAS_GID: u8 = 4;
+const HAS_BOUNDARY: u8 = 8;
 /// Resource limits a request carries, as soft and hard pairs.
 const LIMITS: usize = 16;
 /// The fixed fields before a request's strings: slots, flags, user, group,
 /// owner, file-creation mask, limits, and the argument and environment
 /// counts.
 const FIXED: usize = 3 + 1 + 4 + 4 + 4 + 4 + 8 + 8 + LIMITS * 16 + 8 + 8;
+// The native instruction slice is borrowed directly from this wire offset.
+const _: () = assert!((FIXED + 4).is_multiple_of(core::mem::align_of::<entry::Instruction>()));
 /// The control socket, above the standard streams.
 const CONTROL: Fd = 3;
 
@@ -412,6 +417,15 @@ struct Spec {
     path: Option<*const c_char>,
     argv: *const *const c_char,
     envp: *const *const c_char,
+    boundary: Option<Boundary>,
+}
+
+/// Borrowed native policy in this original request's mapping. Remapping is
+/// complete before these pointers are formed, just like argv and envp.
+struct Boundary {
+    ruleset: Fd,
+    filter: *const entry::Instruction,
+    count: usize,
 }
 
 /// Clones one warden as the owner's child. Every failure is reported on the
@@ -477,6 +491,30 @@ fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
             _ => return Err(invalid),
         };
     }
+    let (policy, strings) = if flags & HAS_BOUNDARY != 0 {
+        let mut reader = Reader(body.bytes().get(FIXED..length).ok_or(invalid)?);
+        let count = usize::try_from(reader.word()?).map_err(|_| invalid)?;
+        // The kernel consumes a 16-bit instruction count. Reject malformed
+        // requests before creating a warden; no truncation can broaden policy.
+        if count == 0 || u16::try_from(count).is_err() {
+            return Err(invalid);
+        }
+        reader.take(
+            count
+                .checked_mul(core::mem::size_of::<entry::Instruction>())
+                .ok_or(invalid)?,
+        )?;
+        let start = FIXED + 4;
+        let end = start
+            .checked_add(count * core::mem::size_of::<entry::Instruction>())
+            .ok_or(invalid)?;
+        (Some((descriptor(next)?, start, count)), end)
+    } else {
+        (None, FIXED)
+    };
+    if received.count != next + usize::from(policy.is_some()) {
+        return Err(invalid);
+    }
     // The vectors follow the body, aligned for pointers.
     let vectors = length
         .checked_next_multiple_of(8)
@@ -490,7 +528,7 @@ fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
     let base = body.base;
     // Shared, and only the body: the vectors after it are written below.
     let bytes: &[u8] = body.bytes().get(..length).ok_or(invalid)?;
-    let mut offset = FIXED;
+    let mut offset = strings;
     let mut string = || -> Result<*const c_char, Errno> {
         let rest = bytes.get(offset..).ok_or(invalid)?;
         let end = rest.iter().position(|byte| *byte == 0).ok_or(invalid)?;
@@ -550,6 +588,11 @@ fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
         path,
         argv: vector.cast_const(),
         envp: environment.cast_const(),
+        boundary: policy.map(|(ruleset, start, count)| Boundary {
+            ruleset,
+            filter: base.wrapping_add(start).cast(),
+            count,
+        }),
     })
 }
 
@@ -615,6 +658,13 @@ fn prepare_program(spec: &Spec) -> Result<(), Errno> {
         sys::set_signal_checked(sys::SIGCHLD, true)?;
     }
     sys::set_signal_mask(spec.signals)?;
+    if let Some(boundary) = &spec.boundary {
+        // SAFETY: spec checked the complete Instruction range. Its start
+        // FIXED+4 is eight-byte aligned in this mapping and remapping ended
+        // before spec formed this pointer. The original request stays live.
+        let filter = unsafe { core::slice::from_raw_parts(boundary.filter, boundary.count) };
+        entry::enter(boundary.ruleset, filter).map_err(Errno)?;
+    }
     Ok(())
 }
 

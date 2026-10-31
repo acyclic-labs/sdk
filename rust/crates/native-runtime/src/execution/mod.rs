@@ -14,8 +14,6 @@ use std::{
 
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
 
 /// Filesystem authority of an execution, including all its descendants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,20 +254,18 @@ impl ExecutionGrant {
     /// Prepares OS objects without starting untrusted code. A failure is a
     /// refusal, never an instruction to retry without confinement.
     pub fn prepare(&self) -> io::Result<PreparedExecution> {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         let roots = std::iter::once(&self.0.workspace)
             .chain(&self.0.read)
             .map(BoundPath::bind)
             .collect::<io::Result<Vec<_>>>()?;
         #[cfg(target_os = "linux")]
         let platform = linux::Prepared::new(&self.0, roots)?;
-        #[cfg(target_os = "macos")]
-        let platform = macos::Prepared::new(&self.0, roots)?;
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(target_os = "linux"))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         Ok(PreparedExecution {
             platform,
             grant: self.clone(),
@@ -282,32 +278,50 @@ impl ExecutionGrant {
 pub struct PreparedExecution {
     #[cfg(target_os = "linux")]
     platform: linux::Prepared,
-    #[cfg(target_os = "macos")]
-    platform: macos::Prepared,
     grant: ExecutionGrant,
 }
 
+impl std::fmt::Debug for PreparedExecution {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedExecution")
+            .field("grant", &self.grant)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PreparedExecution {
-    /// Adds enforcement after the process owner's custody hook. The native
-    /// launch core must consume the command exactly once, immediately after
-    /// this call. On Unix the hook runs only in the final executing child.
-    pub(crate) fn install(self, command: &mut std::process::Command) -> io::Result<()> {
-        let cwd = command
-            .get_current_dir()
+    pub(crate) fn validate_cwd(&self, cwd: Option<&Path>) -> io::Result<()> {
+        let cwd = cwd
             .ok_or_else(|| refused("confined execution requires an explicit working directory"))?;
         if !canonical(cwd)?.starts_with(self.grant.workspace()) {
             return Err(refused(
                 "execution working directory escapes the granted workspace",
             ));
         }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        self.platform.install(command);
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        Ok(())
+    }
+
+    /// Adds enforcement after the process owner's custody hook. The command
+    /// has already been admitted once and is consumed by the launch owner.
+    pub(crate) fn install(self, _command: &mut std::process::Command) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        self.platform.install(_command);
+        #[cfg(not(target_os = "linux"))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn encode_linux(
+        &self,
+        descriptors: &mut Vec<std::os::fd::RawFd>,
+        body: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        self.platform.encode(descriptors, body)
     }
 }
 
