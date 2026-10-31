@@ -270,6 +270,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         roots.insert(path);
     }
     let generators: &[&str] = match key {
+        "objects" => &["scripts/generate-objects-rpc-inventory.mjs"],
         "actors" => &[
             "scripts/generate-actors.mjs",
             "scripts/generate-actors-routes.mjs",
