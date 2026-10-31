@@ -15,6 +15,29 @@ pub struct ExecutionClaim<'a> {
     _claim: acyclic_fs::OperationClaim<'a>,
 }
 
+/// Original producer custody, or its exact-generation terminal observation.
+pub enum ExecutionAttempt<'a> {
+    /// Owns the one operation that may inspect replay and dispatch work.
+    Owned(ExecutionClaim<'a>),
+    /// Pins the existing producer without permitting another dispatch.
+    Observed(acyclic_fs::OperationObservation),
+}
+
+impl<'a> ExecutionAttempt<'a> {
+    /// Ordinary execution rejects contention; summary consumers retain the
+    /// observation instead and wait for that producer's physical retirement.
+    pub fn into_owner(self, io: Option<&PreparationIo>) -> Result<ExecutionClaim<'a>> {
+        match self {
+            Self::Owned(owner) => Ok(owner),
+            Self::Observed(_) => Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "operation already has a live executor",
+            )),
+        }
+    }
+}
+
 impl ExecutionClaim<'_> {
     /// Pins the shared operation event before handing custody to model work.
     pub fn observe(&self) -> acyclic_fs::OperationObservation {
@@ -29,57 +52,55 @@ impl ExecutionClaim<'_> {
 
 impl ExecutionClaims {
     /// Claims an operation before inspecting its replay observations.
-    pub fn claim<'a>(
+    pub fn acquire<'a>(
         &'a self,
         namespace: [u8; 32],
         operation: OperationId,
         io: Option<&PreparationIo>,
-    ) -> Result<ExecutionClaim<'a>> {
-        claim(&self.0, namespace, operation, io)
+    ) -> Result<ExecutionAttempt<'a>> {
+        acquire(&self.0, namespace, operation, io)
     }
 }
 
-pub(crate) fn claim<'a>(
+pub(crate) fn acquire<'a>(
     claims: &'a acyclic_fs::OperationClaims,
     namespace: [u8; 32],
     operation: OperationId,
     io: Option<&PreparationIo>,
-) -> Result<ExecutionClaim<'a>> {
+) -> Result<ExecutionAttempt<'a>> {
     let mut key = [0; 48];
     key[..32].copy_from_slice(&namespace);
     key[32..].copy_from_slice(&operation.into_bytes());
-    let claim = claims
-        .claim(
-            key,
-            || crate::model::charge_items(io, 1),
-            |bytes, allocations| -> Result<Storage> {
-                #[cfg(feature = "filesystem")]
-                {
-                    io.map(|io| {
-                        for _ in 0..allocations {
-                            io.allocation_attempt(bytes)?;
-                        }
-                        io.retain_owned(bytes)?;
-                        io.take_owned_custody(bytes)
-                    })
-                    .transpose()
-                }
-                #[cfg(not(feature = "filesystem"))]
-                {
-                    let _ = (io, bytes, allocations);
-                    Ok(())
-                }
-            },
-        )?
-        .into_owner()
-        .map_err(|_| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Conflict,
-                "operation already has a live executor",
-            )
-        })?;
-    Ok(ExecutionClaim { _claim: claim })
+    let claim = claims.claim(
+        key,
+        || crate::model::charge_items(io, 1),
+        |bytes, allocations| -> Result<Storage> {
+            #[cfg(feature = "filesystem")]
+            {
+                io.map(|io| {
+                    for _ in 0..allocations {
+                        io.allocation_attempt(bytes)?;
+                    }
+                    io.retain_owned(bytes)?;
+                    io.take_owned_custody(bytes)
+                })
+                .transpose()
+            }
+            #[cfg(not(feature = "filesystem"))]
+            {
+                let _ = (io, bytes, allocations);
+                Ok(())
+            }
+        },
+    )?;
+    Ok(match claim {
+        acyclic_fs::OperationAttempt::Owned(claim) => {
+            ExecutionAttempt::Owned(ExecutionClaim { _claim: claim })
+        }
+        acyclic_fs::OperationAttempt::Observed(observation) => {
+            ExecutionAttempt::Observed(observation)
+        }
+    })
 }
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
@@ -96,8 +117,12 @@ mod tests {
         let baseline = native.live_allocation_bytes();
         let claims = ExecutionClaims::default();
         let io = PreparationIo::from_native_work(&native)?;
-        let first = claims.claim([1; 32], OperationId::from_bytes([1; 16]), Some(&io))?;
-        let second = claims.claim([1; 32], OperationId::from_bytes([2; 16]), Some(&io))?;
+        let first = claims
+            .acquire([1; 32], OperationId::from_bytes([1; 16]), Some(&io))?
+            .into_owner(Some(&io))?;
+        let second = claims
+            .acquire([1; 32], OperationId::from_bytes([2; 16]), Some(&io))?
+            .into_owner(Some(&io))?;
         drop(io);
         assert!(native.live_allocation_bytes() > baseline);
         drop(first);

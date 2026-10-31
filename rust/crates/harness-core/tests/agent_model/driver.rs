@@ -6,8 +6,8 @@ use acyclic_harness_core::{
     agent::*,
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     executor::{
-        ExecutionClaim, ExecutionEvent, ExecutionJournal, ExecutionProgress, ExecutionRecord,
-        Executor, PreparationIo, TurnInput as ExecutorInput, TurnOutput,
+        ExecutionEvent, ExecutionJournal, ExecutionProgress, ExecutionRecord, Executor,
+        PreparationIo, TurnInput as ExecutorInput, TurnOutput,
     },
     goal::{GoalContinuationPolicy, GoalStatus, GoalView},
     interaction::{Interaction, InteractionOutcome},
@@ -37,11 +37,11 @@ fn unused<T>() -> acyclic_harness_core::Result<T> {
 }
 
 impl ExecutionJournal for Unused {
-    fn claim_execution<'a>(
+    fn acquire_execution<'a>(
         &'a self,
         _: OperationId,
         _: Option<&'a PreparationIo>,
-    ) -> acyclic_harness_core::Result<ExecutionClaim<'a>> {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::executor::ExecutionAttempt<'a>> {
         unused()
     }
 

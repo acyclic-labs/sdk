@@ -460,12 +460,12 @@ impl ExecutionJournal for Journal {
             .transpose()
     }
 
-    fn claim_execution<'a>(
+    fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
         io: Option<&'a PreparationIo>,
-    ) -> Result<ExecutionClaim<'a>> {
-        self.6.claim([0; 32], operation, io)
+    ) -> Result<crate::executor::ExecutionAttempt<'a>> {
+        self.6.acquire([0; 32], operation, io)
     }
 
     fn verify_model_content<'a>(

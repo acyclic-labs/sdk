@@ -136,7 +136,8 @@ impl OperationClaims {
     /// Claims a full-width operation key, with work bounded by key width.
     /// A duplicate visits only its fixed-depth path and allocates nothing.
     /// `admit(bytes, allocations)` retains the original owned funding for the
-    /// exact index node and its erased token. It can run twice for insertion.
+    /// exact index node and its erased token, and the producer's retained event.
+    /// Insertion funds at most two index nodes and one event allocation.
     /// Refusal or unwinding publishes no partial registration.
     pub fn claim<H, E>(
         &self,

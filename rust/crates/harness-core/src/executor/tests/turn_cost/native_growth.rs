@@ -9,12 +9,12 @@ impl ExecutionJournal for ReplayOnly<'_> {
         self.0.cache_identity()
     }
 
-    fn claim_execution<'a>(
+    fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
         io: Option<&'a PreparationIo>,
-    ) -> Result<ExecutionClaim<'a>> {
-        self.0.claim_execution(operation, io)
+    ) -> Result<crate::executor::ExecutionAttempt<'a>> {
+        self.0.acquire_execution(operation, io)
     }
     fn replay<'a>(
         &'a self,
