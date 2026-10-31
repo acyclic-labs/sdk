@@ -27,15 +27,27 @@ impl LogFrame {
         if self.wide { 8 } else { 4 }
     }
 
-    /// The bytes of a frame holding `body` bytes.
+    /// The bytes of a frame holding `body` bytes, if its prefix and slice
+    /// endpoints are representable on this platform.
     #[must_use]
-    pub const fn frame_bytes(&self, body: u64) -> u64 {
-        self.prefix_bytes() as u64 + body + Self::CHECKSUM_BYTES as u64
+    pub const fn frame_bytes(&self, body: u64) -> Option<u64> {
+        if !self.wide && body > u32::MAX as u64 {
+            return None;
+        }
+        let Some(bytes) =
+            body.checked_add(self.prefix_bytes() as u64 + Self::CHECKSUM_BYTES as u64)
+        else {
+            return None;
+        };
+        if bytes > usize::MAX as u64 {
+            return None;
+        }
+        Some(bytes)
     }
 
     /// The largest frame of this log.
     #[must_use]
-    pub const fn maximum_frame_bytes(&self) -> u64 {
+    pub const fn maximum_frame_bytes(&self) -> Option<u64> {
         self.frame_bytes(self.maximum_body)
     }
 
@@ -85,17 +97,21 @@ impl LogFrame {
 
     /// Appends the frame whose body is `parts`, in order, to `out`.
     pub fn encode(&self, parts: &[&[u8]], out: &mut Vec<u8>) -> io::Result<()> {
-        let body = parts.iter().try_fold(0_u64, |length, part| {
-            length
-                .checked_add(part.len() as u64)
-                .ok_or(io::ErrorKind::InvalidInput)
-        })?;
+        let body = parts
+            .iter()
+            .try_fold(0_u64, |total, part| total.checked_add(part.len() as u64))
+            .ok_or(io::ErrorKind::InvalidInput)?;
         let (prefix, width) = self.prefix(body).ok_or(io::ErrorKind::InvalidInput)?;
         let prefix = prefix.get(..width).ok_or(io::ErrorKind::InvalidInput)?;
-        let frame_bytes = body
-            .checked_add(self.frame_bytes(0))
+        let bytes = self.frame_bytes(body).ok_or(io::ErrorKind::InvalidInput)? as usize;
+        let end = out
+            .len()
+            .checked_add(bytes)
             .ok_or(io::ErrorKind::InvalidInput)?;
-        out.reserve(usize::try_from(frame_bytes).map_err(io::Error::other)?);
+        if end > isize::MAX as usize {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        out.try_reserve(bytes).map_err(io::Error::other)?;
         out.extend_from_slice(prefix);
         for part in parts {
             out.extend_from_slice(part);
@@ -114,10 +130,10 @@ impl LogFrame {
         let Some(length) = self.body_length(prefix) else {
             return false;
         };
-        let Ok(length) = usize::try_from(length) else {
+        let Some(_) = self.frame_bytes(length) else {
             return false;
         };
-        let Some((body, tail)) = bytes[width..].split_at_checked(length) else {
+        let Some((body, tail)) = bytes[width..].split_at_checked(length as usize) else {
             return false;
         };
         tail.get(..Self::CHECKSUM_BYTES)
@@ -137,13 +153,17 @@ impl LogFrame {
         let Some(length) = self.body_length(prefix) else {
             return Ok(None);
         };
-        if remaining
-            .checked_sub(self.frame_bytes(0))
-            .is_none_or(|available| length > available)
-        {
+        let bytes = self.frame_bytes(length).ok_or(io::ErrorKind::InvalidData)?;
+        if remaining < bytes {
             return Ok(None);
         }
-        let mut body = vec![0; usize::try_from(length).map_err(io::Error::other)?];
+        let length = usize::try_from(length).map_err(|_| io::ErrorKind::InvalidData)?;
+        if length > isize::MAX as usize {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let mut body = Vec::new();
+        body.try_reserve_exact(length).map_err(io::Error::other)?;
+        body.resize(length, 0);
         reader.read_exact(&mut body)?;
         let mut checksum = [0; Self::CHECKSUM_BYTES];
         reader.read_exact(&mut checksum)?;
@@ -172,7 +192,7 @@ mod tests {
         for format in [NARROW, WIDE] {
             let mut frame = Vec::new();
             format.encode(&[b"ab", b"cde"], &mut frame).unwrap();
-            assert_eq!(frame.len() as u64, format.frame_bytes(5));
+            assert_eq!(Some(frame.len() as u64), format.frame_bytes(5));
             assert!(format.is_valid(&frame));
             assert_eq!(
                 format.read(frame.as_slice(), frame.len() as u64).unwrap(),
@@ -212,5 +232,44 @@ mod tests {
                 assert!(format.read(frame.as_slice(), u64::MAX).unwrap().is_none());
             }
         }
+    }
+
+    #[test]
+    fn impossible_extents_refuse_before_body_io_or_output_allocation() {
+        use std::io::{Cursor, Read as _};
+
+        let format = LogFrame {
+            maximum_body: u64::MAX,
+            ..WIDE
+        };
+        assert_eq!(format.maximum_frame_bytes(), None);
+        assert_eq!(format.frame_bytes(u64::MAX), None);
+        assert_eq!(NARROW.frame_bytes(u64::from(u32::MAX) + 1), None);
+        let overhead = format.prefix_bytes() as u64 + LogFrame::CHECKSUM_BYTES as u64;
+        let last = usize::MAX as u64 - overhead;
+        assert_eq!(format.frame_bytes(last), Some(usize::MAX as u64));
+        assert_eq!(format.frame_bytes(last + 1), None);
+
+        // A real prefix writer can represent a declaration whose full extent
+        // cannot fit. Admission must stop before requesting any body bytes.
+        let (prefix, width) = format.prefix(u64::MAX).unwrap();
+        let mut prefix = Cursor::new(&prefix[..width]);
+        let mut body = Cursor::new(b"unread body".as_slice());
+        let error = format
+            .read((&mut prefix).chain(&mut body), u64::MAX)
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(prefix.position(), width as u64);
+        assert_eq!(body.position(), 0);
+        assert!(!format.is_valid(&u64::MAX.to_le_bytes()));
+
+        let mut output = Vec::from(b"retained".as_slice());
+        let capacity = output.capacity();
+        assert_eq!(
+            NARROW.encode(&[&[0; 65]], &mut output).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(output, b"retained");
+        assert_eq!(output.capacity(), capacity);
     }
 }

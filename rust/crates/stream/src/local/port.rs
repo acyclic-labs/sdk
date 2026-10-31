@@ -97,7 +97,11 @@ impl CommandJournal for LocalPort {
                             .first_chunk::<8>()
                             .ok_or(StreamError::InvalidResponse)?;
                         let at_millis = u64::from_le_bytes(*time);
-                        cursor += frame_bytes(&frame.length);
+                        let bytes =
+                            frame_bytes(&frame.length).map_err(|_| StreamError::InvalidResponse)?;
+                        cursor = cursor
+                            .checked_add(bytes)
+                            .ok_or(StreamError::InvalidResponse)?;
                         entries.push(JournalEntry {
                             sequence: cursor,
                             at_millis,

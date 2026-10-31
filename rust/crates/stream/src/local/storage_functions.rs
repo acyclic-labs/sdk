@@ -15,11 +15,16 @@ fn lock_root(
 }
 
 /// The largest frame the journal holds: length prefix, commit timestamp, command
-fn maximum_frame_bytes() -> usize {
-    usize::try_from(JOURNAL_FRAME.maximum_frame_bytes()).unwrap_or(usize::MAX)
+fn maximum_frame_bytes() -> Result<usize, LocalStreamError> {
+    JOURNAL_FRAME
+        .maximum_frame_bytes()
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or(LocalStreamError::InvalidLimits)
 }
 
 /// The bytes of the frame whose length prefix is `length_bytes`.
-fn frame_bytes(length_bytes: &[u8; 4]) -> u64 {
-    JOURNAL_FRAME.frame_bytes(u64::from(u32::from_le_bytes(*length_bytes)))
+fn frame_bytes(length_bytes: &[u8; 4]) -> Result<u64, LocalStreamError> {
+    JOURNAL_FRAME
+        .frame_bytes(u64::from(u32::from_le_bytes(*length_bytes)))
+        .ok_or_else(|| LocalStreamError::Io(std::io::ErrorKind::InvalidData.into()))
 }

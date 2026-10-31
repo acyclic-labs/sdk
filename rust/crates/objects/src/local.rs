@@ -442,7 +442,9 @@ fn replay(
         let Some((operation, key, value)) = decode(&body) else {
             return Err(std::io::ErrorKind::InvalidData.into());
         };
-        let bytes = LOG_FRAME.frame_bytes(body.len() as u64);
+        let bytes = LOG_FRAME
+            .frame_bytes(body.len() as u64)
+            .ok_or(std::io::ErrorKind::InvalidData)?;
         let previous = if operation == PUT {
             let slot = Slot {
                 frame: end,
