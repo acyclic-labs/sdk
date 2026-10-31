@@ -115,6 +115,42 @@ fn denied_ambiguous_tools_are_filtered_before_resolution_or_copying() -> Result<
 }
 
 #[cfg(feature = "filesystem")]
+fn retained_oracle(registry: &ToolRegistry) -> Result<u64> {
+    use crate::filesystem::UploadRecord as _;
+    let mut total = REGISTRY_BYTES as u64;
+    for ((name, revision), tool) in &registry.data.versions {
+        total += VERSION_SLOT_BYTES as u64
+            + name.capacity() as u64
+            + revision.capacity() as u64
+            + std::mem::size_of::<ToolDefinition>() as u64
+            + tool.definition.logical_owned_bytes()?
+            + tool
+                .skill_source
+                .as_ref()
+                .map(|source| {
+                    source
+                        .logical_owned_bytes()
+                        .map(|bytes| bytes + crate::executor::filesystem_skill_marker_bytes())
+                })
+                .transpose()?
+                .unwrap_or(0);
+    }
+    for (name, selected) in &registry.data.selected {
+        total += std::mem::size_of::<(String, ModelSelection)>() as u64 + name.capacity() as u64;
+        total += match selected {
+            ModelSelection::Revision(revision) | ModelSelection::CallableRevision(revision) => {
+                revision.capacity() as u64
+            }
+            ModelSelection::Ambiguous | ModelSelection::Hidden => 0,
+        };
+    }
+    for name in registry.data.catalog_revisions.keys() {
+        total += std::mem::size_of::<(String, [u8; 32])>() as u64 + name.capacity() as u64;
+    }
+    Ok(total)
+}
+
+#[cfg(feature = "filesystem")]
 #[test]
 fn native_registry_storage_and_copy_remain_funded() -> Result<()> {
     use crate::filesystem::UploadRecord as _;
@@ -140,6 +176,57 @@ fn native_registry_storage_and_copy_remain_funded() -> Result<()> {
             registry.native_owned_bytes()?
         );
     }
+    let before = (
+        registry.native_owned_bytes()?,
+        custody.as_ref().unwrap().bytes(),
+    );
+    let checks = std::cell::Cell::new(0);
+    let failed =
+        registry.register_checked(make_tool("failed")?, &mut custody, Some(&work), &|| {
+            checks.set(checks.get() + 1);
+            if checks.get() > 1 {
+                Err(Error::tool_rejected("admission revoked"))
+            } else {
+                Ok(())
+            }
+        });
+    assert!(failed.is_err());
+    assert!(registry.get("failed", None, None)?.is_none());
+    assert_eq!(
+        (
+            registry.native_owned_bytes()?,
+            custody.as_ref().unwrap().bytes()
+        ),
+        before
+    );
+    assert_eq!(registry.native_owned_bytes()?, retained_oracle(&registry)?);
+    // The retained-total oracle observes the entries independently of the
+    // aggregate; corrupting only the aggregate must fail its comparison.
+    Arc::get_mut(&mut registry.data).unwrap().retained_bytes += 1;
+    assert_ne!(registry.native_owned_bytes()?, retained_oracle(&registry)?);
+    Arc::get_mut(&mut registry.data).unwrap().retained_bytes -= 1;
+    let mut portable = ToolRegistry::default();
+    let mut short = crate::tool::files::read()?;
+    short.definition.name = "x".into();
+    short.definition.revision = "y".into();
+    portable.register((short, None), &mut None, None)?;
+    let old = portable.clone();
+    portable.select_model_version("x", "y")?;
+    assert_eq!(portable.native_owned_bytes()?, retained_oracle(&portable)?);
+    assert_eq!(old.native_owned_bytes()?, retained_oracle(&old)?);
+    for data in [&*portable.data, &*old.data] {
+        let (key, selected) = data.selected.first_key_value().unwrap();
+        let ModelSelection::Revision(revision) = selected else {
+            unreachable!()
+        };
+        let copy = (key.clone(), revision.clone());
+        // Observe the original and actual cloned allocations, rather than
+        // deriving an expected capacity from a Rust implementation constant.
+        assert_eq!(
+            key.capacity() + revision.capacity(),
+            copy.0.capacity() + copy.1.capacity()
+        );
+    }
     let snapshot = registry.clone();
     assert!(matches!(
         registry.register(make_tool("shared")?, &mut custody, Some(&work)),
@@ -155,6 +242,16 @@ fn native_registry_storage_and_copy_remain_funded() -> Result<()> {
     assert_eq!(registry.definitions(None)?.len(), 2);
     assert_eq!(snapshot.definitions(None)?.len(), 2);
     assert_eq!(copied.definitions(None)?.len(), 3);
+    copied.pin_catalog_revision("catalog", None, [1; 32])?;
+    assert_eq!(copied.native_owned_bytes()?, retained_oracle(&copied)?);
+    copied.pin_catalog_revision("catalog", Some([1; 32]), [2; 32])?;
+    assert_eq!(copied.native_owned_bytes()?, retained_oracle(&copied)?);
+    let mut extra = ToolRegistry::default();
+    let mut tool = crate::tool::files::read()?;
+    tool.definition.name = "extra".into();
+    extra.register((tool, None), &mut None, None)?;
+    copied.extend(extra)?;
+    assert_eq!(copied.native_owned_bytes()?, retained_oracle(&copied)?);
     Ok(())
 }
 
@@ -245,6 +342,8 @@ proptest::proptest! {
                 }
             }
             proptest::prop_assert!(indexed_names(&registry));
+            #[cfg(feature = "filesystem")]
+            proptest::prop_assert_eq!(checked(registry.native_owned_bytes())?, checked(retained_oracle(&registry))?);
         }
         #[cfg(feature = "filesystem")]
         {
@@ -260,12 +359,14 @@ proptest::proptest! {
             proptest::prop_assert!(registry.data.versions.keys().eq(copied.data.versions.keys()));
             proptest::prop_assert!(registry.data.selected.iter().eq(copied.data.selected.iter()));
             proptest::prop_assert!(indexed_names(&copied));
+            proptest::prop_assert_eq!(checked(copied.native_owned_bytes())?, checked(retained_oracle(&copied))?);
             let remaining = checked(work.remaining())?;
             for name in registry.data.selected.keys() {
                 checked(copied.remove_from_model(name))?;
             }
             proptest::prop_assert_eq!(checked(work.remaining())?, remaining);
             proptest::prop_assert!(indexed_names(&copied));
+            proptest::prop_assert_eq!(checked(copied.native_owned_bytes())?, checked(retained_oracle(&copied))?);
             drop(copied);
             drop(custody);
         }
@@ -296,6 +397,11 @@ fn hiding_requires_no_allocation_or_payload_copy() -> Result<()> {
                     .insert((name.clone(), "1".into()), Arc::new(tool));
                 data.selected
                     .insert(name, ModelSelection::Revision("1".into()));
+            }
+            #[cfg(feature = "filesystem")]
+            {
+                let retained = retained_oracle(&registry)? - REGISTRY_BYTES as u64;
+                Arc::get_mut(&mut registry.data).unwrap().retained_bytes = retained;
             }
             for position in [0, count / 2, count - 1] {
                 let name = format!("tool.{position:06}");

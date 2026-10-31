@@ -65,6 +65,14 @@ impl ToolRegistry {
                     | ModelSelection::CallableRevision(revision) => revision.capacity(),
                     _ => 0,
                 };
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                {
+                    data.retained_bytes = data
+                        .retained_bytes
+                        .checked_sub(selection.retained_bytes())
+                        .and_then(|bytes| bytes.checked_add(replacement.retained_bytes()))
+                        .ok_or(OWNERSHIP_OVERFLOW)?;
+                }
                 *selection = replacement;
                 #[cfg(feature = "filesystem")]
                 if let Some(io) = io {
@@ -77,17 +85,24 @@ impl ToolRegistry {
 
     /// Selects one revision for future model requests.
     pub fn select_model_version(&mut self, name: &str, revision: &str) -> Result<()> {
-        if !self
-            .data
-            .versions
-            .contains_key(&(name.to_owned(), revision.to_owned()))
-        {
+        if lookup::get(&self.data.versions, name, revision).is_none() {
             return Err(Error::NotFound(format!("tool {name}@{revision}")));
         }
-        Arc::make_mut(&mut self.data).selected.insert(
-            name.to_owned(),
-            ModelSelection::Revision(revision.to_owned()),
-        );
+        let replacement = ModelSelection::Revision(revision.to_owned());
+        let data = Arc::make_mut(&mut self.data);
+        let selection = data
+            .selected
+            .get_mut(name)
+            .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            data.retained_bytes = data
+                .retained_bytes
+                .checked_sub(selection.retained_bytes())
+                .and_then(|bytes| bytes.checked_add(replacement.retained_bytes()))
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+        }
+        *selection = replacement;
         Ok(())
     }
 
@@ -103,18 +118,38 @@ impl ToolRegistry {
                 "dynamic catalog installation changed".into(),
             ));
         }
-        Arc::make_mut(&mut self.data)
-            .catalog_revisions
-            .insert(namespace.into(), revision);
+        let data = Arc::make_mut(&mut self.data);
+        if let Some(selected) = data.catalog_revisions.get_mut(namespace) {
+            *selected = revision;
+        } else {
+            let name: String = namespace.into();
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                data.retained_bytes = data
+                    .retained_bytes
+                    .checked_add(std::mem::size_of::<(String, [u8; 32])>() as u64)
+                    .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
+                    .ok_or(OWNERSHIP_OVERFLOW)?;
+            }
+            data.catalog_revisions.insert(name, revision);
+        }
         Ok(())
     }
 
     /// Hides a logical tool while retaining admitted revisions.
     pub fn remove_from_model(&mut self, name: &str) -> Result<()> {
-        let selection = Arc::make_mut(&mut self.data)
+        let data = Arc::make_mut(&mut self.data);
+        let selection = data
             .selected
             .get_mut(name)
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            data.retained_bytes = data
+                .retained_bytes
+                .checked_sub(selection.retained_bytes())
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+        }
         *selection = ModelSelection::Hidden;
         Ok(())
     }

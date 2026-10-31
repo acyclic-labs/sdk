@@ -2,45 +2,9 @@ use super::*;
 
 impl ToolRegistry {
     pub(super) fn native_owned_bytes(&self) -> Result<u64> {
-        use crate::filesystem::UploadRecord as _;
-        let mut bytes = REGISTRY_BYTES as u64;
-        for ((name, revision), tool) in &self.data.versions {
-            let definition_deep = tool.definition.logical_owned_bytes()?;
-            let source_deep = tool
-                .skill_source
-                .as_ref()
-                .map(|source| source.logical_owned_bytes())
-                .transpose()?
-                .unwrap_or(0);
-            let row = ((VERSION_SLOT_BYTES + std::mem::size_of::<ToolDefinition>()) as u64)
-                .checked_add(name.capacity() as u64)
-                .and_then(|bytes| bytes.checked_add(revision.capacity() as u64))
-                .and_then(|bytes| bytes.checked_add(definition_deep))
-                .and_then(|bytes| bytes.checked_add(source_deep));
-            bytes = bytes
-                .checked_add(row.ok_or(OWNERSHIP_OVERFLOW)?)
-                .ok_or(OWNERSHIP_OVERFLOW)?;
-        }
-        for (name, selection) in &self.data.selected {
-            let deep = match selection {
-                ModelSelection::Revision(revision) | ModelSelection::CallableRevision(revision) => {
-                    revision.capacity() as u64
-                }
-                _ => 0,
-            };
-            bytes = bytes
-                .checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
-                .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
-                .and_then(|bytes| bytes.checked_add(deep))
-                .ok_or(OWNERSHIP_OVERFLOW)?;
-        }
-        for name in self.data.catalog_revisions.keys() {
-            bytes = bytes
-                .checked_add(std::mem::size_of::<(String, [u8; 32])>() as u64)
-                .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
-                .ok_or(OWNERSHIP_OVERFLOW)?;
-        }
-        Ok(bytes)
+        (REGISTRY_BYTES as u64)
+            .checked_add(self.data.retained_bytes)
+            .ok_or(OWNERSHIP_OVERFLOW)
     }
 
     /// Copies registry metadata on its original ledger.
@@ -60,20 +24,46 @@ impl ToolRegistry {
                 crate::executor::stock_string_copy(revision, Some(&io))?,
             );
             let definition = crate::model::clone_tool_definition(&tool.definition, Some(&io))?;
-            data.versions.insert(
-                key,
-                Arc::new(Tool {
-                    skill_source: tool
-                        .skill_source
-                        .as_ref()
-                        .map(|source| source.copy(Some(&io)))
-                        .transpose()?,
-                    hook_names: tool.hook_names,
-                    definition,
-                    executor: tool.executor.clone(),
-                    projection: tool.projection.clone(),
-                }),
-            );
+            if tool.skill_source.is_some() {
+                io.retain_owned(crate::executor::filesystem_skill_marker_bytes())?;
+            }
+            let tool = Arc::new(Tool {
+                skill_source: tool
+                    .skill_source
+                    .as_ref()
+                    .map(|source| source.copy(Some(&io)))
+                    .transpose()?,
+                hook_names: tool.hook_names,
+                definition,
+                executor: tool.executor.clone(),
+                projection: tool.projection.clone(),
+            });
+            use crate::filesystem::UploadRecord as _;
+            let source = tool
+                .skill_source
+                .as_ref()
+                .map(|source| {
+                    source.logical_owned_bytes().and_then(|bytes| {
+                        bytes
+                            .checked_add(crate::executor::filesystem_skill_marker_bytes())
+                            .ok_or(OWNERSHIP_OVERFLOW)
+                    })
+                })
+                .transpose()?
+                .unwrap_or(0);
+            let definition_bytes = tool.definition.logical_owned_bytes()?;
+            let added = (VERSION_SLOT_BYTES as u64)
+                .checked_add(key.0.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(key.1.capacity() as u64))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ToolDefinition>() as u64))
+                .and_then(|bytes| bytes.checked_add(definition_bytes))
+                .and_then(|bytes| bytes.checked_add(source))
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+            data.retained_bytes = data
+                .retained_bytes
+                .checked_add(added)
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+            data.versions.insert(key, tool);
         }
         for (name, selection) in &self.data.selected {
             io.retain_owned(std::mem::size_of::<(String, ModelSelection)>() as u64)?;
@@ -88,14 +78,27 @@ impl ToolRegistry {
                 ModelSelection::Ambiguous => ModelSelection::Ambiguous,
                 ModelSelection::Hidden => ModelSelection::Hidden,
             };
+            let added = (std::mem::size_of::<(String, ModelSelection)>() as u64)
+                .checked_add(name.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(selection.retained_bytes()))
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+            data.retained_bytes = data
+                .retained_bytes
+                .checked_add(added)
+                .ok_or(OWNERSHIP_OVERFLOW)?;
             data.selected.insert(name, selection);
         }
         for (name, revision) in &self.data.catalog_revisions {
             io.retain_owned(std::mem::size_of::<(String, [u8; 32])>() as u64)?;
-            data.catalog_revisions.insert(
-                crate::executor::stock_string_copy(name, Some(&io))?,
-                *revision,
-            );
+            let name = crate::executor::stock_string_copy(name, Some(&io))?;
+            let added = (std::mem::size_of::<(String, [u8; 32])>() as u64)
+                .checked_add(name.capacity() as u64)
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+            data.retained_bytes = data
+                .retained_bytes
+                .checked_add(added)
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+            data.catalog_revisions.insert(name, *revision);
         }
         let retained = copied.native_owned_bytes()?;
         Ok((copied, io.into_native_custody(retained)?))

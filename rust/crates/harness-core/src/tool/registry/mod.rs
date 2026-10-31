@@ -36,6 +36,18 @@ enum ModelSelection {
     Hidden,
 }
 
+impl ModelSelection {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn retained_bytes(&self) -> u64 {
+        match self {
+            Self::Revision(revision) | Self::CallableRevision(revision) => {
+                revision.capacity() as u64
+            }
+            Self::Ambiguous | Self::Hidden => 0,
+        }
+    }
+}
+
 /// Immutable shared snapshots of pinned revisions and the model selection.
 /// Cloning shares storage; changing a snapshot copies metadata and retains payloads.
 #[derive(Clone, Default)]
@@ -48,6 +60,10 @@ struct RegistryData {
     versions: BTreeMap<(String, String), Arc<Tool>>,
     selected: BTreeMap<String, ModelSelection>,
     catalog_revisions: BTreeMap<String, [u8; 32]>,
+    /// Exact retained entries, excluding the fixed registry frame. Every
+    /// mutation updates this with its admitted payload and metadata delta.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    retained_bytes: u64,
 }
 
 mod merge;

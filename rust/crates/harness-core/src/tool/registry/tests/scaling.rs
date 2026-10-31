@@ -52,3 +52,57 @@ proptest! {
         prop_assert_eq!(actual_allocations.bytes_total, expected_allocations.bytes_total);
     }
 }
+
+// One real registration must examine only its admitted slot and incoming
+// definition, independently of retained catalog population. The old slot
+// admission charged the entire retained map on this same operation.
+#[test]
+fn registration_credit_does_not_grow_with_retained_revisions() -> Result<()> {
+    use crate::filesystem::UploadRecord as _;
+    let mut observed = None;
+    for population in [0, 256] {
+        let token = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let (mut registry, custody) = ToolRegistry::new(&work)?;
+        let mut custody = Some(custody);
+        let make = |name: String| -> Result<_> {
+            let mut tool = crate::tool::files::read()?;
+            tool.definition.name = name;
+            let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+            tool.definition = crate::model::clone_tool_definition(&tool.definition, Some(&io))?;
+            let retained = std::mem::size_of::<ToolDefinition>() as u64
+                + tool.definition.logical_owned_bytes()?;
+            Ok((tool, Some(io.into_native_custody(retained)?)))
+        };
+        for index in 0..population {
+            registry.register(
+                make(format!("prior.{index:04}"))?,
+                &mut custody,
+                Some(&work),
+            )?;
+        }
+        let incoming = make("new-entry".into())?;
+        let before = work.receipt().items_examined;
+        registry.register(incoming, &mut custody, Some(&work))?;
+        let charged = work.receipt().items_examined - before;
+        if let Some(expected) = observed {
+            assert_eq!(charged, expected);
+        } else {
+            observed = Some(charged);
+        }
+        assert_eq!(registry.native_owned_bytes()?, retained_oracle(&registry)?);
+        assert_eq!(
+            custody.as_ref().unwrap().bytes(),
+            registry.native_owned_bytes()?
+        );
+        if population > 0 {
+            assert_ne!(
+                charged + population,
+                observed.unwrap(),
+                "old whole-map slot charge must fail the same oracle"
+            );
+        }
+    }
+    Ok(())
+}
