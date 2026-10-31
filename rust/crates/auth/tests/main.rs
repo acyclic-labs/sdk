@@ -1,3 +1,5 @@
+acyclic_test_support::counting_allocator!();
+
 #[path = "admission.rs"]
 mod admission;
 

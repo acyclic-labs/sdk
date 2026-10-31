@@ -1,5 +1,4 @@
 //! Properties over authenticated chains and current trust snapshots.
-acyclic_test_support::counting_allocator!();
 #[path = "verifier/current_trust.rs"]
 mod current_trust;
 #[path = "verifier/proof_storage.rs"]

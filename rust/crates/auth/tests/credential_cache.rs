@@ -1,5 +1,4 @@
 //! Synthetic trusted-source vectors; no captured external credentials.
-acyclic_test_support::counting_allocator!();
 
 use acyclic_auth::credential::*;
 use futures::{
