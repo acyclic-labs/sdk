@@ -489,6 +489,10 @@ pub async fn run(
             Vec::new()
         };
         let feedback = matches!(view.prompt, Some(Prompt::Feedback));
+        if let Some(panel) = diff_panel.as_mut() {
+            let area = Rect::from((Position::ORIGIN, size));
+            panel.wrap(Screen::default().areas(area, &input).overlay_columns());
+        }
         let (areas, page) = {
             let status = Line::raw(view.status());
             let screen = Screen {
@@ -730,6 +734,11 @@ pub async fn run(
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
                             InputEffect::Quit => return Ok(view.outcome.code()),
                             InputEffect::Scroll(rows) if diff_open && diff_query.is_none() && credit != 0 => {
+                                if let Some(panel) = diff_panel.as_ref()
+                                    && !panel.page_boundary(&mut overlay_top, rows, areas.overlay_rows(0))
+                                {
+                                    continue;
+                                }
                                 let cursor = if rows < 0 {
                                     diff_panel.as_mut().and_then(|panel| panel.next.take())
                                 } else {

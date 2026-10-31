@@ -79,6 +79,11 @@ impl ScreenAreas {
             .inner(self.transcript)
     }
 
+    /// Modal content columns after its border.
+    pub fn overlay_columns(&self) -> u16 {
+        self.overlay_content().width
+    }
+
     /// Visible modal rows after its border and caller-reserved hints or headers.
     /// Zero means no query row can be painted, including a zero-width viewport.
     pub fn overlay_rows(&self, reserved: u16) -> u16 {
