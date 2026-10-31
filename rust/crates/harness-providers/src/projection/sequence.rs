@@ -172,7 +172,11 @@ fn order(messages: &mut [Message<'_>]) {
     super::gemini_results::order(messages);
 }
 fn tool_result(item: &Item<'_>) -> bool {
-    matches!(item, Item::Json(value) if sequence::tool_result(value))
+    match item {
+        Item::Result(result) => result.adapter == Adapter::Anthropic,
+        Item::Json(value) => sequence::tool_result(value),
+        _ => false,
+    }
 }
 fn role(message: &Message<'_>) -> &'static str {
     match message {

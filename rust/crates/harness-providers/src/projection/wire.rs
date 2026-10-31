@@ -10,6 +10,7 @@ pub(super) enum Item<'a> {
     Json(Value),
     Native(&'a RawValue),
     Call(Call<'a>),
+    Result(super::result::ToolResult<'a>),
 }
 
 #[derive(Serialize)]
@@ -118,6 +119,23 @@ impl<'a> Body<'a> {
             }
         }
         args
+    }
+
+    pub(crate) fn results(&mut self) -> Vec<&mut super::result::ToolResult<'a>> {
+        let mut results = Vec::new();
+        for message in &mut self.messages {
+            match message {
+                Message::Item(Item::Result(result)) => results.push(result),
+                Message::Anthropic { content, .. } | Message::Gemini { parts: content, .. } => {
+                    results.extend(content.iter_mut().filter_map(|item| match item {
+                        Item::Result(result) => Some(result),
+                        _ => None,
+                    }));
+                }
+                _ => {}
+            }
+        }
+        results
     }
 }
 

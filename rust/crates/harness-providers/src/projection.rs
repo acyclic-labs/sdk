@@ -6,6 +6,7 @@ pub(crate) mod image;
 mod json_string;
 pub(crate) mod native_reasoning;
 mod profile;
+pub(crate) mod result;
 mod sequence;
 pub(crate) mod text;
 pub(crate) mod wire;
@@ -420,30 +421,17 @@ fn project_message<'a>(
             } => {
                 let name = names.wire(name)?;
                 let call_id = call_ids.wire(call_id)?;
-                let text = result_text(content, files)?;
-                let error = matches!(content, ToolResultContent::Error { .. });
-                let result = match adapter {
-                    Adapter::Anthropic if error => json!(
-                        {"type":"tool_result","tool_use_id":call_id,"content":text,"is_error":true}
-                    ),
-                    Adapter::Gemini if error => json!(
-                        {"functionResponse":{"id":call_id,"name":name,"response":{"error":text}}}
-                    ),
-                    Adapter::Anthropic => {
-                        json!({"type":"tool_result","tool_use_id":call_id,"content":text})
-                    }
-                    Adapter::Responses => {
-                        json!({"type":"function_call_output","call_id":call_id,"output":text})
-                    }
-                    Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
-                    Adapter::Gemini => {
-                        json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}})
-                    }
-                };
+                let result = Item::Result(result::ToolResult {
+                    adapter,
+                    id: call_id.into_owned(),
+                    name,
+                    payload: result_text(content, files)?,
+                    error: matches!(content, ToolResultContent::Error { .. }),
+                });
                 if adapter == Adapter::Chat {
                     results.push(result);
                 } else {
-                    ordered.push(Item::Json(result));
+                    ordered.push(result);
                 }
             }
         }
@@ -468,11 +456,7 @@ fn project_message<'a>(
                     reasoning_content: chat_reasoning,
                 }));
             }
-            output.extend(
-                results
-                    .into_iter()
-                    .map(|value| Message::Item(Item::Json(value))),
-            );
+            output.extend(results.into_iter().map(Message::Item));
             Ok(output)
         }
         Adapter::Responses => Ok(ordered.into_iter().map(Message::Item).collect()),
@@ -535,11 +519,12 @@ fn project_text(
     }
 }
 
-fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<String> {
+fn result_text<'a>(
+    content: &'a ToolResultContent,
+    files: &mut FileText,
+) -> Result<result::Payload<'a>> {
     match content {
-        ToolResultContent::Json { value } => {
-            serde_json::to_string(value).map_err(|error| invalid(error.to_string()))
-        }
+        ToolResultContent::Json { value } => Ok(result::Payload::Json(value)),
         ToolResultContent::Parts { parts } => parts
             .iter()
             .map(|part| match part {
@@ -547,8 +532,10 @@ fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<Stri
                 ModelDataPart::File { file, policy } => files.project(file, policy),
             })
             .collect::<Result<Vec<_>>>()
-            .map(|parts| parts.join("\n")),
-        ToolResultContent::Error { message, .. } => Ok(message.clone()),
+            .map(|parts| result::Payload::Text(parts.join("\n").into())),
+        ToolResultContent::Error { message, .. } => {
+            Ok(result::Payload::Text(message.as_str().into()))
+        }
     }
 }
 

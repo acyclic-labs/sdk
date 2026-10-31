@@ -36,6 +36,11 @@ enum Event {
         adapter: Adapter,
         unchanged: bool,
     },
+    Result {
+        adapter: Adapter,
+        borrowed: bool,
+        exact: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,6 +66,8 @@ enum Fault {
     /// Projecting for the adapter rewrites the canonical history with
     /// normalized arguments.
     NormalizeHistory(Adapter),
+    MaterializeResult(Adapter),
+    AlterResultIdentity(Adapter),
 }
 
 impl Fault {
@@ -196,6 +203,22 @@ fn oracle() -> Oracle<Case, Fault, Event> {
             )),
             _ => Ok(()),
         })
+        .invariant("result-borrowed", |event| match event {
+            Event::Result {
+                adapter,
+                borrowed: false,
+                ..
+            } => Err(format!("{adapter:?}: copied result payload")),
+            _ => Ok(()),
+        })
+        .invariant("result-exact", |event| match event {
+            Event::Result {
+                adapter,
+                exact: false,
+                ..
+            } => Err(format!("{adapter:?}: changed result envelope or payload")),
+            _ => Ok(()),
+        })
         .control("object", Case::Normalized(json!([1])), Fault::Unwrapped)
         .control(
             "identity",
@@ -240,6 +263,16 @@ fn oracle() -> Oracle<Case, Fault, Event> {
                 "history",
                 Case::Projected(json!([1])),
                 Fault::NormalizeHistory(adapter),
+            )
+            .control(
+                "result-borrowed",
+                Case::Projected(json!({"nested": [1, 2, 3]})),
+                Fault::MaterializeResult(adapter),
+            )
+            .control(
+                "result-exact",
+                Case::Projected(json!({"nested": [1, 2, 3]})),
+                Fault::AlterResultIdentity(adapter),
             );
     }
     oracle.build()
@@ -282,7 +315,7 @@ fn projection(
                     call_id: "call_0".into(),
                     name: "echo".into(),
                     content: ToolResultContent::Json {
-                        value: json!("done"),
+                        value: value.clone(),
                     },
                 }),
             },
@@ -292,6 +325,16 @@ fn projection(
             unreachable!("the fixture appended a tool call")
         };
         let copy = source.arguments.clone();
+        let ModelContent::Part(ModelContentPart::ToolResult {
+            content: ToolResultContent::Json {
+                value: result_source,
+            },
+            ..
+        }) = &request.messages[3].content
+        else {
+            unreachable!("the fixture appended a JSON result")
+        };
+        let result_copy = result_source.clone();
         let names = crate::tool_names::Names::new(&request);
         let origin = provider.reasoning_origin(provider.key.as_deref(), None);
         let projected = crate::projection::body_named(
@@ -322,6 +365,41 @@ fn projection(
             adapter,
             same: borrowed.len() == 1 && std::ptr::eq(&source.arguments, borrowed[0]),
         })?;
+        let results = projected.results();
+        let result_count = results.len();
+        if result_count != 1 {
+            observer.see(Event::Result {
+                adapter,
+                borrowed: false,
+                exact: false,
+            })?;
+        }
+        let expected_text = serde_json::to_string(value).unwrap();
+        let expected_result = match adapter {
+            Adapter::Anthropic => {
+                json!({"type":"tool_result","tool_use_id":"call_0","content":expected_text})
+            }
+            Adapter::Responses => {
+                json!({"type":"function_call_output","call_id":"call_0","output":expected_text})
+            }
+            Adapter::Chat => json!({"role":"tool","tool_call_id":"call_0","content":expected_text}),
+            Adapter::Gemini => {
+                json!({"functionResponse":{"id":"call_0","name":"echo","response":{"output":expected_text}}})
+            }
+        };
+        for result in results {
+            if fault == Some(Fault::MaterializeResult(adapter)) {
+                result.payload = crate::projection::result::Payload::Json(&result_copy);
+            }
+            if fault == Some(Fault::AlterResultIdentity(adapter)) {
+                result.id.clear();
+            }
+            observer.see(Event::Result {
+                adapter,
+                borrowed: result_count == 1 && matches!(&result.payload, crate::projection::result::Payload::Json(value) if std::ptr::eq(*value, result_source)),
+                exact: serde_json::to_vec(result).unwrap() == serde_json::to_vec(&expected_result).unwrap(),
+            })?;
+        }
         let mut see = |seen| observer.see(Event::Normalization(seen));
         let bytes = serde_json::to_vec(&projected).unwrap_or_default();
         let site = format!("{adapter:?} projection");
@@ -371,6 +449,9 @@ fn projection(
 #[test]
 fn arbitrary_history_arguments_are_lossless_idempotent_objects_in_every_protocol() {
     let oracle = oracle();
+    oracle.check(&Case::Projected(
+        json!({"retained": "\"\n\0hé".repeat(32_768)}),
+    ));
     proptest!(ProptestConfig::with_cases(64), |(value in values())| {
         crate::fuzzing::assert_model_json_round_trip(&value);
         oracle.check(&Case::Projected(value));
