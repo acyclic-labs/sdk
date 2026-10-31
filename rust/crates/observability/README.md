@@ -72,6 +72,33 @@ completion on another worker does not replace it with that worker's context.
 These scalars retain no span or physical work. They are registry-local
 diagnostic joins, rather than metric labels or globally unique identities.
 
+For a join to an admitted operation, the original owner can use
+`Binding::attach(&original_span, original_ids, caller_owned_permit)` before
+creating children. The key is a fixed-size `Copy + Send + Sync + 'static` value
+containing that owner's exact opaque authority, operation, generation and
+physical-owner IDs. The adapter does not discover or authorize those IDs.
+An opt-in detail sink carries the same token along each immediate registry
+edge, including non-operation worker spans, without searching ancestors.
+`Binding::matches(&sample)` compares the original token; `Binding::key::<K>()`
+recovers its typed IDs. Equal scalar IDs from another admission do not match.
+Missing or filtered parents leave provenance unknown. Attach after terminal
+completion, duplicate attachment to the same root, and a disabled or unavailable
+registry return typed errors. Counters-only sinks propagate no token.
+
+One allocation at explicit binding admission holds the fixed key and its
+caller-supplied credit. Clones share that allocation through diagnostic
+retirement, retaining neither a span nor physical work. Each admitted export
+record still owns its separate output credit through processing. Neither token
+nor record retirement completes the operation or certifies a provider range,
+physical coverage or report acknowledgement.
+
+Detail sinks also receive `Sample::work`, the original producer's fixed
+`work.items`, `work.bytes` and `work.durability` summary when declared. Producers
+record these fields before their terminal outcome. Missing and unrepresentable
+totals remain unknown. These semantic units do not count hidden copies, locks,
+quorum requests, OS syscalls or device drains. No measurement can treat their
+absence as zero physical work.
+
 The original `acyclic.runtime.durability` producer's fields project into
 `Sample::durability: Option<DurabilityAttempt>`. Its fixed fields preserve
 requested Full/Barrier, the actual named syscall, an attempt-local opaque

@@ -186,6 +186,10 @@ pub struct Sample<'a> {
     pub parent_id: Option<&'a Id>,
     /// Fixed native-attempt fields from the original durability producer.
     pub durability: Option<crate::DurabilityAttempt>,
+    /// Optional producer-declared semantic work, retained only when requested.
+    pub work: Option<crate::WorkSummary>,
+    /// Caller-funded original admission, when explicitly supplied and requested.
+    pub binding: Option<&'a crate::Binding>,
     /// Original static span metadata. Exporters must use bounded static labels.
     pub metadata: &'static tracing::Metadata<'static>,
     /// RPC method declared by the operation factory, never a resource label.
@@ -208,6 +212,10 @@ pub struct OwnedSample {
     pub parent_id: Option<Id>,
     /// Original fixed physical-attempt evidence, with no dynamic field map.
     pub durability: Option<crate::DurabilityAttempt>,
+    /// Original producer's optional work totals, without reconstructing work.
+    pub work: Option<crate::WorkSummary>,
+    /// Original admission token; it owns diagnostic credit, never physical work.
+    pub binding: Option<crate::Binding>,
     /// Original static operation metadata.
     pub metadata: &'static tracing::Metadata<'static>,
     /// Declared method, retained from span creation.
@@ -227,6 +235,8 @@ impl OwnedSample {
             span_id: &self.span_id,
             parent_id: self.parent_id.as_ref(),
             durability: self.durability,
+            work: self.work,
+            binding: self.binding.as_ref(),
             metadata: self.metadata,
             rpc: self.rpc.as_deref(),
             error_kind: self.error_kind.as_deref(),
@@ -252,6 +262,16 @@ pub trait Sink: Clone + Send + Sync + 'static {
     fn error_details(&self) -> bool {
         false
     }
+    /// Opt into the original producer's fixed `work.*` totals. Metrics alone
+    /// retain none. Missing counters never become inferred zero work.
+    fn work_details(&self) -> bool {
+        false
+    }
+    /// Opt into original caller-funded admission identity. Counters-only sinks
+    /// need no identity propagation, parent lookup or retained token.
+    fn binding_details(&self) -> bool {
+        false
+    }
 }
 
 impl<A: Sink, B: Sink> Sink for (A, B) {
@@ -261,6 +281,12 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
     }
     fn error_details(&self) -> bool {
         self.0.error_details() || self.1.error_details()
+    }
+    fn work_details(&self) -> bool {
+        self.0.work_details() || self.1.work_details()
+    }
+    fn binding_details(&self) -> bool {
+        self.0.binding_details() || self.1.binding_details()
     }
     fn record_owned(&self, sample: OwnedSample) {
         self.0.record(&sample.sample());
@@ -654,10 +680,38 @@ struct Operation {
     metadata: &'static tracing::Metadata<'static>,
     parent_id: Option<Id>,
     durability: Option<crate::DurabilityAttempt>,
+    work: Option<crate::WorkSummary>,
     rpc: Option<String>,
     started: Instant,
     completed: bool,
     error_kind: Option<Box<str>>,
+}
+
+pub(crate) fn attach_binding(
+    span: &Span,
+    make: impl FnOnce(Id) -> crate::Binding,
+) -> Result<crate::Binding, crate::BindingError> {
+    use crate::BindingError;
+    span.with_subscriber(|(id, dispatch)| {
+        let registry = dispatch
+            .downcast_ref::<tracing_subscriber::Registry>()
+            .ok_or(BindingError::RegistryUnavailable)?;
+        let span = registry.span(id).ok_or(BindingError::SpanUnavailable)?;
+        let mut extensions = span.extensions_mut();
+        if extensions.get::<Operation>().is_some_and(|op| op.completed) {
+            return Err(BindingError::Completed);
+        }
+        if extensions
+            .get::<crate::Binding>()
+            .is_some_and(|binding| binding.root_id() == id)
+        {
+            return Err(BindingError::AlreadyBound);
+        }
+        let binding = make(id.clone());
+        extensions.replace(binding.clone());
+        Ok(binding)
+    })
+    .unwrap_or(Err(BindingError::SpanUnavailable))
 }
 
 #[derive(Default)]
@@ -665,6 +719,7 @@ struct Terminal {
     outcome: Option<Outcome>,
     has_error_kind: bool,
     has_durability_fields: bool,
+    has_work: bool,
 }
 
 struct FirstCause<'a>(&'a mut Option<Box<str>>);
@@ -680,6 +735,7 @@ impl Visit for FirstCause<'_> {
 struct Fields {
     rpc: Option<String>,
     durability: Option<crate::DurabilityAttempt>,
+    work: Option<crate::WorkSummary>,
 }
 impl Visit for Fields {
     fn record_str(&mut self, field: &Field, value: &str) {
@@ -692,6 +748,9 @@ impl Visit for Fields {
     fn record_u64(&mut self, field: &Field, value: u64) {
         if let Some(attempt) = self.durability.as_mut() {
             attempt.record_u64(field, value);
+        }
+        if let Some(work) = self.work.as_mut() {
+            work.record_u64(field, value);
         }
     }
     fn record_i64(&mut self, field: &Field, value: i64) {
@@ -708,6 +767,10 @@ impl Visit for Terminal {
     }
     fn record_u64(&mut self, field: &Field, _: u64) {
         self.has_durability_fields |= matches!(field.name(), "error.os" | "descriptor");
+        self.has_work |= matches!(
+            field.name(),
+            "work.items" | "work.bytes" | "work.durability"
+        );
     }
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "outcome" {
@@ -729,6 +792,26 @@ impl Visit for Terminal {
 impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C> {
     fn on_new_span(&self, attributes: &Attributes<'_>, id: &Id, context: Context<'_, S>) {
         let metadata = attributes.metadata();
+        // Carry only an explicitly funded token along the immediate edge.
+        // A filtered/missing parent stays unknown; never search its ancestry.
+        let binding = if self.0.binding_details() {
+            let current = context.current_span();
+            let parent = if attributes.is_contextual() {
+                current.id()
+            } else {
+                attributes.parent()
+            };
+            parent
+                .and_then(|parent| context.span(parent))
+                .and_then(|parent| parent.extensions().get::<crate::Binding>().cloned())
+        } else {
+            None
+        };
+        if let Some(binding) = binding.as_ref()
+            && let Some(span) = context.span(id)
+        {
+            span.extensions_mut().insert(binding.clone());
+        }
         if !metadata.name().starts_with("acyclic.") || metadata.fields().field("outcome").is_none()
         {
             return;
@@ -738,6 +821,11 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             rpc: None,
             durability: (metadata.name() == "acyclic.runtime.durability")
                 .then(crate::DurabilityAttempt::default),
+            work: (self.0.work_details()
+                && ["work.items", "work.bytes", "work.durability"]
+                    .iter()
+                    .any(|name| metadata.fields().field(name).is_some()))
+            .then(crate::WorkSummary::default),
         };
         attributes.record(&mut fields);
         let mut operation = Operation {
@@ -750,6 +838,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 attributes.parent().cloned()
             },
             durability: fields.durability,
+            work: fields.work,
             rpc: fields.rpc,
             started: Instant::now(),
             completed: false,
@@ -765,6 +854,8 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 span_id: id.clone(),
                 parent_id: operation.parent_id.take(),
                 durability: operation.durability.take(),
+                work: operation.work.take(),
+                binding,
                 metadata,
                 rpc: operation.rpc.take(),
                 elapsed: operation.started.elapsed(),
@@ -782,11 +873,17 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         if terminal.outcome.is_none()
             && !(terminal.has_error_kind && self.0.error_details())
             && !terminal.has_durability_fields
+            && !(terminal.has_work && self.0.work_details())
         {
             return;
         }
         let Some(span) = context.span(id) else { return };
         let mut extensions = span.extensions_mut();
+        let binding = self
+            .0
+            .binding_details()
+            .then(|| extensions.get::<crate::Binding>().cloned())
+            .flatten();
         let Some(operation) = extensions.get_mut::<Operation>() else {
             return;
         };
@@ -795,6 +892,9 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         }
         if let Some(attempt) = operation.durability.as_mut() {
             values.record(attempt);
+        }
+        if let Some(work) = operation.work.as_mut() {
+            values.record(work);
         }
         if operation.error_kind.is_none() && self.0.error_details() {
             values.record(&mut FirstCause(&mut operation.error_kind));
@@ -806,6 +906,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let metadata = operation.metadata;
         let parent_id = operation.parent_id.take();
         let durability = operation.durability.take();
+        let work = operation.work.take();
         let rpc = operation.rpc.take();
         let started = operation.started;
         let error_kind = operation.error_kind.take();
@@ -816,6 +917,8 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             span_id: id.clone(),
             parent_id,
             durability,
+            work,
+            binding,
             metadata,
             rpc,
             elapsed: started.elapsed(),
@@ -828,7 +931,11 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let Some(span) = context.span(&id) else {
             return;
         };
-        let operation = span.extensions_mut().remove::<Operation>();
+        let (operation, binding) = {
+            let mut extensions = span.extensions_mut();
+            let binding = extensions.remove::<crate::Binding>();
+            (extensions.remove::<Operation>(), binding)
+        };
         if let Some(operation) = operation
             && !operation.completed
         {
@@ -836,6 +943,8 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 span_id: id,
                 parent_id: operation.parent_id,
                 durability: operation.durability,
+                work: operation.work,
+                binding: self.0.binding_details().then_some(binding).flatten(),
                 metadata: operation.metadata,
                 rpc: operation.rpc,
                 elapsed: operation.started.elapsed(),

@@ -42,6 +42,230 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 }
 
 #[test]
+fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{Binding, BindingError, Export, Outcome, WorkSummary};
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    // IDs come from this test's original admission, never from native descriptors
+    // or a parent lookup. Different admissions may legitimately reuse these IDs.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct Key {
+        authority: u64,
+        operation: u64,
+        generation: u64,
+        physical_owner: u64,
+    }
+    let key = Key {
+        authority: 1,
+        operation: 2,
+        generation: 3,
+        physical_owner: 4,
+    };
+    let admission = Arc::new(Semaphore::new(2));
+    let records = Arc::new(Semaphore::new(8));
+    let (export, mut output) = Export::channel(records.clone(), true);
+    let dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export.clone())));
+    let (binding, work, bridge_id) = tracing::dispatcher::with_default(&dispatch, || {
+        let root = tracing::info_span!(parent: None, "admitted.owner");
+        let binding = Binding::attach(&root, key, admission.clone().try_acquire_owned()?)?;
+        assert_eq!(
+            Binding::attach(&root, key, admission.clone().try_acquire_owned()?).unwrap_err(),
+            BindingError::AlreadyBound
+        );
+        assert_eq!(admission.available_permits(), 1);
+        let bridge = tracing::info_span!(parent: &root, "original.worker");
+        let work = bridge.in_scope(|| {
+            acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+                "acyclic.test.bound",
+                outcome = tracing::field::Empty,
+                error.kind = tracing::field::Empty,
+                work.items = tracing::field::Empty,
+                work.bytes = tracing::field::Empty,
+                work.durability = tracing::field::Empty
+            ))
+        });
+        // An explicit root cannot steal the ambient operation's provenance.
+        bridge.in_scope(|| {
+            drop(tracing::info_span!(parent: None, "acyclic.test.unbound", outcome = "ok"))
+        });
+        Ok::<_, Box<dyn std::error::Error>>((binding, work, bridge.id()))
+    })?;
+    let original_error = std::fs::File::open("").expect_err("empty path cannot open a file");
+    let code = original_error.raw_os_error();
+    let returned = std::thread::spawn(move || {
+        let foreign = tracing::Dispatch::new(tracing_subscriber::registry());
+        tracing::dispatcher::with_default(&foreign, || {
+            work.in_scope(|| {
+                work.record("error.kind", "not_found");
+                work.record("work.items", 1_u64).record("work.bytes", 0_u64);
+                work.finish::<()>(Err(original_error))
+            })
+        })
+    })
+    .join()
+    .map_err(|_| "original worker panicked")?;
+    assert_eq!(returned.unwrap_err().raw_os_error(), code);
+    let unbound = ready(output.recv())?.ok_or("explicit root terminal absent")?;
+    assert!(unbound.sample().binding.is_none());
+    assert!(!binding.matches(&unbound.sample()));
+    let terminal = ready(output.recv())?.ok_or("worker terminal absent")?;
+    assert_eq!(terminal.sample().outcome, Outcome::Err);
+    assert_eq!(terminal.sample().error_kind, Some("not_found"));
+    assert_eq!(terminal.sample().parent_id, bridge_id.as_ref());
+    assert_eq!(
+        terminal.sample().work,
+        Some(WorkSummary {
+            items: Some(1),
+            bytes: Some(0),
+            durability: None
+        })
+    );
+    assert!(binding.matches(&terminal.sample()));
+    assert_eq!(
+        terminal.sample().binding.and_then(Binding::key::<Key>),
+        Some(&key)
+    );
+
+    // Equal user IDs in another registry are not the original admission.
+    let unrelated = tracing::dispatcher::with_default(
+        &tracing::Dispatch::new(tracing_subscriber::registry()),
+        || {
+            let root = tracing::info_span!(parent: None, "admitted.owner");
+            Binding::attach(&root, key, admission.clone().try_acquire_owned()?)
+        },
+    )?;
+    assert!(!unrelated.matches(&terminal.sample()));
+    drop(unrelated);
+    drop(binding);
+    assert_eq!(
+        admission.available_permits(),
+        1,
+        "retained evidence still owns identity credit"
+    );
+    drop(terminal);
+    drop(unbound);
+    assert_eq!(admission.available_permits(), 2);
+    assert_eq!(records.available_permits(), 8);
+
+    // Lost producers retain both incomplete disposition and original binding.
+    tracing::dispatcher::with_default(&dispatch, || {
+        let span = tracing::info_span!("acyclic.test.lost", outcome = tracing::field::Empty);
+        Binding::attach(&span, key, admission.clone().try_acquire_owned()?)?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    let lost = ready(output.recv())?.ok_or("lost producer terminal absent")?;
+    assert_eq!(lost.sample().outcome, Outcome::Incomplete);
+    assert!(lost.sample().binding.is_some());
+    drop(lost);
+    tracing::dispatcher::with_default(&dispatch, || {
+        let span = tracing::info_span!("acyclic.test.completed", outcome = "ok");
+        assert_eq!(
+            Binding::attach(&span, key, admission.clone().try_acquire_owned()?).unwrap_err(),
+            BindingError::Completed
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    drop(ready(output.recv())?.ok_or("completed terminal absent")?);
+    assert_eq!(admission.available_permits(), 2);
+    assert_eq!(export.stats().retained, 0);
+    Ok(())
+}
+
+#[test]
+fn bound_detail_cost_is_independent_of_unrelated_live_operations()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{Binding, BindingError, Export};
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    // Hold the population outside the measured interval. This measures actual
+    // current-thread allocations, not OS-wide work or elapsed-time complexity.
+    let mut baseline = None;
+    for population in [1, 100_000] {
+        let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
+        let dispatch =
+            tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
+        tracing::dispatcher::with_default(&dispatch, || {
+            let unrelated: Vec<_> = (0..population)
+                .map(|_| tracing::info_span!(parent: None, "unrelated.live"))
+                .collect();
+            let root = tracing::info_span!(parent: None, "bound.owner");
+            let credit = Arc::new(Semaphore::new(1));
+            let binding = Binding::attach(&root, 17_u64, credit.clone().try_acquire_owned()?)?;
+            let one = || {
+                let span = tracing::info_span!(parent: &root, "acyclic.test.fixed_detail", outcome = tracing::field::Empty, work.items = tracing::field::Empty);
+                span.record("work.items", 1_u64).record("outcome", "ok");
+                let record = ready(output.recv())
+                    .expect("no asynchronous producer needed")
+                    .expect("admitted terminal");
+                assert!(binding.matches(&record.sample()));
+                assert_eq!(record.sample().work.and_then(|work| work.items), Some(1));
+            };
+            let mut one = one;
+            one(); // Warm callsite, queue block, registry storage and allocator.
+            let cost = acyclic_test_support::measure(one);
+            if let Some(expected) = baseline {
+                assert_eq!(cost, expected, "detail cost grew with unrelated operations");
+            } else {
+                baseline = Some(cost);
+            }
+            let scan = acyclic_test_support::measure(|| {
+                // Negative control: materializing unrelated history is exactly
+                // the cost that the immediate-token path must not introduce.
+                std::hint::black_box(unrelated.iter().map(tracing::Span::id).collect::<Vec<_>>());
+            });
+            assert!(
+                scan.bytes_total
+                    >= population as u64 * std::mem::size_of::<Option<tracing::Id>>() as u64
+            );
+            drop(binding);
+            drop(root);
+            assert_eq!(credit.available_permits(), 1);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+    }
+    let credit = Arc::new(Semaphore::new(1));
+    let permit = credit.clone().try_acquire_owned()?;
+    let disabled = acyclic_test_support::measure(|| {
+        assert_eq!(
+            Binding::attach(&tracing::Span::none(), 17_u64, permit).unwrap_err(),
+            BindingError::SpanUnavailable
+        );
+    });
+    assert_eq!(disabled.count_total, 0);
+    assert_eq!(credit.available_permits(), 1);
+
+    // A per-layer filtered immediate parent is unknown; searching through it
+    // would both change the original edge and add depth-dependent work.
+    let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
+    struct Keep;
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Keep {}
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry()
+            .with(
+                Operations(export).with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                    metadata.name() != "hidden.parent"
+                })),
+            )
+            .with(Keep),
+    );
+    tracing::dispatcher::with_default(&dispatch, || {
+        let root = tracing::info_span!(parent: None, "bound.owner");
+        let binding = Binding::attach(&root, 17_u64, credit.clone().try_acquire_owned()?)?;
+        let hidden = tracing::info_span!(parent: &root, "hidden.parent");
+        drop(tracing::info_span!(parent: &hidden, "acyclic.test.filtered_bound", outcome = "ok"));
+        let record = ready(output.recv())?.ok_or("filtered child terminal absent")?;
+        assert!(record.sample().binding.is_none());
+        assert!(!binding.matches(&record.sample()));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
 fn exported_evidence_retains_original_parent_and_native_field_contract()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Export, Outcome, Sink};
