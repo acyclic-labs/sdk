@@ -108,7 +108,6 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
         job.await?
     })?;
     assert_eq!(query.snapshot().ok, 3);
-    assert!(capture.has_ancestor("acyclic.runtime.durability", "original-durability-owner"));
     let evidence = capture
         .0
         .lock()
@@ -121,5 +120,16 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
     );
     assert!(last.fields.contains_key("descriptor"));
     assert!(last.closed);
+    let mut parent = last.parent;
+    let mut original_owner = false;
+    while let Some(index) = parent {
+        let span = &evidence.spans[index];
+        if span.name == "original-durability-owner" {
+            original_owner = true;
+            break;
+        }
+        parent = span.parent;
+    }
+    assert!(original_owner, "worker leaf lost its original causal owner");
     Ok(())
 }
