@@ -9,7 +9,7 @@ use crate::{
     tool::{JsonToolProjection, ToolProjection, ToolRegistry},
 };
 use acyclic_stream::BoxProviderFuture;
-use futures::future::join_all;
+use futures::{StreamExt as _, stream};
 use serde_json::json;
 use std::{path::Path, sync::Arc, time::Duration};
 
@@ -20,7 +20,8 @@ use cancellation::CancelOnDrop;
 /// Optional host-selected discovery and exchange allowances. No default ceiling.
 #[derive(Clone, Copy, Default)]
 pub struct McpClientLimits {
-    /// Maximum concurrently initialized servers.
+    /// Concurrent initialization credit; `None` starts every configured server.
+    /// This does not bound the total number of servers.
     pub servers: Option<u32>,
     /// Maximum advertised tools from each server, before filtering.
     pub tools_per_server: Option<u32>,
@@ -93,17 +94,19 @@ impl McpConfig {
             || limits.pages_per_server == Some(0)
             || limits.catalog_bytes == Some(0)
             || limits.tool_bytes == Some(0)
-            || limits
-                .servers
-                .is_some_and(|maximum| self.servers.len() as u64 > u64::from(maximum))
         {
             return Err(Error::Invalid(
-                "MCP startup bounds must be positive and sufficient".into(),
+                "MCP startup allowances must be positive".into(),
             ));
         }
         let mut diagnostics = Vec::new();
         let mut capabilities = Capabilities::default();
-        let results = join_all(self.servers.into_iter().map(|(name, server)| {
+        // The empty configuration needs no credit; Buffered still requires a
+        // positive buffer size. An absent policy admits the complete input.
+        let concurrent = limits
+            .servers
+            .map_or(self.servers.len().max(1), |credit| credit as usize);
+        let mut results = stream::iter(self.servers.into_iter().map(|(name, server)| {
             let connect = &connect;
             async move {
                 let required = server.required;
@@ -124,19 +127,28 @@ impl McpConfig {
                 (name, required, result)
             }
         }))
-        .await;
-        for (server, required, result) in results {
+        .buffered(concurrent);
+        let mut failure = None;
+        while let Some((server, required, result)) = results.next().await {
+            // Keep the original startup/registration owners joined even when
+            // an earlier required server or registry merge has failed.
+            if failure.is_some() {
+                continue;
+            }
             match result {
-                Ok((additional, grants)) => {
-                    tools.extend(additional)?;
-                    capabilities.0.extend(grants.0);
-                }
-                Err(error) if required => return Err(error),
+                Ok((additional, grants)) => match tools.extend(additional) {
+                    Ok(()) => capabilities.0.extend(grants.0),
+                    Err(error) => failure = Some(error),
+                },
+                Err(error) if required => failure = Some(error),
                 Err(error) => diagnostics.push(McpServerFailure {
                     server,
                     message: error.to_string(),
                 }),
             }
+        }
+        if let Some(error) = failure {
+            return Err(error);
         }
         Ok(McpInstallation {
             tools,
