@@ -314,7 +314,7 @@ mod tests {
         // Inherited records retain the ancestor appender while authorization
         // still applies to the executing volume's resources.
         for appender in [volume, VolumeId::from_bytes([14; 16])] {
-            let mut inherited = crate::PublicationContext::from_bytes(&context).unwrap();
+            let mut inherited = crate::PublicationContext::from_bytes(context.as_ref()).unwrap();
             inherited.volume = appender;
             let context = inherited.encode();
             let appended =
