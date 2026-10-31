@@ -1164,7 +1164,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
                     bytes,
                     "text/markdown",
                     "GOAL.md",
-                    None,
+                    LIMITS.maximum_bytes,
                     &acyclic_harness_core::IdempotencyKey::new(key)?,
                     None,
                     ContentAccess::default(),
@@ -1277,6 +1277,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
                 &scope,
                 &volume,
                 VolumeOperation::Write,
+                LIMITS.maximum_bytes,
                 &mut None,
             )?,
             volume: volume.clone(),
@@ -1375,7 +1376,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
                 &read,
                 "GOAL.md",
                 None,
-                None,
+                LIMITS.maximum_bytes,
                 ContentAccess::default(),
             )
             .await?;
