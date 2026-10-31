@@ -160,36 +160,43 @@ constants, never the request path. The same rules apply to the TypeScript
 
 Do not add a second set of counters.
 
-- `WorkCounters::emit` emits one
-  `debug!` event with all `WorkCounters` fields, under their `WorkCounters`
-  names. It does so only when
-  `tracing::enabled!(target: "acyclic.work", Level::DEBUG)` is true.
-- Each receipt-returning fs `info`/`debug` span also declares three `Empty`
+- The returned `OperationReceipt` or `OperationFailure` owns the original work
+  evidence. `obs::measured_on` and `measured_on_with_kind` borrow that evidence
+  for success and failure alike, without another provider read or result copy.
+- Receipt-returning fs spans declare three `Empty`
   summary fields, filled from the receipt:
   - `work.items`: `items_examined`
   - `work.bytes`: `object_bytes_read + object_bytes_written + authority_bytes_written`
   - `work.durability`: `durability_operations`
-  Plain `Result<OperationReceipt<_>, _>` APIs record these totals on success;
-  failures without a receipt leave them unset. Measured failures carry their
-  own work totals and record those too.
-- `Observe::observe_on(self, span, op)` on `MeasuredResult` does both at the return
-  point, for success and failure alike, only at receipt-returning facade
-  operations. Observed facade operations do not call another observed facade
-  operation. Sum `acyclic.work` events to account for that facade work once.
-  Each event has an explicit operation span parent; if that span is filtered,
-  the event has no parent. Its static `op` still identifies the receipt, and
-  filtering spans does not suppress independently enabled work events.
-- Kernel, native capture, materialization, and other nested operations use
-  `obs::measured_on` to record summaries on their own spans without emitting
-  `acyclic.work`. Their `work.*` fields overlap with caller receipts and must
-  not be added together. Direct calls to those APIs are visible through spans,
-  but are outside the facade event ledger.
+  These are diagnostic summaries. The byte sum saturates on overflow; use the
+  original receipt's individual fields for exact accounting. Unrecorded fields
+  are unknown. There is no separate `acyclic.work` event ledger.
+- Kernel, native capture, materialization and other nested spans can summarize
+  work already included in their caller's receipt. Do not add those summaries
+  together or infer a physical syscall count from logical provider requests.
+- `NativeReadMeter` feeds the original invocation's work owner at the actual
+  instrumented attempts and completions. Operation and byte reservations follow
+  accepted work through cancellation; owned allocation credit retires after the
+  capacity is freed. Its production filesystem implementations update the same
+  work ledger used by the receipt. They do not count uninstrumented OS retries,
+  threads, locks or timer registrations.
+- `AllocationInfo` measures the current thread. An OS resource snapshot measures
+  one instant. Neither establishes worker coverage or a process high-water mark;
+  a maximum of periodic snapshots can miss an entire resource lifetime. Exact
+  peaks require updates at the original resource admission and release events.
 - Convenience entry points that delegate to an instrumented implementation
   share that implementation's span. Blocking workers retain the caller's span
   and scoped subscriber through the actual work, including after caller drop.
   A retained worker span is not evidence that its caller succeeded. Its
   original worker records the terminal result; lost producers project
   `incomplete` without asserting that accepted work failed.
+
+The shared harness conformance observer defaults to request counters without
+retaining commit, append or follow history. The finite dispatcher and publication
+fault vectors explicitly select request capture to compare exact retry bytes and
+keys. They consume the captured evidence rather than cloning its history at
+assertion time. Scale measurements use the counter-only observer. These logical
+counts remain separate from original physical work receipts.
 
 ## Enablement
 

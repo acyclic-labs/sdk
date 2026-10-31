@@ -19,11 +19,17 @@ pub(crate) struct Observed {
     // A history-read sentinel, independent of the aggregate request budget.
     pub history_reads: AtomicUsize,
     calls: AtomicUsize,
-    commits: Mutex<Vec<CommitRequest>>,
-    follows: Mutex<Vec<(StreamPath, u64)>>,
-    appends: Mutex<Vec<AppendRequest>>,
+    commit_count: AtomicUsize,
+    capture: Option<Mutex<Capture>>,
     fault: Mutex<Option<(usize, Fault)>>,
     crash: Mutex<Option<(usize, Fault)>>,
+}
+
+#[derive(Default)]
+struct Capture {
+    commits: Vec<CommitRequest>,
+    follows: Vec<(StreamPath, u64)>,
+    appends: Vec<AppendRequest>,
 }
 
 impl Observed {
@@ -33,42 +39,56 @@ impl Observed {
             requests: RequestLedger::new(),
             history_reads: AtomicUsize::new(0),
             calls: AtomicUsize::new(0),
-            commits: Mutex::new(Vec::new()),
-            follows: Mutex::new(Vec::new()),
-            appends: Mutex::new(Vec::new()),
+            commit_count: AtomicUsize::new(0),
+            capture: None,
             fault: Mutex::new(None),
             crash: Mutex::new(None),
         }
     }
 
+    /// Only the finite exact-retry vectors retain requests. Counter and scale
+    /// workloads use `new`, with no history allocation, lock or request clone.
+    pub fn capturing(inner: Arc<dyn StreamProvider>) -> Self {
+        Self {
+            capture: Some(Mutex::default()),
+            ..Self::new(inner)
+        }
+    }
+
     pub fn arm(&self, offset: usize, fault: Fault) {
-        let next = self.commits.lock().unwrap_or_else(|e| e.into_inner()).len() + offset;
+        let next = self.commit_count() + offset;
         *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some((next, fault));
     }
 
-    pub fn commits(&self) -> Vec<CommitRequest> {
-        self.commits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+    pub fn commit_count(&self) -> usize {
+        self.commit_count.load(Ordering::SeqCst)
+    }
+
+    pub fn take_commits(&self) -> Vec<CommitRequest> {
+        self.take_capture(|capture| std::mem::take(&mut capture.commits))
     }
 
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
 
-    pub fn follows(&self) -> Vec<(StreamPath, u64)> {
-        self.follows
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
+    pub fn take_follows(&self) -> Vec<(StreamPath, u64)> {
+        self.take_capture(|capture| std::mem::take(&mut capture.follows))
     }
 
-    pub fn appends(&self) -> Vec<AppendRequest> {
-        self.appends
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
+    pub fn take_appends(&self) -> Vec<AppendRequest> {
+        self.take_capture(|capture| std::mem::take(&mut capture.appends))
+    }
+
+    fn capture(&self, record: impl FnOnce(&mut Capture)) {
+        if let Some(capture) = &self.capture {
+            record(&mut capture.lock().unwrap_or_else(|error| error.into_inner()));
+        }
+    }
+
+    fn take_capture<T>(&self, take: impl FnOnce(&mut Capture) -> T) -> T {
+        let capture = self.capture.as_ref().expect("request capture was selected");
+        take(&mut capture.lock().unwrap_or_else(|error| error.into_inner()))
     }
 
     pub fn crash_at(&self, at: usize, fault: Fault) {
@@ -99,11 +119,16 @@ impl Observed {
     }
 
     async fn commit_inner(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let index = {
-            let mut commits = self.commits.lock().unwrap_or_else(|e| e.into_inner());
-            let index = commits.len();
-            commits.push(request.clone());
+        let index = if let Some(capture) = &self.capture {
+            let mut capture = capture.lock().unwrap_or_else(|error| error.into_inner());
+            // Keep captured order and fault ordinals at the same boundary even
+            // when two callers submit concurrently. Taking history never resets
+            // the original operation count.
+            let index = self.commit_count.fetch_add(1, Ordering::SeqCst);
+            capture.commits.push(request.clone());
             index
+        } else {
+            self.commit_count.fetch_add(1, Ordering::SeqCst)
         };
         let fault = {
             let mut fault = self.fault.lock().unwrap_or_else(|e| e.into_inner());
@@ -162,10 +187,7 @@ impl StreamProvider for Observed {
             acyclic_stream::WriteRequest::Append(request) => {
                 Box::pin(futures::TryFutureExt::map_ok(
                     async move {
-                        self.appends
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner())
-                            .push(request.clone());
+                        self.capture(|capture| capture.appends.push(request.clone()));
                         self.requests.record(RequestClass::Data);
                         self.io(self.inner.append(request)).await
                     },
@@ -197,10 +219,7 @@ impl StreamProvider for Observed {
         self.io(self.inner.read(request)).await
     }
     async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
-        self.follows
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push((request.path.clone(), request.from));
+        self.capture(|capture| capture.follows.push((request.path.clone(), request.from)));
         self.requests.record(RequestClass::Data);
         self.history_reads.fetch_add(1, Ordering::SeqCst);
         self.io(self.inner.follow(request)).await
@@ -217,3 +236,88 @@ impl StreamProvider for Observed {
 impl acyclic_stream::NativeStreamProvider for Observed {}
 
 impl acyclic_harness_core::filesystem::attestation::AttestedProvider for Observed {}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    fn measured_commit(
+        provider: &dyn StreamProvider,
+        request: CommitRequest,
+    ) -> crate::conformance::Result<(CommitOutcome, acyclic_test_support::AllocationInfo)> {
+        let mut result = None;
+        let allocation = acyclic_test_support::measure(|| {
+            result = Some(futures::executor::block_on(provider.commit(request)));
+        });
+        Ok((
+            result.ok_or("commit observation lost its result")??,
+            allocation,
+        ))
+    }
+
+    #[test]
+    fn counter_observation_has_fixed_allocation_cost_with_request_capture_negative_control()
+    -> crate::conformance::Result {
+        let mut previous = None;
+        for records in [1, 1_024] {
+            let memory = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("observation")?;
+            let request = CommitRequest {
+                deadline_unix_millis: None,
+                conditions: vec![CommitCondition::Absent { path: path.clone() }],
+                mutations: vec![CommitMutation::Append {
+                    path,
+                    records: vec![AppendRecord::from("value"); records],
+                }],
+                idempotency_key: IdempotencyKey::unique(),
+            };
+            // All comparisons replay one actual committed request against the
+            // same provider and unchanged state, excluding fixture preparation.
+            let committed = futures::executor::block_on(memory.commit(request.clone()))?;
+            assert!(matches!(committed, CommitOutcome::Committed(_)));
+            let counters = Observed::new(memory.clone());
+            let captured = Observed::capturing(memory.clone());
+            let (direct, direct_cost) = measured_commit(&*memory, request.clone())?;
+            let (counted, counted_cost) = measured_commit(&counters, request.clone())?;
+            let (recorded, recorded_cost) = measured_commit(&captured, request.clone())?;
+            assert_eq!(direct, committed);
+            assert_eq!(counted, committed);
+            assert_eq!(recorded, committed);
+            let overhead = (
+                counted_cost.count_total - direct_cost.count_total,
+                counted_cost.bytes_total - direct_cost.bytes_total,
+            );
+            if let Some(previous) = previous {
+                assert_eq!(
+                    overhead, previous,
+                    "observer cost grew with request records"
+                );
+            }
+            previous = Some(overhead);
+            assert!(recorded_cost.count_total > counted_cost.count_total);
+            assert!(recorded_cost.bytes_total > counted_cost.bytes_total);
+            eprintln!(
+                "records={records} direct={direct_cost:?} counter={counted_cost:?} capture={recorded_cost:?}"
+            );
+            // Taking evidence transfers its original allocation and cannot
+            // change the absolute ordinal used by an armed fault.
+            let history = captured.take_commits();
+            assert_eq!(history, [request.clone()]);
+            assert_eq!(captured.commit_count(), 1);
+            captured.arm(0, Fault::Before);
+            assert!(matches!(
+                futures::executor::block_on(captured.commit(request.clone())),
+                Err(StreamError::Unavailable)
+            ));
+            let retried = captured.take_commits();
+            assert_eq!(retried, history);
+            assert_eq!(captured.commit_count(), 2);
+            // The refusal did not replace or remove the actual original effect.
+            assert_eq!(
+                futures::executor::block_on(memory.commit(request))?,
+                committed
+            );
+        }
+        Ok(())
+    }
+}
