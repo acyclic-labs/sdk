@@ -19,7 +19,8 @@
 //!   on a PID. A record still linked after its lock is free belongs to a
 //!   warden killed outright; its recorded process group is killed and awaited.
 //! - Windows: each tree is a named Job with `KILL_ON_JOB_CLOSE`. A fence
-//!   opens each recorded Job by name, terminates it and awaits every member.
+//!   opens each recorded Job by name, terminates it and awaits that tree's
+//!   original retirement event, including every retained member handle.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -554,15 +555,14 @@ use unix::fence;
 #[cfg(windows)]
 mod windows {
     use super::{Path, ProcessCustody, Record, fs, io};
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, WAIT_FAILED};
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList, OpenJobObjectW,
         QueryInformationJobObject, TerminateJobObject,
     };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SYNCHRONIZE, WaitForMultipleObjects,
-    };
+    use windows_sys::Win32::System::Threading::{OpenEventW, SYNCHRONIZATION_SYNCHRONIZE};
 
     const PREFIX: &str = "acyclic-process-tree-";
     // JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE.
@@ -574,6 +574,10 @@ mod windows {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect()
+    }
+
+    fn retirement_name(record: &str) -> Vec<u16> {
+        job_name(&format!("{record}-retired"))
     }
 
     impl ProcessCustody {
@@ -592,8 +596,8 @@ mod windows {
                 std::process::id(),
                 crate::process_identity::current_process_started()?
             );
-            // The record names the custodian from its creation, so a fence
-            // always knows whose exit ends every member of the tree.
+            // The custodian identity detects loss of the original tree's
+            // retirement producer; it is never a barrier for unrelated trees.
             let path = self
                 .path
                 .join(format!("{name}{CUSTODIAN}{}", custodian.identity()));
@@ -630,7 +634,20 @@ mod windows {
             job: HANDLE,
             process: HANDLE,
         ) -> io::Result<()> {
-            self.link = Some(self.custodian.open(self.tree, &self.secret, job, process)?);
+            let name = self
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.split_once(CUSTODIAN))
+                .map(|(name, _)| name)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            self.link = Some(self.custodian.open(
+                self.tree,
+                &self.secret,
+                job,
+                process,
+                &retirement_name(name),
+            )?);
             Ok(())
         }
     }
@@ -642,6 +659,22 @@ mod windows {
         let (name, custodian) = name
             .split_once(CUSTODIAN)
             .map_or((name, None), |(name, custodian)| (name, Some(custodian)));
+        // Open the original event before the Job: once its producer releases
+        // both, a missing Job is already retired. Retaining this event also
+        // covers retirement racing this fence's Job open.
+        let event = retirement_name(name);
+        // SAFETY: a NUL-terminated original tree identity; owned on success.
+        let event = unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, 0, event.as_ptr()) };
+        let event = if event.is_null() {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_FILE_NOT_FOUND.cast_signed()) {
+                return Err(error);
+            }
+            None
+        } else {
+            // SAFETY: OpenEventW transferred one owned handle.
+            Some(unsafe { OwnedHandle::from_raw_handle(event.cast()) })
+        };
         let wide = job_name(name);
         // SAFETY: a NUL-terminated name; the handle is owned on success.
         let job = unsafe { OpenJobObjectW(JOB_ACCESS, 0, wide.as_ptr()) };
@@ -651,62 +684,28 @@ mod windows {
                 return Err(error);
             }
         } else {
-            // A member leaves the Job's list before its process has fully
-            // exited; the custodian exits only once each has, so its exit
-            // ends the fence.
-            let fenced = terminate_and_await(job);
-            // SAFETY: the Job handle opened above.
-            unsafe { CloseHandle(job) };
-            fenced?;
+            // SAFETY: OpenJobObjectW transferred one owned handle.
+            let job = unsafe { OwnedHandle::from_raw_handle(job.cast()) };
+            // SAFETY: the owned Job has terminate access.
+            if unsafe { TerminateJobObject(job.as_raw_handle().cast(), 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if event.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "process tree retirement producer is unavailable",
+                ));
+            }
         }
-        // A missing Job proves that the custodian closed it after member
-        // retirement, but its own process and retained pipe handles can still
-        // be live. The recorded identity is the same barrier in either case.
-        // This owner's own custodian outlives it, so a tree of this owner
-        // is awaited through its listed members alone.
-        if let Some(custodian) = custodian
-            && !super::super::custodian::is_current(custodian)?
-        {
-            super::super::custodian::await_custodian(custodian)?;
+        if let Some(event) = event {
+            super::super::custodian::await_tree(
+                &event,
+                custodian.ok_or(io::ErrorKind::InvalidData)?,
+            )?;
         }
         match fs::remove_file(path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(true),
-        }
-    }
-
-    fn terminate_and_await(job: HANDLE) -> io::Result<()> {
-        // SAFETY: an owned Job handle with terminate access.
-        if unsafe { TerminateJobObject(job, 1) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        loop {
-            let members = members(job)?;
-            if members.is_empty() {
-                return Ok(());
-            }
-            let handles: Vec<HANDLE> = members
-                .iter()
-                // SAFETY: opening a synchronize-only handle to a listed PID.
-                .map(|pid| unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, *pid) })
-                .filter(|handle| !handle.is_null())
-                .collect();
-            let waited = handles.chunks(64).try_for_each(|chunk| {
-                let count = u32::try_from(chunk.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
-                // SAFETY: up to 64 owned process handles; waits for all.
-                if unsafe { WaitForMultipleObjects(count, chunk.as_ptr(), 1, u32::MAX) }
-                    == WAIT_FAILED
-                {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
-            for handle in handles {
-                // SAFETY: each handle opened above.
-                unsafe { CloseHandle(handle) };
-            }
-            waited?;
         }
     }
 
@@ -750,5 +749,7 @@ mod windows {
 }
 #[cfg(windows)]
 use windows::fence;
+#[cfg(all(windows, test))]
+pub(super) use windows::job_name;
 #[cfg(windows)]
 pub(super) use windows::members;

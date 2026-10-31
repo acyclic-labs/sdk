@@ -362,10 +362,6 @@ fn leased_successor_fences_the_killed_native_owner_before_admission() {
     let root = tempfile::tempdir().expect("root");
     let mut owner = owner("leased", root.path());
     let watch = Watch::new(published(&mut owner)).expect("running program");
-    #[cfg(windows)]
-    let records = root.path().join("fleet/trees");
-    #[cfg(windows)]
-    let custodian = Watch::new(custodian_of(&records)).expect("running custodian");
     owner.kill().expect("kill native owner");
     owner.wait().expect("reap native owner");
     let successor = ProcessCustodyLease::acquire(&root.path().join("fleet"))
@@ -375,11 +371,6 @@ fn leased_successor_fences_the_killed_native_owner_before_admission() {
         watch.kill();
     }
     assert!(exited, "successor admitted before physical retirement");
-    #[cfg(windows)]
-    assert!(
-        custodian.exited(),
-        "successor admitted before pipe custody retired"
-    );
     assert_eq!(successor.custody().fence_stale().expect("empty fence"), 0);
 }
 

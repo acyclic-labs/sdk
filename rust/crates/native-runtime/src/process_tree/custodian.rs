@@ -3,10 +3,10 @@
 //! that tree has fully exited, and kills every tree when the owner exits. A
 //! reopened owner's fence therefore finds a Job by name for as long as any
 //! member may still run, and "not found" means the tree is gone. Each record
-//! names the custodian, so the fence also awaits the custodian's exit, which
-//! follows the last member of the dead owner's last tree. Records are never
-//! the custodian's to remove: each has one remover, its live owner or the
-//! reopened owner's fence.
+//! names the custodian to detect producer loss while awaiting the selected
+//! tree's original retirement event. Unrelated trees are never barriers.
+//! Records are never the custodian's to remove: each has one remover, its
+//! live owner or the reopened owner's fence.
 //!
 //! The custodian is the owner's own executable, started once, detached from
 //! any console, with [`SWITCH`] set: a CRT initializer runs it before the
@@ -28,8 +28,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle,
-    ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_ALREADY_EXISTS, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, GetLastError, HANDLE,
+    INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::IO::{
@@ -109,16 +109,6 @@ pub(super) fn current() -> io::Result<Arc<Custodian>> {
     let custodian = Arc::new(launch()?);
     *current = Some(Arc::clone(&custodian));
     Ok(custodian)
-}
-
-/// Whether `identity` names this owner's running custodian, which exits only
-/// after the owner does and so can never be awaited by it.
-pub(super) fn is_current(identity: &str) -> io::Result<bool> {
-    Ok(CURRENT
-        .lock()
-        .map_err(|_| poisoned())?
-        .as_ref()
-        .is_some_and(|custodian| custodian.identity == identity))
 }
 
 fn launch() -> io::Result<Custodian> {
@@ -209,9 +199,10 @@ impl Custodian {
         secret: &Secret,
         job: HANDLE,
         process: HANDLE,
+        retirement: &[u16],
     ) -> io::Result<Link> {
-        let ready = event(false)?;
-        let done = event(true)?;
+        let ready = event(false, None)?;
+        let done = event(true, Some(retirement))?;
         let target: HANDLE = self.child.as_raw_handle().cast();
         let mut handoff = Handoff::new(target);
         handoff.duplicate(job, 0, DUPLICATE_SAME_ACCESS)?;
@@ -327,26 +318,49 @@ impl Drop for Handoff {
 }
 
 impl Link {
-    /// Returns once every member of the tree has fully exited, or the
-    /// custodian has, as it does only after killing the tree's members.
+    /// Returns once every member has fully exited. Loss of the original
+    /// custodian without that terminal event retains unresolved custody.
     pub(super) fn await_members(&self) -> io::Result<()> {
-        wait_any(&[
+        match wait_any(&[
             self.done.as_raw_handle().cast(),
             self.custodian.child.as_raw_handle().cast(),
-        ])
-        .map(drop)
+        ])? {
+            0 => Ok(()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "process tree retirement producer exited before completion",
+            )),
+        }
     }
 }
 
-/// A new unnamed event, auto-reset unless `manual`.
-fn event(manual: bool) -> io::Result<OwnedHandle> {
-    // SAFETY: an unnamed, unsignaled event; owned on success.
-    let event = unsafe { CreateEventW(std::ptr::null(), i32::from(manual), 0, std::ptr::null()) };
+/// A new event, auto-reset unless `manual`. Only the original tree's
+/// retirement event has a name so the successor can retain that same source.
+fn event(manual: bool, name: Option<&[u16]>) -> io::Result<OwnedHandle> {
+    // SAFETY: an unsignaled event; any supplied name is NUL-terminated and
+    // belongs to this original tree identity. Owned on success.
+    let event = unsafe {
+        CreateEventW(
+            std::ptr::null(),
+            i32::from(manual),
+            0,
+            name.map_or(std::ptr::null(), <[u16]>::as_ptr),
+        )
+    };
     if event.is_null() {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: captured immediately after the original successful creation.
+    let existed = name.is_some() && unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
     // SAFETY: a successful creation transfers one owned handle.
-    Ok(unsafe { OwnedHandle::from_raw_handle(event) })
+    let event = unsafe { OwnedHandle::from_raw_handle(event) };
+    if existed {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "process tree retirement identity already exists",
+        ));
+    }
+    Ok(event)
 }
 
 /// Waits for the first of `handles` to be signaled, and returns its index.
@@ -396,29 +410,49 @@ fn identity(process: HANDLE) -> io::Result<String> {
     ))
 }
 
-/// Waits for the custodian of `identity`, as a record names it, if it still
-/// runs: it exits only once every member of each of its trees has.
-pub(super) fn await_custodian(identity: &str) -> io::Result<()> {
-    let Some((pid, created)) = identity
+/// Waits for this tree's original physical retirement. Custodian exit is
+/// producer loss, never a successful substitute for that terminal event.
+pub(super) fn await_tree(done: &OwnedHandle, expected: &str) -> io::Result<()> {
+    // One admission observation handles a terminal retained after its
+    // custodian exited. This is not a readiness loop.
+    // SAFETY: the caller retains the event through this observation and wait.
+    match unsafe { WaitForSingleObject(done.as_raw_handle().cast(), 0) } {
+        WAIT_OBJECT_0 => return Ok(()),
+        WAIT_TIMEOUT => {}
+        _ => return Err(io::Error::last_os_error()),
+    }
+    let Some(pid) = expected
         .split_once('-')
-        .and_then(|(pid, created)| Some((pid.parse::<u32>().ok()?, created.parse::<u64>().ok()?)))
+        .and_then(|(pid, _)| pid.parse::<u32>().ok())
     else {
         return Err(io::ErrorKind::InvalidData.into());
     };
-    use crate::process_identity::{
-        IncarnationState, ProcessIncarnation, ProcessObservation, ProcessProbe,
+    // SAFETY: a process identity, queried through the same owned handle that
+    // remains in the wait. No replacement PID can become its producer.
+    let process = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
     };
-    let owner = ProcessIncarnation::new(pid, created).ok_or(io::ErrorKind::InvalidData)?;
-    let Some(process) = ProcessProbe::open(owner.pid())? else {
-        return Ok(());
-    };
-    match owner.observe(ProcessObservation::Present {
-        started: process.started()?,
-        exited: false,
-    }) {
-        IncarnationState::Running => process.await_exit(),
-        IncarnationState::Replaced | IncarnationState::Exited | IncarnationState::Absent => Ok(()),
-        IncarnationState::Unknown => Err(io::ErrorKind::InvalidData.into()),
+    if process.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: OpenProcess transferred one owned handle.
+    let process = unsafe { OwnedHandle::from_raw_handle(process.cast()) };
+    if identity(process.as_raw_handle().cast())? != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "process tree retirement producer was replaced",
+        ));
+    }
+    match wait_any(&[done.as_raw_handle().cast(), process.as_raw_handle().cast()])? {
+        0 => Ok(()),
+        _ => Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "process tree retirement producer exited before completion",
+        )),
     }
 }
 
@@ -568,7 +602,7 @@ fn serve() -> io::Result<()> {
         let touched = match key {
             OPENED => {
                 let tree = opened.recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
-                state.open(tree, port);
+                state.open(tree, port)?;
                 Some(tree.tree)
             }
             INPUT_CLOSED => {
@@ -623,7 +657,7 @@ impl State {
     /// Starts watching a handed-over tree, then acknowledges it. A tree this
     /// custodian cannot watch is killed before its first member resumes,
     /// and its owner told so.
-    fn open(&mut self, opened: Opened, port: HANDLE) {
+    fn open(&mut self, opened: Opened, port: HANDLE) -> io::Result<()> {
         let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
             CompletionKey: std::ptr::with_exposed_provenance_mut(opened.tree),
             CompletionPort: port,
@@ -650,20 +684,34 @@ impl State {
                 .watch(&mut tree, opened.tree, opened.process)
                 .is_ok()
         } else {
-            // SAFETY: the handed-over process handle, which nothing watches.
-            unsafe { CloseHandle(opened.process) };
             false
         };
+        if !watched {
+            // Before acknowledgement the sole initial member is suspended:
+            // no untrusted code or descendant can have started. Keep its
+            // original handle through termination before signalling done.
+            // SAFETY: the handed-over Job and still-owned suspended member.
+            if unsafe { TerminateJobObject(opened.job, 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: watch retains ownership on failure; association failure
+            // did not transfer the original member handle either.
+            if unsafe { WaitForSingleObject(opened.process, INFINITE) } != WAIT_OBJECT_0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: the failed watch never took this handle.
+            unsafe { CloseHandle(opened.process) };
+        }
         // SAFETY: the handed-over Job with terminate access, and its events,
         // each signaled at most once here and the ready event then released.
         unsafe {
-            if !watched || self.owner_exited {
+            if watched && self.owner_exited {
                 TerminateJobObject(opened.job, 1);
             }
             if watched {
                 SetEvent(opened.ready);
             } else {
-                // Unwatched, the tree is the owner's to kill and await.
+                // The suspended member has physically exited before refusal.
                 SetEvent(opened.done);
                 CloseHandle(opened.done);
                 CloseHandle(opened.job);
@@ -673,6 +721,7 @@ impl State {
         if watched {
             self.trees.insert(opened.tree, tree);
         }
+        Ok(())
     }
 
     /// Watches process `pid` if it is a member of tree `id`.
@@ -722,13 +771,18 @@ impl State {
             return Ok(());
         };
         if tree.members == 0 && active_processes(tree.job)? == 0 {
-            // SAFETY: the tree's handed-over Job and event; closing the Job
-            // lets the name go only now.
-            unsafe {
-                SetEvent(tree.done);
-                CloseHandle(tree.done);
-                CloseHandle(tree.job);
+            // The terminal event follows release of the original Job. Its
+            // producer must fail rather than publish retirement on OS error.
+            // SAFETY: the tree's handed-over Job and event remain owned here.
+            if unsafe { CloseHandle(tree.job) } == 0 {
+                return Err(io::Error::last_os_error());
             }
+            // SAFETY: the original retirement event remains owned here.
+            if unsafe { SetEvent(tree.done) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: terminal publication completes this event's custody.
+            unsafe { CloseHandle(tree.done) };
             self.trees.remove(&id);
         }
         Ok(())
@@ -823,7 +877,13 @@ impl Members {
         // SAFETY: owned process and Job handles and a writable result.
         let queried = unsafe { IsProcessInJob(process, tree.job, &raw mut member) };
         if queried != 0 && member != 0 {
-            return self.watch(tree, id, process).map(|()| true);
+            return self
+                .watch(tree, id, process)
+                .map(|()| true)
+                .inspect_err(|_| {
+                    // SAFETY: a failed watch leaves ownership with this caller.
+                    unsafe { CloseHandle(process) };
+                });
         }
         let error = io::Error::last_os_error();
         // SAFETY: the handle opened above.
@@ -831,7 +891,8 @@ impl Members {
         if queried == 0 { Err(error) } else { Ok(false) }
     }
 
-    /// Watches `process`, a member of `tree`, taking ownership of its handle.
+    /// Watches `process`, taking ownership only on success. On failure the
+    /// caller retains the same handle for physical cleanup.
     fn watch(&mut self, tree: &mut Tree, id: usize, process: HANDLE) -> io::Result<()> {
         // SAFETY: an owned process handle.
         let pid = unsafe { GetProcessId(process) };
@@ -851,8 +912,6 @@ impl Members {
             } != 0;
         if !registered {
             let error = io::Error::last_os_error();
-            // SAFETY: the owned handle, which nothing watches.
-            unsafe { CloseHandle(process) };
             return Err(error);
         }
         self.0.insert(pid, (process, wait, id));
@@ -898,8 +957,105 @@ fn active_processes(job: HANDLE) -> io::Result<u32> {
 #[cfg(test)]
 mod handoff_tests {
     use super::*;
+    use std::os::windows::io::IntoRawHandle as _;
     use windows_sys::Win32::Foundation::GetHandleInformation;
+    use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
     use windows_sys::Win32::System::Pipes::CreatePipe;
+
+    #[test]
+    fn recovery_uses_the_selected_retirement_and_refuses_original_producer_loss() -> io::Result<()>
+    {
+        let root = tempfile::tempdir()?;
+        let mut random = [0; 8];
+        getrandom::fill(&mut random).map_err(io::Error::other)?;
+        // SAFETY: the current-process pseudo-handle is borrowed for identity.
+        let producer = identity(unsafe { GetCurrentProcess() })?;
+        let name = format!(
+            "acyclic-process-tree-{}-{:016x}",
+            producer,
+            u64::from_ne_bytes(random)
+        );
+        let job_name = super::super::custody::job_name(&name);
+        let event_name = super::super::custody::job_name(&format!("{name}-retired"));
+        let done = event(true, Some(&event_name))?;
+        assert_eq!(
+            event(true, Some(&event_name)).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let unrelated_done = event(true, None)?;
+        let job = |name: *const u16| -> io::Result<OwnedHandle> {
+            // SAFETY: an optional NUL-terminated name, owned on success.
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), name) };
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: CreateJobObjectW transferred one owned handle.
+            Ok(unsafe { OwnedHandle::from_raw_handle(handle.cast()) })
+        };
+        let selected = job(job_name.as_ptr())?;
+        let unrelated = job(std::ptr::null())?;
+        // Hold the unrelated original producer before its settle transition.
+        // These are actual native Jobs and the SAME production State, not a
+        // synthesized member count or process-exit receipt.
+        let tree = |job: &OwnedHandle, done: &OwnedHandle| -> io::Result<Tree> {
+            Ok(Tree {
+                job: job.try_clone()?.into_raw_handle().cast(),
+                done: done.try_clone()?.into_raw_handle().cast(),
+                members: 0,
+                secret: [0; 16],
+            })
+        };
+        let mut state = State {
+            trees: [
+                (0, tree(&selected, &done)?),
+                (1, tree(&unrelated, &unrelated_done)?),
+            ]
+            .into_iter()
+            .collect(),
+            members: Members::default(),
+            owner_exited: false,
+            input_closed: false,
+        };
+        std::fs::write(root.path().join(format!("{name}-custodian-{producer}")), [])?;
+        state.settle_tree(0)?;
+        assert_eq!(
+            super::super::ProcessCustody::open(root.path())?.fence_stale()?,
+            1
+        );
+        assert!(state.trees.contains_key(&1));
+        // SAFETY: one observation of the retained original unrelated event.
+        assert_eq!(
+            unsafe { WaitForSingleObject(unrelated_done.as_raw_handle().cast(), 0) },
+            WAIT_TIMEOUT
+        );
+        let mut child = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "process_tree::custody_tests::custody_owner_helper",
+                "--nocapture",
+            ])
+            .env_remove("ACYCLIC_CUSTODY_TEST_MODE")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let lost = identity(child.as_raw_handle().cast())?;
+        assert!(child.wait()?.success());
+        assert_eq!(
+            await_tree(&unrelated_done, &lost).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        let (pid, started) = producer.split_once('-').unwrap();
+        let replaced = format!("{pid}-{}", started.parse::<u64>().unwrap() ^ 1);
+        assert_eq!(
+            await_tree(&unrelated_done, &replaced).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        state.settle_tree(1)?;
+        await_tree(&unrelated_done, &producer)?;
+        assert!(state.trees.is_empty());
+        Ok(())
+    }
 
     fn assert_closed(handle: HANDLE) {
         let mut flags = 0;
@@ -913,7 +1069,7 @@ mod handoff_tests {
 
     #[test]
     fn failed_handover_retires_every_unpublished_duplicate() {
-        let source = event(false).expect("source event");
+        let source = event(false, None).expect("source event");
         // SAFETY: the current process pseudo-handle is always live.
         let target = unsafe { GetCurrentProcess() };
         let copied;
