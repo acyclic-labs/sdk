@@ -4,11 +4,11 @@
     reason = "QuickJS requires an allocator FFI contract; each block carries its original allocation custody"
 )]
 
-use super::{Error, Result, js_error, lock};
+use super::{Error, Result, engine::Runtime, lock};
 use acyclic_fs::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters,
 };
-use rquickjs::{Runtime, allocator::Allocator};
+use rquickjs_sys as qjs;
 use std::{
     alloc::{self, Layout},
     mem, ptr,
@@ -46,9 +46,8 @@ impl AllocatorState {
     }
 }
 
-struct NativeAllocator {
-    work: NativeMaterializationWork,
-    state: Arc<AllocatorState>,
+struct NativeAllocator<'a> {
+    state: &'a AllocatorState,
 }
 
 struct Header {
@@ -71,34 +70,29 @@ fn layout(payload: usize) -> std::result::Result<Layout, NativeTreeMaterializati
 }
 
 pub(super) fn runtime(work: &NativeMaterializationWork) -> Result<(Runtime, Arc<AllocatorState>)> {
-    // The two allocator-holder boxes are part of rquickjs's fixed ABI adapter.
-    // Its other Rust runtime scaffolding is outside these C callbacks and
-    // requires its own original admission before use. TypeScript preparation
-    // itself runs inside the credited interpreter heap.
-    let metadata = acyclic_native_runtime::arc_allocation_bytes::<AllocatorState>()
-        .checked_add(mem::size_of::<NativeAllocator>())
-        .and_then(|bytes| bytes.checked_add(mem::size_of::<Box<dyn Allocator>>()))
-        .ok_or(NativeTreeMaterializationError::Work(
-            acyclic_fs::WorkError::Overflow,
-        ))?;
-    let custody = work.claim(metadata as u64, 3, WorkCounters::UNCHARGED)?;
+    let metadata = acyclic_native_runtime::arc_allocation_bytes::<AllocatorState>();
+    let custody = work.claim(metadata as u64, 1, WorkCounters::UNCHARGED)?;
     let state = Arc::new(AllocatorState {
         first: Mutex::new(None),
         work: work.clone(),
         _custody: custody,
     });
-    let allocator = NativeAllocator {
-        work: work.clone(),
-        state: Arc::clone(&state),
-    };
-    let result = Runtime::new_with_alloc(allocator);
-    if let Some(error) = state.take_failure() {
-        return Err(error);
-    }
-    result.map(|runtime| (runtime, state)).map_err(js_error)
+    Runtime::with_allocator(Arc::clone(&state)).map(|runtime| (runtime, state))
 }
 
-impl NativeAllocator {
+impl NativeAllocator<'_> {
+    fn protected<T>(&mut self, fallback: T, action: impl FnOnce(&mut Self) -> T) -> T {
+        // A Rust failure, including a producer waker, must never unwind across
+        // QuickJS's C frames or become a JS-catchable acknowledgement.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(self))) {
+            Ok(value) => value,
+            Err(_) => {
+                self.state
+                    .record(NativeTreeMaterializationError::InvalidLayout);
+                fallback
+            }
+        }
+    }
     fn failed(&self, cause: NativeTreeMaterializationError) -> *mut u8 {
         self.state.record(cause);
         ptr::null_mut()
@@ -113,6 +107,7 @@ impl NativeAllocator {
             Err(error) => return self.failed(error),
         };
         let custody = match self
+            .state
             .work
             .claim(layout.size() as u64, 1, WorkCounters::UNCHARGED)
         {
@@ -144,7 +139,7 @@ impl NativeAllocator {
 // u64 alignment. The preceding header retains its exact original reservation.
 // realloc leaves the old block/charge intact on refusal; free destroys backing
 // before releasing credit. QuickJS serializes callbacks on its runtime lock.
-unsafe impl Allocator for NativeAllocator {
+impl NativeAllocator<'_> {
     fn alloc(&mut self, size: usize) -> *mut u8 {
         self.allocate(size, false)
     }
@@ -200,13 +195,17 @@ unsafe impl Allocator for NativeAllocator {
             Err(error) => return self.failed(error),
         };
         let growth = next.size().saturating_sub(previous.size());
-        let mut claim = match self.work.claim(growth as u64, 1, WorkCounters::UNCHARGED) {
+        let mut claim = match self
+            .state
+            .work
+            .claim(growth as u64, 1, WorkCounters::UNCHARGED)
+        {
             Ok(claim) => claim,
             Err(error) => return self.failed(error),
         };
         // realloc may move the original block. Withhold only that possible copy
         // and report zero when the allocator actually keeps the same address.
-        let copying = match self.work.reserve_work(WorkCounters {
+        let copying = match self.state.work.reserve_work(WorkCounters {
             bytes_copied: previous.size().min(next.size()) as u64,
             ..WorkCounters::UNCHARGED
         }) {
@@ -261,11 +260,76 @@ unsafe impl Allocator for NativeAllocator {
     }
 }
 
+pub(super) const FUNCTIONS: qjs::JSMallocFunctions = qjs::JSMallocFunctions {
+    js_malloc: Some(malloc),
+    js_calloc: Some(calloc),
+    js_realloc: Some(realloc),
+    js_free: Some(free),
+    js_malloc_usable_size: Some(usable_size),
+};
+
+unsafe fn allocator<'a>(opaque: *mut qjs::c_void) -> NativeAllocator<'a> {
+    // SAFETY: RuntimeInner retains the exact Arc through JS_FreeRuntime.
+    NativeAllocator {
+        state: unsafe { &*opaque.cast::<AllocatorState>() },
+    }
+}
+unsafe extern "C" fn malloc(opaque: *mut qjs::c_void, size: qjs::size_t) -> *mut qjs::c_void {
+    let mut allocator = unsafe { allocator(opaque) };
+    match usize::try_from(size) {
+        Ok(size) => allocator
+            .protected(ptr::null_mut(), |allocator| allocator.alloc(size))
+            .cast(),
+        Err(_) => allocator
+            .failed(acyclic_fs::WorkError::Overflow.into())
+            .cast(),
+    }
+}
+unsafe extern "C" fn calloc(
+    opaque: *mut qjs::c_void,
+    count: qjs::size_t,
+    size: qjs::size_t,
+) -> *mut qjs::c_void {
+    let mut allocator = unsafe { allocator(opaque) };
+    match (usize::try_from(count), usize::try_from(size)) {
+        (Ok(count), Ok(size)) => allocator
+            .protected(ptr::null_mut(), |allocator| allocator.calloc(count, size))
+            .cast(),
+        _ => allocator
+            .failed(acyclic_fs::WorkError::Overflow.into())
+            .cast(),
+    }
+}
+unsafe extern "C" fn realloc(
+    opaque: *mut qjs::c_void,
+    pointer: *mut qjs::c_void,
+    size: qjs::size_t,
+) -> *mut qjs::c_void {
+    let mut allocator = unsafe { allocator(opaque) };
+    match usize::try_from(size) {
+        Ok(size) => allocator
+            .protected(ptr::null_mut(), |allocator| unsafe {
+                allocator.realloc(pointer.cast(), size)
+            })
+            .cast(),
+        Err(_) => allocator
+            .failed(acyclic_fs::WorkError::Overflow.into())
+            .cast(),
+    }
+}
+unsafe extern "C" fn free(opaque: *mut qjs::c_void, pointer: *mut qjs::c_void) {
+    unsafe { allocator(opaque) }
+        .protected((), |allocator| unsafe { allocator.dealloc(pointer.cast()) });
+}
+unsafe extern "C" fn usable_size(pointer: *const qjs::c_void) -> qjs::size_t {
+    (unsafe { NativeAllocator::usable_size(pointer.cast_mut().cast()) }) as _
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::engine::Context;
     use super::*;
     use acyclic_fs::{CancellationToken, WorkBudget};
-    use rquickjs::Context;
 
     #[test]
     fn actual_engine_heap_retires_original_credit_and_refuses_exhausted_owner() -> Result<()> {
@@ -274,11 +338,12 @@ mod tests {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         let (runtime, state) = runtime(&work)?;
-        let context = Context::full(&runtime).map_err(js_error)?;
-        let value: usize = context
-            .with(|ctx| ctx.eval("Array.from({length: 1024}, (_, n) => n).length"))
-            .map_err(js_error)?;
-        assert_eq!(value, 1024);
+        let context = Context::new(&runtime, None)?;
+        context.with(|ctx| {
+            let value = ctx.eval(c"Array.from({length: 1024}, (_, n) => n).length")?;
+            assert_eq!(value.text()?.as_str()?, "1024");
+            Ok(())
+        })?;
         assert!(work.live_allocation_bytes() > baseline);
         assert!(state.take_failure().is_none());
         drop(context);

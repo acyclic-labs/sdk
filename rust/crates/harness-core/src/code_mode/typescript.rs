@@ -1,40 +1,29 @@
-//! The TypeScript eraser runs in the same credited QuickJS heap as execution.
-//! Its private realm is shared by all invocations; source and transformed output
-//! stay JavaScript strings, with no Rust parser arena or generated-code buffer.
-use super::{Result, js_error};
-use rquickjs::{Context, Ctx, Function, Runtime};
+//! The TypeScript eraser runs in the same credited engine heap as execution.
+use super::{
+    Result,
+    engine::{Context, Ctx, Runtime, Value},
+};
+
+const SOURCE: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
+    concat!(include_str!("typescript_bundle.js"), "\0").as_bytes(),
+) {
+    Ok(source) => source,
+    Err(_) => panic!("TypeScript eraser source must have exactly one trailing zero"),
+};
 
 pub(super) struct Compiler {
     pub(super) context: Context,
 }
-
 impl Compiler {
     pub(super) fn new(runtime: &Runtime) -> Result<Self> {
-        let context = Context::full(runtime).map_err(js_error)?;
-        context
-            .with(|ctx| {
-                ctx.eval::<(), _>(include_str!("typescript_bundle.js"))?;
-                // Capture the original pure transform privately. The model never
-                // receives this function, its realm or its mutable parser globals.
-                ctx.eval::<(), _>(
-                    r#"
-                globalThis.__prepare = ((transform) => (source) => {
-                    const wrapped = "async function __code_mode__() {\n" + source + "\n}";
-                    return transform(wrapped) + "\nreturn await __code_mode__();";
-                })(__harness_typescript.transform);
-                delete globalThis.__harness_typescript;
-            "#,
-                )
-            })
-            .map_err(js_error)?;
+        let context = Context::new(runtime, None)?;
+        context.with(|ctx| {
+            ctx.eval(SOURCE)?;
+            ctx.eval(c"globalThis.__prepare = ((transform) => (source) => { const wrapped = \"async function __code_mode__() {\\n\" + source + \"\\n}\"; return transform(wrapped) + \"\\nreturn await __code_mode__();\"; })(__harness_typescript.transform); delete globalThis.__harness_typescript;").map(drop)
+        })?;
         Ok(Self { context })
     }
-
-    pub(super) fn prepare<'js>(
-        ctx: &Ctx<'js>,
-        source: &str,
-    ) -> rquickjs::Result<rquickjs::String<'js>> {
-        let prepare: Function = ctx.globals().get("__prepare")?;
-        prepare.call((source,))
+    pub(super) fn prepare<'a>(ctx: Ctx<'a>, source: &str) -> Result<Value<'a>> {
+        ctx.global()?.get(c"__prepare")?.call([ctx.string(source)?])
     }
 }

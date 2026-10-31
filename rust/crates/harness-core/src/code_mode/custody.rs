@@ -32,19 +32,6 @@ impl CodeRuntime {
         }))
     }
 
-    pub(super) fn interrupt_handler<F>(&self, handler: F) -> Result<PhaseLease<'_>>
-    where
-        F: FnMut() -> bool + Send + 'static,
-    {
-        let bytes = std::mem::size_of::<F>() as u64;
-        let custody = self.claim_rust(bytes, u64::from(bytes != 0))?;
-        self.runtime.set_interrupt_handler(Some(Box::new(handler)));
-        Ok(PhaseLease {
-            runtime: &self.runtime,
-            _custody: custody,
-        })
-    }
-
     fn claim_rust(&self, bytes: u64, operations: u64) -> Result<crate::NativeCustody> {
         #[cfg(feature = "filesystem")]
         if let Some(allocator) = &self.native_allocator {

@@ -7,6 +7,7 @@
 mod buffers;
 mod custody;
 mod declarations;
+mod engine;
 #[cfg(feature = "filesystem")]
 mod native_allocator;
 mod typescript;
@@ -20,8 +21,8 @@ use crate::{
 use acyclic_stream::BoxProviderFuture;
 use buffers::{Buffers, Owned, PendingQueue};
 use custody::Retained;
+use engine::{Context, Runtime};
 use futures::{StreamExt, stream::FuturesOrdered};
-use rquickjs::{Context, Function, MultiWith, Runtime};
 use serde_json::Value;
 use std::{
     num::NonZeroUsize,
@@ -35,12 +36,12 @@ use std::{
 ///
 /// Implementations retain their original reservation and cancellation owner.
 /// Exhausted work is a typed refusal; cancellation/producer loss completes
-/// `interrupted`. There is no interpreter-specific timer or step allowance.
+/// `poll_interrupted`. There is no interpreter-specific timer or step allowance.
 pub trait CodeControl: Send + Sync {
     /// Charges/checks the original work credit at an interpreter interruption.
     fn check(&self) -> Result<()>;
     /// Waits on the original cancellation/owner-loss event, never a probe.
-    fn interrupted(&self) -> BoxProviderFuture<'_, Error>;
+    fn poll_interrupted(&self, context: &mut std::task::Context<'_>) -> std::task::Poll<Error>;
 }
 
 /// The original harness-wide memory reservation funding the shared interpreter.
@@ -149,16 +150,12 @@ impl Protocol {
         ProtocolLease(self)
     }
 
-    fn consume(&self) -> rquickjs::Result<()> {
+    fn consume(&self) -> Result<()> {
         if self.admitted.swap(false, Ordering::AcqRel) {
             Ok(())
         } else {
             self.forged.store(true, Ordering::Release);
-            Err(rquickjs::Error::new_from_js_message(
-                "code",
-                "protocol",
-                "interpreter protocol entry is not admitted",
-            ))
+            Err(rejected("interpreter protocol entry is not admitted"))
         }
     }
 
@@ -181,7 +178,7 @@ impl Drop for ProtocolLease<'_> {
 impl CodeRuntime {
     /// Creates the harness's shared interpreter, without any ambient host APIs.
     pub fn new(memory: Arc<dyn CodeMemory>) -> Result<Self> {
-        let runtime = Runtime::new().map_err(js_error)?;
+        let runtime = Runtime::new()?;
         if let Some(credit) = memory.credit_bytes() {
             runtime.set_memory_limit(credit.get());
         }
@@ -258,7 +255,7 @@ impl CodeRuntime {
     ) -> Result<CodeOutput> {
         control.check()?;
         let _credit = tokio::select! {
-            error = control.interrupted() => return Err(error),
+            error = futures::future::poll_fn(|context| control.poll_interrupted(context)) => return Err(error),
             credit = self._memory.acquire() => credit?,
         };
         run(self, outer, source, input, tools, host, control).await
@@ -270,29 +267,18 @@ impl CodeRuntime {
         action: impl FnOnce(&Runtime) -> Result<T>,
     ) -> Result<T> {
         let _phase = tokio::select! {
-            error = control.interrupted() => return Err(error),
+            error = futures::future::poll_fn(|context| control.poll_interrupted(context)) => return Err(error),
             phase = self.phase.lock() => phase,
         };
         control.check()?;
-        let failure = self.retained_arc(Mutex::new(None))?;
-        let interrupt_failure = Arc::clone(&failure);
-        let interrupt_control = Arc::clone(&control);
-        let lease = self.interrupt_handler(move || match interrupt_control.check() {
-            Ok(()) => false,
-            Err(error) => {
-                let mut failure = lock(&interrupt_failure);
-                if failure.is_none() {
-                    *failure = Some(error);
-                }
-                true
-            }
-        })?;
+        let failure = Mutex::new(None);
+        let interruption = engine::Interrupt {
+            control,
+            failure: &failure,
+        };
+        let lease = self.runtime.interrupt(&interruption);
         let result = action(&self.runtime).and_then(|value| {
-            while self
-                .runtime
-                .execute_pending_job()
-                .map_err(|_| rejected("code microtask failed"))?
-            {
+            while self.runtime.execute_pending_job()? {
                 control.check()?;
             }
             Ok(value)
@@ -311,22 +297,6 @@ impl CodeRuntime {
     }
 }
 
-// Every exit, including future drop, retires only this transient realm's jobs.
-// Native callbacks merely enqueue descriptors; cleanup cannot dispatch effects.
-struct PhaseLease<'a> {
-    runtime: &'a Runtime,
-    _custody: crate::NativeCustody,
-}
-impl Drop for PhaseLease<'_> {
-    fn drop(&mut self) {
-        self.runtime.set_interrupt_handler(Some(Box::new(|| true)));
-        while self.runtime.is_job_pending() {
-            let _ = self.runtime.execute_pending_job();
-        }
-        self.runtime.set_interrupt_handler(None);
-    }
-}
-
 async fn run(
     engine: &CodeRuntime,
     outer: &ToolInvocation,
@@ -341,29 +311,28 @@ async fn run(
     let protocol = engine.retained_arc(Protocol::default())?;
     let context = engine
         .phase(&control, |runtime| {
-            let context = Context::full(runtime).map_err(js_error)?;
-            install(
-                &context,
-                outer,
-                tools,
-                input,
-                Arc::clone(&queue),
-                Arc::clone(&protocol),
-                buffers.clone(),
+            let context = Context::new(
+                runtime,
+                Some(engine::Callbacks {
+                    queue: Arc::clone(&queue),
+                    protocol: Arc::clone(&protocol),
+                    buffers: buffers.clone(),
+                    recursive: buffers.text(&outer.name)?,
+                    ordinal: 0,
+                }),
             )?;
-            // Both contexts belong to this one runtime. MultiWith holds its
-            // original lock once, so transformation never leaks a Rust-owned
-            // output buffer or exposes the compiler realm to model code.
-            (&engine.compiler.context, &context)
-                .with(|(compiler, ctx)| {
-                    let javascript = typescript::Compiler::prepare(&compiler, source)?;
-                    let constructor: Function = ctx.eval("(async function(){}).constructor")?;
-                    let body: Function = constructor.call((javascript,))?;
-                    let run: Function = ctx.globals().get("__run")?;
+            install(&context, outer, tools, input, &buffers)?;
+            engine
+                .compiler
+                .context
+                .with_pair(&context, |compiler, ctx| {
+                    let javascript = typescript::Compiler::prepare(compiler, source)?;
+                    let constructor = ctx.eval(c"(async function(){}).constructor")?;
+                    let body = constructor.call([javascript])?;
+                    let run = ctx.global()?.get(c"__run")?;
                     let _entry = protocol.enter();
-                    run.call::<_, ()>((body,))
-                })
-                .map_err(js_error)?;
+                    run.call([body]).map(drop)
+                })?;
             Ok(context)
         })
         .await?;
@@ -389,8 +358,9 @@ async fn run(
         let state = engine
             .phase(&control, |_| {
                 context.with(|ctx| {
-                    let state: rquickjs::CString = ctx.eval("__state()").map_err(js_error)?;
-                    buffers.text(state.as_str())
+                    let state = ctx.eval(c"__state()")?;
+                    let text = state.text()?;
+                    buffers.text(text.as_str()?)
                 })
             })
             .await?;
@@ -404,7 +374,7 @@ async fn run(
             };
         }
         let (ordinal, result) = tokio::select! {
-            error = control.interrupted() => return Err(error),
+            error = futures::future::poll_fn(|context| control.poll_interrupted(context)) => return Err(error),
             completed = calls.next() => completed.ok_or_else(|| rejected("code host-call producer was dropped"))?,
         };
         // Preserve the original storage/uncertain/refusal error. JavaScript
@@ -415,12 +385,12 @@ async fn run(
         engine
             .phase(&control, |_| {
                 let _entry = protocol.enter();
-                context
-                    .with(|ctx| {
-                        let complete: Function = ctx.globals().get("__complete")?;
-                        complete.call::<_, ()>((ordinal.value.as_str(), json.value.as_str()))
-                    })
-                    .map_err(js_error)
+                context.with(|ctx| {
+                    let complete = ctx.global()?.get(c"__complete")?;
+                    complete
+                        .call([ctx.string(&ordinal.value)?, ctx.string(&json.value)?])
+                        .map(drop)
+                })
             })
             .await?;
         protocol.check()?;
@@ -433,9 +403,7 @@ fn install(
     outer: &ToolInvocation,
     tools: &[ToolDefinition],
     input: &Value,
-    queue: Arc<Retained<Mutex<PendingQueue>>>,
-    protocol: Arc<Retained<Protocol>>,
-    buffers: Buffers,
+    buffers: &Buffers,
 ) -> Result<()> {
     let seed = outer.operation_id.into_bytes();
     let seed = u32::from_le_bytes(
@@ -443,66 +411,24 @@ fn install(
             .try_into()
             .map_err(|_| rejected("code seed is malformed"))?,
     );
-    let recursive_name = buffers.text(&outer.name)?;
     let input = buffers.json(input)?;
-    context
-        .with(|ctx| {
-            let names = rquickjs::Array::new(ctx.clone())?;
-            for (index, tool) in tools.iter().enumerate() {
-                names.set(index, tool.name.as_str())?;
-            }
-            ctx.globals()
-                .set("__input", ctx.json_parse(input.value.as_str())?)?;
-            let mut ordinal = 0_u64;
-            let enqueue = Function::new(
-                ctx.clone(),
-                rquickjs::function::MutFn::new(
-                    move |callback_ctx: rquickjs::Ctx,
-                          name: rquickjs::CString,
-                          arguments: rquickjs::CString| {
-                        if name.as_str() == recursive_name.value().as_str() {
-                            return Err(rquickjs::Error::new_from_js_message(
-                                "name",
-                                "tool",
-                                "tool is unavailable",
-                            ));
-                        }
-                        let current = ordinal;
-                        ordinal = ordinal.checked_add(1).ok_or_else(|| {
-                            rquickjs::Error::new_from_js_message(
-                                "ordinal",
-                                "tool",
-                                "host-call ordinal overflow",
-                            )
-                        })?;
-                        let result = (|| {
-                            let name = buffers.text(name.as_str())?;
-                            let arguments = buffers.text(arguments.as_str())?;
-                            let ordinal_text = buffers.format(format_args!("{current}"))?;
-                            lock(&queue).push(QueuedCall {
-                                ordinal: current,
-                                name,
-                                arguments,
-                            })?;
-                            rquickjs::String::from_str(callback_ctx.clone(), &ordinal_text.value)
-                                .map_err(js_error)
-                        })();
-                        result.map_err(|error| {
-                            lock(&queue).fail(error);
-                            rquickjs::Error::new_from_js("code", "original work")
-                        })
-                    },
-                ),
+    context.with(|ctx| {
+        let names = ctx.array()?;
+        for (index, tool) in tools.iter().enumerate() {
+            names.set_index(
+                u32::try_from(index).map_err(|_| rejected("code tool index overflow"))?,
+                ctx.string(&tool.name)?,
             )?;
-            ctx.globals().set("__enqueue", enqueue)?;
-            ctx.globals().set(
-                "__admit",
-                Function::new(ctx.clone(), move || protocol.consume())?,
-            )?;
-            let bootstrap: Function = ctx.eval(BOOTSTRAP)?;
-            bootstrap.call::<_, ()>((seed, names))
-        })
-        .map_err(js_error)
+        }
+        let global = ctx.global()?;
+        let parse = global.get(c"JSON")?.get(c"parse")?;
+        global.set(c"__input", parse.call([ctx.string(&input.value)?])?)?;
+        global.set(c"__enqueue", ctx.callback(c"enqueue", true)?)?;
+        global.set(c"__admit", ctx.callback(c"admit", false)?)?;
+        ctx.eval(BOOTSTRAP)?
+            .call([ctx.number(seed), names])
+            .map(drop)
+    })
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -518,11 +444,12 @@ fn rejected(reason: &'static str) -> Error {
     }
 }
 
-fn js_error(_: rquickjs::Error) -> Error {
-    rejected("code interpreter rejected the program")
-}
-
-const BOOTSTRAP: &str = concat!("(", include_str!("sandbox.js"), ")");
+const BOOTSTRAP: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
+    concat!("(", include_str!("sandbox.js"), ")\0").as_bytes(),
+) {
+    Ok(source) => source,
+    Err(_) => panic!("code bootstrap must have exactly one trailing zero"),
+};
 
 #[cfg(test)]
 mod tests;

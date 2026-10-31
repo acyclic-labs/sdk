@@ -14,7 +14,7 @@ impl CodeMemory for Memory {
 }
 
 struct Control {
-    owner: tokio::sync::watch::Receiver<bool>,
+    owner: Mutex<tokio::sync::oneshot::Receiver<()>>,
     remaining: AtomicUsize,
 }
 impl CodeControl for Control {
@@ -26,23 +26,22 @@ impl CodeControl for Control {
             .map(|_| ())
             .map_err(|_| rejected("original work credit exhausted"))
     }
-    fn interrupted(&self) -> BoxProviderFuture<'_, Error> {
-        let mut owner = self.owner.clone();
-        Box::pin(async move {
-            match owner.changed().await {
-                Ok(()) => rejected("original execution cancelled"),
-                Err(_) => rejected("original execution owner dropped"),
-            }
-        })
+    fn poll_interrupted(&self, context: &mut std::task::Context<'_>) -> std::task::Poll<Error> {
+        use std::{future::Future as _, pin::Pin, task::Poll};
+        match Pin::new(&mut *lock(&self.owner)).poll(context) {
+            Poll::Ready(Ok(())) => Poll::Ready(rejected("original execution cancelled")),
+            Poll::Ready(Err(_)) => Poll::Ready(rejected("original execution owner dropped")),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
-fn original_control() -> (tokio::sync::watch::Sender<bool>, Arc<dyn CodeControl>) {
-    let (owner, receiver) = tokio::sync::watch::channel(false);
+fn original_control() -> (tokio::sync::oneshot::Sender<()>, Arc<dyn CodeControl>) {
+    let (owner, receiver) = tokio::sync::oneshot::channel();
     (
         owner,
         Arc::new(Control {
-            owner: receiver,
+            owner: Mutex::new(receiver),
             remaining: AtomicUsize::new(100_000),
         }),
     )
@@ -395,9 +394,9 @@ async fn producerless_promises_and_exhausted_original_work_refuse_without_waitin
             ..
         })
     ));
-    let (_owner, receiver) = tokio::sync::watch::channel(false);
+    let (_owner, receiver) = tokio::sync::oneshot::channel();
     let control = Arc::new(Control {
-        owner: receiver,
+        owner: Mutex::new(receiver),
         remaining: AtomicUsize::new(20),
     });
     let failed = runtime
@@ -457,6 +456,7 @@ async fn host_wait_releases_shared_interpreter_and_owner_drop_terminates() -> Re
         host.clone(),
         control.clone(),
     );
+    let (_independent_owner, independent_control) = original_control();
     let independent = async {
         ready
             .await
@@ -467,7 +467,7 @@ async fn host_wait_releases_shared_interpreter_and_owner_drop_terminates() -> Re
                 "return 42;",
                 &[],
                 Arc::new(Echo::default()),
-                control,
+                independent_control,
             )
             .await?
             .value;
