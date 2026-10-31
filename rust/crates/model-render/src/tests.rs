@@ -546,6 +546,27 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
             item(family, ItemKind::Message, "retained tool reply"),
             item(family, ItemKind::Message, "next turn"),
         ];
+        // These negatives use the same admitted model and renderer. A JSON
+        // no-op can change the cached bytes; reordering can lose context while
+        // retaining every item and the same amount of selected work.
+        let normalized: Vec<_> = sources[..3]
+            .iter()
+            .map(|source| {
+                WireItem::capture(
+                    source.provenance().clone(),
+                    source.kind(),
+                    raw(serde_json::to_string(
+                        &serde_json::from_str::<Value>(source.wire().get()).unwrap(),
+                    )
+                    .unwrap()),
+                    BTreeMap::new(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let reordered = [sources[0].clone(), sources[2].clone(), sources[1].clone()];
+        let expected = reference(family, "producing-provider", &sources[..3]);
+        let expected_items = expected[family.input()].as_array().unwrap();
         let borrowed_segments = |writes: &[(*const u8, usize)], selected: &[WireItem]| {
             writes.len() == 2 * selected.len() + 1
                 && writes[0] == (header.bytes().as_ptr(), header.bytes().len())
@@ -559,6 +580,9 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
             ("first", &sources[..3]),
             ("repeat", &sources[..3]),
             ("append", &sources[..]),
+            ("same_model_bare", &sources[..1]),
+            ("normalized", normalized.as_slice()),
+            ("reordered", &reordered[..]),
         ] {
             let mut sink = Counter::default();
             let mut visited = 0;
@@ -572,18 +596,33 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
             assert_eq!(visited, selected.len());
             // Header, first item, then separator/item pairs, finally tail.
             assert!(borrowed_segments(&sink.writes, selected));
-            assert_eq!(
-                serde_json::from_slice::<Value>(&sink.bytes).unwrap(),
-                reference(family, "producing-provider", selected)
-            );
+            let decoded = serde_json::from_slice::<Value>(&sink.bytes).unwrap();
+            assert_eq!(decoded, reference(family, "producing-provider", selected));
+            let ordered_context_matches = decoded[family.input()]
+                .as_array()
+                .unwrap()
+                .starts_with(expected_items);
             match phase {
                 "first" => first = sink.bytes.clone(),
                 "repeat" => assert_eq!(sink.bytes, first),
-                _ => assert!(
+                "append" => assert!(
                     sink.bytes
                         .starts_with(&first[..first.len() - Tail.bytes().len()])
                 ),
+                "normalized" => assert_eq!(decoded, expected),
+                _ => assert!(!ordered_context_matches),
             }
+            let extends_original_prefix = sink
+                .bytes
+                .starts_with(&first[..first.len() - Tail.bytes().len()]);
+            assert_eq!(
+                extends_original_prefix,
+                matches!(phase, "first" | "repeat" | "append")
+            );
+            assert_eq!(
+                ordered_context_matches,
+                !matches!(phase, "same_model_bare" | "reordered")
+            );
             // These are generated IR measurements, not provider fixtures or
             // live cache/token/task-quality results. The command receipt pins
             // source and platform; retain the actual inputs and raw counts.
@@ -604,6 +643,9 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
                     "sink_writes": sink.writes.len(),
                     "request_bytes": sink.bytes.len(),
                     "borrowed_payload_bytes": selected.iter().map(|source| source.wire().get().len()).sum::<usize>(),
+                    "retained_history_complete": selected.len() >= 3,
+                    "ordered_context_matches": ordered_context_matches,
+                    "extends_original_prefix": extends_original_prefix,
                     "latency_ns": Value::Null,
                     "tokens": Value::Null,
                     "cache_hits": Value::Null,
@@ -617,9 +659,9 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
             assert_ne!(visited, selected.len());
             // A copy preserves every byte while failing the SAME borrowing
             // oracle against the actual successful renderer's write trace.
-            let copied = selected[1].wire().get().as_bytes().to_vec();
-            assert_eq!(copied, selected[1].wire().get().as_bytes());
-            sink.writes[3] = (copied.as_ptr(), copied.len());
+            let copied = selected[0].wire().get().as_bytes().to_vec();
+            assert_eq!(copied, selected[0].wire().get().as_bytes());
+            sink.writes[1] = (copied.as_ptr(), copied.len());
             assert!(!borrowed_segments(&sink.writes, selected));
         }
         // Removing either native reasoning or the reply must fail the same
