@@ -51,7 +51,7 @@ use crate::{
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
 /// The magic, the limits, then the journal's epoch.
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + LIMITS_BYTES + 8;
-const LIMITS_BYTES: usize = 6 * (1 + 8) + 2 * 8;
+const LIMITS_BYTES: usize = 6 * 8 + 2 * 8;
 const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAP-V01\0";
 /// The magic, limits and journal epoch; state and checksum follow.
 const SNAPSHOT_HEADER_BYTES: usize = SNAPSHOT_MAGIC.len() + LIMITS_BYTES + 8;

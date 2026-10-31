@@ -73,7 +73,7 @@ impl Default for JournalStreamLimits {
 
 impl JournalStreamLimits {
     fn configuration(self) -> Vec<u8> {
-        [
+        let capacities = [
             self.commands.map(u64::from),
             self.journal_bytes,
             self.memory.paths.map(|value| value as u64),
@@ -82,11 +82,18 @@ impl JournalStreamLimits {
             self.memory.payload_bytes.map(|value| value as u64),
             self.memory.commits.map(|value| value as u64),
             self.memory.idempotency_results.map(|value| value as u64),
-        ]
-        .into_iter()
-        .flat_map(|value| [u64::from(value.is_some()), value.unwrap_or_default()])
-        .flat_map(u64::to_le_bytes)
-        .collect()
+        ];
+        let mut words = capacities.map(|value| value.unwrap_or_default());
+        // Finite configurations retain their eight original words, including
+        // explicit zero memory capacities. Commands occupy only the low 32
+        // bits; six previously unused high bits distinguish unbounded memory.
+        // Zero commands/bytes are rejected at open, so their zero denotes None.
+        for (index, capacity) in capacities[2..].iter().enumerate() {
+            if capacity.is_none() {
+                words[0] |= 1 << (32 + index);
+            }
+        }
+        words.into_iter().flat_map(u64::to_le_bytes).collect()
     }
 }
 
