@@ -19,7 +19,7 @@ use acyclic_machines::{
     MachineContract, MachineId, MachineObservation, MachineState, Platform as MachinePlatform,
     SuspensionPolicy,
 };
-use acyclic_stream::{StreamProvider as _, StreamProviderExt as _, wire as session_wire};
+use acyclic_stream::{StreamProvider as _, wire as session_wire};
 use futures::StreamExt as _;
 use std::sync::Mutex;
 
@@ -121,7 +121,7 @@ impl TurnExecutors for NativeTurns {
                     "bash"
                 }
                 .into(),
-                &acyclic_host_platform::shell::PLATFORM,
+                &crate::tools::shell::PLATFORM,
             )?;
             let limits = Limits {
                 model_steps: 4,
@@ -290,8 +290,29 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
                 &client,
                 "agents",
                 &AgentCommand::Read {
+                    agent: child.clone(),
+                    target: ReadTarget::File {
+                        file: foreign.clone()
+                    },
+                    offset: 0,
+                }
+            )
+            .await?
+            .is_err()
+        );
+        assert!(
+            call(
+                &client,
+                "agents",
+                &AgentCommand::Read {
                     agent: child,
-                    target: ReadTarget::File { file: foreign },
+                    target: ReadTarget::ToolOutput {
+                        path: fork["result_file"]["path"]
+                            .as_str()
+                            .ok_or("result path missing")?
+                            .into(),
+                        at: Some(foreign),
+                    },
                     offset: 0,
                 }
             )
@@ -418,6 +439,46 @@ async fn observe(
             break;
         }
     }
+    // A result read must bind the original immutable conversation cut, never
+    // whatever bytes a later raw writer puts at the same path.
+    let expected = journal.load(&file, None)?.await?;
+    let workspace = crate::resources::WorkspaceRef::new(
+        authority.private.volume.provider().clone(),
+        authority
+            .private
+            .volume
+            .storage_name(&mut None)?
+            .into_bytes(),
+        None,
+    )?;
+    bound
+        .volumes()
+        .apply(
+            &workspace,
+            None,
+            &[crate::filesystem::WorkspaceMutation::PutFile {
+                path: format!("/{}", file.path()),
+                bytes: bytes::Bytes::from_static(b"{}").into(),
+            }],
+            &crate::IdempotencyKey::new(format!("replace-result-{credential_id}"))?,
+        )
+        .await?;
+    assert!(
+        call(
+            client,
+            "agents",
+            &AgentCommand::Read {
+                agent: agent.clone(),
+                target: ReadTarget::ToolOutput {
+                    path: file.path().into(),
+                    at: None
+                },
+                offset: 0,
+            }
+        )
+        .await?
+        .is_err()
+    );
     let reply = call(
         client,
         "agents",
@@ -425,13 +486,14 @@ async fn observe(
             agent: agent.clone(),
             target: ReadTarget::ToolOutput {
                 path: file.path().into(),
+                at: Some(entry.output.clone()),
             },
             offset: 0,
         },
     )
     .await??;
     let (bytes, _) = reply.content()?;
-    assert_eq!(journal.load(&file, None)?.await?.as_ref(), bytes.as_slice());
+    assert_eq!(expected.as_ref(), bytes.as_slice());
     let mut result: serde_json::Value = serde_json::from_slice(&bytes)?;
     let mut value = result["value"].take();
     assert_eq!(value["execution"]["agent"], agent.as_str());

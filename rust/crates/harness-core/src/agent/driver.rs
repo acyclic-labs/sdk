@@ -212,7 +212,9 @@ pub struct ConversationEntry {
     pub targets: Option<FileRef>,
     /// Directory of this turn's original validated tool-result files, below
     /// the agent's tool-output resource. Follow/list it lazily and use the
-    /// ordinary ToolOutput read; each file is the journal's own result payload.
+    /// ordinary ToolOutput read with `at: Some(output)` to pin the complete
+    /// directory to this entry's immutable generation. Each file is the journal's
+    /// own result payload; no current-head read can substitute later bytes.
     /// A file's publication attests its validated result, not settlement of
     /// every effect or physical retirement beyond that result's contract.
     #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]

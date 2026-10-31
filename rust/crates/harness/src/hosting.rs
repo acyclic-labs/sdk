@@ -427,9 +427,9 @@ where
                             .read_file(agent, file, *offset, MAX_READ_BYTES)
                             .await?
                     }
-                    ReadTarget::ToolOutput { path } => {
+                    ReadTarget::ToolOutput { path, at } => {
                         self.bound
-                            .read_tool_output(agent, path, *offset, MAX_READ_BYTES)
+                            .read_tool_output(agent, path, at.as_ref(), *offset, MAX_READ_BYTES)
                             .await?
                     }
                 };

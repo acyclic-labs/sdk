@@ -309,6 +309,12 @@ pub enum ReadTarget {
     ToolOutput {
         /// Path below the agent's tool-output directory.
         path: String,
+        /// Read from this settled conversation output's immutable generation.
+        /// Required for a committed tool-result path. The file must belong to
+        /// this agent's private volume; no current-head fallback is allowed.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef", optional))]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<FileRef>,
     },
 }
 
@@ -334,7 +340,7 @@ impl AgentCommand {
                 ..
             } if !is_digest(digest) || *parts == 0 || *bytes == 0 => Err(CommandError::Invalid),
             Self::Read {
-                target: ReadTarget::ToolOutput { path },
+                target: ReadTarget::ToolOutput { path, .. },
                 ..
             } if path.is_empty()
                 || path.len() > MAX_READ_PATH_BYTES

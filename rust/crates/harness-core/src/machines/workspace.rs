@@ -15,6 +15,7 @@ use acyclic_stream::BoxProviderFuture;
 pub struct MachinesWorkspace {
     host: MachinesHost,
     sandbox: SandboxRef,
+    machine: MachineId,
     volume: VolumeRef,
     signed: Scope,
     verifier: AuthorityVerifier,
@@ -58,6 +59,7 @@ impl MachinesWorkspace {
         Ok(Self {
             host,
             sandbox,
+            machine: admitted.id,
             volume: volume.clone(),
             signed,
             verifier,
@@ -229,7 +231,7 @@ impl ToolExecutor for MachinesWorkspace {
                         "call_id": context.call_id(),
                         "operation": context.operation_id(),
                         "provider": self.sandbox.as_resource().provider(),
-                        "machine": self.host.machine_id(&self.sandbox)?,
+                        "machine": self.machine,
                         "volume": &self.volume,
                     },
                 }),

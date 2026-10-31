@@ -350,7 +350,10 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         // this same admitted reader, with no local filesystem provider.
         let client = connect(Some(Arc::new(bound.changes()?)))?;
         for target in [
-            ReadTarget::ToolOutput { path: path.into() },
+            ReadTarget::ToolOutput {
+                path: path.into(),
+                at: None,
+            },
             ReadTarget::File { file: file.clone() },
         ] {
             let reply = call(
@@ -398,7 +401,10 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
                 "agents",
                 &AgentCommand::Read {
                     agent,
-                    target: ReadTarget::ToolOutput { path: path.into() },
+                    target: ReadTarget::ToolOutput {
+                        path: path.into(),
+                        at: None
+                    },
                     offset: 0,
                 }
             )
@@ -442,7 +448,10 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             "agents",
             &AgentCommand::Read {
                 agent: root.clone(),
-                target: ReadTarget::ToolOutput { path: path.into() },
+                target: ReadTarget::ToolOutput {
+                    path: path.into(),
+                    at: None
+                },
                 offset: 0,
             }
         )

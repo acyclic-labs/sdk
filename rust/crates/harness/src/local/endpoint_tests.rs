@@ -119,7 +119,10 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     // A rejected command still reports its own admission error after storage fails.
     let invalid = AgentCommand::Read {
         agent: connection.root.clone(),
-        target: acyclic_harness_client::ReadTarget::ToolOutput { path: "..".into() },
+        target: acyclic_harness_client::ReadTarget::ToolOutput {
+            path: "..".into(),
+            at: None,
+        },
         offset: 0,
     };
     let error = message(
