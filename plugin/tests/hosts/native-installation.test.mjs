@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -52,6 +52,27 @@ test("actual Codex installs and removes the exact native plugin in its fixture p
       assert.equal(installed[0].pluginId, "acyclic@acyclic");
       assert.equal(installed[0].installed, true);
       assert.equal(installed[0].enabled, true);
+      step = "reuse the exact native marketplace registration";
+      const marketplaces = await run(codex, ["plugin", "marketplace", "list", "--json"]);
+      assert.equal(marketplaces.code, 0);
+      const registered = JSON.parse(marketplaces.stdout).marketplaces.filter(entry => entry.name === "acyclic");
+      assert.equal(registered.length, 1);
+      assert.equal(registered[0].root, packageRoot);
+      assert.equal(registered[0].marketplaceSource.sourceType, "local");
+      assert.equal(registered[0].marketplaceSource.source, packageRoot);
+      const originalConfig = await readFile(join(env.CODEX_HOME, "config.toml"));
+      assert.equal((await run(executable, ["install", "codex", "--plugin-root", packageRoot])).code, 0);
+      assert.deepEqual(await readFile(join(env.CODEX_HOME, "config.toml")), originalConfig);
+      assert.deepEqual(await list(), installed);
+      step = "refuse a foreign source before changing the admitted registration";
+      const foreign = join(root, "foreign");
+      await mkdir(join(foreign, ".agents/plugins"), { recursive: true });
+      await copyFile(join(packageRoot, ".agents/plugins/marketplace.json"), join(foreign, ".agents/plugins/marketplace.json"));
+      const refused = await run(executable, ["install", "codex", "--plugin-root", foreign]);
+      assert.notEqual(refused.code, 0);
+      assert.match(refused.stderr, /NATIVE_MARKETPLACE_SOURCE_MISMATCH/);
+      assert.deepEqual(await readFile(join(env.CODEX_HOME, "config.toml")), originalConfig);
+      assert.deepEqual(await list(), installed);
       step = "verify native plugin cache contains the admitted executable and shipped manifests";
       const cached = join(env.CODEX_HOME, "plugins/cache/acyclic/acyclic", installed[0].version);
       for (const member of [".mcp.json", "hooks/hooks.json", ".codex-plugin/plugin.json", "bin/" + (process.platform === "win32" ? "acyclic.exe" : "acyclic")])

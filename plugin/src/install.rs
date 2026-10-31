@@ -50,14 +50,15 @@ pub(super) fn run(args: &[String]) -> Result<()> {
                 if !package.join(".agents/plugins/marketplace.json").is_file() {
                     return Err("plugin marketplace manifest is missing".into());
                 }
-                codex(&[
-                    "plugin",
-                    "marketplace",
-                    "add",
-                    package.to_str().ok_or("non-Unicode plugin path")?,
-                ])?;
-                codex(&["plugin", "add", "acyclic@acyclic", "--json"])?;
-                trust_codex_hooks()?;
+                if !codex_marketplace(&package)? {
+                    codex(&[
+                        "plugin",
+                        "marketplace",
+                        "add",
+                        package.to_str().ok_or("non-Unicode plugin path")?,
+                    ])?;
+                }
+                install_codex_plugin(&package)?;
             } else {
                 codex(&["plugin", "remove", "acyclic@acyclic", "--json"])?;
             }
@@ -167,34 +168,139 @@ fn host_directory(variable: &str, default: &str) -> Result<PathBuf> {
 }
 
 fn check_codex() -> Result<()> {
-    let output = host_command("codex")?.arg("--version").output()?;
-    if !output.status.success() {
-        return Err("cannot identify Codex; requires Codex >= 0.164.0".into());
-    }
+    let output = codex_output(&["--version"])?;
     Ok(acyclic_harness::host_hooks::check_codex_version(
         std::str::from_utf8(&output.stdout)?,
     )?)
 }
 
 fn codex(args: &[&str]) -> Result<()> {
-    let status = host_command("codex")?.args(args).status()?;
-    if !status.success() {
-        return Err(format!("Codex plugin manager failed: {status}").into());
-    }
+    use std::io::Write as _;
+    let output = codex_output(args)?;
+    io::stdout().write_all(&output.stdout)?;
+    io::stderr().write_all(&output.stderr)?;
     Ok(())
 }
 
-/// Installing is the user's consent to the package's hooks. Codex runs a
-/// plugin hook only once its hash is trusted, so record that trust for
-/// exactly the acyclic@acyclic hooks Codex lists, through Codex's own
-/// app-server and config writer, as its interactive hook review would.
-fn trust_codex_hooks() -> Result<()> {
+fn codex_output(args: &[&str]) -> Result<std::process::Output> {
+    use acyclic_native_runtime::{CaptureSchedule, ProcessInput, ProcessTree};
+    use std::process::Stdio;
+    let recovery = format!(
+        "recovery argv: {}",
+        serde_json::to_string(
+            &std::iter::once("codex")
+                .chain(args.iter().copied())
+                .collect::<Vec<_>>()
+        )?
+    );
+    let mut command = host_command("codex")?;
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = ProcessTree::spawn(&mut command)
+        .map_err(|error| format!("step=start Codex native command: {error}; {recovery}"))?;
+    let output = child
+        .wait_with_output(
+            CaptureSchedule::unbounded(),
+            usize::MAX,
+            None,
+            || Ok(()),
+            |_| Ok(ProcessInput::default()),
+            None,
+            None,
+            None,
+        )
+        .map_err(|failure| {
+            format!(
+                "step=complete Codex native command: {}; physical_cleanup_completed={}; {recovery}",
+                failure.error, failure.cleanup_completed
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "step=Codex native command: {}; stdout={}; stderr={}; {recovery}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(output)
+}
+
+/// Discovery is read-only. Native marketplace add rewrites configuration even
+/// for an existing source, so it cannot serve as the admission check.
+fn codex_marketplace(package: &Path) -> Result<bool> {
+    let recovery = "recovery=codex plugin marketplace list --json";
+    let output = codex_output(&["plugin", "marketplace", "list", "--json"])?;
+    let listed: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("step=decode Codex marketplaces: {error}; {recovery}"))?;
+    let entries = listed
+        .get("marketplaces")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            format!("step=admit Codex marketplaces: marketplace list absent; {recovery}")
+        })?;
+    let mut selected = None;
+    for entry in entries {
+        let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| {
+            format!("step=admit Codex marketplace: native marketplace name absent; {recovery}")
+        })?;
+        if name == "acyclic" && selected.replace(entry).is_some() {
+            return Err(format!(
+                "step=admit Codex marketplace: NATIVE_MARKETPLACE_AMBIGUOUS; {recovery}"
+            )
+            .into());
+        }
+    }
+    let Some(entry) = selected else {
+        return Ok(false);
+    };
+    let source = entry.get("marketplaceSource");
+    let root = entry.get("root").and_then(Value::as_str);
+    let original = source
+        .and_then(|source| source.get("source"))
+        .and_then(Value::as_str);
+    let local = source
+        .and_then(|source| source.get("sourceType"))
+        .and_then(Value::as_str)
+        == Some("local");
+    let Some((root, original)) = root.zip(original).filter(|_| local) else {
+        return Err(format!(
+            "step=admit Codex marketplace: NATIVE_MARKETPLACE_SOURCE_UNAVAILABLE; {recovery}"
+        )
+        .into());
+    };
+    let original = if original == root {
+        None
+    } else {
+        Some(fs::canonicalize(original).map_err(|error| {
+            format!("step=resolve Codex marketplace source: {error}; {recovery}")
+        })?)
+    };
+    let root = fs::canonicalize(root)
+        .map_err(|error| format!("step=resolve Codex marketplace root: {error}; {recovery}"))?;
+    if root != package || original.as_deref().is_some_and(|source| source != package) {
+        let source = original.as_deref().unwrap_or(&root);
+        return Err(format!("step=admit Codex marketplace: NATIVE_MARKETPLACE_SOURCE_MISMATCH; existing registration retained; recovery argv: {}", serde_json::to_string(&("acyclic", "install", "codex", "--plugin-root", source))?).into());
+    }
+    Ok(true)
+}
+
+/// The native install request names the admitted manifest itself, so a later
+/// registry change cannot redirect installation to a namesake marketplace.
+/// Install and hook trust use one initialized app-server and config writer.
+fn install_codex_plugin(package: &Path) -> Result<()> {
     use acyclic_native_runtime::{
         CaptureInput, CaptureSchedule, ProcessInput, ProcessOutput, ProcessTree,
     };
     use std::process::Stdio;
-    let recovery =
-        "recovery: run codex interactively and trust the acyclic@acyclic hooks in its hook review";
+    let recovery = format!(
+        "recovery argv: {}",
+        serde_json::to_string(&("acyclic", "install", "codex", "--plugin-root", package))?
+    );
     let mut command = host_command("codex")?;
     command
         .arg("app-server")
@@ -237,14 +343,21 @@ fn trust_codex_hooks() -> Result<()> {
                 match expected {
                     1 => {
                         next.extend_from_slice(b"{\"method\":\"initialized\"}\n");
-                        next.extend(codex_frame(2, "hooks/list", json!({})).map_err(io::Error::other)?);
+                        next.extend(codex_frame(2, "plugin/install", json!({"pluginName": "acyclic", "marketplacePath": package.join(".agents/plugins/marketplace.json")})).map_err(io::Error::other)?);
                         expected = 2;
                     }
                     2 => {
+                        if result.get("authPolicy").and_then(Value::as_str).is_none() || result.get("appsNeedingAuth").and_then(Value::as_array).is_none() {
+                            return Err(io::Error::new(io::ErrorKind::InvalidData, "Codex plugin/install acknowledgement lacks its native authentication disposition"));
+                        }
+                        next.extend(codex_frame(3, "hooks/list", json!({})).map_err(io::Error::other)?);
+                        expected = 3;
+                    }
+                    3 => {
                         let trust = codex_hook_trust(result).map_err(io::Error::other)?;
                         if trust.is_empty() {committed = true;} else {
-                            next.extend(codex_frame(3, "config/batchWrite", json!({"edits": [{"keyPath": "hooks.state", "value": trust, "mergeStrategy": "upsert"}]})).map_err(io::Error::other)?);
-                            expected = 3;
+                            next.extend(codex_frame(4, "config/batchWrite", json!({"edits": [{"keyPath": "hooks.state", "value": trust, "mergeStrategy": "upsert"}]})).map_err(io::Error::other)?);
+                            expected = 4;
                         }
                     }
                     _ => committed = true,
