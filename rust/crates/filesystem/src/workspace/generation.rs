@@ -119,6 +119,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     /// [`crate::LazyWorkspace`] also retains source observations, tombstones and
     /// identity shadows in its [`crate::LazySnapshotRef`]. A query over that
     /// complete cut must resolve those components alongside this frontier.
+    /// Without exact source alias coverage, that query must retain
+    /// [`crate::LazyWorkspaceError::OriginalSnapshotUnavailable`], rather than
+    /// finish a complete page or advance its continuation using authored rows
+    /// alone. A source link count or equal authored generations cannot provide
+    /// that coverage.
     pub async fn changed_paths_to<W: crate::facade::FsWork>(
         &self,
         to: &Generation<A, O>,
