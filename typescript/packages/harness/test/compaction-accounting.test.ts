@@ -49,7 +49,6 @@ test("generated compaction policy validates actual capacity and finite output in
   if (policy.kind !== "threshold") throw new Error("expected stock threshold policy");
   expect(policy.config.response_reserve_tokens).toBe(16_384);
   expect(policy.config.recent_tokens).toBe(20_000);
-  expect(policy.config.retention).toEqual({ roles: ["system"], native_media: true });
   const capacity = { context_tokens: 65_536, output_tokens: 4_096 };
   expect(contracts.validateThresholdCompaction(policy.config, capacity, undefined)).toBe(4_096);
   const replacement = { ...policy.config, response_reserve_tokens: 1_024, recent_tokens: 2_048 };

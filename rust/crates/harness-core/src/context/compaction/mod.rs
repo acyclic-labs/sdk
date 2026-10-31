@@ -1,6 +1,6 @@
 //! Primitive threshold compaction using provider-owned token accounting.
 
-use super::{CompactionRetention, Context, ContextSummary, ModelContextCapacity, ModelTokenCount};
+use super::{Context, ContextSummary, ModelContextCapacity, ModelTokenCount};
 use crate::{Error, Result, model::ModelContentPart};
 use serde::{Deserialize, Serialize};
 
@@ -13,8 +13,6 @@ pub struct ThresholdCompaction {
     pub response_reserve_tokens: u32,
     /// Minimum recent suffix token budget retained alongside mandatory content.
     pub recent_tokens: u32,
-    /// Consumer-selected roles and media that remain verbatim.
-    pub retention: CompactionRetention,
 }
 
 impl Default for ThresholdCompaction {
@@ -22,7 +20,6 @@ impl Default for ThresholdCompaction {
         Self {
             response_reserve_tokens: 16_384,
             recent_tokens: 20_000,
-            retention: CompactionRetention::default(),
         }
     }
 }
@@ -56,7 +53,6 @@ impl ThresholdCompaction {
         output_tokens: Option<u32>,
     ) -> Result<u32> {
         capacity.validate()?;
-        self.retention.validate(None)?;
         let output = capacity.output_reservation(output_tokens)?;
         let required =
             u64::from(self.response_reserve_tokens.max(output)) + u64::from(self.recent_tokens);

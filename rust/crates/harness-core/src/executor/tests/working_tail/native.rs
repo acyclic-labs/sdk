@@ -64,13 +64,8 @@ async fn private_cut() -> Result<CutFixture> {
             )?
             .await?,
     };
-    let (retained, proof) = crate::context::DurableContextProvider::compact(
-        &source,
-        3,
-        Some(summary),
-        &crate::context::CompactionRetention::default(),
-        None,
-    )?;
+    let (retained, proof) =
+        crate::context::DurableContextProvider::compact(&source, 3, Some(summary), None)?;
     let proof = stage_json(
         journal.as_ref(),
         input.operation_id,

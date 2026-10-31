@@ -19,7 +19,6 @@ export {
   type ModelContextCapacity,
   type ModelTokenCount,
   type CompactionPolicy,
-  type CompactionRetention,
   type ThresholdCompaction,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { ensureModelWasm as initializeModelProviders } from "./wasm-runtime.js";

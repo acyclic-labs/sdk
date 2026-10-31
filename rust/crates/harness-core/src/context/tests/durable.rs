@@ -211,7 +211,6 @@ async fn context_pages_reject_corrupt_identity_and_unproven_compaction() -> Resu
     missing_source["compaction"] = serde_json::to_value(CompactionReference {
         source_digest: crate::executor::json::canonical_json_digest(&context, u64::MAX, &mut None)?,
         maximum_messages: 2,
-        retention: CompactionRetention::default(),
         summary: None,
     })
     .map_err(|error| crate::Error::Invalid(error.to_string()))?;

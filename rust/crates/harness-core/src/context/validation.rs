@@ -41,7 +41,6 @@ pub(crate) fn validate_compaction(
             source,
             reference.maximum_messages as usize,
             summary,
-            &reference.retention,
             io,
         )?;
         #[cfg(feature = "filesystem")]

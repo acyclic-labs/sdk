@@ -282,7 +282,7 @@ proptest! {
                 output,
             };
             let (retained, proof) = crate::context::DurableContextProvider::compact(
-                &source, 2, Some(summary), &Default::default(), None)?;
+                &source, 2, Some(summary), None)?;
             let source_file = stage_json(&journal, input.operation_id, "source", &source, None).await?;
             let proof_file = stage_json(&journal, input.operation_id, "proof", &proof, None).await?;
             let before = journal.4.load(Ordering::SeqCst);

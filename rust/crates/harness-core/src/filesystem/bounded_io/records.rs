@@ -135,7 +135,6 @@ impl PreparationRecord for crate::context::CompactionReference {
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         crate::core::owned_sum([
             size_of::<Self>() as u64,
-            crate::core::owned_buffer::<crate::model::ModelRole>(self.retention.roles.capacity())?,
             self.summary
                 .as_ref()
                 .map_or(Ok(0), |summary| summary.output.logical_owned_bytes())?,

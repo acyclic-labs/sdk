@@ -2,8 +2,8 @@
 #![cfg(feature = "filesystem-local")]
 
 use acyclic_harness::context::{
-    CompactionPolicy, CompactionReference, CompactionRetention, Context, ContextPipeline,
-    ContextPlacement, DurableContextProvider, ModelContextCapacity, ModelTokenCount, SourceStage,
+    CompactionPolicy, CompactionReference, Context, ContextPipeline, ContextPlacement,
+    DurableContextProvider, ModelContextCapacity, ModelTokenCount, SourceStage,
 };
 use acyclic_harness::conversation::{
     ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeRef,
@@ -236,13 +236,7 @@ async fn fixture() -> Result<Fixture> {
         ModelContent::Text("Summarize the pinned source".into()),
     )
     .await?;
-    let (compacted, reference) = DurableContextProvider::compact(
-        &source,
-        2,
-        Some(summary),
-        &CompactionRetention::default(),
-        None,
-    )?;
+    let (compacted, reference) = DurableContextProvider::compact(&source, 2, Some(summary), None)?;
     Ok(Fixture {
         stream,
         storage,

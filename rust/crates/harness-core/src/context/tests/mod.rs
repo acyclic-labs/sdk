@@ -282,13 +282,7 @@ fn compact(
     maximum: usize,
     through: usize,
 ) -> Result<(Context, CompactionReference)> {
-    DurableContextProvider::compact(
-        source,
-        maximum,
-        Some(summary(source, through)?),
-        &CompactionRetention::default(),
-        None,
-    )
+    DurableContextProvider::compact(source, maximum, Some(summary(source, through)?), None)
 }
 fn durable(
     stream: Arc<MemoryStream>,

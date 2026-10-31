@@ -226,7 +226,6 @@ impl StockExecution<'_> {
                 ));
             };
             if self.model_capacity()? != Some(final_accounting.capacity)
-                || proof.retention != policy.retention
                 || proof.summary.as_ref().is_none_or(|summary| {
                     summary.operation_id != input.operation_id || summary.step != step
                 })

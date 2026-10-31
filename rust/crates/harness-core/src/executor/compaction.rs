@@ -53,7 +53,6 @@ impl StockExecution<'_> {
             &context,
             maximum,
             Some(summary),
-            &policy.retention,
             self.io,
         )?;
         let compaction_key = with_history_io(self.io, |work| {
@@ -204,7 +203,7 @@ impl StockExecution<'_> {
             self.io,
         )?;
         let mandatory = with_history_io(self.io, |work| {
-            crate::context::mandatory_messages(context, through, &policy.retention, work)
+            crate::context::mandatory_messages(context, through, work)
         })?;
         let mandatory = crate::model::PreparedModelRequest::prepare(
             self.request_from_messages(mandatory)?,

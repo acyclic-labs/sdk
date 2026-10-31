@@ -83,7 +83,7 @@ impl ThresholdCompaction {
         covered: usize,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<usize> {
-        let (flags, pending, groups) = mandatory_flags(context, covered, &self.retention, quota)?;
+        let (flags, pending, groups) = mandatory_flags(context, covered, quota)?;
         let count = flags.iter().filter(|selected| **selected).count();
         retire_vector(pending, quota)?;
         retire_vector(flags, quota)?;
@@ -143,7 +143,6 @@ impl ThresholdCompaction {
 pub(in crate::context) fn mandatory_flags<'a>(
     context: &'a Context,
     covered: usize,
-    retention: &super::CompactionRetention,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<(Vec<bool>, PendingCalls<'a>, Vec<Group>)> {
     let (groups, mut pending) = exchange_groups(context, quota)?;
@@ -155,8 +154,8 @@ pub(in crate::context) fn mandatory_flags<'a>(
                 || position + 1 == context.messages.len()
                 || position >= covered
                 || message.content.contains_project_instructions()
-                || retention.roles.contains(&message.role)
-                || (retention.native_media && message.content.contains_native_media()),
+                || message.role == crate::model::ModelRole::System
+                || message.content.contains_native_media(),
         );
     }
     // Components are flattened. First select every selected member's root,
@@ -178,13 +177,12 @@ pub(in crate::context) fn mandatory_flags<'a>(
 pub(crate) fn mandatory_messages(
     context: &Context,
     covered: usize,
-    retention: &super::CompactionRetention,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Vec<crate::model::ModelMessage>> {
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut messages = Vec::new();
     let made = (|| {
-        let (selected, pending, groups) = mandatory_flags(context, covered, retention, &mut quota)?;
+        let (selected, pending, groups) = mandatory_flags(context, covered, &mut quota)?;
         messages = quota_vector(selected.iter().filter(|keep| **keep).count(), &mut quota)?;
         for (message, keep) in context.messages.iter().zip(&selected) {
             compaction_step(&mut quota)?;
@@ -212,7 +210,6 @@ pub(crate) fn compact_context(
     context: &Context,
     maximum: usize,
     summary: &super::ContextSummary,
-    retention: &super::CompactionRetention,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Context, u64)> {
     use crate::model::{ModelContent, ModelMessage, ModelRole};
@@ -225,12 +222,8 @@ pub(crate) fn compact_context(
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut result = Context::default();
     let made = (|| {
-        let (mut selected, mut pending, groups) = mandatory_flags(
-            context,
-            summary.source_messages as usize,
-            retention,
-            &mut quota,
-        )?;
+        let (mut selected, mut pending, groups) =
+            mandatory_flags(context, summary.source_messages as usize, &mut quota)?;
         let mut count = selected.iter().filter(|value| **value).count();
         if count >= maximum {
             return Err(compaction_error(
