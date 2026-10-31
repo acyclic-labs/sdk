@@ -393,11 +393,12 @@ impl ToolExecutor for FileTool {
         }) {
             return Err(unauthorized());
         }
-        let (file, _custody) = self.preflight(scope, invocation, work)?;
-        let path = file
-            .as_ref()
-            .map(FileRef::path)
-            .or_else(|| invocation.arguments.get("path").and_then(Value::as_str))
+        let (file, _custody) = self.preflight_with_context(scope, invocation, work, context)?;
+        let path = invocation
+            .arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .or_else(|| file.as_ref().map(FileRef::path))
             .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
         if file.is_none() && matches!(self, Self::Read | Self::Edit | Self::Insert) {
@@ -431,12 +432,7 @@ impl ToolExecutor for FileTool {
         if self.is_read() {
             Ok(())
         } else {
-            context.task().authorize_content_publication(
-                path,
-                file.as_ref(),
-                context.effective_scope(),
-                None,
-            )
+            context.authorize_tool_path_publication(path, file.as_ref(), None)
         }
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -516,7 +512,12 @@ impl ToolExecutor for FileTool {
             let source = if matches!(self, Self::Write) {
                 (None, None)
             } else {
-                self.preflight(context.effective_scope(), invocation, Some(work))?
+                self.preflight_with_context(
+                    context.effective_scope(),
+                    invocation,
+                    Some(work),
+                    Some(context),
+                )?
             };
             let receipt = context
                 .observe_tool_source_file_once(
@@ -609,7 +610,12 @@ impl ToolExecutor for FileTool {
                     &invocation,
                     None,
                 )?;
-                let source = self.preflight(context.effective_scope(), &invocation, None)?;
+                let source = self.preflight_with_context(
+                    context.effective_scope(),
+                    &invocation,
+                    None,
+                    Some(context),
+                )?;
                 let receipt = context
                     .observe_tool_source_file_once(invocation.operation_id, source.0.as_ref(), None)
                     .await?;
