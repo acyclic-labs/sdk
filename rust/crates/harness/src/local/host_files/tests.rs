@@ -128,13 +128,83 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         outside
     };
     let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
-    let connected = Registry::bridge(&registry, &cwd, |directory, endpoint| {
-        assert!(
-            registry.try_lock().is_ok(),
-            "native connection setup must not hold the registry for unrelated owners"
-        );
-        Bridge::open(directory, endpoint)
-    })?;
+    let other_checkout = tempfile::tempdir().map_err(storage)?;
+    watcher
+        .watch(other_checkout.path(), RecursiveMode::Recursive)
+        .map_err(storage)?;
+    let other_local = Arc::new(
+        LocalHarness::open(
+            LocalHarnessConfig::native_host(other_checkout.path())
+                .state_directory(state.path().join("other-owner")),
+        )
+        .await?,
+    );
+    let mut other_owner = tokio::spawn(Box::pin(serve(Arc::clone(&other_local))));
+    let other_descriptor = other_checkout.path().join(DIRECTORY).join("owner.json");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !other_descriptor.is_file() {
+            projection_event(&mut changes, &mut other_owner).await?;
+        }
+        Ok::<_, Error>(())
+    })
+    .await
+    .map_err(storage)??;
+    watcher.unwatch(other_checkout.path()).map_err(storage)?;
+    let other_cwd = std::fs::canonicalize(other_checkout.path()).map_err(storage)?;
+    let opening_registry = Arc::clone(&registry);
+    let opening_cwd = cwd.clone();
+    let connected = tokio::task::spawn_blocking(move || {
+        std::thread::scope(|scope| -> Result<_> {
+            let registry = &opening_registry;
+            let cwd = &opening_cwd;
+            // Dropping the sole release producer also ends the paused open,
+            // so a failed assertion cannot leave the scoped thread waiting.
+            let (release, resume) = mpsc::sync_channel(1);
+            let (started, opening) = mpsc::sync_channel(1);
+            let first = scope.spawn(move || {
+                Registry::bridge(registry, cwd, |directory, endpoint| {
+                    started.send(()).map_err(storage)?;
+                    resume.recv().map_err(storage)?;
+                    Bridge::open(directory, endpoint)
+                })
+            });
+            opening.recv().map_err(storage)?;
+            assert!(
+                registry.try_lock().is_ok(),
+                "native connection setup must not hold the registry for unrelated owners"
+            );
+            let connection = lock(registry).bridges[&cwd.join(DIRECTORY)].clone();
+            assert!(
+                connection.try_lock().is_err(),
+                "the connecting owner must retain its single initialization slot"
+            );
+            let (started, overlapping) = mpsc::sync_channel(1);
+            let second = scope.spawn(move || {
+                started.send(()).map_err(storage)?;
+                Registry::bridge(registry, cwd, |_, _| {
+                    panic!("an overlapping connection must reuse the first native open")
+                })
+            });
+            overlapping.recv().map_err(storage)?;
+            let other = Registry::bridge(registry, &other_cwd, Bridge::open)?;
+            assert_eq!(other.workspace, other_cwd);
+            release.send(()).map_err(storage)?;
+            let first = first.join().expect("the first native open must settle")?;
+            let second = second
+                .join()
+                .expect("the overlapping connection must settle")?;
+            assert!(Arc::ptr_eq(&first, &second));
+            Ok(first)
+        })
+    })
+    .await
+    .map_err(storage)??;
+    other_owner.abort();
+    assert!(other_owner.await.unwrap_err().is_cancelled());
+    Arc::try_unwrap(other_local)
+        .map_err(|_| Error::Conflict("other workspace owner retained after shutdown".into()))?
+        .disconnect()
+        .await?;
     assert!(Arc::ptr_eq(
         &Registry::bridge(&registry, &cwd, |_, _| {
             panic!("a warm connection must not repeat native setup")
