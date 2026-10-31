@@ -33,7 +33,7 @@ pub(super) struct Chat<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<Call<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_content: Option<String>,
+    pub reasoning_content: Option<&'a RawValue>,
 }
 
 pub(crate) struct Body<'a> {
@@ -149,7 +149,7 @@ pub(super) fn replay_turns_with(
         };
         super::sequence::push(adapter, &mut projected, next).unwrap();
     }
-    super::sequence::finish_with(adapter, &mut projected, rules);
+    super::sequence::finish_with(adapter, &mut projected, rules).ok()?;
     match crate::json(&serde_json::to_vec(&projected).unwrap()).unwrap() {
         Value::Array(output) => Some(output),
         _ => unreachable!("a message list encodes as an array"),

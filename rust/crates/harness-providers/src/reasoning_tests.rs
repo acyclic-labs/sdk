@@ -20,47 +20,123 @@ fn origin(provider: &str, scope: &str) -> ReasoningOrigin {
     }
 }
 
-#[test]
-fn every_origin_target_and_readable_opaque_pair_has_an_explicit_projection() {
-    for source in FAMILIES {
-        for target in FAMILIES {
-            for readable in [false, true] {
-                let block = ReasoningBlock {
-                    kind: ReasoningKind::Encrypted,
-                    text: readable.then(|| "verified readable text".into()),
-                    origin: origin(source, "org"),
-                    continuity: b"exact native payload".to_vec(),
-                    outcome: ReasoningOutcome::PreservedOpaque,
-                };
-                let projection = project_reasoning(&block, &origin(target, "org"));
-                if source == target {
-                    let ProjectedReasoning::Native { continuity, .. } = projection else {
-                        panic!("native pair")
-                    };
-                    assert!(std::ptr::eq(continuity.as_ptr(), block.continuity.as_ptr()));
-                    assert_eq!(continuity, block.continuity);
-                } else if readable {
-                    let ProjectedReasoning::Readable {
-                        text,
-                        origin,
-                        outcome,
-                    } = projection
-                    else {
-                        panic!("foreign readable pair")
-                    };
-                    assert_eq!(text, "verified readable text");
-                    assert!(std::ptr::eq(origin, &block.origin));
-                    assert_eq!(outcome, ReasoningOutcome::PreservedReadable);
-                } else {
-                    assert_eq!(
-                        projection,
-                        ProjectedReasoning::Dropped {
-                            outcome: ReasoningOutcome::UnsupportedShape
-                        }
-                    );
-                }
+fn check_chat_native(text: &str) {
+    use acyclic_harness_core::model::{ModelContent, ModelContentPart, ModelMessage, ModelRole};
+    let escaped = serde_json::to_string(text).unwrap();
+    let token = format!(
+        "\"\\u0061{}\"",
+        escaped
+            .strip_prefix('"')
+            .unwrap()
+            .strip_suffix('"')
+            .unwrap()
+    );
+    // Generated parser/renderer input, not a captured response fixture.
+    let native = format!("{{ \"reasoning_content\" : {token} }}");
+    let (provider, _) = crate::tests::provider(crate::Adapter::Chat, 200);
+    let (prepared, _) = crate::tests::request(&provider).unwrap();
+    let target = provider.reasoning_origin(provider.key.as_deref(), None);
+    let block = ReasoningBlock {
+        kind: ReasoningKind::Readable,
+        text: Some("display-must-never-be-replayed".into()),
+        origin: target.clone(),
+        continuity: native.into_bytes(),
+        outcome: ReasoningOutcome::PreservedReadable,
+    };
+    for split in [false, true] {
+        let mut request = prepared.request().clone();
+        for _ in 0..2 {
+            let parts = vec![
+                ModelContentPart::Reasoning {
+                    block: block.clone(),
+                },
+                ModelContentPart::Text {
+                    text: "answer".into(),
+                },
+            ];
+            if split {
+                request
+                    .messages
+                    .extend(parts.into_iter().map(|part| ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Part(part),
+                    }));
+            } else {
+                request.messages.push(ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Parts(parts),
+                });
             }
         }
+        let names = crate::tool_names::Names::new(&request);
+        let body = crate::projection::body_named(
+            &provider,
+            &request,
+            &names,
+            &target,
+            &mut crate::files::FileText::default(),
+        )
+        .unwrap();
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let wire = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            wire.contains(&token),
+            "native JSON string token was re-encoded"
+        );
+        assert!(!wire.contains("display-must-never-be-replayed"));
+        assert_eq!(
+            wire.matches(&token).count(),
+            2,
+            "native blocks were merged or lost"
+        );
+        let body = serde_json::from_slice(&bytes).unwrap();
+        assert!(crate::validate_input(crate::Adapter::Chat, &body).is_empty());
+    }
+}
+
+#[test]
+fn malformed_owned_native_continuity_refuses_before_request_encoding() {
+    use acyclic_harness_core::model::{ModelContent, ModelContentPart, ModelMessage, ModelRole};
+    for adapter in [
+        crate::Adapter::Anthropic,
+        crate::Adapter::Responses,
+        crate::Adapter::Chat,
+    ] {
+        let (provider, _) = crate::tests::provider(adapter, 200);
+        let (prepared, _) = crate::tests::request(&provider).unwrap();
+        let target = provider.reasoning_origin(provider.key.as_deref(), None);
+        let mut request = prepared.request().clone();
+        request.messages.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(ModelContentPart::Reasoning {
+                block: ReasoningBlock {
+                    kind: ReasoningKind::Readable,
+                    text: Some("must-not-become-fallback-text".into()),
+                    origin: target.clone(),
+                    continuity: b"{}".to_vec(),
+                    outcome: ReasoningOutcome::PreservedReadable,
+                },
+            }),
+        });
+        let names = crate::tool_names::Names::new(&request);
+        let encode = |target: &ReasoningOrigin| {
+            crate::projection::body_named(
+                &provider,
+                &request,
+                &names,
+                target,
+                &mut crate::files::FileText::default(),
+            )
+        };
+        assert!(
+            encode(&target).is_err(),
+            "owned malformed native data was lost"
+        );
+        let mut foreign = target;
+        foreign.credential_scope = None;
+        let body = serde_json::to_value(encode(&foreign).unwrap()).unwrap();
+        assert!(crate::validate_input(adapter, &body).is_empty());
+        assert!(!body.to_string().contains("must-not-become-fallback-text"));
     }
 }
 
@@ -71,6 +147,7 @@ proptest! {
         text in prop::option::of(".{0,96}"), bytes in prop::collection::vec(any::<u8>(), 0..128),
         kind in 0usize..6, known_scope in any::<bool>(),
     ) {
+        check_chat_native(text.as_deref().unwrap_or_default());
         for source in FAMILIES {
             let block = ReasoningBlock {kind: KINDS[kind], text: text.clone(), origin: origin(source, if known_scope {"scope"} else {""}),
                 continuity: bytes.clone(), outcome: ReasoningOutcome::PreservedOpaque};
@@ -86,9 +163,6 @@ proptest! {
                 prop_assert_eq!(matches!(projected, ProjectedReasoning::Native {..}), native);
                 if let ProjectedReasoning::Native {continuity, ..} = projected {
                     prop_assert_eq!(continuity, bytes.as_slice());
-                } else if let Some(text) = text.as_deref().filter(|text| !text.trim().is_empty()) {
-                    let ProjectedReasoning::Readable {text: projected_text, ..} = projected else {panic!("readable text must survive")};
-                    prop_assert_eq!(projected_text, text);
                 } else {
                     prop_assert!(matches!(projected, ProjectedReasoning::Dropped {..}), "opaque foreign block must be dropped");
                 }
