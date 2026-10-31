@@ -310,6 +310,7 @@ impl HttpStream {
     }
 }
 
+#[acyclic_contract_derive::implementation_methods(RPC_METHODS)]
 #[async_trait]
 impl StreamProvider for HttpStream {
     fn context(&self) -> crate::ProviderContext<'_> {

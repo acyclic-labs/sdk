@@ -5,70 +5,93 @@ import { createSourceInspector } from "./public-rpc-source.mjs";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v1/stream_pb.js";
 import { BlobsService } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
-
 import { MachinesService } from "../typescript/packages/machines/generated/proto/machines/v1/machines_pb.js";
 const root = new URL("..", import.meta.url);
 const read = path => { try { return readFileSync(new URL(path, root), "utf8"); } catch (error) { if (error.code === "ENOENT") return ""; throw error; } };
-function missing(label, service, rpc, path, replace, flag) {
+function rows(service, readSource = read) {
+  const inspect = createSourceInspector(root, readSource);
+  try { return service.methods.map(method => inspect(service, method)); }
+  finally { inspect.close(); }
+}
+function removed(label, service, rpc, path, replace, flag) {
   test(label, () => {
-    const method = service.methods.find(method => method.name === rpc);
-    assert.ok(method);
-    assert.equal(createSourceInspector(root)(service, method)[flag], true);
+    const index = service.methods.findIndex(method => method.name === rpc);
+    assert.ok(index >= 0);
+    const before = rows(service);
+    assert.equal(before[index][flag], true);
     const original = read(path);
     const changed = replace(original);
-    assert.notEqual(changed, original, "negative fixture must remove actual exposure");
-    const inspect = createSourceInspector(root, candidate => candidate === path ? changed : read(candidate));
-    assert.equal(inspect(service, method)[flag], false);
+    assert.notEqual(changed, original, "negative control must remove an actual implementation");
+    const after = rows(service, candidate => candidate === path ? changed : read(candidate));
+    const expected = structuredClone(before);
+    expected[index][flag] = false;
+    assert.deepEqual(after, expected, "only the removed operation's capability may change");
   });
 }
-missing("missing Rust-owned Actors gRPC operation", ActorsService, ActorsService.methods[0].name, "rust/crates/actors/src/client.rs", s => s.replace(`("${ActorsService.methods[0].name}",`, '("Removed",').replace(`operation!(\n    ${ActorsService.methods[0].localName.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`)},`, "operation!(\n    removed,"), "rustGrpc");
-missing("missing Actors WASM bridge", ActorsService, "DeployNamespace", "rust/crates/actors-wasm/src/lib.rs", s => s.replace("pub struct ActorsClient", "pub struct Removed"), "typescriptGrpcWeb");
-missing("server implementation cannot substitute for Rust client", StreamService, "Read", "rust/crates/stream/src/grpc/client.rs", s => s.replace("async fn read(", "async fn removed_read("), "rustGrpc");
-missing("missing inherited Objects HTTP operation", BlobsService, "PutBlob", "typescript/packages/objects/src/v1.ts", s => s.replace("async put(", "async removed_put("), "typescriptHttp");
+removed("removing an inherited Objects implementation changes exactly its HTTP row", BlobsService, "PutBlob", "typescript/packages/objects/src/v1.ts",
+  source => source.replace("async put(", "async removed_put("), "typescriptHttp");
+removed("compiler-emitted Rust inventory changes exactly the removed provider row", StreamService, "Read", "compatibility/rpc-implementations/stream.json",
+  source => { const inventory = JSON.parse(source); inventory.grpc = inventory.grpc.filter(method => method !== "read"); return JSON.stringify(inventory); }, "rustGrpc");
+removed("compiler-emitted WASM bridge inventory changes exactly its removed RPC row", ActorsService, "InvokeActor", "compatibility/rpc-implementations/actors.json",
+  source => { const inventory = JSON.parse(source); inventory.wasm = inventory.wasm.filter(method => method !== "invoke_actor"); return JSON.stringify(inventory); }, "typescriptGrpcWeb");
 
-test("missing generated Actors operation removes both TypeScript capability flags", () => {
-  const method = ActorsService.methods[0];
-  const path = "typescript/packages/actors/src/generated/actors-service.ts";
-  const original = read(path);
-  const changed = original.replace(`"${method.input.typeName}":`, '"removedOperation":');
-  assert.notEqual(changed, original);
-  const inspect = createSourceInspector(root, candidate => candidate === path ? changed : read(candidate));
-  const result = inspect(ActorsService, method);
-  assert.equal(result.typescriptGrpcNodeBun, false);
-  assert.equal(result.typescriptGrpcWeb, false);
-});
-
-test("missing Actors native bridge removes the Node/Bun capability", () => {
-  const method = ActorsService.methods[0];
+test("Actors declarations cannot substitute for installing the actual methods", () => {
   const path = "typescript/packages/actors/src/client.ts";
-  const original = read(path);
-  const changed = original.replaceAll("nativeBinding()", "removedNativeBinding()");
-  assert.notEqual(changed, original);
-  const inspect = createSourceInspector(root, candidate => candidate === path ? changed : read(candidate));
-  assert.equal(inspect(ActorsService, method).typescriptGrpcNodeBun, false);
+  const source = read(path);
+  const changed = source.replace("installActorsMethods(this,", "removedActorsMethods(this,");
+  assert.notEqual(changed, source);
+  const before = rows(ActorsService);
+  const after = rows(ActorsService, candidate => candidate === path ? changed : read(candidate));
+  assert.ok(before.every(row => row.typescriptGrpcNodeBun && row.typescriptGrpcWeb));
+  assert.deepEqual(after, before.map(row => ({ ...row, typescriptGrpcNodeBun: false, typescriptGrpcWeb: false })));
 });
 
-test("missing Actors client export removes the package capability", () => {
-  const method = ActorsService.methods[0];
+for (const [name, flag] of [["nativeBinding", "typescriptGrpcNodeBun"], ["wasmBinding", "typescriptGrpcWeb"]]) {
+  test(`removing the typed Actors ${name} declaration removes its bridge exposure`, () => {
+    const path = "typescript/packages/actors/src/client.ts";
+    const original = read(path);
+    const changed = original.replace(`function ${name}(`, `function removed_${name}(`);
+    assert.notEqual(changed, original);
+    assert.ok(rows(ActorsService).every(row => row[flag]));
+    assert.ok(rows(ActorsService, candidate => candidate === path ? changed : read(candidate)).every(row => !row[flag]));
+  });
+}
+
+test("removing the public Actors client export removes its package exposure", () => {
   const path = "typescript/packages/actors/package.json";
-  const original = read(path);
-  const manifest = JSON.parse(original);
+  const manifest = JSON.parse(read(path));
   delete manifest.exports["./client"];
-  const changed = JSON.stringify(manifest);
+  assert.ok(rows(ActorsService).every(row => row.typescriptPackageExported));
+  assert.ok(rows(ActorsService, candidate => candidate === path ? JSON.stringify(manifest) : read(candidate)).every(row => !row.typescriptPackageExported));
+});
+
+test("an unresolved Stream factory cannot substitute for a typed generated client", () => {
+  const path = "typescript/packages/stream/src/grpc.ts";
+  const original = read(path);
+  const changed = original.replace("const { client, sessions } = streamGrpc(options)", "const { client, sessions } = removed(options)");
   assert.notEqual(changed, original);
-  const inspect = createSourceInspector(root, candidate => candidate === path ? changed : read(candidate));
-  assert.equal(inspect(ActorsService, method).typescriptPackageExported, false);
+  assert.ok(rows(StreamService).every(row => row.typescriptGrpcNodeBun));
+  const index = StreamService.methods.findIndex(method => method.name === "Read");
+  assert.equal(rows(StreamService, candidate => candidate === path ? changed : read(candidate))[index].typescriptGrpcNodeBun, false);
 });
 
 for (const service of [BlobsService, StreamService]) {
   test(`${service.typeName} rejects the obsolete namespace`, () => {
-    const obsolete = { ...service, typeName: service.typeName.replace(".v1.", ".v2.") };
-    assert.throws(() => createSourceInspector(root)(obsolete, service.methods[0]), /unsupported current contract/);
+    const inspect = createSourceInspector(root);
+    try { assert.throws(() => inspect({ ...service, typeName: service.typeName.replace(".v1.", ".v2.") }, service.methods[0]), /unsupported current contract/); }
+    finally { inspect.close(); }
   });
 }
-missing("missing Stream factory delegation removes Node/Bun exposure", StreamService, "Read", "typescript/packages/stream/src/grpc.ts", s => s.replace("const { client, sessions } = streamGrpc(options)", "const { client, sessions } = removed(options)"), "typescriptGrpcNodeBun");
-missing("missing Stream generated client removes Node/Bun exposure", StreamService, "Read", "typescript/packages/stream/src/grpc.ts", s => s.replace("createClient(StreamService, home)", "removed(StreamService, home)"), "typescriptGrpcNodeBun");
-missing("missing Stream transport removes Node/Bun exposure", StreamService, "Read", "typescript/packages/stream/src/grpc.ts", s => s.replace("return createGrpcTransport(", "return removedTransport("), "typescriptGrpcNodeBun");
 
-missing("missing Machines descriptor transport removes package exposure", MachinesService, "WatchOperation", "typescript/packages/machines/src/transport.ts", s => s.replace("createClient(wire.MachinesService, transport)", "removed(wire.MachinesService, transport)"), "typescriptPackageExported");
-missing("missing Machines transport export removes package exposure", MachinesService, "WatchOperation", "typescript/packages/machines/package.json", s => { const manifest = JSON.parse(s); delete manifest.exports["./transport"]; return JSON.stringify(manifest); }, "typescriptPackageExported");
+test("Machines package export remains tied to the typed generated transport", () => {
+  const method = MachinesService.methods.find(method => method.name === "WatchOperation");
+  const path = "typescript/packages/machines/src/transport.ts";
+  const source = read(path).replace("createClient(wire.MachinesService, transport)", "removed(wire.MachinesService, transport)");
+  assert.notEqual(source, read(path));
+  const inspect = createSourceInspector(root);
+  const missing = createSourceInspector(root, candidate => candidate === path ? source : read(candidate));
+  try {
+    assert.equal(inspect(MachinesService, method).typescriptPackageExported, true);
+    assert.equal(missing(MachinesService, method).typescriptPackageExported, false);
+  } finally { inspect.close(); missing.close(); }
+});

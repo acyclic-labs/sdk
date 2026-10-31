@@ -51,6 +51,7 @@
     "scripts/ensure-bun.sh",
     "scripts/filesystem-napi-types.mjs",
     "scripts/generate-actors-routes.mjs",
+    "scripts/generate-actors-rpc-inventory.mjs",
     "scripts/generate-actors.mjs",
     "scripts/generate-contracts.mjs",
     "scripts/generate-proto.mjs",

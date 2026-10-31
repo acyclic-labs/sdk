@@ -9,6 +9,9 @@ import { buildContractTargets, runContractTarget } from "./contract-targets.mjs"
 // repository-relative files.
 const modules = [
   "generate-actors-routes.mjs",
+  "generate-actors-rpc-inventory.mjs",
+  "generate-stream-rpc-inventory.mjs",
+  "generate-objects-rpc-inventory.mjs",
   "generate-inference-routes.mjs",
   "filesystem-napi-types.mjs",
   "stream-napi-types.mjs",

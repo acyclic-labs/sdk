@@ -5,9 +5,61 @@ mod authorization;
 mod enumeration;
 mod explicit_provider;
 mod heap_layout;
+mod implementation_methods;
 mod message;
 mod options;
 mod registration;
+
+/// Derive a method inventory from the same implementation rustc checks.
+/// The associated constant has no independently maintained method list.
+/// Additional arguments name attributes required on the inventoried impl.
+/// A bridge inventory therefore cannot silently outlive its export annotation.
+/// ```compile_fail
+/// use acyclic_contract_derive::implementation_methods;
+/// struct MissingBridge;
+/// #[implementation_methods(METHODS, wasm_bindgen)]
+/// impl MissingBridge { fn read() {} }
+/// ```
+///
+/// Removing an implementation method removes exactly that inventory entry.
+/// ```
+/// use acyclic_contract_derive::implementation_methods;
+/// struct Original;
+/// #[implementation_methods(METHODS)]
+/// impl Original { fn read() {} fn write() {} }
+/// struct RemovedRead;
+/// #[implementation_methods(METHODS)]
+/// impl RemovedRead { fn write() {} }
+/// assert_eq!(Original::METHODS, &["read", "write"]);
+/// assert_eq!(RemovedRead::METHODS, &["write"]);
+/// Original::read(); Original::write(); RemovedRead::write();
+/// ```
+#[proc_macro_attribute]
+pub fn implementation_methods(arguments: TokenStream, input: TokenStream) -> TokenStream {
+    let arguments = parse_macro_input!(arguments with syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated);
+    let implementation = parse_macro_input!(input as syn::ItemImpl);
+    let mut arguments = arguments.into_iter();
+    let Some(name) = arguments.next() else {
+        return syn::Error::new_spanned(&implementation, "expected inventory constant name")
+            .into_compile_error()
+            .into();
+    };
+    for required in arguments {
+        if !implementation
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident(&required))
+        {
+            return syn::Error::new_spanned(
+                &implementation,
+                format!("inventory requires #[{required}] on this implementation"),
+            )
+            .into_compile_error()
+            .into();
+        }
+    }
+    implementation_methods::expand(name, implementation).into()
+}
 
 /// Generate an `ExplicitNAME` provider contract with every default removed,
 /// and the forwarding implementation of `NAME`. Adding a default method to

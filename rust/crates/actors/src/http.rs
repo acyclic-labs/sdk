@@ -169,6 +169,8 @@ mod credential_tests;
 
 macro_rules! operations {
     ($(($method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
+        /// Methods emitted with this client's canonical operation table.
+        pub const RPC_METHODS: &[&str] = &[$(stringify!($method)),+];
         $(/// Executes the canonical HTTP operation.
         pub async fn $method(&self, request: &wire::$input) -> Result<wire::$output, Error> {
             let (method, route) = *HTTP_ROUTES.get($index).ok_or(Error::InvalidArgument)?;

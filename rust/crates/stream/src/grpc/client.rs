@@ -92,6 +92,7 @@ impl Client {
     }
 }
 
+#[acyclic_contract_derive::implementation_methods(RPC_METHODS)]
 #[async_trait]
 impl StreamProvider for Client {
     fn context(&self) -> crate::ProviderContext<'_> {

@@ -210,6 +210,20 @@
     "typescriptPackageExported": true
   },
   {
+    "rpc": "acyclic.stream.v1.StreamService/Heads",
+    "kind": "unary",
+    "request": "acyclic.stream.v1.HeadsRequest",
+    "response": "acyclic.stream.v1.HeadsResponse",
+    "contractStatus": "target",
+    "httpOperation": "v1/stream/heads",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptGrpcWeb": false,
+    "typescriptPackageExported": true
+  },
+  {
     "rpc": "acyclic.stream.v1.StreamService/Tail",
     "kind": "unary",
     "request": "acyclic.stream.v1.TailRequest",
@@ -294,12 +308,40 @@
     "typescriptPackageExported": true
   },
   {
+    "rpc": "acyclic.objects.v1.BlobsService/Availability",
+    "kind": "server_streaming",
+    "request": "acyclic.objects.v1.AvailabilityRequest",
+    "response": "acyclic.objects.v1.AvailabilityCursor",
+    "contractStatus": "target",
+    "httpOperation": "v1/objects/blobs/availability",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": false,
+    "typescriptGrpcWeb": false,
+    "typescriptPackageExported": true
+  },
+  {
     "rpc": "acyclic.objects.v1.BlobsService/PutBlob",
     "kind": "unary",
     "request": "acyclic.objects.v1.PutBlobRequest",
     "response": "acyclic.objects.v1.PutResponse",
     "contractStatus": "target",
     "httpOperation": "v1/objects/blobs/put",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptGrpcWeb": false,
+    "typescriptPackageExported": true
+  },
+  {
+    "rpc": "acyclic.objects.v1.BlobsService/PutBlobs",
+    "kind": "unary",
+    "request": "acyclic.objects.v1.PutBlobsRequest",
+    "response": "acyclic.objects.v1.PutBlobsResponse",
+    "contractStatus": "target",
+    "httpOperation": "v1/objects/blobs/put-batch",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
