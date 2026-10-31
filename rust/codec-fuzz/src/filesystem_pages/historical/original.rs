@@ -103,8 +103,7 @@ pub(super) async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std:
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .await
-    .map_err(|failure| failure.into_error(std::convert::identity))?;
+    .await?;
     assert_eq!(proof.generation_id, GenerationId::from_root(root_id));
     let mut outputs = Vec::new();
     for (name, retention) in [
