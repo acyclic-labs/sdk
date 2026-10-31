@@ -322,9 +322,13 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
             Some(&session),
         )?
         .await?;
+    let binding_cancellation = CancellationToken::new();
+    let binding_io = PreparationIo::from_budget(session.remaining()?, &binding_cancellation)?;
     let mut binding = journal
-        .bind_context_source(&volume, workspace.id().volume_id(), cursor, &session)?
+        .bind_context_source(&volume, workspace.id().volume_id(), cursor, &binding_io)?
         .await?;
+    binding_cancellation.cancel();
+    drop(binding_io);
     use crate::conversation::epochs::{Epoch, Snapshot, SummaryKey};
     let mut epoch = Snapshot::genesis(Epoch {
         header: [3; 32],
