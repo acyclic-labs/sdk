@@ -52,6 +52,12 @@ impl StockExecutor {
         let key = format!("{}/{}", self.model.provider, self.model.name);
         let resolved = profiles.for_model(&pin, &key)?;
         self.max_output_tokens = resolved.overlay().max_output_tokens;
+        self = self.with_context_stage(Arc::new(crate::context::SourceStage::new(
+            "profile-instructions",
+            blake3::Hash::from(resolved.digest()).to_hex().to_string(),
+            profiles.instruction_source(&pin.role, &key)?,
+            crate::context::ContextPlacement::Prepend,
+        )))?;
         self.profile = Some((profiles, pin, key));
         Ok(self)
     }

@@ -32,6 +32,7 @@ pub struct Profiles {
 struct Resolved {
     identities: ([u8; 32], [u8; 32]),
     tools: HashMap<String, (String, bool)>,
+    instructions: Arc<crate::context::Context>,
 }
 
 impl Resolved {
@@ -53,11 +54,44 @@ impl Resolved {
         Ok(Self {
             identities: (profile.digest(), profile.prefix_digest()),
             tools,
+            instructions: Arc::new(crate::context::Context {
+                messages: profile
+                    .prefix()
+                    .system_layers
+                    .into_iter()
+                    .map(|text| (crate::model::ModelRole::System, text))
+                    .chain(
+                        profile
+                            .overlay()
+                            .directives
+                            .into_iter()
+                            .map(|text| (crate::model::ModelRole::User, text)),
+                    )
+                    .filter(|(_, text)| !text.trim().is_empty())
+                    .map(|(role, text)| crate::model::ModelMessage {
+                        role,
+                        content: crate::model::ModelContent::Text(text.into()),
+                    })
+                    .collect(),
+                ..Default::default()
+            }),
         })
     }
 }
 
 impl Profiles {
+    pub(crate) fn instruction_source(
+        &self,
+        role: &str,
+        key: &str,
+    ) -> Result<Arc<crate::context::Context>> {
+        self.resolved
+            .get(role)
+            .and_then(|models| models.get(key))
+            .map(|resolved| Arc::clone(&resolved.instructions))
+            .ok_or_else(|| invalid("selected instruction profile is absent"))
+    }
+
     /// Retains already admitted model files and the versioned role files.
     /// Every role must resolve here, before any root or child can be created.
     pub fn new(

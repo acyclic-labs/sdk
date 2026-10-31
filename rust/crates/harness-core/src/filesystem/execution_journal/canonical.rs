@@ -48,6 +48,104 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn pinned_profile_instructions_reach_the_original_request_and_replay() -> Result<()> {
+        use crate::profile::{ModelProfile, Profiles, ProjectLayer, RoleFile};
+
+        let model = Model::new("test".into(), "profile".into(), "1".into())?;
+        let profiles = Arc::new(Profiles::new(
+            [ModelProfile::parse(
+                "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\ncache: automatic\n---\nFamily instruction.",
+                "---\nversion: 1\nkey: test/profile\n---\nModel instruction.",
+                ModelContextCapacity {
+                    context_tokens: 131_072,
+                    output_tokens: Some(4_096),
+                },
+                "renderer-v1",
+            )?],
+            [
+                RoleFile::parse(
+                    "---\nversion: 1\nname: orchestrator\nmodel: test/profile\ncontext: top_level\nmay_spawn: [reviewer]\n---\nParent directive.",
+                )?,
+                RoleFile::parse(
+                    "---\nversion: 1\nname: reviewer\nmodel: test/profile\ncontext: fresh\nmay_spawn: []\n---\nReview directive.",
+                )?,
+            ],
+            ProjectLayer::parse("---\nversion: 1\n---\nProject instruction.")?,
+            "---\nversion: 1\n---\nAgent directive.",
+            crate::approvals::ApprovalPolicy::default().bind()?,
+        )?);
+        let (journal, _issuer) = super::super::test_support::journal().await?;
+        let provider = Arc::new(ScriptedModelProvider::new([
+            ScriptedTurn::Text("parent done".into()),
+            ScriptedTurn::Text("review done".into()),
+        ]));
+        for (index, (role, directive)) in [
+            ("orchestrator", "Parent directive."),
+            ("reviewer", "Review directive."),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let pin = profiles.role_pin(role)?;
+            let executor = StockExecutor::new(
+                model.clone(),
+                provider.clone(),
+                ContextPipeline::default(),
+                ToolRegistry::default(),
+            )
+            .with_profile(profiles.clone(), pin.clone())?;
+            let input = TurnInput {
+                operation_id: OperationId::new(),
+                input: ModelContent::Text("Current task.".into()),
+                selected_context: None,
+                max_steps: 1,
+            };
+            let result = executor.execute(input.clone(), &journal).await?;
+            let request = provider.request(index).expect("original model dispatch");
+            let expected = [
+                crate::preset::AGENT_PROMPT,
+                "Family instruction.",
+                "Model instruction.",
+                "Project instruction.",
+                directive,
+                "Agent directive.",
+                "Current task.",
+            ];
+            assert_eq!(request.messages.len(), expected.len());
+            for (position, (message, text)) in request.messages.iter().zip(expected).enumerate() {
+                assert_eq!(
+                    message.role,
+                    if position < 4 {
+                        ModelRole::System
+                    } else {
+                        ModelRole::User
+                    }
+                );
+                assert_eq!(message.content, ModelContent::Text(text.into()));
+            }
+            assert_eq!(executor.execute(input.clone(), &journal).await?, result);
+            assert_eq!(
+                provider.request_count(),
+                index + 1,
+                "replay cannot project or dispatch again"
+            );
+            let mut changed = pin;
+            changed.digest[0] ^= 1;
+            assert!(
+                StockExecutor::new(
+                    model.clone(),
+                    provider.clone(),
+                    ContextPipeline::default(),
+                    ToolRegistry::default()
+                )
+                .with_profile(profiles.clone(), changed)
+                .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn selected_compaction_publishes_only_the_signed_working_cut() -> Result<()> {
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let selected = crate::projection::SelectedModelContext {
