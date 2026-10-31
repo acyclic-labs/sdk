@@ -45,7 +45,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let authority_id = request.authority_id;
         let epoch = request.epoch;
         let commit = &request.commit;
-        let (durable, encoded) = prepare_record(request, work)?;
+        let durable = prepare_record(request, work)?;
         let sequence = durable.sequence;
         let records = work.path(&self.placement, authority_id, "/records", None)?;
         let epochs = work.path(&self.placement, authority_id, "/epochs", None)?;
@@ -73,7 +73,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             Preparation::Outcome(outcome) => return Ok(Preparation::Outcome(outcome)),
         };
         let generation = generation_from_payload(authority_id, sequence, &commit.payload, work)?;
-        let encoded = work.publication_record(encoded, commit.operation_id, generation)?;
+        let encoded = work.publication_record(&durable, generation)?;
         // Authority, operation locator, lineage, generation locator and changes.
         let mut mutations = work.vec(5)?;
         work.append_record(&mut mutations, records.clone(), [encoded])?;
@@ -451,13 +451,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
 fn prepare_record<'a>(
     request: &'a crate::GuardedAppend,
     work: &mut AuthorityWork<'_>,
-) -> Result<
-    (
-        crate::streams_record::BorrowedStreamsDurableRecord<'a>,
-        acyclic_stream::OwnedBytes,
-    ),
-    AuthorityStoreError,
-> {
+) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'a>, AuthorityStoreError> {
     let authority_id = request.authority_id;
     let epoch = request.epoch;
     let expected = request.expected;
@@ -476,11 +470,5 @@ fn prepare_record<'a>(
         payload: &commit.payload,
     };
     durable.digest = work.durable_digest(authority_id, &durable)?;
-    let encoded = StreamsDurableRecord::encode_borrowed_with(
-        &durable,
-        STREAM_RECORD_LIMIT,
-        |domain, fields| work.stream_bytes(domain, fields),
-    )
-    .map_err(AuthorityStoreError::DurableCodec)??;
-    Ok((durable, encoded))
+    Ok(durable)
 }

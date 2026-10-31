@@ -490,14 +490,26 @@ impl<'a> AuthorityWork<'a> {
 
     pub(super) fn publication_record(
         &mut self,
-        value: acyclic_stream::OwnedBytes,
-        operation: OperationId,
+        record: &crate::streams_record::BorrowedStreamsDurableRecord<'_>,
         generation: Option<GenerationId>,
     ) -> Result<acyclic_stream::AppendRecord, AuthorityStoreError> {
-        let operation = operation.into_bytes();
-        let headers = match generation {
-            Some(generation) => {
-                let reference = generation.to_bytes();
+        let operation = record.operation_id.into_bytes();
+        let reference = generation.map(|generation| generation.to_bytes());
+        // Streams admits value and indexed headers together. Reserve the exact
+        // header bytes before the canonical encoder allocates the durable value.
+        let header_bytes = OPERATION_INDEX_DOMAIN.len()
+            + operation.len()
+            + reference.as_ref().map_or(0, |reference| {
+                GENERATION_INDEX_DOMAIN.len() + reference.len()
+            });
+        let value = StreamsDurableRecord::encode_borrowed_with(
+            record,
+            STREAM_RECORD_LIMIT - header_bytes as u64,
+            |domain, fields| self.stream_bytes(domain, fields),
+        )
+        .map_err(AuthorityStoreError::DurableCodec)??;
+        let headers = match reference {
+            Some(reference) => {
                 let split = GENERATION_INDEX_DOMAIN.len() + reference.len();
                 let keys = self.stream_bytes(
                     GENERATION_INDEX_DOMAIN,

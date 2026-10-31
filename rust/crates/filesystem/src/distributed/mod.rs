@@ -65,6 +65,13 @@ pub trait AuthorityProvider: acyclic_stream::StreamProvider {}
 impl<P: acyclic_stream::StreamProvider + ?Sized> AuthorityProvider for P {}
 
 /// Filesystem authority over the canonical hierarchical Streams provider.
+///
+/// A record's durable envelope, opaque payload and indexed keys together fit
+/// [`acyclic_stream::MAX_RECORD_BYTES`]. Opaque operations reserve 32 bytes for
+/// their operation key in addition to the durable envelope. Generation records
+/// also reserve 17 bytes plus their complete canonical generation reference.
+/// Oversized values return [`AuthorityStoreError::DurableCodec`] before their
+/// durable value or indexed keys are allocated.
 pub struct StreamAuthorityStore<P: ?Sized> {
     provider: Arc<P>,
     placement: Arc<AuthorityPlacement>,
