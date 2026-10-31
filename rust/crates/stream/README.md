@@ -85,6 +85,10 @@ named observations consume one slot each and the remaining slots bound children.
 The hierarchy continuation retains its existing revision fence. A refused named
 path refuses the entire view; it never appears as absence. Remote adapters carry
 this operation intact through the shared session rather than composing head calls.
+When a child page selects `tail_stream`, each `Child.tail` distinguishes a missing
+stream (`None`) from a present empty stream (`Some(0)`). A positive tail carries
+the original last record at `tail - 1`. These facts share the enclosing Heads cut;
+they require no additional per-child head request.
 
 `ReadRequest.key` seeks an exact opaque header key within
 `[from, min(key.before, tail at open))`. Its limit counts matching records;
