@@ -158,7 +158,7 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
     let scope = RuntimeScope::new(grants, Limits::default())?;
     assert_eq!(
         adapter
-            .preflight(&scope, &input, None)?
+            .preflight(&scope, None, &input, None)?
             .0
             .expect("read source"),
         file
@@ -168,6 +168,7 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
             adapter
                 .preflight(
                     &scope,
+                    None,
                     &invocation(json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":range})),
                     None
                 )
@@ -181,14 +182,19 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
             ..Limits::default()
         },
     )?;
-    assert!(adapter.preflight(&bounded, &input, None).is_err());
+    assert!(adapter.preflight(&bounded, None, &input, None).is_err());
     let bounded = FileTool::Search {
         options: SEARCH,
         maximum_result_bytes: 1,
     };
     assert!(
         bounded
-            .preflight(&scope, &invocation(json!({"file":file,"query":"a"})), None)
+            .preflight(
+                &scope,
+                None,
+                &invocation(json!({"file":file,"query":"a"})),
+                None
+            )
             .is_err()
     );
     let search = FileTool::Search {
@@ -197,7 +203,12 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
     };
     assert!(
         search
-            .preflight(&scope, &invocation(json!({"file":file,"query":""})), None)
+            .preflight(
+                &scope,
+                None,
+                &invocation(json!({"file":file,"query":""})),
+                None
+            )
             .is_err()
     );
     Ok(())

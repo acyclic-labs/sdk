@@ -110,12 +110,6 @@ impl crate::hosting::Platform for LocalUser {
 /// the turn's task context and tool authority, and its hooks.
 struct LocalContext(Weak<LocalHarness>);
 
-struct TurnBindings {
-    harness: Arc<crate::runtime::AgentHarness>,
-    #[cfg(any(test, feature = "native-execution"))]
-    workspace: Option<Arc<super::LocalWorkspace>>,
-}
-
 impl TurnContext for LocalContext {
     fn prepare<'a>(
         &'a self,
