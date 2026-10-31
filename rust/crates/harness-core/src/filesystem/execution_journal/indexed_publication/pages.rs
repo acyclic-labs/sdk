@@ -1,8 +1,12 @@
 //! Oversized initial snapshots stage bounded, unreachable pages before the cut.
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod retained;
 #[cfg(test)]
 mod tests;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) use retained::{NativeCut, Publication};
 
 pub(super) struct Cut<'a> {
     pub(super) operation: OperationId,
@@ -182,6 +186,33 @@ impl Cut<'_> {
                     })?;
                 }
                 if request.0.wire_encoded_len() <= acyclic_stream::MAX_COMMAND_BYTES {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if request
+                        .1
+                        .work()
+                        .as_deref()
+                        .and_then(|io| io.original_native_work())
+                        .is_some()
+                    {
+                        let (prepared, producer) = self.prepare_native(
+                            provider,
+                            request,
+                            Publication {
+                                pages_tail: expected,
+                                records: pending,
+                                observation,
+                                checkpoint,
+                            },
+                        )?;
+                        crate::distributed::native_call_result(
+                            prepared.original(),
+                            producer.await,
+                        )?
+                        .map_err(|error| {
+                            crate::store::operations::stream_error_with_work(error, work)
+                        })?;
+                        return prepared.finish(work).await;
+                    }
                     let (outcome, retained) = crate::distributed::commit(
                         request,
                         provider,
