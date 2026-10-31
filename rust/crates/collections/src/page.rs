@@ -5,6 +5,7 @@
 //! only contiguous nonempty slices. It never reads another page or a backend.
 
 pub mod merge;
+pub mod publish;
 pub mod rewrite;
 pub mod selection;
 

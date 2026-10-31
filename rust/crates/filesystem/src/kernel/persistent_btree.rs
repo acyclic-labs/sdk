@@ -13,18 +13,20 @@ use crate::foundation::usize_to_u64;
 use crate::performance::{OperationReceipt, WorkCounters, WorkError};
 use crate::storage::{HashedObject, ObjectId, ObjectKind, ObjectStoreError};
 use acyclic_collections::page::rewrite::{self, Action, Entered};
-use acyclic_collections::page::{merge, selection};
+use acyclic_collections::page::{merge, publish, selection};
 use std::marker::PhantomData;
 use std::ops::Range;
 
 mod support;
 pub use support::Child;
 #[cfg(test)]
+use support::PageChunks;
+#[cfg(test)]
 pub(crate) use support::TARGET_PAGE_BYTES;
 pub(crate) use support::{Error, Format, Mutation, Page, PageRef, children_within, leaf_within};
 use support::{
-    PAGE_WRITE, PageChunks, append_owned, push_summary, push_value, sort_indexed, storage_error,
-    validate,
+    PAGE_HEADER_BYTES, PAGE_WRITE, append_owned, push_summary, push_value, sort_indexed,
+    storage_error, validate,
 };
 
 struct NodeRequest<K> {
@@ -128,6 +130,103 @@ where
 
     fn invalid_input() -> Self::Error {
         Self::error(Error::MutationContract)
+    }
+}
+
+impl<S, F, M> publish::Work<F> for Context<'_, '_, '_, S, F, M>
+where
+    S: crate::AsyncObjectStore,
+    F: Format,
+    M: Mutation<F>,
+{
+    type First = Owned<F::Key>;
+    type Output = Owned<Vec<Child<F::Key>>>;
+    type Error = crate::FsError;
+
+    fn limits(&self) -> Result<acyclic_collections::page::PackingLimits, Self::Error> {
+        Ok(acyclic_collections::page::PackingLimits {
+            maximum_items: usize::try_from(self.limits.maximum_page_items)
+                .map_err(|_| Self::error(Error::InvalidLimits))?,
+            maximum_bytes: usize::try_from(self.limits.maximum_page_bytes)
+                .map_err(|_| Self::error(Error::InvalidLimits))?,
+        })
+    }
+
+    fn leaf_length(value: &F::Value) -> Result<usize, Self::Error> {
+        F::leaf_item_encoded_length(value).map_err(|error| Self::error(Error::Decode(error)))
+    }
+
+    fn child_length(child: &Child<F::Key>) -> Result<usize, Self::Error> {
+        F::internal_item_encoded_length(&child.first, child.page)
+            .map_err(|error| Self::error(Error::Decode(error)))
+    }
+
+    fn packing_error(error: acyclic_collections::page::PackingError<Self::Error>) -> Self::Error {
+        match error {
+            acyclic_collections::page::PackingError::InvalidLimits => {
+                Self::error(Error::InvalidLimits)
+            }
+            acyclic_collections::page::PackingError::ItemTooLarge => {
+                Self::error(Error::PageItemTooLarge)
+            }
+            acyclic_collections::page::PackingError::Encode(error) => error,
+        }
+    }
+
+    fn invalid_input() -> Self::Error {
+        Self::error(Error::MutationContract)
+    }
+
+    fn nonreducing() -> Self::Error {
+        Self::error(Error::PageItemTooLarge)
+    }
+
+    fn next_height(&self, height: u16) -> Result<u16, Self::Error> {
+        let height = height
+            .checked_add(1)
+            .filter(|height| *height <= self.limits.maximum_page_height)
+            .ok_or_else(|| Self::error(Error::HeightExceeded))?;
+        Ok(height)
+    }
+
+    fn charge_items(&mut self, count: u64) -> Result<(), Self::Error> {
+        Context::charge_items(self, count)
+    }
+
+    fn allocate(&mut self, capacity: usize) -> Result<Self::Output, Self::Error> {
+        Owned::allocate(capacity, self.accounting)
+    }
+
+    fn reserve(&mut self, output: &mut Self::Output, maximum: usize) -> Result<(), Self::Error> {
+        output.ensure_for_push(maximum, self.accounting)
+    }
+
+    fn first(&mut self, key: &F::Key) -> Result<Self::First, Self::Error> {
+        self.clone_key(key)
+    }
+
+    fn append(
+        &mut self,
+        output: &mut Self::Output,
+        first: Self::First,
+        page: ObjectId,
+    ) -> Result<(), Self::Error> {
+        push_summary(output, first, page, self.accounting)
+    }
+
+    fn children(output: &Self::Output) -> &[Child<F::Key>] {
+        &output.value
+    }
+
+    fn retire(&mut self, output: Self::Output) -> Result<(), Self::Error> {
+        output.retire(self.accounting)
+    }
+
+    fn write(
+        &mut self,
+        page: &PageRef<'_, F>,
+    ) -> impl Future<Output = Result<ObjectId, Self::Error>> {
+        self.write_page(page)
     }
 }
 
@@ -547,87 +646,31 @@ where
         &mut self,
         entries: &[F::Value],
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
-        let (mut chunks, examined) =
-            PageChunks::new(entries, self.limits, F::leaf_item_encoded_length)
-                .map_err(Self::error)?;
-        self.charge_items(examined)?;
-        let mut result = Owned::allocate(0, self.accounting)?;
-        while let Some((chunk, examined)) = chunks.next().map_err(Self::error)? {
-            self.charge_items(examined)?;
-            let first = self.clone_key(F::key(
-                chunk
-                    .first()
-                    .ok_or_else(|| Self::error(Error::MutationContract))?,
-            ))?;
-            result.ensure_for_push(entries.len(), self.accounting)?;
-            let page = self.write_page(&PageRef::<F>::Leaf(chunk)).await?;
-            push_summary(&mut result, first, page, self.accounting)?;
-        }
-        Ok(result)
+        publish::write::<F, publish::Leaf, _, PAGE_HEADER_BYTES, { support::TARGET_PAGE_BYTES }>(
+            self, entries,
+        )
+        .await
     }
 
     async fn write_internal_chunks(
         &mut self,
         children: &[Child<F::Key>],
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
-        let child_length =
-            |child: &Child<F::Key>| F::internal_item_encoded_length(&child.first, child.page);
-        let (mut counted, examined) =
-            PageChunks::new(children, self.limits, child_length).map_err(Self::error)?;
-        self.charge_items(examined)?;
-        let mut pages = 0;
-        while let Some((_, examined)) = counted.next().map_err(Self::error)? {
-            self.charge_items(examined)?;
-            pages += 1;
-        }
-        if children.len() > 1 && pages >= children.len() {
-            return Err(Self::error(Error::PageItemTooLarge));
-        }
-        let (mut chunks, examined) =
-            PageChunks::new(children, self.limits, child_length).map_err(Self::error)?;
-        self.charge_items(examined)?;
-        let mut result = Owned::allocate(pages, self.accounting)?;
-        while let Some((chunk, examined)) = chunks.next().map_err(Self::error)? {
-            self.charge_items(examined)?;
-            let first = self.clone_key(
-                &chunk
-                    .first()
-                    .ok_or_else(|| Self::error(Error::MutationContract))?
-                    .first,
-            )?;
-            let page = self.write_page(&PageRef::<F>::Internal(chunk)).await?;
-            push_summary(&mut result, first, page, self.accounting)?;
-        }
-        Ok(result)
+        publish::write::<F, publish::Internal, _, PAGE_HEADER_BYTES, { support::TARGET_PAGE_BYTES }>(
+            self, children,
+        )
+        .await
     }
 
     async fn finish_root(
         &mut self,
-        mut summaries: Owned<Vec<Child<F::Key>>>,
+        summaries: Owned<Vec<Child<F::Key>>>,
     ) -> Result<ObjectId, crate::FsError> {
-        if summaries.value.is_empty() {
-            summaries.retire(self.accounting)?;
-            return self.write_page(&PageRef::<F>::Leaf(&[])).await;
-        }
-        let mut height = self.maximum_seen_height;
-        while summaries.value.len() > 1 {
-            height = height
-                .checked_add(1)
-                .ok_or_else(|| Self::error(Error::HeightExceeded))?;
-            if height > self.limits.maximum_page_height {
-                return Err(Self::error(Error::HeightExceeded));
-            }
-            let next = self.write_internal_chunks(&summaries.value).await?;
-            summaries.retire(self.accounting)?;
-            summaries = next;
-        }
-        let root = summaries
-            .value
-            .first()
-            .ok_or_else(|| Self::error(Error::MutationContract))?
-            .page;
-        summaries.retire(self.accounting)?;
-        Ok(root)
+        let height = self.maximum_seen_height;
+        publish::root::<F, _, PAGE_HEADER_BYTES, { support::TARGET_PAGE_BYTES }>(
+            self, summaries, height,
+        )
+        .await
     }
 
     async fn read_page(&mut self, page: ObjectId) -> Result<Owned<Page<F>>, crate::FsError> {
