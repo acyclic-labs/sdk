@@ -113,6 +113,10 @@ name the requested operation set, and a subset never claims full core coverage.
 the same setup and drivers. The default is `1,1000,100000`. Reports retain the
 selected population set; incomplete sets cannot qualify the three-population
 counting obligation.
+N names the initially settled dormant root population. Creation samples retain
+new durable identities; session samples also add resident roots. The cohort's
+namespace therefore grows across its fixed acquisition-order samples. Population
+labels do not assert constant cardinality throughout creation measurements.
 `--setup-credit` bounds concurrent original root preparation and submission
 during population setup (default1). Each root retains its own intent, sealed
 request and publication holds; independent lifecycles can share the provider's

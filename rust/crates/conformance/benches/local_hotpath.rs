@@ -167,6 +167,7 @@ fn run() -> Result {
         "durability": "full", "batch": 1,
         "instrumentation": "original Handler entry timestamp; follow notification waker timestamp; public provider request ledger; current-thread allocator; no tracing subscriber",
         "populations": options.populations,
+        "population_scope": "initial settled dormant roots; creation samples retain new durable identities; session samples add resident roots",
         "operations": options.operations.iter().map(|operation| operation.name()).collect::<Vec<_>>(),
     }))?;
     let floors = calibrate::run(&options.root, options.samples)?;
