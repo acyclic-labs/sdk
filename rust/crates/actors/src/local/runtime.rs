@@ -17,6 +17,7 @@ mod pause;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
+use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
 use acyclic_stream::{
     AppendRequest, BoxProviderFuture, IdempotencyKey, Record, RecordStream, StreamError,
     StreamPath, StreamProvider,
