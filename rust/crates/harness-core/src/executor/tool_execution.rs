@@ -206,7 +206,7 @@ impl StockExecution<'_> {
                             ToolCallRejection::Failed(refusal),
                         )
                         .await?;
-                    return self.push_tool_result(&invocation, content, prior_messages);
+                    return Ok(ExecutionProgress::Ready((invocation, content)));
                 }
                 // A started call whose hook target went away may have run.
                 Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
@@ -316,7 +316,7 @@ impl StockExecution<'_> {
                                 ToolCallRejection::Failed(refusal),
                             )
                             .await?;
-                        return self.push_tool_result(&invocation, content, prior_messages);
+                        return Ok(ExecutionProgress::Ready((invocation, content)));
                     }
                     // A dispatched command whose target went away may have run.
                     Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
