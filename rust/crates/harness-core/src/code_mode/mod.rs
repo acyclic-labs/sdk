@@ -10,7 +10,6 @@ mod native_allocator;
 mod typescript;
 
 pub use declarations::declarations;
-pub use typescript::strip_types;
 
 use crate::{
     Error, Result,
@@ -18,7 +17,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use futures::{StreamExt, stream::FuturesOrdered};
-use rquickjs::{Context, Function, Runtime};
+use rquickjs::{Context, Function, MultiWith, Runtime};
 use serde_json::Value;
 use std::{
     collections::{HashSet, VecDeque},
@@ -49,7 +48,7 @@ pub trait CodeMemory: Send + Sync {
     /// Acquires the original pool's transient execution/preparation credit.
     /// Waits on release by that pool's original owner; producer loss must refuse.
     /// The permit funds parsing as well as the realm and all pending host calls.
-    fn acquire(&self, source_bytes: usize) -> BoxProviderFuture<'_, Result<Box<dyn CodeCredit>>>;
+    fn acquire(&self) -> BoxProviderFuture<'_, Result<Box<dyn CodeCredit>>>;
 }
 
 /// Original reservation custody, retained until all code and issued calls end.
@@ -108,6 +107,7 @@ pub trait CodeHost: Send + Sync {
 
 /// One interpreter shared by the harness, with event-driven execution credit.
 pub struct CodeRuntime {
+    compiler: typescript::Compiler,
     runtime: Runtime,
     phase: tokio::sync::Mutex<()>,
     _memory: Arc<dyn CodeMemory>,
@@ -171,7 +171,9 @@ impl CodeRuntime {
     pub fn new(memory: Arc<dyn CodeMemory>) -> Result<Self> {
         let runtime = Runtime::new().map_err(js_error)?;
         runtime.set_memory_limit(memory.credit_bytes().map_or(0, NonZeroUsize::get));
+        let compiler = typescript::Compiler::new(&runtime)?;
         Ok(Self {
+            compiler,
             runtime,
             phase: tokio::sync::Mutex::new(()),
             _memory: memory,
@@ -184,16 +186,22 @@ impl CodeRuntime {
     /// harness-wide native reservation. Each actual alloc/realloc/free retains
     /// or returns that reservation's exact capacity, with no allocation index.
     ///
-    /// This is the engine-heap join only. The supplied execution permit must
-    /// also admit TypeScript/Rust preparation and wait on its original release
-    /// event before a host activates this constructor for profile execution.
+    /// The TypeScript parser and output share this same credited C heap. The
+    /// supplied execution permit also retains original Rust dispatch custody
+    /// and waits on its original release event before profile activation.
     #[cfg(feature = "filesystem")]
     pub fn new_with_native_work(
         memory: Arc<dyn CodeMemory>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         let (runtime, allocator) = native_allocator::runtime(work)?;
+        let compiler = typescript::Compiler::new(&runtime);
+        if let Some(error) = allocator.take_failure() {
+            return Err(error);
+        }
+        let compiler = compiler?;
         Ok(Self {
+            compiler,
             runtime,
             phase: tokio::sync::Mutex::new(()),
             _memory: memory,
@@ -237,10 +245,9 @@ impl CodeRuntime {
         control.check()?;
         let _credit = tokio::select! {
             error = control.interrupted() => return Err(error),
-            credit = self._memory.acquire(source.len()) => credit?,
+            credit = self._memory.acquire() => credit?,
         };
-        let javascript = strip_types(source)?;
-        run(self, outer, &javascript, input, tools, host, control).await
+        run(self, outer, source, input, tools, host, control).await
     }
 
     async fn phase<T>(
@@ -309,7 +316,7 @@ impl Drop for PhaseLease<'_> {
 async fn run(
     engine: &CodeRuntime,
     outer: &ToolInvocation,
-    javascript: &str,
+    source: &str,
     input: &Value,
     tools: &[ToolDefinition],
     host: Arc<dyn CodeHost + '_>,
@@ -328,10 +335,17 @@ async fn run(
                 Arc::clone(&queue),
                 Arc::clone(&protocol),
             )?;
-            let _entry = protocol.enter();
-            context
-                .with(|ctx| {
-                    ctx.eval::<(), _>(format!("__run(async function () {{\n{javascript}\n}});"))
+            // Both contexts belong to this one runtime. MultiWith holds its
+            // original lock once, so transformation never leaks a Rust-owned
+            // output buffer or exposes the compiler realm to model code.
+            (&engine.compiler.context, &context)
+                .with(|(compiler, ctx)| {
+                    let javascript = typescript::Compiler::prepare(&compiler, source)?;
+                    let constructor: Function = ctx.eval("(async function(){}).constructor")?;
+                    let body: Function = constructor.call((javascript,))?;
+                    let run: Function = ctx.globals().get("__run")?;
+                    let _entry = protocol.enter();
+                    run.call::<_, ()>((body,))
                 })
                 .map_err(js_error)?;
             Ok(context)

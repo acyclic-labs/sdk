@@ -1,43 +1,40 @@
-use crate::{Error, Result};
-use oxc_allocator::Allocator;
-use oxc_codegen::Codegen;
-use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
-use oxc_span::SourceType;
-use oxc_transformer::{TransformOptions, Transformer};
-use std::path::Path;
+//! The TypeScript eraser runs in the same credited QuickJS heap as execution.
+//! Its private realm is shared by all invocations; source and transformed output
+//! stay JavaScript strings, with no Rust parser arena or generated-code buffer.
+use super::{Result, js_error};
+use rquickjs::{Context, Ctx, Function, Runtime};
 
-/// Removes TypeScript syntax in-process, without type checking or a compiler
-/// subprocess. Ordinary JavaScript is left at its original language level.
-pub fn strip_types(source: &str) -> Result<String> {
-    let allocator = Allocator::default();
-    // Parse as a function body so top-level return/await match code mode.
-    let source = format!("async function __code_mode__() {{\n{source}\n}}");
-    let parsed = Parser::new(&allocator, &source, SourceType::ts()).parse();
-    if !parsed.errors.is_empty() {
-        return Err(invalid("code contains invalid TypeScript"));
-    }
-    let mut program = parsed.program;
-    let semantic = SemanticBuilder::new().build(&program);
-    if !semantic.errors.is_empty() {
-        return Err(invalid("code contains invalid bindings"));
-    }
-    let mut options = TransformOptions::default();
-    options.typescript.only_remove_type_imports = true;
-    options.typescript.allow_namespaces = false;
-    let transformed = Transformer::new(&allocator, Path::new("code.ts"), &options)
-        .build_with_scoping(semantic.semantic.into_scoping(), &mut program);
-    if !transformed.errors.is_empty() {
-        return Err(invalid("code uses unsupported TypeScript syntax"));
-    }
-    let javascript = Codegen::new().build(&program).code;
-    // Keep the parsed wrapper, rather than slicing braces or reparsing source.
-    Ok(format!("{javascript}\nreturn await __code_mode__();"))
+pub(super) struct Compiler {
+    pub(super) context: Context,
 }
 
-fn invalid(reason: &'static str) -> Error {
-    Error::ToolRejected {
-        code: crate::wire::ErrorCode::Invalid,
-        reason,
+impl Compiler {
+    pub(super) fn new(runtime: &Runtime) -> Result<Self> {
+        let context = Context::full(runtime).map_err(js_error)?;
+        context
+            .with(|ctx| {
+                ctx.eval::<(), _>(include_str!("typescript_bundle.js"))?;
+                // Capture the original pure transform privately. The model never
+                // receives this function, its realm or its mutable parser globals.
+                ctx.eval::<(), _>(
+                    r#"
+                globalThis.__prepare = ((transform) => (source) => {
+                    const wrapped = "async function __code_mode__() {\n" + source + "\n}";
+                    return transform(wrapped) + "\nreturn await __code_mode__();";
+                })(__harness_typescript.transform);
+                delete globalThis.__harness_typescript;
+            "#,
+                )
+            })
+            .map_err(js_error)?;
+        Ok(Self { context })
+    }
+
+    pub(super) fn prepare<'js>(
+        ctx: &Ctx<'js>,
+        source: &str,
+    ) -> rquickjs::Result<rquickjs::String<'js>> {
+        let prepare: Function = ctx.globals().get("__prepare")?;
+        prepare.call((source,))
     }
 }

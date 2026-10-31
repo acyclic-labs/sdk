@@ -22,6 +22,31 @@ impl SkillRuntime {
     }
 }
 
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::UploadRecord for SkillRuntime {
+    fn diagnostic_label_bytes() -> u64 {
+        const LABELS: &[&str] = &[
+            "SkillRuntime",
+            "Shell",
+            "Code",
+            "kind",
+            "shell",
+            "code",
+            "script",
+        ];
+        LABELS.iter().fold(
+            crate::executor::json::preparation_serde_diagnostic_label_bytes(),
+            |bytes, label| bytes + label.len() as u64 + 4,
+        )
+    }
+
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        Ok(match self {
+            Self::Shell { script } | Self::Code { script } => script.capacity() as u64,
+        })
+    }
+}
+
 /// Provenance admitted by the shared filesystem skill catalog. It is retained
 /// on the original tool revision, never in a second callable registry.
 ///

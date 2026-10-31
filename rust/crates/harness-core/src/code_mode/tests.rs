@@ -8,7 +8,7 @@ impl CodeMemory for Memory {
     fn credit_bytes(&self) -> Option<NonZeroUsize> {
         None
     }
-    fn acquire(&self, _: usize) -> BoxProviderFuture<'_, Result<Box<dyn CodeCredit>>> {
+    fn acquire(&self) -> BoxProviderFuture<'_, Result<Box<dyn CodeCredit>>> {
         Box::pin(async { Ok(Box::new(()) as Box<dyn CodeCredit>) })
     }
 }
@@ -151,7 +151,7 @@ async fn javascript_cannot_catch_original_heap_exhaustion_into_success() -> Resu
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(
         WorkBudget {
-            peak_allocation_bytes: 1024 * 1024,
+            peak_allocation_bytes: 32 * 1024 * 1024,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
@@ -159,6 +159,15 @@ async fn javascript_cannot_catch_original_heap_exhaustion_into_success() -> Resu
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
     let runtime = CodeRuntime::new_with_native_work(Arc::new(Memory), &work)?;
+    // Retain all but one MiB of the real remaining configured capacity after
+    // loading the shared compiler. The tested execution allowance is unchanged.
+    let blocker = work.claim(
+        work.remaining()?
+            .peak_allocation_bytes
+            .saturating_sub(1024 * 1024),
+        1,
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
     let (_owner, control) = original_control();
     let host = Arc::new(Echo::default());
     let result = runtime
@@ -191,7 +200,7 @@ async fn javascript_cannot_catch_original_heap_exhaustion_into_success() -> Resu
         json!(7)
     );
     assert!(lock(&host.0).is_empty());
-    drop(runtime);
+    drop((runtime, blocker));
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
@@ -486,4 +495,47 @@ proptest::proptest! {
             assert_eq!(calls[0].arguments, result);
         });
     }
+}
+
+#[tokio::test]
+async fn credited_compiler_realm_is_private_and_recovers_after_parse_failure() -> Result<()> {
+    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let (_owner, control) = original_control();
+    let host = Arc::new(Echo::default());
+    let tools = [echo_definition()];
+    assert!(
+        runtime
+            .execute(
+                &outer(),
+                "const invalid: = await echo({value:'unreachable'});",
+                &tools,
+                host.clone(),
+                control.clone()
+            )
+            .await
+            .is_err()
+    );
+    assert!(lock(&host.0).is_empty());
+    assert_eq!(
+        runtime
+            .execute(
+                &outer(),
+                r#"
+        type Message = {value: string};
+        const message: Message = {value: "after parse failure"};
+        return {result: await echo(message),
+            compiler: typeof __harness_typescript, prepare: typeof __prepare};
+    "#,
+                &tools,
+                host.clone(),
+                control
+            )
+            .await?,
+        json!({
+            "result":{"value":"after parse failure"},
+            "compiler":"undefined", "prepare":"undefined"
+        })
+    );
+    assert_eq!(lock(&host.0).len(), 1);
+    Ok(())
 }
