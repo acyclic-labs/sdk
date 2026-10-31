@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// A transferred child output pipe. Waiting for input occupies no worker.
 pub struct ProcessPipeReader {
-    wait: Option<events::Wait<'static>>,
+    wait: Option<events::Wait>,
     pipe: ChildStdout,
     operation: Arc<events::PipeOperation>,
 }
@@ -39,8 +39,9 @@ impl AsyncRead for ProcessPipeReader {
         let this = self.get_mut();
         loop {
             if let Some(wait) = &mut this.wait {
-                ready!(Pin::new(wait).poll(cx)).into_result()?;
+                let outcome = ready!(Pin::new(wait).poll(cx)).into_result();
                 this.wait = None;
+                outcome?;
             }
             // SAFETY: read_pipe writes into the destination without reading it.
             let unfilled = unsafe { buffer.unfilled_mut() };
@@ -202,7 +203,7 @@ mod tests {
 /// A transferred child input pipe. Flush joins physical delivery.
 /// The shared completion service retains pending bytes if the caller disappears.
 pub struct ProcessPipeWriter {
-    wait: Option<events::Wait<'static>>,
+    wait: Option<events::Wait>,
     pipe: Option<ChildStdin>,
     writer: platform::Writer,
 }
@@ -224,9 +225,11 @@ impl ProcessPipeWriter {
             if self.wait.is_none() {
                 self.wait = Some(events::arm(&[events::Source::Pipe(operation)], None)?);
             }
-            ready!(Pin::new(self.wait.as_mut().ok_or(io::ErrorKind::BrokenPipe)?).poll(cx))
-                .into_result()?;
+            let outcome =
+                ready!(Pin::new(self.wait.as_mut().ok_or(io::ErrorKind::BrokenPipe)?).poll(cx))
+                    .into_result();
             self.wait = None;
+            outcome?;
         }
         self.wait = None;
         if let Some(result) = operation.take_written() {
