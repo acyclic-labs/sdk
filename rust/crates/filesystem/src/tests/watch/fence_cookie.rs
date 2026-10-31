@@ -197,3 +197,50 @@ fn a_cookie_after_a_lost_batch_never_confirms() -> Result<(), Box<dyn std::error
     ));
     Ok(())
 }
+
+/// A held native cookie cannot make cancellation depend on another delivery.
+#[test]
+fn cancellation_ends_a_cookie_wait_before_or_after_registration()
+-> Result<(), Box<dyn std::error::Error>> {
+    for cancelled_first in [false, true] {
+        let mut fixture = fixture(&[(".volumes", 0o755)])?;
+        let arrived = cookie(&mut fixture.watch)?;
+        let stop = CancellationToken::new();
+        if cancelled_first {
+            stop.cancel();
+        }
+        std::thread::scope(|scope| {
+            let (entered, registered) = std::sync::mpsc::sync_channel(1);
+            let token = &stop;
+            let cancelling = scope.spawn(move || {
+                registered
+                    .recv()
+                    .expect("cookie waiter ended before its registration");
+                token.cancel();
+            });
+            let mut entered = Some(entered);
+            let result = fixture.watch.await_cookie_cancellable(&stop, None, || {
+                if let Some(entered) = entered.take() {
+                    let _ = entered.send(());
+                }
+                stop.check().map_err(|_| {
+                    NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::Cancelled)
+                })
+            });
+            cancelling
+                .join()
+                .expect("cookie cancellation producer panicked");
+            assert!(matches!(
+                result,
+                Err(NativeWatchError::NativeWork(
+                    crate::NativeTreeMaterializationError::Cancelled
+                ))
+            ));
+        });
+        // Cancellation leaves continuity and the original cookie intact.
+        assert!(armed(&fixture.watch)?.is_some());
+        deliver(&fixture.hints, &[arrived], u64::MAX)?;
+        assert!(fixture.watch.await_cookie()?);
+    }
+    Ok(())
+}

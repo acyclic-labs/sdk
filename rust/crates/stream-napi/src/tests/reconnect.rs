@@ -11,7 +11,8 @@ type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Sen
 struct Outage {
     calls: AtomicUsize,
     changed: tokio::sync::Notify,
-    disconnect: tokio::sync::Notify,
+    connections: SyncMutex<std::collections::HashMap<usize, std::net::TcpStream>>,
+    accepted: AtomicUsize,
     release: tokio::sync::Notify,
     recovered: AtomicBool,
     terminal: AtomicBool,
@@ -24,6 +25,16 @@ struct Outage {
     subscriptions: SyncMutex<std::collections::BTreeMap<usize, Vec<wire::SessionSubscription>>>,
 }
 impl Outage {
+    fn disconnect(&self) -> std::io::Result<()> {
+        let sockets = std::mem::take(&mut *self.connections.lock());
+        if sockets.is_empty() {
+            return Err(std::io::ErrorKind::NotConnected.into());
+        }
+        for socket in sockets.into_values() {
+            socket.shutdown(std::net::Shutdown::Both)?;
+        }
+        Ok(())
+    }
     fn accept_replacement(&self) {
         self.replacement_ready.store(true, Ordering::SeqCst);
         self.replacement_release.notify_waiters();
@@ -126,10 +137,13 @@ impl StreamSessionService for DisconnectingHost {
         let mut incoming = request.into_inner();
         let mut buffered = Vec::new();
         if call > 0 {
-            // Cross a whole handshake attempt group before the deterministic
-            // recovery gate. Unavailable is not a terminal established-interest error.
+            // Withdraw the actual OS transport. An application Unavailable
+            // without transport provenance is a terminal protocol response.
             if call <= 4 {
-                return Err(Status::unavailable("fixture outage"));
+                self.outage
+                    .disconnect()
+                    .map_err(|error| Status::internal(error.to_string()))?;
+                return std::future::pending().await;
             }
             if self.outage.terminal.load(Ordering::SeqCst) {
                 return Err(Status::permission_denied("fixture authorization revoked"));
@@ -207,18 +221,65 @@ impl StreamSessionService for DisconnectingHost {
         }
         self.outage.outputs.fetch_add(1, Ordering::SeqCst);
         let owner = OutputOwner(Arc::clone(&self.outage));
-        let outage = Arc::clone(&self.outage);
-        let failure = futures::stream::once(async move {
-            outage.disconnect.notified().await;
-            Err(Status::unavailable("physical session disconnected"))
-        });
         Ok(Response::new(
-            futures::stream::select(output, failure)
+            output
                 .inspect(move |_| {
                     let _owner = &owner;
                 })
                 .boxed(),
         ))
+    }
+}
+
+// Thin adapter retaining only live physical sockets, including their TLS owner.
+struct Socket {
+    socket: tokio::net::TcpStream,
+    outage: Arc<Outage>,
+    id: usize,
+}
+impl Drop for Socket {
+    fn drop(&mut self) {
+        self.outage.connections.lock().remove(&self.id);
+    }
+}
+impl tonic::transport::server::Connected for Socket {
+    type ConnectInfo = <tokio::net::TcpStream as tonic::transport::server::Connected>::ConnectInfo;
+    fn connect_info(&self) -> Self::ConnectInfo {
+        tonic::transport::server::Connected::connect_info(&self.socket)
+    }
+}
+impl tokio::io::AsyncRead for Socket {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut self.get_mut().socket), cx, buffer)
+    }
+}
+impl tokio::io::AsyncWrite for Socket {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        tokio::io::AsyncWrite::poll_write(
+            std::pin::Pin::new(&mut self.get_mut().socket),
+            cx,
+            buffer,
+        )
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncWrite::poll_flush(std::pin::Pin::new(&mut self.get_mut().socket), cx)
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncWrite::poll_shutdown(std::pin::Pin::new(&mut self.get_mut().socket), cx)
     }
 }
 
@@ -259,12 +320,23 @@ impl Fixture {
         };
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
-        let incoming = futures::stream::unfold(listener, |listener| async move {
-            listener
-                .accept()
-                .await
-                .ok()
-                .map(|(socket, _)| (Ok::<_, std::io::Error>(socket), listener))
+        let incoming_outage = Arc::clone(&outage);
+        let incoming = futures::stream::try_unfold(listener, move |listener| {
+            let outage = Arc::clone(&incoming_outage);
+            async move {
+                let (socket, _) = listener.accept().await?;
+                #[cfg(unix)]
+                let retained = std::net::TcpStream::from(
+                    std::os::fd::AsFd::as_fd(&socket).try_clone_to_owned()?,
+                );
+                #[cfg(windows)]
+                let retained = std::net::TcpStream::from(
+                    std::os::windows::io::AsSocket::as_socket(&socket).try_clone_to_owned()?,
+                );
+                let id = outage.accepted.fetch_add(1, Ordering::SeqCst);
+                outage.connections.lock().insert(id, retained);
+                Ok::<_, std::io::Error>(Some((Socket { socket, outage, id }, listener)))
+            }
         });
         let server = Server::builder()
             .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(&certificate, key)))?
@@ -333,11 +405,15 @@ impl Fixture {
         .await
         .map_err(|error| error.message.into())
     }
-    async fn outage(&self) -> TestResult {
-        self.outage.disconnect.notify_one();
-        self.outage
-            .until(|| self.outage.calls.load(Ordering::SeqCst) >= 6)
-            .await
+    async fn outage(&self, cursor: &NativeStreamFollow) -> TestResult {
+        self.outage.disconnect()?;
+        tokio::select! {
+            biased;
+            result = self.outage.until(|| self.outage.calls.load(Ordering::SeqCst) >= 6) => result,
+            result = cursor.next_result() => {
+                Err(format!("original interest settled before its recovery handshake: {:?}", result.map(|next| next.error.map(|error| error.code))).into())
+            }
+        }
     }
     async fn retired(&self) -> TestResult {
         self.outage
@@ -415,7 +491,7 @@ async fn recovered_consumers(terminal: bool) -> TestResult {
     let records = fixture.follow(None).await?;
     record(&records, 0, 10).await?;
     tokio::select! {
-        result = fixture.outage() => result?,
+        result = fixture.outage(&records) => result?,
         next = records.next_result() => {
             let next = next?;
             assert!(
@@ -474,7 +550,7 @@ async fn terminal_reconnect_rejection_is_typed_once_for_native_follow() -> TestR
     fixture.append("events", 10).await?;
     let records = fixture.follow(None).await?;
     record(&records, 0, 10).await?;
-    fixture.outage().await?;
+    fixture.outage(&records).await?;
     for cursor in [&records] {
         let next = cursor.next_result().await?;
         assert!(next.value.is_none());
@@ -624,7 +700,7 @@ async fn cancellation_case(
         );
     }
     evidence.lock().gate = "unavailable handshake group";
-    fixture.outage().await?;
+    fixture.outage(&cursor).await?;
     // Identify an actually pending server RPC, not an expected call count.
     let old = *fixture
         .outage

@@ -454,6 +454,7 @@ async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
         );
         assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
         meter.assert_refunded();
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
         Ok(())
     })
     .await?
@@ -503,6 +504,7 @@ fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
             drop(provider);
             schedule.drained().await;
             meter.assert_refunded();
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
             Ok(())
         })
         .await?
