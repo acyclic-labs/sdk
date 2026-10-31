@@ -249,7 +249,9 @@ impl ApprovalRule {
         Self::evaluate_target(rules, fallback, (tool, arguments), None)
     }
 
-    fn evaluate_target(
+    /// [`Self::evaluate`] for a call resolved to `target`: what a device
+    /// evaluates again before it runs a command dispatched to it.
+    pub fn evaluate_target(
         rules: &[Self],
         fallback: RuleVerdict,
         (tool, arguments): (&str, &Value),

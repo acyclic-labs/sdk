@@ -52,7 +52,9 @@ use crate::runtime::{signal, sync};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use client::Cache;
 pub use client::transport;
-pub use client::{ActorSocket, ApplicationDelivery, ApplicationSubscription, Client};
+pub use client::{
+    ActorSocket, ActorSocketSender, ApplicationDelivery, ApplicationSubscription, Client,
+};
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use client::{
     verify_abandoned_reconnect, verify_cache, verify_cancel_before_open, verify_follow_data,

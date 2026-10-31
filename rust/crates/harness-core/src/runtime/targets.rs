@@ -17,8 +17,8 @@ pub struct Target {
 /// Resolves each call's target. One resolver serves an agent's whole turn;
 /// it never falls back from the named target to another one.
 pub trait TargetResolver: acyclic_stream::ProviderPlatform {
-    /// Every target visible to the agent, and its home.
-    fn roster(&self) -> &Arc<Roster>;
+    /// Every target visible to the agent now, and its home.
+    fn roster(&self) -> Arc<Roster>;
 
     /// The target `target` names ([`Roster::select`]); its executor.
     ///
@@ -64,18 +64,21 @@ impl InProcessTargets {
     pub fn local_record(name: &str, owner: &str) -> TargetRecord {
         Self::record(
             (name, owner),
-            crate::agent::TargetClass::Attached,
+            (
+                crate::agent::TargetClass::Attached,
+                crate::agent::DeviceKind::Desktop,
+            ),
             std::env::consts::OS,
             &crate::tools::shell::PLATFORM,
         )
     }
 
-    /// The online record of target `name` owned by `owner`, of `class`,
-    /// running `shell` on `os`.
+    /// The online record of target `name` owned by `owner`, of `class`
+    /// and `device_kind`, running `shell` on `os`.
     #[must_use]
     pub fn record(
         (name, owner): (&str, &str),
-        class: crate::agent::TargetClass,
+        (class, device_kind): (crate::agent::TargetClass, crate::agent::DeviceKind),
         os: &str,
         shell: &acyclic_host_platform::shell::ShellSpec,
     ) -> TargetRecord {
@@ -86,14 +89,15 @@ impl InProcessTargets {
             os: os.to_owned(),
             shell: shell.language.to_owned(),
             path_style: crate::agent::PathStyle::of(shell),
+            device_kind,
             state: crate::agent::TargetState::Online,
         }
     }
 }
 
 impl TargetResolver for InProcessTargets {
-    fn roster(&self) -> &Arc<Roster> {
-        &self.roster
+    fn roster(&self) -> Arc<Roster> {
+        Arc::clone(&self.roster)
     }
 
     fn resolve(&self, target: Option<&str>) -> Result<Arc<Target>> {

@@ -166,10 +166,7 @@ impl TurnContext for LocalContext {
     /// (a child on its fork view of it).
     fn roster(&self, _: &AgentState) -> Option<Arc<crate::agent::Roster>> {
         let local = self.0.upgrade()?;
-        local
-            .harness
-            .targets()
-            .map(|targets| Arc::clone(targets.roster()))
+        local.harness.targets().map(|targets| targets.roster())
     }
 }
 

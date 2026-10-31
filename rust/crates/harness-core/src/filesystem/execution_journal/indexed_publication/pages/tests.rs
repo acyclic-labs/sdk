@@ -41,6 +41,7 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
         head_tail: 0,
         base: 0,
         digest: [7; 32],
+        dispatch: None,
     };
     let mut old_work = None;
     let old = cut.request(

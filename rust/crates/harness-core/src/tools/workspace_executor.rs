@@ -104,6 +104,19 @@ impl ToolExecutor for WorkspaceExecutor {
         }
     }
 
+    fn dispatch(
+        &self,
+        invocation: &ToolInvocation,
+        context: Option<&ToolContext>,
+    ) -> Result<Option<crate::tool::Dispatch>> {
+        let Some(context) = context else {
+            return Ok(None);
+        };
+        target(context, invocation, None)?
+            .executor
+            .dispatch(invocation, Some(context))
+    }
+
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,

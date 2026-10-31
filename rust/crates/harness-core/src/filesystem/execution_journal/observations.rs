@@ -134,6 +134,7 @@ where
         expected_tail: Option<u64>,
         claim_id: &str,
         event: &ExecutionEvent,
+        dispatch: Option<&crate::tool::Dispatch>,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
         // Appending returns no caller-owned payload. Validation decoders and
@@ -262,7 +263,12 @@ where
                 retained_io,
             )?;
             let committed = self
-                .publish_indexed_observation(summary, retry_key, event, &bytes, retained_io)
+                .publish_indexed_observation(
+                    summary,
+                    retry_key,
+                    (event, &bytes, dispatch),
+                    retained_io,
+                )
                 .await?;
             if let Some(recovery) = committed {
                 #[cfg(feature = "test-support")]

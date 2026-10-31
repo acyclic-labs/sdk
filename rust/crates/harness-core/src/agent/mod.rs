@@ -33,8 +33,8 @@ pub use settled::{TurnChildren, answer, settled};
 mod slots;
 mod targets;
 pub use targets::{
-    MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass, TargetRecord,
-    TargetRefusal, TargetState, USER_PREFIX,
+    DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,
+    TargetRecord, TargetRefusal, TargetState, USER_PREFIX,
 };
 mod volumes;
 pub use volumes::SpawnVolumes;

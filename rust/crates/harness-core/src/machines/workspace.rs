@@ -100,13 +100,67 @@ impl MachinesWorkspace {
         input: ShellInput,
         maximum_output: u64,
     ) -> Result<acyclic_machines::ExecStream> {
-        self.shell_until(input, maximum_output, None).await
+        self.shell_until(input, Some(maximum_output), None).await
     }
 
-    async fn shell_until(
+    /// Runs one command to its end: the `shell` result every target
+    /// returns, `{success, exit_code, stdout, stderr, stop}`. An effect
+    /// without a terminal receipt is indeterminate for `operation`.
+    pub async fn run_shell(
+        &self,
+        operation: crate::OperationId,
+        input: ShellInput,
+        maximum: u64,
+        task_deadline: Option<u64>,
+    ) -> Result<ToolResult> {
+        let stream = self
+            .shell_until(input, Some(maximum), task_deadline)
+            .await
+            .map_err(|error| match error {
+                Error::Machines(cause) => map_error(cause, Some(operation)),
+                cause => cause,
+            })?;
+        let output = capture_exec(stream, maximum)
+            .await
+            // Dispatch already happened. Without a terminal receipt,
+            // dropping capture cannot attest physical process retirement.
+            .map_err(|_| Error::Indeterminate(operation))?;
+        if output
+            .stop
+            .as_ref()
+            .is_some_and(|stop| !stop.cleanup_completed)
+        {
+            return Err(Error::Indeterminate(operation));
+        }
+        let stop = output.stop.map(Self::stop_result);
+        Ok(ToolResult {
+            value: serde_json::json!({
+                "success": output.exit_code == Some(0) && stop.is_none(),
+                "exit_code": output.exit_code,
+                "stdout": String::from_utf8_lossy(&output.stdout),
+                "stderr": String::from_utf8_lossy(&output.stderr), "stop": stop,
+            }),
+        })
+    }
+
+    pub(crate) fn stop_result(stop: acyclic_machines::ExecStop) -> serde_json::Value {
+        use acyclic_machines::ExecStopKind;
+        let kind = match stop.kind {
+            ExecStopKind::Timeout => "timeout",
+            ExecStopKind::OutputLimit => "output_limit",
+            ExecStopKind::Expired | ExecStopKind::ControlStopped => "control_stopped",
+            ExecStopKind::CaptureFailed => "capture_failed",
+        };
+        serde_json::json!({
+            "kind": kind, "message": stop.message,
+            "cleanup_completed": stop.cleanup_completed,
+        })
+    }
+
+    pub(crate) async fn shell_until(
         &self,
         input: ShellInput,
-        maximum_output: u64,
+        maximum_output: Option<u64>,
         task_deadline: Option<u64>,
     ) -> Result<acyclic_machines::ExecStream> {
         input.validate()?;
@@ -121,8 +175,10 @@ impl MachinesWorkspace {
         let mut command = ExecCommand::new(argv, timeout)
             .map_err(|error| map_error(error, None))?
             .with_expiry(expiry)
-            .with_stdin(stdin.unwrap_or_default())
-            .with_output_limit(maximum_output);
+            .with_stdin(stdin.unwrap_or_default());
+        if let Some(maximum) = maximum_output {
+            command = command.with_output_limit(maximum);
+        }
         if let Some(cwd) = input.cwd.filter(|value| !value.is_empty()) {
             command = command
                 .with_cwd(cwd)
@@ -180,51 +236,13 @@ impl ToolExecutor for MachinesWorkspace {
             })?;
             let input: ShellInput = serde_json::from_value(invocation.arguments)
                 .map_err(|error| Error::Invalid(format!("shell input decode failed: {error}; recovery: use the shared ShellInput schema")))?;
-            let maximum = context.effective_scope().limits().render_bytes;
-            let stream = self
-                .shell_until(
-                    input,
-                    maximum,
-                    context.effective_scope().run_limits().deadline_epoch_ms,
-                )
-                .await
-                .map_err(|error| match error {
-                    Error::Machines(cause) => map_error(cause, Some(context.operation_id())),
-                    cause => cause,
-                })?;
-            let output = capture_exec(stream, maximum)
-                .await
-                // Dispatch already happened. Without a terminal receipt,
-                // dropping capture cannot attest physical process retirement.
-                .map_err(|_| Error::Indeterminate(context.operation_id()))?;
-            if output
-                .stop
-                .as_ref()
-                .is_some_and(|stop| !stop.cleanup_completed)
-            {
-                return Err(Error::Indeterminate(context.operation_id()));
-            }
-            let stop = output.stop.map(|stop| {
-                use acyclic_machines::ExecStopKind;
-                let kind = match stop.kind {
-                    ExecStopKind::Timeout => "timeout",
-                    ExecStopKind::OutputLimit => "output_limit",
-                    ExecStopKind::Expired | ExecStopKind::ControlStopped => "control_stopped",
-                    ExecStopKind::CaptureFailed => "capture_failed",
-                };
-                serde_json::json!({
-                    "kind": kind, "message": stop.message,
-                    "cleanup_completed": stop.cleanup_completed,
-                })
-            });
-            Ok(ToolResult {
-                value: serde_json::json!({
-                    "success": output.exit_code == Some(0) && stop.is_none(),
-                    "exit_code": output.exit_code,
-                    "stdout": String::from_utf8_lossy(&output.stdout),
-                    "stderr": String::from_utf8_lossy(&output.stderr), "stop": stop,
-                }),
-            })
+            self.run_shell(
+                context.operation_id(),
+                input,
+                context.effective_scope().limits().render_bytes,
+                context.effective_scope().run_limits().deadline_epoch_ms,
+            )
+            .await
         })
     }
 

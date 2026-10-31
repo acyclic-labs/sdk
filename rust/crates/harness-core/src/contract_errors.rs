@@ -497,6 +497,7 @@ impl Error {
             Self::Target(refusal) => match refusal.refused {
                 crate::agent::Refused::Unknown => ErrorCode::NotFound,
                 crate::agent::Refused::Offline => ErrorCode::Unsupported,
+                crate::agent::Refused::Declined(_) => ErrorCode::Unauthorized,
             },
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
