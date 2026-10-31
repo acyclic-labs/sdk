@@ -90,7 +90,7 @@ where
         admitted?;
         let destination_id =
             self.workspace_id_for_name(&fork.destination, accounting, cancellation)?;
-        let (fork_root, source_root, _) = self
+        let (fork_root, source_root, _, filtered) = self
             .materialize_forked_generation_root(
                 source,
                 destination_id,
@@ -106,6 +106,7 @@ where
                     destination_id,
                     fork_root: &fork_root.value,
                     source_root,
+                    filtered,
                     idempotency_key: fork.idempotency_key,
                     permit: PublicationPermit::Unrestricted,
                 },

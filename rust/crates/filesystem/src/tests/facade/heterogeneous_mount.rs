@@ -103,6 +103,21 @@ impl AsyncAuthorityStore for Stores {
         }
         Ok(value)
     }
+    // A store with prefix lineage forks atomically, its changes included.
+    async fn fork_workspace<G: crate::AuthorityGuard>(
+        &self,
+        fork: crate::WorkspaceForkCommit,
+        permit: crate::PublicationPermit,
+        work: &mut crate::AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<crate::WorkspaceForkOutcome, crate::AuthorityError<G::Error>> {
+        delegate!(
+            self,
+            AsyncAuthorityStore,
+            authority,
+            fork_workspace(fork, permit, work, guard)
+        )
+    }
     async fn compare_and_append<G: crate::AuthorityGuard>(
         &self,
         request: crate::GuardedAppend,

@@ -292,7 +292,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         commit: &mut FilesystemCommit,
         authority: AuthorityId,
         proposed: &ProposedCommit,
-        source: Option<(StreamPath, u64, GenerationId)>,
+        source: Option<(StreamPath, GenerationLocator, GenerationId)>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
         let owner = self.operation_claims().owner_identity();
@@ -395,13 +395,16 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 "a sealed filesystem commit cannot accept contributions",
             ));
         }
-        let (path, expected) = self
+        let (path, located) = self
             .resolve_source_fork_point(authority, generation, work)
             .await?;
         grow(&mut commit.request.conditions, 1, work)?;
         super::policy::merge_condition(
             &mut commit.request.conditions,
-            CommitCondition::Tail { path, expected },
+            CommitCondition::Tail {
+                path,
+                expected: located.lineage,
+            },
             work,
         )?;
         commit.bind_owner(owner);

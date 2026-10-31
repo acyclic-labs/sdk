@@ -656,3 +656,133 @@ async fn append_rejects_unsealed_publications_before_changing_either_stream() ->
     }
     Ok(())
 }
+
+/// One fork of a volume holding `files` files, from its head or, when
+/// `from_head` is false, from the generation before it. Returns the change
+/// entries the fork's creation appended itself, the records it shares with
+/// its source, its changes tail and its source's changes tail.
+async fn fork_change_set(
+    files: usize,
+    from_head: bool,
+) -> Result<(usize, u64, u64, u64), Box<dyn Error>> {
+    let streams = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(streams.clone());
+    let fs = Fs::new(
+        store,
+        MemoryObjectStore::default(),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .create_workspace("fork-changes", WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    for file in 0..files {
+        workspace.write_text(&format!("/{file}"), "content").await?;
+    }
+    let older = workspace
+        .head(WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    workspace.write_text("/tip", "tip").await?;
+    let source = if from_head {
+        workspace
+            .head(WorkBudget::UNBOUNDED, &cancel)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+    } else {
+        older
+    };
+    let fork = workspace
+        .fork::<_, _, crate::WorkspaceError>(
+            "fork-changes-child",
+            crate::ForkOptions::from_generation(
+                source,
+                crate::IdempotencyKey::from_bytes([94; 16]),
+            ),
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+            &mut |_| {
+                std::future::ready(Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+    let placement = AuthorityPlacement::default();
+    let own = changes_path(&placement, fork.id().volume_id(), &mut work)?;
+    let shared = changes_path(&placement, workspace.id().volume_id(), &mut work)?;
+    let tail = streams.tail(own.clone()).await?;
+    let source_tail = streams.tail(shared.clone()).await?;
+    let records = streams
+        .read(ReadRequest {
+            key: None,
+            path: own.clone(),
+            from: 0,
+            limit: u32::try_from(tail)?,
+            at_least: Default::default(),
+        })
+        .await?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    let (mut listed, mut inherited) = (0, 0);
+    for record in &records {
+        let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
+        let appender = changes.context.get(..16).ok_or("context missing")?;
+        if record.origin == own {
+            assert_eq!(appender, fork.id().volume_id().into_bytes());
+            listed += changes
+                .entries
+                .iter()
+                .filter(|entry| !entry.key.is_empty())
+                .count();
+        } else {
+            // A shared record names its source's stream and volume.
+            assert_eq!(record.origin, shared);
+            assert_eq!(appender, workspace.id().volume_id().into_bytes());
+            inherited += 1;
+        }
+    }
+    // The fork's next publication continues its own stream after the cut.
+    fork.write_text("/after-fork", "later").await?;
+    assert_eq!(streams.tail(own).await?, tail + 1);
+    Ok((listed, inherited, tail, source_tail))
+}
+
+#[tokio::test]
+async fn an_unfiltered_fork_shares_its_source_changes_instead_of_listing_them() -> TestResult {
+    let (few, many) = (
+        fork_change_set(4, true).await?,
+        fork_change_set(32, true).await?,
+    );
+    // The fork lists nothing itself: it shares every source record up to
+    // the forked head and appends one record marking its own root, whatever
+    // the volume's size.
+    for (listed, inherited, tail, source_tail) in [few, many] {
+        assert_eq!(listed, 0, "a fork listed its namespace");
+        assert_eq!(inherited, source_tail);
+        assert_eq!(tail, inherited + 1);
+    }
+    // Negative control: a fork of an older generation shares no published
+    // prefix, so it lists every path, and that grows with the volume.
+    let (few_listed, many_listed) = (
+        fork_change_set(4, false).await?,
+        fork_change_set(32, false).await?,
+    );
+    assert_eq!((few_listed.1, many_listed.1), (0, 0));
+    assert!(
+        few_listed.0 >= 4 && many_listed.0 >= 32,
+        "{few_listed:?} {many_listed:?}"
+    );
+    Ok(())
+}

@@ -8,6 +8,7 @@ use acyclic_stream::{AppendRecord, Record};
 pub(super) fn project(
     mut record: Record,
     volume: VolumeId,
+    scope: [u8; 16],
     config: VolumeConfig,
     trie: &PathTrie,
     authorization: &acyclic_stream::session::ResourceAuthorization,
@@ -15,7 +16,7 @@ pub(super) fn project(
     let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
     if !acyclic_stream::is_changes(&record.headers)
         || changes.context.len() != 56
-        || changes.context.get(..16) != Some(volume.into_bytes().as_slice())
+        || !appended_by_context(&record, &changes.context, scope)
         || changes.entries.len() != record.headers.keys().len()
         || changes
             .entries
@@ -93,6 +94,21 @@ pub(super) fn project(
     Ok(FollowUpdate::Record(record))
 }
 
+/// A record's context names the volume whose changes stream appended it.
+/// That is this volume's, or for a forked volume an ancestor's whose changes
+/// it shares; Streams, not the record, names the appending stream.
+fn appended_by_context(record: &Record, context: &[u8], scope: [u8; 16]) -> bool {
+    let Some(appender) = context
+        .get(..16)
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+    else {
+        return false;
+    };
+    let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
+    crate::publication_changes::changes_path_text(scope, VolumeId::from_bytes(appender), &mut text)
+        .is_some_and(|path| path == record.origin.as_str())
+}
+
 fn canonical_resource(
     volume: VolumeId,
     path: &NamespacePath,
@@ -117,6 +133,12 @@ fn canonical_resource(
 #[cfg(all(test, feature = "memory", not(loom)))]
 mod tests {
     use super::*;
+
+    fn changes_stream(scope: [u8; 16], volume: VolumeId) -> acyclic_stream::StreamPath {
+        let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
+        let text = crate::publication_changes::changes_path_text(scope, volume, &mut text).unwrap();
+        acyclic_stream::StreamPath::new(text.to_owned()).unwrap()
+    }
     use acyclic_stream::wire;
     #[test]
     fn long_full_metadata_paths_cannot_hide_behind_an_allowed_truncated_key() {
@@ -240,10 +262,31 @@ mod tests {
             headers: appended.headers,
             commit_id: acyclic_stream::CommitId::from_bytes([9; 32]),
             committed_at_micros: 0,
-            origin: acyclic_stream::StreamPath::new("origin").unwrap(),
+            origin: changes_stream([0; 16], volume),
         };
+        // The context must name the volume whose changes stream appended the
+        // record, which Streams reports: another stream cannot claim it.
+        for origin in [
+            changes_stream([0; 16], VolumeId::from_bytes([7; 16])),
+            changes_stream([1; 16], volume),
+        ] {
+            let mut forged = record.clone();
+            forged.origin = origin;
+            assert!(matches!(
+                project(forged, volume, [0; 16], config, &trie, &authorization),
+                Err(StreamError::InvalidArgument)
+            ));
+        }
         assert!(matches!(
-            project(record.clone(), volume, config, &trie, &authorization).unwrap(),
+            project(
+                record.clone(),
+                volume,
+                [0; 16],
+                config,
+                &trie,
+                &authorization
+            )
+            .unwrap(),
             FollowUpdate::Progress { next: 4, .. }
         ));
         let allowing: crate::access::Policy =
@@ -268,7 +311,7 @@ mod tests {
         .unwrap();
         // The same record and credential are disclosed once the exact owner deny is removed.
         assert!(matches!(
-            project(record, volume, config, &allowing, &authorization).unwrap(),
+            project(record, volume, [0; 16], config, &allowing, &authorization).unwrap(),
             FollowUpdate::Record(_)
         ));
         for cut in [0, 1, entry.metadata.len() - 1] {

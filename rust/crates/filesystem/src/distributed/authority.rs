@@ -288,7 +288,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         &self,
         authority: AuthorityId,
         generation: GenerationId,
-        forked_at: u64,
+        forked_at: GenerationLocator,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<AuthoritySnapshot>, AuthorityStoreError> {
         let snapshot = match self.fork_snapshot(authority, work).await {
@@ -305,9 +305,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let bytes = locator.as_str().len() as u64;
         let record = self.record(locator, 0, work).await?;
         work.release(bytes)?;
-        let tail = decode_lineage_tail(&record.0.value)?;
+        let located = decode_generation_locator(&record.0.value)?;
         drop(record);
-        let from = tail.checked_sub(1).ok_or_else(|| {
+        let from = located.lineage.checked_sub(1).ok_or_else(|| {
             authority_corrupt(
                 "destination generation locator selected an empty lineage",
                 work,
@@ -318,7 +318,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 decode_lineage_generation(&record.value)
             })
             .await?;
-        if tail == forked_at && selected == generation {
+        if located == forked_at && selected == generation {
             Ok(Some(snapshot))
         } else {
             Err(AuthorityStoreError::RejectedStatic(
@@ -348,7 +348,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             Err(error) if authority_missing(&error) => return Ok(false),
             result => result?,
         };
-        let tail = decode_lineage_tail(&record.0.value)?;
+        let tail = decode_generation_locator(&record.0.value)?.lineage;
         drop(record);
         let from = tail.checked_sub(1).ok_or_else(|| {
             authority_corrupt("generation locator selected an empty lineage", work)
@@ -372,7 +372,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         authority: AuthorityId,
         generation: GenerationId,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(StreamPath, u64), AuthorityStoreError> {
+    ) -> Result<(StreamPath, GenerationLocator), AuthorityStoreError> {
         let lineage = work.path(&self.placement, authority, "/lineage", None)?;
         let locator = work.path(
             &self.placement,
@@ -391,9 +391,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             }
         })?;
         work.release(bytes)?;
-        let tail = decode_lineage_tail(&record.0.value)?;
+        let located = decode_generation_locator(&record.0.value)?;
         drop(record);
-        let from = tail.checked_sub(1).ok_or_else(|| {
+        let from = located.lineage.checked_sub(1).ok_or_else(|| {
             authority_corrupt("generation locator selected an empty lineage", work)
         })?;
         let record = self.record(lineage.clone(), from, work).await?;
@@ -403,6 +403,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 work,
             ));
         }
-        Ok((lineage, tail))
+        Ok((lineage, located))
     }
 }
