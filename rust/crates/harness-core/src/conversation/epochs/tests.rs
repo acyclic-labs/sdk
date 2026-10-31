@@ -183,35 +183,190 @@ proptest::proptest! {
     fn epoch_reducer_matches_materialized_history_at_every_commit_cut(
         schedule in proptest::collection::vec((0_u8..6, 0_u8..8, proptest::bool::ANY), 1..128)
     ) {
-        let mut durable = State::default();
-        let mut reference = Reference::default();
-        for (operation, argument, crash_before_commit) in schedule {
-            if operation == 0 {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all().build().unwrap()
+            .block_on(replay_snapshot_schedule(schedule));
+    }
+}
+
+async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
+    use acyclic_stream::{
+        AppendRecord, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream,
+        StreamProvider,
+    };
+
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("account/agent/conversation").unwrap();
+    let path = StreamPath::new("account/agent/epochs").unwrap();
+    let genesis = Snapshot::genesis(Epoch {
+        header: [1; 32],
+        profile: [2; 32],
+        summary: None,
+        key: SummaryKey {
+            source: source.clone(),
+            through: 0,
+            renderer: 1,
+            model: [3; 32],
+        },
+    })
+    .unwrap();
+    assert!(matches!(
+        provider
+            .commit(
+                genesis
+                    .publication(path.clone(), IdempotencyKey::unique())
+                    .unwrap()
+            )
+            .await
+            .unwrap(),
+        CommitOutcome::Committed(_)
+    ));
+    let body =
+        super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "summary.txt").unwrap();
+    let mut reference = Reference::default();
+    let mut swapped = false;
+    let mut interrupted = [false; 3];
+    // Reach a real swap in every generated case; random suffixes then
+    // interrupt preparations, completions and later swaps at commit.
+    let prefix = [
+        (0, 0, false),
+        (0, 0, false),
+        (1, 2, true),
+        (1, 2, false),
+        (2, 0, true),
+        (2, 0, false),
+        (4, 0, true),
+        (4, 0, false),
+    ];
+    for (operation, argument, crash_before_commit) in prefix.into_iter().chain(schedule) {
+        let head = reference.items.len() as u64;
+        let durable =
+            Snapshot::decode(&last_snapshot(&provider, &path).await, &source, head).unwrap();
+        if operation == 0 {
+            let request = CommitRequest {
+                deadline_unix_millis: None,
+                conditions: Vec::new(),
+                mutations: vec![CommitMutation::Append {
+                    path: source.clone(),
+                    records: vec![AppendRecord::from(vec![argument])],
+                }],
+                idempotency_key: IdempotencyKey::unique(),
+            };
+            if !crash_before_commit {
+                assert!(matches!(
+                    provider.commit(request).await.unwrap(),
+                    CommitOutcome::Committed(_)
+                ));
                 reference.items.push(false);
+            }
+        } else {
+            let mut candidate = durable.clone();
+            let mut expected = reference.clone();
+            let id = if operation == 1 {
+                candidate.epoch().key.digest_through(u64::from(argument))
             } else {
-                let mut candidate = durable;
-                let mut expected = reference.clone();
-                let id = [argument % 2; 32];
-                let head = reference.items.len() as u64;
-                let (actual, accepted) = match operation {
-                    1 => (candidate.prepare(id, u64::from(argument), head).is_ok(), expected.prepare(id, usize::from(argument))),
-                    2 | 3 => {
-                        let result = if operation == 2 { Completion::Ready } else { Completion::Failed };
-                        (candidate.complete(id, result).is_ok(), expected.complete(id, result))
-                    }
-                    _ => (candidate.swap(id, u64::from(argument / 2), head).is_ok(), expected.swap(id, u64::from(argument / 2))),
-                };
-                proptest::prop_assert_eq!(actual, accepted);
-                // Every transition is interrupted both before and after its
-                // linearization point across generated schedules.
-                if !crash_before_commit {
-                    durable = candidate;
+                candidate
+                    .state()
+                    .pending()
+                    .filter(|_| argument % 2 == 0)
+                    .map(|p| p.summary)
+                    .unwrap_or_else(|| candidate.epoch().key.digest_through(head + 1))
+            };
+            let (actual, accepted) = match operation {
+                1 => (
+                    candidate.prepare(u64::from(argument), head).is_ok(),
+                    expected.prepare(id, usize::from(argument)),
+                ),
+                2 | 3 => {
+                    let (result, outcome) = if operation == 2 {
+                        (Completion::Ready, SummaryOutcome::Ready(body.clone()))
+                    } else {
+                        (Completion::Failed, SummaryOutcome::Failed)
+                    };
+                    (
+                        candidate.complete(id, outcome).is_ok(),
+                        expected.complete(id, result),
+                    )
+                }
+                _ => {
+                    let mut next = candidate.epoch().clone();
+                    next.key.through = candidate
+                        .state()
+                        .pending()
+                        .filter(|_| argument % 2 == 0)
+                        .map_or(head + 1, |p| p.through);
+                    next.summary = Some(body.clone());
+                    // Odd selectors represent a result from another
+                    // preparation, not a request to repair its identity.
+                    let actual = candidate.swap(u64::from(argument / 2), next, head).is_ok();
+                    (actual, expected.swap(id, u64::from(argument / 2)))
+                }
+            };
+            assert_eq!(actual, accepted);
+            if !actual {
+                assert_eq!(candidate, durable);
+            } else {
+                let request = candidate
+                    .publication(path.clone(), IdempotencyKey::unique())
+                    .unwrap();
+                if crash_before_commit {
+                    interrupted[match operation {
+                        1 => 0,
+                        2 | 3 => 1,
+                        _ => 2,
+                    }] = true;
+                } else {
+                    assert!(matches!(
+                        provider.commit(request).await.unwrap(),
+                        CommitOutcome::Committed(_)
+                    ));
+                    swapped |= candidate.state().generation() > durable.state().generation();
                     reference = expected;
                 }
             }
-            reference.verify(durable);
         }
+        // Discard every volatile candidate and reopen after every
+        // step, including both sides of each commit/crash boundary.
+        let reopened = Snapshot::decode(
+            &last_snapshot(&provider, &path).await,
+            &source,
+            reference.items.len() as u64,
+        )
+        .unwrap();
+        assert_eq!(
+            provider.tail(source.clone()).await.unwrap(),
+            reference.items.len() as u64
+        );
+        reference.verify(reopened.state());
     }
+    assert!(swapped, "generated execution never reached a swap");
+    assert!(
+        interrupted.into_iter().all(|reached| reached),
+        "generated execution did not interrupt every publication boundary"
+    );
+}
+
+async fn last_snapshot(
+    provider: &acyclic_stream::MemoryStream,
+    path: &StreamPath,
+) -> acyclic_stream::Record {
+    use acyclic_stream::{ReadRequest, StreamProvider, StreamProviderExt as _};
+    use futures::TryStreamExt as _;
+
+    let tail = provider.tail(path.clone()).await.unwrap();
+    let mut records = provider
+        .read(ReadRequest {
+            key: None,
+            path: path.clone(),
+            from: tail - 1,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+        .unwrap();
+    let record = records.try_next().await.unwrap().unwrap();
+    assert!(records.try_next().await.unwrap().is_none());
+    record
 }
 
 #[test]
@@ -298,27 +453,7 @@ fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
 
 #[tokio::test]
 async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across_reopen() {
-    use acyclic_stream::{
-        CommitOutcome, MemoryStream, ReadRequest, StreamProvider, StreamProviderExt as _,
-    };
-    use futures::TryStreamExt as _;
-
-    async fn last(provider: &MemoryStream, path: &StreamPath) -> acyclic_stream::Record {
-        let tail = provider.tail(path.clone()).await.unwrap();
-        let mut records = provider
-            .read(ReadRequest {
-                key: None,
-                path: path.clone(),
-                from: tail - 1,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await
-            .unwrap();
-        let record = records.try_next().await.unwrap().unwrap();
-        assert!(records.try_next().await.unwrap().is_none());
-        record
-    }
+    use acyclic_stream::{CommitOutcome, MemoryStream, StreamProvider};
 
     let provider = MemoryStream::default();
     let source = StreamPath::new("account/agent/conversation").unwrap();
@@ -355,7 +490,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         CommitOutcome::Conflict(_)
     ));
 
-    let record = last(&provider, &path).await;
+    let record = last_snapshot(&provider, &path).await;
     let mut first = Snapshot::decode(&record, &source, 12).unwrap();
     let mut competing = first.clone();
     let summary = first.prepare(10, 12).unwrap();
@@ -365,7 +500,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         .unwrap();
     // A crash before commit leaves the previous complete snapshot intact.
     assert_eq!(
-        Snapshot::decode(&last(&provider, &path).await, &source, 12)
+        Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12)
             .unwrap()
             .state(),
         State::default()
@@ -386,7 +521,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         CommitOutcome::Conflict(_)
     ));
 
-    let prepared_record = last(&provider, &path).await;
+    let prepared_record = last_snapshot(&provider, &path).await;
     let mut reopened = Snapshot::decode(&prepared_record, &source, 12).unwrap();
     assert_eq!(reopened.state().demand(), Demand::Await(summary));
     assert!(matches!(
@@ -430,7 +565,8 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         provider.commit(request).await.unwrap(),
         CommitOutcome::Committed(_)
     ));
-    let mut reopened = Snapshot::decode(&last(&provider, &path).await, &source, 12).unwrap();
+    let mut reopened =
+        Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12).unwrap();
     assert_eq!(reopened.outcome(), Some(&SummaryOutcome::Ready(body)));
     let ready = reopened.clone();
     let mut wrong = next.clone();
@@ -459,7 +595,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         provider.commit(request).await.unwrap(),
         CommitOutcome::Committed(_)
     ));
-    let final_record = last(&provider, &path).await;
+    let final_record = last_snapshot(&provider, &path).await;
     let settled = Snapshot::decode(&final_record, &source, 12).unwrap();
     assert_eq!(settled.state().cursor(), 10);
     assert_eq!(settled.state().generation(), 1);
@@ -489,7 +625,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         CommitOutcome::Committed(_)
     ));
     assert_ne!(
-        Snapshot::decode(&last(&provider, &path).await, &source, 12)
+        Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12)
             .unwrap()
             .state()
             .cursor(),
