@@ -13,7 +13,7 @@ pub(super) fn decode_observation(bytes: &[u8], io: Option<&PreparationIo>) -> Re
     acyclic_auth::format::header(
         bytes,
         b"{\"version\":",
-        b"3,",
+        b"4,",
         || {
             canonical_boundary(
                 io,
@@ -98,7 +98,7 @@ pub(super) mod codec_fuzz {
             let restored = decode_observation(&encoded, None).expect("writer output decodes");
             assert_eq!(encode(&restored).unwrap(), encoded);
             let version = b"{\"version\":".len();
-            for unsupported in [b'0', b'2', b'4', u8::MAX] {
+            for unsupported in [b'0', b'2', b'3', u8::MAX] {
                 let mut header = encoded[..version + 2].to_vec();
                 header[version] = unsupported;
                 assert_eq!(
