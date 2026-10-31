@@ -27,9 +27,9 @@ extern "C" {
     #[wasm_bindgen(method, catch)]
     fn configure(
         this: &HostJournal,
-        configuration: &[u8],
+        configuration: &Uint8Array,
         maximum_frame_bytes: u32,
-        authority: &[u8],
+        authority: &Uint8Array,
     ) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(method, catch)]
     fn flush(this: &HostJournal) -> Result<js_sys::Promise, JsValue>;
@@ -168,7 +168,11 @@ impl JournalStream {
                 let retained = JsFuture::from(
                     self.0
                         .journal
-                        .configure(&self.0.limits.configuration(), maximum, &proposed)
+                        .configure(
+                            &Uint8Array::from(&self.0.limits.configuration()[..]),
+                            maximum,
+                            &Uint8Array::from(&proposed[..]),
+                        )
                         .map_err(unavailable)?,
                 )
                 .await

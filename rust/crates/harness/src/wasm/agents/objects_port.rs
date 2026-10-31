@@ -23,8 +23,9 @@ export interface WasmObjectsPort {
 /** The host's own keys beneath the one blob engine. Every write is atomic and
  * visible once it returns; `flush` makes every earlier write durable, and is
  * the only durability wait. `replace` and `removeIf` are atomic against every
- * other write of the key. A ranged read past the value's end throws. Results
- * may be returned directly or as promises. */
+ * other write of the key. Every byte argument is the host's own copy. A ranged
+ * read past the value's end throws. Results may be returned directly or as
+ * promises. */
 export interface WasmObjectsMedium {
     create(key: string, bytes: Uint8Array): boolean | Promise<boolean>;
     read(key: string, start: number | null, end: number | null): Uint8Array | null | Promise<Uint8Array | null>;
@@ -46,7 +47,7 @@ export type WasmObjectsSource =
 extern "C" {
     type ObjectsMedium;
     #[wasm_bindgen(method, catch)]
-    fn create(this: &ObjectsMedium, key: &str, bytes: &[u8]) -> Result<JsValue, JsValue>;
+    fn create(this: &ObjectsMedium, key: &str, bytes: &Uint8Array) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(method, catch)]
     fn read(
         this: &ObjectsMedium,
@@ -60,11 +61,15 @@ extern "C" {
     fn replace(
         this: &ObjectsMedium,
         key: &str,
-        expected: &[u8],
-        bytes: &[u8],
+        expected: &Uint8Array,
+        bytes: &Uint8Array,
     ) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(method, catch, js_name = removeIf)]
-    fn remove_if(this: &ObjectsMedium, key: &str, expected: &[u8]) -> Result<JsValue, JsValue>;
+    fn remove_if(
+        this: &ObjectsMedium,
+        key: &str,
+        expected: &Uint8Array,
+    ) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(method, catch)]
     fn list(
         this: &ObjectsMedium,
@@ -152,8 +157,14 @@ fn open(objects: &JsValue) -> Result<Arc<dyn Blobs>, JsValue> {
     }
 }
 
-/// The host's durable keys beneath the one blob engine.
+/// The host's durable keys beneath the one blob engine. Every byte argument
+/// it passes is the host's own copy, never a view of WebAssembly memory, so
+/// an asynchronous host may read it after memory grows.
 struct HostMedium(ObjectsMedium);
+
+fn owned(bytes: &[u8]) -> Uint8Array {
+    Uint8Array::from(bytes)
+}
 
 fn failed(error: &JsValue) -> MediumError {
     MediumError::Failed(std::io::Error::other(format!("{error:?}")))
@@ -196,7 +207,7 @@ fn position(value: u64) -> Result<f64, MediumError> {
 #[async_trait::async_trait(?Send)]
 impl Medium for HostMedium {
     async fn create(&self, key: &str, value: OwnedBytes) -> Result<bool, MediumError> {
-        flag(self.0.create(key, &value)).await
+        flag(self.0.create(key, &owned(&value))).await
     }
 
     async fn read(
@@ -231,11 +242,11 @@ impl Medium for HostMedium {
         expected: &[u8],
         value: OwnedBytes,
     ) -> Result<bool, MediumError> {
-        flag(self.0.replace(key, expected, &value)).await
+        flag(self.0.replace(key, &owned(expected), &owned(&value))).await
     }
 
     async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        flag(self.0.remove_if(key, expected)).await
+        flag(self.0.remove_if(key, &owned(expected))).await
     }
 
     async fn list(

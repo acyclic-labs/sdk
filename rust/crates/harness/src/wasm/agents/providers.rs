@@ -25,13 +25,17 @@ use acyclic_fs::{
     browser::IndexedDbObjectStore,
     storage::ObjectWrite,
 };
-use acyclic_objects::{Blobs, MemoryObjects};
+use acyclic_objects::{Blobs, MemoryObjects, RootId};
 use acyclic_stream::{
     BrowserStream, BrowserStreamLimits, MemoryLimits, MemoryStream, OwnedBytes, StreamError,
     StreamProvider,
 };
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
+
+/// The Objects root retaining every volume blob these providers publish.
+/// Retention is additive, so hosts sharing an account share it safely.
+const PUBLICATION_ROOT: [u8; 15] = *b"harness-volumes";
 
 /// The object store injected by one host.
 pub(super) enum Objects {
@@ -244,14 +248,20 @@ impl Providers {
 
     /// A host's own stream and objects providers: the stream carries the
     /// agents and their volumes' authority, `objects` the volumes' blobs,
-    /// and `durable` says whether both outlive the host.
+    /// and `durable` says whether both outlive the host. Every published
+    /// closure is retained under [`PUBLICATION_ROOT`] before its record is
+    /// written, so no collection of a shared account removes a blob a
+    /// committed volume names.
     pub(super) fn over(
         stream: Arc<dyn StreamProvider>,
         objects: Arc<dyn Blobs>,
         durable: bool,
         options: &WasmBrowserAgentOptions,
     ) -> Result<Self, JsValue> {
+        let root = RootId::new(PUBLICATION_ROOT)
+            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let objects = LogicalObjectStore::new(objects)
+            .with_publication_root(root)
             .with_object_limit(options.maximum_object_bytes)
             .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Self::new(

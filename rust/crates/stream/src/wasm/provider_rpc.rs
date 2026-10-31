@@ -1,5 +1,7 @@
 //! Canonical protobuf provider port. SQL, DO RPC and guest code share no Rust
 //! pointers; this adapter only projects calls and owns cursor cancellation.
+//! Every byte argument is the port's own copy, so an asynchronous port may
+//! read it after WebAssembly memory grows.
 use crate::*;
 use futures::StreamExt;
 use js_sys::{Promise, Reflect, Uint8Array};
@@ -13,13 +15,13 @@ extern "C" {
     #[derive(Clone)]
     type Port;
     #[wasm_bindgen(method, catch)]
-    fn dispatch(this: &Port, operation: &str, input: &[u8]) -> Result<Promise, JsValue>;
+    fn dispatch(this: &Port, operation: &str, input: &Uint8Array) -> Result<Promise, JsValue>;
     #[wasm_bindgen(method, catch)]
     fn open(
         this: &Port,
         operation: &str,
-        input: &[u8],
-        preceding: &[u8],
+        input: &Uint8Array,
+        preceding: &Uint8Array,
     ) -> Result<Promise, JsValue>;
     type Cursor;
     #[wasm_bindgen(method, catch)]
@@ -112,7 +114,8 @@ impl InjectedStream {
         if input.len() > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        let bytes = snapshot(reply(self.port.dispatch(operation, &input)).await?)?;
+        let bytes =
+            snapshot(reply(self.port.dispatch(operation, &Uint8Array::from(&input[..]))).await?)?;
         R::decode(bytes.as_slice()).map_err(|_| StreamError::InvalidResponse)
     }
     async fn cursor(
@@ -130,7 +133,12 @@ impl InjectedStream {
         // The original request carries its minimum. Registration observes it
         // atomically in the canonical provider, outside the host's write order.
         let anchor = preceding.map_or_else(Vec::new, |id| id.as_bytes().to_vec());
-        let cursor = reply(self.port.open(operation, &input, &anchor)).await?;
+        let cursor = reply(self.port.open(
+            operation,
+            &Uint8Array::from(&input[..]),
+            &Uint8Array::from(&anchor[..]),
+        ))
+        .await?;
         if !cursor.is_object() {
             return Err(StreamError::InvalidResponse);
         }
