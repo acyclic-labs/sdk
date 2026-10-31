@@ -1,5 +1,7 @@
 //! Replay selected real-storage inputs and report their actual touched units.
-use acyclic_codec_fuzz::object_schedule::{Report, Terminal, check, check_each_site, seeds};
+use acyclic_codec_fuzz::object_schedule::{
+    Report, Terminal, check_each_site, check_selected_site, seeds,
+};
 use acyclic_native_runtime::testing::DurableFault;
 use acyclic_objects::MediumError;
 use std::{collections::BTreeMap, error::Error};
@@ -35,6 +37,7 @@ fn replay_inputs(
     all_sites: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut coverage = BTreeMap::new();
+    let mut no_fault_inputs = 0;
     let (mut cases, mut max_writes, mut max_boundaries, mut max_requested) = (0, 0, 0, 0);
     let mut record = |report: Report| {
         let fault = match report.fault.fault {
@@ -80,16 +83,25 @@ fn replay_inputs(
     };
     for input in inputs {
         let bytes = input?;
-        if all_sites {
-            if !check_each_site(&bytes, &mut record)? {
-                return Err("input has no admitted full generation identity".into());
-            }
+        let mut reported = false;
+        let mut observe = |report| {
+            reported = true;
+            record(report);
+        };
+        let admitted = if all_sites {
+            check_each_site(&bytes, &mut observe)?
         } else {
-            record(check(&bytes)?.ok_or("input has no admitted full generation identity")?);
+            check_selected_site(&bytes, &mut observe)?
+        };
+        if !admitted {
+            return Err("input has no admitted full generation identity".into());
+        }
+        if !reported {
+            no_fault_inputs += 1;
         }
     }
     println!(
-        "cases={cases} covered-fault-outcomes={} max-physical-calls={max_writes} max-owned-boundaries={max_boundaries} max-requested-bytes={max_requested}",
+        "cases={cases} inputs-without-physical-cuts={no_fault_inputs} covered-fault-outcomes={} max-physical-calls={max_writes} max-owned-boundaries={max_boundaries} max-requested-bytes={max_requested}",
         coverage.len()
     );
     for ((operation, physical, ordinal, fault, stage, outcome), count) in coverage {

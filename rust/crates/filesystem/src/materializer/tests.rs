@@ -659,9 +659,11 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
     {
         desired.windows_attributes = desired.windows_attributes.map(|attributes| attributes ^ 2);
     }
+    let (image, _image_allocation) =
+        super::witness::encode_native_metadata(&desired, &backend.work())?;
     let edit = MaterializationEdit::SetMetadata {
         path: "directory".into(),
-        image: serde_json::to_vec(&desired)?,
+        image,
     };
     let materializer = JournaledMaterializer::new(Store::default(), backend.clone());
     let journal = materializer.prepare(plan(vec![edit.clone()]), None).await?;

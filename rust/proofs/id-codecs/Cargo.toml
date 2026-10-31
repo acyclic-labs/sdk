@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 acyclic-auth = { path = "../../crates/auth" }
-acyclic-fs = { path = "../../crates/filesystem", default-features = false }
+acyclic-fs = { path = "../../crates/filesystem", default-features = false, features = ["test-support"] }
 acyclic-native-runtime = { path = "../../crates/native-runtime" }
 acyclic-objects = { path = "../../crates/objects", default-features = false }
 acyclic-stream = { path = "../../crates/stream", default-features = false }
