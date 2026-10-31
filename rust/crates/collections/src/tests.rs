@@ -207,6 +207,19 @@ fn a_full_scan_negative_exposes_population_work_hidden_by_the_fixed_key_index()
     assert!(index_work <= 73);
     assert_eq!(scan_work, 4096);
     assert!(scan_work > index_work);
+    let before = work.items;
+    let after = 4094_u64.to_be_bytes();
+    let indexed = table.seek_after(after, &mut work)?;
+    let seek_work = work.items - before;
+    let mut scan_work = 0;
+    let scanned = scan
+        .iter()
+        .inspect(|_| scan_work += 1)
+        .find(|(key, _)| **key > after);
+    assert_eq!(indexed, scanned);
+    assert!(seek_work <= 25 * 8 + 3);
+    assert_eq!(scan_work, 4096);
+    assert!(scan_work > seek_work);
     Ok(())
 }
 
