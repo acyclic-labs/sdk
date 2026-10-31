@@ -7,37 +7,47 @@ use crate::{
 };
 use std::{marker::PhantomData, mem::size_of};
 
-impl OwnedBytes for MonitorFilter {
-    fn owned_heap_bytes(&self) -> Result<u64> {
-        let Self { keys, attributes } = self;
+owned_struct!(MonitorKeyRange { start, end });
+owned_struct!(MonitorCursor { next, preceding });
+owned_enum!(Lifetime { Session, Daemon });
+owned_enum!(Missed { CatchUp, Coalesce });
+owned_enum!(Recurrence { Every { milliseconds }, Cron { expression } });
+
+impl PreparationRecord for Monitor {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        let Self {
+            version,
+            id,
+            source,
+            cursor,
+            filter: MonitorFilter { keys, attributes },
+            wake,
+            deadline_unix_ms,
+            coalesce_key,
+        } = self;
         // A freshly decoded empty map has no retained node allocation.
         crate::core::owned_sum([
+            size_of::<Self>() as u64,
+            version.owned_heap_bytes()?,
+            id.owned_heap_bytes()?,
+            source.owned_heap_bytes()?,
+            cursor.owned_heap_bytes()?,
             keys.owned_heap_bytes()?,
             if attributes.is_empty() {
                 0
             } else {
                 attributes.owned_heap_bytes()?
             },
+            wake.owned_heap_bytes()?,
+            deadline_unix_ms.owned_heap_bytes()?,
+            coalesce_key.owned_heap_bytes()?,
         ])
+        .map(Some)
     }
 }
-owned_struct!(MonitorKeyRange { start, end });
-owned_struct!(MonitorCursor { next, preceding });
-owned_struct!(Monitor {
-    version,
-    id,
-    source,
-    cursor,
-    filter,
-    wake,
-    deadline_unix_ms,
-    coalesce_key
-});
-owned_enum!(Lifetime { Session, Daemon });
-owned_enum!(Missed { CatchUp, Coalesce });
-owned_enum!(Recurrence { Every { milliseconds }, Cron { expression } });
-impl OwnedBytes for Schedule {
-    fn owned_heap_bytes(&self) -> Result<u64> {
+
+impl PreparationRecord for Schedule {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         let Self {
             version,
             id,
@@ -52,6 +62,7 @@ impl OwnedBytes for Schedule {
             remaining,
         } = self;
         crate::core::owned_sum([
+            size_of::<Self>() as u64,
             version.owned_heap_bytes()?,
             id.owned_heap_bytes()?,
             owner.owned_heap_bytes()?,
@@ -64,18 +75,7 @@ impl OwnedBytes for Schedule {
             expires_unix_ms.owned_heap_bytes()?,
             remaining.owned_heap_bytes()?,
         ])
-    }
-}
-
-impl PreparationRecord for Monitor {
-    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
-        crate::core::owned_sum([size_of::<Self>() as u64, self.owned_heap_bytes()?]).map(Some)
-    }
-}
-
-impl PreparationRecord for Schedule {
-    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
-        crate::core::owned_sum([size_of::<Self>() as u64, self.owned_heap_bytes()?]).map(Some)
+        .map(Some)
     }
 
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {

@@ -166,8 +166,7 @@ impl Schedule {
                 coalesce_key: None,
             },
         };
-        let mut next = self.clone();
-        next.remaining = self.remaining.map(|n| n - 1);
+        let remaining = self.remaining.map(|n| n - 1);
         let after = match self.missed {
             Missed::CatchUp => self.next_due_unix_ms,
             Missed::Coalesce => now,
@@ -186,10 +185,11 @@ impl Schedule {
             }
         };
         let next = due
-            .filter(|due| {
-                next.remaining != Some(0) && next.expires_unix_ms.is_none_or(|end| *due < end)
-            })
+            .filter(|due| remaining != Some(0) && self.expires_unix_ms.is_none_or(|end| *due < end))
             .map(|due| {
+                // Only a retained recurrence needs another owned document.
+                let mut next = self.clone();
+                next.remaining = remaining;
                 next.next_due_unix_ms = due;
                 next
             });
