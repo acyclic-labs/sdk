@@ -37,7 +37,6 @@ impl RoutePattern {
     /// Admit exactly the supported CF route grammar, normalizing only host case.
     pub fn parse(value: &str) -> Result<Self, RouteError> {
         if value.is_empty()
-            || value.len() > 4096
             || value.contains(['?', '#', '\\'])
             || value.bytes().any(|b| b.is_ascii_control() || b == b' ')
         {
