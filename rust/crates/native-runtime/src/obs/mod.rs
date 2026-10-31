@@ -9,7 +9,9 @@ mod report_port;
 mod wait_report;
 pub use report_port::{ReportAck, ReportOutcome, ReportPort, ReportRequest};
 mod waiting;
-pub use acyclic_observability::{Metrics, Operations, Query, QueryError, Snapshot};
+pub use acyclic_observability::{
+    DurabilitySyscall, Metrics, Operations, Outcome, Query, QueryError, Sample, Sink, Snapshot,
+};
 pub(crate) use tracing::field::Empty;
 pub use wait_report::{WaitReport, WaitSnapshot};
 pub use waiting::{Waiting, waiting, waiting_sync};

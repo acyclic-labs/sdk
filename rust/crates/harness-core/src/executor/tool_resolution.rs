@@ -122,6 +122,24 @@ impl StockExecution<'_> {
         reason: ToolFailureKind,
         cause: ToolFailureCause,
     ) -> Result<crate::model::ToolResultContent> {
+        super::phase::Publication::ToolFailureRecord
+            .observe(
+                operation_id,
+                step,
+                self.publish_tool_failure(journal, operation_id, step, call_id, reason, cause),
+            )
+            .await
+    }
+
+    async fn publish_tool_failure(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        call_id: &str,
+        reason: ToolFailureKind,
+        cause: ToolFailureCause,
+    ) -> Result<crate::model::ToolResultContent> {
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;

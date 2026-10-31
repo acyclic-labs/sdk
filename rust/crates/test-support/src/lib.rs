@@ -53,6 +53,8 @@ pub mod module_cases;
 pub mod partitions;
 pub mod physical_cuts;
 pub mod readiness;
+/// Population-independent work and retained-resource qualification.
+pub mod scale;
 #[cfg(all(test, feature = "source-catalog"))]
 mod source_catalog_build;
 /// Compiler observations made on the build host for every module path case.
