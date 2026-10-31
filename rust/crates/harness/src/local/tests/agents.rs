@@ -190,7 +190,7 @@ async fn served_shared_interpreter_uses_original_session_and_journaled_file_call
         .await?;
     assert_eq!(provider.request_count(), requests);
     let session = Arc::clone(harness.agents.get().unwrap().runtime.session());
-    let retained = session.agent(&crate::AgentId::from_bytes([71; 16]))?;
+    let retained = session.agent(&harness.agents().await?.1.id())?;
     let stopped = retained
         .preparation()?
         .original_native_work()
