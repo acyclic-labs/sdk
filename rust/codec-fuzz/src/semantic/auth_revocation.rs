@@ -42,6 +42,8 @@ fn initial() -> &'static SignedRevocation {
             blocks: vec![Revocation {
                 id: BLOCK.to_vec(),
                 expires_at_unix_seconds: NOW + 1,
+                reason: "retained authority".into(),
+                label: None,
             }],
             issued_at_unix_seconds: 10,
         }))
@@ -293,6 +295,8 @@ pub(super) fn seeds() -> Vec<(&'static str, &'static str, Vec<u8>)> {
             blocks: vec![Revocation {
                 id: vec![19; 32],
                 expires_at_unix_seconds: NOW + 1,
+                reason: "targeted authority".into(),
+                label: Some("target".into()),
             }],
             revoke_all_before_epoch: epoch,
         }));
@@ -351,10 +355,14 @@ pub(super) fn seeds() -> Vec<(&'static str, &'static str, Vec<u8>)> {
                     Revocation {
                         id: BLOCK.to_vec(),
                         expires_at_unix_seconds: NOW + 1,
+                        reason: "retained authority".into(),
+                        label: None,
                     },
                     Revocation {
                         id: vec![19; 32],
                         expires_at_unix_seconds: NOW + 1,
+                        reason: "targeted authority".into(),
+                        label: Some("target".into()),
                     },
                 ]
             } else {
