@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
@@ -11,6 +11,20 @@ const rust = 'rust/crates/example/src/lib.rs';
 const script = 'typescript/packages/example/test/control.ts';
 const disposition = (site, classification, producer, terminal, negativeControl) => ({
  file: site.file, fingerprint: site.fingerprint, classification, producer, terminal, negativeControl,
+});
+
+test('Python comments and multiline strings preserve executable timer detection', () => {
+ const file = 'scripts/control.py';
+ const comments = "# the producer's original owner\nvalue = 'ordinary # string'\n";
+ assert.deepEqual(pollingSites(file, comments), []);
+ for (const source of [
+  comments + 'time.sleep(1)\n',
+  comments + 'program = """first line\nThread.Sleep(1)\nlast line"""\n',
+  comments + "program = '''first line\ntime.sleep(1)\nlast line'''\n",
+ ]) assert.ok(newPollingSites(file, '', source).length);
+ const owned = readFileSync(new URL('./graphcoder-e2e/owned-process.py', import.meta.url), 'utf8');
+ assert.doesNotThrow(() => pollingSites('scripts/graphcoder-e2e/owned-process.py', owned));
+ assert.deepEqual(newPollingSites('scripts/graphcoder-e2e/owned-process.py', owned, owned), []);
 });
 
 test('new direct and indirect readiness mutations are rejected', () => {

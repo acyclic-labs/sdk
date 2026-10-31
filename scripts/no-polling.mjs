@@ -104,6 +104,8 @@ function scriptTokens(file, source) {
 // Quoted child programs and computed property names remain visible as literals.
 function nativeTokens(source, file) {
  const rust = file.endsWith('.rs');
+ const python = file.endsWith('.py');
+ const hashComments = /\.(?:py|sh|ps1|toml|ya?ml)$/.test(file);
  const slashComments = /\.(?:rs|[ch]|cc|cpp|cs|proto)$/.test(file);
  const escapedIdentifiers = /\.(?:[ch]|cc|cpp|cs)$/.test(file);
  const wordPattern = escapedIdentifiers
@@ -121,6 +123,7 @@ function nativeTokens(source, file) {
  while (at < source.length) {
   const tail = source.slice(at);
   if (/^\s/.test(tail)) { emit(at + tail.match(/^\s+/)[0].length); continue; }
+  if (hashComments && tail.startsWith('#')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
   if (slashComments && tail.startsWith('//')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
   if (slashComments && tail.startsWith('/*')) {
    let depth = 1;
@@ -141,6 +144,13 @@ function nativeTokens(source, file) {
    emit(end + close.length, 'literal'); continue;
   }
   const quote = tail[0];
+  if (python && (tail.startsWith('"""') || tail.startsWith("'''"))) {
+   const delimiter = tail.slice(0, 3);
+   let end = at + 3;
+   while (end < source.length && !source.startsWith(delimiter, end)) end += source[end] === '\\' ? 2 : 1;
+   if (end >= source.length) throw new Error('unterminated Python triple-quoted string');
+   emit(end + 3, 'literal'); continue;
+  }
   const character = rust && quote === "'" && tail.match(/^'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\r\n])'/u);
   if (character) { emit(at + character[0].length, 'literal'); continue; }
   if (quote === '"' || (!rust && quote === "'")) {

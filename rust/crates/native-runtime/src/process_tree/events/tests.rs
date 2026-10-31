@@ -6,7 +6,7 @@ fn a_wake_time_alone_fires_once_it_passes() -> io::Result<()> {
     let started = Instant::now();
     let wait = arm(&[], Some(started + Duration::from_millis(20)))?;
     assert!(!wait.fired());
-    wait.block()?;
+    wait.block().into_result()?;
     assert!(started.elapsed() >= Duration::from_millis(20));
     Ok(())
 }
@@ -26,7 +26,9 @@ fn a_dropped_wait_leaves_nothing_armed() -> io::Result<()> {
 fn a_later_earlier_wake_time_is_not_delayed_by_a_distant_one() -> io::Result<()> {
     let _distant = arm(&[], Some(Instant::now() + Duration::from_secs(3600)))?;
     let started = Instant::now();
-    arm(&[], Some(started + Duration::from_millis(10)))?.block()?;
+    arm(&[], Some(started + Duration::from_millis(10)))?
+        .block()
+        .into_result()?;
     assert!(started.elapsed() < Duration::from_secs(60));
     Ok(())
 }
@@ -40,9 +42,11 @@ fn a_pipe_fires_when_its_data_arrives_and_not_before() -> io::Result<()> {
     let wait = arm(&[Source::Readable(reader.as_fd())], None)?;
     assert!(!wait.fired(), "an empty pipe is not readable");
     writer.write_all(b"x")?;
-    wait.block()?;
+    wait.block().into_result()?;
     // A writable pipe with room is ready at once.
-    arm(&[Source::Writable(writer.as_fd())], None)?.block()?;
+    arm(&[Source::Writable(writer.as_fd())], None)?
+        .block()
+        .into_result()?;
     Ok(())
 }
 
@@ -55,10 +59,10 @@ fn an_exit_fires_for_a_child_that_exits_and_one_that_already_has() -> io::Result
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null()),
     )?;
-    tree.readiness()?.0.block()?;
+    tree.readiness()?.0.block().into_result()?;
     assert!(tree.try_wait(None)?.is_some());
     // The child is now unreaped and exited: the same source still fires.
-    tree.readiness()?.0.block()?;
+    tree.readiness()?.0.block().into_result()?;
     assert!(tree.try_wait(None)?.is_some());
     Ok(())
 }
@@ -135,9 +139,9 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
             registry: Mutex::new(Registry::default()),
         })
     }
-    fn failure(wait: &mut Wait<'_>, context: &mut Context<'_>) -> io::Error {
+    fn failure(wait: &mut Wait<'_>, context: &mut Context<'_>) -> Arc<io::Error> {
         match Pin::new(wait).poll(context) {
-            Poll::Ready(Err(error)) => error,
+            Poll::Ready(ProcessWaitOutcome::ServiceFailed(error)) => error,
             other => panic!("original wait did not return producer failure: {other:?}"),
         }
     }
@@ -189,7 +193,10 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
     for error in [
         failure(&mut pending, &mut context),
         failure(&mut early, &mut context),
-        blocked_result.unwrap_err(),
+        match blocked_result {
+            ProcessWaitOutcome::ServiceFailed(error) => error,
+            other => panic!("original blocking wait lost failure: {other:?}"),
+        },
     ] {
         assert_eq!(error.kind(), actual.kind());
         assert_eq!(error.raw_os_error(), actual.raw_os_error());

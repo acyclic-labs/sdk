@@ -70,6 +70,7 @@ fn stderr_tail_is_bounded_and_drained_after_stdout_closes() {
                 .unwrap()
                 .0
                 .block()
+                .into_result()
                 .expect("original native event succeeded");
         }
     }
@@ -191,6 +192,7 @@ fn native_session_events_retain_the_original_meter_and_process_owner() {
             .unwrap()
             .0
             .block()
+            .into_result()
             .expect("original native event succeeded");
     }
     slot.require_stdin_complete().unwrap();

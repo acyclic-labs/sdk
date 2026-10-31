@@ -60,7 +60,7 @@ impl Running {
             return Poll::Pending;
         };
         self.armed = None;
-        if let Err(error) = result {
+        if let Err(error) = result.into_result() {
             self.failure.get_or_insert_with(|| error.to_string());
         }
         Poll::Ready(())

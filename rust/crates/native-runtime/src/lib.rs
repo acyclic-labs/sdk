@@ -57,7 +57,8 @@ pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, CaptureWakes, ControlledCapture,
     OwnedCaptureInput, ProcessCaptureFailure, ProcessCaptureStream, ProcessChunk, ProcessControl,
     ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput,
-    ProcessReadiness, ProcessTree, ProcessTreeIo, ProcessTreeStorage, ProcessWake,
+    ProcessReadiness, ProcessTree, ProcessTreeIo, ProcessTreeStorage, ProcessWaitOutcome,
+    ProcessWake,
 };
 #[cfg(windows)]
 pub use process_tree::{ProcessPipeReader, ProcessPipeWriter};

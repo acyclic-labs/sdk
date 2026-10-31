@@ -127,7 +127,7 @@ fn plan(cache: &CachedObjectStore<()>) -> Result<ReadPlan, ObjectStoreError> {
 
 #[test]
 fn fills_coalesce_only_within_their_namespace() {
-    let first = store(2, 1);
+    let first = store(2);
     let second = first.share_cache_with(()).unwrap();
     let ReadPlan::Leader(flight) = plan(&first).unwrap() else {
         panic!("no leader")
@@ -183,7 +183,7 @@ fn drops_after_unlock(retirement: Retirement) -> bool {
         }
     }
 
-    let cache = store(1, 1);
+    let cache = store(1);
     let unlocked = Arc::new(AtomicBool::new(false));
     let value = DecodedCacheValue {
         value: Arc::new(ObserveDrop {
@@ -244,7 +244,7 @@ fn reentrant_eviction_preserves_new_admission() {
     }
 
     for same_key in [false, true] {
-        let cache = store(1, 1);
+        let cache = store(1);
         let requested = object(3);
         let reentered = if same_key { requested } else { object(2) };
         let value = DecodedCacheValue {
@@ -288,7 +288,7 @@ fn namespace_retirement_preserves_peers_leases_and_unlocked_destruction() {
         !drops_after_unlock(Retirement::Locked),
         "drop observer missed the held lock"
     );
-    let first = store(4, 2);
+    let first = store(4);
     let second = first.share_cache_with(()).unwrap();
     first
         .insert(

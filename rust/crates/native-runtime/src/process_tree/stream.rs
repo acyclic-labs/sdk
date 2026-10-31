@@ -181,7 +181,9 @@ impl ProcessTree {
                         Ok(control) => control,
                         Err(error) => break 'capture Err(error),
                     };
-                    match control_first(control, sender.reserve()).await {
+                    match control_first(async { control.await.into_result() }, sender.reserve())
+                        .await
+                    {
                         Ok(Some(Ok(permit))) => break permit,
                         Ok(Some(Err(_))) => break 'capture Err(receiver_lost()),
                         Err(error) => break 'capture Err(error),
@@ -236,14 +238,14 @@ impl ProcessTree {
                         .await
                         {
                             Ok(Some(result)) => {
-                                if let Err(error) = result {
+                                if let Err(error) = result.into_result() {
                                     break Err(error);
                                 }
                             }
                             Ok(None) => break Err(receiver_lost()),
                             Err(error) => break Err(error),
                         }
-                    } else if let Err(error) = wait.await {
+                    } else if let Err(error) = wait.await.into_result() {
                         break Err(error);
                     }
                 }

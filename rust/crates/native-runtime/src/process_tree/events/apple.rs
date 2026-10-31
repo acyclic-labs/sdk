@@ -174,6 +174,11 @@ impl Poller {
             return Err(io::Error::last_os_error());
         }
         for event in events.iter().take(usize::try_from(count).unwrap_or(0)) {
+            if event.flags & libc::EV_ERROR != 0 && event.data != 0 {
+                return Err(io::Error::from_raw_os_error(
+                    i32::try_from(event.data).map_err(io::Error::other)?,
+                ));
+            }
             if event.filter != libc::EVFILT_USER {
                 ready.push(event.udata.addr() as u64);
             }

@@ -156,6 +156,7 @@ fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation() -
     assert!(frame.is_none());
     let mut tree = custody.take().expect("same actual leader owns its frame");
     assert!(tree.prepared_spawn.is_some());
+    tree.readiness()?.0.block().into_result()?;
     assert_eq!(
         original.memory.load(std::sync::atomic::Ordering::Acquire),
         bytes
@@ -600,6 +601,7 @@ fn owned_streaming_stdout_rejects_empty_reads_and_reaches_eof() {
                 .expect("arm original stdout or exit")
                 .0
                 .block()
+                .into_result()
                 .expect("original native event succeeded"),
         }
     }
@@ -762,6 +764,7 @@ fn queued_stdin_delivers_exact_bytes_and_eof_through_the_capture_pump() {
             .expect("arm original stdin or exit")
             .0
             .block()
+            .into_result()
             .expect("original native event succeeded");
     }
     tree.require_stdin_complete().expect("prompt delivered");
@@ -858,6 +861,7 @@ fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
             .expect("arm original child exit")
             .0
             .block()
+            .into_result()
             .expect("original native event succeeded");
         assert!(
             tree.try_wait(None)

@@ -160,7 +160,16 @@ where
         {
             acyclic_stream::CommitOutcome::Committed(_) => {}
             acyclic_stream::CommitOutcome::Conflict(_) => {
-                let snapshot = self.multipart_snapshot(&workspace, &upload_id).await?;
+                let snapshot = self
+                    .multipart_snapshot(&workspace, &upload_id)
+                    .await
+                    .map_err(|error| {
+                        if error.code() == &s3s::S3ErrorCode::NoSuchUpload {
+                            s3s::s3_error!(SlowDown)
+                        } else {
+                            error
+                        }
+                    })?;
                 if snapshot.key != request.input.key {
                     return Err(s3s::s3_error!(InvalidRequest));
                 }

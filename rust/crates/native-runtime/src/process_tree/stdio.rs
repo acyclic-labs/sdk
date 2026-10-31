@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// A transferred child output pipe. Waiting for input occupies no worker.
 pub struct ProcessPipeReader {
-    wait: Option<events::Wait>,
+    wait: Option<events::Wait<'static>>,
     pipe: ChildStdout,
     operation: Arc<events::PipeOperation>,
 }
@@ -39,7 +39,7 @@ impl AsyncRead for ProcessPipeReader {
         let this = self.get_mut();
         loop {
             if let Some(wait) = &mut this.wait {
-                ready!(Pin::new(wait).poll(cx));
+                ready!(Pin::new(wait).poll(cx)).into_result()?;
                 this.wait = None;
             }
             // SAFETY: read_pipe writes into the destination without reading it.
@@ -202,7 +202,7 @@ mod tests {
 /// A transferred child input pipe. Flush joins physical delivery.
 /// The shared completion service retains pending bytes if the caller disappears.
 pub struct ProcessPipeWriter {
-    wait: Option<events::Wait>,
+    wait: Option<events::Wait<'static>>,
     pipe: Option<ChildStdin>,
     writer: platform::Writer,
 }
@@ -224,7 +224,8 @@ impl ProcessPipeWriter {
             if self.wait.is_none() {
                 self.wait = Some(events::arm(&[events::Source::Pipe(operation)], None)?);
             }
-            ready!(Pin::new(self.wait.as_mut().ok_or(io::ErrorKind::BrokenPipe)?).poll(cx));
+            ready!(Pin::new(self.wait.as_mut().ok_or(io::ErrorKind::BrokenPipe)?).poll(cx))
+                .into_result()?;
             self.wait = None;
         }
         self.wait = None;
