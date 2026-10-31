@@ -52,6 +52,7 @@ impl StockExecution<'_> {
                 ContextPipeline::summary_source(source, revision, self.io)?,
                 summary_output,
             )),
+            single_request: false,
             compaction: once_cell::sync::OnceCell::new(),
             records: tokio::sync::Mutex::new(Default::default()),
             working_tail: tokio::sync::Mutex::new(Default::default()),

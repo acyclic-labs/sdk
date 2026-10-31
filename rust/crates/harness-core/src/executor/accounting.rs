@@ -113,6 +113,13 @@ pub(super) fn stock_json_bound<T: Serialize>(
 
 impl StockExecution<'_> {
     pub(super) fn model_capacity(&self) -> Result<Option<crate::context::ModelContextCapacity>> {
+        if self.single_request {
+            let capacity =
+                stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
+            capacity.validate()?;
+            capacity.output_reservation(self.output_tokens())?;
+            return Ok(Some(capacity));
+        }
         match self.compaction_policy()? {
             crate::context::CompactionPolicy::Disabled => Ok(None),
             crate::context::CompactionPolicy::Threshold(policy) => {

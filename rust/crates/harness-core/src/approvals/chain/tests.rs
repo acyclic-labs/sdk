@@ -284,7 +284,9 @@ async fn automatic_and_parent_decisions_require_their_authenticated_role() -> Re
     else {
         panic!("rules must evaluate before deciding");
     };
+    let journal = crate::executor::tests::Journal::default();
     let review = super::super::automatic_agent_review(
+        (&journal, None),
         &BTreeMap::new(),
         &files,
         &request,

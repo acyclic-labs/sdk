@@ -112,8 +112,10 @@ pub(crate) use content::verify_model_contents_scoped;
 pub use content::verify_model_contents_with_summary_authorization;
 pub(crate) use tool_settlement::tool_settlement_key;
 pub use tool_settlement::{ToolSettlement, ToolSettlementQuery, ToolTerminalOutcome};
+mod inference;
 mod retained;
 mod turn;
+pub use inference::InferenceResult;
 pub(crate) use phase::DispatchPhase;
 pub use phase::PreDispatchFailure;
 pub(crate) use retained::{completed_tool_projection, retained_model_step};
@@ -608,7 +610,7 @@ pub struct ModelEventAdmission {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 mod validation;
 #[doc(hidden)]

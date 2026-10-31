@@ -129,7 +129,7 @@ impl StockExecution<'_> {
         Ok(())
     }
 
-    fn collect_step_events(
+    pub(super) fn collect_step_events(
         &self,
         input: &TurnInput,
         step: u32,
@@ -161,6 +161,13 @@ impl StockExecution<'_> {
                     arguments,
                     metadata,
                 }) => {
+                    if self.single_request {
+                        return Err(stock_boundary(
+                            self.io,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "single inference request attempted a tool call",
+                        ));
+                    }
                     let invocation = ToolInvocation::for_model_call(
                         input.operation_id,
                         step,

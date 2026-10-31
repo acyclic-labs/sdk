@@ -14,6 +14,10 @@ mod llm;
 /// Escalation is durable before another stage starts. A decisive review must be
 /// settled by the authenticated approval owner; the review itself grants nothing.
 pub async fn automatic_review(
+    execution: (
+        &dyn crate::executor::ExecutionJournal,
+        Option<&crate::executor::PreparationIo>,
+    ),
     models: &BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     files: &dyn ApprovalFiles,
     request: &ApprovalRequest<'_>,
@@ -55,10 +59,10 @@ pub async fn automatic_review(
                 Error::Unsupported("independent approver model is not bound".into())
             })?;
             llm::review_model(
-                files,
+                execution,
                 request,
                 &expected.principal,
-                (model, provider.as_ref()),
+                (model, provider),
                 limits,
             )
             .await?

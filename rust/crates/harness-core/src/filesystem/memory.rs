@@ -331,7 +331,9 @@ impl<
         self.approvals
             .decide(id, responder, approved, reason)
             .await?;
-        self.approvals.outcome(id).await
+        self.approvals
+            .outcome(id, self.journal.as_ref(), None)
+            .await
     }
 
     /// Supplies the exact ref-only journal required by `HarnessBuilder`.
