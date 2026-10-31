@@ -37,6 +37,10 @@ struct LostReader<'a> {
     reads: &'a std::cell::Cell<usize>,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("core decoder reader lost")]
+struct ReaderLost;
+
 impl std::io::Read for LostReader<'_> {
     fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
         if output.is_empty() {
@@ -44,7 +48,10 @@ impl std::io::Read for LostReader<'_> {
         }
         self.reads.set(self.reads.get() + 1);
         if self.input.is_empty() {
-            return Err(std::io::ErrorKind::BrokenPipe.into());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                ReaderLost,
+            ));
         }
         let length = self.input.len().min(output.len());
         let (bytes, rest) = self.input.split_at(length);
@@ -109,7 +116,17 @@ pub fn check(bytes: &[u8]) -> bool {
         };
         let result = measured_decode_reader::<LogFrame<Change>>(reader, bytes.len() as u64, &work);
         let error_kind = match result {
-            Err(LocalCoreStateStoreError::Io(error)) => Some(error.kind()),
+            Err(LocalCoreStateStoreError::Io(error)) => {
+                if error.kind() == std::io::ErrorKind::BrokenPipe {
+                    assert!(
+                        error
+                            .get_ref()
+                            .is_some_and(|cause| cause.is::<ReaderLost>()),
+                        "reader refusal retains original cause; recovery: cargo run --example capture",
+                    );
+                }
+                Some(error.kind())
+            }
             Err(LocalCoreStateStoreError::Json(error)) => error.io_error_kind(),
             result => panic!(
                 "reader refusal at {length} bytes: {:?}; recovery: cargo run --example capture",

@@ -250,6 +250,28 @@ pub(super) fn read_file<T: DeserializeOwned>(
     measured_decode_reader(reader, length, work).map(Some)
 }
 
+// Parser lookahead must not retry a failed producer or erase its original cause.
+struct DecodeReader<R> {
+    inner: R,
+    failure: Option<std::io::Error>,
+}
+
+impl<R: Read> Read for DecodeReader<R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(error) = &self.failure {
+            return Err(error.kind().into());
+        }
+        match self.inner.read(output) {
+            Err(error) if error.kind() != std::io::ErrorKind::Interrupted => {
+                let kind = error.kind();
+                self.failure = Some(error);
+                Err(kind.into())
+            }
+            result => result,
+        }
+    }
+}
+
 // SDK payloads are funded before decode; std tree backing remains opaque.
 pub(super) fn measured_decode_reader<T: DeserializeOwned>(
     reader: impl Read,
@@ -275,18 +297,25 @@ pub(super) fn measured_decode_reader<T: DeserializeOwned>(
         allocation: std::cell::RefCell::new(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
         failure: std::cell::RefCell::new(None),
     };
-    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let mut reader = DecodeReader {
+        inner: reader,
+        failure: None,
+    };
+    let mut deserializer = serde_json::Deserializer::from_reader(&mut reader);
     let result = T::deserialize(Funded {
         inner: &mut deserializer,
         decode: &decode,
         kind: DecodeKind::Borrowed,
     })
     .and_then(|value| deserializer.end().map(|()| value));
+    drop(deserializer);
     if let Some(error) = decode.failure.borrow_mut().take() {
         return Err(LocalCoreStateStoreError::from(error));
     }
+    if let Some(error) = reader.failure {
+        return Err(LocalCoreStateStoreError::from(error));
+    }
     let value = result?;
-    drop(deserializer);
     Ok((value, decode.allocation.into_inner()))
 }
 
