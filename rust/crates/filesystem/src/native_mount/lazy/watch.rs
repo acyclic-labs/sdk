@@ -7,6 +7,12 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    fn delivery_lost(&self) {
+        if let Some(authored) = self.authored.upgrade() {
+            authored.cancel();
+        }
+    }
+
     fn source_changed(
         &self,
         changes: &[SourceChange],

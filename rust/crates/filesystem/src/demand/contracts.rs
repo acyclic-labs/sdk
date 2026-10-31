@@ -151,15 +151,34 @@ pub trait SourceChangeSink: Send + Sync {
         changes: &[SourceChange],
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), DemandError>;
+
+    /// Delivery has failed, stopped, or lost its public owner: invalidate
+    /// retained observations and wake their consumers before returning.
+    /// This terminal signal may repeat. It cannot
+    /// require accounting credit: the original delivery may have exhausted it.
+    /// Do not synchronously stop the watch from its own delivery callback.
+    fn delivery_lost(&self);
+}
+
+/// Confirmation of the changes preceding one source fence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceFence {
+    /// All preceding changes reached the sink. Later changes remain possible.
+    Confirmed,
+    /// The producer cannot establish a delivery cut. A retained observation
+    /// cannot be qualified as unchanged by this fence, even if delivery is exact.
+    Unconfirmed,
 }
 
 /// Live observation of every change made to one source outside every view
 pub trait SourceWatch: Send + Sync {
-    /// Delivers preceding changes within the accounting allowance.
+    /// Delivers preceding changes within the accounting allowance, preserving
+    /// whether the producer established a delivery cut. Success alone and
+    /// [`Self::is_exact`] do not qualify a retained observation as unchanged.
     fn fence(
         &self,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<(), DemandError>;
+    ) -> Result<SourceFence, DemandError>;
 
     /// Quiesces this subscription within the accounting allowance.
     fn stop(&self, accounting: &mut crate::kernel::KernelAccounting<'_>)
