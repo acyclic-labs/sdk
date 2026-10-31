@@ -369,7 +369,11 @@ async fn a_cached_refusal_observes_once_without_reconsidering_the_command()
             .await?
             .is_none()
     );
-    assert_eq!(source.tail(path).await?, 2);
+    assert_eq!(replica.provider.tail(path.clone()).await?, 2);
+    drop(replica);
+    drop(source);
+    let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+    assert_eq!(reopened.tail(path).await?, 2);
     Ok(())
 }
 
@@ -432,12 +436,16 @@ async fn a_lost_acceptance_clock_proposal_refreshes_only_the_next_invocation()
     assert_eq!(replica.journal.proposals.len(), 2);
     assert_eq!(replica.journal.proposals[0], replica.journal.proposals[1]);
     let reads = replica.journal.pages.len();
-    // Retained replay at a current cut needs neither SQL nor a new proposal.
+    // Retained replay at a current cut needs neither a journal read nor a proposal.
     replica
         .execute(WriteRequest::Append(request), None, 1)
         .await?;
     assert_eq!(replica.journal.pages.len(), reads);
     assert_eq!(replica.journal.proposals.len(), 2);
-    assert_eq!(source.tail(path).await?, 2);
+    assert_eq!(replica.provider.tail(path.clone()).await?, 2);
+    drop(replica);
+    drop(source);
+    let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+    assert_eq!(reopened.tail(path).await?, 2);
     Ok(())
 }
