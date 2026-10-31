@@ -391,7 +391,12 @@ impl AgentTool {
                 }
                 let receipt = turn
                     .writer
-                    .observe_staged_once(invocation.operation_id, turn.maximum_bytes, access())?
+                    .observe_staged_once(
+                        invocation.operation_id,
+                        None,
+                        turn.maximum_bytes,
+                        access(),
+                    )?
                     .await?;
                 let body = if let Some(file) = receipt.0 {
                     #[cfg(feature = "filesystem")]
