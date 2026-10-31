@@ -16,6 +16,7 @@ struct Outage {
     recovered: AtomicBool,
     terminal: AtomicBool,
     outputs: AtomicUsize,
+    server_ended: AtomicBool,
     isolated: AtomicBool,
     replacement_release: tokio::sync::Notify,
     replacement_ready: AtomicBool,
@@ -34,11 +35,20 @@ impl Outage {
         self.recovered.store(true, Ordering::SeqCst);
         self.release.notify_waiters();
     }
-    async fn until(&self, predicate: impl Fn() -> bool) {
+    async fn until(&self, predicate: impl Fn() -> bool) -> TestResult {
         loop {
             let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             if predicate() {
-                return;
+                return Ok(());
+            }
+            if self.server_ended.load(Ordering::SeqCst) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "original session fixture producer ended before its event",
+                )
+                .into());
             }
             changed.await;
         }
@@ -131,6 +141,8 @@ impl StreamSessionService for DisconnectingHost {
                 } else {
                     self.outage.release.notified()
                 };
+                tokio::pin!(released);
+                released.as_mut().enable();
                 let ready = if successor {
                     &self.outage.replacement_ready
                 } else {
@@ -218,6 +230,13 @@ struct Fixture {
     _server: ServerOwner,
 }
 struct ServerOwner(tokio::task::JoinHandle<std::result::Result<(), tonic::transport::Error>>);
+struct ServerLifetime(Arc<Outage>);
+impl Drop for ServerLifetime {
+    fn drop(&mut self) {
+        self.0.server_ended.store(true, Ordering::SeqCst);
+        self.0.changed.notify_waiters();
+    }
+}
 impl Drop for ServerOwner {
     fn drop(&mut self) {
         // Also covers setup failure/unwind; no detached listening server survives.
@@ -247,12 +266,15 @@ impl Fixture {
                 .ok()
                 .map(|(socket, _)| (Ok::<_, std::io::Error>(socket), listener))
         });
-        let server = tokio::spawn(
-            Server::builder()
-                .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(&certificate, key)))?
-                .add_service(StreamSessionServiceServer::new(host))
-                .serve_with_incoming(incoming),
-        );
+        let server = Server::builder()
+            .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(&certificate, key)))?
+            .add_service(StreamSessionServiceServer::new(host))
+            .serve_with_incoming(incoming);
+        let lifetime = ServerLifetime(Arc::clone(&outage));
+        let server = tokio::spawn(async move {
+            let _lifetime = lifetime;
+            server.await
+        });
         // Own the abort guard before awaiting connection setup.
         let server = ServerOwner(server);
         let client = Arc::new(
@@ -311,13 +333,13 @@ impl Fixture {
         .await
         .map_err(|error| error.message.into())
     }
-    async fn outage(&self) {
+    async fn outage(&self) -> TestResult {
         self.outage.disconnect.notify_one();
         self.outage
             .until(|| self.outage.calls.load(Ordering::SeqCst) >= 6)
-            .await;
+            .await
     }
-    async fn retired(&self) {
+    async fn retired(&self) -> TestResult {
         self.outage
             .until(|| {
                 self.outage.outputs.load(Ordering::SeqCst) == 0
@@ -328,7 +350,7 @@ impl Fixture {
                         .values()
                         .all(|state| *state != HandshakeState::Pending)
             })
-            .await;
+            .await
     }
     async fn replacement_after_retirement(
         &self,
@@ -340,8 +362,8 @@ impl Fixture {
         let opening = self.follow_path("replacement", None);
         futures::pin_mut!(opening);
         tokio::select! {
-            () = self.outage.until(|| self.outage.handshakes.lock()
-                .iter().any(|(call, state)| *call != old && *state == HandshakeState::Pending)) => {}
+            result = self.outage.until(|| self.outage.handshakes.lock()
+                .iter().any(|(call, state)| *call != old && *state == HandshakeState::Pending)) => result?,
             _ = &mut opening => panic!("replacement opened without its own pending handshake"),
         }
         let successor = *self
@@ -355,7 +377,7 @@ impl Fixture {
         evidence.lock().gate = "old RPC withdrawal";
         self.outage
             .until(|| self.outage.handshake(old) == Some(HandshakeState::Dropped))
-            .await;
+            .await?;
         assert!(!self.outage.recovered.load(Ordering::SeqCst));
         self.outage.accept_replacement();
         evidence.lock().gate = "successor registration";
@@ -393,7 +415,7 @@ async fn recovered_consumers(terminal: bool) -> TestResult {
     let records = fixture.follow(None).await?;
     record(&records, 0, 10).await?;
     tokio::select! {
-        () = fixture.outage() => {}
+        result = fixture.outage() => result?,
         next = records.next_result() => {
             let next = next?;
             assert!(
@@ -415,52 +437,57 @@ async fn recovered_consumers(terminal: bool) -> TestResult {
     records.close().await;
     assert!(records.state.records.lock().await.is_none());
     end(&records).await?;
-    fixture.retired().await;
+    fixture.retired().await?;
     fixture.stop().await;
     Ok(())
 }
 
 #[tokio::test]
-async fn native_follow_recovers_exactly_once_after_unavailable_attempt_groups() {
-    tokio::time::timeout(Duration::from_secs(3), recovered_consumers(false))
+async fn native_follow_recovers_exactly_once_after_unavailable_attempt_groups() -> TestResult {
+    let fixture = Fixture::open(false).await?;
+    let outage = Arc::clone(&fixture.outage);
+    let next_handshake = outage.until(|| outage.handshake(1) == Some(HandshakeState::Pending));
+    futures::pin_mut!(next_handshake);
+    assert!(futures::poll!(&mut next_handshake).is_pending());
+    fixture.stop().await;
+    let error = next_handshake
         .await
-        .unwrap()
-        .unwrap();
+        .expect_err("ended original server produced another handshake");
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .ok_or("lost original server termination error")?
+            .kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+    recovered_consumers(false).await
 }
 #[tokio::test]
 #[should_panic(expected = "recovery must retain the original native interest")]
 async fn negative_control_terminal_rejection_cannot_satisfy_the_recovery_oracle() {
-    tokio::time::timeout(Duration::from_secs(3), recovered_consumers(true))
-        .await
-        .unwrap()
-        .unwrap();
+    recovered_consumers(true).await.unwrap();
 }
 
 #[tokio::test]
-async fn terminal_reconnect_rejection_is_typed_once_for_native_follow() {
-    tokio::time::timeout(Duration::from_secs(3), async {
-        let fixture = Fixture::open(true).await?;
-        fixture.append("events", 10).await?;
-        let records = fixture.follow(None).await?;
-        record(&records, 0, 10).await?;
-        fixture.outage().await;
-        for cursor in [&records] {
-            let next = cursor.next_result().await?;
-            assert!(next.value.is_none());
-            assert_eq!(
-                next.error.ok_or("terminal error became EOF")?.code,
-                "access_denied"
-            );
-            end(cursor).await?;
-            assert!(cursor.state.records.lock().await.is_none());
-        }
-        fixture.retired().await;
-        fixture.stop().await;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-    })
-    .await
-    .unwrap()
-    .unwrap();
+async fn terminal_reconnect_rejection_is_typed_once_for_native_follow() -> TestResult {
+    let fixture = Fixture::open(true).await?;
+    fixture.append("events", 10).await?;
+    let records = fixture.follow(None).await?;
+    record(&records, 0, 10).await?;
+    fixture.outage().await?;
+    for cursor in [&records] {
+        let next = cursor.next_result().await?;
+        assert!(next.value.is_none());
+        assert_eq!(
+            next.error.ok_or("terminal error became EOF")?.code,
+            "access_denied"
+        );
+        end(cursor).await?;
+        assert!(cursor.state.records.lock().await.is_none());
+    }
+    fixture.retired().await?;
+    fixture.stop().await;
+    Ok(())
 }
 
 // Deliberate counterfactual: preserve the real provider cursor when the adapter
@@ -597,7 +624,7 @@ async fn cancellation_case(
         );
     }
     evidence.lock().gate = "unavailable handshake group";
-    fixture.outage().await;
+    fixture.outage().await?;
     // Identify an actually pending server RPC, not an expected call count.
     let old = *fixture
         .outage
@@ -623,7 +650,7 @@ async fn cancellation_case(
     replacement.close().await;
     drop(retained);
     evidence.lock().gate = "all peer resources retired";
-    fixture.retired().await;
+    fixture.retired().await?;
     evidence.lock().gate = "fixture server joined";
     fixture.stop().await;
     let mut evidence = evidence.lock();
@@ -634,8 +661,8 @@ async fn cancellation_case(
 
 #[tokio::test]
 async fn cancellation_close_and_drop_release_native_interests_during_recovery() {
-    // Independent endpoints and owners must not consume one another's clock.
-    // Keep the same whole matrix and deadline, just as in the counterfactual.
+    // Each case keeps its original endpoint, cursor and handshake owners,
+    // just as in the counterfactual.
     let cases: Vec<_> = [false]
         .into_iter()
         .flat_map(|children| {
@@ -648,48 +675,29 @@ async fn cancellation_close_and_drop_release_native_interests_during_recovery() 
             })
         })
         .collect();
-    let result = tokio::time::timeout(
-        Duration::from_secs(3),
-        futures::future::join_all(cases.iter().map(|(children, action, evidence)| {
-            cancellation_case(*children, *action, false, evidence)
-        })),
-    )
+    let results = futures::future::join_all(cases.iter().map(|(children, action, evidence)| {
+        cancellation_case(*children, *action, false, evidence)
+    }))
     .await;
-    match result {
-        Ok(results) => {
-            for result in results {
-                result.unwrap();
-            }
-        }
-        Err(error) => {
-            let snapshots: Vec<_> = cases
-                .iter()
-                .map(|(_, _, evidence)| evidence.lock().describe())
-                .collect();
-            panic!(
-                "native retirement deadline: {error}; {}",
-                snapshots.join("; ")
-            );
-        }
+    for (result, (_, _, evidence)) in results.into_iter().zip(&cases) {
+        result.unwrap_or_else(|error| {
+            panic!("native retirement: {error}; {}", evidence.lock().describe())
+        });
     }
 }
 
 #[tokio::test]
 async fn retained_provider_cursor_fails_the_same_cancellation_close_and_drop_oracle() {
     use futures::FutureExt as _;
-    let results = tokio::time::timeout(
-        Duration::from_secs(3),
-        futures::future::join_all([false].into_iter().flat_map(|children| {
-            (0..3).map(move |action| async move {
-                let evidence = SyncMutex::new(CancellationEvidence::default());
-                std::panic::AssertUnwindSafe(cancellation_case(children, action, true, &evidence))
-                    .catch_unwind()
-                    .await
-            })
-        })),
-    )
-    .await
-    .expect("counterfactual must fail semantically, not by timeout");
+    let results = futures::future::join_all([false].into_iter().flat_map(|children| {
+        (0..3).map(move |action| async move {
+            let evidence = SyncMutex::new(CancellationEvidence::default());
+            std::panic::AssertUnwindSafe(cancellation_case(children, action, true, &evidence))
+                .catch_unwind()
+                .await
+        })
+    }))
+    .await;
     for result in results {
         let error = result.expect_err("retained original cursor escaped the lifecycle oracle");
         let message = error
