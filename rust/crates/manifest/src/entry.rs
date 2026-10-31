@@ -188,7 +188,6 @@ impl<P: Blobs> EntryStore<P> {
         environment: &str,
         entry: &str,
     ) -> Result<LoadedEntry<'_, P>, Error> {
-        EntryClosure::admit_length(length)?;
         let descriptor = self.objects.get(digest, ByteRange::FULL, length).await?;
         exact(&descriptor, length)?;
         let closure = EntryClosure::decode(descriptor.body(), environment, entry)?;
