@@ -180,10 +180,14 @@ Do not add a second set of counters.
   capacity is freed. Its production filesystem implementations update the same
   work ledger used by the receipt. They do not count uninstrumented OS retries,
   threads, locks or timer registrations.
-- `AllocationInfo` measures the current thread. An OS resource snapshot measures
-  one instant. Neither establishes worker coverage or a process high-water mark;
-  a maximum of periodic snapshots can miss an entire resource lifetime. Exact
-  peaks require updates at the original resource admission and release events.
+- `AllocationInfo` measures the current thread. OS resource and descriptor
+  readings are available on demand; fields can reflect different instants.
+  Neither establishes worker coverage or a process high-water mark. A maximum
+  of periodic snapshots can miss an entire resource lifetime. Exact peaks
+  require updates at the original resource admission and release events. Use
+  the shared collector's event-fed high-water counter for admitted export
+  records. Physical quantities without their original accounting hooks remain
+  unknown.
 - Convenience entry points that delegate to an instrumented implementation
   share that implementation's span. Blocking workers retain the caller's span
   and scoped subscriber through the actual work, including after caller drop.

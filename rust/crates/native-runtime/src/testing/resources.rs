@@ -3,11 +3,11 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-#[path = "resources/monitor.rs"]
-mod monitor;
-pub use monitor::ResourceSampler;
-
-/// Process-wide OS resources at one instant.
+/// Point-in-time process-wide OS resource readings.
+///
+/// Fields are read separately and can reflect different instants. Resource
+/// lifetimes between reads require accounting at their admission and release
+/// events to establish a high-water mark.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ProcessResources {
     /// Memory the process holds: resident bytes on Linux and macOS, private
@@ -42,7 +42,7 @@ pub enum Descriptor {
 
 /// Reads this process's resources from one platform's OS.
 trait Sampler {
-    /// Every counter but `watches`, cheaply enough to poll.
+    /// Reads every counter but `watches` on demand.
     fn sample() -> io::Result<ProcessResources>;
     /// Watches beyond their descriptors.
     fn watches() -> io::Result<u64>;
@@ -57,12 +57,12 @@ type Native = apple::Libproc;
 #[cfg(windows)]
 type Native = windows::NtProcess;
 
-/// Every counter but `watches`, cheaply enough to poll.
+/// Reads every counter but `watches` on demand.
 pub fn sample_process_resources() -> io::Result<ProcessResources> {
     Native::sample()
 }
 
-/// Every counter, `watches` included.
+/// Reads every counter on demand, including `watches`.
 pub fn process_resources() -> io::Result<ProcessResources> {
     Ok(ProcessResources {
         watches: Native::watches()?,
