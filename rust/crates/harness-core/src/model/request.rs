@@ -123,6 +123,42 @@ impl ModelRequest {
         content: &mut ToolResultContent,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        if let ToolResultContent::Json { value } = content {
+            #[cfg(feature = "filesystem")]
+            let _hold;
+            let mut envelope = match io {
+                #[cfg(feature = "filesystem")]
+                Some(io) => {
+                    let (envelope, hold) = io.decode(
+                        std::marker::PhantomData::<Value>,
+                        br#"{"kind":"json","value":null}"#,
+                        Storage,
+                    )?;
+                    _hold = Some(hold);
+                    envelope
+                }
+                _ => {
+                    #[cfg(feature = "filesystem")]
+                    {
+                        _hold = None;
+                    }
+                    serde_json::json!({"kind":"json", "value":null})
+                }
+            };
+            // Only the fixed envelope is new. The admitted payload moves into
+            // it for validation and returns even when its schema refuses it.
+            std::mem::swap(value, &mut envelope["value"]);
+            let result = with_history_io(io, |work| {
+                crate::executor::validate_json_schema_value(
+                    &tool.projection_schema,
+                    &envelope,
+                    "model tool result",
+                    work,
+                )
+            });
+            std::mem::swap(value, &mut envelope["value"]);
+            return result;
+        }
         match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
@@ -140,25 +176,14 @@ impl ModelRequest {
                 })?;
             }
             _ => {
-                let validate = |envelope: &Value| {
-                    crate::executor::validate_json_schema_value(
-                        &tool.projection_schema,
-                        envelope,
-                        "model tool result",
-                        &mut None,
-                    )
-                };
-                if let ToolResultContent::Json { value } = content {
-                    let mut envelope = serde_json::json!({"kind":"json", "value":null});
-                    envelope["value"] = std::mem::take(value);
-                    let result = validate(&envelope);
-                    *value = envelope["value"].take();
-                    result?;
-                } else {
-                    let envelope = serde_json::to_value(content)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                    validate(&envelope)?;
-                }
+                let envelope = serde_json::to_value(content)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                crate::executor::validate_json_schema_value(
+                    &tool.projection_schema,
+                    &envelope,
+                    "model tool result",
+                    &mut None,
+                )?;
             }
         }
         Ok(())
