@@ -105,9 +105,12 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         chunks.push(value);
       }
       if (sizes) sizes.responseBytes = size;
-      const data = new Uint8Array(size);
-      let offset = 0;
-      for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }
+      let data = chunks[0] ?? new Uint8Array(0);
+      if (chunks.length > 1) {
+        data = new Uint8Array(size);
+        let offset = 0;
+        for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }
+      }
       if (response.status !== 200) {
         let detail: wire.ErrorDetail | undefined;
         try { detail = fromBinary(wire.ErrorDetailSchema, decode_objects_v1_json("ErrorDetail", data, data.byteLength)); } catch { /* the status classifies it */ }
