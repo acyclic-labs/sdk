@@ -186,42 +186,6 @@ impl FilesystemCommit {
         self.owner = Some(owner);
     }
 
-    /// Installs an already authenticated authority transition without submitting
-    /// it. Caller and authority entries retain the caller's exact operation key.
-    pub(super) fn contribute(
-        &mut self,
-        authority: AuthorityId,
-        mut part: CommitRequest,
-        transition: (
-            crate::kernel::allocation::retained::RetainedArc<crate::kernel::AuthorityActor>,
-            super::actor::Revision,
-            super::actor::PreparedProjection,
-        ),
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(), AuthorityStoreError> {
-        self.ensure_unclaimed(authority)?;
-        grow(&mut self.request.conditions, part.conditions.len(), work)?;
-        grow(&mut self.request.mutations, part.mutations.len(), work)?;
-        grow(&mut self.authorities, 1, work)?;
-        grow(&mut self.contributions, 1, work)?;
-        self.request.deadline_unix_millis = self
-            .request
-            .deadline_unix_millis
-            .into_iter()
-            .chain(part.deadline_unix_millis)
-            .min();
-        self.request.conditions.append(&mut part.conditions);
-        self.request.mutations.append(&mut part.mutations);
-        self.authorities.push(authority);
-        let (actor, revision, projection) = transition;
-        self.contributions.push(Contribution {
-            actor,
-            revision,
-            projection,
-        });
-        Ok(())
-    }
-
     pub(super) fn retain_request_custody(
         &mut self,
         work: &mut AuthorityWork<'_>,
@@ -268,10 +232,7 @@ impl FilesystemCommit {
         // Preparation has already merged its funding into this original owner.
     }
 
-    pub(super) fn ensure_unclaimed(
-        &self,
-        authority: AuthorityId,
-    ) -> Result<(), AuthorityStoreError> {
+    fn ensure_unclaimed(&self, authority: AuthorityId) -> Result<(), AuthorityStoreError> {
         if self.sealed {
             return Err(AuthorityStoreError::RejectedStatic(
                 "a sealed filesystem commit cannot accept contributions",
@@ -444,7 +405,16 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             source,
             work,
         )?;
-        commit.contribute(authority, part, (actor, revision, projection), work)?;
+        grow(&mut commit.request.conditions, part.conditions.len(), work)?;
+        grow(&mut commit.request.mutations, part.mutations.len(), work)?;
+        commit.request.conditions.append(&mut part.conditions);
+        commit.request.mutations.append(&mut part.mutations);
+        commit.authorities.push(authority);
+        commit.contributions.push(Contribution {
+            actor,
+            revision,
+            projection,
+        });
         commit.bind_owner(owner);
         Ok(())
     }

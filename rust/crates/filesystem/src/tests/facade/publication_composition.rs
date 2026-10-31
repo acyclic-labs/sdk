@@ -37,12 +37,15 @@ async fn authored_generation_and_companion_share_both_conditional_fences() -> Te
             &cancel,
         )
         .await?;
-        let mut transaction = companion()?;
-        let crate::PublicationContribution::Prepared(proposed) = authored
+        let transaction = companion()?;
+        let crate::PublicationContribution::Prepared {
+            generation: proposed,
+            commit: transaction,
+        } = authored
             .contribute_publication(
                 OperationId::from_bytes([0x39; 16]),
                 crate::kernel::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
-                &mut transaction,
+                transaction,
                 B,
                 &cancel,
             )
@@ -120,26 +123,26 @@ async fn unresolved_authored_publication_keeps_the_exact_commit_for_resubmission
         &cancel,
     )
     .await?;
-    let mut transaction = companion()?;
-    assert!(matches!(
-        authored
-            .contribute_publication(
-                OperationId::from_bytes([0x40; 16]),
-                crate::kernel::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
-                &mut transaction,
-                B,
-                &cancel,
-            )
-            .await?
-            .value,
-        crate::PublicationContribution::Prepared(_)
-    ));
-    fs.seal_commit(&mut transaction, B, &cancel)?;
-    let request = transaction.request().clone();
+    let transaction = companion()?;
+    let crate::PublicationContribution::Prepared { mut commit, .. } = authored
+        .contribute_publication(
+            OperationId::from_bytes([0x40; 16]),
+            crate::kernel::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
+            transaction,
+            B,
+            &cancel,
+        )
+        .await?
+        .value
+    else {
+        return Err("authored contribution refused".into());
+    };
+    fs.seal_commit(&mut commit, B, &cancel)?;
+    let request = commit.request().clone();
     let stopped = CancellationToken::new();
     stopped.cancel();
     let crate::FilesystemCommitOutcome::Unknown { commit, .. } =
-        fs.submit_commit(transaction, B, &stopped).await?.value
+        fs.submit_commit(commit, B, &stopped).await?.value
     else {
         return Err("cancelled submission lost its unresolved owner".into());
     };
@@ -172,21 +175,21 @@ async fn dropping_an_authored_contribution_releases_the_original_authority() -> 
         &cancel,
     )
     .await?;
-    let mut transaction = companion()?;
-    assert!(matches!(
-        authored
-            .contribute_publication(
-                OperationId::from_bytes([0x41; 16]),
-                crate::kernel::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
-                &mut transaction,
-                B,
-                &cancel,
-            )
-            .await?
-            .value,
-        crate::PublicationContribution::Prepared(_)
-    ));
-    drop(transaction);
+    let transaction = companion()?;
+    let crate::PublicationContribution::Prepared { commit: batch, .. } = authored
+        .contribute_publication(
+            OperationId::from_bytes([0x41; 16]),
+            crate::kernel::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
+            transaction,
+            B,
+            &cancel,
+        )
+        .await?
+        .value
+    else {
+        return Err("authored contribution refused".into());
+    };
+    drop(batch);
     let mut next = open_checkout(&volume, writable_manual(), &cancel).await?;
     create(
         &mut next,

@@ -7,9 +7,19 @@ use crate::distributed::{FilesystemCommit, FilesystemCommitOutcome, StreamAuthor
 #[must_use]
 pub enum PublicationContribution {
     /// The authenticated generation contributed to the caller's transaction.
-    Prepared(GenerationId),
+    Prepared {
+        /// Proposed authenticated generation.
+        generation: GenerationId,
+        /// The sole unsent commit, including original publication custody.
+        commit: FilesystemCommit,
+    },
     /// Nothing was added, including on an already committed operation.
-    Rejected(crate::AppendGroupOutcome),
+    Rejected {
+        /// The original authority preparation refusal.
+        outcome: crate::AppendGroupOutcome,
+        /// The unchanged caller batch; no publication was submitted.
+        commit: FilesystemCommit,
+    },
 }
 
 pub(crate) struct PreparedCheckoutPublication {
@@ -36,18 +46,19 @@ where
     /// authentication, object durability and policy/projection fences. The
     /// original dependency freeze and every proof/collection hold stay in
     /// `commit`, including when submission returns Unknown. Preparation submits
-    /// nothing. On refusal or a dropped future, the caller's entries remain
-    /// unchanged. The consumed checkout needs no post-publication root install.
+    /// nothing. A failed or dropped preparation drops the entire unsent batch,
+    /// so a partial contribution cannot escape through the caller. A semantic
+    /// refusal returns the unchanged batch. The consumed checkout needs no
+    /// post-publication root install.
     pub async fn contribute_publication<W: FsWork>(
         self,
         operation_id: OperationId,
         mut intent: PublicationIntent,
-        commit: &mut FilesystemCommit,
+        mut commit: FilesystemCommit,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<PublicationContribution, FsError> {
         let mut accounting = work.accounting(cancellation);
-        let mut guard = commit.guard();
         let result = async {
             cancellation.check()?;
             accounting.check()?;
@@ -77,37 +88,42 @@ where
             let generation = prepared.generation();
             let mut authority = authority_work(&accounting, cancellation)?;
             let contributed = async {
-                guard.commit().reserve_publication(&mut authority)?;
-                self.volume
+                commit.reserve_publication(&mut authority)?;
+                let contribution = self
+                    .volume
                     .fs
                     .inner
                     .authority
                     .contribute_append_group(
-                        guard.commit(),
+                        &mut commit,
                         std::slice::from_ref(prepared.append()),
                         &[],
                         &mut authority,
                     )
-                    .await
+                    .await?;
+                // The shared confirmation borrows the append. The original
+                // consumed generation custody below owns authoritative settlement.
+                Ok::<_, crate::AuthorityStoreError>(match contribution {
+                    crate::FilesystemAppendPreparation::Ready(_) => None,
+                    crate::FilesystemAppendPreparation::Rejected(refused) => Some(refused),
+                })
             }
             .await;
             record_authority_work(&mut accounting, &authority)?;
             if let Some(refused) = contributed? {
-                return Ok(PublicationContribution::Rejected(refused));
-            }
-            guard
-                .commit()
-                .hold_publication(PreparedCheckoutPublication {
-                    publication: prepared,
-                    _read_fence: read_fence,
-                    _owner: self.volume.fs.inner.clone(),
+                return Ok(PublicationContribution::Rejected {
+                    outcome: refused,
+                    commit,
                 });
-            Ok(PublicationContribution::Prepared(generation))
+            }
+            commit.hold_publication(PreparedCheckoutPublication {
+                publication: prepared,
+                _read_fence: read_fence,
+                _owner: self.volume.fs.inner.clone(),
+            });
+            Ok(PublicationContribution::Prepared { generation, commit })
         }
         .await;
-        if matches!(result, Ok(PublicationContribution::Prepared(_))) {
-            guard.disarm();
-        }
         work.finish(result, &accounting)
     }
 }

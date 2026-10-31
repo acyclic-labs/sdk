@@ -13,7 +13,7 @@ where
     pub async fn contribute_publication<W: crate::facade::FsWork>(
         self,
         intent: crate::kernel::PublicationIntent,
-        commit: &mut crate::FilesystemCommit,
+        commit: crate::FilesystemCommit,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<crate::PublicationContribution, FsError> {
