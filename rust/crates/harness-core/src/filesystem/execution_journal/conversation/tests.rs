@@ -7,7 +7,6 @@ async fn envelope_admission_retains_original_position_and_rejects_retry_substitu
 {
     let (journal, _issuer) = super::super::test_support::journal().await?;
     let operation = OperationId::new();
-    let journal = journal.with_turn(operation, operation);
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(10_000_000, 16 * 1024 * 1024),
@@ -15,6 +14,17 @@ async fn envelope_admission_retains_original_position_and_rejects_retry_substitu
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&original)?;
+    let envelope = item(operation, 1, &io)?;
+    assert!(matches!(
+        journal
+            .append_envelope_if_tail(0, "unbound", 0, &envelope, &io)?
+            .await,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    let journal = journal.with_turn(operation, operation);
     journal
         .append(
             operation,
@@ -25,7 +35,6 @@ async fn envelope_admission_retains_original_position_and_rejects_retry_substitu
             Some(&io),
         )?
         .await?;
-    let envelope = item(operation, 1, &io)?;
     assert!(
         journal
             .append_envelope_if_tail(1, "item", 0, &envelope, &io)?
