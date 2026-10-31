@@ -116,12 +116,28 @@ pub(crate) fn task_completion<T: Send + 'static>(
         obs::span!(
             DEBUG,
             "acyclic.runtime.blocking_io",
+            native.queued = obs::Empty,
+            native.started = obs::Empty,
+            native.terminal = obs::Empty,
+            error.os = obs::Empty,
+            outcome = obs::Empty,
+            error.kind = obs::Empty
+        )
+    } else if std::ptr::eq(pool, &crate::workers::PERSISTENCE_WORKERS) {
+        obs::span!(
+            INFO,
+            "acyclic.runtime.persistence",
+            native.queued = obs::Empty,
+            native.started = obs::Empty,
+            native.terminal = obs::Empty,
+            error.os = obs::Empty,
             outcome = obs::Empty,
             error.kind = obs::Empty
         )
     } else {
         obs::OperationSpan::new(tracing::Span::none())
     };
+    let observation = tracing::Span::clone(&span);
     let observer = meter.clone();
     let operation = move || {
         span.in_scope(|| {
@@ -130,7 +146,6 @@ pub(crate) fn task_completion<T: Send + 'static>(
                 Ok(()) => operation(),
                 Err(error) => Err(error),
             };
-            span.record_error(result.as_ref().err());
             completion
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -143,6 +158,8 @@ pub(crate) fn task_completion<T: Send + 'static>(
     let admission = allocation_meter.map(prepay_capacity_waiter).transpose()?;
     Ok(NativeCompletion::pending(
         NativeJob::Task {
+            observation,
+            queued: false,
             #[cfg(feature = "test-support")]
             scope: None,
             operation: Box::new(operation),

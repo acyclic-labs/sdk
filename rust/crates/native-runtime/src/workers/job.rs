@@ -23,6 +23,8 @@ pub(crate) enum NativeJob {
     },
     Task {
         progress: Option<obs::OperationSpan>,
+        observation: tracing::Span,
+        queued: bool,
         #[cfg(feature = "test-support")]
         scope: Option<testing::host::Work>,
         operation: Box<dyn FnOnce() + Send>,
@@ -39,6 +41,25 @@ pub(crate) enum NativeJob {
 }
 
 impl NativeJob {
+    /// Marks only the candidate transfer. A Full result restores this job;
+    /// only a successfully received job can run with `queued = true`.
+    pub(crate) fn queue_observation(&mut self) -> Option<tracing::Span> {
+        if let Self::Task {
+            observation,
+            queued: transferred,
+            ..
+        } = self
+        {
+            *transferred = true;
+            return (!observation.is_disabled()).then(|| observation.clone());
+        }
+        None
+    }
+    pub(crate) fn restore_unqueued(&mut self) {
+        if let Self::Task { queued, .. } = self {
+            *queued = false;
+        }
+    }
     pub(crate) fn stage(&self, stage: u64) {
         if let Self::Task {
             progress: Some(progress),
@@ -181,6 +202,8 @@ impl NativeJob {
             }),
             Self::Task {
                 progress,
+                observation,
+                queued,
                 #[cfg(feature = "test-support")]
                 scope,
                 operation,
@@ -196,6 +219,7 @@ impl NativeJob {
                 completion,
                 (_allocation, admission, meter, health),
                 progress,
+                (observation, queued),
                 #[cfg(feature = "test-support")]
                 scope,
             ),
@@ -210,8 +234,14 @@ fn run_task(
     completion: Option<Arc<OperationFence>>,
     charges: impl Sized,
     progress: Option<obs::OperationSpan>,
+    observation: (tracing::Span, bool),
     #[cfg(feature = "test-support")] scope: Option<testing::host::Work>,
 ) -> Option<Waker> {
+    let (observation, queued) = observation;
+    // A received job proves its own successful transfer even if the sender is
+    // preempted before projecting acceptance outside the admission lock.
+    observation.record("native.queued", queued);
+    observation.record("native.started", true);
     let _turn = crate::task::PersistenceTurn::enter(progress.clone());
     if let Some(progress) = &progress {
         progress.record("stage", 2_u64);
@@ -225,7 +255,7 @@ fn run_task(
         if let Some(completion) = completion {
             completion.complete();
         }
-        let waker = terminal.publish();
+        let waker = terminal.publish(&observation);
         if let Some(progress) = &progress {
             progress.record("stage", 4_u64);
         }
@@ -241,3 +271,7 @@ fn run_task(
     }
     run()
 }
+
+#[cfg(all(test, not(loom)))]
+#[path = "job_observation_tests.rs"]
+mod observation_tests;

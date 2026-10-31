@@ -60,7 +60,7 @@ pub(crate) trait TaskTerminal: Send + Sync {
     #[cfg(feature = "test-support")]
     fn test_poll_completion(&self, waker: &Waker) -> Poll<()>;
     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>);
-    fn publish(&self) -> Option<Waker>;
+    fn publish(&self, observation: &tracing::Span) -> Option<Waker>;
 }
 
 // Sole completion lock; no queue lock, callback, or wake is held under it.
@@ -83,10 +83,24 @@ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .panic = Some(payload);
     }
-    fn publish(&self) -> Option<Waker> {
+    fn publish(&self, observation: &tracing::Span) -> Option<Waker> {
         let mut state = self
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Capture the original cause before publishing: an observing thread
+        // may take the result immediately after this lock is released. These
+        // fixed values retain neither the result nor its allocation.
+        let evidence = (!observation.is_disabled()).then(|| {
+            if state.panic.is_some() {
+                ("panic", Some("panic"), None)
+            } else {
+                match &state.result {
+                    Some(Ok(_)) => ("ok", None, None),
+                    Some(Err(error)) => ("io_error", Some(obs::kind(error)), error.raw_os_error()),
+                    None => ("missing", Some("missing_result"), None),
+                }
+            }
+        });
         #[cfg(all(test, loom))]
         if state.broken_accounting {
             return state.waker.take();
@@ -96,6 +110,22 @@ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
         if state.broken_wake {
             state.waker = None;
         }
-        state.waker.take()
+        let waker = state.waker.take();
+        drop(state);
+        // Subscriber callbacks and arbitrary output wakes run outside both
+        // admission and completion locks. Missing result is never success.
+        if let Some((terminal, error, os_error)) = evidence {
+            observation.record("native.terminal", terminal);
+            if let Some(os_error) = os_error {
+                observation.record("error.os", os_error);
+            }
+            if terminal == "missing" {
+                observation.record("error.kind", "missing_result");
+                observation.record("outcome", "incomplete");
+            } else {
+                acyclic_observability::record_outcome(observation, error);
+            }
+        }
+        waker
     }
 }
