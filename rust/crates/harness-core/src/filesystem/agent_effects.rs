@@ -571,6 +571,8 @@ mod tests {
             )
             .map_err(|(cause, _)| Error::from(cause))?;
             let io = super::super::PreparationIo::from_native_work(&original)?;
+            let review_storage = super::super::MemoryHarnessStorage::new(owner, 4096).await?;
+            let review_journal = review_storage.journal();
             assert_eq!(
                 effects
                     .recorded_call_with_io("0000000001-a", Some(&io))?
@@ -621,7 +623,9 @@ mod tests {
                 .open_with_io(approval_id, &interaction, Some(&io))
                 .await?;
             assert_eq!(
-                approvals.dispatch_with_io(approval_id, Some(&io)).await?,
+                approvals
+                    .dispatch(approval_id, review_journal.as_ref(), Some(&io))
+                    .await?,
                 Some(crate::interaction::InteractionOutcome::Approved {})
             );
             // Reopening retains exactly the original request; changed action bytes
@@ -658,7 +662,12 @@ mod tests {
             human
                 .open_with_io(human_id, &interaction, Some(&io))
                 .await?;
-            assert_eq!(human.dispatch_with_io(human_id, Some(&io)).await?, None);
+            assert_eq!(
+                human
+                    .dispatch(human_id, review_journal.as_ref(), Some(&io))
+                    .await?,
+                None
+            );
             human
                 .decide(
                     human_id,
@@ -668,7 +677,9 @@ mod tests {
                 )
                 .await?;
             assert_eq!(
-                human.dispatch_with_io(human_id, Some(&io)).await?,
+                human
+                    .dispatch(human_id, review_journal.as_ref(), Some(&io))
+                    .await?,
                 Some(crate::interaction::InteractionOutcome::Approved {})
             );
             let receipt = original.receipt();

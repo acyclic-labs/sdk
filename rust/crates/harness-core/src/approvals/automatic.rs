@@ -25,7 +25,10 @@ pub async fn automatic_review(
     expected: ApprovalReviewFile,
     limits: Limits,
 ) -> Result<ApprovalReviewFile> {
-    automatic_review_with_io(models, files, request, approver, expected, limits, execution).await
+    automatic_review_with_io(
+        models, files, request, approver, expected, limits, execution,
+    )
+    .await
 }
 
 pub(super) async fn automatic_review_with_io(

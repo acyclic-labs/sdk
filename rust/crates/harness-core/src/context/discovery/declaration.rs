@@ -262,7 +262,8 @@ impl PinnedContextPath {
         use crate::core::ownership::OwnedBytes as _;
         crate::executor::with_history_io(io, |work| {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let source = crate::core::copy(self, &mut quota, |source, _| source.owned_heap_bytes())?;
+            let source =
+                crate::core::copy(self, &mut quota, |source, _| source.owned_heap_bytes())?;
             quota.transfer();
             Ok(source)
         })

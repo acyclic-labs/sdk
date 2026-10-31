@@ -52,7 +52,13 @@ impl ThresholdCompaction {
         output_tokens: u32,
     ) -> Result<Self> {
         let output_tokens = capacity.output_reservation(Some(output_tokens))?;
-        Self::for_capacity(ModelContextCapacity { output_tokens: Some(output_tokens), ..capacity }, fixed_tokens)
+        Self::for_capacity(
+            ModelContextCapacity {
+                output_tokens: Some(output_tokens),
+                ..capacity
+            },
+            fixed_tokens,
+        )
     }
 
     /// Validates the defaults or replacement against the actual selected capacity.
