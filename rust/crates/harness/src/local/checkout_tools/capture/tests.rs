@@ -619,7 +619,7 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
             slot.as_mut()
                 .unwrap()
                 .watcher
-                .fence(Duration::ZERO)
+                .invalidate()
                 .map_err(storage)?;
             assert!(
                 tools
