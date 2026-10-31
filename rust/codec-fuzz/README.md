@@ -27,6 +27,18 @@ cargo run --locked --example capture
 cargo run --locked --example replay
 ```
 
+After a reviewed protobuf schema change, refresh only the named protobuf
+producers and their table selectors:
+
+```sh
+cargo run --locked --example capture -- --only-protobuf --extend-goldens
+```
+
+Existing payloads must still compare equal through the current descriptor.
+Only their selector changes; new message writers get new captures, and entries
+for deleted message types are removed. Other targets and their goldens stay
+unchanged. The ordinary changed-value and changed-selector controls still run.
+
 Capture exercises each emitted input and compares it with the single
 `compatibility/frames/golden.hex` baseline. Protobuf messages and their JSON
 projections compare values through the original descriptor codecs, since map
