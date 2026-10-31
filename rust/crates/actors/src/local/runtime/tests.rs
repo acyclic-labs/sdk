@@ -841,7 +841,10 @@ async fn created<P: StreamProvider + ?Sized>(
     path: StreamPath,
 ) -> TestResult {
     let mut wakes = provider
-        .follow(acyclic_stream::FollowRequest::new(wake, 0))
+        .follow(acyclic_stream::FollowRequest {
+            when_absent: acyclic_stream::WhenAbsent::Wait,
+            ..acyclic_stream::FollowRequest::new(wake, 0)
+        })
         .map_ok(acyclic_stream::records_only)
         .await?;
     loop {
@@ -877,8 +880,8 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
             ready = created(&*provider, path.clone(), path) => ready?,
         }
         assert_eq!(
-            provider.tail(root()?).await,
-            Err(StreamError::NotFound),
+            provider.tail(root()?).await?,
+            0,
             "starting a host must not append a synthetic activation"
         );
     }
