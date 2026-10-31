@@ -444,13 +444,15 @@ impl Client {
         wire_codec::session::validate_follow(&follow, &cursor(request.from))?;
         wire_codec::cut_from_wire(follow.at_least.clone())?;
         let mut records = super::runtime::boxed(
-            self.open_kind(
-                Kind::Follow(follow),
-                request.from,
-                acknowledge,
-                Some(crate::FollowFilter::default().transport_filter()?),
+            data::Data::new(
+                self.open_kind(
+                    Kind::Follow(follow),
+                    request.from,
+                    acknowledge,
+                    Some(crate::FollowFilter::default().transport_filter()?),
+                )
+                .await?,
             )
-            .await?
             .map(move |item| item?.into_record(&path)),
         );
         // The open resolves the stream as every provider read does: an absent
@@ -481,9 +483,11 @@ impl Client {
         let filter = Some(request.filter.transport_filter()?);
         let (from, path) = (request.from, request.path.clone());
         Ok(super::runtime::boxed(
-            self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
-                .await?
-                .map(move |item| item?.into_record(&path)),
+            data::Data::new(
+                self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
+                    .await?,
+            )
+            .map(move |item| item?.into_record(&path)),
         ))
     }
     async fn follow_updates(
@@ -567,7 +571,8 @@ impl Client {
                 Some(filter.transport_filter()?),
             )
             .await?,
-        ))
+        )
+        .map(|item| item?.into_data()))
     }
 
     async fn open_kind(

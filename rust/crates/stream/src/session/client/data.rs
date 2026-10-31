@@ -1,5 +1,5 @@
-//! Synchronous canonical data projection, without a retained per-item future.
-use super::{Body, Frame, StreamError, wire};
+//! Canonical data frames without progress, preserving original payload custody.
+use super::{Body, Frame, StreamError};
 use std::{
     pin::Pin,
     task::{Context, Poll},
@@ -17,7 +17,7 @@ impl<S> Data<S> {
     }
 }
 impl<S: futures::Stream<Item = Result<Frame, StreamError>>> futures::Stream for Data<S> {
-    type Item = Result<wire::SessionData, StreamError>;
+    type Item = Result<Frame, StreamError>;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
         loop {
@@ -26,9 +26,7 @@ impl<S: futures::Stream<Item = Result<Frame, StreamError>>> futures::Stream for 
                     Some(Ok(item)) if matches!(item.wire().body, Some(Body::Watermark(_))) => {
                         continue;
                     }
-                    Some(Ok(item)) => Some(item.into_data()),
-                    Some(Err(error)) => Some(Err(error)),
-                    None => None,
+                    item => item,
                 },
             );
         }
