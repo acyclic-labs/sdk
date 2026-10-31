@@ -70,27 +70,35 @@ impl ResolvedModel {
         account: Option<&str>,
     ) -> acyclic_harness_core::model::ReasoningOrigin {
         let family = crate::stream::family(self.config.adapter);
-        let mut scope = blake3::Hasher::new();
-        scope.update(b"harness-reasoning-scope-v1\0");
-        if self.credential_scope.is_some() {
-            scope.update(b"protected-account\0");
-        }
         let credential = self.credential_scope.as_ref().map_or_else(
-            || account.or(key).unwrap_or("").as_bytes(),
-            |scope| scope.as_slice(),
+            || {
+                account
+                    .or(key)
+                    .filter(|value| !value.is_empty())
+                    .map(str::as_bytes)
+            },
+            |scope| Some(scope.as_slice()),
         );
-        for value in [
-            family.as_bytes(),
-            self.config.base_url.as_bytes(),
-            credential,
-        ] {
-            scope.update(&(value.len() as u64).to_be_bytes());
-            scope.update(value);
-        }
+        let credential_scope = credential.map(|credential| {
+            let mut scope = blake3::Hasher::new();
+            scope.update(b"harness-reasoning-scope-v1\0");
+            if self.credential_scope.is_some() {
+                scope.update(b"protected-account\0");
+            }
+            for value in [
+                family.as_bytes(),
+                self.config.base_url.as_bytes(),
+                credential,
+            ] {
+                scope.update(&(value.len() as u64).to_be_bytes());
+                scope.update(value);
+            }
+            *scope.finalize().as_bytes()
+        });
         acyclic_harness_core::model::ReasoningOrigin {
             provider: family.into(),
             model: self.model.name.clone(),
-            credential_scope: Some(*scope.finalize().as_bytes()),
+            credential_scope,
         }
     }
 

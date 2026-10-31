@@ -91,6 +91,22 @@ fn check_chat_native(text: &str) {
         );
         let body = serde_json::from_slice(&bytes).unwrap();
         assert!(crate::validate_input(crate::Adapter::Chat, &body).is_empty());
+        let unknown = provider.reasoning_origin(None, None);
+        assert!(unknown.credential_scope.is_none());
+        let body = serde_json::to_vec(
+            &crate::projection::body_named(
+                &provider,
+                &request,
+                &names,
+                &unknown,
+                &mut crate::files::FileText::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let wire = std::str::from_utf8(&body).unwrap();
+        assert!(!wire.contains("reasoning_content"));
+        assert!(!wire.contains("display-must-never-be-replayed"));
     }
 }
 
@@ -148,6 +164,29 @@ proptest! {
         kind in 0usize..6, known_scope in any::<bool>(),
     ) {
         check_chat_native(text.as_deref().unwrap_or_default());
+        for adapter in [crate::Adapter::Responses, crate::Adapter::Chat, crate::Adapter::Anthropic, crate::Adapter::Gemini] {
+            let (mut provider, _) = crate::tests::provider(adapter, 200);
+            let known = provider.reasoning_origin(provider.key.as_deref(), None);
+            prop_assert!(known.credential_scope.is_some());
+            for (key, account) in [(None, None), (Some(""), None), (None, Some(""))] {
+                let unknown = provider.reasoning_origin(key, account);
+                prop_assert!(unknown.credential_scope.is_none(), "missing credentials acquired ownership");
+                let block = ReasoningBlock {kind: KINDS[kind], text: text.clone(), origin: unknown.clone(),
+                    continuity: bytes.clone(), outcome: ReasoningOutcome::PreservedOpaque};
+                prop_assert!(matches!(project_reasoning(&block, &unknown), ProjectedReasoning::Dropped {..}));
+            }
+            prop_assert_ne!(known.credential_scope, provider.reasoning_origin(Some("rotated-key"), None).credential_scope);
+            let account = provider.reasoning_origin(Some("first-key"), Some("account"));
+            prop_assert_eq!(account, provider.reasoning_origin(Some("rotated-key"), Some("account")));
+            provider.credential_scope = Some([37; 32]);
+            let protected = provider.reasoning_origin(None, None);
+            prop_assert!(protected.credential_scope.is_some());
+            prop_assert_eq!(&protected, &provider.reasoning_origin(Some("rotated-key"), Some("account")));
+            provider.model.name.push_str("-successor");
+            prop_assert_eq!(protected.credential_scope, provider.reasoning_origin(None, None).credential_scope);
+            std::sync::Arc::make_mut(&mut provider.config).base_url.push_str("/other-endpoint");
+            prop_assert_ne!(protected.credential_scope, provider.reasoning_origin(None, None).credential_scope);
+        }
         for source in FAMILIES {
             let block = ReasoningBlock {kind: KINDS[kind], text: text.clone(), origin: origin(source, if known_scope {"scope"} else {""}),
                 continuity: bytes.clone(), outcome: ReasoningOutcome::PreservedOpaque};
