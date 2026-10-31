@@ -169,7 +169,7 @@ pub use extension::{
 };
 pub use json_literal::deserialize as deserialize_json_value;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use native_future::NativeFutureBundle;
+pub use native_future::{NativeFutureBundle, NativeOrdered, OrderedFutureKey};
 mod process_error;
 pub use process_error::ProcessError;
 

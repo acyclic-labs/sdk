@@ -9,6 +9,9 @@ use std::{
     task::{Context, Poll},
 };
 
+mod ordered;
+pub use ordered::{NativeOrdered, OrderedFutureKey};
+
 /// An admitted future whose custody outlives its physical allocation.
 #[must_use = "native futures must be awaited or dropped"]
 pub struct NativeFutureBundle<'a, T> {
