@@ -109,6 +109,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
 
 pub fn harness_codecs(bytes: &[u8]) {
     acyclic_harness_core::agent::codec_fuzz::check(bytes);
+    acyclic_harness_core::filesystem::execution_codec_fuzz::check(bytes);
     harness_manifest::check(bytes);
     acyclic_harness_core::mcp::http::codec_fuzz::check(bytes);
     acyclic_harness_core::mcp::stdio::codec_fuzz::check(bytes);

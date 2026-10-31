@@ -37,6 +37,8 @@ pub use execution_journal::FilesystemExecutionJournal;
 pub use execution_journal::{
     ContextCheckpoint, ContextPublicationReceipt, ContextPublicationRequest,
 };
+#[cfg(feature = "test-support")]
+pub use execution_journal::codec_fuzz as execution_codec_fuzz;
 mod agent_effects;
 mod agent_goal;
 pub use agent_goal::GOAL_VOLUME;
