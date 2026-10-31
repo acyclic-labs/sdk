@@ -1,7 +1,7 @@
 //! Independent model review, with one durable dispatch identity across hosts.
 use super::*;
 use crate::{
-    OperationId,
+    Error, OperationId,
     model::{
         ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelRequest, ModelRole,
         PreparedModelRequest,
