@@ -145,6 +145,13 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         crate::executor::ModelTokenUsage::default()
     );
     assert_eq!(before.items[0].latency_ns, None);
+    assert_eq!(before.end, 2);
+    assert_eq!(before.next, None);
+    let quiet =
+        crate::executor::usage_page(&journal, operation, "agents/usage", before.end).await?;
+    assert!(quiet.items.is_empty());
+    assert_eq!(quiet.end, before.end);
+    assert_eq!(quiet.next, None);
     usage.dispatch.operation_id = OperationId::new();
     assert!(
         crate::executor::append_model_event(
@@ -210,6 +217,16 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     assert!(after.items[1].completed);
     assert_eq!(after.items[0].dispatch, after.items[1].dispatch);
     assert_eq!(after.items[1].tokens, usage.tokens);
+    assert_eq!(after.end, 3);
+    let resumed =
+        crate::executor::usage_page(&journal, operation, "agents/usage", quiet.end).await?;
+    assert_eq!(resumed.items.len(), 1);
+    assert!(resumed.items[0].completed);
+    assert_eq!(resumed.items[0].dispatch, before.items[0].dispatch);
+    assert_eq!(resumed.end, after.end);
+    assert_eq!(resumed.next, None);
+    // Rescanning the prior prefix would duplicate the admitted contribution.
+    assert!(after.items.len() > resumed.items.len());
     Ok(())
 }
 

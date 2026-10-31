@@ -585,6 +585,7 @@ where
         } else {
             crate::executor::ModelUsagePage {
                 items: Vec::new(),
+                end: after,
                 next: None,
             }
         };
