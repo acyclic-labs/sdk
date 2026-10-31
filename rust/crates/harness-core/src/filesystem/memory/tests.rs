@@ -467,8 +467,8 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         )
         .await?;
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes: 4_096,
+        file_bytes: Some(4_096),
+        render_bytes: Some(4_096),
         ..Limits::default()
     };
     let read_capability = storage.read_capability.clone();
