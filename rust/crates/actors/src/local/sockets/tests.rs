@@ -3,9 +3,9 @@ use crate::conformance::Failure;
 use crate::conformance::sockets::{self as conformance, Peer, SocketBackend, SocketPackage};
 use crate::local::{Runtime, SystemClock};
 use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
-use acyclic_stream::MemoryStream;
 use acyclic_stream::runtime::PlatformExecutor;
 use acyclic_stream::session::{ActorSocket, Client, testing};
+use acyclic_stream::{BoxProviderFuture, MemoryStream};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -281,6 +281,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
     assert!(
         commit(
             &shared.store,
+            &*shared.executor,
             layout.key(&[b"fixture"])?,
             vec![
                 append(
@@ -328,4 +329,87 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
     );
     assert_eq!(recovered.shared.incarnation, 3);
     Ok(())
+}
+
+/// MemoryStream whose first two `heads` reads meet before either returns,
+/// so two hosts opening at once observe the same epochs tail.
+struct MeetingHeads {
+    inner: MemoryStream,
+    meet: tokio::sync::Barrier,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl StreamProvider for MeetingHeads {
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
+    }
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> Result<acyclic_stream::Heads, StreamError> {
+        let heads = self.inner.heads(request).await;
+        if self.reads.fetch_add(1, Ordering::AcqRel) < 2 {
+            self.meet.wait().await;
+        }
+        heads
+    }
+    async fn inspect_idempotency(
+        &self,
+        key: IdempotencyKey,
+    ) -> Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
+        self.inner.inspect_idempotency(key).await
+    }
+    async fn read(
+        &self,
+        request: ReadRequest,
+    ) -> Result<acyclic_stream::RecordStream, StreamError> {
+        self.inner.read(request).await
+    }
+    async fn read_commit(
+        &self,
+        id: acyclic_stream::CommitId,
+    ) -> Result<acyclic_stream::CommittedEnvelope, StreamError> {
+        self.inner.read_commit(id).await
+    }
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
+    }
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> BoxProviderFuture<'_, Result<acyclic_stream::WriteOutcome, StreamError>> {
+        self.inner.write(request)
+    }
+}
+
+#[tokio::test]
+async fn concurrent_hosts_cannot_share_an_incarnation() -> TestResult {
+    let provider = Arc::new(MeetingHeads {
+        inner: MemoryStream::default(),
+        meet: tokio::sync::Barrier::new(2),
+        reads: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let open = || -> Result<_, Error> {
+        Ok(Sockets::open(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(PlatformExecutor),
+            Arc::new(SystemClock),
+        ))
+    };
+    let (first, second) = tokio::join!(open()?, open()?);
+    // Both fenced the same tail. Identical fence keys would let the second
+    // replay the first's result and reuse its connection ids.
+    match (first, second) {
+        (Ok(_), Err(Error::Conflict)) | (Err(Error::Conflict), Ok(_)) => Ok(()),
+        (first, second) => Err(format!(
+            "concurrent opens did not exclude each other: {:?} {:?}",
+            first.map(|sockets| sockets.shared.incarnation),
+            second.map(|sockets| sockets.shared.incarnation),
+        )
+        .into()),
+    }
 }

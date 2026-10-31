@@ -665,10 +665,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 if bytes.is_empty() || bytes.len() > crate::MAX_RECORD_BYTES {
                     return Err(StreamError::LimitExceeded);
                 }
-                // Applied in order before the next session input: the owner's
-                // commit latency is the peer's transport backpressure.
-                let received = socket.receive(bytes);
-                if let Err(error) = received.await {
+                // Handed over without awaiting the owner, so one socket's
+                // storage latency never stalls the session's other channels.
+                if let Err(error) = socket.receive(bytes) {
                     self.end(input.channel_id, error.code())?;
                 }
                 Ok(())

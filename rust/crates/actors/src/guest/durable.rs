@@ -105,7 +105,9 @@ pub fn validate_web_socket_auto_response(value: &WebSocketAutoResponse) -> Resul
 /// Hibernatable socket effects. A host keeps sockets, tags, attachments and the
 /// auto-response pair outside the actor heap, so a hibernated actor holding
 /// sockets costs it nothing; implementations check the actor on every call.
-pub trait SocketHost: Send + Sync {
+/// Like every host trait it follows the platform boundary: thread-safe on
+/// native targets, and free to own thread-affine handles in a browser.
+pub trait SocketHost: acyclic_stream::ProviderPlatform {
     /// Transfer a pending socket to host ownership, retaining tags across hibernation.
     fn accept_web_socket(
         &self,

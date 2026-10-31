@@ -263,8 +263,10 @@ impl Pool {
                     }),
                 );
                 let node = route.node.clone();
-                let _ = sent.send(Ok(()));
-                self.send(&node, value)
+                // Answer with whether the frame was actually queued.
+                let queued = self.queue(&node, value)?;
+                let _ = sent.send(queued);
+                Ok(())
             }
             Command::Open(open) => {
                 let OpenCommand {
