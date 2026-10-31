@@ -168,7 +168,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let bytes = read_generation(&generation, &requested.0, maximum_bytes, Some(io)).await?;
+        let bytes = read_generation(&generation, &requested.0, maximum_bytes, Some(io))
+            .await
+            .map_err(path_read_refusal)?;
         let bytes_hold = io.guard_bytes(&bytes)?;
         let bytes = (bytes, bytes_hold);
         let staged = read_content_metadata(&generation, path, io).await?;
@@ -499,6 +501,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(generation)
     }
 }
+// Only the selected user path is classified here. Metadata, backing storage,
+// cancellation and accounting failures retain their original terminal cause.
+fn path_read_refusal(error: Error) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Error::NativeWorkspace { source, .. } = &error {
+        let (code, reason) = match source.as_ref() {
+            WorkspaceError::NotFound => (
+                crate::wire::ErrorCode::NotFound,
+                "selected file does not exist",
+            ),
+            WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
+                crate::wire::ErrorCode::Invalid,
+                "selected path is not a regular file",
+            ),
+            WorkspaceError::ReadLimitExceeded => (
+                crate::wire::ErrorCode::Invalid,
+                "selected file exceeds the admitted read bound",
+            ),
+            _ => return error,
+        };
+        return Error::ToolRejected { code, reason };
+    }
+    error
+}
+
 pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,

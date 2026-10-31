@@ -146,6 +146,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
     fn observe_staged_once<'a>(
         &'a self,
         operation: OperationId,
+        replacement: Option<(&'a VolumeRef, &'a str)>,
         maximum: u64,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
@@ -153,7 +154,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
 
         BoundedContentFuture::new(io, || async move {
             let file = self
-                .observe_publication(operation, maximum, ceiling, io)
+                .observe_publication(operation, replacement, maximum, ceiling, io)
                 .await?;
             let bytes = file
                 .as_ref()
@@ -212,11 +213,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     pub(super) async fn observe_publication(
         &self,
         operation: OperationId,
+        replacement: Option<(&VolumeRef, &str)>,
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
-        let retry = once_key(operation, io)?;
+        let retry = match replacement {
+            Some((volume, path)) => {
+                if volume != &self.volume {
+                    return Err(stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "replacement observation belongs to another writer volume",
+                    ));
+                }
+                replacement_key(operation, path, io)?
+            }
+            None => once_key(operation, io)?,
+        };
         let hold = io
             .map(|io| io.guard_owned(retry.as_str().len() as u64))
             .transpose()?;
@@ -228,10 +242,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 super::PublicationLookup {
                     volume: &self.volume,
                     key: &retry,
-                    expected_path: None,
+                    expected_path: replacement.map(|(_, path)| path),
                     maximum_bytes: maximum.min(self.maximum_bytes),
                     internal_class: None,
-                    purpose: super::PublicationPurpose::Metadata,
+                    purpose: if replacement.is_some() {
+                        super::PublicationPurpose::WriteReceipt
+                    } else {
+                        super::PublicationPurpose::Metadata
+                    },
                     scope: self.grant.policy_scope(),
                     ceiling,
                 },
@@ -441,11 +459,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<Option<FileRef>> {
-        self.observe_write_receipt(
-            replacement_key(operation, source.path(), None)?,
-            source.path(),
+        self.observe_publication(
+            operation,
+            Some((source.volume(), source.path())),
             maximum,
             ceiling,
+            None,
         )
         .await
     }

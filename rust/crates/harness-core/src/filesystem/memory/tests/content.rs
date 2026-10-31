@@ -129,6 +129,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         .publisher
         .observe_staged_once(
             operation,
+            None,
             1024,
             crate::conversation::ContentAccess {
                 ceiling: None,
@@ -210,6 +211,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .publisher
             .observe_staged_once(
                 denied_operation,
+                None,
                 1024,
                 crate::conversation::ContentAccess {
                     ceiling: None,

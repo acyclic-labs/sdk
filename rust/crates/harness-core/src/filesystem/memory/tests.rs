@@ -471,17 +471,45 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         render_bytes: 4_096,
         ..Limits::default()
     };
+    let read_capability = storage.read_capability.clone();
     let mut readonly_project = storage.content_bindings();
     readonly_project.writer = None;
     let other_private = MemoryHarnessStorage::new(AgentId::new(), 4_096)
         .await?
         .content_bindings();
     run_admitted_file_case(&storage, limits, move |task| {
+        let read_capability = read_capability.clone();
         let readonly_project = readonly_project.clone();
         let other_private = other_private.clone();
         async move {
         let read = crate::tool::files::read()?;
         let edit = crate::tool::files::edit()?;
+        // A real bound writer remains present, but the caller can only read.
+        let read_granted = task.scoped(Capabilities::new([
+            read_capability, "tool:call:read".into(), "tool:call:edit".into(),
+        ]), limits)?;
+        assert_eq!(call(&read_granted, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "one");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(), call_id: "read-only-edit".into(), name: "edit".into(),
+            arguments: json!({"path":"notes/one.txt","old_text":"one","new_text":"denied"}),
+        };
+        let context = crate::runtime::ToolContext::new(Arc::new(read_granted.clone()), invocation.operation_id, &invocation.call_id)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let error = edit.executor.authorize(Some(read_granted.scope()), Some(&context), &invocation, Some(&work)).unwrap_err();
+        assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+        assert!(!error.is_native_failure(), "{error:?}");
+        assert!(error.is_tool_failure());
+        assert!(!error.leaves_effect_uncertain());
+        let io = crate::executor::PreparationIo::from_native_work(&work)?;
+        let cause = crate::executor::with_history_io(Some(&io), |history| crate::executor::ToolFailureCause::of(&error, history))?;
+        assert!(matches!(crate::executor::tool_failure_content(crate::executor::ToolFailureKind::ExecutorRejected, &cause, Some(&io))?, crate::model::ToolResultContent::Error { .. }));
+        // Native failures with the same wire code retain their terminal meaning.
+        assert!(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native authority verification failed" }.is_native_failure());
+        }
+        assert_eq!(call(&read_granted, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "one");
         let readonly = crate::runtime::Bindings {
             scope: task.scope().clone(),
             content: Some(readonly_project),
@@ -518,7 +546,10 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         // Replay observes the original publication, even after the path moves.
         task.stage_file(None, OperationId::new(), "notes/one.txt", b"later", "text/plain", "one.txt").await?;
         let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
-        assert_eq!(edit.executor.reconcile(invocation, Some(context)).await?, Some(result));
+        let operation = invocation.operation_id;
+        assert_eq!(edit.executor.reconcile(invocation, Some(context.clone())).await?, Some(result));
+        assert!(context.observe_tool_source_file_once(operation, None, Some("notes/other.txt"), None).await?.0.is_none());
+        assert!(context.observe_tool_file_once(operation, None).await?.0.is_none());
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "later");
         Ok(())
     }}).await
