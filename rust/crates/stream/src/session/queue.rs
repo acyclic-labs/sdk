@@ -93,7 +93,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     None,
                 )
             }
-            Ok(Event::Socket { next, bytes }) => (cursor(next), Item::ActorSocket(bytes), None),
+            Ok(Event::Socket { next, bytes }) => {
+                (cursor(next), Item::ActorSocket(bytes), None, None)
+            }
             Ok(Event::End) => {
                 self.end(identity.channel_id, wire_codec::session::END_CODE)?;
                 return Ok(());
