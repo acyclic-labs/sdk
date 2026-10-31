@@ -16,7 +16,7 @@ mod render;
 pub mod strict;
 
 pub use item::{Family, ItemKind, Provenance, WireItem};
-pub use render::{Header, RenderError, Tail, render, seg};
+pub use render::{Header, RenderError, Tail, render, render_summary, seg};
 
 /// Changing rendered bytes requires a new renderer version and corpus review.
 pub const RENDERER_VERSION: u32 = 1;

@@ -229,25 +229,152 @@ fn old_reencoding_and_foreign_text_paths_violate_the_oracles() {
 fn sink_failure_returns_at_the_failed_write_without_retrying() {
     struct Closed {
         writes: usize,
+        accept: usize,
     }
     impl Write for Closed {
-        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.writes += 1;
-            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed consumer"))
+            if self.writes > self.accept {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed consumer"))
+            } else {
+                Ok(bytes.len())
+            }
         }
         fn flush(&mut self) -> io::Result<()> {
             unreachable!("rendering never flushes")
         }
     }
     let source = item(Family::Responses, ItemKind::Message, "message");
-    let mut closed = Closed { writes: 0 };
+    let mut closed = Closed {
+        writes: 0,
+        accept: 0,
+    };
     assert!(
         matches!(render(&header(Family::Responses), [&source], Tail, &mut closed), Err(RenderError::Write(error)) if error.kind() == io::ErrorKind::BrokenPipe)
     );
     assert_eq!(closed.writes, 1);
+    // Fail in the prefix, separator and borrowed instruction serializer. Each
+    // failure must leave the original sink error typed and end immediately.
+    for accept in 0..6 {
+        let mut sink = Closed { writes: 0, accept };
+        assert!(
+            matches!(render_summary(&header(Family::Responses), [&source], "summarize", &mut sink), Err(RenderError::Write(error)) if error.kind() == io::ErrorKind::BrokenPipe)
+        );
+        assert_eq!(sink.writes, accept + 1);
+    }
     // A retrying consumer would violate this same operation-count oracle.
     assert!(closed.write(b"retry").is_err());
     assert_ne!(closed.writes, 1);
+}
+
+proptest! {
+    // Generated request inputs and an independent semantic oracle, not captured
+    // provider exchanges. Byte-prefix identity is not a cache-hit assertion.
+    #[test]
+    fn summary_keeps_the_epoch_prefix_and_disables_invocation(
+        instruction in ".{1,160}",
+        history in prop::collection::vec(".{0,40}", 0..30),
+    ) {
+        for family in FAMILIES {
+            let declaration = |name| match family {
+                Family::Anthropic => json!({"name":name,"input_schema":{"type":"object","properties":{}}}),
+                Family::Responses => json!({"type":"function","name":name,"parameters":{"type":"object","properties":{}}}),
+                Family::Chat => json!({"type":"function","function":{"name":name,"parameters":{"type":"object","properties":{}}}}),
+                Family::Gemini => json!({"name":name,"parameters":{"type":"object","properties":{}}}),
+            };
+            let declarations = json!([declaration("first"), declaration("second")]);
+            let tools = if family == Family::Gemini {
+                json!([{"functionDeclarations":declarations}])
+            } else { declarations };
+            let fields = if family == Family::Gemini { json!({"tools":tools}) }
+                else { json!({"model":"target-model","tools":tools}) };
+            let fields = fields.as_object().unwrap();
+            let header = Header::new(family, "producing-provider".into(), [7;32], RENDERER_VERSION, fields).unwrap();
+            let items: Vec<_> = history.iter().enumerate().map(|(index, text)| {
+                let role = if index % 2 == 0 { "user" } else if family == Family::Gemini { "model" } else { "assistant" };
+                let wire = if family == Family::Gemini { json!({"role":role,"parts":[{"text":text}]}) }
+                    else { json!({"role":role,"content":text}) };
+                WireItem::capture(Provenance {family,provider:"producing-provider".into(),model:"producing-model".into(),endpoint:"https://example.invalid".into()}, ItemKind::Message, raw(wire.to_string()), BTreeMap::new()).unwrap()
+            }).collect();
+            let ordinary = bytes(&header, &items);
+            let prefix = &ordinary[..ordinary.len() - Tail.bytes().len()];
+            let mut summary = Vec::new();
+            let mut visited = 0;
+            render_summary(&header, items.iter().inspect(|_| visited += 1), &instruction, &mut summary).unwrap();
+            prop_assert_eq!(visited, items.len());
+            prop_assert!(summary.starts_with(prefix));
+            let actual: Value = serde_json::from_slice(&summary).unwrap();
+            let mut expected: Value = serde_json::from_slice(&ordinary).unwrap();
+            let (input, message) = match family {
+                Family::Gemini => ("contents", json!({"role":"user","parts":[{"text":instruction}]})),
+                Family::Responses => ("input", json!({"role":"user","content":instruction})),
+                _ => ("messages", json!({"role":"user","content":instruction})),
+            };
+            expected[input].as_array_mut().unwrap().push(message);
+            match family {
+                Family::Gemini => expected["toolConfig"] = json!({"functionCallingConfig":{"mode":"NONE"}}),
+                Family::Anthropic => expected["tool_choice"] = json!({"type":"none"}),
+                _ => expected["tool_choice"] = json!("none"),
+            }
+            prop_assert_eq!(actual, expected);
+            // Reconstructing the header with reordered declarations is the
+            // forbidden alternative: the exact same prefix oracle detects it.
+            let mut changed = fields.clone();
+            let list = changed.get_mut("tools").unwrap();
+            let list = if family == Family::Gemini { &mut list[0]["functionDeclarations"] } else { list };
+            list.as_array_mut().unwrap().reverse();
+            let changed = Header::new(family, "producing-provider".into(), [7;32], RENDERER_VERSION, &changed).unwrap();
+            let mut negative = Vec::new();
+            render_summary(&changed, &items, &instruction, &mut negative).unwrap();
+            prop_assert!(!negative.starts_with(prefix));
+        }
+    }
+}
+
+#[test]
+fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
+    let fields = json!({"tools":[{"google_search":{}}]});
+    let server_header = Header::new(
+        Family::Gemini,
+        "provider".into(),
+        [7; 32],
+        RENDERER_VERSION,
+        fields.as_object().unwrap(),
+    )
+    .unwrap();
+    let mut output = Vec::new();
+    let mut visited = 0;
+    let source = item(Family::Gemini, ItemKind::Message, "source");
+    let selected = std::iter::once(&source).inspect(|_| visited += 1);
+    assert!(render_summary(&server_header, selected, "summary", &mut output).is_err());
+    assert_eq!(visited, 0);
+    assert!(output.is_empty());
+    // The exact same header remains valid for ordinary generation.
+    render(&server_header, [&source], Tail, &mut output).unwrap();
+    assert!(!output.is_empty());
+    output.clear();
+    assert!(
+        render_summary(
+            &header(Family::Responses),
+            std::iter::empty(),
+            "",
+            &mut output
+        )
+        .is_err()
+    );
+    assert!(output.is_empty());
+    for fields in [json!({"tool_choice":"auto"}), json!({"toolConfig":{}})] {
+        assert!(
+            Header::new(
+                Family::Gemini,
+                "provider".into(),
+                [7; 32],
+                RENDERER_VERSION,
+                fields.as_object().unwrap()
+            )
+            .is_err()
+        );
+    }
 }
 
 #[test]
