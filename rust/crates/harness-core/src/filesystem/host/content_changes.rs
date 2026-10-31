@@ -10,6 +10,199 @@ struct ChangeRecord<'a> {
     file: Option<FileRef>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AgentId,
+        conversation::VolumeOwner,
+        core::{AggregateKind, Authority, AuthorityRoot},
+    };
+
+    #[tokio::test]
+    async fn conditional_batch_is_atomic_and_recovers_its_original_cut() -> Result<()> {
+        let provider =
+            ProviderRef::new("changes".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = AgentId::from_bytes([37; 16]);
+        let volume = VolumeRef::new(
+            provider,
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let root = AuthorityRoot::new(
+            "changes",
+            [41; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "changes".into(),
+            },
+        );
+        let scope = root.bootstrap_scope(
+            "changes-owner",
+            &crate::Capabilities::new([
+                volume.capability(VolumeOperation::Write, &mut None)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+            ]),
+            Some(agent),
+            &mut None,
+        )?;
+        let verifier = root.verifier(&mut None)?;
+        let write = ContentGrant::verify(
+            &verifier,
+            &scope,
+            &volume,
+            VolumeOperation::Write,
+            4096,
+            &mut None,
+        )?;
+        let read = ContentGrant::verify(
+            &verifier,
+            &scope,
+            &volume,
+            VolumeOperation::Read,
+            4096,
+            &mut None,
+        )?;
+        let access = ContentAccess::default();
+        let initial = [
+            ContentChange::CreateAbsent {
+                path: "a",
+                bytes: b"old",
+                media_type: "text/plain",
+                display_name: "a",
+            },
+            ContentChange::CreateAbsent {
+                path: "b",
+                bytes: b"remove",
+                media_type: "text/plain",
+                display_name: "b",
+            },
+        ];
+        let original = host
+            .put_changes(
+                &volume,
+                &write,
+                &initial,
+                &IdempotencyKey::new("initial-changes")?,
+                4096,
+                access,
+            )?
+            .await?;
+        let changes = [
+            ContentChange::UpdateExpected {
+                source: &original[0],
+                bytes: b"new",
+            },
+            ContentChange::DeleteExpected {
+                source: &original[1],
+            },
+            ContentChange::CreateAbsent {
+                path: "c",
+                bytes: b"added",
+                media_type: "text/plain",
+                display_name: "c",
+            },
+        ];
+        let key = IdempotencyKey::new("complete-changes")?;
+        let published = host
+            .put_changes(&volume, &write, &changes, &key, 4096, access)?
+            .await?;
+        assert_eq!(published.len(), 2);
+        assert_eq!(published[0].version(), published[1].version());
+        assert_eq!(
+            host.read_private_path(&volume, &read, "a", None, 4096, access)
+                .await?
+                .1
+                .as_ref(),
+            b"new"
+        );
+        assert_eq!(
+            host.read_private_path(&volume, &read, "c", None, 4096, access)
+                .await?
+                .1
+                .as_ref(),
+            b"added"
+        );
+        assert!(
+            host.read_private_path(&volume, &read, "b", None, 4096, access)
+                .await
+                .is_err()
+        );
+        let stale = [
+            ContentChange::CreateAbsent {
+                path: "must-stay-absent",
+                bytes: b"partial",
+                media_type: "text/plain",
+                display_name: "partial",
+            },
+            ContentChange::UpdateExpected {
+                source: &original[0],
+                bytes: b"stale",
+            },
+        ];
+        assert!(
+            host.put_changes(
+                &volume,
+                &write,
+                &stale,
+                &IdempotencyKey::new("stale-changes")?,
+                4096,
+                access
+            )?
+            .await
+            .is_err()
+        );
+        assert!(
+            host.read_private_path(&volume, &read, "must-stay-absent", None, 4096, access)
+                .await
+                .is_err()
+        );
+        host.put_content(
+            &volume,
+            &write,
+            "c",
+            b"later",
+            "text/plain",
+            "c",
+            4096,
+            &IdempotencyKey::new("later-content")?,
+            None,
+            access,
+        )
+        .await?;
+        let replayed = host
+            .put_changes(&volume, &write, &changes, &key, 4096, access)?
+            .await?;
+        assert_eq!(replayed, published);
+        assert_eq!(
+            host.observe_changes(&volume, &write, &key, 4096, access)?
+                .await?,
+            Some(published)
+        );
+        let changed = [ContentChange::CreateAbsent {
+            path: "different",
+            bytes: b"changed",
+            media_type: "text/plain",
+            display_name: "different",
+        }];
+        assert!(
+            host.put_changes(&volume, &write, &changed, &key, 4096, access)?
+                .await
+                .is_err()
+        );
+        assert!(
+            host.read_private_path(&volume, &read, "different", None, 4096, access)
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+}
+
 #[derive(Deserialize, crate::HeapLayout)]
 struct StoredChange {
     source: Option<FileRef>,

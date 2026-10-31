@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+mod patch;
+pub use patch::apply_patch;
+
 /// The immutable trained function revision, also pinned by model files.
 pub const REVISION: &str = "trained-file-1";
 
@@ -228,6 +231,7 @@ impl FileVariant {
         Ok(Tool {
             definition,
             hook_names,
+            skill_source: None,
             executor: Arc::new(self),
             projection: Arc::new(self),
         })
