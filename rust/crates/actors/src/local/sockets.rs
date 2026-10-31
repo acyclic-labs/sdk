@@ -667,11 +667,21 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
     /// publication refusal or loss of its executor returns the original error.
     pub async fn drain(&self) -> Result<(), Arc<Error>> {
         let close = Close::new(1001, "runtime draining", SocketCloseInitiator::Runtime);
-        let connections: Vec<String> = self.shared.lock().sockets.keys().cloned().collect();
-        let completions: Vec<_> = connections
+        let claims = {
+            let mut table = self.shared.lock();
+            let connections: Vec<String> = table.sockets.keys().cloned().collect();
+            connections
+                .into_iter()
+                .filter_map(|connection| {
+                    self.shared
+                        .claim_close(&mut table, &connection, &close)
+                        .map(|claim| (connection, claim))
+                })
+                .collect::<Vec<_>>()
+        };
+        let completions = claims
             .into_iter()
-            .filter_map(|connection| self.shared.begin_close(&connection, close.clone()))
-            .collect();
+            .map(|(connection, claim)| self.shared.start_close(&connection, close.clone(), claim));
         futures::future::try_join_all(completions).await?;
         Ok(())
     }
@@ -694,15 +704,15 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Move `connection` toward its one close. The returned owner must
-    /// run [`Self::finish_close`]; a close requested while the open is
-    /// still committing runs when that commit settles.
+    /// Pin the original completion while moving toward the one close under
+    /// the same table lock. A pending Open retains the producer until it
+    /// settles; otherwise only the returned owner may finish the close.
     fn claim_close(
         self: &Arc<Self>,
+        table: &mut Table,
         connection: &str,
         close: &Close,
-    ) -> Option<(CloseOwner<P>, CloseCompletion)> {
-        let mut table = self.lock();
+    ) -> Option<(Option<CloseOwner<P>>, CloseCompletion)> {
         let Some(entry) = table.sockets.get_mut(connection) else {
             return None;
         };
@@ -716,10 +726,9 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 pending,
             } => {
                 pending.get_or_insert_with(|| close.clone());
-                let _completion = entry.close_completion();
-                None
+                Some((None, entry.close_completion()))
             }
-            Phase::Closing => None,
+            Phase::Closing => Some((None, entry.close_completion())),
             phase @ (Phase::Opening {
                 committed: true, ..
             }
@@ -727,12 +736,12 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 *phase = Phase::Closing;
                 let completion = entry.close_completion();
                 Some((
-                    CloseOwner {
+                    Some(CloseOwner {
                         shared: Arc::clone(self),
                         connection: connection.to_owned(),
                         completed: entry.completed.take(),
                         retire: true,
-                    },
+                    }),
                     completion,
                 ))
             }
@@ -740,18 +749,23 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     }
 
     fn begin_close(self: &Arc<Self>, connection: &str, close: Close) -> Option<CloseCompletion> {
-        if let Some((owner, completion)) = self.claim_close(connection, &close) {
+        let claim = self.claim_close(&mut self.lock(), connection, &close)?;
+        Some(self.start_close(connection, close, claim))
+    }
+
+    fn start_close(
+        self: &Arc<Self>,
+        connection: &str,
+        close: Close,
+        (owner, completion): (Option<CloseOwner<P>>, CloseCompletion),
+    ) -> CloseCompletion {
+        if let Some(owner) = owner {
             let shared = Arc::clone(self);
             let connection = connection.to_owned();
             self.executor
                 .spawn(Box::pin(shared.finish_close(connection, close, owner)));
-            Some(completion)
-        } else {
-            self.lock()
-                .sockets
-                .get(connection)
-                .and_then(|entry| entry.completion.clone())
         }
+        completion
     }
 
     async fn finish_close(
@@ -1224,7 +1238,8 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             match self.next_peer_event(&connection) {
                 None => return,
                 Some(Step::Close(close)) => {
-                    if let Some((owner, _completion)) = self.claim_close(&connection, &close) {
+                    let claim = self.claim_close(&mut self.lock(), &connection, &close);
+                    if let Some((Some(owner), _completion)) = claim {
                         self.finish_close(connection, close, owner).await;
                     }
                     return;

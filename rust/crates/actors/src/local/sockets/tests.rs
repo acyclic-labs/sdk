@@ -686,8 +686,22 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         .await?;
     let mut waiting = Box::pin(sockets.drain());
     assert!(futures::poll!(&mut waiting).is_pending());
+    // Join while Closing, then let the original producer retire the entry
+    // before observing its result. No later table lookup can recover this cut.
+    let (owner, completion) = shared
+        .claim_close(
+            &mut shared.lock(),
+            &connection,
+            &Close::new(1001, "runtime draining", SocketCloseInitiator::Runtime),
+        )
+        .ok_or("closing socket lost its original completion")?;
+    assert!(owner.is_none(), "joining cannot claim a second producer");
     executor.take()?.await;
-    assert!(matches!(waiting.await, Err(error) if matches!(error.as_ref(), Error::Conflict)));
+    assert!(sockets.is_empty());
+    let joined_error = completion.await.expect_err("original Close must refuse");
+    let drain_error = waiting.await.expect_err("drain must retain the refusal");
+    assert!(matches!(joined_error.as_ref(), Error::Conflict));
+    assert!(Arc::ptr_eq(&joined_error, &drain_error));
     assert!(
         last.await.is_err(),
         "a refused publication cannot report a successful Close"
