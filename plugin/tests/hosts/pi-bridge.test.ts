@@ -20,7 +20,8 @@ function extension(directory: string): string {
 }
 
 test("installed Pi failed spawn closes custody and shutdown without adjacent assets or an exit event", async () => {
-  const directory = hostFixtureDirectory('pi-bridge-');
+  const directory = mkdtempSync(join(import.meta.dir, ".pi-bridge-"));
+  const packageDirectory = hostFixtureDirectory('pi-package-');
   const missing = join(directory, "absent-native-bridge");
   let closed: Promise<void> | undefined;
   let child: childProcess.ChildProcess | undefined;
@@ -33,7 +34,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
     const binary = process.env.ACYCLIC_TEST_BINARY;
     assert(binary && isAbsolute(binary), `step=admit Pi installer executable; recovery=${recovery}`);
     const path = join(directory, "acyclic.ts");
-    const assembled = join(directory, "package");
+    const assembled = join(packageDirectory, "package");
     const packageRoot = join(assembled, "plugin");
     const packaged = native.spawnSync(process.execPath, [fileURLToPath(new URL("../../scripts/package.mjs", import.meta.url)),
       "--binary", binary, "--out", assembled], {encoding: "utf8", windowsHide: true});
@@ -101,6 +102,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
   } finally {
     mock.restore();
     rmSync(directory, { recursive: true, force: true });
+    rmSync(packageDirectory, { recursive: true, force: true });
   }
 });
 
