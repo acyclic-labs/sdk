@@ -714,9 +714,18 @@ async fn live_fork(
         .fork_machine(machine.id, NonZeroU32::MIN, key(0x35)?)
         .await
         .map_err(|error| error.to_string())?;
-    let MutationOutcome::MachineForked { children, .. } = &suspended else {
+    let MutationOutcome::Forked {
+        machines: children,
+        provenance,
+    } = &suspended
+    else {
         return Err("suspended fork returned the wrong outcome".into());
     };
+    if provenance.source != crate::ForkSource::Machine(machine.id)
+        || provenance.fidelity != expected
+    {
+        return Err("suspended fork substituted its source or declared fidelity".into());
+    }
     let [child] = children.as_slice() else {
         return Err("suspended fork child set is not exact".into());
     };

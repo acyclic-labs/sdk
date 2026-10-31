@@ -173,8 +173,9 @@ async fn live_fork_forks_a_suspended_source_without_waking_it() {
         .suspend(parent.id, key(0x21))
         .await
         .unwrap_or_else(|_| unreachable!());
-    let Ok(MutationOutcome::MachineForked { children, .. }) =
-        provider.fork_machine(parent.id, two(), key(0x22)).await
+    let Ok(MutationOutcome::Forked {
+        machines: children, ..
+    }) = provider.fork_machine(parent.id, two(), key(0x22)).await
     else {
         unreachable!()
     };
