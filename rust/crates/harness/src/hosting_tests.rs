@@ -12,7 +12,7 @@ use crate::{
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock, wire};
 use acyclic_fs::{EmbeddedCapabilities, LogicalObjectStore};
 use acyclic_harness_client::{AgentControlFailure, PreparedCommand, decode_agent_reply};
-use acyclic_stream::{MemoryStream, session::Client};
+use acyclic_stream::{MemoryStream, session::Client, testing::Counted};
 use prost::Message as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -118,8 +118,9 @@ async fn call(
     Ok(decode_agent_reply(&response.body, command)?)
 }
 
-fn binding() -> Result<Bound<MemoryStream, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
-    let stream = Arc::new(MemoryStream::default());
+fn binding()
+-> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
+    let stream = Arc::new(Counted::new(MemoryStream::default()));
     let objects = acyclic_objects::MemoryObjects::memory();
     Ok(Bound::local_root(
         AuthorityRoot::new(
@@ -485,17 +486,23 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         matches!(call(&client, "agents", &spawn).await?, Ok(AgentReply::Spawned { agent, .. }) if agent == child),
         "a retried spawn names the same child"
     );
-    let mut listed = false;
-    for _ in 0..500 {
-        if let Ok(AgentReply::Children { items, .. }) = call(&client, "agents", &children).await?
-            && items.iter().any(|item| item.agent == child)
-        {
-            listed = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(listed, "the parent's step spawned the child");
+    runner.abort();
+    let _ = runner.await;
+    // Spawn's committed result already names the child. No later publication
+    // is needed to list it with its atomically published external JSON status.
+    let before = stream.requests();
+    assert!(matches!(
+        call(&client, "agents", &children).await?,
+        Ok(AgentReply::Children { items, next: None })
+            if items.len() == 1 && items[0].agent == child && items[0].status.is_some()
+    ));
+    let requests = stream.requests().since(before);
+    assert_eq!(requests.control(), 2, "one page and one status view");
+    assert_eq!(
+        requests.data(),
+        0,
+        "child status required separate record reads"
+    );
     // Nothing waits on an approval, so none is listed and none can be decided.
     assert!(matches!(
         call(
@@ -538,6 +545,24 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             delivery: Delivered::Committed { .. }
         })
     ));
+    // A namespace fork alone is not an admitted agent publication: its
+    // canonical external status is missing. Refuse the incomplete row.
+    let orphan = root.child(&AgentId::from_bytes([8; 16]))?;
+    stream
+        .fork(acyclic_stream::ForkRequest {
+            source: child.inbox()?,
+            destination: orphan.inbox()?,
+            at_tail: Some(0),
+            exclude: Vec::new(),
+            idempotency_key: acyclic_stream::IdempotencyKey::new(
+                b"missing-child-status".as_slice(),
+            )?,
+        })
+        .await?;
+    assert!(matches!(
+        call(&client, "agents", &children).await?,
+        Err(AgentControlFailure::Refused { code, .. }) if code == "invalid_agent_record"
+    ));
     // Outside the admitted tree is a typed refusal.
     let stranger = AgentPath::root(&AgentId::from_bytes([9; 16]));
     assert!(matches!(
@@ -564,7 +589,10 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             .await
             .is_err()
     );
-    runner.abort();
+    let before = stream.requests();
+    assert!(call(&client, "agents", &children).await.is_err());
+    let requests = stream.requests().since(before);
+    assert_eq!(requests.control() + requests.data(), 0);
     Ok(())
 }
 

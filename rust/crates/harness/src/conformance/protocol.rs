@@ -316,6 +316,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         };
         if items.len() != 1
             || items.first().map(|item| &item.agent) != Some(child)
+            || items.first().and_then(|item| item.status.as_ref()) != Some(&initial)
             || next.is_some()
         {
             return Err("the committed child was not listed exactly once".into());
