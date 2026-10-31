@@ -435,6 +435,16 @@ impl Follower {
         self.notify(None);
     }
 
+    /// A record on `account`'s Stream was refused, whatever the cause,
+    /// an undecodable record included: fence that account until a record
+    /// for it applies.
+    pub fn refuse(&self, account: &str) {
+        if let Ok(mut accounts) = self.accounts.write() {
+            accounts.entry(account.to_owned()).or_default().poisoned = true;
+        }
+        self.notify(None);
+    }
+
     /// Monotone protected time: never earlier than any time this follower has
     /// returned or any accepted publication. A rolled-back host clock cannot
     /// revive expired authority.
