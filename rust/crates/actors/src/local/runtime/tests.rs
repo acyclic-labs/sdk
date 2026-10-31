@@ -1486,7 +1486,12 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
         .set_paused(&cut, 1, true, key("external-pause")?)
         .await?;
     runtime.wake(&address);
-    assert!(runtime.drain().await.is_empty());
+    let failures = runtime.drain().await;
+    assert!(
+        matches!(failures.as_slice(), [(_, Error::Conflict)]),
+        "{failures:?}"
+    );
+    assert_eq!(runtime.counts(), (0, 0));
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -1500,7 +1505,7 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
     store
         .set_paused(&cut, 1, false, key("external-resume")?)
         .await?;
-    runtime.wake(&address);
+    runtime.track(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -1508,7 +1513,10 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
         vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
     );
     let cut = store.load(&address).await?;
-    store.claim(&cut, 2, key("foreign-placement")?).await?;
+    let next_epoch = cut.state().ok_or("missing state")?.epoch() + 1;
+    store
+        .claim(&cut, next_epoch, key("foreign-placement")?)
+        .await?;
     provider
         .append(AppendRequest {
             path: inbox,

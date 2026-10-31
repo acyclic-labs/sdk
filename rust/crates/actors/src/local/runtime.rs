@@ -343,12 +343,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         .map_err(|_| Error::Invalid("event delivery count overflow"))?;
                     EventDelivery(Arc::clone(slot))
                 };
-                while !self.deliver(actor, &delivery.0).await? {
-                    // Drop both the actor lock and admission before queueing another
-                    // batch. Finite event delivery still drains its committed input.
-                    limits::yield_now().await;
+                let result = loop {
+                    match self.deliver(actor, &delivery.0).await {
+                        Ok(true) => break Ok(()),
+                        Ok(false) => {
+                            // Drop both locks before queueing the next finite batch.
+                            limits::yield_now().await;
+                        }
+                        Err(error) => break Err(error),
+                    }
+                };
+                drop(delivery);
+                if matches!(result, Err(Error::Conflict)) {
+                    self.release(actor);
                 }
-                Ok(())
+                result
             }
         )
     }
@@ -634,10 +643,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         inner.pending = Some((snapshot, *publication));
                         return Err(Error::Stream(source));
                     }
-                    Err(Error::Conflict) => {
-                        self.refresh_cut(actor, &mut inner, &snapshot).await?;
-                        continue;
-                    }
                     Err(error) => {
                         inner.observed = None;
                         return Err(error);
@@ -682,7 +687,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         inner.epoch = epoch;
                         inner.observed = Some(Arc::new(claimed));
                     }
-                    Err(Error::Conflict) => inner.observed = None,
                     Err(error) => {
                         inner.observed = None;
                         return Err(error);
@@ -725,9 +729,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // another host may already have paused or replaced this placement.
             // Until canonical control invalidation is available, observe the
             // real provider before every handler attempt, including alarms.
-            if let Some(admitted) = self.store.observe(&snapshot).await? {
-                inner.observed = Some(Arc::new(admitted));
-                continue;
+            if self.store.observe(&snapshot).await?.is_some() {
+                inner.observed = None;
+                return Err(Error::Conflict);
             }
             let epoch = inner.epoch;
             let limits = &self.handler.manifest().limits;
@@ -815,10 +819,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         observed.ok_or(Error::Invalid("actor receipt has no state"))?,
                     ));
                 }
-                // A moved cut is re-read; a lost placement surfaces above.
-                Err(Error::Conflict) => {
-                    self.refresh_cut(actor, &mut inner, &snapshot).await?;
-                }
                 Err(Error::Unknown {
                     publication,
                     source,
@@ -834,23 +834,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
             }
         }
-    }
-
-    /// A conflict is the only steady-state reason to rediscover the actor cut.
-    async fn refresh_cut(
-        &self,
-        actor: &ActorReference,
-        inner: &mut Inner,
-        previous: &Snapshot,
-    ) -> Result<(), Error> {
-        inner.observed = None;
-        let observed = Arc::new(self.store.load(actor).await?);
-        let moved = observed.tail != previous.tail || observed.anchor != previous.anchor;
-        inner.observed = Some(observed);
-        if !moved {
-            return Err(Error::Invalid("transition refused at an unchanged cut"));
-        }
-        Ok(())
     }
 
     /// Open the follow for one subscription. A stream that does not exist yet

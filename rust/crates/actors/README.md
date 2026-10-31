@@ -46,6 +46,11 @@ explicitly restart after observing either refusal. The running dispatcher
 returns these failures to its owner, and unknown acknowledgements retain the
 original publication and participant custody.
 
+Delivery also returns a lost claim, changed admission cut or refused checkpoint
+as `Conflict`, releasing this placement. It does not claim another epoch or
+invoke the handler again within that delivery. A new placement or explicit
+resume can deliver unconsumed input using the original committed cursor.
+
 ## Guest streaming fetch
 
 `GuestStreamingResponse` carries `GuestBody`, an HTTP body that preserves data
