@@ -131,6 +131,13 @@ struct TextEditor<'a> {
     view_range: Option<[i64; 2]>,
 }
 
+#[derive(schemars::JsonSchema)]
+#[serde(untagged)]
+enum TextEditorOutput {
+    Publication(FileResult),
+    Read(crate::tool::files::ReadFileResult),
+}
+
 #[derive(Serialize)]
 struct Edit<'a> {
     path: &'a str,
@@ -221,7 +228,7 @@ impl FileVariant {
             description: description.into(),
             input_schema,
             output_schema: if self == Self::TextEditor {
-                serde_json::json!({"oneOf":[schema::output::<FileResult>()?, schema::output::<crate::tool::files::ReadFileResult>()?]})
+                schema::output::<TextEditorOutput>()?
             } else {
                 schema::output::<FileResult>()?
             },
