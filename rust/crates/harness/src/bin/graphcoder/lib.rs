@@ -23,7 +23,7 @@ use acyclic_harness::{
 };
 use acyclic_harness_providers::{Credentials, Registry};
 use args::{Args, Command, InputFormat};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
 use std::{future::Future, process::ExitCode, sync::Arc};
 use tracing_subscriber::util::SubscriberInitExt as _;
@@ -40,7 +40,11 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// `seams` makes of the self-deployed defaults: the one entry point a
 /// self-deployed and a managed server share.
 pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
-    let args = Args::parse();
+    let matches = Args::command().get_matches();
+    let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
+        args.model = None;
+    }
     let report = acyclic_native_runtime::obs::WaitReport::default();
     if let Err(error) =
         lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok()).try_init()
@@ -103,7 +107,9 @@ fn configure(
     if let Some(directory) = &args.directory {
         config = config.active_directory(directory);
     }
-    if let Some(root) = &args.settings_root {
+    if args.default_config {
+        config = config.without_user_settings();
+    } else if let Some(root) = &args.settings_root {
         config = config
             .settings(SettingsConfig::new(&args.workspace, root).codex_home(root.join(".codex")));
     }
@@ -153,12 +159,28 @@ async fn run(
         let connection = phase(|| Connection::connect_endpoint(endpoint.as_deref())).await?;
         return drive(&args, Conversation::open(connection)?).await;
     }
-    let credentials = args
-        .credentials
-        .as_deref()
-        .map(Credentials::from_file)
-        .transpose()?
-        .unwrap_or_default();
+    let credentials = if args.default_config {
+        let configured = args
+            .credentials
+            .as_deref()
+            .map(|path| -> Result<Credentials, Box<dyn std::error::Error>> {
+                let bytes = std::fs::read(path)?;
+                serde_json::from_slice::<Credentials>(&bytes)
+                    .map_err(|_| "invalid provider credential file".into())
+            })
+            .transpose()?;
+        Credentials::explicit(
+            configured
+                .map(|credentials| credentials.api_keys)
+                .unwrap_or_default(),
+        )
+    } else {
+        args.credentials
+            .as_deref()
+            .map(Credentials::from_file)
+            .transpose()?
+            .unwrap_or_default()
+    };
     let config = configure(&args, credentials)?;
     if let Some(Command::Serve(serve)) = &args.command {
         let tls = match (&serve.tls_certificate, &serve.tls_key, &serve.url) {

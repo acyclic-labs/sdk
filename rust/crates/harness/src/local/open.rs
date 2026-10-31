@@ -44,7 +44,10 @@ impl Opening {
         #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let (config, settings_configuration) = {
             let mut config = config;
-            if config.model.is_none() && config.models.is_none() {
+            if config.without_user_settings {
+                config.settings = None;
+                (config.resolve(None, true)?, None)
+            } else if config.model.is_none() && config.models.is_none() {
                 (config, None)
             } else {
                 let injected = config.settings.is_some();
@@ -53,7 +56,7 @@ impl Opening {
                     config.settings.take(),
                     config.hermetic,
                 )?;
-                (config.resolve(&settings, injected)?, Some(settings))
+                (config.resolve(Some(&settings), injected)?, Some(settings))
             }
         };
         if config.approval_issuer.is_some() {
