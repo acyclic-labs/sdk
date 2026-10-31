@@ -154,17 +154,50 @@ impl Poller {
             if token == WAKE {
                 let mut counter = 0_u64;
                 // SAFETY: an eight-byte read into an owned counter drains the eventfd.
-                unsafe {
+                let drained = unsafe {
                     libc::read(
                         self.wake.as_raw_fd(),
                         (&raw mut counter).cast(),
                         size_of::<u64>(),
-                    );
+                    )
+                };
+                if drained < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if drained != 8 {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
                 }
             } else {
                 ready.push(token);
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read as _, Write as _};
+
+    #[test]
+    fn a_failed_native_wake_drain_returns_the_original_cause() -> io::Result<()> {
+        let mut poller = Poller::new()?;
+        let (mut reader, mut writer) = std::io::pipe()?;
+        // Publish a real WAKE-key readiness packet. A write-only descriptor
+        // then supplies the actual read refusal at the original drain call.
+        poller.interest(reader.as_raw_fd(), libc::EPOLLIN, WAKE)?;
+        assert_eq!(writer.write(b"x")?, 1);
+        poller.wake = writer.into();
+        let mut ready = Vec::new();
+        let error = poller.wait(None, &mut ready).unwrap_err();
+        // The old discarded read reported Ok and immediately re-entered the
+        // still-readable kernel interest. This oracle rejects that one turn.
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+        assert!(ready.is_empty());
+        let mut byte = [0];
+        assert_eq!(reader.read(&mut byte)?, 1);
+        assert_eq!(byte, [b'x']);
         Ok(())
     }
 }
