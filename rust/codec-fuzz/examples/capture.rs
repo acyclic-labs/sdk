@@ -224,6 +224,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
+    for (name, bytes) in acyclic_fs::s3_http::codec_fuzz::seeds()? {
+        save(
+            "filesystem_codecs",
+            name,
+            &bytes,
+            "S3 multipart production created/part/completing/completed/aborted writers with explicit upload context",
+            &mut manifest,
+        )?;
+    }
     for (name, bytes) in acyclic_fs::core_state::codec_fuzz::seeds()? {
         save(
             "filesystem_codecs",

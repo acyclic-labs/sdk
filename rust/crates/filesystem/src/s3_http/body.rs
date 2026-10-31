@@ -253,19 +253,42 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     Ok(snapshot)
 }
 
+/// Persisted multipart refusal, projected only at the S3 service boundary.
+#[derive(Debug, thiserror::Error)]
+enum MultipartDecodeError {
+    #[error("multipart upload does not exist")]
+    NoSuchUpload,
+    #[error("multipart record is malformed")]
+    Malformed,
+    #[error("multipart record version {0} is unsupported")]
+    UnsupportedVersion(u8),
+}
+
+type MultipartDecodeResult<T = ()> = Result<T, MultipartDecodeError>;
+
+impl From<MultipartDecodeError> for s3s::S3Error {
+    fn from(error: MultipartDecodeError) -> Self {
+        match error {
+            MultipartDecodeError::NoSuchUpload => s3s::s3_error!(NoSuchUpload),
+            MultipartDecodeError::Malformed => s3s::s3_error!(InvalidRequest),
+            MultipartDecodeError::UnsupportedVersion(_) => s3s::s3_error!(NotImplemented),
+        }
+    }
+}
+
 /// Decodes and validates the leading `created` record of a multipart record stream, returning the upload's key and its negotiated part bounds.
 fn decode_multipart_header(
     created: &acyclic_stream::OwnedBytes,
     limits: FilesystemS3Limits,
-) -> S3Result<(String, u32, u64, u64)> {
+) -> MultipartDecodeResult<(String, u32, u64, u64)> {
     let mut cursor = RecordCursor::new(created);
     cursor.header(1)?;
     let key_length = cursor.u32()?;
     if key_length == 0 || key_length > limits.maximum_key_bytes {
-        return Err(s3s::s3_error!(InvalidRequest));
+        return Err(MultipartDecodeError::Malformed);
     }
     let key = std::str::from_utf8(cursor.take(key_length as usize)?)
-        .map_err(|_| s3s::s3_error!(InvalidRequest))?
+        .map_err(|_| MultipartDecodeError::Malformed)?
         .to_owned();
     let maximum_parts = cursor.u32()?;
     let maximum_part_bytes = cursor.u64()?;
@@ -277,7 +300,7 @@ fn decode_multipart_header(
         || maximum_part_bytes > limits.maximum_multipart_part_bytes
         || minimum_part_bytes > maximum_part_bytes
     {
-        return Err(s3s::s3_error!(InvalidRequest));
+        return Err(MultipartDecodeError::Malformed);
     }
     Ok((key, maximum_parts, maximum_part_bytes, minimum_part_bytes))
 }
@@ -286,9 +309,9 @@ fn decode_multipart(
     records: Vec<acyclic_stream::OwnedBytes>,
     tail: u64,
     limits: FilesystemS3Limits,
-) -> S3Result<MultipartSnapshot> {
+) -> MultipartDecodeResult<MultipartSnapshot> {
     let mut records = records.into_iter();
-    let created = records.next().ok_or_else(|| s3s::s3_error!(NoSuchUpload))?;
+    let created = records.next().ok_or(MultipartDecodeError::NoSuchUpload)?;
     let (key, maximum_parts, maximum_part_bytes, minimum_part_bytes) =
         decode_multipart_header(&created, limits)?;
     let mut parts = BTreeMap::new();
@@ -298,7 +321,7 @@ fn decode_multipart(
         let mut cursor = RecordCursor::new(&record);
         let tag = cursor.any_header()?;
         if terminal.is_some() && tag != 4 {
-            return Err(s3s::s3_error!(InvalidRequest));
+            return Err(MultipartDecodeError::Malformed);
         }
         match tag {
             2 => {
@@ -312,13 +335,13 @@ fn decode_multipart(
                     || part_number > maximum_parts
                     || logical_bytes > maximum_part_bytes
                 {
-                    return Err(s3s::s3_error!(InvalidRequest));
+                    return Err(MultipartDecodeError::Malformed);
                 }
                 let etag = format!("\"{}\"", hex::encode(etag_digest));
                 if let Some((prior_number, prior_etag)) = operations.get(&operation)
                     && (*prior_number != part_number || prior_etag != &etag)
                 {
-                    return Err(s3s::s3_error!(InvalidRequest));
+                    return Err(MultipartDecodeError::Malformed);
                 }
                 operations.insert(operation, (part_number, etag.clone()));
                 parts.insert(
@@ -332,7 +355,16 @@ fn decode_multipart(
             3 => {
                 let count = cursor.u32()?;
                 if count == 0 || count > maximum_parts {
-                    return Err(s3s::s3_error!(InvalidRequest));
+                    return Err(MultipartDecodeError::Malformed);
+                }
+                if count as usize
+                    > record
+                        .len()
+                        .checked_sub(cursor.offset)
+                        .ok_or(MultipartDecodeError::Malformed)?
+                        / 36
+                {
+                    return Err(MultipartDecodeError::Malformed);
                 }
                 let mut selected = Vec::with_capacity(count as usize);
                 for _ in 0..count {
@@ -347,10 +379,10 @@ fn decode_multipart(
             4 => {
                 let generation =
                     crate::GenerationId::from_bytes(cursor.take(record.len().saturating_sub(2))?)
-                        .ok_or_else(|| s3s::s3_error!(InvalidRequest))?;
+                        .ok_or(MultipartDecodeError::Malformed)?;
                 cursor.finish()?;
                 if !matches!(terminal, Some(MultipartTerminal::Completing(_))) {
-                    return Err(s3s::s3_error!(InvalidRequest));
+                    return Err(MultipartDecodeError::Malformed);
                 }
                 terminal = Some(MultipartTerminal::Completed(generation));
             }
@@ -358,7 +390,7 @@ fn decode_multipart(
                 cursor.finish()?;
                 terminal = Some(MultipartTerminal::Aborted);
             }
-            _ => return Err(s3s::s3_error!(InvalidRequest)),
+            _ => return Err(MultipartDecodeError::Malformed),
         }
     }
     Ok(MultipartSnapshot {
@@ -382,82 +414,88 @@ impl<'a> RecordCursor<'a> {
         Self { bytes, offset: 0 }
     }
 
-    fn take(&mut self, count: usize) -> S3Result<&'a [u8]> {
+    fn take(&mut self, count: usize) -> MultipartDecodeResult<&'a [u8]> {
         let end = self
             .offset
             .checked_add(count)
-            .ok_or_else(|| s3s::s3_error!(InvalidRequest))?;
+            .ok_or(MultipartDecodeError::Malformed)?;
         let value = self
             .bytes
             .get(self.offset..end)
-            .ok_or_else(|| s3s::s3_error!(InvalidRequest))?;
+            .ok_or(MultipartDecodeError::Malformed)?;
         self.offset = end;
         Ok(value)
     }
 
-    fn object(&mut self) -> S3Result<ObjectId> {
+    fn object(&mut self) -> MultipartDecodeResult<ObjectId> {
         let (object, remaining) = ObjectId::from_prefix(
             self.bytes
                 .get(self.offset..)
-                .ok_or_else(|| s3s::s3_error!(InvalidRequest))?,
+                .ok_or(MultipartDecodeError::Malformed)?,
         )
-        .map_err(|_| s3s::s3_error!(InvalidRequest))?;
+        .map_err(|_| MultipartDecodeError::Malformed)?;
         self.offset = self.bytes.len() - remaining.len();
         Ok(object)
     }
 
-    fn u8(&mut self) -> S3Result<u8> {
+    fn u8(&mut self) -> MultipartDecodeResult<u8> {
         self.take(1)?
             .first()
             .copied()
-            .ok_or_else(|| s3s::s3_error!(InvalidRequest))
+            .ok_or(MultipartDecodeError::Malformed)
     }
 
-    fn u32(&mut self) -> S3Result<u32> {
+    fn u32(&mut self) -> MultipartDecodeResult<u32> {
         Ok(u32::from_le_bytes(
             self.take(4)?
                 .try_into()
-                .map_err(|_| s3s::s3_error!(InvalidRequest))?,
+                .map_err(|_| MultipartDecodeError::Malformed)?,
         ))
     }
 
-    fn u64(&mut self) -> S3Result<u64> {
+    fn u64(&mut self) -> MultipartDecodeResult<u64> {
         Ok(u64::from_le_bytes(
             self.take(8)?
                 .try_into()
-                .map_err(|_| s3s::s3_error!(InvalidRequest))?,
+                .map_err(|_| MultipartDecodeError::Malformed)?,
         ))
     }
 
-    fn array32(&mut self) -> S3Result<[u8; 32]> {
+    fn array32(&mut self) -> MultipartDecodeResult<[u8; 32]> {
         self.take(32)?
             .try_into()
-            .map_err(|_| s3s::s3_error!(InvalidRequest))
+            .map_err(|_| MultipartDecodeError::Malformed)
     }
 
-    fn array16(&mut self) -> S3Result<[u8; 16]> {
+    fn array16(&mut self) -> MultipartDecodeResult<[u8; 16]> {
         self.take(16)?
             .try_into()
-            .map_err(|_| s3s::s3_error!(InvalidRequest))
+            .map_err(|_| MultipartDecodeError::Malformed)
     }
 
-    fn any_header(&mut self) -> S3Result<u8> {
-        if self.u8()? != MULTIPART_RECORD_VERSION {
-            return Err(s3s::s3_error!(InvalidRequest));
+    fn any_header(&mut self) -> MultipartDecodeResult<u8> {
+        let version = self
+            .bytes
+            .get(self.offset)
+            .copied()
+            .ok_or(MultipartDecodeError::UnsupportedVersion(0))?;
+        if version != MULTIPART_RECORD_VERSION {
+            return Err(MultipartDecodeError::UnsupportedVersion(version));
         }
+        self.u8()?;
         self.u8()
     }
 
-    fn header(&mut self, tag: u8) -> S3Result {
+    fn header(&mut self, tag: u8) -> MultipartDecodeResult {
         if self.any_header()? != tag {
-            return Err(s3s::s3_error!(InvalidRequest));
+            return Err(MultipartDecodeError::Malformed);
         }
         Ok(())
     }
 
-    fn finish(&self) -> S3Result {
+    fn finish(&self) -> MultipartDecodeResult {
         if self.offset != self.bytes.len() {
-            return Err(s3s::s3_error!(InvalidRequest));
+            return Err(MultipartDecodeError::Malformed);
         }
         Ok(())
     }

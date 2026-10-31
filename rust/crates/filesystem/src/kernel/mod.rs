@@ -252,7 +252,11 @@ pub use rebase::{
 pub(crate) use rebase::{ProofDataClaim, ProofDataCustody};
 pub use regular_mutation::RegularMutationError;
 pub(crate) use regular_mutation::{RegularMutation, apply_regular_mutation_async};
+#[cfg(not(feature = "test-support"))]
 pub(crate) use retention::encode_retention_created;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use retention::encode_retention_created;
 pub use retention::{
     RetentionCreated, RetentionCreatedError, RetentionKind, decode_retention_created,
     decode_workspace_deleted, encode_workspace_deleted, retention_authority_id,
@@ -286,9 +290,9 @@ pub use types::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use volume::encode_config;
-#[cfg(not(loom))]
+#[cfg(all(not(loom), not(feature = "test-support")))]
 pub(crate) use volume::encode_volume_created;
-#[cfg(loom)]
+#[cfg(any(loom, feature = "test-support"))]
 #[doc(hidden)]
 pub use volume::encode_volume_created;
 pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};

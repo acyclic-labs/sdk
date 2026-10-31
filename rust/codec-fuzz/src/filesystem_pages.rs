@@ -16,6 +16,12 @@ impl From<CanonicalDecodeError> for DecodeFailure {
     }
 }
 
+impl From<VolumeCreatedError> for DecodeFailure {
+    fn from(_: VolumeCreatedError) -> Self {
+        Self::Canonical
+    }
+}
+
 macro_rules! interrupt {
     ($decode:ident, $bytes:expr, $limits:expr, $steps:expr) => {{
         assert!($steps > 0, "admitted decoding accounts for its work");
@@ -132,7 +138,21 @@ pub fn check(bytes: &[u8]) {
             bytes,
         );
     }
-    if decode_volume_created::<VolumeCreatedError>(bytes, u64::MAX, &mut |_| Ok(())).is_ok() {
+    let mut steps = 0;
+    if let Ok(value) = decode_volume_created::<VolumeCreatedError>(bytes, u64::MAX, &mut |_| {
+        steps += 1;
+        Ok(())
+    }) {
+        interrupt!(decode_volume_created, bytes, u64::MAX, steps);
+        assert_eq!(
+            encode_volume_created(
+                value,
+                |_| Ok::<_, VolumeCreatedError>(()),
+                |_error| { CanonicalDecodeError::AllocationFailed.into() }
+            )
+            .unwrap(),
+            bytes,
+        );
         refuses_versions(
             bytes,
             b"acyclic-fs-volume-created-v1\0".len(),
@@ -143,7 +163,16 @@ pub fn check(bytes: &[u8]) {
         );
     }
     publication_codec_fuzz::check(bytes);
-    if decode_retention_created(bytes, u64::MAX).is_ok() {
+    if let Ok(value) = decode_retention_created(bytes, u64::MAX) {
+        assert_eq!(
+            encode_retention_created(
+                &value,
+                |_| Ok::<_, RetentionCreatedError>(()),
+                |_error| { CanonicalDecodeError::AllocationFailed.into() }
+            )
+            .unwrap(),
+            bytes,
+        );
         refuses_versions(
             bytes,
             b"acyclic-fs-retention-created-v1\0".len(),
@@ -269,6 +298,63 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 origin_generation: Digest::from_bytes([5; 32]),
             }),
         };
+        seeds.push((
+            if sealed {
+                "volume-created-sealed"
+            } else {
+                "volume-created"
+            },
+            encode_volume_created(
+                VolumeCreated {
+                    volume_id,
+                    config,
+                    initial_generation_root: generation_root,
+                },
+                |_| Ok::<_, VolumeCreatedError>(()),
+                |_error| CanonicalDecodeError::AllocationFailed.into(),
+            )?,
+        ));
+        for (name, kind) in [
+            (
+                if sealed {
+                    "retention-checkpoint-sealed"
+                } else {
+                    "retention-checkpoint"
+                },
+                RetentionKind::Checkpoint,
+            ),
+            (
+                if sealed {
+                    "retention-pin-sealed"
+                } else {
+                    "retention-pin"
+                },
+                RetentionKind::Pin,
+            ),
+            (
+                if sealed {
+                    "retention-fork-sealed"
+                } else {
+                    "retention-fork"
+                },
+                RetentionKind::ForkBase,
+            ),
+        ] {
+            seeds.push((
+                name,
+                encode_retention_created(
+                    &RetentionCreated {
+                        volume_id,
+                        config,
+                        generation_root,
+                        kind,
+                        label: "retained".into(),
+                    },
+                    |_| Ok::<_, RetentionCreatedError>(()),
+                    |_error| CanonicalDecodeError::AllocationFailed.into(),
+                )?,
+            ));
+        }
         seeds.push((
             if sealed { "export-sealed" } else { "export" },
             encode_generation_export_manifest(&GenerationExportManifest {
