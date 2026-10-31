@@ -19,10 +19,8 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
     let dispatch = OwnedBytes::from_static(b"original-run");
     let wake = StreamPath::new("snapshot/actor-activation")?;
     let dispatch_records = crate::tool::Dispatch {
-        records: vec![
-            (queue.clone(), dispatch.clone()),
-            (wake.clone(), OwnedBytes::from_static(b"original-actor")),
-        ],
+        delivery: (queue.clone(), dispatch.clone()),
+        activation: (wake.clone(), OwnedBytes::from_static(b"original-actor")),
     };
     let record = if large {
         OwnedBytes::from(vec![7; acyclic_stream::MAX_RECORD_BYTES])

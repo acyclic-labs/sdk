@@ -234,7 +234,7 @@ impl DeviceRunner {
                         _ => {}
                     }
                 }
-                result = async { sending.as_mut().expect("guarded pending send").await }, if sending.is_some() => {
+                Some(result) = futures::future::OptionFuture::from(sending.as_mut()), if sending.is_some() => {
                     result?;
                     sending = None;
                 }
@@ -261,8 +261,8 @@ impl DeviceRunner {
         reports: &tokio::sync::mpsc::Sender<DeviceMessage>,
     ) -> Result<Option<DeviceMessage>> {
         let started = AtomicBool::new(false);
-        let input = match self.admit(session, &run) {
-            Ok(input) => input,
+        let (input, expiry) = match self.admit(session, &run) {
+            Ok(admitted) => admitted,
             Err(reason) => {
                 return Ok(Some(DeviceMessage::Refused {
                     op: run.command.op,
@@ -270,10 +270,7 @@ impl DeviceRunner {
                 }));
             }
         };
-        let expiry = self
-            .authority
-            .verifier
-            .expiry(&run.grant)?
+        let expiry = expiry
             .checked_mul(1000)
             .ok_or_else(|| Error::Invalid("device grant expiry overflows".into()))?;
         let expiry = run
@@ -377,22 +374,11 @@ impl DeviceRunner {
         while let Some(output) = stream.next().await {
             use acyclic_machines::ExecOutput;
             match output {
-                Ok(output @ (ExecOutput::Data(_) | ExecOutput::Stderr(_))) => {
-                    let (stderr, data) = match output {
-                        ExecOutput::Data(data) => (false, data),
-                        ExecOutput::Stderr(data) => (true, data),
-                        _ => unreachable!("matched channel bytes"),
-                    };
-                    for chunk in data.chunks(super::records::OUTPUT_CHUNK_BYTES) {
-                        reports
-                            .send(DeviceMessage::Output {
-                                op,
-                                stderr,
-                                data: chunk.to_vec(),
-                            })
-                            .await
-                            .map_err(|_| Error::Storage("device report consumer ended".into()))?;
-                    }
+                Ok(ExecOutput::Data(data)) => {
+                    report_output(reports, op, false, &data).await?;
+                }
+                Ok(ExecOutput::Stderr(data)) => {
+                    report_output(reports, op, true, &data).await?;
                 }
                 Ok(ExecOutput::ExitCode(code)) => {
                     return Ok(Some(DeviceMessage::Exit {
@@ -428,7 +414,7 @@ impl DeviceRunner {
 
     /// The run's checks on this device: its session, its grant, and the
     /// owner's policy. A refusal's reason is what the model reads.
-    fn admit(&self, session: &str, run: &Run) -> std::result::Result<ShellInput, String> {
+    fn admit(&self, session: &str, run: &Run) -> std::result::Result<(ShellInput, u64), String> {
         let command = &run.command;
         if &command.volume != self.shell.selected_volume() {
             return Err("the device has not admitted this agent's exact project volume".into());
@@ -450,9 +436,10 @@ impl DeviceRunner {
         }
         let input = command.input().map_err(|error| error.to_string())?;
         let id = command.grant_id().map_err(|error| error.to_string())?;
-        self.authority
+        let expiry = self
+            .authority
             .verifier
-            .verify(&run.grant, &mut None)
+            .expiry(&run.grant)
             .map_err(|error| format!("its grant did not verify: {error}"))?;
         if run.grant.id() != id
             || !run
@@ -462,7 +449,7 @@ impl DeviceRunner {
         {
             return Err("its grant does not authorize this command".into());
         }
-        Ok(input)
+        Ok((input, expiry))
     }
 
     /// The owner's policy, evaluated here. A model or parent decision in the
@@ -505,6 +492,25 @@ impl DeviceRunner {
         }
         Err("no approver of the device's owner accepted it".into())
     }
+}
+
+async fn report_output(
+    reports: &tokio::sync::mpsc::Sender<DeviceMessage>,
+    op: OperationId,
+    stderr: bool,
+    data: &[u8],
+) -> Result<()> {
+    for chunk in data.chunks(super::records::OUTPUT_CHUNK_BYTES) {
+        reports
+            .send(DeviceMessage::Output {
+                op,
+                stderr,
+                data: chunk.to_vec(),
+            })
+            .await
+            .map_err(|_| Error::Storage("device report consumer ended".into()))?;
+    }
+    Ok(())
 }
 
 fn interrupted(op: OperationId, started: &AtomicBool, reason: String) -> DeviceMessage {

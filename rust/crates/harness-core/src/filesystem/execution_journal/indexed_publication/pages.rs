@@ -60,7 +60,7 @@ impl Cut<'_> {
             )?;
             add_records(&mut request, self.head, std::slice::from_ref(checkpoint))?;
             if let Some(dispatch) = self.dispatch {
-                for (path, record) in &dispatch.records {
+                for (path, record) in [&dispatch.delivery, &dispatch.activation] {
                     add_records(&mut request, path, std::slice::from_ref(record))?;
                 }
             }
@@ -187,14 +187,16 @@ impl Cut<'_> {
             CommitOutcome::Committed(receipt) => {
                 // The dispatched record lands at whatever its stream's tail is.
                 let dispatched = self.dispatch.is_none_or(|dispatch| {
-                    dispatch.records.iter().all(|(path, _)| {
-                        receipt.appends.iter().any(|append| {
-                            append.path == *path && append.start.checked_add(1) == Some(append.tail)
+                    [&dispatch.delivery, &dispatch.activation]
+                        .iter()
+                        .all(|(path, _)| {
+                            receipt.appends.iter().any(|append| {
+                                append.path == *path
+                                    && append.start.checked_add(1) == Some(append.tail)
+                            })
                         })
-                    })
                 });
-                if receipt.appends.len()
-                    != 3 + self.dispatch.map_or(0, |dispatch| dispatch.records.len())
+                if receipt.appends.len() != if self.dispatch.is_some() { 5 } else { 3 }
                     || !dispatched
                     || !receipt.forks.is_empty()
                     || !confirms(
