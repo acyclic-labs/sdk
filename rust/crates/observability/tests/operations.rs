@@ -58,11 +58,12 @@ fn exported_evidence_retains_original_parent_and_native_field_contract()
 
     let (closed, retired) = mpsc::channel();
     let (export, mut output) = Export::channel(Arc::new(Semaphore::new(4)), false);
-    let dispatch = tracing::Dispatch::new(
-        tracing_subscriber::registry()
-            .with(Closed(closed))
-            .with(Operations(export.clone())),
-    );
+    let dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Closed(closed)).with(
+            Operations(export.clone()).with_filter(tracing_subscriber::filter::filter_fn(
+                |metadata| metadata.name().starts_with("acyclic."),
+            )),
+        ));
     let (work, owner, unrelated) = tracing::dispatcher::with_default(&dispatch, || {
         let owner = tracing::info_span!(parent: None, "original.persistence");
         let unrelated = tracing::info_span!(parent: None, "unrelated.caller");

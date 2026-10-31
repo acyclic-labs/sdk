@@ -740,7 +740,13 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         attributes.record(&mut fields);
         let mut operation = Operation {
             metadata,
-            parent_id: span.parent().map(|parent| parent.id()),
+            // SpanRef::parent can scan past ancestors filtered by this layer.
+            // Read only the producer's creation-time edge, including roots.
+            parent_id: if attributes.is_contextual() {
+                context.current_span().id().cloned()
+            } else {
+                attributes.parent().cloned()
+            },
             durability: fields.durability,
             rpc: fields.rpc,
             started: Instant::now(),
