@@ -140,13 +140,15 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
             crate::persistence_syscall(|| {
                 #[cfg(target_vendor = "apple")]
                 return apple::sync_once(file, durability, || Ok(()));
-                #[cfg(windows)]
-                return sync_file_unsequenced(file, durability);
-                #[cfg(not(any(windows, target_vendor = "apple")))]
-                {
-                    // Every durability is the full flush here; see `Durability::Barrier`.
-                    let _ = durability;
-                    file.sync_data()
+                #[cfg(not(target_vendor = "apple"))]
+                match durability {
+                    Durability::Full => {
+                        #[cfg(windows)]
+                        return sync_file_unsequenced(file, durability);
+                        #[cfg(not(windows))]
+                        super::durable::flush_file_policy(file, true)
+                    }
+                    Durability::Barrier => barrier_sync(file),
                 }
             })
         }))
