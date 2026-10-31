@@ -967,14 +967,27 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         request
             .messages
             .iter()
-            .flat_map(|message| message.content.parts())
-            .find_map(|part| match part {
-                ModelContentPart::Text { text } => {
-                    serde_json::from_str::<Vec<crate::context::SkillMetadata>>(&text)
-                        .ok()
-                        .filter(|skills| !skills.is_empty())
-                }
-                _ => None,
+            .flat_map(|message| {
+                let text = match &message.content {
+                    ModelContent::Text(text) => Some(text.as_str()),
+                    _ => None,
+                };
+                text.into_iter()
+                    .chain(
+                        message
+                            .content
+                            .parts()
+                            .iter()
+                            .filter_map(|part| match part {
+                                ModelContentPart::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            }),
+                    )
+            })
+            .find_map(|text| {
+                serde_json::from_str::<Vec<crate::context::SkillMetadata>>(text)
+                    .ok()
+                    .filter(|skills| !skills.is_empty())
             })
             .ok_or_else(|| Error::NotFound("model-visible skill catalog".into()))
     };
@@ -1112,6 +1125,19 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             .all(|skill| skill.source.root.volume == harness.scratch)
     );
     assert_ne!(child_skills, parent_skills);
+    for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {
+        assert!(matches!(
+            harness.resolve_prompt_command(command).await,
+            Err(Error::Conflict(_))
+        ));
+    }
+    // An unambiguous name must still expand in the same catalog.
+    assert!(
+        harness
+            .resolve_prompt_command("/candidate-search")
+            .await?
+            .is_some()
+    );
     for (owner, file, expected) in [
         (&child, &child_file, b"child".as_slice()),
         (&root, &parent_file, b"parent".as_slice()),

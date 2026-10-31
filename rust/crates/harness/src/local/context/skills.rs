@@ -45,15 +45,6 @@ pub(in crate::local) async fn seed(files: &LocalFilesystem, scratch: &VolumeRef)
 }
 
 impl LocalHarness {
-    #[cfg(test)]
-    pub(in crate::local) async fn skills(
-        &self,
-        generation: Option<&crate::resources::GenerationRef>,
-    ) -> Result<Vec<SkillMetadata>> {
-        self.skills_with_work(generation, &mut DiscoveryWork::default())
-            .await
-    }
-
     pub(in crate::local) async fn skills_with_work(
         &self,
         generation: Option<&crate::resources::GenerationRef>,
