@@ -1,6 +1,6 @@
 use super::*;
 
-/// Exact immutable UTF-8 file read arguments.
+/// Version-pinned file/media read arguments shared by native tool profiles.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(
     Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
@@ -16,6 +16,61 @@ pub struct ReadFileInput {
     /// Optional exact UTF-8 byte interval; omission reads the complete file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<super::text::TextRange>,
+    /// A line, cell or native media projection. Mutually exclusive with `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ReadSelection>,
+}
+
+/// Requested projection of the authoritative source file. Offsets are zero based;
+/// omitted counts have no count ceiling. Model views remain byte paged.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReadSelection {
+    /// Text lines, with an optional byte cursor returned by a previous page.
+    Lines {
+        /// First line to return.
+        #[serde(default)]
+        offset: u64,
+        /// Number of lines; omission means no count ceiling.
+        #[serde(default)]
+        limit: Option<u64>,
+    },
+    /// Notebook cells, including their outputs, from the same JSON file.
+    Cells {
+        /// First cell to return.
+        #[serde(default)]
+        offset: u64,
+        /// Number of cells; omission means no count ceiling.
+        #[serde(default)]
+        limit: Option<u64>,
+    },
+    /// Native image input, preserving the requested provider detail.
+    Image {
+        /// Provider image detail.
+        detail: crate::model::ImageDetail,
+    },
+    /// Native PDF input.
+    Pdf,
+}
+
+/// Exact provenance and continuation for a projected read.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct ReadPage {
+    /// Selected byte interval in the source, or selected cell interval for notebooks.
+    pub start: u64,
+    /// Exclusive end of the selected interval.
+    pub end: u64,
+    /// Next byte/cell offset, absent at end of source.
+    pub next: Option<u64>,
+    /// First zero-based line/cell in this view.
+    pub offset: u64,
 }
 
 /// Single-operation UTF-8 publication arguments.
@@ -45,10 +100,38 @@ pub struct EditFileInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// One exact nonempty unambiguous needle.
-    #[schemars(length(min = 1))]
+    #[serde(default)]
     pub old_text: String,
     /// Exact replacement, including an empty deletion.
+    #[serde(default)]
     pub new_text: String,
+    /// Cell edit against this same versioned file, exclusive with text replacement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notebook: Option<NotebookEdit>,
+}
+
+/// A cell operation on an nbformat v4 notebook; metadata and other cells survive.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NotebookEdit {
+    /// Replace the source of a cell identified by index and optionally stable ID.
+    Replace {
+        index: u64,
+        id: Option<String>,
+        source: String,
+    },
+    /// Insert before `index` (the cell count appends).
+    Insert {
+        index: u64,
+        id: String,
+        cell_type: String,
+        source: String,
+    },
+    /// Delete exactly the selected cell.
+    Delete { index: u64, id: Option<String> },
 }
 
 /// Explicit single-file V4A update arguments.
@@ -91,6 +174,12 @@ pub struct ReadFileResult {
     pub file: FileRef,
     /// Exact selected UTF-8 text.
     pub text: String,
+    /// Provenance of a bounded text/cell view; absent for exact complete reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<ReadPage>,
+    /// Native media selection; the immutable file supplies its bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<ReadSelection>,
 }
 
 /// Model-visible file identity; the version is opaque and grants no authority.
@@ -100,6 +189,8 @@ pub(crate) struct FileView<'a> {
     pub version: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<&'a ReadPage>,
 }
 
 #[cfg(test)]
@@ -135,8 +226,8 @@ mod codec_tests {
             let file = FileRef::new(volume, path.clone(), "version".into(),
                 FileDescriptor::new([1; 32], 128, "text/plain".into()).unwrap(), "file".into(), &mut None).unwrap();
             let version = super::super::version::encode_version(&file, None).unwrap().0;
-            round_trip(ReadFileInput { path: path.clone(), version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }) });
-            round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement });
+            round_trip(ReadFileInput { path: path.clone(), version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
+            round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, notebook: None });
             round_trip(WriteFileInput { path, content: text });
         }
     }

@@ -152,7 +152,7 @@ fn escaped_len(text: &str) -> usize {
 }
 
 /// The longest prefix of `text` whose encoded string body fits `budget`.
-fn prefix(text: &str, budget: usize) -> &str {
+pub(crate) fn prefix(text: &str, budget: usize) -> &str {
     let mut used = 0;
     for (index, character) in text.char_indices() {
         used += escaped(character);
