@@ -153,10 +153,16 @@ mod tests {
                 after = page.next_after;
             }
             let target = target.unwrap();
+            explorer.reader.cache().take_listing_visits();
             assert!(matches!(
                 explorer.locate(&target),
                 Some(Pos::Row { page: 128, .. })
             ));
+            assert_eq!(
+                explorer.reader.cache().take_listing_visits(),
+                1,
+                "child location visited unrelated retained pages"
+            );
             explorer.expand(&target);
             assert_eq!(explorer.expanded.get(&target), Some(&128));
             // Both residency maps contain actual pages from this same cut.
@@ -172,7 +178,20 @@ mod tests {
             assert!(indexed.listing_before(&parent, 129, u32::MAX).is_none());
             assert_eq!(indexed.take_listing_visits(), 0);
             assert!(indexed.listing_before(&parent, 128, 128).is_none());
+            assert_eq!(indexed.indexed_children(), 129);
             let sparse = std::mem::replace(explorer.reader.cache_mut(), indexed);
+            let hint = explorer.expanded.remove(&target);
+            assert!(matches!(
+                explorer.locate(&target),
+                Some(Pos::Row { page: 128, .. })
+            ));
+            assert!(
+                explorer.reader.cache().take_listing_visits() <= 1,
+                "child location visited unrelated retained pages"
+            );
+            if let Some(hint) = hint {
+                explorer.expanded.insert(target.clone(), hint);
+            }
             // Keep the displayed pass-through pages in the logical plan while
             // seeking beyond them; unrelated wants cannot prolong residency.
             let wants: Vec<_> = (0..=128)
@@ -210,6 +229,18 @@ mod tests {
                 "hierarchy reset visited unrelated retained records"
             );
             assert!(explorer.reader.cache().listings(&parent).next().is_none());
+            assert_eq!(
+                explorer.reader.cache().indexed_children(),
+                0,
+                "hierarchy reset retained child locations"
+            );
+            assert!(
+                explorer
+                    .reader
+                    .cache()
+                    .listing_containing(&parent, &target_path)
+                    .is_none()
+            );
             assert!(explorer.reader.cache().record(&target_path, 0).is_some());
             *explorer.reader.cache_mut() = sparse;
             explorer.frame(2);
@@ -231,6 +262,11 @@ mod tests {
             // even though this new provider is readable and unqualified.
             assert!(explorer.reader_ref().readable());
             assert!(explorer.rows().is_empty());
+            assert_eq!(
+                explorer.reader.cache().indexed_children(),
+                0,
+                "source reset retained child locations"
+            );
         });
     }
 }
@@ -477,28 +513,30 @@ impl Explorer {
             .cloned()
     }
 
-    /// Where `agent` is listed, searching cached pages of its parent.
+    /// Where `agent` is listed, using retained page membership.
     fn locate(&self, agent: &AgentPath) -> Option<Pos> {
         let parent = parent_listing(agent)?;
         let hint = self.expanded.get(agent).copied();
-        // The hint is fast when still cached; otherwise search only retained
-        // pages, including pages beyond the former fixed scan window.
+        // Keep an expanded row's exact page while present; otherwise seek its
+        // retained membership without visiting unrelated pages.
         let cache = self.reader.cache();
         let hinted =
             hint.and_then(|page| cache.listing(&parent, page).map(|listing| (page, listing)));
-        for (page, listing) in hinted.into_iter().chain(cache.listings(&parent)) {
-            if let Ok(offset) = listing
+        let position = |(page, listing): (u32, &crate::reader::Listing)| {
+            let offset = listing
                 .children
                 .binary_search_by(|child| child.as_str().cmp(agent.as_str()))
-            {
-                return Some(Pos::Row {
-                    parent,
-                    page,
-                    offset: u32::try_from(offset).ok()?,
-                });
-            }
-        }
-        None
+                .ok()?;
+            Some(Pos::Row {
+                parent: parent.clone(),
+                page,
+                offset: u32::try_from(offset).ok()?,
+            })
+        };
+        hinted.and_then(position).or_else(|| {
+            let child = StreamPath::new(agent.as_str()).ok()?;
+            cache.listing_containing(&parent, &child).and_then(position)
+        })
     }
 
     /// The first row at or after `page`. Pages may be empty yet continue
