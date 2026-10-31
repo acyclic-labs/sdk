@@ -357,3 +357,6 @@ async fn injected_clock_drives_exact_expiry_boundaries_and_publication_time() ->
     }
     Ok(())
 }
+
+#[path = "codex_io_tests.rs"]
+mod io;

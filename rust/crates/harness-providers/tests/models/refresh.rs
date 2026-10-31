@@ -1,6 +1,6 @@
 mod refresh {
     include!("../../src/refresh.rs");
-    pub fn ticket<F>(state: &Refresh<F>) -> u64 {
+    pub fn ticket<F: Copy>(state: &Refresh<F>) -> u64 {
         state.generation.load(Ordering::Acquire)
     }
     pub async fn joined<T, F: Copy>(
@@ -8,7 +8,17 @@ mod refresh {
         ticket: u64,
         operation: impl std::future::Future<Output = (T, Option<F>)>,
     ) -> Result<T, F> {
-        execute(state, ticket, operation).await
+        let permit = state.acquire_generation(ticket).await?;
+        let (value, failure) = operation.await;
+        state.complete(permit, failure);
+        Ok(value)
+    }
+    pub fn serialized<T, F: Copy>(
+        state: &Refresh<F>,
+        operation: impl std::future::Future<Output = (T, Option<F>)>,
+    ) -> impl std::future::Future<Output = Result<T, F>> {
+        let ticket = ticket(state);
+        joined(state, ticket, operation)
     }
 }
 use crate::sync::{
