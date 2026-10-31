@@ -209,11 +209,11 @@ proptest! {
         prop_assert!(CertificateChain::try_from(CertificateChainProto::from(chain)).is_err());
     }
     #[test]
-    fn typed_grants_round_trip(cpu in prop::option::of(any::<u64>()), memory in prop::option::of(any::<u64>()), spend in prop::option::of(any::<u64>())) {
+    fn typed_grants_round_trip(cpu in prop::option::of(any::<u64>()), memory in prop::option::of(any::<u64>()), spend in prop::option::of(any::<u64>()), generation in prop::option::of(any::<u64>()), owner in prop::option::of(any::<String>()), concurrency in prop::option::of(any::<u64>()), reserved in prop::option::of(any::<u64>())) {
         let resource=ResourceGrant {resource:ResourcePattern {name:"execution:/".into(),prefix:true},actions:vec!["execution/invoke".into()]};
         let set=GrantSet {grants:vec![
             Grant {kind:GrantKind::Resource(resource.clone())},
-            Grant {kind:GrantKind::Execution(ExecutionGrant {grant:resource,cpu_millis:cpu,memory_bytes:memory})},
+            Grant {kind:GrantKind::Execution(ExecutionGrant {grant:resource,cpu_millis:cpu,memory_bytes:memory,policy_generation:generation,usage_owner:owner,max_concurrency:concurrency,reserved_capacity_units:reserved})},
             Grant {kind:GrantKind::Billing(BillingGrant {grant:ResourceGrant {resource:ResourcePattern {name:"billing:/".into(),prefix:true},actions:vec!["billing/read".into()]},spend_micros:spend})},
             Grant {kind:GrantKind::WebsocketConnect(WebsocketConnectGrant {rules:vec![SocketHostRule {host:"example.com".into(),ports:vec![SocketPortRange {first:443,last:443}]}]})} ]};
         let bytes=GrantSetProto::from(set.clone()).encode_to_vec();

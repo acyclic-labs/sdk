@@ -50,6 +50,91 @@ fn record_bytes(attributes: Vec<Attribute>) -> Vec<u8> {
     }
     .encode_to_vec()
 }
+
+#[test]
+fn execution_concurrency_cannot_be_widened_by_attenuation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut root = root();
+    let parent = ExecutionGrant {
+        grant: ResourceGrant {
+            resource: ResourcePattern {
+                name: "execution:/work".into(),
+                prefix: false,
+            },
+            actions: vec!["execution/invoke".into()],
+        },
+        cpu_millis: Some(10),
+        memory_bytes: Some(100),
+        policy_generation: Some(u64::MAX),
+        usage_owner: Some("actors/work".into()),
+        max_concurrency: Some(2),
+        reserved_capacity_units: Some(u64::MAX),
+    };
+    let set = |grant| GrantSet {
+        grants: vec![Grant {
+            kind: GrantKind::Execution(grant),
+        }],
+    };
+    root.certificates
+        .as_mut()
+        .ok_or("missing certificates")?
+        .keys
+        .first_mut()
+        .ok_or("missing key")?
+        .key
+        .grants = set(parent.clone());
+    let mut widened = parent.clone();
+    widened.max_concurrency = Some(3);
+    let child = attenuate(
+        &[root.clone()],
+        vec![Caveat {
+            kind: CaveatKind::Grants(set(widened)),
+        }],
+        vec![6; 32],
+    )?;
+    let mut omitted = parent;
+    omitted.max_concurrency = None;
+    let inherited = attenuate(
+        &[root.clone()],
+        vec![Caveat {
+            kind: CaveatKind::Grants(set(omitted)),
+        }],
+        vec![7; 32],
+    )?;
+    let attributes = RecordAttributes::default();
+    let mut usage = limits(None);
+    for concurrency in [0, 2, 3, u64::MAX] {
+        usage.concurrency = Some(concurrency);
+        let mut facts = request(
+            Target::Resource {
+                action: "execution/invoke",
+                resource: "execution:/work",
+            },
+            &attributes,
+            &usage,
+        );
+        facts.cpu_millis = 10;
+        facts.memory_bytes = 100;
+        for blocks in [
+            std::slice::from_ref(&root),
+            child.as_slice(),
+            inherited.as_slice(),
+        ] {
+            assert_eq!(
+                permits(
+                    blocks,
+                    &facts,
+                    PolicyDecision::Allow,
+                    acyclic_auth::authority::Scope::Exact
+                )
+                .is_ok(),
+                concurrency <= 2
+            );
+        }
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
