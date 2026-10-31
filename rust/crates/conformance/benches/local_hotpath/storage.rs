@@ -839,7 +839,7 @@ async fn sessions(
                 wakes: 1,
                 ..commit(0)
             },
-            serde_json::json!({"agent": agent.to_string(), "intent": format!("{intent:?}")}),
+            serde_json::json!({"agent": request.agent.to_string(), "intent": format!("{intent:?}")}),
             fixture.bound.create_root(&intent, request)
         )?;
         require_root(&created, &expected)?;
