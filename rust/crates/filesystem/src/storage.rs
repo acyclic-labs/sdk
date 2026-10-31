@@ -814,15 +814,15 @@ mod object_id_codec_tests {
     #[test]
     fn canonical_object_prefix_keeps_every_kind_seal_and_following_field()
     -> Result<(), ObjectIdError> {
-        for kind in [
-            ObjectKind::Blob,
-            ObjectKind::BlobChunk,
-            ObjectKind::TreePage,
-            ObjectKind::ExtentPage,
-            ObjectKind::FileTablePage,
-            ObjectKind::GenerationRoot,
-            ObjectKind::Metadata,
-            ObjectKind::AttributePage,
+        for (kind, tag) in [
+            (ObjectKind::Blob, 1),
+            (ObjectKind::BlobChunk, 2),
+            (ObjectKind::TreePage, 3),
+            (ObjectKind::ExtentPage, 4),
+            (ObjectKind::FileTablePage, 5),
+            (ObjectKind::GenerationRoot, 6),
+            (ObjectKind::Metadata, 7),
+            (ObjectKind::AttributePage, 8),
         ] {
             for storage in [
                 None,
@@ -838,6 +838,21 @@ mod object_id_codec_tests {
                     storage,
                 };
                 let bytes = id.to_bytes();
+                // Fixed wire expectations catch encoder and decoder drifting together.
+                let mut expected = [7; 113];
+                expected[0] = tag;
+                let length = if storage.is_some() {
+                    expected[0] |= 128;
+                    expected[33..65].fill(11);
+                    expected[65..81].fill(13);
+                    expected[81..113].fill(17);
+                    113
+                } else {
+                    33
+                };
+                let expected = &expected[..length];
+                assert_eq!(bytes.as_slice(), expected);
+                assert_eq!(ObjectId::from_prefix(expected), Ok((id, &[][..])));
                 assert_eq!(ObjectId::try_from(bytes.as_slice()), Ok(id));
                 for length in 0..bytes.len() {
                     assert_eq!(
