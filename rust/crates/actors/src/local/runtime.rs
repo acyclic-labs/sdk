@@ -701,35 +701,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 inner.observed = None;
                 return Ok(true);
             };
-            // Unclaimed here (epoch 0 locally) always claims, including a state
-            // created at epoch 0 by a foreign commit.
-            if inner.epoch == 0 || state.epoch() != inner.epoch {
-                if inner.epoch != 0 {
-                    return Err(Error::Conflict);
-                }
-                let epoch = state
-                    .epoch()
-                    .checked_add(1)
-                    .ok_or(Error::Invalid("epoch overflow"))?;
-                match self
-                    .store
-                    .claim(
-                        &snapshot,
-                        epoch,
-                        key(&snapshot, &format!("claim-{epoch}-{}", self.instance))?,
-                    )
-                    .await
-                {
-                    Ok(claimed) => {
-                        inner.epoch = epoch;
-                        inner.observed = Some(Arc::new(claimed));
-                    }
-                    Err(error) => {
-                        inner.observed = None;
-                        return Err(error);
-                    }
-                }
-                continue;
+            if inner.epoch != 0 && state.epoch() != inner.epoch {
+                return Err(Error::Conflict);
             }
             if state.paused() {
                 // The alarm stays committed; only its active wake is withdrawn.
@@ -757,19 +730,51 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     None,
                 ),
                 _ => match self.next_record(state, inner.last_input.as_deref()).await? {
-                    Some((subscription, record)) => {
-                        inner.last_input = Some(subscription.clone());
-                        (
-                            Trigger::Record {
-                                subscription,
-                                sequence: record.sequence,
-                            },
-                            Some(record),
-                        )
-                    }
+                    Some((subscription, record)) => (
+                        Trigger::Record {
+                            subscription,
+                            sequence: record.sequence,
+                        },
+                        Some(record),
+                    ),
                     None => return Ok(true),
                 },
             };
+            // Claim only for an actual delivery. Idle events must not publish a
+            // new epoch and wake themselves through their own state path.
+            // The claim changes only the epoch; its receipt retains the exact
+            // subscriptions and alarm that selected this immutable input.
+            let snapshot = if inner.epoch == 0 {
+                let epoch = state
+                    .epoch()
+                    .checked_add(1)
+                    .ok_or(Error::Invalid("epoch overflow"))?;
+                match self
+                    .store
+                    .claim(
+                        &snapshot,
+                        epoch,
+                        key(&snapshot, &format!("claim-{epoch}-{}", self.instance))?,
+                    )
+                    .await
+                {
+                    Ok(claimed) => {
+                        inner.epoch = epoch;
+                        let claimed = Arc::new(claimed);
+                        inner.observed = Some(Arc::clone(&claimed));
+                        claimed
+                    }
+                    Err(error) => {
+                        inner.observed = None;
+                        return Err(error);
+                    }
+                }
+            } else {
+                snapshot
+            };
+            let state = snapshot
+                .state()
+                .ok_or(Error::Invalid("claim receipt has no state"))?;
             // A retained publication cut cannot admit external handler work:
             // another host may already have paused or replaced this placement.
             // Until canonical control invalidation is available, observe the
@@ -777,6 +782,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             if self.store.observe(&snapshot).await?.is_some() {
                 inner.observed = None;
                 return Err(Error::Conflict);
+            }
+            if let Trigger::Record { subscription, .. } = &trigger {
+                inner.last_input = Some(subscription.clone());
             }
             let epoch = inner.epoch;
             let limits = &self.handler.manifest().limits;
