@@ -173,7 +173,7 @@ proptest! {
                 prop_assert!(unknown.credential_scope.is_none(), "missing credentials acquired ownership");
                 let block = ReasoningBlock {kind: KINDS[kind], text: text.clone(), origin: unknown.clone(),
                     continuity: bytes.clone(), outcome: ReasoningOutcome::PreservedOpaque};
-                prop_assert!(matches!(project_reasoning(&block, &unknown), ProjectedReasoning::Dropped {..}));
+                prop_assert!(matches!(project_reasoning(&block, &unknown), ProjectedReasoning::Dropped {..}), "unknown source ownership must drop native continuity");
             }
             prop_assert_ne!(known.credential_scope, provider.reasoning_origin(Some("rotated-key"), None).credential_scope);
             let account = provider.reasoning_origin(Some("first-key"), Some("account"));
