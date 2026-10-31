@@ -555,6 +555,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
