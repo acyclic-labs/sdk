@@ -1,13 +1,12 @@
 use super::*;
 
-/// One record appended to `path` atomically with a tool call's claim
+/// Records appended atomically with a tool call's claim
 /// ([`ToolExecutor::dispatch`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dispatch {
-    /// The stream the record joins, such as a device's run queue.
-    pub path: acyclic_stream::StreamPath,
-    /// The record, at most one Stream record.
-    pub record: acyclic_stream::OwnedBytes,
+    /// Original delivery and primitive wake records. Each value fits one
+    /// protective Stream record; they are never published separately.
+    pub records: Vec<(acyclic_stream::StreamPath, acyclic_stream::OwnedBytes)>,
 }
 
 /// Replaceable execution behavior for a tool.
