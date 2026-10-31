@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, fmt::Write};
 /// enforced by that dispatcher; the declarations confer no authority.
 pub fn declarations(tools: &[ToolDefinition]) -> Result<String> {
     let mut output = String::from("// Host calls use the normal approval and tool journal.\n");
+    output.push_str("declare const input: unknown;\n");
     for (index, tool) in tools.iter().enumerate() {
         for (suffix, schema) in [
             ("Input", &tool.input_schema),

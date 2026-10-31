@@ -9,7 +9,7 @@ impl ToolRegistry {
             let source_deep = tool
                 .skill_source
                 .as_ref()
-                .map(|source| source.file().logical_owned_bytes())
+                .map(|source| source.logical_owned_bytes())
                 .transpose()?
                 .unwrap_or(0);
             let row = ((VERSION_SLOT_BYTES + std::mem::size_of::<ToolDefinition>()) as u64)

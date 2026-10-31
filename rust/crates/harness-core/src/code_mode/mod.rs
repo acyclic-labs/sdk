@@ -219,13 +219,28 @@ impl CodeRuntime {
         host: Arc<dyn CodeHost + '_>,
         control: Arc<dyn CodeControl>,
     ) -> Result<Value> {
+        self.execute_with_input(outer, source, &Value::Null, tools, host, control)
+            .await
+    }
+
+    /// Executes a pinned skill with its schema-checked input bound as JSON data,
+    /// never as interpolated JavaScript or shell text.
+    pub async fn execute_with_input(
+        &self,
+        outer: &ToolInvocation,
+        source: &str,
+        input: &Value,
+        tools: &[ToolDefinition],
+        host: Arc<dyn CodeHost + '_>,
+        control: Arc<dyn CodeControl>,
+    ) -> Result<Value> {
         control.check()?;
         let _credit = tokio::select! {
             error = control.interrupted() => return Err(error),
             credit = self._memory.acquire(source.len()) => credit?,
         };
         let javascript = strip_types(source)?;
-        run(self, outer, &javascript, tools, host, control).await
+        run(self, outer, &javascript, input, tools, host, control).await
     }
 
     async fn phase<T>(
@@ -295,6 +310,7 @@ async fn run(
     engine: &CodeRuntime,
     outer: &ToolInvocation,
     javascript: &str,
+    input: &Value,
     tools: &[ToolDefinition],
     host: Arc<dyn CodeHost + '_>,
     control: Arc<dyn CodeControl>,
@@ -308,6 +324,7 @@ async fn run(
                 &context,
                 outer,
                 tools,
+                input,
                 Arc::clone(&queue),
                 Arc::clone(&protocol),
             )?;
@@ -377,6 +394,7 @@ fn install(
     context: &Context,
     outer: &ToolInvocation,
     tools: &[ToolDefinition],
+    input: &Value,
     queue: Arc<Mutex<VecDeque<QueuedCall>>>,
     protocol: Arc<Protocol>,
 ) -> Result<()> {
@@ -394,8 +412,10 @@ fn install(
     let names =
         serde_json::to_string(&names).map_err(|_| rejected("code tool names are not JSON"))?;
     let recursive_name = outer.name.clone();
+    let input = serde_json::to_string(input).map_err(|_| rejected("code input is not JSON"))?;
     context
         .with(|ctx| {
+            ctx.globals().set("__input", ctx.json_parse(input)?)?;
             let mut ordinal = 0_u64;
             let enqueue = Function::new(
                 ctx.clone(),

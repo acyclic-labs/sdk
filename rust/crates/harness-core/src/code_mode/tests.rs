@@ -125,6 +125,22 @@ async fn sandbox_uses_only_host_calls_and_replays_seeded_values_and_identity() -
         .await;
     assert!(refused.is_err());
     assert_eq!(lock(&host.0).len(), 2);
+    let input = json!({"payload": "'); await echo({value:'injected'}); //", "nested": [1, true]});
+    let (_owner, control) = original_control();
+    assert_eq!(
+        runtime
+            .execute_with_input(
+                &outer(),
+                "return input;",
+                &input,
+                &[],
+                host.clone(),
+                control,
+            )
+            .await?,
+        input
+    );
+    assert_eq!(lock(&host.0).len(), 2);
     Ok(())
 }
 

@@ -1,7 +1,9 @@
 //! Profile functions composed through the original stock tool settlement path.
 
 use super::*;
-use crate::tool::{JsonToolProjection, SkillSource, Tool, ToolDefinition, ToolExecutor};
+use crate::tool::{
+    JsonToolProjection, SkillRuntime, SkillSource, Tool, ToolDefinition, ToolExecutor,
+};
 #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
 use std::sync::Mutex;
 
@@ -12,6 +14,8 @@ pub const CODE_REVISION: &str = "quickjs-code-1";
 #[serde(deny_unknown_fields)]
 struct CodeInput {
     code: String,
+    #[serde(default)]
+    input: Option<Value>,
 }
 
 /// Creates the one fixed code declaration. Registration alone grants no access;
@@ -46,6 +50,27 @@ pub fn call_tool() -> Result<Tool> {
         executor: Arc::new(ProfileFunction),
         projection: Arc::new(JsonToolProjection),
     })
+}
+
+impl Tool {
+    /// The shared catalog's executable-skill admission. Discovery retains only
+    /// the pinned metadata source; no script body is read here. The original
+    /// registry remains the sole definition/schema validation boundary.
+    pub(crate) fn filesystem_skill(
+        definition: ToolDefinition,
+        source: crate::context::PinnedContextPath,
+        runtime: SkillRuntime,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        let source = SkillSource::admitted(source, runtime, &definition, io)?;
+        Ok(Self {
+            skill_source: Some(source),
+            definition,
+            hook_names: &[],
+            executor: Arc::new(ProfileFunction),
+            projection: Arc::new(JsonToolProjection),
+        })
+    }
 }
 
 // This marker has no alternate execution implementation. Only the stock
@@ -134,9 +159,10 @@ impl StockExecution<'_> {
                 Error::tool_rejected("call target is not an admitted filesystem skill")
             })?;
             let readable = with_history_io(self.io, |work| {
-                crate::runtime::read_granted_with_work(
+                crate::core::directory_read_granted_with_work(
                     self.stock.tool_scope.grants(),
-                    source.file(),
+                    &source.source().root.volume,
+                    &source.source().root.directory,
                     work,
                 )
             })?;
@@ -165,6 +191,12 @@ impl StockExecution<'_> {
                 .await
                 .map(Some);
         }
+        if let Some(source) = &tool.skill_source {
+            return self
+                .dispatch_skill(journal, invocation, tool, source)
+                .await
+                .map(Some);
+        }
         if invocation.name != "code" || tool.definition.revision != CODE_REVISION {
             return Ok(None);
         }
@@ -179,12 +211,9 @@ impl StockExecution<'_> {
             let source = invocation
                 .arguments
                 .as_object()
-                .filter(|object| object.len() == 1)
                 .and_then(|object| object.get("code"))
                 .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    Error::tool_rejected("code requires exactly one TypeScript source field")
-                })?;
+                .ok_or_else(|| Error::tool_rejected("code requires a TypeScript source field"))?;
             let mut tools = self
                 .stock
                 .tools
@@ -212,9 +241,10 @@ impl StockExecution<'_> {
                 progress: &progress,
             });
             let result = runtime
-                .execute(
+                .execute_with_input(
                     invocation,
                     source,
+                    invocation.arguments.get("input").unwrap_or(&Value::Null),
                     &tools,
                     host,
                     Arc::new(NativeCodeControl { work: work.clone() }),
@@ -232,6 +262,126 @@ impl StockExecution<'_> {
         Err(Error::tool_rejected(
             "code mode is not enabled in this host",
         ))
+    }
+
+    async fn dispatch_skill(
+        &self,
+        journal: &dyn ExecutionJournal,
+        invocation: &ToolInvocation,
+        tool: &Tool,
+        source: &SkillSource,
+    ) -> Result<ProfileDispatch> {
+        source.verify(&tool.definition, self.io)?;
+        if matches!(source.runtime(), SkillRuntime::Shell { .. }) {
+            return Err(Error::ToolRejected {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "skill shell requires the target's pinned-script and JSON-input framing port",
+            });
+        }
+        #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+        {
+            // Refuse before loading a script if its original execution producer
+            // is unavailable. No discovery path materializes a body to admit it.
+            if self.stock.code_runtime.is_none() {
+                return Err(Error::ToolRejected {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "skill code has no admitted shared memory reservation",
+                });
+            }
+            self.native_work().ok_or_else(|| {
+                Error::tool_rejected("skill code requires original accounted execution custody")
+            })?;
+            let pinned = source.source();
+            let readable = with_history_io(self.io, |work| {
+                crate::core::directory_read_granted_with_work(
+                    self.stock.tool_scope.grants(),
+                    &pinned.root.volume,
+                    &pinned.root.directory,
+                    work,
+                )
+            })?;
+            if !readable {
+                return Err(Error::tool_rejected(
+                    "skill script is outside the original directory read grant",
+                ));
+            }
+            let (task, _) = self.context.ok_or_else(|| {
+                Error::tool_rejected("skill script requires its original task binding")
+            })?;
+            let binding = task
+                .content_binding(Some(&pinned.root.volume))
+                .filter(|binding| binding.volume == pinned.root.volume)
+                .ok_or_else(|| {
+                    Error::tool_rejected("skill script reader is not bound to its original volume")
+                })?;
+            let (file, bytes, _hold) = binding
+                .reader
+                .read_private_path(
+                    &pinned.root.volume,
+                    &pinned.root.directory,
+                    source.runtime().script(),
+                    Some(&pinned.generation),
+                    self.stock.limits.file_bytes,
+                    crate::conversation::ContentAccess {
+                        ceiling: Some(self.stock.tool_scope.grants()),
+                        io: self.io,
+                    },
+                )?
+                .await?;
+            with_history_io(self.io, |work| {
+                self.stock.limits.validate_file(&file, work)?;
+                if file.volume() != &pinned.root.volume || file.path() != source.runtime().script()
+                {
+                    return Err(stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Storage,
+                        "skill reader returned another pinned script",
+                    ));
+                }
+                file.descriptor().verify(&bytes, work)
+            })?;
+            let code = std::str::from_utf8(&bytes)
+                .map_err(|_| Error::tool_rejected("skill script is not UTF-8 TypeScript"))?;
+            #[derive(serde::Serialize)]
+            struct Input<'a> {
+                code: &'a str,
+                input: &'a Value,
+            }
+            let (arguments, _input_credit) = crate::tool::value(
+                &Input {
+                    code,
+                    input: &invocation.arguments,
+                },
+                self.stock.limits.file_bytes,
+                self.native_work(),
+            )?;
+            let nested = ToolInvocation::for_model_call(
+                invocation.operation_id,
+                0,
+                stock_string_copy("skill-code", self.io)?,
+                stock_string_copy("code", self.io)?,
+                arguments,
+                self.native_work(),
+            )?;
+            let (metadata, _metadata_credit) = crate::tool::value(
+                &HostMetadata {
+                    parent: invocation.operation_id,
+                    revision: &tool.definition.revision,
+                    skill: Some(source),
+                },
+                self.stock.limits.file_bytes,
+                self.native_work(),
+            )?;
+            self.nested_dispatch(journal, nested, &metadata).await
+        }
+        #[cfg(not(all(feature = "code-mode", not(target_arch = "wasm32"))))]
+        {
+            let _ = (journal, invocation);
+            Err(Error::ToolRejected {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "skill code is not enabled in this host",
+            })
+        }
     }
 
     async fn nested_dispatch(

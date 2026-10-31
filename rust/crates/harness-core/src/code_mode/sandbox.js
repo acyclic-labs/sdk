@@ -2,8 +2,11 @@ function (seed, names) {
     "use strict";
     const enqueue = globalThis.__enqueue;
     const admit = globalThis.__admit;
+    const input = globalThis.__input;
     delete globalThis.__enqueue;
     delete globalThis.__admit;
+    delete globalThis.__input;
+    Object.defineProperty(globalThis, "input", {value: input});
     // Blocking shared-memory waits have no owned host producer. GC liveness
     // is nondeterministic and cannot participate in replayed control flow.
     for (const name of ["Atomics", "SharedArrayBuffer", "WeakRef", "FinalizationRegistry"]) {
