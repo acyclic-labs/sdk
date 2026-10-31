@@ -329,21 +329,22 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
         };
         let first = commit("first");
         tokio::task::spawn_blocking(move || started_rx.recv()).await??;
-        let second = commit("second");
-        let appended = |provider: &LocalStream| {
-            provider
-                .inner
-                .journal
-                .lock()
-                .map(|journal| journal.appended)
-                .unwrap_or_default()
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while appended(&provider) < 2 {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let mut request = crate::FollowRequest::new(StreamPath::new("second")?, 0);
+        request.when_absent = crate::WhenAbsent::Wait;
+        let mut follow = crate::records_only(provider.follow(request).await?);
+        let mut second = commit("second");
+        // Acceptance is visible while the original device operation is held.
+        // The writer's terminal also ends this wait if publication fails.
+        let accepted = tokio::select! {
+            record = follow.next() => record.ok_or("second-path follow ended")??,
+            outcome = &mut second => {
+                outcome??;
+                return Err("second commit completed before the held durability barrier".into());
             }
-        })
-        .await?;
+        };
+        assert_eq!(accepted.sequence, 0);
+        assert_eq!(accepted.value.as_slice(), b"second-0");
+        assert_eq!(provider.inner.journal.lock().unwrap().appended, 2);
         assert!(!first.is_finished() && !second.is_finished());
         release_tx.send(())?;
         for (outcome, path) in [(first.await??, "first"), (second.await??, "second")] {
