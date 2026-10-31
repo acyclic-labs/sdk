@@ -216,7 +216,8 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
     let blocked = arm_on(&hub, &[], None)?;
     let mut early = arm_on(&hub, &[], None)?;
     let cancelled = arm_on(&hub, &[], None)?;
-    drop(cancelled);
+    cancelled.cancel();
+    assert!(matches!(cancelled.block(), ProcessWaitOutcome::Cancelled));
     assert_eq!(hub.registry().armed.len(), 3);
     let (notify, notified) = mpsc::channel();
     let waker = Waker::from(Arc::new(Notified(notify)));
@@ -251,10 +252,10 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
         assert_eq!(error.kind(), actual.kind());
         assert_eq!(error.raw_os_error(), actual.raw_os_error());
     }
-    let later = arm_on(&hub, &[], None)
-        .err()
-        .expect("a dead producer cannot arm");
-    assert_eq!(later.raw_os_error(), actual.raw_os_error());
+    let first = failure(&mut pending, &mut context);
+    hub.fail(io::ErrorKind::BrokenPipe.into());
+    let mut later = arm_on(&hub, &[], None)?;
+    assert!(Arc::ptr_eq(&first, &failure(&mut later, &mut context)));
     let registry = hub.registry();
     assert!(registry.armed.is_empty());
     assert!(registry.positions.is_empty());
@@ -282,8 +283,71 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
         io::ErrorKind::BrokenPipe
     );
     assert_eq!(
-        arm_on(&hub, &[], None).err().unwrap().kind(),
+        failure(&mut arm_on(&hub, &[], None)?, &mut context).kind(),
         io::ErrorKind::BrokenPipe
     );
+
+    // A failed native timer notification is a service failure, even before
+    // the wait loop runs. Existing and later waiters retain the same cause.
+    let hub = isolated()?;
+    let mut existing = arm_on(&hub, &[], None)?;
+    assert!(Pin::new(&mut existing).poll(&mut context).is_pending());
+    let mut timed = arm_on(&hub, &[], Some(Instant::now() + Duration::from_secs(3600)))?;
+    notified
+        .recv()
+        .expect("failed original notification wakes waiter");
+    let first = failure(&mut existing, &mut context);
+    assert!(first.raw_os_error().is_some());
+    assert!(Arc::ptr_eq(&first, &failure(&mut timed, &mut context)));
+    assert!(Arc::ptr_eq(
+        &first,
+        &failure(&mut arm_on(&hub, &[], None)?, &mut context)
+    ));
+    assert!(hub.registry().armed.is_empty());
+
+    // Tokens cannot wrap onto another live wait or the native WAKE key.
+    let hub = isolated()?;
+    hub.registry().next = u64::MAX - 1;
+    assert!(arm_on(&hub, &[], None).is_err());
+    assert!(hub.registry().armed.is_empty());
+    assert!(hub.registry().positions.is_empty());
+
+    // A consumer unwind cannot discard terminal outcomes already removed
+    // from the registry. Delivery retains the remaining original producers.
+    struct Panicking;
+    impl Wake for Panicking {
+        fn wake(self: Arc<Self>) {
+            panic!("original waiter unwound during terminal delivery");
+        }
+    }
+    let panicking = Arc::new(Signal::default());
+    let following = Arc::new(Signal::default());
+    let waker = Waker::from(Arc::new(Panicking));
+    assert!(
+        panicking
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    assert!(following.poll(&mut context).is_pending());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        deliver(
+            [panicking, Arc::clone(&following)]
+                .into_iter()
+                .map(|signal| {
+                    (
+                        signal,
+                        ProcessWaitOutcome::ServiceFailed(Arc::clone(&first)),
+                    )
+                }),
+        );
+    }));
+    assert!(result.is_err());
+    notified
+        .recv()
+        .expect("remaining original waiter was woken");
+    let Poll::Ready(ProcessWaitOutcome::ServiceFailed(error)) = following.poll(&mut context) else {
+        panic!("consumer unwind discarded the following original terminal")
+    };
+    assert!(Arc::ptr_eq(&first, &error));
     Ok(())
 }

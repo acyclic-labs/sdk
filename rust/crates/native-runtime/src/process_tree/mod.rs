@@ -160,6 +160,14 @@ pub struct ProcessReadiness(events::Wait<'static>);
 
 pub use events::ProcessWaitOutcome;
 
+impl ProcessReadiness {
+    /// Cancels this observation without releasing the original process owner.
+    /// An already settled readiness or service failure remains the outcome.
+    pub fn cancel(&self) {
+        self.0.cancel();
+    }
+}
+
 impl std::future::Future for ProcessReadiness {
     type Output = ProcessWaitOutcome;
 

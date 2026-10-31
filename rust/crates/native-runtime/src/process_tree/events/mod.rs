@@ -96,6 +96,36 @@ impl Registry {
         }
         Some(armed)
     }
+
+    fn fail(&mut self, error: io::Error) -> Option<Failure> {
+        if self.failure.is_some() {
+            return None;
+        }
+        let error = Arc::new(error);
+        self.failure = Some(Arc::clone(&error));
+        self.positions = HashMap::new();
+        self.timers.clear();
+        Some(Failure {
+            error,
+            armed: std::mem::take(&mut self.armed),
+        })
+    }
+}
+
+struct Failure {
+    error: Arc<io::Error>,
+    armed: Vec<(u64, Armed)>,
+}
+
+impl Failure {
+    fn deliver(self) {
+        deliver(self.armed.into_iter().map(|(_, armed)| {
+            (
+                armed.signal,
+                ProcessWaitOutcome::ServiceFailed(Arc::clone(&self.error)),
+            )
+        }));
+    }
 }
 
 struct Hub {
@@ -137,16 +167,16 @@ pub(super) struct Events {
 
 impl Events {
     pub(super) fn start() -> io::Result<Self> {
-        hub().map(|hub| Self { _hub: hub })
+        let hub = hub()?;
+        if let Some(error) = &hub.registry().failure {
+            return Err(io::Error::new(error.kind(), Arc::clone(error)));
+        }
+        Ok(Self { _hub: hub })
     }
 }
 
 fn hub() -> io::Result<&'static Hub> {
-    let hub = *HUB.as_ref().map_err(copy_error)?;
-    if let Some(error) = &hub.registry().failure {
-        return Err(copy_error(error));
-    }
-    Ok(hub)
+    HUB.as_ref().copied().map_err(copy_error)
 }
 
 impl Hub {
@@ -155,34 +185,26 @@ impl Hub {
     }
 
     fn fail(&self, error: io::Error) {
-        let (error, armed) = {
-            let mut registry = self.registry();
-            if registry.failure.is_some() {
-                return;
-            }
-            let error = Arc::new(error);
-            registry.failure = Some(Arc::clone(&error));
-            registry.positions = HashMap::new();
-            registry.timers.clear();
-            (error, std::mem::take(&mut registry.armed))
-        };
-        deliver(armed.into_iter().map(|(_, armed)| {
-            (
-                armed.signal,
-                ProcessWaitOutcome::ServiceFailed(Arc::clone(&error)),
-            )
-        }));
+        let failure = self.registry().fail(error);
+        if let Some(failure) = failure {
+            failure.deliver();
+        }
     }
 
     fn run(&self) {
         let _retirement = Retirement(self);
         let mut ready = Vec::new();
         loop {
-            let timeout = self
-                .registry()
-                .timers
-                .first()
-                .map(|(at, _)| at.saturating_duration_since(Instant::now()));
+            let timeout = {
+                let registry = self.registry();
+                if registry.failure.is_some() {
+                    return;
+                }
+                registry
+                    .timers
+                    .first()
+                    .map(|(at, _)| at.saturating_duration_since(Instant::now()))
+            };
             ready.clear();
             if let Err(error) = self.poller.wait(timeout, &mut ready) {
                 if error.kind() == io::ErrorKind::Interrupted {
@@ -260,6 +282,12 @@ pub(super) struct Wait<'a> {
 
 /// Arms one wait on `sources`, waking no later than `wake_at`.
 pub(super) fn arm(sources: &[Source<'_>], wake_at: Option<Instant>) -> io::Result<Wait<'static>> {
+    if sources.is_empty() && wake_at.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "process readiness needs a source or deadline",
+        ));
+    }
     arm_on(hub()?, sources, wake_at)
 }
 
@@ -269,13 +297,26 @@ fn arm_on<'a>(
     wake_at: Option<Instant>,
 ) -> io::Result<Wait<'a>> {
     let signal = Arc::new(Signal::default());
-    let mut registrations = Vec::with_capacity(sources.len());
-    let (token, ready) = {
+    let mut registrations = Vec::new();
+    let (token, ready, failure) = {
         let mut registry = hub.registry();
         if let Some(error) = &registry.failure {
-            return Err(copy_error(error));
+            let error = Arc::clone(error);
+            drop(registry);
+            signal.settle(ProcessWaitOutcome::ServiceFailed(error));
+            return Ok(Wait {
+                hub,
+                token: 0,
+                signal,
+                _registrations: registrations,
+            });
         }
-        registry.next = registry.next.wrapping_add(1);
+        registry.next = registry
+            .next
+            .checked_add(1)
+            .filter(|token| *token != u64::MAX)
+            .ok_or_else(|| io::Error::other("process readiness tokens exhausted"))?;
+        registrations.reserve(sources.len());
         let token = registry.next;
         let earliest =
             wake_at.filter(|at| registry.timers.first().is_none_or(|(first, _)| at < first));
@@ -300,13 +341,20 @@ fn arm_on<'a>(
                 };
                 registrations.push(registration);
             }
-            if earliest.is_some() {
-                hub.poller.notify()?;
-            }
             Ok(false)
         })();
         match registration {
-            Ok(ready) => (token, ready),
+            Ok(ready) => {
+                let failure = if !ready && earliest.is_some() {
+                    hub.poller
+                        .notify()
+                        .err()
+                        .and_then(|error| registry.fail(error))
+                } else {
+                    None
+                };
+                (token, ready, failure)
+            }
             Err(error) => {
                 registry.remove(token);
                 return Err(error);
@@ -320,13 +368,18 @@ fn arm_on<'a>(
         _registrations: registrations,
     };
     // A wake may re-enter registration, so deliver outside the lifecycle lock.
-    if ready {
+    if let Some(failure) = failure {
+        failure.deliver();
+    } else if ready {
         wait.signal.settle(ProcessWaitOutcome::Ready);
     }
     Ok(wait)
 }
 
 impl Wait<'_> {
+    pub(super) fn cancel(&self) {
+        self.signal.settle(ProcessWaitOutcome::Cancelled);
+    }
     /// Whether a source, the wake time or producer failure has settled.
     #[cfg(test)]
     pub(super) fn fired(&self) -> bool {

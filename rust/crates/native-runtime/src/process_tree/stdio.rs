@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// A transferred child output pipe. Waiting for input occupies no worker.
 pub struct ProcessPipeReader {
-    wait: Option<events::Wait>,
+    wait: Option<events::Wait<'static>>,
     pipe: ChildStdout,
     operation: Arc<events::PipeOperation>,
 }
@@ -203,7 +203,7 @@ mod tests {
 /// A transferred child input pipe. Flush joins physical delivery.
 /// The shared completion service retains pending bytes if the caller disappears.
 pub struct ProcessPipeWriter {
-    wait: Option<events::Wait>,
+    wait: Option<events::Wait<'static>>,
     pipe: Option<ChildStdin>,
     writer: platform::Writer,
 }

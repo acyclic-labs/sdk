@@ -32,8 +32,8 @@ impl Poller {
     pub(super) fn refused_wait() -> io::Result<Self> {
         let (reader, writer) = std::io::pipe()?;
         Ok(Self {
-            epoll: reader.into(),
-            wake: writer.into(),
+            epoll: writer.into(),
+            wake: reader.into(),
         })
     }
 
