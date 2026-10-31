@@ -63,7 +63,11 @@ pub fn check(bytes: &[u8]) -> bool {
         return false;
     };
     macro_rules! check {
-        ($($kind:ty),+ $(,)?) => { $(if !check_type::<$kind>(bytes, &work) { return false; })+ };
+        ($($kind:ty),+ $(,)?) => { $(assert!(
+            check_type::<$kind>(bytes, &work),
+            "funded JSON admission/custody for {}; recovery: cargo run --example capture",
+            stringify!($kind),
+        );)+ };
     }
     check!(
         RecordKey,
@@ -104,16 +108,28 @@ pub fn check(bytes: &[u8]) -> bool {
             reads: &reads,
         };
         let result = measured_decode_reader::<LogFrame<Change>>(reader, bytes.len() as u64, &work);
+        assert!(
+            matches!(&result, Err(LocalCoreStateStoreError::Json(_))),
+            "reader refusal at {length} bytes: {:?}; recovery: cargo run --example capture",
+            result.as_ref().err(),
+        );
         let Err(LocalCoreStateStoreError::Json(error)) = result else {
-            return false;
+            unreachable!()
         };
-        if (length == 0 && error.io_error_kind() != Some(std::io::ErrorKind::BrokenPipe))
-            || reads.get() == 0
-            || reads.get() > length + 1
-            || work.live_allocation_bytes() != baseline
-        {
-            return false;
-        }
+        assert!(
+            length != 0 || error.io_error_kind() == Some(std::io::ErrorKind::BrokenPipe),
+            "reader error category at {length} bytes: {error}; recovery: cargo run --example capture",
+        );
+        assert!(
+            reads.get() > 0 && reads.get() <= length + 1,
+            "reader progress at {length} bytes: {} reads; recovery: cargo run --example capture",
+            reads.get(),
+        );
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline,
+            "reader refusal releases custody; recovery: cargo run --example capture",
+        );
     }
     true
 }
