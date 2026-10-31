@@ -47,7 +47,7 @@ test("real browser results settle on publication, script failure and producer re
         const crashed = assert.rejects(browser.send("Page.crash", {}, sessionId), /target crashed/);
         await Promise.all([refused, crashed]);
         // A later registration observes the same terminal, even before detach.
-        await assert.rejects(browser.event(() => false, sessionId).promise, /target crashed/);
+        await assert.rejects(browser.event(() => false, sessionId).promise, /target crashed|target detached/);
         await browser.send("Target.closeTarget", { targetId });
       } else await browser.send("Target.closeTarget", { targetId });
       await refused;

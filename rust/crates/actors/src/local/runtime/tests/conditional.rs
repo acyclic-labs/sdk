@@ -252,7 +252,7 @@ async fn explicit_resume_restores_delivery_after_a_competing_pause() -> TestResu
             .into_request()?;
         *provider.inner().before_write.lock().unwrap() = Some(Competing::Publication(competing));
         let failure = if event_owned {
-            runtime.drain_event(&address).await
+            runtime.drain_event(&address).await.map(|_| ())
         } else {
             runtime
                 .drain()
