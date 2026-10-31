@@ -46,6 +46,7 @@ async fn generated_generation_histories_match_independent_namespace_and_identity
                     Mutation::Create {
                         path: path(&[&destination])?,
                         record: FileRecord {
+                            bindings: None,
                             file_id,
                             kind: FileKind::Regular,
                             link_count: 1,
@@ -313,6 +314,7 @@ async fn generated_multi_operation_transactions_observe_the_candidate_in_order()
             Mutation::Create {
                 path: path(&["x"])?,
                 record: FileRecord {
+                    bindings: None,
                     file_id: x_id,
                     kind: FileKind::Regular,
                     link_count: 1,
@@ -323,6 +325,7 @@ async fn generated_multi_operation_transactions_observe_the_candidate_in_order()
             Mutation::Create {
                 path: path(&["y"])?,
                 record: FileRecord {
+                    bindings: None,
                     file_id: y_id,
                     kind: FileKind::Regular,
                     link_count: 1,
@@ -365,6 +368,7 @@ async fn generated_multi_operation_transactions_observe_the_candidate_in_order()
             Mutation::Create {
                 path: path(&["z"])?,
                 record: FileRecord {
+                    bindings: None,
                     file_id: z_id,
                     kind: FileKind::Regular,
                     link_count: 1,
@@ -382,6 +386,7 @@ async fn generated_multi_operation_transactions_observe_the_candidate_in_order()
             Mutation::Create {
                 path: path(&["large"])?,
                 record: FileRecord {
+                    bindings: None,
                     file_id: large_id,
                     kind: FileKind::Regular,
                     link_count: 1,

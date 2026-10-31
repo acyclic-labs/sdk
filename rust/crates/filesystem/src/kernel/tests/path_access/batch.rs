@@ -28,6 +28,7 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
     let file_table = put_file_table_page(
         &store,
         &FileTablePage::Leaf(vec![FileRecord {
+            bindings: None,
             file_id: root_id,
             kind: FileKind::Directory,
             link_count: 1,

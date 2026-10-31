@@ -110,6 +110,29 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work.finish(result, &accounting)
     }
 
+    /// Opens the shared changed-path frontier over these exact generations.
+    /// No complete delta or path list is prepared. Both checkouts stay pinned
+    /// until the returned cursor is dropped. The supplied work is the total
+    /// budget for admission and all subsequent rows; receipts are cumulative.
+    ///
+    /// These endpoints describe their authored namespaces. A source-backed
+    /// [`crate::LazyWorkspace`] also retains source observations, tombstones and
+    /// identity shadows in its [`crate::LazySnapshotRef`]. A query over that
+    /// complete cut must resolve those components alongside this frontier.
+    /// Without exact source alias coverage, that query must retain
+    /// [`crate::LazyWorkspaceError::OriginalSnapshotUnavailable`], rather than
+    /// finish a complete page or advance its continuation using authored rows
+    /// alone. A source link count or equal authored generations cannot provide
+    /// that coverage.
+    pub async fn changed_paths_to<W: crate::facade::FsWork>(
+        &self,
+        to: &Generation<A, O>,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<ChangedPaths<A, O>>, WorkspaceError> {
+        ChangedPaths::open(self, to, work, cancellation).await
+    }
+
     /// Performs the operation under the supplied limits.
     pub async fn diff_to<W: crate::facade::FsWork>(
         &self,

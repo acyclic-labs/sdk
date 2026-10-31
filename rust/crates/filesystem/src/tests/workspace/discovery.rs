@@ -93,10 +93,9 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
 }
 
 #[tokio::test]
-async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
--> Result<(), Box<dyn Error>> {
+async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = unbounded!(fs, create_workspace("bounded-path-index"))?;
+    let workspace = unbounded!(fs, create_workspace("bounded-direct-paths"))?;
     let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
     transaction.write_text("/a", "body").await?;
     unbounded!(transaction, hard_link("/a", "/b"))?;

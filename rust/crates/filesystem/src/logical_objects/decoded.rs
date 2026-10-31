@@ -17,6 +17,7 @@ async fn scenario(share_narrowed_cache: bool) -> Result<bool, Box<dyn std::error
         )
         .await?;
     let value = FileRecord {
+        bindings: None,
         file_id: crate::FileId::from_bytes([7; 16]),
         kind: FileKind::Fifo,
         link_count: 1,

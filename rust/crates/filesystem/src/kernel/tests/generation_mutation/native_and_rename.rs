@@ -196,6 +196,7 @@ impl RenameEndpoint {
         identity: u8,
     ) -> Result<Vec<Mutation>, Box<dyn std::error::Error>> {
         let directory = |file_id| FileRecord {
+            bindings: None,
             file_id,
             kind: FileKind::Directory,
             link_count: 1,
@@ -209,6 +210,7 @@ impl RenameEndpoint {
             Self::Absent => return Ok(Vec::new()),
             Self::Regular => regular(file_id, fixture.metadata)?,
             Self::SymbolicLink => FileRecord {
+                bindings: None,
                 file_id,
                 kind: FileKind::SymbolicLink,
                 link_count: 1,
@@ -389,6 +391,7 @@ async fn rename_over_an_ancestor_is_refused() -> Result<(), Box<dyn std::error::
     let store = MemoryObjectStore::default();
     let fixture = fixture(&store).await?;
     let directory = |identity| FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([identity; 16]),
         kind: FileKind::Directory,
         link_count: 1,

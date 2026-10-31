@@ -183,6 +183,9 @@ where
 
 pub(super) fn record_copied_bytes(record: FileRecord) -> u64 {
     16 + usize_to_u64(record.metadata.encoded_len())
+        + record
+            .bindings
+            .map_or(0, |id| usize_to_u64(id.encoded_len()))
         + match record.payload {
             FilePayload::InlineRegular(data) => usize_to_u64(data.as_bytes().len()),
             FilePayload::Regular {
@@ -219,6 +222,20 @@ pub(crate) fn file_table_page_decode_shape(
                 decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 decoder.any_object(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                match decoder.u8(&mut |_| Ok::<_, CanonicalDecodeError>(()))? {
+                    0 => {}
+                    1 => {
+                        decoder.object(ObjectKind::BindingPage, &mut |_| {
+                            Ok::<_, CanonicalDecodeError>(())
+                        })?;
+                    }
+                    tag => {
+                        return Err(CanonicalDecodeError::UnknownTag {
+                            field: "file_bindings",
+                            tag,
+                        });
+                    }
+                }
                 match decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
                     1 | 3 | 6 => {
                         decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
@@ -284,7 +301,13 @@ pub(crate) fn file_table_page_decode_shape(
 pub(crate) fn file_record_encoded_length(
     record: FileRecord,
 ) -> Result<usize, CanonicalDecodeError> {
-    let prefix = 16 + 1 + 8 + record.metadata.encoded_len() + 1;
+    let prefix = 16
+        + 1
+        + 8
+        + record.metadata.encoded_len()
+        + 1
+        + record.bindings.map_or(0, |id| id.encoded_len())
+        + 1;
     let payload = match record.payload {
         FilePayload::InlineRegular(data) => 1_usize
             .checked_add(data.as_bytes().len())
@@ -310,6 +333,13 @@ fn encode_record(encoder: &mut Encoder, record: FileRecord) {
     encoder.u8(record.kind.tag());
     encoder.u64(record.link_count);
     encoder.object(record.metadata);
+    match record.bindings {
+        Some(bindings) => {
+            encoder.u8(1);
+            encoder.object(bindings);
+        }
+        None => encoder.u8(0),
+    }
     match record.payload {
         FilePayload::InlineRegular(data) => {
             encoder.u8(7);
@@ -508,6 +538,17 @@ fn decode_record<E: From<CanonicalDecodeError>, T>(
     let kind = FileKind::from_tag(decoder.u8(observe)?).map_err(invariant_tree)?;
     let link_count = decoder.u64(observe)?;
     let metadata = decoder.object(ObjectKind::Metadata, observe)?;
+    let bindings = match decoder.u8(observe)? {
+        0 => None,
+        1 => Some(decoder.object(ObjectKind::BindingPage, observe)?),
+        tag => {
+            return Err(CanonicalDecodeError::UnknownTag {
+                field: "file_bindings",
+                tag,
+            }
+            .into());
+        }
+    };
     let payload = match decoder.u8(observe)? {
         1 => FilePayload::Regular {
             logical_bytes: decoder.u64(observe)?,
@@ -558,6 +599,7 @@ fn decode_record<E: From<CanonicalDecodeError>, T>(
         kind,
         link_count,
         metadata,
+        bindings,
         payload,
     };
     record.validate().map_err(invariant)?;

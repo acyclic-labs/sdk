@@ -32,6 +32,7 @@ const MAXIMUM_WORKSPACE_NAME_BYTES: usize = 255;
 pub(crate) mod access;
 #[cfg(all(test, feature = "memory"))]
 mod access_tests;
+mod changed_paths;
 mod checkout;
 mod commit;
 mod conditions;
@@ -69,6 +70,7 @@ mod transaction_ranges;
 mod transaction_write;
 mod writes;
 
+pub use changed_paths::{ChangedPathEntry, ChangedPaths};
 pub use commit::{TransactionCommit, TransactionRebase};
 pub use conditions::FileCondition;
 pub(crate) use diff::complete_changed_paths;
@@ -111,7 +113,7 @@ pub use transaction::Transaction;
 mod tests;
 
 use reverse_traversal::{
-    NamespaceRecordSearch, NamespaceRecords, reverse_drop, reverse_grow, sorted_changed_file_ids,
+    NamespaceRecordSearch, NamespaceRecords, reverse_drop, sorted_changed_file_ids,
 };
 
 async fn publication_ready(

@@ -327,6 +327,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                 .value
             };
             Ok(Some(FileRecord {
+                bindings: ours.bindings,
                 file_id: directory_id,
                 kind: super::FileKind::Directory,
                 link_count,

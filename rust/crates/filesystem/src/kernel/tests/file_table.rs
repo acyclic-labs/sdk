@@ -13,6 +13,7 @@ use crate::test_support::put_file_table_page as put_memory_page;
 #[cfg(feature = "memory")]
 fn fifo_record(byte: u8) -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([byte; 16]),
         kind: FileKind::Fifo,
         link_count: 1,
@@ -51,6 +52,7 @@ async fn two_level_file_table(
 #[test]
 fn kind_payload_mismatches_fail_before_identity() {
     let record = FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([1; 16]),
         kind: FileKind::Directory,
         link_count: 1,
@@ -102,6 +104,7 @@ fn every_file_record_payload_and_typed_reference_is_validated() {
         digest: Digest::from_bytes([10; 32]),
     };
     let base = FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([9; 16]),
         kind: FileKind::Fifo,
         link_count: 1,
@@ -115,6 +118,10 @@ fn every_file_record_payload_and_typed_reference_is_validated() {
         },
         FileRecord {
             metadata: typed(ObjectKind::Blob),
+            ..base
+        },
+        FileRecord {
+            bindings: Some(typed(ObjectKind::Blob)),
             ..base
         },
         FileRecord {
@@ -210,6 +217,7 @@ fn every_file_record_payload_and_typed_reference_is_validated() {
 #[test]
 fn record_round_trip_is_canonical() -> Result<(), Box<dyn std::error::Error>> {
     let page = FileTablePage::Leaf(vec![FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([1; 16]),
         kind: FileKind::Regular,
         link_count: 2,
@@ -253,6 +261,7 @@ fn inline_regular_payload_is_bounded_allocation_free_and_canonical()
         Err(InlineFileDataError::TooLarge)
     );
     let page = FileTablePage::Leaf(vec![FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([4; 16]),
         kind: FileKind::Regular,
         link_count: 1,
@@ -370,6 +379,7 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
     };
     let metadata = typed(ObjectKind::Metadata, 20);
     let record = |byte, kind, payload| FileRecord {
+        bindings: (byte % 2 != 0).then(|| typed(ObjectKind::BindingPage, 26)),
         file_id: FileId::from_bytes([byte; 16]),
         kind,
         link_count: 1,
@@ -498,6 +508,7 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
 #[test]
 fn file_table_page_invariants_fail_at_encoding_and_identity_boundaries() {
     let record = |byte| FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([byte; 16]),
         kind: FileKind::Fifo,
         link_count: 1,
@@ -571,17 +582,18 @@ fn file_table_page_invariants_fail_at_encoding_and_identity_boundaries() {
 #[test]
 fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
 -> Result<(), Box<dyn std::error::Error>> {
-    const RECORD_PAYLOAD_OFFSET: usize = 15 + 16 + 1 + 8 + 32;
-
+    let metadata = ObjectId {
+        storage: None,
+        kind: ObjectKind::Metadata,
+        digest: Digest::ZERO,
+    };
+    let record_payload_offset = DOMAIN.len() + 2 + 1 + 4 + 16 + 1 + 8 + metadata.encoded_len() + 1;
     let page = FileTablePage::Leaf(vec![FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([1; 16]),
         kind: FileKind::Regular,
         link_count: 1,
-        metadata: ObjectId {
-            storage: None,
-            kind: ObjectKind::Metadata,
-            digest: Digest::ZERO,
-        },
+        metadata,
         payload: FilePayload::InlineRegular(InlineFileData::new(b"x")?),
     }]);
     let encoded = encode_file_table_page(
@@ -644,7 +656,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     }
 
     let mut unknown_payload = encoded.clone();
-    unknown_payload[RECORD_PAYLOAD_OFFSET] = 9;
+    unknown_payload[record_payload_offset] = 9;
     for result in [
         file_table_page_decode_shape(&unknown_payload, DecodeLimits::default()).map(|_| ()),
         decode_file_table_page(&unknown_payload, DecodeLimits::default(), &mut |_| {
@@ -662,7 +674,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     }
 
     let mut oversized_inline = encoded;
-    oversized_inline[RECORD_PAYLOAD_OFFSET + 1] = u8::try_from(MAXIMUM_INLINE_FILE_BYTES + 1)?;
+    oversized_inline[record_payload_offset + 1] = u8::try_from(MAXIMUM_INLINE_FILE_BYTES + 1)?;
     for result in [
         file_table_page_decode_shape(&oversized_inline, DecodeLimits::default()).map(|_| ()),
         decode_file_table_page(&oversized_inline, DecodeLimits::default(), &mut |_| {

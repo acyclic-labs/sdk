@@ -45,6 +45,110 @@ struct StandaloneAccounting {
     baseline: WorkCounters,
 }
 
+struct StandaloneReadAccounting {
+    allocations: AllocationLedger,
+    work: WorkCounters,
+    budget: WorkBudget,
+}
+
+impl Drop for StandaloneReadAccounting {
+    fn drop(&mut self) {
+        std::mem::take(&mut self.allocations).retire_read_frame();
+    }
+}
+
+/// The physical read state is destroyed before its original accounting frame.
+/// Fresh standalone frames move inline, without allocating a handoff owner.
+pub(crate) struct ReadOwner<T> {
+    value: T,
+    accounting: ReadAccounting,
+}
+
+impl<T: Default> ReadOwner<T> {
+    pub(crate) fn new(accounting: KernelAccounting<'_>) -> Result<Self, crate::FsError> {
+        let accounting = ReadAccounting::consume(accounting)?;
+        Ok(Self {
+            value: T::default(),
+            accounting,
+        })
+    }
+}
+
+impl<T> ReadOwner<T> {
+    pub(crate) fn borrow(&mut self) -> (&mut T, KernelAccounting<'_>) {
+        (&mut self.value, self.accounting.borrow())
+    }
+}
+
+// The inline read frame is separate from the boxed authority handoff so it
+// does not enlarge every existing authority continuation.
+struct ReadAccounting {
+    state: ReadAccountingState,
+    cancellation: crate::CancellationToken,
+}
+
+enum ReadAccountingState {
+    Standalone(StandaloneReadAccounting),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(crate::NativeMaterializationWork),
+}
+
+impl Drop for ReadAccounting {
+    fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let ReadAccountingState::Native(work) = &self.state {
+            // ReadOwner destroys its physical state first. Checkout custody
+            // publishes retirement there; reconcile that original aggregate
+            // now, including its final shared header, without admitting work.
+            work.receipt();
+        }
+    }
+}
+
+impl ReadAccounting {
+    /// Consumes a fresh immutable-read frame, retaining its original cancel and
+    /// work. A borrowed frame cannot be consumed or silently abandoned.
+    fn consume(accounting: KernelAccounting<'_>) -> Result<Self, crate::FsError> {
+        accounting.check()?;
+        match accounting {
+            KernelAccounting::Standalone {
+                allocations,
+                work,
+                budget,
+                cancellation,
+            } => Ok(Self {
+                state: ReadAccountingState::Standalone(StandaloneReadAccounting {
+                    allocations,
+                    work,
+                    budget,
+                }),
+                cancellation: cancellation.clone(),
+            }),
+            KernelAccounting::BorrowedStandalone { .. } => {
+                Err(crate::FsError::AccountingHandoffActive)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work, cancellation } => Ok(Self {
+                state: ReadAccountingState::Native(work.clone()),
+                cancellation: cancellation.clone(),
+            }),
+        }
+    }
+
+    fn borrow(&mut self) -> KernelAccounting<'_> {
+        match &mut self.state {
+            ReadAccountingState::Standalone(state) => KernelAccounting::borrowed_standalone(
+                &mut state.allocations,
+                &mut state.work,
+                state.budget,
+                &self.cancellation,
+            ),
+            #[cfg(not(target_arch = "wasm32"))]
+            ReadAccountingState::Native(work) => KernelAccounting::native(work, &self.cancellation),
+        }
+    }
+}
+
 impl OwnedAccounting {
     pub(crate) fn cancellation(&self) -> crate::CancellationToken {
         self.cancellation.clone()
@@ -63,6 +167,15 @@ impl OwnedAccounting {
                 cancellation: lifetime.cancellation().clone(),
             });
         }
+        Ok(Self {
+            state: Self::take_standalone(accounting)?,
+            cancellation: lifetime.cancellation().clone(),
+        })
+    }
+
+    fn take_standalone(
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedAccountingState, crate::FsError> {
         let allocation = RetainedAllocation::claim(
             std::mem::size_of::<StandaloneAccounting>() as u64,
             1,
@@ -77,13 +190,10 @@ impl OwnedAccounting {
             budget,
             baseline: *work,
         };
-        Ok(Self {
-            state: OwnedAccountingState::Standalone(Retained {
-                value: Box::new(state),
-                allocation,
-            }),
-            cancellation: lifetime.cancellation().clone(),
-        })
+        Ok(OwnedAccountingState::Standalone(Retained {
+            value: Box::new(state),
+            allocation,
+        }))
     }
 
     pub(crate) fn borrow(&mut self) -> KernelAccounting<'_> {
@@ -249,6 +359,124 @@ impl<T> Retained<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn owned_reader_keeps_original_budget_cancellation_and_native_invocation()
+    -> Result<(), crate::FsError> {
+        let cancel = crate::CancellationToken::new();
+        let mut caller = KernelAccounting::standalone(
+            WorkBudget {
+                items_examined: 2,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancel,
+        );
+        caller.charge_items(1)?;
+        let before = caller.spent();
+        let mut reader = ReadOwner::<Option<Observe>>::new(caller)?;
+        assert_eq!(reader.borrow().1.spent(), before);
+        reader.borrow().1.charge_items(1)?;
+        assert!(matches!(
+            reader.borrow().1.charge_items(1),
+            Err(crate::FsError::Work(WorkError::BudgetExceeded {
+                counter: "items_examined",
+                ..
+            }))
+        ));
+        cancel.cancel();
+        assert!(matches!(
+            reader.borrow().1.check(),
+            Err(crate::FsError::Cancelled(_))
+        ));
+        assert_eq!(reader.borrow().1.spent().items_examined, 2);
+        drop(reader);
+
+        // Physical state retires before scratch, while a returned independent
+        // lease remains funded after the reader itself is gone.
+        let cancel = crate::CancellationToken::new();
+        let caller = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+        let mut reader = ReadOwner::<Option<Observe>>::new(caller)?;
+        let (state, mut accounting) = reader.borrow();
+        let page = RetainedAllocation::claim(73, 1, &mut accounting)?;
+        let ledger = match &page {
+            RetainedAllocation::Standalone { _lease } => Arc::clone(&_lease.ledger),
+            #[cfg(not(target_arch = "wasm32"))]
+            RetainedAllocation::Native { .. } => unreachable!("ordinary accounting"),
+        };
+        let scratch = accounting.claim_owned(127, 1)?;
+        let minimum = accounting
+            .standalone_parts()
+            .ok_or(WorkError::Overflow)?
+            .0
+            .live_bytes();
+        let observed = Arc::new(AtomicBool::new(false));
+        *state = Some(Observe {
+            ledger: Arc::clone(&ledger),
+            minimum,
+            observed: Arc::clone(&observed),
+        });
+        drop(scratch);
+        drop(accounting);
+        drop(reader);
+        assert!(
+            observed.load(Ordering::SeqCst),
+            "read state outlived original scratch credit"
+        );
+        let live = ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .allocations
+            .live_bytes;
+        assert_eq!(live, minimum - 127);
+        drop(page);
+        assert_eq!(
+            ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .allocations
+                .live_bytes,
+            live - 73
+        );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        for invocation_cancelled in [false, true] {
+            let invocation = crate::CancellationToken::new();
+            let caller_cancel = crate::CancellationToken::new();
+            let original =
+                crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &invocation)
+                    .map_err(|(error, _)| crate::FsError::from(error))?;
+            let caller = KernelAccounting::native(&original, &caller_cancel);
+            let before = original.receipt();
+            let mut reader = ReadOwner::<()>::new(caller)?;
+            assert_eq!(
+                original.receipt(),
+                before,
+                "an owned native read allocated another invocation"
+            );
+            reader.borrow().1.charge_items(1)?;
+            assert_eq!(original.receipt().items_examined, before.items_examined + 1);
+            if invocation_cancelled {
+                invocation.cancel()
+            } else {
+                caller_cancel.cancel()
+            }
+            assert!(matches!(
+                reader.borrow().1.check(),
+                Err(crate::FsError::Cancelled(_))
+                    | Err(crate::FsError::NativeKernel(
+                        crate::NativeTreeMaterializationError::Cancelled
+                    ))
+            ));
+            drop(reader);
+            assert!(
+                KernelAccounting::native(&original, &caller_cancel)
+                    .check()
+                    .is_err(),
+                "read retirement replaced the original cancellation source"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn owned_accounting_handoff_fences_the_caller_and_returns_the_same_budget()

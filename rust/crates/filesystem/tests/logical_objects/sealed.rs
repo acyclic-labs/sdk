@@ -235,6 +235,7 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
     }
     store.put_many_hashed(&objects, &mut work).await?;
     let record = FileRecord {
+        bindings: None,
         file_id: lineage,
         kind: FileKind::Directory,
         link_count: 1,
@@ -532,4 +533,194 @@ fn blob(id: ObjectId) -> acyclic_objects::Digest {
             .map_or(id.digest, |storage| storage.locator)
             .as_bytes(),
     )
+}
+
+#[cfg(feature = "memory")]
+#[tokio::test]
+async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_fs::{
+        CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, Lifecycle,
+        MemoryAuthorityBackend, OperationId, PublicationPermit, TransactionCommit, VolumeConfig,
+        VolumeInitialization, WorkspaceError,
+    };
+
+    use acyclic_fs::model::{CheckoutMode, GenerationSelector};
+
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let provider = Arc::new(acyclic_objects::MemoryObjects::memory());
+    let authority = Arc::new(MemoryAuthorityBackend::new(Arc::new(
+        acyclic_stream::MemoryStream::default(),
+    )));
+    let cancellation = CancellationToken::new();
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    // Obtain the root through the canonical creator in an independent store,
+    // without duplicating its identity derivation or admitting any plain child
+    // into the sealed volume under test. Both use the default namespace/name.
+    let bootstrap = Fs::memory();
+    let initial = bootstrap
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "sealed-changed-paths",
+            VolumeInitialization::new(VolumeConfig::portable(Lifecycle::Ephemeral), None),
+            OperationId::new(),
+            &original,
+            &cancellation,
+            None,
+        )
+        .await?;
+    let workspace = initial.workspace();
+    let checkout = workspace
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::read_only_pinned(),
+            &original,
+            &cancellation,
+        )
+        .await?;
+    let lineage = checkout.root().root_file_id;
+    drop((checkout, workspace, initial, bootstrap));
+    let writer_origin = GenerationId::new(Digest::from_bytes([52; 32]));
+    let fs = Fs::new(
+        Arc::clone(&authority),
+        LogicalObjectStore::new(Arc::clone(&provider)).with_sealer(Envelope {
+            lineage,
+            generation: writer_origin,
+        }),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let files = [
+        ("/entry", OwnedBytes::from_static(b"before")),
+        ("/unrelated", OwnedBytes::from_static(b"unchanged")),
+    ];
+    let created = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "sealed-changed-paths",
+            VolumeInitialization {
+                config: VolumeConfig::portable(Lifecycle::Ephemeral),
+                access_policy: None,
+            },
+            CreationOperation::populated(OperationId::new(), &files),
+            &original,
+            &cancellation,
+            None,
+        )
+        .await?;
+    let workspace = created.workspace();
+    let mut transaction = workspace
+        .begin_transaction(IdempotencyKey::new(), &original, &cancellation)
+        .await?;
+    transaction
+        .hard_link("/entry", "/alias", &original, &cancellation)
+        .await?;
+    let mut allow = |_: &NativeMaterializationWork| std::future::ready(Ok::<_, WorkspaceError>(()));
+    let TransactionCommit::Committed(before) = transaction
+        .commit_with_native_work(
+            None,
+            PublicationPermit::Unrestricted,
+            &original,
+            &cancellation,
+            &mut allow,
+        )
+        .await?
+    else {
+        return Err("hard-link publication did not commit".into());
+    };
+    drop(transaction);
+    let mut transaction = workspace
+        .begin_transaction(IdempotencyKey::new(), &original, &cancellation)
+        .await?;
+    transaction
+        .write(
+            "/entry",
+            OwnedBytes::from_static(b"after"),
+            &original,
+            &cancellation,
+        )
+        .await?;
+    let TransactionCommit::Committed(after) = transaction
+        .commit_with_native_work(
+            None,
+            PublicationPermit::Unrestricted,
+            &original,
+            &cancellation,
+            &mut allow,
+        )
+        .await?
+    else {
+        return Err("content publication did not commit".into());
+    };
+    let endpoints = [before.id(), after.id()];
+    for endpoint in endpoints {
+        let seal = endpoint.object_id().storage.ok_or("unsealed endpoint")?;
+        assert_eq!(seal.root_file_id, lineage);
+        assert_eq!(seal.origin_generation, writer_origin.digest());
+    }
+    drop((transaction, before, after, created, workspace, fs));
+
+    // A fresh store and filesystem have no retained decoded namespace pages.
+    // Their writer origin differs; every old reference must keep its own seal.
+    let cold_objects = LogicalObjectStore::new(provider).with_sealer(Envelope {
+        lineage,
+        generation: GenerationId::new(Digest::from_bytes([53; 32])),
+    });
+    let cold = Fs::new(
+        authority,
+        cold_objects.clone(),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = cold
+        .open_workspace("sealed-changed-paths", &original, &cancellation)
+        .await?;
+    let before = workspace
+        .generation(endpoints[0], &original, &cancellation)
+        .await?;
+    let after = workspace
+        .generation(endpoints[1], &original, &cancellation)
+        .await?;
+    let mut reader = before
+        .changed_paths_to(&after, &original, &cancellation)
+        .await?
+        .value;
+    let mut names = Vec::new();
+    let mut original_binding = None;
+    while let Some(row) = reader.next().await?.value {
+        let record = row.value().before.ok_or("missing baseline record")?;
+        let current = row.value().after.ok_or("missing current record")?;
+        assert_eq!(record.file_id, current.file_id);
+        assert_eq!(record.link_count, 2);
+        assert_eq!(record.bindings, current.bindings);
+        let binding = record.bindings.ok_or("missing authenticated bindings")?;
+        original_binding = Some(binding);
+        assert_eq!(binding.kind, ObjectKind::BindingPage);
+        assert_eq!(
+            binding
+                .storage
+                .ok_or("unsealed bindings")?
+                .origin_generation,
+            writer_origin.digest()
+        );
+        let components = row.value().path.components();
+        assert_eq!(components.len(), 1);
+        names.push(components[0].as_bytes().to_vec());
+    }
+    names.sort();
+    assert_eq!(names, [b"alias".to_vec(), b"entry".to_vec()]);
+    let mut substituted = original_binding.ok_or("no emitted binding reference")?;
+    substituted
+        .storage
+        .as_mut()
+        .ok_or("unsealed bindings")?
+        .origin_generation = GenerationId::new(Digest::from_bytes([53; 32])).digest();
+    assert!(matches!(
+        cold_objects
+            .read(
+                substituted,
+                4096,
+                &mut AuthorityWork::native(&original, &cancellation),
+            )
+            .await,
+        Err(ObjectStoreError::Corrupt)
+    ));
+    Ok(())
 }

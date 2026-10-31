@@ -15,6 +15,7 @@ fn page(
     records
         .value
         .extend((0..count).map(|key| crate::kernel::FileRecord {
+            bindings: None,
             file_id: FileId::from_bytes([key as u8; 16]),
             kind: FileKind::Fifo,
             link_count: 1,

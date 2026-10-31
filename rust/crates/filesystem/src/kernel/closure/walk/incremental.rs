@@ -111,6 +111,9 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             let Some(record) = change.after else {
                 return Ok(None);
             };
+            if change.before.is_none() {
+                self.prove_bindings(&record).await?;
+            }
             if let FilePayload::Directory { entries } = record.payload {
                 self.prove_metadata(record.metadata).await?;
                 let before = change.before.and_then(|record| match record.payload {
@@ -120,9 +123,10 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                 self.collect_pages::<crate::kernel::tree_mutation::TreeFormat>(entries, before)
                     .await?;
             } else {
-                self.prove_record(&record).await?;
+                self.prove_record_contents(&record).await?;
             }
         }
+        self.validate_increment_binding_relations(root.root_file_id, &diff.0)?;
         let bytes = previous
             .object_bytes
             .checked_add(self.object_bytes)
@@ -155,9 +159,11 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                     after.kind,
                     crate::kernel::FileKind::Directory | crate::kernel::FileKind::Regular
                 )
-                || change
-                    .before
-                    .is_some_and(|before| before.kind != after.kind || before.link_count != 1)
+                || change.before.is_some_and(|before| {
+                    before.kind != after.kind
+                        || before.link_count != 1
+                        || before.bindings != after.bindings
+                })
             {
                 return Ok(false);
             }

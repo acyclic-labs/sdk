@@ -94,6 +94,7 @@ fn identity_record_replacement_rejects_mismatched_or_invalid_records()
 -> Result<(), Box<dyn std::error::Error>> {
     let file_id = FileId::from_bytes([7; 16]);
     let record = FileRecord {
+        bindings: None,
         file_id,
         kind: FileKind::Regular,
         link_count: 2,
@@ -172,6 +173,7 @@ fn every_mutation_precondition_is_rejected_before_plan_work()
     let root = path("/")?;
     let file_id = FileId::from_bytes([9; 16]);
     let invalid_record = FileRecord {
+        bindings: None,
         file_id,
         kind: FileKind::Regular,
         link_count: 0,

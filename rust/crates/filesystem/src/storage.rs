@@ -269,6 +269,8 @@ pub enum ObjectKind {
     Metadata,
     /// Authenticated named extended-attribute/stream page.
     AttributePage,
+    /// Authenticated direct parent/name bindings for one file identity.
+    BindingPage,
 }
 
 impl ObjectKind {
@@ -284,6 +286,7 @@ impl ObjectKind {
             Self::GenerationRoot => 6,
             Self::Metadata => 7,
             Self::AttributePage => 8,
+            Self::BindingPage => 9,
         }
     }
 
@@ -298,6 +301,7 @@ impl ObjectKind {
             6 => Ok(Self::GenerationRoot),
             7 => Ok(Self::Metadata),
             8 => Ok(Self::AttributePage),
+            9 => Ok(Self::BindingPage),
             value => Err(ObjectKindError::Unknown(value)),
         }
     }

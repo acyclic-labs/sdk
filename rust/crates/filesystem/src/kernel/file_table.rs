@@ -200,6 +200,10 @@ pub struct FileRecord {
     pub link_count: u64,
     /// Canonical metadata object.
     pub metadata: ObjectId,
+    /// Authenticated direct parent/name bindings in this generation's authored
+    /// namespace; absent for its root. Source-backed views retain unresolved
+    /// source aliases separately from this relation.
+    pub bindings: Option<ObjectId>,
     /// Kind-specific content identity.
     pub payload: FilePayload,
 }
@@ -208,7 +212,12 @@ impl FileRecord {
     pub(crate) fn validate(self) -> Result<(), FileTableError> {
         #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
         decode_probe::validation();
-        if self.link_count == 0 || self.metadata.kind != ObjectKind::Metadata {
+        if self.link_count == 0
+            || self.metadata.kind != ObjectKind::Metadata
+            || self
+                .bindings
+                .is_some_and(|id| id.kind != ObjectKind::BindingPage)
+        {
             return Err(FileTableError::InvalidRecord);
         }
         let valid = match (self.kind, self.payload) {

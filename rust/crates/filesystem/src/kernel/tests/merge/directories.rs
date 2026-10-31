@@ -168,6 +168,7 @@ async fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
     let empty_tree = put_tree(&store, Vec::new()).await?;
     let renamed_tree = put_tree(&store, vec![entry(b)]).await?;
     let base_directory = FileRecord {
+        bindings: None,
         file_id: directory_id,
         kind: FileKind::Directory,
         link_count: 1,
@@ -289,6 +290,7 @@ async fn pruning_an_unbound_directory_recomputes_descendant_links()
     )
     .await?;
     let directory = FileRecord {
+        bindings: None,
         file_id: directory_id,
         kind: FileKind::Directory,
         link_count: 1,

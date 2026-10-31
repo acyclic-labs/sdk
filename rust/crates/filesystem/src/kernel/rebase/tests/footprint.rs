@@ -26,6 +26,7 @@ fn name(value: u8) -> Proof<LogicalName> {
 }
 fn file(value: u8, content: u8) -> Proof<FileRecord> {
     Ok(FileRecord {
+        bindings: None,
         file_id: id(value),
         kind: FileKind::Regular,
         link_count: 1,
@@ -35,6 +36,7 @@ fn file(value: u8, content: u8) -> Proof<FileRecord> {
 }
 fn directory(value: u8, tree: u8) -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id: id(value),
         kind: FileKind::Directory,
         link_count: 1,

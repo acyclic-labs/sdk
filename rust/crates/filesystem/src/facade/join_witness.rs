@@ -373,6 +373,7 @@ mod tests {
                     ),
                 };
                 FileRecord {
+                    bindings: None,
                     file_id: FileId::from_bytes([8; 16]),
                     kind,
                     link_count: 1,

@@ -11,6 +11,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
         &missing_root_store,
         root_file_id,
         vec![FileRecord {
+            bindings: None,
             file_id: child_file_id,
             kind: FileKind::Directory,
             link_count: 1,
@@ -42,6 +43,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
         &non_directory_store,
         root_file_id,
         vec![FileRecord {
+            bindings: None,
             file_id: root_file_id,
             kind: FileKind::Regular,
             link_count: 1,
@@ -82,6 +84,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
         &absent_child_store,
         root_file_id,
         vec![FileRecord {
+            bindings: None,
             file_id: root_file_id,
             kind: FileKind::Directory,
             link_count: 1,
@@ -123,6 +126,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
         root_file_id,
         vec![
             FileRecord {
+                bindings: None,
                 file_id: root_file_id,
                 kind: FileKind::Directory,
                 link_count: 1,
@@ -132,6 +136,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
                 },
             },
             FileRecord {
+                bindings: None,
                 file_id: child_file_id,
                 kind: FileKind::Regular,
                 link_count: 1,
@@ -178,6 +183,7 @@ async fn closure_rejects_kinds_outside_the_declared_volume_profile()
         &store,
         &FileTablePage::Leaf(vec![
             FileRecord {
+                bindings: None,
                 file_id: root_file_id,
                 kind: FileKind::Directory,
                 link_count: 1,
@@ -185,6 +191,7 @@ async fn closure_rejects_kinds_outside_the_declared_volume_profile()
                 payload: FilePayload::Directory { entries: tree },
             },
             FileRecord {
+                bindings: None,
                 file_id: fifo_file_id,
                 kind: FileKind::Fifo,
                 link_count: 1,
@@ -247,6 +254,7 @@ async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cy
         vec![
             directory_record(root_id, 1, metadata_id, root_tree),
             FileRecord {
+                bindings: None,
                 file_id: child_id,
                 kind: FileKind::Regular,
                 link_count: 2,

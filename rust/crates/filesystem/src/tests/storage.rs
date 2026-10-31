@@ -12,6 +12,7 @@ fn object_kinds_digests_and_read_views_are_canonical() {
         ObjectKind::GenerationRoot,
         ObjectKind::Metadata,
         ObjectKind::AttributePage,
+        ObjectKind::BindingPage,
     ];
     for (index, kind) in kinds.into_iter().enumerate() {
         let tag = u8::try_from(index + 1).unwrap_or(u8::MAX);
@@ -23,8 +24,8 @@ fn object_kinds_digests_and_read_views_are_canonical() {
         Err(ObjectKindError::Unknown(0))
     );
     assert_eq!(
-        ObjectKind::from_canonical_tag(9),
-        Err(ObjectKindError::Unknown(9))
+        ObjectKind::from_canonical_tag(10),
+        Err(ObjectKindError::Unknown(10))
     );
     assert_eq!(object_digest(b"bytes"), object_digest(b"bytes"));
     assert_ne!(object_digest(b"bytes"), object_digest(b"other"));

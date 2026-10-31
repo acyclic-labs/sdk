@@ -303,6 +303,7 @@ async fn opaque_payload_reads_enforce_the_volume_output_bound() -> TestResult {
                 Mutation::Create {
                     path: path("symbolic")?,
                     record: FileRecord {
+                        bindings: None,
                         file_id: FileId::from_bytes([127; 16]),
                         kind: FileKind::SymbolicLink,
                         link_count: 1,
@@ -316,6 +317,7 @@ async fn opaque_payload_reads_enforce_the_volume_output_bound() -> TestResult {
                 Mutation::Create {
                     path: path("reparse")?,
                     record: FileRecord {
+                        bindings: None,
                         file_id: FileId::from_bytes([128; 16]),
                         kind: FileKind::ReparsePoint,
                         link_count: 1,

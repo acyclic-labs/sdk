@@ -94,6 +94,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         .ok_or("root record absent")?
         .metadata;
     let record = FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([7; 16]),
         kind: FileKind::Regular,
         link_count: 1,
@@ -337,6 +338,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         .ok_or("root record absent")?
         .metadata;
     let record = FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([12; 16]),
         kind: FileKind::Regular,
         link_count: 1,

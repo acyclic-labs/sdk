@@ -113,6 +113,17 @@ fn decode_record<E: From<CanonicalDecodeError>>(
     let kind = FileKind::from_tag(decoder.u8(observe)?).map_err(invariant_tree)?;
     let link_count = decoder.u64(observe)?;
     let metadata = decoder.object(ObjectKind::Metadata, observe)?;
+    let bindings = match decoder.u8(observe)? {
+        0 => None,
+        1 => Some(decoder.object(ObjectKind::BindingPage, observe)?),
+        tag => {
+            return Err(CanonicalDecodeError::UnknownTag {
+                field: "file_bindings",
+                tag,
+            }
+            .into());
+        }
+    };
     let payload = match decoder.u8(observe)? {
         1 => FilePayload::Regular {
             logical_bytes: decoder.u64(observe)?,
@@ -163,6 +174,7 @@ fn decode_record<E: From<CanonicalDecodeError>>(
         kind,
         link_count,
         metadata,
+        bindings,
         payload,
     };
     validate_record(record).map_err(invariant)?;
@@ -170,7 +182,12 @@ fn decode_record<E: From<CanonicalDecodeError>>(
 }
 
 fn validate_record(record: FileRecord) -> Result<(), FileTableError> {
-    if record.link_count == 0 || record.metadata.kind != ObjectKind::Metadata {
+    if record.link_count == 0
+        || record.metadata.kind != ObjectKind::Metadata
+        || record
+            .bindings
+            .is_some_and(|id| id.kind != ObjectKind::BindingPage)
+    {
         return Err(FileTableError::InvalidRecord);
     }
     let valid = match (record.kind, record.payload) {

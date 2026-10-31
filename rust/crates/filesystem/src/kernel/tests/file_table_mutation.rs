@@ -52,6 +52,7 @@ async fn original_table_encoding_denial_precedes_native_payload_and_backend_writ
 }
 fn record(byte: u8, metadata_byte: u8) -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([byte; 16]),
         kind: FileKind::Fifo,
         link_count: 1,

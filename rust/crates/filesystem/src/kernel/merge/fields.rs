@@ -74,6 +74,7 @@ async fn merge_file_fields_async<S: AsyncObjectStore>(
     )
     .await?;
     Ok(metadata.map(|metadata| FileRecord {
+        bindings: ours.bindings,
         file_id: ours.file_id,
         kind,
         link_count: ours.link_count,

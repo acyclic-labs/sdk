@@ -78,7 +78,7 @@ fn admission_rejects_every_invalid_request_before_work() -> Result<(), Box<dyn s
         ),
     ] {
         let failure = validate::<TreeFormat, TreeMutation>(
-            candidate_root,
+            Some(candidate_root),
             &mutations,
             maximum,
             candidate_limits,
@@ -94,7 +94,12 @@ fn admission_rejects_every_invalid_request_before_work() -> Result<(), Box<dyn s
         }
     }
 
-    validate::<TreeFormat, TreeMutation>(root(ObjectKind::TreePage, 1), &[mutation], 1, limits)?;
+    validate::<TreeFormat, TreeMutation>(
+        Some(root(ObjectKind::TreePage, 1)),
+        &[mutation],
+        1,
+        limits,
+    )?;
     Ok(())
 }
 

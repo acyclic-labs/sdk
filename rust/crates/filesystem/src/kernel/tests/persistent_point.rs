@@ -11,6 +11,7 @@ use crate::storage::ObjectKind;
 
 fn record(byte: u8) -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([byte; 16]),
         kind: FileKind::Fifo,
         link_count: 1,

@@ -43,6 +43,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             Mutation::Create {
                 path,
                 record: FileRecord {
+                    bindings: None,
                     file_id,
                     kind,
                     link_count: 1,
@@ -109,6 +110,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 let file_id = self.authored_file_id(record.kind, &path, 0, accounting)?;
                 record.file_id = file_id;
                 record.link_count = 1;
+                record.bindings = None;
                 Ok((Mutation::Create { path, record }, file_id))
             }
         }
@@ -156,6 +158,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 Mutation::Create {
                     path,
                     record: FileRecord {
+                        bindings: None,
                         file_id,
                         kind: FileKind::Regular,
                         link_count: 1,
@@ -187,6 +190,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     ) -> Result<(), FsError> {
         let record = FileRecord {
+            bindings: None,
             file_id,
             kind: FileKind::Regular,
             link_count: 1,

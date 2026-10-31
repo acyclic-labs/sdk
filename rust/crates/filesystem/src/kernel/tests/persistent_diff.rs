@@ -35,6 +35,7 @@ use crate::test_support::put_tree_page as put;
 
 fn file_record(id: u8) -> Result<FileRecord, Box<dyn std::error::Error>> {
     Ok(FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([id; 16]),
         kind: FileKind::Regular,
         link_count: 1,
@@ -855,7 +856,7 @@ async fn diff_accounted<S: AsyncObjectStore, F: Format>(
     cancellation: &CancellationToken,
 ) -> Result<Diff<F::Key, F::Value>, OperationFailure<FsError>> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = diff_with_accounting::<S, F, true, true>(
+    let result = diff_with_accounting::<S, F>(
         store,
         before,
         after,

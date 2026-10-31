@@ -212,7 +212,7 @@ where
 }
 
 pub(super) fn validate<F, M>(
-    root: ObjectId,
+    root: Option<ObjectId>,
     mutations: &[M],
     maximum_mutations: u32,
     limits: DecodeLimits,
@@ -221,7 +221,7 @@ where
     F: Format,
     M: Mutation<F>,
 {
-    let error = if root.kind != F::kind() {
+    let error = if root.is_some_and(|root| root.kind != F::kind()) {
         Some(Error::WrongRootKind)
     } else if mutations.is_empty() {
         Some(Error::Empty)
@@ -240,13 +240,7 @@ where
     }
 }
 
-pub(super) fn storage_error(error: ObjectStoreError) -> crate::FsError {
-    match error {
-        #[cfg(not(target_arch = "wasm32"))]
-        ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
-        error => error.into(),
-    }
-}
+pub(super) use crate::kernel::file_read::read_store_error as storage_error;
 
 pub(super) fn push_summary<K>(
     output: &mut Owned<Vec<Child<K>>>,

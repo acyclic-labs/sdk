@@ -1,68 +1,90 @@
 use super::*;
 use proptest::prelude::*;
+use std::collections::{BTreeMap, BTreeSet};
 
-type Changes = Vec<ValueChange<FileId, FileRecord>>;
-type Outcome = Result<(Changes, bool), String>;
-
-#[path = "ordered/prefixes.rs"]
-mod prefixes;
-
-std::thread_local! {
-    static COMPARISONS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-}
-
-pub(crate) fn record_comparison() {
-    COMPARISONS.with(|count| {
-        if let Some(previous) = count.get() {
-            count.set(Some(previous + 1));
-        }
-    });
-}
-
-async fn put_page(store: &MemoryObjectStore, page: FileTablePage) -> ObjectId {
-    crate::test_support::put_file_table_page(store, &page, 128)
-        .await
-        .unwrap()
-}
-
-async fn root(store: &MemoryObjectStore, keys: &[u8], width: usize, after: bool) -> ObjectId {
-    if keys.is_empty() {
-        return put_page(store, FileTablePage::Leaf(Vec::new())).await;
+async fn root(
+    store: &MemoryObjectStore,
+    records: &BTreeMap<u8, u64>,
+    width: usize,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let values = records
+        .iter()
+        .map(|(key, links)| {
+            let mut record = file_record(*key)?;
+            record.link_count = *links;
+            Ok(record)
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    if values.len() <= width {
+        return put_file_table(store, &FileTablePage::Leaf(values), 128).await;
     }
     let mut children = Vec::new();
-    for chunk in keys.chunks(width) {
-        let records = chunk
-            .iter()
-            .map(|key| {
-                let mut record = file_record(*key).unwrap();
-                record.link_count = if after { 2 } else { 1 };
-                record
-            })
-            .collect();
+    for values in values.chunks(width) {
         children.push(Child {
-            first: FileId::from_bytes([chunk[0]; 16]),
-            page: put_page(store, FileTablePage::Leaf(records)).await,
+            first: values[0].file_id,
+            page: put_file_table(store, &FileTablePage::Leaf(values.to_vec()), 128).await?,
         });
     }
-    put_page(store, FileTablePage::Internal(children)).await
+    put_file_table(store, &FileTablePage::Internal(children), 128).await
 }
 
-async fn run<const PREFIX: bool, const RESET: bool>(
-    store: &MemoryObjectStore,
-    roots: (ObjectId, ObjectId),
+fn expected(
+    before: &BTreeMap<u8, u64>,
+    after: &BTreeMap<u8, u64>,
+) -> Vec<ValueChange<FileId, FileRecord>> {
+    let record = |key, links| {
+        let mut record = file_record(key).unwrap();
+        record.link_count = links;
+        record
+    };
+    before
+        .keys()
+        .chain(after.keys())
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|key| before.get(key) != after.get(key))
+        .map(|key| ValueChange {
+            key: FileId::from_bytes([key; 16]),
+            before: before.get(&key).map(|links| record(key, *links)),
+            after: after.get(&key).map(|links| record(key, *links)),
+        })
+        .collect()
+}
+
+async fn compare(
+    before: &BTreeMap<u8, u64>,
+    after: &BTreeMap<u8, u64>,
+    widths: (usize, usize),
     maximum: u32,
-    items: u64,
-) -> (Outcome, WorkCounters) {
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(
-        WorkBudget {
-            items_examined: items,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let roots = (
+        root(&store, before, widths.0).await?,
+        root(&store, after, widths.1).await?,
     );
-    let result = diff_with_accounting::<_, FileTableFormat, PREFIX, RESET>(
-        store,
+    let cancellation = CancellationToken::new();
+    let expected = expected(before, after);
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut cursor = Cursor::<FileTableFormat>::new(
+        Some(roots.0),
+        Some(roots.1),
+        DecodeLimits::default(),
+        &mut accounting,
+    )?;
+    // One row per yield exercises every retained leaf/parent position. An
+    // independent ordered map decides both value sides, including equal rows.
+    let mut observed = Vec::new();
+    while let Some(change) = cursor.next(&store, &mut accounting, &cancellation).await? {
+        observed.push(change.value.clone());
+        change.retire(&mut accounting)?;
+    }
+    cursor.retire(&mut accounting)?;
+    assert_eq!(observed, expected);
+    let paged = accounting.spent();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let (diff, allocation) = diff_with_accounting::<_, FileTableFormat>(
+        &store,
         Some(roots.0),
         Some(roots.1),
         maximum,
@@ -70,197 +92,104 @@ async fn run<const PREFIX: bool, const RESET: bool>(
         &mut accounting,
         &cancellation,
     )
-    .await;
-    let work = accounting.spent();
-    (
-        result
-            .map(|(diff, _)| (diff.changes, diff.truncated))
-            .map_err(|error| error.to_string()),
-        work,
-    )
-}
-
-async fn compare(
-    before: &[u8],
-    after: &[u8],
-    widths: (usize, usize),
-    maximum: u32,
-    prefix_budget: usize,
-) -> proptest::test_runner::TestCaseResult {
-    let store = MemoryObjectStore::default();
-    let roots = (
-        root(&store, before, widths.0, false).await,
-        root(&store, after, widths.1, true).await,
-    );
-    // The old-search mode uses the same real read/frontier/insertion/retirement
-    // path. Only the known-prefix optimization is disabled.
-    let (old, old_work) = run::<false, true>(&store, roots, maximum, u64::MAX).await;
-    let (new, new_work) = run::<true, true>(&store, roots, maximum, u64::MAX).await;
-    prop_assert_eq!(&new, &old);
-    prop_assert!(new.is_ok());
-    prop_assert!(new_work.items_examined <= old_work.items_examined);
-    let mut old_other = old_work;
-    let mut new_other = new_work;
-    old_other.items_examined = 0;
-    new_other.items_examined = 0;
-    prop_assert_eq!(
-        new_other,
-        old_other,
-        "all non-comparison receipts are unchanged"
-    );
-    // This exact budget admitted the baseline's complete traversal, including
-    // reads and every old comparator. The candidate must still complete.
-    let (limited, work) = run::<true, true>(&store, roots, maximum, old_work.items_examined).await;
-    prop_assert_eq!(&limited, &old);
-    prop_assert_eq!(work, new_work);
-    let budget = prefix_budget as u64 % (old_work.items_examined + 1);
-    let (old_limited, old_prefix) = run::<false, true>(&store, roots, maximum, budget).await;
-    let (new_limited, new_prefix) = run::<true, true>(&store, roots, maximum, budget).await;
-    prop_assert!(old_prefix.items_examined <= budget);
-    prop_assert!(new_prefix.items_examined <= budget);
-    if old_limited.is_ok() {
-        prop_assert_eq!(&new_limited, &old_limited);
+    .await?;
+    let count = (maximum as usize).min(expected.len());
+    assert_eq!(diff.changes, expected[..count]);
+    assert_eq!(diff.truncated, expected.len() > count);
+    if expected.len() <= count {
+        assert_eq!(
+            diff.work.page_reads, paged.page_reads,
+            "collecting must use the same retained frontier"
+        );
+        assert_eq!(diff.work.items_examined, paged.items_examined);
     }
-    if new_limited.is_ok() {
-        prop_assert_eq!(&new_limited, &old);
-    }
-    for (outcome, receipt) in [(old_limited, old_prefix), (new_limited, new_prefix)] {
-        if let Err(error) = outcome {
-            prop_assert!(error.contains("items_examined"), "{error}");
-            prop_assert!(receipt.items_examined <= budget);
-        }
-    }
+    let bytes = diff.retained_allocation_bytes;
+    drop(diff);
+    retire_allocation(allocation, bytes, &mut accounting)?;
+    assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
     Ok(())
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
     #[test]
-    fn traversal_matches_old_receipts_and_budget_prefixes_across_pages_and_sides(
-        before in prop::collection::btree_set(1_u8..=255, 0..65),
-        after in prop::collection::btree_set(1_u8..=255, 0..65),
+    fn retained_pair_frontier_matches_ordered_maps_across_independent_page_shapes(
+        before in prop::collection::btree_map(1_u8..=127, 1_u64..4, 0..65),
+        after in prop::collection::btree_map(1_u8..=127, 1_u64..4, 0..65),
         left_width in 1_usize..9, right_width in 1_usize..9,
-        maximum in 1_u32..129, budget in any::<usize>(),
+        maximum in 1_u32..129,
     ) {
         tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(compare(
-            &before.into_iter().collect::<Vec<_>>(), &after.into_iter().collect::<Vec<_>>(),
-            (left_width,right_width), maximum, budget))?;
+            &before, &after, (left_width, right_width), maximum,
+        )).map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }
 
-#[test]
-fn sparse_overlap_keeps_the_baseline_budget_and_actual_reset_is_required() {
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let keys: Vec<_> = (1..=64).collect();
-            compare(&keys, &[1, 64], (1, 2), 128, 277).await.unwrap();
-            let store = MemoryObjectStore::default();
-            let roots = (
-                root(&store, &keys, 1, false).await,
-                root(&store, &[1, 64], 2, true).await,
-            );
-            let (old, old_work) = run::<false, true>(&store, roots, 128, u64::MAX).await;
-            let (valid, _) = run::<true, true>(&store, roots, 128, old_work.items_examined).await;
-            let (broken, _) = run::<true, false>(&store, roots, 128, u64::MAX).await;
-            assert_eq!(valid, old);
-            assert_ne!(
-                broken, old,
-                "breaking push_page's reset must change the real traversal"
-            );
-        });
-}
+#[tokio::test]
+async fn retained_pair_frontier_keeps_early_output_and_cancellation_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let before: BTreeMap<_, _> = (1..=64).map(|key| (key, 1)).collect();
+    let after: BTreeMap<_, _> = [(1, 2), (64, 2)].into_iter().collect();
+    compare(&before, &after, (1, 2), 128).await?;
+    let store = MemoryObjectStore::default();
+    let roots = (
+        root(&store, &before, 1).await?,
+        root(&store, &after, 2).await?,
+    );
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut cursor = Cursor::<FileTableFormat>::new(
+        Some(roots.0),
+        Some(roots.1),
+        DecodeLimits::default(),
+        &mut accounting,
+    )?;
+    let first = cursor
+        .next(&store, &mut accounting, &cancellation)
+        .await?
+        .ok_or("missing early change")?;
+    assert_eq!(first.value, expected(&before, &after)[0]);
+    assert!(
+        accounting.spent().page_reads < 10,
+        "one row exported the remaining tree"
+    );
+    let reads = accounting.spent().page_reads;
+    cancellation.cancel();
+    assert!(matches!(
+        cursor.next(&store, &mut accounting, &cancellation).await,
+        Err(FsError::Cancelled(_))
+    ));
+    assert_eq!(accounting.spent().page_reads, reads);
+    // Refusal retains both the delivered value and the held frontier until
+    // their original physical retirement, even after caller cancellation.
+    first.retire(&mut accounting)?;
+    cursor.retire(&mut accounting)?;
+    assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
 
-fn replay_pages<const PREFIX: bool, const RESET: bool>(
-    pages: &[(bool, Vec<u8>)],
-    budget: u64,
-) -> (Outcome, WorkCounters, u64, Changes) {
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(
         WorkBudget {
-            items_examined: budget,
+            items_examined: 1,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
     );
-    let mut tasks = Owned::<Vec<Task>>::allocate(0, &mut accounting).unwrap();
-    let mut values = Owned::<Changes>::allocate(0, &mut accounting).unwrap();
-    let mut truncated = false;
-    COMPARISONS.with(|count| count.set(Some(0)));
-    let result = (|| {
-        for (before, keys) in pages {
-            let mut records = Owned::<Vec<FileRecord>>::allocate(keys.len(), &mut accounting)?;
-            assert_eq!(records.value.capacity(), keys.len());
-            records.value.extend(keys.iter().map(|key| {
-                let mut record = file_record(*key).unwrap();
-                record.link_count = if *before { 1 } else { 2 };
-                record
-            }));
-            let bytes = records.bytes;
-            let page = Owned::new(
-                OwnedPage {
-                    page: PageLease::Owned(Page::Leaf(records.value)),
-                    logical_bytes: bytes,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    native_custody: None,
-                },
-                records.allocation,
-                bytes,
-            );
-            // This is the real page mover, including its reset and both owned
-            // value transfers; the test never manages an insertion cursor.
-            push_page::<FileTableFormat, PREFIX, RESET>(
-                page,
-                *before,
-                &mut tasks,
-                &mut values,
-                128,
-                &mut truncated,
-                DecodeLimits::default(),
-                &mut accounting,
-            )?;
-        }
-        Ok::<_, FsError>(())
-    })();
-    let probes = COMPARISONS.with(|count| count.replace(None).unwrap());
-    let work = accounting.spent();
-    tasks.retire(&mut accounting).unwrap();
-    let partial = values.value.clone();
-    let outcome = match result {
-        Ok(()) => Ok((values.value.clone(), truncated)),
-        Err(error) => Err(error.to_string()),
-    };
-    values.retire(&mut accounting).unwrap();
-    (outcome, work, probes, partial)
-}
-
-#[test]
-fn actual_page_mover_preserves_all_277_comparison_budget_prefixes() {
-    let pages: Vec<_> = (1..=64)
-        .map(|key| (true, vec![key]))
-        .chain([(false, vec![1, 64])])
-        .collect();
-    let (baseline, work, probes, _) = replay_pages::<false, true>(&pages, 277);
-    assert!(baseline.is_ok());
-    assert_eq!(work.items_examined, 277);
-    assert_eq!(probes, 277);
-    for budget in 0..=277 {
-        let (old, old_work, old_calls, _) = replay_pages::<false, true>(&pages, budget);
-        let (new, new_work, new_calls, _) = replay_pages::<true, true>(&pages, budget);
-        assert_eq!(old_work.items_examined, old_calls);
-        assert_eq!(new_work.items_examined, new_calls);
-        assert!(old_calls <= budget && new_calls <= budget);
-        if old.is_ok() {
-            assert_eq!(new, baseline);
-        }
-        if new.is_err() {
-            assert_eq!(new_calls, budget);
-        }
-    }
-    let (broken, _, _, _) = replay_pages::<true, false>(&pages, u64::MAX);
-    assert_ne!(
-        broken, baseline,
-        "the production reset is essential across sides"
-    );
+    let mut cursor = Cursor::<FileTableFormat>::new(
+        Some(roots.0),
+        Some(roots.1),
+        DecodeLimits::default(),
+        &mut accounting,
+    )?;
+    let failure = cursor.next(&store, &mut accounting, &cancellation).await;
+    assert!(matches!(
+        failure,
+        Err(FsError::Work(WorkError::BudgetExceeded {
+            counter: "items_examined",
+            ..
+        }))
+    ));
+    cursor.retire(&mut accounting)?;
+    assert!(accounting.spent().items_examined <= 1);
+    assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
+    Ok(())
 }

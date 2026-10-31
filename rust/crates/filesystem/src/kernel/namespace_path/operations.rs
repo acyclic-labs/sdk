@@ -9,6 +9,49 @@ fn components(path: &str) -> impl Iterator<Item = &str> {
 }
 
 impl NamespacePath {
+    /// Consumes leaf-to-root names without cloning their backing buffers.
+    pub(crate) fn from_reversed_owned(
+        mut names: super::super::Owned<Vec<LogicalName>>,
+        limits: VolumeLimits,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<super::super::Owned<Self>, crate::FsError> {
+        let result = (|| {
+            accounting.check()?;
+            accounting.charge_items(names.value.len() as u64)?;
+            let encoded_bytes = Self::validate_component_lengths(
+                names.value.iter().map(|name| name.as_bytes().len()),
+                limits,
+            )?;
+            let bytes_copied = (names.value.len() / 2)
+                .checked_mul(2 * std::mem::size_of::<LogicalName>())
+                .ok_or(crate::WorkError::Overflow)? as u64;
+            accounting.admit(WorkCounters {
+                bytes_copied,
+                ..WorkCounters::UNCHARGED
+            })?;
+            names.value.reverse();
+            accounting.record_completed(WorkCounters {
+                bytes_copied,
+                ..WorkCounters::UNCHARGED
+            })?;
+            Ok(encoded_bytes)
+        })();
+        match result {
+            Ok(encoded_bytes) => Ok(super::super::Owned::new(
+                Self {
+                    components: names.value,
+                    encoded_bytes,
+                },
+                names.allocation,
+                names.bytes,
+            )),
+            Err(error) => {
+                names.retire(accounting)?;
+                Err(error)
+            }
+        }
+    }
+
     pub(crate) fn validate_component_lengths(
         lengths: impl IntoIterator<Item = usize>,
         limits: VolumeLimits,

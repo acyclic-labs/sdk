@@ -16,6 +16,7 @@ fn reference_copies(object: crate::ObjectId) -> u64 {
 
 fn record_copies(record: &FileRecord) -> u64 {
     16 + reference_copies(record.metadata)
+        + record.bindings.map_or(0, reference_copies)
         + match record.payload {
             FilePayload::Empty | FilePayload::Device { .. } => 0,
             FilePayload::InlineRegular(bytes) => bytes.as_bytes().len() as u64,

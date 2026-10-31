@@ -28,6 +28,30 @@ impl<T> Owned<T> {
         }
     }
 
+    /// Moves the value only after its original guard has joined the recipient.
+    /// On refusal the donor destroys its value before releasing its own credit.
+    pub(crate) fn transfer_to(
+        mut self,
+        allocation: &mut KernelOwnedAllocation,
+        bytes: &mut u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<T, crate::FsError> {
+        let handoff = bytes
+            .checked_add(self.bytes)
+            .ok_or(crate::FsError::Work(crate::WorkError::Overflow))
+            .and_then(|total| allocation.absorb(&mut self.allocation).map(|()| total));
+        match handoff {
+            Ok(total) => {
+                *bytes = total;
+                Ok(self.value)
+            }
+            Err(error) => {
+                self.retire(accounting)?;
+                Err(error)
+            }
+        }
+    }
+
     /// Drops the value and releases its accounted ownership.
     pub fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
         let Self {
@@ -189,10 +213,6 @@ where
         .map_err(|error| OperationFailure::new(project_failure(error), work))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "The lookup retains its admitted pages and traversal frame through completion."
-)]
 pub(crate) async fn lookup_async_with_accounting<S, F>(
     store: &S,
     root: ObjectId,
@@ -205,6 +225,51 @@ pub(crate) async fn lookup_async_with_accounting<S, F>(
 where
     S: AsyncObjectStore,
     F: Format,
+{
+    let value = lookup_projected_with_accounting::<S, F, _, _, _>(
+        store,
+        root,
+        |candidate| candidate.cmp(key),
+        |value, accounting| {
+            let (value, allocation) = persistent_io::clone_value::<F>(
+                value,
+                limits.maximum_name_bytes,
+                accounting,
+                data_custody,
+                0,
+            )?;
+            let bytes = F::value_owned_bytes(&value);
+            Ok(Owned::new(value, allocation, bytes))
+        },
+        limits,
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await?;
+    Ok(match value {
+        Some(value) => (Some(value.value), value.allocation),
+        None => (None, accounting.claim_owned(0, 0)?),
+    })
+}
+
+/// Searches the same authenticated point path and projects only the selected
+/// value. Borrowed queries and inline projections need no copied output key.
+pub(super) async fn lookup_projected_with_accounting<S, F, T, C, P>(
+    store: &S,
+    root: ObjectId,
+    compare: C,
+    mut project: P,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<Option<Owned<T>>, crate::FsError>
+where
+    S: AsyncObjectStore,
+    F: Format,
+    C: Fn(&F::Key) -> std::cmp::Ordering,
+    P: FnMut(&F::Value, &mut KernelAccounting<'_>) -> Result<Owned<T>, crate::FsError>,
 {
     accounting.check()?;
     if root.kind != F::kind() {
@@ -262,25 +327,14 @@ where
                     let position = super::search::binary_search_with_accounting(
                         values,
                         accounting,
-                        |value| F::key(value).cmp(key),
+                        |value| compare(F::key(value)),
                     )?;
                     let result = position
                         .ok()
                         .and_then(|index| values.get(index))
-                        .map(|value| {
-                            persistent_io::clone_value::<F>(
-                                value,
-                                limits.maximum_name_bytes,
-                                accounting,
-                                data_custody,
-                                0,
-                            )
-                        })
+                        .map(|value| project(value, accounting))
                         .transpose()?;
-                    Ok(Some(match result {
-                        Some((value, allocation)) => (Some(value), allocation),
-                        None => (None, accounting.claim_owned(0, 0)?),
-                    }))
+                    Ok(Some(result))
                 }
                 Page::Internal(children) => {
                     if !children_within(
@@ -293,7 +347,7 @@ where
                     let selected = super::search::partition_point_with_accounting(
                         children,
                         accounting,
-                        |child| child.first <= *key,
+                        |child| compare(&child.first).is_le(),
                     )?
                     .saturating_sub(1);
                     let child = children
@@ -329,21 +383,38 @@ where
                     Ok(None)
                 }
             })();
-            decoded.retire(accounting)?;
-            if let Some(result) = step? {
-                return Ok(result);
+            let retirement = decoded.retire(accounting);
+            match step {
+                Ok(Some(value)) => return finish_projection(Ok(value), retirement, accounting),
+                step => {
+                    retirement?;
+                    step?;
+                }
             }
         }
     }
     .await;
-    if let Some(lower) = lower {
-        lower.retire(accounting)?;
+    let lower = lower.map_or(Ok(()), |lower| lower.retire(accounting));
+    let upper = upper.map_or(Ok(()), |upper| upper.retire(accounting));
+    let visited = visited.retire(accounting);
+    finish_projection(result, lower.and(upper).and(visited), accounting)
+}
+
+fn finish_projection<T>(
+    result: Result<Option<Owned<T>>, crate::FsError>,
+    retirement: Result<(), crate::FsError>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Option<Owned<T>>, crate::FsError> {
+    match (result, retirement) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(value), Err(error)) => {
+            if let Some(value) = value {
+                value.retire(accounting)?;
+            }
+            Err(error)
+        }
+        (Err(error), _) => Err(error),
     }
-    if let Some(upper) = upper {
-        upper.retire(accounting)?;
-    }
-    visited.retire(accounting)?;
-    result
 }
 
 pub(super) fn query_error(error: Error) -> crate::FsError {

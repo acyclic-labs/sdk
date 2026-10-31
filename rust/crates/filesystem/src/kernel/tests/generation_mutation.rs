@@ -52,6 +52,7 @@ fn path(values: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
 
 fn regular(file_id: FileId, metadata: ObjectId) -> Result<FileRecord, Box<dyn std::error::Error>> {
     Ok(FileRecord {
+        bindings: None,
         file_id,
         kind: FileKind::Regular,
         link_count: 1,
@@ -103,6 +104,77 @@ async fn inline_at(
     Ok(data.as_bytes().to_vec())
 }
 
+async fn stored_bindings(
+    store: &MemoryObjectStore,
+    edges: &[(FileId, &str)],
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let edits = edges
+        .iter()
+        .map(|(parent, value)| {
+            Ok(crate::kernel::bindings::BindingMutation {
+                binding: crate::kernel::bindings::Binding {
+                    parent: *parent,
+                    name: name(value)?,
+                },
+                present: true,
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    Ok(crate::kernel::bindings::apply_with_accounting(
+        store,
+        None,
+        &edits,
+        u32::try_from(edits.len())?,
+        DecodeLimits::for_volume(config()),
+        &mut accounting,
+        &cancellation,
+    )
+    .await?)
+}
+
+async fn prove_candidate(
+    store: &MemoryObjectStore,
+    generation: ObjectId,
+) -> Result<crate::kernel::GenerationProof, crate::kernel::GenerationProofFailure> {
+    crate::kernel::prove_generation_closure(
+        store,
+        generation,
+        crate::kernel::ClosureLimits {
+            decode: DecodeLimits::for_volume(config()),
+            maximum_objects: u64::MAX,
+            maximum_files: u64::MAX,
+            maximum_object_bytes: u64::MAX,
+            profile: config().profile,
+            symbolic_links: config().symbolic_links,
+            hard_links: config().hard_links,
+            sparse_files: config().sparse_files,
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+}
+
+async fn candidate_record(
+    store: &MemoryObjectStore,
+    generation: &GenerationRoot,
+    id: FileId,
+) -> Result<FileRecord, Box<dyn std::error::Error>> {
+    Ok(lookup_file_record(
+        store,
+        generation.file_table,
+        id,
+        DecodeLimits::for_volume(config()),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?
+    .value
+    .ok_or("candidate file record is absent")?)
+}
+
 async fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::error::Error>> {
     let limits = config().limits;
     let metadata = put_file_metadata(store, metadata_value(MetadataField::Value(1))).await?;
@@ -134,18 +206,25 @@ async fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::erro
         limits.maximum_directory_page_entries,
     )
     .await?;
+    let file_bindings = stored_bindings(store, &[(root_id, "a")]).await?;
+    let directory_bindings = stored_bindings(store, &[(root_id, "dir")]).await?;
     let file_table = put_file_table_page(
         store,
         &FileTablePage::Leaf(vec![
             FileRecord {
+                bindings: None,
                 file_id: root_id,
                 kind: FileKind::Directory,
                 link_count: 1,
                 metadata,
                 payload: FilePayload::Directory { entries: root_tree },
             },
-            regular(file_id, metadata)?,
             FileRecord {
+                bindings: Some(file_bindings),
+                ..regular(file_id, metadata)?
+            },
+            FileRecord {
+                bindings: Some(directory_bindings),
                 file_id: directory_id,
                 kind: FileKind::Directory,
                 link_count: 1,
@@ -443,8 +522,12 @@ async fn assert_generation_matches_model(
     Ok(())
 }
 
+#[path = "generation_mutation/changed_paths.rs"]
+mod changed_paths;
 #[path = "generation_mutation/construction.rs"]
 mod construction;
+#[path = "generation_mutation/direct_paths.rs"]
+mod direct_paths;
 #[path = "generation_mutation/histories.rs"]
 mod histories;
 #[path = "generation_mutation/identity.rs"]

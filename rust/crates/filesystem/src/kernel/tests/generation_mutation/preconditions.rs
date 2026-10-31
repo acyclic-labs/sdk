@@ -9,6 +9,7 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
     disabled.symbolic_links = false;
     let target = blob(&store, b"target").await?;
     let symbolic = FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([31; 16]),
         kind: FileKind::SymbolicLink,
         link_count: 1,
@@ -39,6 +40,7 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
     assert_eq!(*symbolic_failure.work, WorkCounters::default());
 
     let fifo = FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([35; 16]),
         kind: FileKind::Fifo,
         link_count: 1,
@@ -86,6 +88,31 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
         GenerationMutationError::InvalidInitialLinkCount
     ));
     assert_eq!(*link_failure.work, WorkCounters::default());
+
+    let mut invalid_bindings = regular(FileId::from_bytes([32; 16]), fixture.metadata)?;
+    invalid_bindings.bindings = Some(ObjectId {
+        kind: ObjectKind::BindingPage,
+        ..fixture.metadata
+    });
+    let binding_failure = apply_generation_mutations(
+        &store,
+        &fixture.generation,
+        vec![Mutation::Create {
+            path: path(&["invalid-bindings"])?,
+            record: invalid_bindings,
+        }],
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("foreign initial bindings unexpectedly succeeded")?;
+    assert!(matches!(
+        binding_failure.error,
+        GenerationMutationError::InvalidInitialBindings
+    ));
+    assert_eq!(*binding_failure.work, WorkCounters::UNCHARGED);
 
     let mut dense = config();
     dense.sparse_files = false;

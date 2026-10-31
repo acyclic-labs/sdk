@@ -115,6 +115,9 @@ pub enum ClosureError {
     /// Recorded hard-link count differs from exact namespace references.
     #[error("file link count is incorrect for {0:?}")]
     LinkCountMismatch(FileId),
+    /// Authenticated direct bindings differ from this generation's namespace.
+    #[error("file binding relation is incorrect for {0:?}")]
+    BindingRelationMismatch(FileId),
     /// Directories cannot have hard links.
     #[error("directory has multiple namespace links {0:?}")]
     DirectoryHardLink(FileId),

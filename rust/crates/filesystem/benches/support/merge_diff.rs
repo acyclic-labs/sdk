@@ -147,6 +147,7 @@ impl Fixture {
         let records = |keys: &[u8], side: u8| {
             keys.iter()
                 .map(|key| FileRecord {
+                    bindings: None,
                     file_id: FileId::from_bytes([*key; 16]),
                     kind: FileKind::Fifo,
                     link_count: if side == 1 && workload == Workload::Dense {

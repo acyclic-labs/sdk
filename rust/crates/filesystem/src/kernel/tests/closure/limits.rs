@@ -219,6 +219,7 @@ async fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn
     let table = put_file_table_page(
         &store,
         &FileTablePage::Leaf(vec![FileRecord {
+            bindings: None,
             file_id: FileId::from_bytes([1; 16]),
             kind: FileKind::Directory,
             link_count: 1,

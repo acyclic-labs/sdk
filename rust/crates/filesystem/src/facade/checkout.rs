@@ -349,6 +349,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
 }
 
 impl<A, O> Checkout<A, O> {
+    pub(crate) fn objects(&self) -> &O {
+        self.volume.fs.objects()
+    }
+
     pub(crate) fn volume_handle(&self) -> Volume<A, O> {
         self.volume.clone()
     }

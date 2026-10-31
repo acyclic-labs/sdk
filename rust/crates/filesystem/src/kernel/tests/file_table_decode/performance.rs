@@ -40,6 +40,7 @@ pub(super) fn after_decode<E>(
 fn check(count: u8, fault: u8) -> Result<(), &'static str> {
     let records = (1..=count)
         .map(|key| FileRecord {
+            bindings: None,
             file_id: FileId::from_bytes([key; 16]),
             kind: FileKind::Fifo,
             link_count: 1,

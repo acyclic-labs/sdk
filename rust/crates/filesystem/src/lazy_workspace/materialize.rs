@@ -126,6 +126,7 @@ impl<
                     )
                     .await?;
                 Ok::<_, LazyWorkspaceError>(FileRecord {
+                    bindings: None,
                     file_id: self.source_file_id(&node.file_identity, ctx)?,
                     kind: FileKind::Directory,
                     link_count: 1,

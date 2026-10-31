@@ -208,6 +208,7 @@ async fn directory_page_aliases_cannot_enter_a_generation_closure()
         vec![
             directory_record(root_id, 1, metadata_id, aliased_tree),
             FileRecord {
+                bindings: None,
                 file_id: child_id,
                 kind: FileKind::Regular,
                 link_count: 1,
@@ -284,6 +285,7 @@ async fn extent_page_aliases_cannot_enter_a_generation_closure()
         vec![
             directory_record(root_id, 1, metadata_id, namespace),
             FileRecord {
+                bindings: None,
                 file_id: child_id,
                 kind: FileKind::Regular,
                 link_count: 1,
@@ -396,6 +398,7 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
     let records = [
         directory_record(root_id, 1, metadata_id, tree),
         FileRecord {
+            bindings: Some(direct_bindings(&store, root_id, &["a"]).await?),
             file_id: first_id,
             kind: FileKind::Regular,
             link_count: 1,
@@ -406,6 +409,7 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
             },
         },
         FileRecord {
+            bindings: Some(direct_bindings(&store, root_id, &["z"]).await?),
             file_id: second_id,
             kind: FileKind::Regular,
             link_count: 1,
@@ -465,6 +469,7 @@ async fn forged_file_table_lower_bound_fails_before_publication()
     let leaf = put_file_table_page(
         &store,
         &FileTablePage::Leaf(vec![FileRecord {
+            bindings: None,
             file_id: FileId::from_bytes([1; 16]),
             kind: FileKind::Directory,
             link_count: 1,

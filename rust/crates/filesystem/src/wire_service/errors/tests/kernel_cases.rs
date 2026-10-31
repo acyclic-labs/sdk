@@ -38,7 +38,7 @@ kernel_cases! { path: PathLookupError, path_code {
     NotFound => [E::FileTable(FileRecordReadError::Storage(ObjectStoreError::Missing)), E::Tree(TreeReadError::Storage(ObjectStoreError::Missing)), E::Dependency(AuthenticatedProbeError::Storage(ObjectStoreError::Missing))];
 }}
 kernel_cases! { mutation: GenerationMutationError, mutation_code {
-    InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit), E::InvalidInitialLinkCount, E::DirectoryCycle, E::NotDirectory, E::IsDirectory, E::Plan(MutationPlanError::Empty)];
+    InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit), E::InvalidInitialLinkCount, E::InvalidInitialBindings, E::DirectoryCycle, E::NotDirectory, E::IsDirectory, E::Plan(MutationPlanError::Empty)];
     ResourceExhausted => [E::TooManyPaths, E::AllocationFailed, E::Work(WorkError::Overflow)];
     FailedPrecondition => [E::UnsupportedSymbolicLink, E::UnsupportedFileKind, E::UnsupportedSparseMutation, E::UnsupportedHardLink, E::FileIdentityConflict, E::DirectoryNotEmpty];
     NotFound => [E::MissingParent, E::MissingSource, E::Path(PathLookupError::Tree(TreeReadError::Storage(ObjectStoreError::Missing))), E::FileRecord(FileRecordReadError::Storage(ObjectStoreError::Missing)), E::Tree(TreeMutationError::Missing), E::FileTable(FileTableMutationError::Missing), E::Regular(RegularMutationError::Storage(ObjectStoreError::Missing)), E::Directory(DirectoryReadError::Storage(ObjectStoreError::Missing))];
@@ -68,7 +68,7 @@ kernel_cases! { publication: PublicationError {
 }}
 kernel_cases! { closure: ClosureError {
     ResourceExhausted => [E::TooManyObjects {observed: 2, maximum: 1}, E::TooManyFiles {observed: 2, maximum: 1}, E::ClosureBytesExceeded {observed: 2, maximum: 1}, E::LogicalBytesOverflow, E::RangeOverflow, E::Work(WorkError::Overflow)];
-    DataLoss => [E::WrongObjectKind, E::RoutingAlias, E::RoutingBoundsMismatch, E::DuplicateFileRecord(crate::FileId::from_bytes([1;16])), E::MissingRootFile, E::RootIsNotDirectory, E::UnsupportedVolumeSemantics, E::MissingFileRecord(crate::FileId::from_bytes([1;16])), E::NamespaceKindMismatch(crate::FileId::from_bytes([1;16])), E::LinkCountMismatch(crate::FileId::from_bytes([1;16])), E::DirectoryHardLink(crate::FileId::from_bytes([1;16])), E::MissingDirectoryTree(crate::FileId::from_bytes([1;16])), E::UnreachableFileRecords, E::BlobLengthMismatch, E::BlobSpanOutsideObject, E::Decode(CanonicalDecodeError::Truncated)];
+    DataLoss => [E::WrongObjectKind, E::RoutingAlias, E::RoutingBoundsMismatch, E::DuplicateFileRecord(crate::FileId::from_bytes([1;16])), E::MissingRootFile, E::RootIsNotDirectory, E::UnsupportedVolumeSemantics, E::MissingFileRecord(crate::FileId::from_bytes([1;16])), E::NamespaceKindMismatch(crate::FileId::from_bytes([1;16])), E::LinkCountMismatch(crate::FileId::from_bytes([1;16])), E::BindingRelationMismatch(crate::FileId::from_bytes([1;16])), E::DirectoryHardLink(crate::FileId::from_bytes([1;16])), E::MissingDirectoryTree(crate::FileId::from_bytes([1;16])), E::UnreachableFileRecords, E::BlobLengthMismatch, E::BlobSpanOutsideObject, E::Decode(CanonicalDecodeError::Truncated)];
     NotFound => [E::Storage(ObjectStoreError::Missing), E::FileRead(FileRangeReadError::Blob(BlobReadError::Storage(ObjectStoreError::Missing))), E::BlobRead(BlobReadError::Storage(ObjectStoreError::Missing))];
     Cancelled => [E::Native(crate::NativeTreeMaterializationError::Cancelled)];
 }}

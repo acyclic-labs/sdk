@@ -1,5 +1,6 @@
 use super::*;
 use crate::foundation::{Digest, VolumeId};
+use crate::kernel::KernelAccounting;
 use crate::kernel::{
     AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent, ExtentChild,
     FileKind, FileMetadata, InlineFileData, NameEncoding,
@@ -45,6 +46,7 @@ async fn minimal_generation(
             put_file_table_page(
                 store,
                 &FileTablePage::Leaf(vec![FileRecord {
+                    bindings: None,
                     file_id: root_file_id,
                     kind: FileKind::Directory,
                     link_count: 1,
@@ -96,12 +98,44 @@ fn directory_record(
     entries: ObjectId,
 ) -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id,
         kind: FileKind::Directory,
         link_count,
         metadata,
         payload: FilePayload::Directory { entries },
     }
+}
+
+async fn direct_bindings(
+    store: &MemoryObjectStore,
+    parent: FileId,
+    names: &[&str],
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let mutations = names
+        .iter()
+        .map(|name| {
+            Ok(crate::kernel::bindings::BindingMutation {
+                binding: crate::kernel::bindings::Binding {
+                    parent,
+                    name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 255)?,
+                },
+                present: true,
+            })
+        })
+        .collect::<Result<Vec<_>, crate::kernel::TreePageError>>()?;
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    Ok(crate::kernel::bindings::apply_with_accounting(
+        store,
+        None,
+        &mutations,
+        u32::try_from(mutations.len())?,
+        limits().decode,
+        &mut accounting,
+        &cancellation,
+    )
+    .await?)
 }
 
 async fn generation_with_regular_extent(
@@ -138,6 +172,7 @@ async fn generation_with_regular_extent(
         vec![
             directory_record(root_id, 1, metadata_id, entries),
             FileRecord {
+                bindings: Some(direct_bindings(store, root_id, &["file"]).await?),
                 file_id: child_id,
                 kind: FileKind::Regular,
                 link_count: 1,

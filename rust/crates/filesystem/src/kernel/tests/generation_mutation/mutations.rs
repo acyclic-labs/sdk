@@ -151,6 +151,237 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
         None
     );
     assert!(receipt.work.backend_write_operations > 0);
+    let root_id = candidate.root_file_id;
+    let file_id = FileId::from_bytes([2; 16]);
+    let folder_id = FileId::from_bytes([5; 16]);
+    for generation in [&fixture.generation, &candidate] {
+        let stored = crate::test_support::put_generation_root(&store, generation).await?;
+        prove_candidate(&store, stored).await?;
+    }
+    let linked = apply_generation_mutations(
+        &store,
+        &candidate,
+        vec![
+            Mutation::Create {
+                path: path(&["folder"])?,
+                record: FileRecord {
+                    bindings: None,
+                    file_id: folder_id,
+                    kind: FileKind::Directory,
+                    link_count: 1,
+                    metadata: fixture.metadata,
+                    payload: FilePayload::Directory {
+                        entries: fixture.empty_tree,
+                    },
+                },
+            },
+            Mutation::Link {
+                source: path(&["renamed"])?,
+                destination: path(&["alias"])?,
+            },
+            Mutation::Rename {
+                source: path(&["renamed"])?,
+                destination: path(&["folder", "inside"])?,
+                replace: false,
+            },
+        ],
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?
+    .root;
+    let linked_file = candidate_record(&store, &linked, file_id).await?;
+    assert_eq!(linked_file.link_count, 2);
+    assert_eq!(
+        linked_file.bindings,
+        Some(stored_bindings(&store, &[(root_id, "alias"), (folder_id, "inside")]).await?)
+    );
+    let linked_folder = candidate_record(&store, &linked, folder_id).await?;
+    assert_eq!(
+        linked_folder.bindings,
+        Some(stored_bindings(&store, &[(root_id, "folder")]).await?)
+    );
+    prove_candidate(
+        &store,
+        crate::test_support::put_generation_root(&store, &linked).await?,
+    )
+    .await?;
+
+    let moved = apply_generation_mutations(
+        &store,
+        &linked,
+        vec![
+            Mutation::Rename {
+                source: path(&["folder"])?,
+                destination: path(&["moved"])?,
+                replace: false,
+            },
+            Mutation::File {
+                file_id,
+                mutation: FileMutation::Resize { logical_bytes: 1 },
+            },
+        ],
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?
+    .root;
+    // A directory move changes only its own edge; content changes retain every alias edge.
+    assert_eq!(
+        candidate_record(&store, &moved, file_id).await?.bindings,
+        linked_file.bindings
+    );
+    assert_eq!(
+        candidate_record(&store, &moved, folder_id).await?.bindings,
+        Some(stored_bindings(&store, &[(root_id, "moved")]).await?)
+    );
+    prove_candidate(
+        &store,
+        crate::test_support::put_generation_root(&store, &moved).await?,
+    )
+    .await?;
+
+    let theirs = apply_generation_mutations(
+        &store,
+        &fixture.generation,
+        vec![Mutation::Link {
+            source: path(&["a"])?,
+            destination: path(&["other"])?,
+        }],
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?
+    .root;
+    let merged = crate::kernel::merge_generation_async(
+        &store,
+        crate::kernel::MergeGenerationRequest {
+            base_generation: crate::test_support::put_generation_root(&store, &fixture.generation)
+                .await?,
+            base: fixture.generation.clone(),
+            ours_generation: None,
+            ours: moved.clone(),
+            theirs_generation: crate::test_support::put_generation_root(&store, &theirs).await?,
+            theirs,
+            retain_theirs_parent: true,
+            maximum_changes: u32::MAX,
+            maximum_conflicts: u32::MAX,
+            resolutions: BTreeMap::new(),
+        },
+        DecodeLimits::for_volume(config()),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    let crate::kernel::MergeGenerationOutcome::Prepared { root: merged, .. } = merged.value else {
+        return Err("disjoint reverse-edge edits conflicted".into());
+    };
+    let merged_file = candidate_record(&store, &merged, file_id).await?;
+    assert_eq!(merged_file.link_count, 3);
+    assert_eq!(
+        merged_file.bindings,
+        Some(
+            stored_bindings(
+                &store,
+                &[
+                    (root_id, "alias"),
+                    (root_id, "other"),
+                    (folder_id, "inside"),
+                ]
+            )
+            .await?
+        )
+    );
+    prove_candidate(
+        &store,
+        crate::test_support::put_generation_root(&store, &merged).await?,
+    )
+    .await?;
+
+    let mut records = BTreeMap::new();
+    collect_file_table_records(&store, merged.file_table, &mut records).await?;
+    for missing in [root_id, file_id] {
+        let mut corrupt = records.clone();
+        corrupt
+            .get_mut(&missing)
+            .ok_or("negative record absent")?
+            .bindings = if missing == root_id {
+            merged_file.bindings
+        } else {
+            None
+        };
+        let table = put_file_table_page(
+            &store,
+            &FileTablePage::Leaf(corrupt.into_values().collect()),
+            config().limits.maximum_directory_page_entries,
+        )
+        .await?;
+        let bad = GenerationRoot {
+            file_table: table,
+            ..merged.clone()
+        };
+        let failure = prove_candidate(
+            &store,
+            crate::test_support::put_generation_root(&store, &bad).await?,
+        )
+        .await
+        .err()
+        .ok_or("invalid stored relation passed closure proof")?;
+        assert!(
+            matches!(failure.error, crate::kernel::ClosureError::BindingRelationMismatch(id) if id == missing)
+        );
+    }
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let denied = apply_generation_mutations(
+        &store,
+        &merged,
+        vec![Mutation::Link {
+            source: path(&["alias"])?,
+            destination: path(&["cancelled"])?,
+        }],
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancelled,
+    )
+    .await
+    .err()
+    .ok_or("cancelled relation edit succeeded")?;
+    assert_eq!(denied.work.backend_write_operations, 0);
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.backend_write_operations = 0;
+    let denied = apply_generation_mutations(
+        &store,
+        &merged,
+        vec![Mutation::Link {
+            source: path(&["alias"])?,
+            destination: path(&["unfunded"])?,
+        }],
+        config(),
+        budget,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("unfunded relation edit succeeded")?;
+    assert!(
+        matches!(
+            denied.error,
+            GenerationMutationError::Work(WorkError::BudgetExceeded {
+                counter: "backend_write_operations",
+                ..
+            })
+        ),
+        "lost the original write admission cause: {denied:?}"
+    );
+    assert_eq!(
+        candidate_record(&store, &merged, file_id).await?,
+        merged_file
+    );
+
     Ok(())
 }
 
@@ -162,6 +393,7 @@ async fn nested_create_uses_new_parent_without_scanning_other_subtrees()
     let parent_id = FileId::from_bytes([4; 16]);
     let child_id = FileId::from_bytes([5; 16]);
     let parent = FileRecord {
+        bindings: None,
         file_id: parent_id,
         kind: FileKind::Directory,
         link_count: 1,

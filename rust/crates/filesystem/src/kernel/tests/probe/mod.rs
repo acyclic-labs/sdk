@@ -38,6 +38,7 @@ async fn fixture(
         .collect::<Result<Vec<_>, super::super::TreePageError>>()?;
     let entries = put_tree_page(store, &TreePage::Leaf(tree_entries), 8).await?;
     let mut records = vec![FileRecord {
+        bindings: None,
         file_id,
         kind: FileKind::Directory,
         link_count: 1,
@@ -46,6 +47,7 @@ async fn fixture(
     }];
     if inserted_name.is_some() {
         records.push(FileRecord {
+            bindings: None,
             file_id: child_id,
             kind: FileKind::Fifo,
             link_count: 1,
@@ -85,6 +87,7 @@ async fn non_regular_fixture(
     };
     let records = vec![
         FileRecord {
+            bindings: None,
             file_id: root_id,
             kind: FileKind::Directory,
             link_count: 1,
@@ -94,6 +97,7 @@ async fn non_regular_fixture(
             },
         },
         FileRecord {
+            bindings: None,
             file_id: symbolic_link_id,
             kind: FileKind::SymbolicLink,
             link_count: 1,
@@ -104,6 +108,7 @@ async fn non_regular_fixture(
             },
         },
         FileRecord {
+            bindings: None,
             file_id: empty_id,
             kind: FileKind::Fifo,
             link_count: 1,
@@ -111,6 +116,7 @@ async fn non_regular_fixture(
             payload: FilePayload::Empty,
         },
         FileRecord {
+            bindings: None,
             file_id: device_id,
             kind: FileKind::CharacterDevice,
             link_count: 1,
@@ -118,6 +124,7 @@ async fn non_regular_fixture(
             payload: FilePayload::Device { major: 1, minor: 3 },
         },
         FileRecord {
+            bindings: None,
             file_id: reparse_id,
             kind: FileKind::ReparsePoint,
             link_count: 1,
@@ -229,6 +236,7 @@ async fn sparse_probe_fixture(
         store,
         &FileTablePage::Leaf(vec![
             FileRecord {
+                bindings: None,
                 file_id: root_id,
                 kind: FileKind::Directory,
                 link_count: 1,
@@ -236,6 +244,7 @@ async fn sparse_probe_fixture(
                 payload: FilePayload::Directory { entries: tree },
             },
             FileRecord {
+                bindings: None,
                 file_id: inline_id,
                 kind: FileKind::Regular,
                 link_count: 1,
@@ -243,6 +252,7 @@ async fn sparse_probe_fixture(
                 payload: FilePayload::InlineRegular(InlineFileData::new(b"abcdefgh")?),
             },
             FileRecord {
+                bindings: None,
                 file_id: regular_id,
                 kind: FileKind::Regular,
                 link_count: 1,
