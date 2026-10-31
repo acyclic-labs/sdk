@@ -94,6 +94,8 @@ pub mod facade;
 pub mod foundation;
 mod publication_changes;
 pub use publication_changes::{PublicationChanges, PublicationContext};
+#[cfg(any(test, feature = "distributed"))]
+pub use publication_changes::PublicationEntry;
 #[cfg(all(feature = "native-watch", target_os = "macos"))]
 mod fsevents;
 pub mod git_compat;

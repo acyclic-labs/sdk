@@ -40,7 +40,7 @@ pub(super) fn project(
     let now = authorization.now_unix_seconds()?;
     let mut visible = Vec::with_capacity(changes.entries.len());
     for entry in changes.entries {
-        let path = crate::publication_changes::entry::path(
+        let entry_facts = crate::PublicationEntry::from_parts(
             &entry.key,
             &entry.operation,
             &entry.metadata,
@@ -50,12 +50,12 @@ pub(super) fn project(
         // The lossless full path is authoritative. A 1-KiB indexed key must
         // never authorize a longer path or an alternate native representation.
         let prepared = trie
-            .prepare_namespace(&path)
+            .prepare_namespace(&entry_facts.path)
             .map_err(|_| StreamError::AccessDenied)?;
         if !prepared.decide(Action::List, now).allowed {
             continue;
         }
-        let name = canonical_resource(volume, &path, config)?;
+        let name = canonical_resource(volume, &entry_facts.path, config)?;
         if authorization
             .authorize(
                 &name,
