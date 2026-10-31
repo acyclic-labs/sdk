@@ -265,6 +265,8 @@ fn read_declared_source(
 }
 
 /// Writes positionally; a metered held handle must support positional I/O and own its file admission.
+/// Successful short writes advance through the payload. The first native error,
+/// including interruption, ends the request; an earlier prefix may be written.
 pub fn write_all_at(
     file: &File,
     offset: u64,
@@ -273,34 +275,14 @@ pub fn write_all_at(
 ) -> io::Result<()> {
     let Some((meter, held)) = meter else {
         return with_file_admission(file, || {
-            #[cfg(not(feature = "test-support"))]
-            return write_all_at_impl(file, offset, bytes);
-            #[cfg(feature = "test-support")]
+            #[cfg(windows)]
+            return windows::write_all_at(file, offset, bytes);
+            #[cfg(not(windows))]
             {
-                validate_prepared_read_range(offset, bytes.len())?;
-                let mut offset = offset;
-                let mut bytes = bytes;
-                while !bytes.is_empty() {
-                    let count = match write_file_with(bytes, |offered| {
-                        write_all_at_impl(file, offset, offered)?;
-                        Ok(offered.len())
-                    }) {
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                        result => result?,
-                    };
-                    if count == 0 {
-                        return Err(io::ErrorKind::WriteZero.into());
-                    }
-                    offset += count as u64;
-                    bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
-                }
-                Ok(())
+                write_all_in_place(file, offset, bytes, None)
             }
         });
     };
-    offset
-        .checked_add(bytes.len() as u64)
-        .ok_or(io::ErrorKind::InvalidInput)?;
     #[cfg(windows)]
     if !held {
         return windows::with_overlapped(file, 0x0012_0116, false, Some(meter), |file| {
@@ -397,23 +379,55 @@ pub(super) fn resize_file(
 
 pub(crate) fn write_bounded_in_place(
     file: &File,
-    mut offset: u64,
-    mut bytes: &[u8],
+    offset: u64,
+    bytes: &[u8],
     meter: &dyn NativeReadMeter,
 ) -> io::Result<()> {
+    write_all_in_place(file, offset, bytes, Some(meter))
+}
+
+pub(crate) fn write_all_in_place(
+    file: &File,
+    mut offset: u64,
+    mut bytes: &[u8],
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
+    let end = offset
+        .checked_add(bytes.len() as u64)
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    #[cfg(unix)]
+    if offset > libc::off_t::MAX as u64 || end > libc::off_t::MAX as u64 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    #[cfg(not(unix))]
+    let _ = end;
     while !bytes.is_empty() {
-        meter.check()?;
-        let length = bytes.len().min(1024 * 1024);
+        if let Some(meter) = meter {
+            meter.check()?;
+        }
+        // Metered requests retain their original physical chunk size. An
+        // unmetered request offers its entire remaining native-sized range.
+        let length = if meter.is_some() {
+            bytes.len().min(1024 * 1024)
+        } else {
+            bytes.len().min(isize::MAX as usize)
+        };
+        #[cfg(windows)]
+        let length = length.min(u32::MAX as usize);
         let chunk = bytes.get(..length).ok_or(io::ErrorKind::InvalidData)?;
-        let result = write_file_with(chunk, |chunk| {
-            #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+        let count = write_file_with(chunk, |chunk| {
+            #[cfg(unix)]
             let result = (|| {
                 let length = chunk.len();
                 use std::os::fd::AsRawFd as _;
-                validate_prepared_read_range(offset, length)?;
-                let mut transfer =
-                    NativeByteReservation::new(meter, NativeOperationKind::Write, length)?;
-                meter.admit_write(0)?;
+                let mut transfer = meter
+                    .map(|meter| {
+                        NativeByteReservation::new(meter, NativeOperationKind::Write, length)
+                    })
+                    .transpose()?;
+                if let Some(meter) = meter {
+                    meter.admit_write(0)?;
+                }
                 #[allow(
                     unsafe_code,
                     reason = "writes the validated borrowed range on a held descriptor"
@@ -424,30 +438,30 @@ pub(crate) fn write_bounded_in_place(
                         file.as_raw_fd(),
                         chunk.as_ptr().cast(),
                         length,
-                        libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?,
+                        offset as libc::off_t,
                     )
                 };
                 if count < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 let count = usize::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?;
-                transfer.record(count)?;
+                if let Some(transfer) = &mut transfer {
+                    transfer.record(count)?;
+                }
                 Ok(count)
             })();
             #[cfg(windows)]
             let result = windows::write_at_known_overlapped(file, offset, chunk, meter);
-            #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+            #[cfg(not(any(windows, unix)))]
             let result: io::Result<usize> = Err(io::Error::from(io::ErrorKind::Unsupported));
             result
-        });
-        let count = match result {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => result?,
-        };
+        })?;
         if count > length {
-            std::process::abort();
+            return Err(io::ErrorKind::InvalidData.into());
         }
-        meter.check()?;
+        if let Some(meter) = meter {
+            meter.check()?;
+        }
         if count == 0 {
             return Err(io::ErrorKind::WriteZero.into());
         }
@@ -498,12 +512,6 @@ pub(crate) fn read_at_impl(
         ReadDestination::Slice(data) => file.read_at(data, offset),
         ReadDestination::Spare { .. } => Err(io::ErrorKind::Unsupported.into()),
     }
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-pub(crate) fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
-    use std::os::unix::fs::FileExt as _;
-    file.write_all_at(bytes, offset)
 }
 
 #[cfg(not(target_vendor = "apple"))]

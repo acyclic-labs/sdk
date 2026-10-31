@@ -75,11 +75,7 @@ fn read_bounded(
     let mut filled = 0;
     while filled < length {
         meter.check()?;
-        let count = match read(filled) {
-            Ok(count) => count,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
+        let count = read(filled)?;
         meter.check()?;
         if count == 0 {
             break;
