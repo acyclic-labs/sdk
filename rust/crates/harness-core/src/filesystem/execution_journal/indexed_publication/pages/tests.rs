@@ -2,9 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positions() -> Result<()> {
-    let execution = StreamPath::new("contributed/execution")?;
-    let head = StreamPath::new("contributed/head")?;
-    let pages = StreamPath::new("contributed/pages")?;
+    let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
+    let operation = OperationId::from_bytes([11; 16]);
+    let execution = crate::distributed::execution_path(operation, &mut None)?;
+    let head = journal.index_path(operation, "head", None)?;
+    let pages = journal.index_path(operation, "pages", None)?;
     let context = StreamPath::new("contributed/context")?;
     let epoch = StreamPath::new("contributed/epoch")?;
     let observation = OwnedBytes::from_static(b"observation");
@@ -42,7 +44,7 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
             },
         ];
         let cut = Cut {
-            operation: OperationId::from_bytes([11; 16]),
+            operation,
             execution: &execution,
             head: &head,
             pages: &pages,
@@ -109,9 +111,11 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
 
 #[tokio::test]
 async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() -> Result<()> {
-    let execution = StreamPath::new("atomic/execution")?;
-    let head = StreamPath::new("atomic/head")?;
-    let pages = StreamPath::new("atomic/pages")?;
+    let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
+    let operation = OperationId::from_bytes([9; 16]);
+    let execution = crate::distributed::execution_path(operation, &mut None)?;
+    let head = journal.index_path(operation, "head", None)?;
+    let pages = journal.index_path(operation, "pages", None)?;
     let observation = OwnedBytes::from_static(b"observation");
     let checkpoint = OwnedBytes::from_static(b"checkpoint");
     let records = [
@@ -119,7 +123,7 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
         OwnedBytes::from_static(b"second"),
     ];
     let cut = Cut {
-        operation: OperationId::from_bytes([9; 16]),
+        operation,
         execution: &execution,
         head: &head,
         pages: &pages,
