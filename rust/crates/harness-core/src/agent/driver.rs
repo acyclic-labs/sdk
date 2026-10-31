@@ -53,8 +53,8 @@ pub struct OpenTurn {
     /// ([`expand_attachments`]); `None` runs the input as given.
     pub input: Option<ModelContent>,
     /// The roster this turn announces, staged, and its digest: present only
-    /// when it differs from the one the agent last announced
-    /// ([`AgentState::roster`]). It is decided once, when the turn starts,
+    /// when the rendered history does not already contain this roster.
+    /// It is decided once, when the turn starts,
     /// and `selected` carries it as its own message before the input.
     pub roster: Option<(FileRef, [u8; 32])>,
 }
@@ -198,7 +198,8 @@ pub struct ConversationEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<OperationId>,
     /// The execution-target roster this turn announced before its input,
-    /// staged on the agent's private volume; absent while it is unchanged.
+    /// staged on the agent's private volume; absent while the same roster
+    /// remains in the selected history.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef", optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub targets: Option<FileRef>,

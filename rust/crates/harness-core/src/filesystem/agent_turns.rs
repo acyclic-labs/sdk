@@ -796,6 +796,8 @@ struct TurnContext<'a> {
     /// Each settled turn: its id, the roster it announced, its input and
     /// its staged output.
     settled: Vec<(OperationId, Option<FileRef>, ModelContent, FileRef)>,
+    /// Latest roster message in `settled`, indexed while selecting history.
+    roster_at: Option<usize>,
     turn: OperationId,
     input: &'a ModelContent,
     policy: Option<&'a FileRef>,
@@ -828,10 +830,15 @@ impl<'a> TurnContext<'a> {
             None => None,
         };
         // A cancelled checkpoint selects nothing and is no turn.
+        let mut roster_at = None;
         let settled = history
             .into_iter()
             .filter(|entry| entry.input.context().is_none())
-            .map(|entry| {
+            .enumerate()
+            .map(|(at, entry)| {
+                if entry.targets.is_some() {
+                    roster_at = Some(at);
+                }
                 Ok((
                     crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
                     entry.targets,
@@ -844,12 +851,22 @@ impl<'a> TurnContext<'a> {
             prompt,
             checkpoint,
             settled,
+            roster_at,
             turn,
             input,
             // A spawned agent runs under the approval policy it inherited,
             // staged on an ancestor's private volume.
             policy: agent.policy.as_ref(),
         })
+    }
+
+    /// Compare the current bytes with the immutable roster actually rendered,
+    /// rather than an announcement outside this history window or checkpoint.
+    fn contains_roster(&self, bytes: &[u8]) -> Result<bool> {
+        match self.roster_at.and_then(|at| self.settled[at].1.as_ref()) {
+            Some(file) => file.descriptor().matches_bytes(bytes, &mut None),
+            None => Ok(false),
+        }
     }
 
     /// Every file the turn can reach, each by its exact version: the files
@@ -1017,8 +1034,9 @@ where
             // under the grant above at the manifest's pinned length.
             let input =
                 &crate::agent::expand_attachments(input.clone(), &*bindings.content.reader).await?;
-            // A changed roster is announced before the model's input, staged
-            // once per distinct roster; an unchanged one costs nothing. A
+            // Append a roster only when this rendered history lacks it. Losing
+            // its announcing turn or compacting starts a new base; no retained
+            // message is rewritten. Stage once per distinct roster. A
             // turn decides it once, when it starts: a resumed turn keeps the
             // announcement its checkpoint holds, so it sends the request it
             // started with, and a roster change meanwhile is the next turn's.
@@ -1026,11 +1044,11 @@ where
                 Some(kept) => kept,
                 None => match self.executors.roster(agent) {
                     Some(roster) => {
-                        match roster.announcement(agent.roster).map_err(agent_error)? {
-                            Some((bytes, digest)) => {
-                                Some((files.stage_roster(digest, &bytes).await?, digest))
-                            }
-                            None => None,
+                        let (bytes, digest) = roster.canonical().map_err(agent_error)?;
+                        if context.contains_roster(&bytes)? {
+                            None
+                        } else {
+                            Some((files.stage_roster(digest, &bytes).await?, digest))
                         }
                     }
                     None => None,

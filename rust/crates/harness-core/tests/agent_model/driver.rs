@@ -210,8 +210,8 @@ impl TurnHost for Host {
     }
 }
 
-/// Host announcing its roster exactly when the agent's announced digest
-/// differs, as every host does ([`Roster::announcement`]).
+/// Unwindowed host exercising the driver's announcement record protocol
+/// ([`Roster::announcement`]); the filesystem host selects its actual history.
 struct Announcing(Host, Arc<Mutex<Roster>>);
 
 impl TurnHost for Announcing {

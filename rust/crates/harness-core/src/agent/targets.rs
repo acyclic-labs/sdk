@@ -9,11 +9,11 @@
 //! policy alone (the approval subject carries the resolved device and its
 //! owner), never by visibility.
 //!
-//! The model learns the targets from the [`Roster`]: a turn whose roster
-//! digest differs from the one the agent last announced stages the roster as
-//! a file on the agent's private volume and its conversation entry names it
-//! (the agent's live `targets` file), so the system prompt and tool schemas
-//! never change and an unchanged roster costs nothing.
+//! The model learns the targets from the [`Roster`]. When its selected
+//! history lacks the current roster, a turn announces it by an immutable file
+//! on the agent's private volume, named by its conversation entry. History
+//! windows and checkpoints preserve this by appending a new announcement
+//! when needed; retained messages, system prompts and tool schemas stay fixed.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
