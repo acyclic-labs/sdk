@@ -555,8 +555,8 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
             // The old complete-file path cannot satisfy the same 4 KiB
             // selected-byte allowance for this 2 MiB source.
             assert!(call(&task, &read, json!({"path":"large.txt"})).await.is_err());
-            cancellation.cancel();
             let io = crate::executor::PreparationIo::from_native_work(&work)?;
+            cancellation.cancel();
             assert!(context.read_tool_path_range("large.txt", None,
                 acyclic_fs::ByteRange { offset: 1024, length: 16 }, Some(&io)).await.is_err());
         }
