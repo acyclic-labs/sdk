@@ -35,23 +35,25 @@ struct Resolved {
 }
 
 impl Resolved {
-    fn new(profile: &AgentProfile<'_>) -> Self {
-        Self {
-            identities: (profile.digest(), profile.prefix_digest()),
-            tools: profile
-                .prefix()
-                .tools
-                .iter()
-                .map(|tool| {
-                    let available = profile.overlay().allowed_tools.is_none_or(|allowed| {
-                        allowed
-                            .iter()
-                            .any(|capability| capability == &tool.capability)
-                    });
-                    (tool.variant.clone(), (tool.revision.clone(), available))
-                })
-                .collect(),
+    fn new(profile: &AgentProfile<'_>) -> Result<Self> {
+        let mut tools = HashMap::with_capacity(profile.prefix().tools.len());
+        for tool in profile.prefix().tools {
+            let available = profile.overlay().allowed_tools.is_none_or(|allowed| {
+                allowed
+                    .iter()
+                    .any(|capability| capability == &tool.capability)
+            });
+            if tools
+                .insert(tool.variant.clone(), (tool.revision.clone(), available))
+                .is_some()
+            {
+                return Err(invalid("profile repeats a model-facing tool variant"));
+            }
         }
+        Ok(Self {
+            identities: (profile.digest(), profile.prefix_digest()),
+            tools,
+        })
     }
 }
 
@@ -96,7 +98,7 @@ impl Profiles {
         for role in selected.roles.values() {
             let profile = selected.resolve(&role.0.metadata.name)?;
             let mut resolved = HashMap::new();
-            resolved.insert(role.model().to_owned(), Resolved::new(&profile));
+            resolved.insert(role.model().to_owned(), Resolved::new(&profile)?);
             let mut pin = AgentProfilePin {
                 role: role.0.metadata.name.clone(),
                 model: role.model().into(),
@@ -123,7 +125,7 @@ impl Profiles {
                         &selected.approvals,
                     )?;
                     digest.update(&member_profile.digest());
-                    resolved.insert(member.clone(), Resolved::new(&member_profile));
+                    resolved.insert(member.clone(), Resolved::new(&member_profile)?);
                 }
                 pin.digest = *digest.finalize().as_bytes();
             }
