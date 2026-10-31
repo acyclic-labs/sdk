@@ -136,6 +136,28 @@ struct QueuedCall {
     arguments: Owned<String>,
 }
 
+struct CallFuture<'a> {
+    ordinal: u64,
+    future: NativeFutureBundle<'a, CodeHostResult>,
+    // The dispatched future is destroyed before its borrowed payload funding.
+    _name_credit: crate::NativeCustody,
+    _argument_credit: crate::NativeCustody,
+}
+
+impl std::future::Future for CallFuture<'_> {
+    type Output = Result<(u64, CodeHostResult)>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.future)
+            .poll(context)
+            .map(|result| result.map(|value| (this.ordinal, value)))
+    }
+}
+
 // Protocol functions live in the realm, but permission to enter them lives in
 // Rust. Admission is consumed before any JavaScript can run, including a
 // thenable getter during promise resolution. A caught JS exception cannot
@@ -351,12 +373,12 @@ async fn run(
             let invocation =
                 host.invocation(outer, call.ordinal, call.name.value, arguments.value)?;
             let dispatched = host.dispatch(invocation)?;
-            let continuation = NativeFutureBundle::new_optional(work, || async move {
-                let _name_credit = call.name.credit;
-                let _argument_credit = arguments.credit;
-                Ok((call.ordinal, dispatched.await?))
+            calls.push_back(CallFuture {
+                ordinal: call.ordinal,
+                future: dispatched,
+                _name_credit: call.name.credit,
+                _argument_credit: arguments.credit,
             })?;
-            calls.push_back(continuation)?;
         }
         drop(_queue_credit);
         let state = engine
