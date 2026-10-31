@@ -679,9 +679,8 @@ async fn native_guard_denial_reads_same_provider_without_lock_and_preserves_type
     let callback_provider = provider.clone();
     let callback_meter = Arc::clone(&meter);
     let callback_path = StreamPath::new("guard-readable")?;
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        provider.native_commit_guarded(request, None, meter.original(), move || {
+    let result = provider
+        .native_commit_guarded(request, None, meter.original(), move || {
             let provider = callback_provider.clone();
             let meter = Arc::clone(&callback_meter);
             let path = callback_path.clone();
@@ -695,9 +694,8 @@ async fn native_guard_denial_reads_same_provider_without_lock_and_preserves_type
                 meter.cancelled.store(true, Ordering::SeqCst);
                 Err(NativeGuardFailure::Owner(0x51))
             }
-        }),
-    )
-    .await??;
+        })
+        .await?;
     assert!(matches!(result, Err(NativeGuardFailure::Owner(0x51))));
     assert!(provider.inspect_idempotency(key).await?.is_none());
     assert_eq!(std::fs::read(directory.path().join(JOURNAL_FILE))?, before);
@@ -708,20 +706,19 @@ async fn native_guard_denial_reads_same_provider_without_lock_and_preserves_type
 }
 
 #[tokio::test]
-async fn native_guard_rechecks_actual_canonical_drift_before_retaining_owner_identity()
+async fn native_guard_returns_canonical_drift_before_an_explicit_new_request()
 -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let limits = LocalStreamLimits::default();
-    let provider = LocalStream::open(directory.path(), limits).await?;
-    let request = keyed_commit("guard-drift-target", 0)?;
-    let key = request.idempotency_key.clone();
-    let meter = Arc::new(Meter::local());
-    let calls = Arc::new(AtomicU64::new(0));
-    let callback_provider = provider.clone();
-    let callback_meter = Arc::clone(&meter);
-    let callback_calls = Arc::clone(&calls);
-    let result = provider
-        .native_commit_guarded(request, None, meter.original(), move || {
+    async fn check<P: crate::NativeStreamProvider + Clone + 'static>(
+        provider: &P,
+    ) -> Result<(IdempotencyKey, Arc<Meter>), Box<dyn std::error::Error>> {
+        let request = keyed_commit("guard-drift-target", 0)?;
+        let key = request.idempotency_key.clone();
+        let meter = Arc::new(Meter::local());
+        let calls = Arc::new(AtomicU64::new(0));
+        let callback_provider = provider.clone();
+        let callback_meter = Arc::clone(&meter);
+        let callback_calls = Arc::clone(&calls);
+        let before = move || {
             let provider = callback_provider.clone();
             let meter = Arc::clone(&callback_meter);
             let calls = Arc::clone(&callback_calls);
@@ -740,29 +737,75 @@ async fn native_guard_rechecks_actual_canonical_drift_before_retaining_owner_ide
                     Err(NativeGuardFailure::Owner(0x52))
                 }
             }
-        })
-        .await?;
-    assert!(matches!(result, Err(NativeGuardFailure::Owner(0x52))));
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert!(provider.inspect_idempotency(key.clone()).await?.is_none());
-    assert_eq!(
-        provider.tail(StreamPath::new("guard-drift-target")?).await,
-        Err(StreamError::NotFound)
-    );
-    assert_eq!(
-        provider.tail(StreamPath::new("guard-drift-other")?).await?,
-        1
-    );
+        };
+        let result = provider
+            .native_commit_guarded(request.clone(), None, meter.original(), before.clone())
+            .await?;
+        assert!(matches!(
+            result,
+            Err(NativeGuardFailure::Provider(StreamError::PrefixNotRetained))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(provider.inspect_idempotency(key.clone()).await?.is_none());
+        assert_eq!(
+            provider.tail(StreamPath::new("guard-drift-target")?).await,
+            Err(StreamError::NotFound)
+        );
+        assert_eq!(
+            provider.tail(StreamPath::new("guard-drift-other")?).await?,
+            1
+        );
+        let result = provider
+            .native_commit_guarded(request.clone(), None, meter.original(), before)
+            .await?;
+        assert!(matches!(result, Err(NativeGuardFailure::Owner(0x52))));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(provider.inspect_idempotency(key.clone()).await?.is_none());
+        let accepted = provider
+            .native_commit(request.clone(), None, meter.original())
+            .await??;
+        assert!(matches!(accepted.value(), CommitOutcome::Committed(_)));
+        let replay = provider
+            .native_commit_guarded(request, None, meter.original(), || {
+                std::future::ready(Err(NativeGuardFailure::Owner(0x53)))
+            })
+            .await??;
+        assert_eq!(replay.value(), accepted.value());
+        drop(replay);
+        drop(accepted);
+        assert_eq!(
+            provider
+                .tail(StreamPath::new("guard-drift-target")?)
+                .await?,
+            1
+        );
+        Ok((key, meter))
+    }
+    let memory = MemoryStream::default();
+    let (_, memory_meter) = check(&memory).await?;
+    drop(memory);
+    memory_meter.assert_refunded();
+    assert_eq!(memory_meter.held.load(Ordering::SeqCst), 0);
+    let directory = tempfile::tempdir()?;
+    let limits = LocalStreamLimits::default();
+    let provider = LocalStream::open(directory.path(), limits).await?;
+    let (key, meter) = check(&provider).await?;
     drop(provider);
     let reopened = LocalStream::open(directory.path(), limits).await?;
-    assert!(reopened.inspect_idempotency(key).await?.is_none());
+    assert!(reopened.inspect_idempotency(key).await?.is_some());
     assert_eq!(
         reopened.tail(StreamPath::new("guard-drift-other")?).await?,
         1
     );
+    assert_eq!(
+        reopened
+            .tail(StreamPath::new("guard-drift-target")?)
+            .await?,
+        1
+    );
     drop(reopened);
-    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
