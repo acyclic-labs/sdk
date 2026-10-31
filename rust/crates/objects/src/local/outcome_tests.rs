@@ -20,6 +20,11 @@ async fn mutation_outcomes_preserve_physical_uncertainty_and_no_effect_refusals(
             if operation != "create" {
                 assert!(medium.create("key", bytes(b"old")).await.unwrap());
             }
+            let observed = if operation == "create" {
+                None
+            } else {
+                Some(observation(&medium, "key").await)
+            };
             let (schedule, mut events) = Schedule::new();
             let driver = tokio::spawn(async move {
                 while let Some(boundary) = events.recv().await {
@@ -31,9 +36,12 @@ async fn mutation_outcomes_preserve_physical_uncertainty_and_no_effect_refusals(
                 .scope(async {
                     match operation {
                         "create" => medium.create("key", bytes(b"new")).await,
-                        "replace" => medium.replace("key", b"old", bytes(b"new")).await,
+                        "replace" => medium
+                            .replace(observed.unwrap(), bytes(b"new"))
+                            .await
+                            .map(|value| value.is_some()),
                         "remove" => medium.remove("key").await,
-                        "remove-if" => medium.remove_if("key", b"old").await,
+                        "remove-if" => medium.remove_if(observed.unwrap()).await,
                         _ => unreachable!(),
                     }
                 })
@@ -96,6 +104,7 @@ async fn compacting_mutation(
     );
     assert!(medium.create("kept", bytes(b"kept")).await.unwrap());
     medium.flush(&[]).await.unwrap();
+    let observed = observation(&medium, "key").await;
     let (schedule, mut events) = Schedule::new();
     let driver = tokio::spawn(async move {
         while let Some(boundary) = events.recv().await {
@@ -108,13 +117,12 @@ async fn compacting_mutation(
     let result = schedule
         .scope(async {
             if remove {
-                medium
-                    .remove_if("key", &vec![7; COMPACTION_CHUNK as usize])
-                    .await
+                medium.remove_if(observed).await
             } else {
                 medium
-                    .replace("key", &vec![7; COMPACTION_CHUNK as usize], bytes(b"new"))
+                    .replace(observed, bytes(b"new"))
                     .await
+                    .map(|value| value.is_some())
             }
         })
         .await;

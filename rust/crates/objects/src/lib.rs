@@ -25,6 +25,7 @@ mod medium;
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_error;
+mod observation;
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 mod operation;
 mod ownership;
@@ -43,6 +44,7 @@ pub use blob::{ByteRange, Digest, Kind, Manifest, Part};
 pub use medium::{Medium, MediumError, MemoryMedium};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_error::{NativeObjectsCause, NativeObjectsError};
+pub use observation::{Observation, ObservationSource, Observed, ObservedVersion};
 pub use ownership::Guarded;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use ownership::native_input_meter;

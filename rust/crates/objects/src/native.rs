@@ -1,8 +1,8 @@
 //! Original-meter producers over the same engine paths as ordinary calls.
 use crate::{
     Account, Blobs, ByteRange, Digest, Medium, MediumError, NativeObjectsCause, NativeObjectsError,
-    Object, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt, Retained,
-    RootId, native_future, native_input_meter,
+    Object, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
+    Observation, Observed, Retained, RootId, native_future, native_input_meter,
 };
 use acyclic_native_runtime::{NativeOperationKind, NativeReadMeter, ReadAllocation};
 use acyclic_stream::OwnedBytes;
@@ -115,14 +115,22 @@ impl<M: Medium> Medium for Metered<M> {
         self.inner.remove(key).await
     }
 
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        self.charge(self.meter.admit_read(0))?;
+        let observed = self.inner.observe(key).await?;
+        if let Some(observed) = &observed {
+            self.hold(observed.bytes.len() + observed.observation.version_bytes())?;
+        }
+        Ok(observed)
+    }
+
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
         bytes: OwnedBytes,
-    ) -> Result<bool, MediumError> {
+    ) -> Result<Option<Observation<'a>>, MediumError> {
         self.admit_write(false)?;
-        self.inner.replace(key, expected, bytes).await
+        self.inner.replace(observed, bytes).await
     }
 
     async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
@@ -142,9 +150,9 @@ impl<M: Medium> Medium for Metered<M> {
         self.inner.settle();
     }
 
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
         self.admit_write(false)?;
-        self.inner.remove_if(key, expected).await
+        self.inner.remove_if(observed).await
     }
 
     async fn list(

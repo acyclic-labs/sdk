@@ -3,7 +3,7 @@
 //! Requires conditional create (`If-None-Match: *`), conditional overwrite
 //! and delete on an observed ETag (`If-Match`), read-after-write consistency,
 //! ranged GETs and lexical listing with a start-after offset.
-use crate::{Medium, MediumError};
+use crate::{Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion};
 use acyclic_stream::OwnedBytes;
 use futures::TryStreamExt as _;
 use object_store::multipart::MultipartStore;
@@ -60,8 +60,57 @@ impl Capabilities {
 pub struct S3Medium {
     store: Arc<dyn Bucket>,
     prefix: String,
-    http: Arc<OnceLock<reqwest_s3::Client>>,
+    shared: Arc<Shared>,
     multipart: bool,
+}
+
+#[derive(Default)]
+struct Shared {
+    http: OnceLock<reqwest_s3::Client>,
+    source: ObservationSource,
+}
+
+impl S3Medium {
+    async fn read_value(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+    ) -> Result<Option<(OwnedBytes, Option<String>)>, MediumError> {
+        if range.as_ref().is_some_and(|range| range.start > range.end) {
+            return Err(failed("range start exceeds its end"));
+        }
+        let options = GetOptions {
+            range: range.clone().map(GetRange::Bounded),
+            ..GetOptions::default()
+        };
+        if range.as_ref().is_some_and(Range::is_empty) {
+            return match self.store.head(&self.path(key)).await {
+                Ok(meta) if range.as_ref().is_some_and(|range| range.end <= meta.size) => {
+                    Ok(Some((OwnedBytes::new(), meta.e_tag)))
+                }
+                Ok(_) => Err(failed("range exceeds object length")),
+                Err(object_store::Error::NotFound { .. }) => Ok(None),
+                Err(error) => Err(failed(error)),
+            };
+        }
+        match self.store.get_opts(&self.path(key), options).await {
+            Ok(mut result) => {
+                if range
+                    .as_ref()
+                    .is_some_and(|range| range.end > result.meta.size || *range != result.range)
+                {
+                    return Err(failed("response does not cover the requested range"));
+                }
+                let tag = result.meta.e_tag.take();
+                Ok(Some((
+                    OwnedBytes::from(result.bytes().await.map_err(failed)?),
+                    tag,
+                )))
+            }
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(error) => Err(failed(error)),
+        }
+    }
 }
 
 impl S3Medium {
@@ -85,7 +134,7 @@ impl S3Medium {
         let prefix = prefix.trim_matches('/');
         Ok(Self {
             store,
-            http: Arc::default(),
+            shared: Arc::default(),
             multipart: capabilities.multipart,
             prefix: if prefix.is_empty() {
                 String::new()
@@ -99,29 +148,12 @@ impl S3Medium {
         Path::from(format!("{}{key}", self.prefix))
     }
 
-    /// The ETag of `key` while it holds exactly `expected`.
-    async fn observed(&self, path: &Path, expected: &[u8]) -> Result<Option<String>, MediumError> {
-        let result = match self.store.get_opts(path, GetOptions::default()).await {
-            Ok(result) => result,
-            Err(object_store::Error::NotFound { .. }) => return Ok(None),
-            Err(error) => return Err(failed(error)),
-        };
-        let e_tag = result.meta.e_tag.clone();
-        let bytes = result.bytes().await.map_err(failed)?;
-        if bytes.as_ref() != expected {
-            return Ok(None);
-        }
-        e_tag
-            .map(Some)
-            .ok_or_else(|| failed("conditional removal needs an ETag"))
-    }
-
     fn http(&self) -> Result<&reqwest_s3::Client, MediumError> {
-        if let Some(client) = self.http.get() {
+        if let Some(client) = self.shared.http.get() {
             return Ok(client);
         }
         let client = reqwest_s3::Client::builder().build().map_err(failed)?;
-        Ok(self.http.get_or_init(|| client))
+        Ok(self.shared.http.get_or_init(|| client))
     }
 
     async fn multipart_create(&self, path: &Path, bytes: OwnedBytes) -> Result<bool, MediumError> {
@@ -251,38 +283,18 @@ impl Medium for S3Medium {
         key: &str,
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
-        if range.as_ref().is_some_and(|range| range.start > range.end) {
-            return Err(failed("range start exceeds its end"));
-        }
-        let options = GetOptions {
-            range: range.clone().map(GetRange::Bounded),
-            ..GetOptions::default()
+        Ok(self.read_value(key, range).await?.map(|(bytes, _)| bytes))
+    }
+
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        let Some((bytes, tag)) = self.read_value(&key, None).await? else {
+            return Ok(None);
         };
-        if range.as_ref().is_some_and(Range::is_empty) {
-            return match self.store.head(&self.path(key)).await {
-                Ok(meta) if range.as_ref().is_some_and(|range| range.end <= meta.size) => {
-                    Ok(Some(OwnedBytes::new()))
-                }
-                Ok(_) => Err(failed("range exceeds object length")),
-                Err(object_store::Error::NotFound { .. }) => Ok(None),
-                Err(error) => Err(failed(error)),
-            };
-        }
-        match self.store.get_opts(&self.path(key), options).await {
-            Ok(result) => {
-                if range
-                    .as_ref()
-                    .is_some_and(|range| range.end > result.meta.size || *range != result.range)
-                {
-                    return Err(failed("response does not cover the requested range"));
-                }
-                Ok(Some(OwnedBytes::from(
-                    result.bytes().await.map_err(failed)?,
-                )))
-            }
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(error) => Err(failed(error)),
-        }
+        let tag = tag.ok_or_else(|| failed("conditional observation needs an ETag; recovery: use a bucket that returns conditional versions"))?;
+        Ok(Some(Observed {
+            bytes,
+            observation: self.shared.source.issue(key, ObservedVersion::Tag(tag)),
+        }))
     }
 
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
@@ -300,37 +312,45 @@ impl Medium for S3Medium {
         }
     }
 
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
         bytes: OwnedBytes,
-    ) -> Result<bool, MediumError> {
-        let path = self.path(key);
-        let Some(e_tag) = self.observed(&path, expected).await? else {
-            return Ok(false);
+    ) -> Result<Option<Observation<'a>>, MediumError> {
+        let (key, ObservedVersion::Tag(e_tag)) = self.shared.source.consume(observed)? else {
+            return Err(failed(
+                "invalid conditional version; recovery: observe the key on this medium",
+            ));
         };
+        let path = self.path(&key);
         let payload = object_store::PutPayload::from(bytes::Bytes::copy_from_slice(&bytes));
         let mode = PutMode::Update(UpdateVersion {
             e_tag: Some(e_tag),
             version: None,
         });
         match self.store.put_opts(&path, payload, mode.into()).await {
-            Ok(_) => Ok(true),
+            Ok(result) => {
+                let tag = result.e_tag.ok_or_else(|| ambiguous("accepted replacement has no ETag; recovery: observe the key before another conditional mutation"))?;
+                Ok(Some(
+                    self.shared.source.issue(key, ObservedVersion::Tag(tag)),
+                ))
+            }
             Err(
                 object_store::Error::Precondition { .. } | object_store::Error::NotFound { .. },
-            ) => Ok(false),
+            ) => Ok(None),
             Err(error) => Err(MediumError::Ambiguous(std::io::Error::other(
                 error.to_string(),
             ))),
         }
     }
 
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        let path = self.path(key);
-        let Some(e_tag) = self.observed(&path, expected).await? else {
-            return Ok(false);
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
+        let (key, ObservedVersion::Tag(e_tag)) = self.shared.source.consume(observed)? else {
+            return Err(failed(
+                "invalid conditional version; recovery: observe the key on this medium",
+            ));
         };
+        let path = self.path(&key);
         let e_tag = HeaderValue::from_str(&e_tag).map_err(failed)?;
         let url = self
             .store

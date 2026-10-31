@@ -556,11 +556,10 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     Ok(())
 }
 
-/// Checks that `medium`'s conditional replace and removal match only the
-/// exact bytes observed: a remover holding an earlier value of a key never
-/// removes or replaces a later one.
+/// Checks that conditional mutation consumes an original source/key/version
+/// fact, including the successor of a successful replacement.
 pub async fn verify_medium(medium: &dyn Medium, run: &str) -> Result<(), Failure> {
-    const CASE: &str = "medium-conditional-writes-match-only-their-observed-bytes";
+    const CASE: &str = "medium-conditional-writes-use-the-original-observation";
     let key = format!("medium-conformance/{run}/key");
     let check = |step: &'static str, observed: Result<bool, crate::MediumError>, wanted: bool| {
         match observed {
@@ -568,50 +567,80 @@ pub async fn verify_medium(medium: &dyn Medium, run: &str) -> Result<(), Failure
             other => Err(fail(CASE, format!("{step}: {other:?}"))),
         }
     };
+    let observe = async || {
+        medium
+            .observe(key.clone())
+            .await
+            .map_err(|error| fail(CASE, format!("observe: {error}")))?
+            .ok_or_else(|| fail(CASE, "missing observed key"))
+    };
+    if medium
+        .observe(key.clone())
+        .await
+        .map_err(|error| fail(CASE, format!("absence: {error}")))?
+        .is_some()
+    {
+        return Err(fail(CASE, "absence issued a conditional fact"));
+    }
     let (first, second, later) = (bytes("first", 32), bytes("second", 32), bytes("later", 32));
-    check(
-        "absent replace",
-        medium.replace(&key, &first, second.clone()).await,
-        false,
-    )?;
-    check(
-        "absent removal",
-        medium.remove_if(&key, &first).await,
-        false,
-    )?;
     check("create", medium.create(&key, first.clone()).await, true)?;
+    let old = observe().await?.observation;
+    let old_remove = observe().await?.observation;
+    let replaced = medium
+        .replace(observe().await?.observation, second.clone())
+        .await
+        .map_err(|error| fail(CASE, format!("replace: {error}")))?
+        .ok_or_else(|| fail(CASE, "matching replacement refused"))?;
     check(
         "stale replace",
-        medium.replace(&key, &second, later.clone()).await,
+        medium
+            .replace(old, later.clone())
+            .await
+            .map(|value| value.is_some()),
         false,
     )?;
-    check(
-        "replace",
-        medium.replace(&key, &first, second.clone()).await,
-        true,
-    )?;
-    check("stale removal", medium.remove_if(&key, &first).await, false)?;
+    check("stale removal", medium.remove_if(old_remove).await, false)?;
     let read = medium.read(&key, None).await;
     if !matches!(&read, Ok(Some(value)) if *value == second) {
         return Err(fail(CASE, format!("replaced value: {read:?}")));
     }
-    check("removal", medium.remove_if(&key, &second).await, true)?;
-    // A later value of the key: the earlier remover's bytes match nothing.
+    let delayed_remove = observe().await?.observation;
+    let delayed_replace = observe().await?.observation;
+    // The accepted replacement itself supplies the removal's version, with no read.
+    check("removal", medium.remove_if(replaced).await, true)?;
     check("recreate", medium.create(&key, later.clone()).await, true)?;
     check(
         "delayed removal",
-        medium.remove_if(&key, &second).await,
+        medium.remove_if(delayed_remove).await,
         false,
     )?;
     check(
         "delayed replace",
-        medium.replace(&key, &second, first.clone()).await,
+        medium
+            .replace(delayed_replace, first.clone())
+            .await
+            .map(|value| value.is_some()),
         false,
     )?;
     let read = medium.read(&key, None).await;
     if !matches!(&read, Ok(Some(value)) if *value == later) {
         return Err(fail(CASE, format!("later value: {read:?}")));
     }
-    check("cleanup", medium.remove_if(&key, &later).await, true)?;
+    let foreign = crate::MemoryMedium::default();
+    check("foreign create", foreign.create(&key, later).await, true)?;
+    let foreign_read = foreign
+        .observe(key.clone())
+        .await
+        .map_err(|error| fail(CASE, format!("foreign observe: {error}")))?
+        .ok_or_else(|| fail(CASE, "missing foreign key"))?;
+    if !matches!(medium.remove_if(foreign_read.observation).await, Err(crate::MediumError::Failed(error)) if error.kind() == std::io::ErrorKind::InvalidInput)
+    {
+        return Err(fail(CASE, "foreign source accepted"));
+    }
+    check(
+        "cleanup",
+        medium.remove_if(observe().await?.observation).await,
+        true,
+    )?;
     Ok(())
 }

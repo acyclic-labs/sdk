@@ -1,6 +1,6 @@
 use crate::{
-    Blobs, ByteRange, Delete, Digest, Medium, MediumError, MemoryMedium, Put, RootId, Store,
-    conformance, wire::ErrorCode,
+    Blobs, ByteRange, Delete, Digest, Medium, MediumError, MemoryMedium, Observation,
+    ObservationSource, Observed, ObservedVersion, Put, RootId, Store, conformance, wire::ErrorCode,
 };
 use acyclic_stream::OwnedBytes;
 use std::ops::Range;
@@ -36,16 +36,27 @@ async fn a_bounded_memory_medium_holds_its_budget_exactly() -> Result<(), Medium
     );
     assert!(
         medium
-            .replace("a", &[1; 3], OwnedBytes::from(vec![3; 5]))
+            .replace(
+                medium.observe("a".to_owned()).await?.unwrap().observation,
+                OwnedBytes::from(vec![3; 5])
+            )
             .await
             .is_err()
     );
     assert!(
         medium
-            .replace("a", &[1; 3], OwnedBytes::from(vec![3; 4]))
+            .replace(
+                medium.observe("a".to_owned()).await?.unwrap().observation,
+                OwnedBytes::from(vec![3; 4])
+            )
+            .await?
+            .is_some()
+    );
+    assert!(
+        medium
+            .remove_if(medium.observe("a".to_owned()).await?.unwrap().observation)
             .await?
     );
-    assert!(medium.remove_if("a", &[3; 4]).await?);
     assert!(medium.create("b", OwnedBytes::from(vec![2; 4])).await?);
     assert!(medium.remove("b").await?);
     assert!(medium.create("c", OwnedBytes::from(vec![4; 4])).await?);
@@ -300,16 +311,22 @@ impl Medium for Faulty {
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         self.inner.remove(key).await
     }
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
-        bytes: OwnedBytes,
-    ) -> Result<bool, MediumError> {
-        self.inner.replace(key, expected, bytes).await
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        if self.faults.load(Ordering::SeqCst) & 2 != 0 && key.contains("/r/") {
+            return Err(MediumError::Failed(std::io::ErrorKind::TimedOut.into()));
+        }
+        self.inner.observe(key).await
     }
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        self.inner.remove_if(key, expected).await
+
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
+        bytes: OwnedBytes,
+    ) -> Result<Option<Observation<'a>>, MediumError> {
+        self.inner.replace(observed, bytes).await
+    }
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
+        self.inner.remove_if(observed).await
     }
     async fn list(
         &self,
@@ -559,27 +576,34 @@ impl Medium for Shared {
         self.after("remove", key).await;
         removed
     }
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        let read = self.inner.observe(key.clone()).await;
+        self.after("read", &key).await;
+        read
+    }
+
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
         bytes: OwnedBytes,
-    ) -> Result<bool, MediumError> {
+    ) -> Result<Option<Observation<'a>>, MediumError> {
+        let key = observed.key().to_owned();
         let replaced = if self.forgets_mark(&bytes) {
-            Ok(self.inner.read(key, Some(0..0)).await?.is_some())
+            Ok(self.inner.read(&key, Some(0..0)).await?.map(|_| observed))
         } else {
-            self.inner.replace(key, expected, bytes).await
+            self.inner.replace(observed, bytes).await
         };
-        self.after("replace", key).await;
+        self.after("replace", &key).await;
         replaced
     }
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
+        let key = observed.key().to_owned();
         let removed = if self.forgetful && key.contains("/e/") {
-            self.inner.remove(key).await
+            self.inner.remove(&key).await
         } else {
-            self.inner.remove_if(key, expected).await
+            self.inner.remove_if(observed).await
         };
-        self.after("remove", key).await;
+        self.after("remove", &key).await;
         removed
     }
     async fn list(
@@ -985,14 +1009,15 @@ async fn collection_revives_a_kept_blob_whose_deleter_crashed()
         .digest;
     let hex = child.to_hex();
     let key = format!("{}/e/{}/{hex}", Digest::of(b"acct").to_hex(), &hex[..2]);
-    let live = store.medium().read(&key, None).await?.ok_or("absent")?;
-    let mut marked = crate::blob::Envelope::decode(&live)?;
+    let live = store.medium().observe(key).await?.ok_or("absent")?;
+    let mut marked = crate::blob::Envelope::decode(&live.bytes)?;
     marked.dying = Some([7; 16]);
     assert!(
         store
             .medium()
-            .replace(&key, &live, marked.encode().into())
+            .replace(live.observation, marked.encode().into())
             .await?
+            .is_some()
     );
     // Marked, it refuses new holders, as a live deleter needs; the refused
     // parent's index key still holds it.
@@ -1355,18 +1380,22 @@ impl Medium for Counting {
         self.count("remove");
         self.inner.remove(key).await
     }
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
-        bytes: OwnedBytes,
-    ) -> Result<bool, MediumError> {
-        self.count("replace");
-        self.inner.replace(key, expected, bytes).await
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        self.count("read");
+        self.inner.observe(key).await
     }
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
+        bytes: OwnedBytes,
+    ) -> Result<Option<Observation<'a>>, MediumError> {
+        self.count("replace");
+        self.inner.replace(observed, bytes).await
+    }
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
         self.count("remove_if");
-        self.inner.remove_if(key, expected).await
+        self.inner.remove_if(observed).await
     }
     async fn list(
         &self,
@@ -1573,6 +1602,7 @@ async fn a_remote_put_batch_waits_for_durability_once_and_fails_members_alone()
 /// control for a removal reaching the disk after removals ordered behind it.
 #[derive(Clone)]
 struct Crashing {
+    source: std::sync::Arc<ObservationSource>,
     disk: std::sync::Arc<std::sync::Mutex<Disk>>,
     flushes: bool,
     swaps: bool,
@@ -1669,6 +1699,7 @@ impl Crashing {
 
     fn over(disk: Disk, flushes: bool, swaps: bool) -> Self {
         Self {
+            source: std::sync::Arc::default(),
             disk: std::sync::Arc::new(std::sync::Mutex::new(disk)),
             flushes,
             swaps,
@@ -1794,36 +1825,49 @@ impl Medium for Crashing {
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         Ok(self.step()?.visible.remove(key).is_some())
     }
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        Ok(self.read(&key, None).await?.map(|bytes| Observed {
+            observation: self
+                .source
+                .issue(key, ObservedVersion::Value(bytes.clone())),
+            bytes,
+        }))
+    }
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
         bytes: OwnedBytes,
-    ) -> Result<bool, MediumError> {
+    ) -> Result<Option<Observation<'a>>, MediumError> {
+        let (key, ObservedVersion::Value(expected)) = self.source.consume(observed)? else {
+            return Err(dead());
+        };
         let mut disk = self.step()?;
         if disk
             .visible
-            .get(key)
-            .is_none_or(|stored| stored.as_ref() != expected)
+            .get(&key)
+            .is_none_or(|stored| stored != &expected)
         {
-            return Ok(false);
+            return Ok(None);
         }
         if self.swaps {
-            disk.swapped.insert(key.to_owned());
+            disk.swapped.insert(key.clone());
         }
-        disk.visible.insert(key.to_owned(), bytes);
-        Ok(true)
+        disk.visible.insert(key.clone(), bytes.clone());
+        Ok(Some(self.source.issue(key, ObservedVersion::Value(bytes))))
     }
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
+        let (key, ObservedVersion::Value(expected)) = self.source.consume(observed)? else {
+            return Err(dead());
+        };
         let mut disk = self.step()?;
         if disk
             .visible
-            .get(key)
-            .is_none_or(|stored| stored.as_ref() != expected)
+            .get(&key)
+            .is_none_or(|stored| stored != &expected)
         {
             return Ok(false);
         }
-        disk.visible.remove(key);
+        disk.visible.remove(&key);
         Ok(true)
     }
     async fn list(
@@ -2756,18 +2800,22 @@ impl Medium for Latent {
         self.trip().await;
         self.inner.remove(key).await
     }
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
-        bytes: OwnedBytes,
-    ) -> Result<bool, MediumError> {
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
         self.trip().await;
-        self.inner.replace(key, expected, bytes).await
+        self.inner.observe(key).await
     }
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
+        bytes: OwnedBytes,
+    ) -> Result<Option<Observation<'a>>, MediumError> {
         self.trip().await;
-        self.inner.remove_if(key, expected).await
+        self.inner.replace(observed, bytes).await
+    }
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
+        self.trip().await;
+        self.inner.remove_if(observed).await
     }
     async fn list(
         &self,

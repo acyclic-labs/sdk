@@ -2,7 +2,10 @@
 //! an admitted account's original binary port, or the host's durable keys
 //! under [`Store`]. The harness keeps no second object store.
 use acyclic_objects::binary::javascript::{JavaScriptTransport, ObjectsV1Request, js_error};
-use acyclic_objects::{Blobs, Medium, MediumError, Store, binary};
+use acyclic_objects::{
+    Blobs, Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion, Store,
+    binary,
+};
 use acyclic_stream::OwnedBytes;
 use js_sys::{Array, Promise, Reflect, Uint8Array};
 use std::{ops::Range, sync::Arc};
@@ -148,9 +151,12 @@ fn open(objects: &JsValue) -> Result<Arc<dyn Blobs>, JsValue> {
             let account: Uint8Array = field("account")
                 .and_then(|account| account.dyn_into().ok())
                 .ok_or_else(|| refused("objects account must be bytes"))?;
-            let account = Store::new(HostMedium(medium.unchecked_into()))
-                .account(&copied(&account)?)
-                .map_err(|error| refused(&error.to_string()))?;
+            let account = Store::new(HostMedium(
+                medium.unchecked_into(),
+                ObservationSource::new(),
+            ))
+            .account(&copied(&account)?)
+            .map_err(|error| refused(&error.to_string()))?;
             Ok(Arc::new(account))
         }
         _ => Err(refused("objects must name exactly one of port or medium")),
@@ -160,7 +166,7 @@ fn open(objects: &JsValue) -> Result<Arc<dyn Blobs>, JsValue> {
 /// The host's durable keys beneath the one blob engine. Every byte argument
 /// it passes is the host's own copy, never a view of WebAssembly memory, so
 /// an asynchronous host may read it after memory grows.
-struct HostMedium(ObjectsMedium);
+struct HostMedium(ObjectsMedium, ObservationSource);
 
 fn owned(bytes: &[u8]) -> Uint8Array {
     Uint8Array::from(bytes)
@@ -236,17 +242,37 @@ impl Medium for HostMedium {
         flag(self.0.remove(key)).await
     }
 
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
-        value: OwnedBytes,
-    ) -> Result<bool, MediumError> {
-        flag(self.0.replace(key, &owned(expected), &owned(&value))).await
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        Ok(self.read(&key, None).await?.map(|bytes| Observed {
+            observation: self.1.issue(key, ObservedVersion::Value(bytes.clone())),
+            bytes,
+        }))
     }
 
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        flag(self.0.remove_if(key, &owned(expected))).await
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
+        value: OwnedBytes,
+    ) -> Result<Option<Observation<'a>>, MediumError> {
+        let (key, ObservedVersion::Value(expected)) = self.1.consume(observed)? else {
+            return Err(invalid(
+                "conditional version is not this host's original value; recovery: observe the key on this medium",
+            ));
+        };
+        if flag(self.0.replace(&key, &owned(&expected), &owned(&value))).await? {
+            Ok(Some(self.1.issue(key, ObservedVersion::Value(value))))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
+        let (key, ObservedVersion::Value(expected)) = self.1.consume(observed)? else {
+            return Err(invalid(
+                "conditional version is not this host's original value; recovery: observe the key on this medium",
+            ));
+        };
+        flag(self.0.remove_if(&key, &owned(&expected))).await
     }
 
     async fn list(
