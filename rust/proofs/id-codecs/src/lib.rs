@@ -349,6 +349,56 @@ mod proofs {
     }
 
     #[kani::proof]
+    #[kani::unwind(122)]
+    fn every_object_prefix_preserves_the_following_field() {
+        let value = object();
+        let encoded = value.to_bytes();
+        let following: [u8; 8] = kani::any();
+        let following_length: u8 = kani::any();
+        kani::assume(following_length <= 8);
+        let following_length = usize::from(following_length);
+        let mut bytes = [0; 121];
+        let width = encoded.len();
+        bytes[..width].copy_from_slice(encoded.as_slice());
+        bytes[width..width + following_length].copy_from_slice(&following[..following_length]);
+        let input = &bytes[..width + following_length];
+        let (decoded, tail) = ObjectId::from_prefix(input).unwrap();
+        assert_eq!(decoded, value);
+        assert_eq!(tail, &following[..following_length]);
+        assert_eq!(tail.as_ptr(), input[width..].as_ptr());
+        assert_eq!(ObjectId::try_from(input).is_ok(), following_length == 0);
+        let cut: u8 = kani::any();
+        kani::assume(usize::from(cut) < width);
+        assert!(ObjectId::from_prefix(&input[..usize::from(cut)]).is_err());
+    }
+
+    #[kani::proof]
+    #[kani::unwind(122)]
+    fn arbitrary_object_prefixes_have_one_exact_identity_and_borrowed_tail() {
+        let bytes: [u8; 121] = kani::any();
+        let length: u8 = kani::any();
+        kani::assume(length <= 121);
+        let input = &bytes[..usize::from(length)];
+        match ObjectId::from_prefix(input) {
+            Ok((value, tail)) => {
+                let encoded = value.to_bytes();
+                assert!(input.starts_with(encoded.as_slice()));
+                assert_eq!(tail, &input[encoded.len()..]);
+                assert_eq!(tail.as_ptr(), input[encoded.len()..].as_ptr());
+                assert_eq!(ObjectId::try_from(input).is_ok(), tail.is_empty());
+                assert_eq!(
+                    GenerationId::from_bytes(input).is_some(),
+                    tail.is_empty() && value.kind == ObjectKind::GenerationRoot
+                );
+            }
+            Err(_) => {
+                assert!(ObjectId::try_from(input).is_err());
+                assert!(GenerationId::from_bytes(input).is_none());
+            }
+        }
+    }
+
+    #[kani::proof]
     #[kani::unwind(114)]
     fn generation_preserves_the_complete_root() {
         let root = ObjectId {

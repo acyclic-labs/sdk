@@ -12,6 +12,8 @@ copy a codec into a model. The obligations are:
 | `scalar_metadata_preserves_all_facts_and_refuses_missing_opaque_bodies` | Every optional u32/u64/i64 scalar survives the public wire writer/parser, including zero and signed extrema; each opaque-presence flag refuses without its separate body. |
 | `impossible_declared_frames_refuse_before_body_io` | Every impossible declared extent or body capacity returns the original `InvalidData` after only the fixed prefix read. A body-read tripwire would return `BrokenPipe` and increment its counter if admission moved after body IO. No payload allocation or checksum is needed on this refusal path. |
 | `every_object_kind_and_storage_association_round_trips` | Every bit of all eight kinds, digests and optional sealed associations survives encoding. Plain and sealed lengths differ. |
+| `every_object_prefix_preserves_the_following_field` | Every kind and storage association decodes through the production prefix parser, preserving a borrowed suffix through eight bytes; each truncated identity refuses, and the strict codec refuses a nonempty suffix. |
+| `arbitrary_object_prefixes_have_one_exact_identity_and_borrowed_tail` | Every admitted input through 121 bytes splits into its exact canonical identity and untouched borrowed tail. Prefix refusal implies strict identity and generation refusal; strict generation admission requires a complete root without a suffix. |
 | `generation_preserves_the_complete_root` | A GenerationId retains the exact root, locator, file identity and origin generation. A raw 32-byte digest is rejected. |
 | `arbitrary_bytes_have_one_canonical_identity_or_are_rejected` | Accepted encodings reproduce every input byte; invalid tags, widths and non-root generation kinds are rejected. Inputs cover all lengths through the maximum plus one. |
 | `another_seal_is_another_identity_even_for_the_same_plaintext` | Changing any chosen bit of the locator, root-file identity or origin generation cannot retain the old complete identity, even when the plaintext digest is unchanged. |
@@ -40,6 +42,10 @@ The gRPC proof bounds its input to the complete five-byte transport header;
 full message bodies remain in the chunked fuzz oracle. The debit proof obtains
 its charge from the real encoder, rather than duplicating protobuf size rules.
 These added harnesses and the expanded seal negative control are unexecuted.
+The prefix models use the merged production `ObjectId::from_prefix` implementation
+and bound input to the maximum 113-byte identity plus eight suffix bytes. Their
+source is present; both Kani runs remain unexecuted. The decoder examines only
+the fixed identity width, with no scan of the following field, allocation or wait.
 The log-prefix harness covers exactly the bounded prefix codec. The separate
 extent harness covers fixed scalar arithmetic, including platform endpoint
 width; neither proves body allocation or SHA-256. Both remain unexecuted.

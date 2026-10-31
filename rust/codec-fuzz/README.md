@@ -84,6 +84,13 @@ check input consumption, typed EOF and finite producer loss; funded controls
 check refusal and allocation retirement. Private hooks use `test-support` and
 call the original parser rather than copying it into a model.
 
+The ID oracle also calls the canonical prefix parser on arbitrary input. It
+requires exact identity bytes, an untouched borrowed suffix and strict whole-input
+admission only for an empty suffix. Every truncation of an admitted identity
+refuses. Concatenated production writer outputs retain the complete second
+identity, including its sealed association. These controls supplement the bounded
+prefix harnesses; neither establishes that every unrelated consumer uses the codec.
+
 The optional `object_schedule` target runs original `LocalMedium` operations
 on temporary real roots through `native_runtime::testing::Schedule`. It selects
 a physical fault site from the same operation's successful trace, injects
