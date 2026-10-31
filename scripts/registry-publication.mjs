@@ -1,11 +1,11 @@
 // Registry indexing has no push subscription in the publication commands.
 // Keep the caller's exact resume identity instead of waiting for propagation.
-export class RegistryPublicationPending extends Error {
+export class RegistryPublicationUnobservable extends Error {
   constructor(registry, name, version, observed) {
     const recovery = publicationCommand();
-    super(`step=${registry}-publication-visibility ${name}@${version} is pending: ${JSON.stringify(observed)}; recovery command: ${recovery}`);
-    this.name = "RegistryPublicationPending";
-    this.code = "REGISTRY_PUBLICATION_PENDING";
+    super(`step=${registry}-publication-visibility ${name}@${version} is unobservable: ${JSON.stringify(observed)}; recovery command: ${recovery}`);
+    this.name = "RegistryPublicationUnobservable";
+    this.code = "REGISTRY_PUBLICATION_UNOBSERVABLE";
     this.registry = registry;
     this.package = name;
     this.version = version;

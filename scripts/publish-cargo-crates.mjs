@@ -5,7 +5,7 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { RegistryPublicationPending, publicationCommand } from "./registry-publication.mjs";
+import { RegistryPublicationUnobservable, publicationCommand } from "./registry-publication.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const order = JSON.parse(readFileSync(join(root, "release", "cargo-crates.json"), "utf8"));
@@ -152,7 +152,7 @@ async function publish(sourceSha, releaseVersion) {
       if (result.status !== 0) {
         fail(`step=cargo-publication ${name}@${releaseVersion} failed and its acceptance is unobservable; recovery command: ${publicationCommand()}`);
       }
-      throw new RegistryPublicationPending("cargo", name, releaseVersion,
+      throw new RegistryPublicationUnobservable("cargo", name, releaseVersion,
         { visible: false, publicationStatus: result.status });
     }
     if (published.yanked) fail(`step=cargo-publication-identity ${name}@${releaseVersion} is yanked; recovery command: ${publicationCommand()}`);

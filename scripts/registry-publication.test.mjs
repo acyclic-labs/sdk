@@ -8,21 +8,21 @@ import test from "node:test";
 
 // The fixture executes Node and the platform shell. Its output is captured from
 // those actual processes; no npm, Cargo or registry response is manufactured.
-test("a pending publication preserves its exact caller arguments through the native shell", () => {
+test("an unobservable publication preserves its exact caller arguments through the native shell", () => {
   const directory = mkdtempSync(join(tmpdir(), "sdk-publication-"));
   const fixture = join(directory, "caller.mjs");
   const marker = join(directory, "accepted");
   const arguments_ = [marker, "space name", "single'quote", 'double"quote', "$() remains data", "` remains data", "line\nbreak"];
   const module = new URL("./registry-publication.mjs", import.meta.url).href;
   writeFileSync(fixture, `
-import { RegistryPublicationPending } from ${JSON.stringify(module)};
+import { RegistryPublicationUnobservable } from ${JSON.stringify(module)};
 import { existsSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (existsSync(args[0])) {
   process.stdout.write(JSON.stringify({ state: "accepted", args }));
 } else {
   writeFileSync(args[0], "accepted");
-  const pending = new RegistryPublicationPending("fixture", "archive", "1", { visible: false });
+  const pending = new RegistryPublicationUnobservable("fixture", "archive", "1", { visible: false });
   process.stdout.write(JSON.stringify({ code: pending.code, recovery: pending.recovery, args }));
 }
 `);
@@ -36,11 +36,11 @@ if (existsSync(args[0])) {
     : invoke("/bin/sh", ["-c", command]);
   try {
     // The one original caller creates its own acceptance marker and exits with
-    // Pending. Only this explicit caller resend invokes its printed command.
+    // Unobservable. Only this explicit caller resend invokes its printed command.
     const pending = invoke(process.execPath, ["--no-warnings", fixture, ...arguments_]);
     assert.equal(pending.status, 0, pending.stderr);
     const first = JSON.parse(pending.stdout);
-    assert.equal(first.code, "REGISTRY_PUBLICATION_PENDING");
+    assert.equal(first.code, "REGISTRY_PUBLICATION_UNOBSERVABLE");
     assert.deepEqual(first.args, arguments_);
     const resumed = shell(first.recovery);
     assert.equal(resumed.status, 0, `step=publication-resume ${resumed.stderr}; recovery command: ${first.recovery}`);

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { RegistryPublicationPending, publicationCommand } from "./registry-publication.mjs";
+import { RegistryPublicationUnobservable, publicationCommand } from "./registry-publication.mjs";
 import { verifyNativeAssembly } from "./assemble-stream-native-package.mjs";
 import { verifyNativeAssembly as verifyActorsNativeAssembly } from "./assemble-actors-native-package.mjs";
 
@@ -54,7 +54,7 @@ function inspectPublishedExact(name, version, expectedIntegrity, {
   // Do not query a tag for an archive that has not become observable.
   const latest = observedIntegrity === expectedIntegrity ? publishedLatest(name) : null;
   if (observedIntegrity !== expectedIntegrity || latest !== version) {
-    throw new RegistryPublicationPending("npm", name, version,
+    throw new RegistryPublicationUnobservable("npm", name, version,
       { integrity: observedIntegrity, latest, publicationStatus });
   }
 }
