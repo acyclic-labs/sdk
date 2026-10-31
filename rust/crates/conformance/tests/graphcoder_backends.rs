@@ -270,7 +270,9 @@ impl Home {
     ) -> Command {
         let settings = self.root.join("settings");
         let mut command = Command::new(binary);
-        self.custody.configure(&mut command);
+        self.custody.configure(|key, value| {
+            command.env(key, value);
+        });
         command
             .env("CODEX_HOME", settings.join(".codex"))
             .env("HOME", &settings)
