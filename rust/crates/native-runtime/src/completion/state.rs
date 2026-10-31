@@ -91,15 +91,14 @@ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
         // may take the result immediately after this lock is released. These
         // fixed values retain neither the result nor its allocation.
         let evidence = (!observation.is_disabled()).then(|| {
-            if state.panic.is_some() {
-                ("panic", Some("panic"), None)
-            } else {
-                match &state.result {
-                    Some(Ok(_)) => ("ok", None, None),
-                    Some(Err(error)) => ("io_error", Some(obs::kind(error)), error.raw_os_error()),
-                    None => ("missing", Some("missing_result"), None),
-                }
-            }
+            let panicked = state.panic.is_some();
+            let result = match &state.result {
+                Some(Ok(_)) => ("ok", panicked.then_some("panic"), None),
+                Some(Err(error)) => ("io_error", Some(obs::kind(error)), error.raw_os_error()),
+                None if panicked => ("panic", Some("panic"), None),
+                None => ("missing", Some("missing_result"), None),
+            };
+            (result, panicked)
         });
         #[cfg(all(test, loom))]
         if state.broken_accounting {
@@ -114,8 +113,9 @@ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
         drop(state);
         // Subscriber callbacks and arbitrary output wakes run outside both
         // admission and completion locks. Missing result is never success.
-        if let Some((terminal, error, os_error)) = evidence {
+        if let Some(((terminal, error, os_error), panicked)) = evidence {
             observation.record("native.terminal", terminal);
+            observation.record("native.panicked", panicked);
             if let Some(os_error) = os_error {
                 observation.record("error.os", os_error);
             }

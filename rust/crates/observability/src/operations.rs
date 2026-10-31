@@ -820,7 +820,10 @@ impl Visit for Fields {
 
 impl Visit for Terminal {
     fn record_bool(&mut self, field: &Field, _: bool) {
-        self.has_native_task |= matches!(field.name(), "native.queued" | "native.started");
+        self.has_native_task |= matches!(
+            field.name(),
+            "native.queued" | "native.started" | "native.panicked"
+        );
     }
     fn record_i64(&mut self, field: &Field, _: i64) {
         self.has_durability_fields |= field.name() == "error.os";

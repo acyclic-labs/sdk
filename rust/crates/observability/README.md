@@ -181,6 +181,8 @@ evidence. Worker entry retains successful transfer even when publication races
 the submitting caller's callback. The original I/O cause is captured under the
 existing completion lock before an observing thread can take the result;
 subscriber callbacks run after releasing admission and completion locks.
+The `panicked` field is independent of the original stored result: when both
+are present, the I/O cause and native code remain intact alongside the panic.
 
 The stored successful result is the native completion carrier's success, not
 an interpretation of a generic returned value, device durability or a higher

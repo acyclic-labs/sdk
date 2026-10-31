@@ -119,6 +119,7 @@ pub(crate) fn task_completion<T: Send + 'static>(
             native.queued = obs::Empty,
             native.started = obs::Empty,
             native.terminal = obs::Empty,
+            native.panicked = obs::Empty,
             error.os = obs::Empty,
             outcome = obs::Empty,
             error.kind = obs::Empty
@@ -130,6 +131,7 @@ pub(crate) fn task_completion<T: Send + 'static>(
             native.queued = obs::Empty,
             native.started = obs::Empty,
             native.terminal = obs::Empty,
+            native.panicked = obs::Empty,
             error.os = obs::Empty,
             outcome = obs::Empty,
             error.kind = obs::Empty

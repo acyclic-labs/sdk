@@ -26,6 +26,9 @@ pub struct NativeTask {
     /// Original result/panic disposition at publication, independent of whether
     /// the caller still observes it. This does not certify final deallocation.
     pub terminal: Option<NativeTaskTerminal>,
+    /// Original retained panic, independent of a stored I/O result. Both may
+    /// coexist; an I/O cause is never replaced by the panic disposition.
+    pub panicked: Option<bool>,
     /// Original I/O error code, captured before result publication.
     pub os_error: Option<i32>,
 }
@@ -35,6 +38,7 @@ impl Visit for NativeTask {
         match field.name() {
             "native.queued" => self.queued = Some(value),
             "native.started" => self.started = Some(value),
+            "native.panicked" => self.panicked = Some(value),
             _ => {}
         }
     }

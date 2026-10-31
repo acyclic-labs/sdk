@@ -262,6 +262,10 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
         assert_eq!(panic.sample().outcome, Outcome::Err);
         assert_eq!(panic.sample().error_kind, Some("panic"));
         assert_eq!(
+            panic.sample().native_task.and_then(|task| task.panicked),
+            Some(true)
+        );
+        assert_eq!(
             panic.sample().native_task.and_then(|task| task.terminal),
             Some(NativeTaskTerminal::Panic)
         );
@@ -277,6 +281,60 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
         );
         drop(panic);
         drop(panicked);
+
+        // Result and panic are independent original carriers. A panic after
+        // staging an I/O result cannot erase its native cause or result.
+        let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
+            .err()
+            .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
+        let original_code = actual.raw_os_error();
+        let mut both = task(|| Ok(()))?;
+        let original = both
+            .state
+            .as_ref()
+            .ok_or(io::ErrorKind::InvalidData)?
+            .clone();
+        if let Some(NativeJob::Task { operation, .. }) = both.pending.as_mut() {
+            *operation = Box::new(move || {
+                original
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .result = Some(Err(actual));
+                panic!("panic after original result publication control");
+            });
+        }
+        assert!(matches!(submit(&workers, &mut both), Poll::Ready(Ok(()))));
+        let _ = crate::workers::receive_job(&receive, &workers.admission)
+            .ok_or(io::ErrorKind::BrokenPipe)?
+            .run();
+        let joined = sample(&mut output)?;
+        assert_eq!(joined.sample().outcome, Outcome::Err);
+        assert_eq!(joined.sample().error_kind, Some("not_found"));
+        let evidence = joined
+            .sample()
+            .native_task
+            .ok_or(io::ErrorKind::InvalidData)?;
+        assert_eq!(evidence.terminal, Some(NativeTaskTerminal::IoError));
+        assert_eq!(evidence.panicked, Some(true));
+        assert_eq!(evidence.os_error, original_code);
+        let original = both
+            .state
+            .as_ref()
+            .ok_or(io::ErrorKind::InvalidData)?
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(
+            original
+                .result
+                .as_ref()
+                .and_then(|result| result.as_ref().err())
+                .and_then(io::Error::raw_os_error),
+            original_code
+        );
+        assert!(original.panic.is_some());
+        drop(original);
+        drop(joined);
+        drop(both);
 
         // Suppress the original result producer: the receipt must fail its
         // terminal obligation rather than certify accepted work as successful.
