@@ -106,7 +106,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             if advance {
                 // A restart resumes `next` before anything retains under it.
                 running = epoch
-                    .persist(next, running)
+                    .persist(next, running, self.clone())
                     .await
                     .map_err(FsError::LocalRoot)?;
                 crash(&epoch, Step::Persisted)?;

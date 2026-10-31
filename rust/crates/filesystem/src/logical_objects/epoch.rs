@@ -1,11 +1,12 @@
 //! The collection epoch a publication retains its closure under.
 //!
 //! Every publication retains its closure under the current epoch's root. A
-//! collection that must reclaim retained objects opens epoch `e + 1` while no
-//! publication is in flight, marks what is live, retains it under `e + 1`,
-//! and only then releases `e`. A publication either finished under `e`
-//! before the switch, so the mark covers it, or retains under `e + 1`
-//! itself. No live object is ever covered only by a released root.
+//! collection that must reclaim retained objects opens epoch `e + 1` for new
+//! publications and drains every retired generation before marking what is
+//! live. It retains that live set under `e + 1` before releasing `e`. A
+//! publication admitted under `e` finishes before the mark, while later
+//! admissions retain under `e + 1` themselves. No live object is ever covered
+//! only by a released root.
 //!
 //! The current epoch survives a restart before its collection retains
 //! anything under it, together with the oldest epoch that may still hold
@@ -106,12 +107,14 @@ impl Epoch {
     /// then never retains under an epoch a later collection would skip
     /// releasing. The write owns the collection's `running` turn until it
     /// finishes, so a dropped caller never lets the next collection's write
-    /// race it.
+    /// race it. The original store owner keeps the root open through that
+    /// same physical terminal.
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     pub(crate) async fn persist(
         &self,
         next: u64,
         running: crate::collection::Running,
+        owner: impl crate::kernel::PublicationOwner,
     ) -> std::io::Result<crate::collection::Running> {
         let Some(pointer) = self.pointer.clone() else {
             return Ok(running);
@@ -121,7 +124,8 @@ impl Epoch {
         let (current, unreleased) = bytes[8..].split_at_mut(8);
         current.copy_from_slice(&next.to_le_bytes());
         unreleased.copy_from_slice(&self.unreleased().to_le_bytes());
-        let write = tokio::task::spawn_blocking(move || {
+        let write = acyclic_native_runtime::spawn_blocking(move || {
+            let _owner = owner;
             let written = (|| {
                 let staged = pointer.with_extension("next");
                 {
@@ -142,7 +146,7 @@ impl Epoch {
             })();
             written.map(|()| running)
         });
-        write.await.map_err(std::io::Error::other)?
+        write.await?
     }
 
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]

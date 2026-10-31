@@ -502,6 +502,64 @@ async fn a_collection_dropped_mid_drain_leaves_its_drain_to_the_next() -> Result
     Ok(())
 }
 
+#[cfg(all(feature = "local", feature = "test-support", any(unix, windows)))]
+#[tokio::test]
+async fn a_dropped_epoch_writer_keeps_the_original_root_until_physical_completion()
+-> Result<(), Box<dyn Error>> {
+    use acyclic_native_runtime::{OwnershipAnchor, testing::Schedule};
+
+    let directory = tempfile::tempdir()?;
+    let fs = Fs::local_with_ownership_anchor(
+        crate::LocalOptions::new(directory.path()),
+        OwnershipAnchor::new(()),
+    )
+    .await?;
+    let released = fs
+        .local_root_release_barrier()
+        .ok_or("missing root owner")?;
+    let epoch = fs.local_epoch();
+    let collection = fs.local_collection();
+    let running = collection.run().await;
+    let (schedule, mut events) = Schedule::new();
+    let mut write = Box::pin(schedule.scope(epoch.persist(1, running, fs)));
+    let submitted = tokio::select! {
+        biased;
+        result = &mut write => {
+            drop(result?);
+            return Err("epoch write ended before submission".into());
+        },
+        boundary = events.recv() => boundary.ok_or("epoch submission source lost")?,
+    };
+    assert_eq!(submitted.name, "blocking:submitted");
+    drop(write);
+    // Removing the physical closure's owner capture releases the actual root
+    // here, even though its accepted pointer write has not started.
+    assert!(
+        !released.is_released(),
+        "root released before accepted epoch I/O"
+    );
+    submitted.release();
+    let completed = tokio::select! {
+        biased;
+        boundary = events.recv() => boundary.ok_or("epoch completion source lost")?,
+        () = schedule.drained() => return Err("epoch producer ended without its completion event".into()),
+    };
+    assert_eq!(completed.name, "blocking:completed");
+    completed.release();
+    schedule.drained().await;
+    acyclic_native_runtime::spawn_blocking(move || released.wait()).await?;
+    // The physical result, not delivery to the cancelled caller, completes
+    // the collection turn and makes the durable pointer available on reopen.
+    drop(collection.run().await);
+    assert_eq!(
+        crate::logical_objects::Epoch::open(directory.path().join("objects-epoch"))?.current(),
+        1,
+    );
+    let reopened = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+    close_local(reopened).await?;
+    Ok(())
+}
+
 /// Names the root a child process holds open in `one_process_owns_a_local_root`.
 #[cfg(all(feature = "local", any(unix, windows)))]
 const ROOT_OWNER: &str = "ACYCLIC_FS_ROOT_OWNER";
