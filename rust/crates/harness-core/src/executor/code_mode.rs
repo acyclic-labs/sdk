@@ -147,7 +147,7 @@ impl ToolExecutor for ProfileFunction {
 }
 
 pub(super) enum ProfileDispatch {
-    Settled(ToolResult),
+    Settled(ToolResult, crate::NativeCustody),
     Progress(ExecutionProgress<()>),
 }
 
@@ -264,7 +264,14 @@ impl StockExecution<'_> {
             {
                 return Ok(Some(ProfileDispatch::Progress(progress)));
             }
-            result.map(|value| Some(ProfileDispatch::Settled(ToolResult { value })))
+            result.map(|output| {
+                Some(ProfileDispatch::Settled(
+                    ToolResult {
+                        value: output.value,
+                    },
+                    output.credit,
+                ))
+            })
         }
         #[cfg(not(all(feature = "code-mode", not(target_arch = "wasm32"))))]
         Err(Error::tool_rejected(
@@ -473,7 +480,7 @@ impl StockExecution<'_> {
                         let result = retain_preparation(
                             load_json::<ToolResult>(journal, result, self.io).await?,
                         )?;
-                        Ok(ProfileDispatch::Settled(result))
+                        Ok(ProfileDispatch::Settled(result, None))
                     }
                     crate::executor::records::RecordedCall::Failed { cause, .. } => {
                         if self.native_work().is_some() {
@@ -610,7 +617,10 @@ impl crate::code_mode::CodeHost for OriginalCodeHost<'_, '_> {
                 .await?;
             drop(execution);
             match result {
-                ProfileDispatch::Settled(result) => {
+                ProfileDispatch::Settled(result, credit) => {
+                    if credit.is_some() {
+                        return Ok(crate::code_mode::CodeHostResult { result, credit });
+                    }
                     use crate::filesystem::UploadRecord as _;
                     let retained = (std::mem::size_of::<ToolResult>() as u64)
                         .checked_add(result.logical_owned_bytes()?)
@@ -620,7 +630,7 @@ impl crate::code_mode::CodeHost for OriginalCodeHost<'_, '_> {
                     let credit = io.into_native_custody(retained)?;
                     Ok(crate::code_mode::CodeHostResult {
                         result,
-                        credit: Some(Box::new(credit)),
+                        credit: Some(credit),
                     })
                 }
                 ProfileDispatch::Progress(progress) => {

@@ -26,11 +26,14 @@ impl StockExecution<'_> {
             .profile_dispatch(journal, invocation, tool, context.as_ref())
             .await;
         #[cfg(feature = "filesystem")]
+        let mut _profile_credit = None;
+        #[cfg(feature = "filesystem")]
         let handled = match profile {
             Ok(Some(crate::executor::code_mode::ProfileDispatch::Progress(progress))) => {
                 return Ok(ToolInvocationOutcome::Progress(progress));
             }
-            Ok(Some(crate::executor::code_mode::ProfileDispatch::Settled(result))) => {
+            Ok(Some(crate::executor::code_mode::ProfileDispatch::Settled(result, credit))) => {
+                _profile_credit = credit;
                 Some(Ok(Some(result)))
             }
             Err(error) => Some(Err(error)),

@@ -4,6 +4,7 @@
 //! No realm, process, task or runtime is retained for a dormant agent. The
 //! interpreter has no module loader, filesystem, network, timer or process API.
 
+mod buffers;
 mod custody;
 mod declarations;
 #[cfg(feature = "filesystem")]
@@ -17,12 +18,12 @@ use crate::{
     tool::{ToolDefinition, ToolInvocation, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture;
+use buffers::{Buffers, Owned, PendingQueue};
 use custody::Retained;
 use futures::{StreamExt, stream::FuturesOrdered};
 use rquickjs::{Context, Function, MultiWith, Runtime};
 use serde_json::Value;
 use std::{
-    collections::{HashSet, VecDeque},
     num::NonZeroUsize,
     sync::{
         Arc, Mutex,
@@ -64,7 +65,16 @@ pub struct CodeHostResult {
     /// Original tool result, without a second projection or response ledger.
     pub result: ToolResult,
     /// Original allocation custody, when the dispatch uses accounted memory.
-    pub credit: Option<Box<dyn CodeCredit>>,
+    pub credit: crate::NativeCustody,
+}
+
+/// The result and its exact original allocation custody. The caller retains
+/// both until the ordinary tool result publication has consumed the value.
+pub struct CodeOutput {
+    /// Schema-checked by the ordinary tool settlement path.
+    pub value: Value,
+    /// Same original owner that admitted the result graph, without a re-claim.
+    pub credit: crate::NativeCustody,
 }
 
 impl From<ToolResult> for CodeHostResult {
@@ -119,8 +129,8 @@ pub struct CodeRuntime {
 
 struct QueuedCall {
     ordinal: u64,
-    name: String,
-    arguments: String,
+    name: Owned<String>,
+    arguments: Owned<String>,
 }
 
 // Protocol functions live in the realm, but permission to enter them lives in
@@ -230,7 +240,7 @@ impl CodeRuntime {
         tools: &[ToolDefinition],
         host: Arc<dyn CodeHost + '_>,
         control: Arc<dyn CodeControl>,
-    ) -> Result<Value> {
+    ) -> Result<CodeOutput> {
         self.execute_with_input(outer, source, &Value::Null, tools, host, control)
             .await
     }
@@ -245,7 +255,7 @@ impl CodeRuntime {
         tools: &[ToolDefinition],
         host: Arc<dyn CodeHost + '_>,
         control: Arc<dyn CodeControl>,
-    ) -> Result<Value> {
+    ) -> Result<CodeOutput> {
         control.check()?;
         let _credit = tokio::select! {
             error = control.interrupted() => return Err(error),
@@ -325,8 +335,9 @@ async fn run(
     tools: &[ToolDefinition],
     host: Arc<dyn CodeHost + '_>,
     control: Arc<dyn CodeControl>,
-) -> Result<Value> {
-    let queue = engine.retained_arc(Mutex::new(VecDeque::new()))?;
+) -> Result<CodeOutput> {
+    let buffers = Buffers::new(engine);
+    let queue = engine.retained_arc(Mutex::new(PendingQueue::new(&buffers)?))?;
     let protocol = engine.retained_arc(Protocol::default())?;
     let context = engine
         .phase(&control, |runtime| {
@@ -338,6 +349,7 @@ async fn run(
                 input,
                 Arc::clone(&queue),
                 Arc::clone(&protocol),
+                buffers.clone(),
             )?;
             // Both contexts belong to this one runtime. MultiWith holds its
             // original lock once, so transformation never leaks a Rust-owned
@@ -359,29 +371,36 @@ async fn run(
     let mut calls = FuturesOrdered::new();
     loop {
         control.check()?;
-        let queued = std::mem::take(&mut *lock(&queue));
-        for call in queued {
-            let invocation = host.invocation(
-                outer,
-                call.ordinal,
-                call.name,
-                serde_json::from_str(&call.arguments)
-                    .map_err(|_| rejected("code host arguments are not JSON"))?,
-            )?;
+        let queued = lock(&queue).take()?;
+        let _queue_credit = queued.credit;
+        for call in queued.value {
+            let arguments = buffers.decode(&call.arguments.value)?;
+            drop(call.arguments);
+            let invocation =
+                host.invocation(outer, call.ordinal, call.name.value, arguments.value)?;
             let host = Arc::clone(&host);
-            calls.push_back(async move { (call.ordinal, host.dispatch(invocation).await) });
+            calls.push_back(async move {
+                let _name_credit = call.name.credit;
+                let _argument_credit = arguments.credit;
+                (call.ordinal, host.dispatch(invocation).await)
+            });
         }
-        let state: String = engine
+        drop(_queue_credit);
+        let state = engine
             .phase(&control, |_| {
-                context.with(|ctx| ctx.eval("__state()")).map_err(js_error)
+                context.with(|ctx| {
+                    let state: rquickjs::CString = ctx.eval("__state()").map_err(js_error)?;
+                    buffers.text(state.as_str())
+                })
             })
             .await?;
         protocol.check()?;
+        lock(&queue).check()?;
         if calls.is_empty() {
-            return match state.as_str() {
+            return match state.value.as_str() {
                 "pending" => Err(rejected("code promise has no live host-call producer")),
                 "rejected" => Err(rejected("code execution failed")),
-                _ => serde_json::from_str(&state).map_err(|_| rejected("code result is not JSON")),
+                _ => buffers.decode(&state.value),
             };
         }
         let (ordinal, result) = tokio::select! {
@@ -391,20 +410,21 @@ async fn run(
         // Preserve the original storage/uncertain/refusal error. JavaScript
         // cannot catch it and turn an unacknowledged effect into success.
         let result = result?;
-        let json = serde_json::to_string(&result.result.value)
-            .map_err(|_| rejected("host result is not JSON"))?;
+        let json = buffers.json(&result.result.value)?;
+        let ordinal = buffers.format(format_args!("{ordinal}"))?;
         engine
             .phase(&control, |_| {
                 let _entry = protocol.enter();
                 context
                     .with(|ctx| {
                         let complete: Function = ctx.globals().get("__complete")?;
-                        complete.call::<_, ()>((ordinal.to_string(), json))
+                        complete.call::<_, ()>((ordinal.value.as_str(), json.value.as_str()))
                     })
                     .map_err(js_error)
             })
             .await?;
         protocol.check()?;
+        lock(&queue).check()?;
     }
 }
 
@@ -413,60 +433,73 @@ fn install(
     outer: &ToolInvocation,
     tools: &[ToolDefinition],
     input: &Value,
-    queue: Arc<Retained<Mutex<VecDeque<QueuedCall>>>>,
+    queue: Arc<Retained<Mutex<PendingQueue>>>,
     protocol: Arc<Retained<Protocol>>,
+    buffers: Buffers,
 ) -> Result<()> {
-    let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
-    let allowed: HashSet<_> = names.iter().map(|name| (*name).to_owned()).collect();
-    if allowed.len() != names.len() {
-        return Err(rejected("code tool names are duplicated"));
-    }
     let seed = outer.operation_id.into_bytes();
     let seed = u32::from_le_bytes(
         seed[..4]
             .try_into()
             .map_err(|_| rejected("code seed is malformed"))?,
     );
-    let names =
-        serde_json::to_string(&names).map_err(|_| rejected("code tool names are not JSON"))?;
-    let recursive_name = outer.name.clone();
-    let input = serde_json::to_string(input).map_err(|_| rejected("code input is not JSON"))?;
+    let recursive_name = buffers.text(&outer.name)?;
+    let input = buffers.json(input)?;
     context
         .with(|ctx| {
-            ctx.globals().set("__input", ctx.json_parse(input)?)?;
+            let names = rquickjs::Array::new(ctx.clone())?;
+            for (index, tool) in tools.iter().enumerate() {
+                names.set(index, tool.name.as_str())?;
+            }
+            ctx.globals()
+                .set("__input", ctx.json_parse(input.value.as_str())?)?;
             let mut ordinal = 0_u64;
+            let callback_ctx = ctx.clone();
             let enqueue = Function::new(
                 ctx.clone(),
-                rquickjs::function::MutFn::new(move |name: String, arguments: String| {
-                    if !allowed.contains(&name) || name == recursive_name {
-                        return Err(rquickjs::Error::new_from_js_message(
-                            "name",
-                            "tool",
-                            "tool is unavailable",
-                        ));
-                    }
-                    let current = ordinal;
-                    ordinal = ordinal.checked_add(1).ok_or_else(|| {
-                        rquickjs::Error::new_from_js_message(
-                            "ordinal",
-                            "tool",
-                            "host-call ordinal overflow",
-                        )
-                    })?;
-                    lock(&queue).push_back(QueuedCall {
-                        ordinal: current,
-                        name,
-                        arguments,
-                    });
-                    Ok(current.to_string())
-                }),
+                rquickjs::function::MutFn::new(
+                    move |name: rquickjs::CString, arguments: rquickjs::CString| {
+                        if name.as_str() == recursive_name.value().as_str() {
+                            return Err(rquickjs::Error::new_from_js_message(
+                                "name",
+                                "tool",
+                                "tool is unavailable",
+                            ));
+                        }
+                        let current = ordinal;
+                        ordinal = ordinal.checked_add(1).ok_or_else(|| {
+                            rquickjs::Error::new_from_js_message(
+                                "ordinal",
+                                "tool",
+                                "host-call ordinal overflow",
+                            )
+                        })?;
+                        let result = (|| {
+                            let name = buffers.text(name.as_str())?;
+                            let arguments = buffers.text(arguments.as_str())?;
+                            let ordinal_text = buffers.format(format_args!("{current}"))?;
+                            lock(&queue).push(QueuedCall {
+                                ordinal: current,
+                                name,
+                                arguments,
+                            })?;
+                            rquickjs::String::from_str(callback_ctx.clone(), &ordinal_text.value)
+                                .map_err(js_error)
+                        })();
+                        result.map_err(|error| {
+                            lock(&queue).fail(error);
+                            rquickjs::Error::new_from_js("code", "original work")
+                        })
+                    },
+                ),
             )?;
             ctx.globals().set("__enqueue", enqueue)?;
             ctx.globals().set(
                 "__admit",
                 Function::new(ctx.clone(), move || protocol.consume())?,
             )?;
-            ctx.eval::<(), _>(format!("({BOOTSTRAP})({seed}, {names});"))
+            let bootstrap: Function = ctx.eval(BOOTSTRAP)?;
+            bootstrap.call::<_, ()>((seed, names))
         })
         .map_err(js_error)
 }
@@ -488,7 +521,7 @@ fn js_error(_: rquickjs::Error) -> Error {
     rejected("code interpreter rejected the program")
 }
 
-const BOOTSTRAP: &str = include_str!("sandbox.js");
+const BOOTSTRAP: &str = concat!("(", include_str!("sandbox.js"), ")");
 
 #[cfg(test)]
 mod tests;

@@ -1,5 +1,6 @@
 function (seed, names) {
     "use strict";
+    if (new Set(names).size !== names.length) throw new Error("duplicate tool name");
     const enqueue = globalThis.__enqueue;
     const admit = globalThis.__admit;
     const input = globalThis.__input;

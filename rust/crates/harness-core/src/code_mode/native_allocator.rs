@@ -40,6 +40,10 @@ impl AllocatorState {
             .claim(bytes, operations, WorkCounters::UNCHARGED)
             .map_err(Into::into)
     }
+
+    pub(super) fn work(&self) -> &NativeMaterializationWork {
+        &self.work
+    }
 }
 
 struct NativeAllocator {

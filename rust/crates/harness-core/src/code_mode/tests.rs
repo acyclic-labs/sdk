@@ -99,10 +99,12 @@ async fn sandbox_uses_only_host_calls_and_replays_seeded_values_and_identity() -
     let tools = [echo_definition()];
     let result = runtime
         .execute(&outer(), source, &tools, host.clone(), control.clone())
-        .await?;
+        .await?
+        .value;
     let replay = runtime
         .execute(&outer(), source, &tools, host.clone(), control.clone())
-        .await?;
+        .await?
+        .value;
     assert_eq!(result, replay);
     assert_eq!(result["result"], json!({"value":"admitted"}));
     assert_eq!(result["reflected"], "undefined");
@@ -137,7 +139,8 @@ async fn sandbox_uses_only_host_calls_and_replays_seeded_values_and_identity() -
                 host.clone(),
                 control,
             )
-            .await?,
+            .await?
+            .value,
         input
     );
     assert_eq!(lock(&host.0).len(), 2);
@@ -196,7 +199,8 @@ async fn javascript_cannot_catch_original_heap_exhaustion_into_success() -> Resu
     assert_eq!(
         runtime
             .execute(&outer(), "return 7;", &[], host.clone(), control)
-            .await?,
+            .await?
+            .value,
         json!(7)
     );
     assert!(lock(&host.0).is_empty());
@@ -232,6 +236,72 @@ fn rust_frames_retain_exact_original_custody_until_the_last_reference() -> Resul
     })?;
     assert!(runtime.retained_arc(Mutex::new(None::<Error>)).is_err());
     assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+#[test]
+fn dynamic_buffers_keep_the_original_owner_through_queue_and_result_handoff() -> Result<()> {
+    use crate::filesystem::UploadRecord as _;
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let runtime = CodeRuntime::new_with_native_work(Arc::new(Memory), &work)?;
+    let buffers = Buffers::new(&runtime);
+    let baseline = work.live_allocation_bytes();
+    let payload = json!({"value": "retained result".repeat(257)});
+    let encoded = buffers.json(&payload)?;
+    assert_eq!(
+        work.live_allocation_bytes(),
+        baseline + encoded.value.capacity() as u64
+    );
+    let decoded = buffers.decode(&encoded.value)?;
+    assert_eq!(decoded.value, payload);
+    let output_bytes = decoded.value.logical_owned_bytes()?;
+    drop(encoded);
+    assert_eq!(work.live_allocation_bytes(), baseline + output_bytes);
+
+    let mut queue = PendingQueue::new(&buffers)?;
+    queue.push(QueuedCall {
+        ordinal: 0,
+        name: buffers.text("echo")?,
+        arguments: buffers.json(&payload)?,
+    })?;
+    let queued = queue.take()?;
+    drop(queue);
+    assert!(work.live_allocation_bytes() > baseline + output_bytes);
+    let call = queued
+        .value
+        .into_iter()
+        .next()
+        .ok_or_else(|| rejected("missing queued call"))?;
+    assert_eq!(call.name.value, "echo");
+    assert_eq!(
+        serde_json::from_str::<Value>(&call.arguments.value).unwrap(),
+        payload
+    );
+    drop((call, queued.credit));
+    assert_eq!(work.live_allocation_bytes(), baseline + output_bytes);
+
+    // A denied Rust-side allocation cannot yield a partial queue for dispatch.
+    // The original error survives even when the model catches its JS wrapper.
+    let mut denied = PendingQueue::new(&buffers)?;
+    work.charge(WorkCounters {
+        allocation_operations: work.remaining()?.allocation_operations,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let error = match buffers.text("must not allocate") {
+        Err(error) => error,
+        Ok(_) => return Err(rejected("original allocation denial was bypassed")),
+    };
+    denied.fail(error);
+    assert!(denied.take().is_err());
+    drop((denied, buffers, runtime));
+    // Output remains funded after the interpreter and queue have gone away.
+    assert_eq!(work.live_allocation_bytes(), output_bytes);
+    drop(decoded);
+    assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
 
@@ -296,7 +366,8 @@ async fn caught_protocol_forgery_cannot_start_dependent_host_effects() -> Result
                 host.clone(),
                 control,
             )
-            .await?,
+            .await?
+            .value,
         json!({"value":"admitted"})
     );
     assert_eq!(lock(&host.0).len(), 2);
@@ -398,7 +469,8 @@ async fn host_wait_releases_shared_interpreter_and_owner_drop_terminates() -> Re
                 Arc::new(Echo::default()),
                 control,
             )
-            .await?;
+            .await?
+            .value;
         assert_eq!(value, json!(42));
         release
             .send(())
@@ -407,7 +479,7 @@ async fn host_wait_releases_shared_interpreter_and_owner_drop_terminates() -> Re
     };
     let (waiting, independent) = tokio::join!(waiting, independent);
     independent?;
-    assert_eq!(waiting?, json!("released"));
+    assert_eq!(waiting?.value, json!("released"));
     // Negative: dropping the original execution producer is an error, not a hang.
     let (owner, control) = original_control();
     drop(owner);
@@ -475,7 +547,8 @@ async fn concurrent_host_completion_order_cannot_change_replay_continuations() -
             host,
             control,
         )
-        .await?;
+        .await?
+        .value;
     // The second effect completed first; original issue order owns JS results.
     assert_eq!(result, json!({"value":"first"}));
     Ok(())
@@ -518,7 +591,7 @@ proptest::proptest! {
             let literal = serde_json::to_string(&text).unwrap();
             let result = runtime.execute(&outer(),
                 &format!("return await echo({{value:{literal}}});"),
-                &[echo_definition()], host.clone(), control).await.unwrap();
+                &[echo_definition()], host.clone(), control).await.unwrap().value;
             assert_eq!(result, json!({"value":text}));
             let calls = lock(&host.0);
             assert_eq!(calls.len(), 1);
@@ -560,7 +633,8 @@ async fn credited_compiler_realm_is_private_and_recovers_after_parse_failure() -
                 host.clone(),
                 control
             )
-            .await?,
+            .await?
+            .value,
         json!({
             "result":{"value":"after parse failure"},
             "compiler":"undefined", "prepare":"undefined"
