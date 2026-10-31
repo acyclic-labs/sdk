@@ -196,7 +196,7 @@ impl Fixture {
                 invalid
                     .mutations
                     .extend(prepared.request().mutations.iter().cloned());
-                if acyclic_stream::validate_commit(&mut invalid)
+                if acyclic_stream::request::validate_commit(&mut invalid)
                     != Err(acyclic_stream::StreamError::InvalidArgument)
                 {
                     return Err("root composition oracle accepted concatenated publications".into());
