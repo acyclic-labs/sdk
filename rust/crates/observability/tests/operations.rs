@@ -134,7 +134,11 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
         &tracing::Dispatch::new(tracing_subscriber::registry()),
         || {
             let root = tracing::info_span!(parent: None, "admitted.owner");
-            Binding::attach(&root, key, admission.clone().try_acquire_owned()?)
+            Ok::<_, Box<dyn std::error::Error>>(Binding::attach(
+                &root,
+                key,
+                admission.clone().try_acquire_owned()?,
+            )?)
         },
     )?;
     assert!(!unrelated.matches(&terminal.sample()));
