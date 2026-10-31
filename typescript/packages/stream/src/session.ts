@@ -12,7 +12,7 @@ export interface SessionTransport {
   /** Canonical v1 frames; the Rust session admits each untrusted message. */
   readonly incoming: AsyncIterable<Uint8Array>;
   /** Abort withdraws a write that has not yet entered the transport queue. */
-  send(frame: Uint8Array, signal?: AbortSignal): Promise<void>;
+  send(frame: Uint8Array<ArrayBuffer>, signal?: AbortSignal): Promise<void>;
   close(): void;
 }
 export type SessionConnect = (node: wire.SessionNode | undefined, signal: AbortSignal) => Promise<SessionTransport>;
@@ -41,7 +41,7 @@ export class StreamSessions {
           const item = await incoming.next();
           return item.done ? null : item.value;
         },
-        send(bytes: Uint8Array, writeSignal: AbortSignal) { return transport.send(bytes, writeSignal); },
+        send(bytes: Uint8Array<ArrayBuffer>, writeSignal: AbortSignal) { return transport.send(bytes, writeSignal); },
         close() { transport.close(); },
       };
     }, acknowledge, revisionScope);
