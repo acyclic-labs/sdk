@@ -26,6 +26,8 @@ struct Shared<const OBSERVATIONS: usize> {
     control: [OnceLock<ProcessHostControlObservation>; OBSERVATIONS],
 }
 
+const _: () = assert!(std::mem::size_of::<Shared<0>>() == std::mem::size_of::<Mutex<State>>());
+
 /// The original host control read, before acquiring the process-state lock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProcessHostControl {
@@ -35,7 +37,9 @@ pub enum ProcessHostControl {
     Eof,
     /// The original read failed; this is not evidence of EOF or cancellation.
     Failed {
+        /// The original read's IO classification.
         kind: io::ErrorKind,
+        /// The original OS error, when one was supplied.
         raw_os_error: Option<i32>,
     },
 }
@@ -43,7 +47,9 @@ pub enum ProcessHostControl {
 /// One completed original control read, on the host's monotonic clock.
 #[derive(Clone, Copy, Debug)]
 pub struct ProcessHostControlObservation {
+    /// Offset from this invocation's original observed entry.
     pub elapsed: Duration,
+    /// The original read's result without retaining its byte payload.
     pub outcome: ProcessHostControl,
 }
 
@@ -56,9 +62,13 @@ pub struct ProcessHostControlObservation {
 /// terminal snapshot, not that a control producer completed or failed.
 #[derive(Clone, Copy, Debug)]
 pub struct ProcessHostProgress {
+    /// Return from custody-bound spawn, including any admission/lease work.
     pub root_admitted: Duration,
+    /// Return from the original root-exit wait, before the state lock.
     pub root_exit_observed: Duration,
+    /// Completion of the original physical cleanup, before receipt writing.
     pub retired: Duration,
+    /// First completed control read, if published at the terminal snapshot.
     pub control: Option<ProcessHostControlObservation>,
 }
 
@@ -69,7 +79,9 @@ pub struct ProcessHostCompletion {
     pub exit_code: i32,
     /// The actual selected root status, before cancellation-result mapping.
     pub root_status: ExitStatus,
+    /// Whether the original host control path applied cancellation.
     pub cancelled: bool,
+    /// Fixed observations from this same physical invocation.
     pub progress: ProcessHostProgress,
 }
 
@@ -517,7 +529,8 @@ mod tests {
                 "eof" => drop(control.take()),
                 _ => {}
             }
-            let status = owner.child.as_mut().unwrap().wait().unwrap();
+            super::super::platform::wait_without_reaping(owner.child.as_ref().unwrap()).unwrap();
+            let status = owner.try_wait(None).unwrap().unwrap();
             owner.terminate(None).unwrap();
             drop(control);
             assert_eq!(status.code(), Some(124));
