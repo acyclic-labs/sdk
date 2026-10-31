@@ -690,7 +690,7 @@ mod tests {
     fn usage_reply_frontiers_preserve_empty_and_partial_source_progress()
     -> Result<(), Box<dyn std::error::Error>> {
         use acyclic_harness_core::executor::ModelUsagePage;
-        let agent = AgentPath::root(&acyclic_harness_core::AgentId::from_bytes([1; 16]));
+        let agent = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([1; 16]));
         for after in [0, 7, u64::MAX - 32, u64::MAX] {
             let command = AgentCommand::Usage {
                 agent: agent.clone(),
