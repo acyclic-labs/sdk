@@ -69,6 +69,18 @@ const PAGE: usize = 1000;
 mod format_recovery_tests {
     use super::*;
 
+    async fn set_fixture(
+        medium: &crate::LocalMedium,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<(), MediumError> {
+        let observed = medium.observe(key.to_owned()).await?.unwrap();
+        assert_eq!(observed.bytes.as_ref(), expected);
+        assert!(medium.replace(observed.observation, bytes).await?.is_some());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn local_recovery_preserves_refused_metadata() -> Result<(), Box<dyn std::error::Error>> {
         acyclic_native_runtime::initialize_native_io_services()?;
@@ -111,12 +123,7 @@ mod format_recovery_tests {
                     }
                     Some(version) => refused[header - 2] = version,
                 }
-                assert!(
-                    account
-                        .medium
-                        .replace(key, original, refused.clone().into())
-                        .await?
-                );
+                set_fixture(&account.medium, key, original, refused.clone().into()).await?;
                 if key == &envelope_key {
                     assert_eq!(
                         account.stored_envelope(&digest).await.unwrap_err().code,
@@ -127,22 +134,14 @@ mod format_recovery_tests {
                         ErrorCode::Unsupported
                     );
                     let retained = encode_batch(&[digest]);
-                    assert!(
-                        account
-                            .medium
-                            .replace(&batch_key, &batch, retained.clone().into())
-                            .await?
-                    );
+                    set_fixture(&account.medium, &batch_key, &batch, retained.clone().into())
+                        .await?;
                     assert_eq!(
                         crate::Blobs::collect(&account).await.unwrap_err().code,
                         ErrorCode::Unsupported
                     );
-                    assert!(
-                        account
-                            .medium
-                            .replace(&batch_key, &retained, batch.clone().into())
-                            .await?
-                    );
+                    set_fixture(&account.medium, &batch_key, &retained, batch.clone().into())
+                        .await?;
                 } else {
                     assert_eq!(
                         account.batch(key).await.unwrap_err().code,
@@ -169,35 +168,26 @@ mod format_recovery_tests {
                     account.medium.read(key, None).await?.as_deref(),
                     Some(refused.as_slice())
                 );
-                assert!(
-                    account
-                        .medium
-                        .replace(key, &refused, original.clone().into())
-                        .await?
-                );
+                set_fixture(&account.medium, key, &refused, original.clone().into()).await?;
             }
         }
         assert!(account.stored_envelope(&digest).await?.is_some());
         assert!(account.batch_survived(&batch_key, &HashMap::new()).await?);
         // A damaged current payload remains recoverable, unlike a refused header.
         let header = envelope.iter().position(|byte| *byte == 0).unwrap() + 1;
-        assert!(
-            account
-                .medium
-                .replace(&envelope_key, &envelope, envelope[..header].to_vec().into())
-                .await?
-        );
+        set_fixture(
+            &account.medium,
+            &envelope_key,
+            &envelope,
+            envelope[..header].to_vec().into(),
+        )
+        .await?;
         assert!(account.stored_envelope(&digest).await?.is_none());
         account.clear_torn(&envelope_key).await?;
         assert!(account.medium.read(&envelope_key, None).await?.is_none());
         let mut corrupt_batch = batch.clone();
         corrupt_batch.push(1);
-        assert!(
-            account
-                .medium
-                .replace(&batch_key, &batch, corrupt_batch.into())
-                .await?
-        );
+        set_fixture(&account.medium, &batch_key, &batch, corrupt_batch.into()).await?;
         assert!(!account.batch_survived(&batch_key, &HashMap::new()).await?);
         assert_eq!(account.batch(&batch_key).await?, Some(Vec::new()));
         assert!(account.medium.read(&batch_key, None).await?.is_none());
