@@ -59,9 +59,12 @@ fn cancelled_custody_transfer_preserves_the_current_owner() -> Result<()> {
         acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
         &cancellation,
     )?;
-    io.retain_owned(8)?;
+    let mut reservation = io.reserve_decode(8)?;
     cancellation.cancel();
-    assert!(io.take_owned_custody(8).is_err());
+    assert!(reservation.take_custody().is_err());
+    assert_eq!(reservation.bytes(), 8);
     assert_eq!(io.owned_bytes()?, 8);
+    drop(reservation);
+    assert_eq!(io.owned_bytes()?, 0);
     Ok(())
 }

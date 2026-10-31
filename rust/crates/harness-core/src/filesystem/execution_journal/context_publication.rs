@@ -23,9 +23,9 @@ pub struct ContextPublicationRequest<'a> {
 
 /// Journal-owned destinations and the last admitted original source cursor.
 /// The paths retain their original funding and cannot be supplied by a caller.
-pub struct ContextCheckpoint<'io> {
-    epoch: checkpoint::IndexPath<'io>,
-    source: checkpoint::IndexPath<'io>,
+pub struct ContextCheckpoint {
+    epoch: checkpoint::OwnedIndexPath,
+    source: checkpoint::OwnedIndexPath,
     owner: [u8; 32],
     volume: [u8; 16],
     selected: [u8; 32],
@@ -33,7 +33,7 @@ pub struct ContextCheckpoint<'io> {
     tail: Option<u64>,
 }
 
-impl ContextCheckpoint<'_> {
+impl ContextCheckpoint {
     /// Fixed original destination for the epoch owner's authorized last-record
     /// recovery. This borrows the admitted path and grants no read authority.
     pub fn epoch_path(&self) -> &acyclic_stream::StreamPath {
@@ -50,9 +50,9 @@ impl ContextCheckpoint<'_> {
 /// Keep prepared catalog/registry state invisible until confirmation succeeds.
 /// Dropping it leaves the original source pending for replay; it does not
 /// fabricate confirmation or withdraw an already committed publication.
-pub struct ContextPublicationReceipt<'a, 'io> {
+pub struct ContextPublicationReceipt<'a> {
     source: &'a mut SkillPublicationSource,
-    checkpoint: &'a mut ContextCheckpoint<'io>,
+    checkpoint: &'a mut ContextCheckpoint,
     cursor: SourceCursor,
     tail: u64,
     epoch: &'a mut Snapshot,
@@ -61,7 +61,7 @@ pub struct ContextPublicationReceipt<'a, 'io> {
     operation: OperationId,
 }
 
-impl ContextPublicationReceipt<'_, '_> {
+impl ContextPublicationReceipt<'_> {
     /// Borrows the original pinned metadata; no body is reopened or copied.
     pub fn changes(&self) -> Result<&[SkillPublicationChange]> {
         Ok(self
@@ -96,15 +96,16 @@ where
 {
     /// Binds one source to this agent-private journal. Cold recovery reads only
     /// its last checkpoint; subsequent admissions use the retained fence.
-    /// The caller must retain the original admitted session, never a turn's
-    /// deadline, for the lifetime of the returned paths and source subscription.
+    /// Returned paths own their original allocation custody independently of the
+    /// preparation observer. The source subscription still needs its original
+    /// admitted session lifetime, never a turn's deadline.
     pub fn bind_context_source<'io>(
         &'io self,
         volume_ref: &VolumeRef,
         volume_id: acyclic_fs::VolumeId,
         initial: SourceCursor,
         io: &'io PreparationIo,
-    ) -> Result<crate::conversation::BoundedContentFuture<'io, ContextCheckpoint<'io>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'io, ContextCheckpoint>> {
         let owner = self.index_volume_digest(Some(io))?;
         let selected = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::json::canonical_json_digest(
@@ -173,8 +174,8 @@ where
                 return Err(invalid(Some(io)));
             }
             Ok(ContextCheckpoint {
-                epoch,
-                source: path,
+                epoch: epoch.into_owned()?,
+                source: path.into_owned()?,
                 owner,
                 volume,
                 selected,
@@ -187,16 +188,15 @@ where
     /// Publishes the producer checkpoint, exact M2 snapshot and selected context
     /// changes through the existing conditional journal/index request. This is
     /// not raw exchange closure, a new submit path or a session allocator.
-    pub fn publish_context<'a, 'io>(
+    pub fn publish_context<'a>(
         &'a self,
-        checkpoint: &'a mut ContextCheckpoint<'io>,
+        checkpoint: &'a mut ContextCheckpoint,
         source: &'a mut SkillPublicationSource,
         request: ContextPublicationRequest<'a>,
         epoch: &'a mut Snapshot,
         io: &'a PreparationIo,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<'a, Option<ContextPublicationReceipt<'a, 'io>>>,
-    > {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<ContextPublicationReceipt<'a>>>>
+    {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             self.require_operation(request.operation, Some(io))?;
             if self.execution.is_none()
