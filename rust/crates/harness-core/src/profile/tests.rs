@@ -9,7 +9,6 @@ tools:
 reasoning: {mode: effort, effort: medium}
 cache: automatic
 watermark_tokens: 700
-output_budget: 100
 ---
 Model family instruction.
 ";
@@ -66,6 +65,10 @@ fn role_changes_append_policy_without_rewriting_the_model_prefix() -> Result<()>
         ["shell", "edit"]
     );
     assert_eq!(base.overlay.allowed_tools, None);
+    assert_eq!(
+        base.overlay.max_output_tokens, None,
+        "retain capacity semantics"
+    );
     let restricted = resolve(&model, &orchestrator, &project, &agent)?;
     assert!(
         !restricted
@@ -122,7 +125,7 @@ proptest! {
         let budget = context / 2 + 2;
         let watermark = budget / 2;
         let output = 1 + seed % (budget / 4);
-        let family = format!("---\nversion: 1\ntools: []\nreasoning: {{mode: adaptive, effort: medium}}\ncache: automatic\noutput_budget: {output}\nwatermark_tokens: {watermark}\n---\n");
+        let family = format!("---\nversion: 1\ntools: []\nreasoning: {{mode: adaptive, effort: medium}}\ncache: automatic\nwatermark_tokens: {watermark}\n---\n");
         let model = ModelProfile::parse(&family, MODEL,
             ModelContextCapacity { context_tokens: context, output_tokens: Some(output) }, "renderer-v1").unwrap();
         let project = ProjectLayer::parse(EMPTY).unwrap();
@@ -133,7 +136,7 @@ proptest! {
         let selected = resolve(&model, &role, &project, &agent).unwrap();
         prop_assert_eq!(selected.prefix.capacity.budget_tokens, budget);
         prop_assert_eq!(selected.prefix.capacity.watermark_tokens, watermark);
-        prop_assert_eq!(selected.overlay.output_budget, output);
+        prop_assert_eq!(selected.overlay.max_output_tokens, None);
         let overflow = AgentOverride::parse(&format!("---\nversion: 1\nbudget_tokens: {}\n---\n", u64::from(context)+1), &approvals);
         prop_assert!(overflow.is_err() || resolve(&model, &role, &project, &overflow.unwrap()).is_err());
         let no_watermark = AgentOverride::parse("---\nversion: 1\nwatermark_tokens: 0\n---\n", &approvals).unwrap();
@@ -149,22 +152,20 @@ fn unverified_output_and_untyped_override_paths_refuse() -> Result<()> {
     let project = ProjectLayer::parse(EMPTY)?;
     let approvals = crate::approvals::ApprovalPolicy::default().bind()?;
     let agent = AgentOverride::parse(EMPTY, &approvals)?;
-    let explicit = profile(FAMILY, None)?;
+    let unknown = profile(FAMILY, None)?;
+    let explicit_role =
+        RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 100", 1))?;
     assert_eq!(
-        resolve(&explicit, &role, &project, &agent)?
+        resolve(&unknown, &explicit_role, &project, &agent)?
             .overlay
-            .output_budget,
-        100
+            .max_output_tokens,
+        Some(100)
     );
-    let unknown = profile(&FAMILY.replace("output_budget: 100\n", ""), None)?;
     assert!(
         resolve(&unknown, &role, &project, &agent).is_err(),
         "no guessed output reserve"
     );
-    let exhausted = profile(
-        &FAMILY.replace("output_budget: 100", "output_budget: 400"),
-        Some(500),
-    )?;
+    let exhausted = profile(FAMILY, Some(500))?;
     assert!(
         resolve(&exhausted, &role, &project, &agent).is_err(),
         "prepare before the output reservation exhausts input capacity"
