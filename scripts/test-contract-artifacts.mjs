@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { setTimeout } from "node:timers/promises";
+import { createInterface } from "node:readline";
 import { buildContractTargets } from "./contract-targets.mjs";
 
 test("compiler artifact discovery rejects identity substitution and partial completion", () => {
@@ -72,6 +74,7 @@ test("the generator compares executed bytes and records failure without changing
   const source = name => readFileSync(fileURLToPath(new URL(name, import.meta.url)), "utf8");
   let cancelled;
   let compilerPid;
+  let compilerServer, compilerSocket, generatorExit;
   const stopCompiler = () => {
     if (!compilerPid) return;
     try { process.kill(compilerPid, "SIGKILL"); } catch (error) { if (!(error instanceof Error) || !("code" in error) || error.code !== "ESRCH") throw error; }
@@ -137,16 +140,47 @@ test("the generator compares executed bytes and records failure without changing
     put("candidate.txt", "current\n");
     assert.equal(run().status, 0);
     const metadata = readFileSync(join(root, "metadata"));
-    put("metadata", 'require("node:fs").writeFileSync("compiler.pid", String(process.pid)); setInterval(() => {}, 1000);');
+    const readinessFailure = step => Object.assign(new Error(`compiler-readiness step=${step}; recovery command: node --test scripts/test-contract-artifacts.mjs`), {
+      code: "COMPILER_READINESS_FAILED", step,
+    });
+    let ready = Promise.withResolvers();
+    ready.promise.catch(() => {}); // Listening failure can precede the await.
+    // The original metadata child owns this connection until cancellation.
+    // Arm the channel before starting it, including early connection loss.
+    compilerServer = createServer(socket => {
+      const admitted = ready;
+      compilerSocket = socket;
+      socket.once("error", admitted.reject);
+      const lines = createInterface({ input: socket });
+      lines.once("line", line => {
+        const pid = Number(line);
+        if (!/^\d+$/.test(line) || !Number.isSafeInteger(pid) || pid <= 0) {
+          admitted.reject(readinessFailure("identity"));
+        } else admitted.resolve(pid);
+      });
+      lines.once("close", () => admitted.reject(readinessFailure("source-ended")));
+    });
+    compilerServer.on("error", error => ready.reject(error));
+    compilerServer.listen(0, "127.0.0.1");
+    await once(compilerServer, "listening");
+    const port = compilerServer.address().port;
+    // Negative control: actual source EOF without an identity must settle.
+    const lost = assert.rejects(ready.promise, { code: "COMPILER_READINESS_FAILED", step: "source-ended" });
+    const departed = connect({ host: "127.0.0.1", port });
+    departed.once("error", ready.reject);
+    departed.end();
+    await lost;
+    ready = Promise.withResolvers();
+    put("metadata", `const socket = require("node:net").connect(${JSON.stringify({ host: "127.0.0.1", port })}, () => socket.write(String(process.pid) + "\\n"));`);
     cancelled = spawn(process.execPath, [join(root, "scripts/generate-contracts.mjs"), "check"], { cwd: root, env, stdio: "ignore", windowsHide: true });
-    const deadline = performance.now() + 10_000;
-    while (!existsSync(join(root, "compiler.pid")) && performance.now() < deadline) await setTimeout(25);
-    assert.ok(existsSync(join(root, "compiler.pid")), "owned compiler fixture did not start");
-    compilerPid = Number(readFileSync(join(root, "compiler.pid"), "utf8"));
+    generatorExit = once(cancelled, "exit");
+    generatorExit.catch(() => {}); // The original join below observes spawn loss.
+    cancelled.once("error", ready.reject);
+    cancelled.once("exit", () => ready.reject(readinessFailure("generator-ended")));
+    compilerPid = await ready.promise;
     process.kill(compilerPid, 0); // Confirm the exact owned child is live.
-    const exited = new Promise(resolve => cancelled.once("exit", resolve));
     assert.ok(cancelled.kill("SIGKILL"));
-    await exited;
+    await generatorExit;
     stopCompiler();
     assert.equal(receipt().status, "incomplete", "abrupt termination must not reuse the previous success");
     assert.equal(receipt().phase, "metadata");
@@ -176,6 +210,9 @@ test("the generator compares executed bytes and records failure without changing
   } finally {
     if (cancelled?.exitCode === null && cancelled.signalCode === null) cancelled.kill("SIGKILL");
     stopCompiler();
+    if (generatorExit) await generatorExit.catch(() => {});
+    compilerSocket?.destroy();
+    if (compilerServer?.listening) await new Promise((resolve, reject) => compilerServer.close(error => error ? reject(error) : resolve()));
     rmSync(root, { recursive: true, force: true });
   }
 });
