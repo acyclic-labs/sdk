@@ -61,7 +61,7 @@ async fn native_policy_identity_checks_use_original_work_before_and_after_evalua
             crate::tool::json_projection_schema(json!({"type":"object"})),
         )?;
         let mut stock = StockExecutor::new(
-            Model::new("test".into(), "policy".into(), "1".into(), Value::Null)?,
+            Model::new("test".into(), "policy".into(), "1".into())?,
             Arc::new(scripted_model()),
             ContextPipeline::default(),
             tools,

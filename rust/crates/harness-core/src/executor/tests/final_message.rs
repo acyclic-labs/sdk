@@ -22,12 +22,7 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
             ScriptedTurn::Events(events),
         ]));
         let executor = uncompacted_executor(
-            Model::new(
-                "fixture".into(),
-                "completion".into(),
-                "1".into(),
-                Value::Null,
-            )?,
+            Model::new("fixture".into(), "completion".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             echo_tools(
@@ -150,7 +145,7 @@ async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -
         ])]));
         let callbacks = McpRuntimeCallbacks::new(
             uncompacted_executor(
-                Model::new("fixture".into(), "sampling".into(), "1".into(), Value::Null)?,
+                Model::new("fixture".into(), "sampling".into(), "1".into())?,
                 model,
                 ContextPipeline::default(),
                 ToolRegistry::default(),
@@ -203,7 +198,7 @@ proptest! {
         turns.push(tool_turn(final_events));
         let provider = Arc::new(ScriptedModelProvider::new(turns).with_token_counter(fixture_token_count));
         let executor = uncompacted_executor(
-            Model::new("fixture".into(), "final".into(), "1".into(), Value::Null)?,
+            Model::new("fixture".into(), "final".into(), "1".into())?,
             provider.clone(), ContextPipeline::default(),
             echo_tools(Arc::new(FakeTool(AtomicUsize::new(0))), json!({"type":"object"}),
                 json!({}), crate::tool::json_projection_schema(json!({})))?,

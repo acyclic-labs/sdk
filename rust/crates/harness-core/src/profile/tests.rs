@@ -55,7 +55,6 @@ fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Resu
             provider: "test".into(),
             name: "model".into(),
             revision: "v1".into(),
-            options: serde_json::json!({}),
         },
         messages: Vec::new(),
         tools: declarations

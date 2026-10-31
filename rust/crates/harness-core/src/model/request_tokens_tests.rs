@@ -7,7 +7,7 @@ fn continuing_an_admitted_request_transfers_every_history_buffer_at_one_to_one_t
 -> Result<()> {
     for count in [1, 10, 100, 1_000] {
         let request = ModelRequest {
-            model: Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?,
+            model: Model::new("scripted".into(), "test".into(), "1".into())?,
             messages: (0..count)
                 .map(|index| ModelMessage {
                     role: ModelRole::User,
@@ -71,7 +71,7 @@ proptest! {
         output in 1u32..=u32::MAX,
     ) {
         let request = ModelRequest {
-            model: Model::new("scripted".into(), "test".into(), "1".into(), Value::Null).unwrap(),
+            model: Model::new("scripted".into(), "test".into(), "1".into()).unwrap(),
             messages: texts.into_iter().map(|text| ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text(text.into_iter().collect()),

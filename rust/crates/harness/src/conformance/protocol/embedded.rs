@@ -132,12 +132,7 @@ pub async fn open<B: Backend + ?Sized>(
     )?;
     let executors = preset.executors(
         (
-            Model::new(
-                "conformance".into(),
-                "scripted".into(),
-                "1".into(),
-                serde_json::Value::Null,
-            )?,
+            Model::new("conformance".into(), "scripted".into(), "1".into())?,
             Arc::new(Scripted),
         ),
         tools,

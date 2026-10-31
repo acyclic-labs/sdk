@@ -143,7 +143,7 @@ async fn drive(modes: &[Mode]) -> Result<()> {
     );
     let tool = Arc::new(ModeTool::default());
     let executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         model.clone(),
         ContextPipeline::default(),
         echo_tools(

@@ -183,13 +183,8 @@ pub(crate) fn body_named<'a>(
     if !provider.capacity.permits_output(max) {
         return Err(invalid("requested output exceeds selected model capacity"));
     }
-    let mut body = request.model.options.clone();
-    names.controls(adapter, &mut body)?;
-    let map = body
-        .as_object_mut()
-        .ok_or_else(|| invalid("model options must be an object"))?;
-    // Only the admitted declarations can populate this field.
-    map.remove("tools");
+    let mut fields = serde_json::Map::new();
+    let map = &mut fields;
     let model = request.model.name.as_str();
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let model =
@@ -206,18 +201,7 @@ pub(crate) fn body_named<'a>(
             map.insert("max_completion_tokens".into(), json!(max));
         }
         Adapter::Responses => {
-            let include = map
-                .entry("include")
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .ok_or_else(|| invalid("Responses include must be an array"))?;
-            if !include
-                .iter()
-                .any(|item| item == "reasoning.encrypted_content")
-            {
-                include.push(json!("reasoning.encrypted_content"));
-            }
-
+            map.insert("include".into(), json!(["reasoning.encrypted_content"]));
             map.insert("stream".into(), json!(true));
             map.insert("store".into(), json!(false));
             map.insert("max_output_tokens".into(), json!(max));
@@ -225,12 +209,8 @@ pub(crate) fn body_named<'a>(
             if provider.codex_login.is_some() {
                 map.remove("max_output_tokens");
                 map.insert("instructions".into(), json!(system.join("\n\n")));
-                map.entry("tool_choice").or_insert_with(|| json!("auto"));
-                map.entry("parallel_tool_calls")
-                    .or_insert_with(|| json!(true));
-                if map.get("reasoning").is_some_and(Value::is_null) {
-                    map.remove("reasoning");
-                }
+                map.insert("tool_choice".into(), json!("auto"));
+                map.insert("parallel_tool_calls".into(), json!(true));
             }
         }
         Adapter::Anthropic => {
@@ -243,11 +223,7 @@ pub(crate) fn body_named<'a>(
         Adapter::Gemini => {
             map.remove("model");
 
-            map.entry("generationConfig")
-                .or_insert_with(|| json!({}))
-                .as_object_mut()
-                .ok_or_else(|| invalid("Gemini generationConfig must be an object"))?
-                .insert("maxOutputTokens".into(), json!(max));
+            map.insert("generationConfig".into(), json!({"maxOutputTokens":max}));
             if !system.is_empty() {
                 map.insert(
                     "systemInstruction".into(),
@@ -256,20 +232,13 @@ pub(crate) fn body_named<'a>(
             }
         }
     }
-    let fields = body
-        .as_object_mut()
-        .ok_or_else(|| invalid("invalid request body"))?;
     let messages_field = match adapter {
         Adapter::Responses => "input",
         Adapter::Gemini => "contents",
         _ => "messages",
     };
-    // Options cannot override transcript projection or inject a second input path.
-    for name in ["messages", "input", "contents"] {
-        fields.remove(name);
-    }
     Ok(Body {
-        fields: std::mem::take(fields),
+        fields,
         tools,
         messages_field,
         messages,

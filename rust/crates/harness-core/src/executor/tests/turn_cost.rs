@@ -7,7 +7,7 @@ mod native_growth;
 
 fn lookup_executor() -> Result<StockExecutor> {
     Ok(uncompacted_executor(
-        Model::new("test".into(), "lookup".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "lookup".into(), "1".into())?,
         Arc::new(scripted_model()),
         ContextPipeline::default(),
         ToolRegistry::default(),

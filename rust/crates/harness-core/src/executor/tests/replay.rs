@@ -101,7 +101,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
         }),
     ])]));
     let executor = uncompacted_executor(
-        Model::new("test".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "model".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
         ToolRegistry::default(),
@@ -145,7 +145,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
 
 #[tokio::test]
 async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
-    let model = Model::new("example".into(), "model".into(), "1".into(), Value::Null)?;
+    let model = Model::new("example".into(), "model".into(), "1".into())?;
     let root = crate::model::PreparedModelRequest::prepare(
         ModelRequest {
             model: model.clone(),
@@ -226,7 +226,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let base = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         model.clone(),
         ContextPipeline::default(),
         tools,
@@ -377,7 +377,7 @@ async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work()
 #[tokio::test]
 async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
     let mut executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         Arc::new(scripted_model()),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -481,7 +481,7 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
     };
     let base = StockExecutor::new(
-        Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "scoped".into(), "1".into())?,
         Arc::new(scripted_model()),
         ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
         tools,
@@ -544,13 +544,7 @@ mod prepared_request_reuse_properties {
     async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
         let journal = Journal::default();
         let (provider, accounting_calls) = counted_model(131_072, None, [], []);
-        let model = Model::new(
-            "test".into(),
-            "request-reuse".into(),
-            "1".into(),
-            Value::Null,
-        )
-        .unwrap();
+        let model = Model::new("test".into(), "request-reuse".into(), "1".into()).unwrap();
         let messages = vec![
             ModelMessage {
                 role: ModelRole::System,
@@ -669,12 +663,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         (10, 8_000, 6_000, 0, false),
         (10, 8_000, 10, 5_000, false),
     ] {
-        let model = Model::new(
-            "example".into(),
-            "model".into(),
-            "1".into(),
-            json!({"padding": "m".repeat(model_bytes)}),
-        )?;
+        let model = Model::new("example".into(), "model".into(), "1".into())?;
         let root = crate::model::PreparedModelRequest::prepare(
             ModelRequest {
                 model: model.clone(),

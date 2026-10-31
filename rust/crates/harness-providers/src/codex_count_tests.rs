@@ -13,7 +13,7 @@ proptest! {
         output in 0u64..u64::MAX,
     ) {
         let mut request = ModelRequest {
-            model: Model::new("openai".into(), "fixture".into(), "1".into(), json!({})).unwrap(),
+            model: Model::new("openai".into(), "fixture".into(), "1".into()).unwrap(),
             messages: Vec::new(), tools: Vec::new(), max_output_tokens: None,
         };
         request.messages = vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(input) }];

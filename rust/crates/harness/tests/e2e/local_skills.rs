@@ -24,12 +24,7 @@ fn config(
     Ok(LocalHarnessConfig::new(
         root,
         (
-            Model::new(
-                "scripted".into(),
-                "test".into(),
-                "1".into(),
-                serde_json::Value::Null,
-            )?,
+            Model::new("scripted".into(), "test".into(), "1".into())?,
             provider,
         ),
     )

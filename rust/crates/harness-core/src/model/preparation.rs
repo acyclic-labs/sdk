@@ -392,7 +392,6 @@ pub(crate) fn clone_model(model: &Model, io: Option<&PreparationIo>) -> Result<M
         provider: crate::executor::stock_string_copy(&model.provider, io)?,
         name: crate::executor::stock_string_copy(&model.name, io)?,
         revision: crate::executor::stock_string_copy(&model.revision, io)?,
-        options: clone_value(&model.options, io)?,
     })
 }
 pub(crate) fn clone_tool_definition(

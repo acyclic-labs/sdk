@@ -87,7 +87,7 @@ async fn complete_batch_keeps_each_signature_through_execution_and_replay() -> R
     );
     let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
     let executor = uncompacted_executor(
-        Model::new("fixture".into(), "exact".into(), "1".into(), json!({}))?,
+        Model::new("fixture".into(), "exact".into(), "1".into())?,
         model.clone(),
         ContextPipeline::default(),
         echo_tools(

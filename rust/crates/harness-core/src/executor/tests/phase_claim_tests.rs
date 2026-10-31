@@ -138,7 +138,7 @@ async fn dispatch_claims_have_no_fallible_post_publication_barrier() -> Result<(
             ScriptedTurn::Text("answer".into()),
         ]));
         let executor = uncompacted_executor(
-            Model::new("test".into(), "claim".into(), "1".into(), Value::Null)?,
+            Model::new("test".into(), "claim".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             echo_tools(tool.clone(), json!(true), json!(true), json!(true))?,

@@ -12,12 +12,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
     let operation = OperationId::new();
     let request = PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new(
-                "synthetic".into(),
-                "journal-test".into(),
-                "1".into(),
-                serde_json::json!({}),
-            )?,
+            model: Model::new("synthetic".into(), "journal-test".into(), "1".into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("source".into()),

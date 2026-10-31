@@ -8,12 +8,7 @@ async fn native_fixture() -> Result<(
 )> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
-    let model = Model::new(
-        "scripted".into(),
-        "publication".into(),
-        "1".into(),
-        serde_json::Value::Null,
-    )?;
+    let model = Model::new("scripted".into(), "publication".into(), "1".into())?;
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
     let harness = LocalHarness::open(
         crate::test_support::local_harness_config(directory.path(), (model, provider))?

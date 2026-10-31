@@ -110,7 +110,7 @@ impl ModelContent {
 #[cfg(feature = "filesystem")]
 impl ModelRequest {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
-        let mut bytes = crate::executor::json::json_value_logical_owned_bytes(&self.model.options)?;
+        let mut bytes = 0;
         for capacity in [
             self.model.provider.capacity(),
             self.model.name.capacity(),

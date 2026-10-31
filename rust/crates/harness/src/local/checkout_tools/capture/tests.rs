@@ -38,12 +38,7 @@ pub(super) fn inject(
 async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutTools)> {
     let directory = tempfile::tempdir().map_err(storage)?;
     std::fs::write(directory.path().join("marker"), b"before").map_err(storage)?;
-    let model = Model::new(
-        "scripted".into(),
-        "test".into(),
-        "1".into(),
-        serde_json::Value::Null,
-    )?;
+    let model = Model::new("scripted".into(), "test".into(), "1".into())?;
     let harness = LocalHarness::open(
         crate::test_support::local_harness_config(
             directory.path(),

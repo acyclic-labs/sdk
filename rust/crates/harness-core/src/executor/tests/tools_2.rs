@@ -27,7 +27,7 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
         ..wide.limits()
     };
     let executor = StockExecutor::new(
-        Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "scoped".into(), "1".into())?,
         Arc::new(scripted_model()),
         ContextPipeline::default(),
         tools,
@@ -104,7 +104,7 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
             crate::tool::json_projection_schema(json!({"type": "object"})),
         )?;
         let executor = super::uncompacted_executor(
-            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into())?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -269,7 +269,7 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
                 crate::tool::json_projection_schema(json!({"type": "object"})),
             )?;
             let executor = super::uncompacted_executor(
-                Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+                Model::new("example".into(), "model".into(), "1".into())?,
                 model.clone(),
                 ContextPipeline::default(),
                 tools,
@@ -334,7 +334,7 @@ async fn refused_calls_survive_an_interruption_after_the_next_context_is_prepare
     let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
     let executor = |model: Arc<ScriptedModelProvider>| -> Result<StockExecutor> {
         uncompacted_executor(
-            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into())?,
             model,
             ContextPipeline::default(),
             echo_tools(
@@ -466,7 +466,7 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
             crate::tool::json_projection_schema(json!({})),
         )?;
         let executor = uncompacted_executor(
-            Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
+            Model::new("fixture".into(), "exact".into(), "1".into())?,
             Arc::new(scripted_model()),
             ContextPipeline::default(),
             tools,

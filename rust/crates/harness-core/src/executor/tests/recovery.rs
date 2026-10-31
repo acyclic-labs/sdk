@@ -13,12 +13,7 @@ async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
         ..crate::context::Context::default()
     };
     let executor = StockExecutor::new(
-        Model::new(
-            "synthetic".into(),
-            "fixed-context".into(),
-            "1".into(),
-            json!({}),
-        )?,
+        Model::new("synthetic".into(), "fixed-context".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
             "fixed",
@@ -56,7 +51,7 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
     let source = Arc::new(ChangingContextSource(AtomicUsize::new(0)));
     let provider = Arc::new(recoverable_model(1));
     let executor = uncompacted_executor(
-        Model::new("test".into(), "model".into(), "1".into(), json!({}))?,
+        Model::new("test".into(), "model".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
             "changing-source",
@@ -109,7 +104,7 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
 async fn operation_identity_rejects_changed_input() -> Result<()> {
     let model = Arc::new(scripted_model());
     let executor = uncompacted_executor(
-        Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+        Model::new("example".into(), "model".into(), "1".into())?,
         model,
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -155,7 +150,7 @@ async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()>
         .with_token_counter(fixture_token_count),
     );
     let executor = StockExecutor::new(
-        Model::new("fixture".into(), "identity".into(), "1".into(), Value::Null)?,
+        Model::new("fixture".into(), "identity".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -352,7 +347,7 @@ async fn direct_model_steps_reject_empty_and_partial_eof() -> Result<()> {
     ] {
         let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(events)]));
         let executor = uncompacted_executor(
-            Model::new("test".into(), "model".into(), "1".into(), Value::Null)?,
+            Model::new("test".into(), "model".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -385,7 +380,7 @@ async fn an_unowned_empty_model_attempt_is_not_reissued() -> Result<()> {
             }]),
     );
     let executor = uncompacted_executor(
-        Model::new("fixture".into(), "pending".into(), "1".into(), Value::Null)?,
+        Model::new("fixture".into(), "pending".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -434,7 +429,7 @@ async fn unrecoverable_prefix(unsettled: bool) -> Result<()> {
         }]),
     );
     let executor = uncompacted_executor(
-        Model::new("fixture".into(), "partial".into(), "1".into(), Value::Null)?,
+        Model::new("fixture".into(), "partial".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),

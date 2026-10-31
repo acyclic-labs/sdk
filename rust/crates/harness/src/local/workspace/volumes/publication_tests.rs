@@ -45,12 +45,7 @@ fn external_projection_writer() -> Result<()> {
 }
 
 async fn open(root: &Path, state: &Path) -> Result<crate::LocalHarness> {
-    let model = crate::model::Model::new(
-        "scripted".into(),
-        "test".into(),
-        "1".into(),
-        serde_json::Value::Null,
-    )?;
+    let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
     let provider = Arc::new(
         ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_context_capacity(
             crate::context::ModelContextCapacity {

@@ -27,12 +27,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         ..Default::default()
     };
     let executor = StockExecutor::new(
-        Model::new(
-            "synthetic".into(),
-            "counter".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("synthetic".into(), "counter".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
             "instructions",
