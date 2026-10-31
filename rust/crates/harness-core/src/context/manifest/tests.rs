@@ -40,9 +40,116 @@ fn definition(name: String, description: String) -> ToolDefinition {
     }
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn callable_registry_admission_preserves_original_custody_on_refusal() -> Result<()> {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .expect("original callable work");
+    let (mut registry, custody) = ToolRegistry::new(&work)?;
+    let mut custody = Some(custody);
+    let mut declared = skill("skills/inspect/SKILL.md".into())?;
+    declared
+        .fields
+        .insert("input_schema".into(), json!({"type":"object"}));
+    declared.fields.insert(
+        "runtime".into(),
+        json!({"kind":"code","script":"skills/inspect/run.ts"}),
+    );
+    assert!(declared.register_callable(&mut registry, &mut custody, Some(&work))?);
+    let before = registry.definitions(None)?;
+    let retained = custody.as_ref().expect("original custody").bytes();
+    // Original native registration refuses missing custody and rolls back a
+    // malformed replacement without changing the admitted revision or its hold.
+    let mut absent = ToolRegistry::default();
+    assert!(matches!(
+        declared.register_callable(&mut absent, &mut None, Some(&work)),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert!(absent.definitions(None)?.is_empty());
+    declared
+        .fields
+        .insert("input_schema".into(), json!({"type":"unknown"}));
+    assert!(
+        declared
+            .register_callable(&mut registry, &mut custody, Some(&work))
+            .is_err()
+    );
+    assert_eq!(registry.definitions(None)?, before);
+    assert_eq!(
+        custody.as_ref().expect("retained custody").bytes(),
+        retained
+    );
+    cancellation.cancel();
+    assert!(
+        declared
+            .register_callable(&mut registry, &mut custody, Some(&work))
+            .is_err()
+    );
+    assert_eq!(
+        custody.as_ref().expect("cancelled custody").bytes(),
+        retained
+    );
+    Ok(())
+}
+
 // Property: canonical encoding is idempotent, preserves array order and round-trips
 // arbitrary descriptions; byte admission rejects before accepting an oversized manifest.
 proptest! {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn callable_registration_retains_pins_and_refuses_invalid_replacements(
+        text in ".{0,80}", code in any::<bool>(),
+    ) {
+        let mut declared = skill("skills/inspect/SKILL.md".into())?;
+        let mut registry = ToolRegistry::default();
+        prop_assert!(!declared.register_callable(&mut registry, &mut None, None)?);
+        prop_assert!(registry.definitions(None)?.is_empty());
+        declared.fields.insert("input_schema".into(), json!({"const": text}));
+        declared.fields.insert("runtime".into(), json!({
+            "kind": if code { "code" } else { "shell" },
+            "script": "skills/inspect/run",
+        }));
+        prop_assert!(declared.register_callable(&mut registry, &mut None, None)?);
+        let registered = registry.get("inspect", None, None)?.ok_or_else(|| TestCaseError::fail("missing registered skill"))?;
+        let revision = registered.definition.revision.clone();
+        let source = registered.skill_source.as_ref().ok_or_else(|| TestCaseError::fail("missing skill provenance"))?;
+        prop_assert_eq!(source.source(), &declared.source);
+        prop_assert_eq!(&registered.definition.input_schema, &declared.fields["input_schema"]);
+        prop_assert_eq!(registered.definition.validate_projection(
+            &json!({"kind":"json","value":text}), Limits::default(), None,
+        )?, crate::model::ToolResultContent::Json { value: json!(text) });
+        prop_assert!(registered.definition.validate_projection(
+            &json!({"kind":"parts","value":text}), Limits::default(), None,
+        ).is_err());
+        let before = registry.definitions(None)?;
+        for runtime in [
+            json!({"kind":"unknown","script":"skills/inspect/run"}),
+            json!({"kind":"code","script":"skills/inspect/run","unknown":true}),
+            json!({"kind":"code","script":"skills-other/run"}),
+        ] {
+            let mut replacement = declared.clone();
+            replacement.fields.insert("runtime".into(), runtime);
+            prop_assert!(replacement.register_callable(&mut registry, &mut None, None).is_err());
+            prop_assert_eq!(registry.definitions(None)?, before.clone());
+        }
+        let mut replacement = declared.clone();
+        replacement.fields.insert("input_schema".into(), json!({"type":"unknown"}));
+        prop_assert!(replacement.register_callable(&mut registry, &mut None, None).is_err());
+        prop_assert_eq!(registry.definitions(None)?, before);
+        // A different pinned source is a different immutable executable revision.
+        replacement = declared;
+        replacement.source.path = "skills/other/SKILL.md".into();
+        let mut other = ToolRegistry::default();
+        prop_assert!(replacement.register_callable(&mut other, &mut None, None)?);
+        let other = other.get("inspect", None, None)?.ok_or_else(|| TestCaseError::fail("missing replacement"))?;
+        prop_assert_ne!(&other.definition.revision, &revision);
+    }
+
     // Both catalog discovery and restored manifests reject partial callables.
     // Opaque runtime data and the original pinned source survive publication;
     // executable/schema admission remains the registry's responsibility.
