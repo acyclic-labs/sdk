@@ -468,7 +468,7 @@ async fn streaming_index_memory_is_logarithmic_in_chunk_count()
             chunk_bytes: 1,
             page_items: 1_024,
             page_bytes: 129,
-            maximum_blob_bytes: Some(4)_096,
+            maximum_blob_bytes: Some(4_096),
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
