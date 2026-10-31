@@ -712,8 +712,10 @@ impl RecordCache {
             self.touch(&key);
             return true;
         }
-        let value = self.backings.retain(value, self.max_bytes);
         let charge = path_len(&key) + ENTRY_OVERHEAD;
+        let value = self
+            .backings
+            .retain(value, self.max_bytes.saturating_sub(charge));
         self.insert(key, Value::Record(value), charge, protect)
     }
 
@@ -1308,14 +1310,30 @@ mod tests {
         let stream = StreamPath::new("record").unwrap();
         let root = OwnedBytes::from(vec![3; 1 << 20]);
         let unknown = OwnedBytes::from(bytes::Bytes::from(vec![3; 1 << 20]).slice(11..15));
-        for value in [root.slice(11..15), unknown] {
+        let budget = 4096;
+        let allowance = budget - ENTRY_OVERHEAD - stream.as_str().len();
+        for (value, detach) in [
+            (root.slice(11..15), true),
+            (OwnedBytes::from(vec![3; budget]).slice(11..15), true),
+            (OwnedBytes::from(vec![3; allowance + 1]).slice(11..15), true),
+            (unknown, true),
+            (OwnedBytes::from(vec![3; allowance]).slice(11..15), false),
+        ] {
             let pointer = value.as_slice().as_ptr();
-            let mut cache = RecordCache::new(4096, 16);
-            assert!(cache.insert_record(&stream, 0, value, None));
+            let mut cache = RecordCache::new(budget, 16);
+            assert!(
+                cache.insert_record(&stream, 0, value, None),
+                "tiny payload failed cache metadata admission"
+            );
             let view = cache.record(&stream, 0).unwrap();
-            assert_ne!(view.as_ptr(), pointer);
+            assert_eq!(
+                view.as_ptr() != pointer,
+                detach,
+                "fitting shared payload was copied"
+            );
             assert_eq!(view.as_ref(), &[3; 4]);
-            assert_eq!(cache.backing_bytes(), 4);
+            assert_eq!(cache.backing_bytes(), if detach { 4 } else { allowance });
+            assert!(cache.bytes() <= budget);
         }
         let full = OwnedBytes::from(vec![5; 8192]);
         let pointer = full.as_slice().as_ptr();
