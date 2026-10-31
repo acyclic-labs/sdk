@@ -112,7 +112,7 @@ impl PreparationIo {
     }
 }
 
-pub(in crate::filesystem) fn generation_ref(
+pub(crate) fn generation_ref(
     provider: &ProviderRef,
     generation: GenerationId,
     io: Option<&PreparationIo>,
