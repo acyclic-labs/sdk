@@ -228,15 +228,19 @@ impl SkillPublicationSource {
 
     /// Called only by the filesystem journal owner after its complete receipt
     /// confirmation, together with catalog/registry publication. A conditional
-    /// loser leaves the pending cut untouched for exact retry.
-    pub(crate) fn confirm_publication(&mut self, cursor: SourceCursor) -> Result<()> {
+    /// loser leaves the pending cut untouched for exact retry. The admitted
+    /// owner receives the original payload and custody without cloning it.
+    pub(crate) fn confirm_publication(
+        &mut self,
+        cursor: SourceCursor,
+    ) -> Result<SkillPublicationCut> {
         let pending = self.pending()?.ok_or(StreamError::InvalidArgument)?;
         if pending.cursor != cursor {
             return Err(StreamError::InvalidArgument.into());
         }
+        let admitted = self.pending.take().ok_or(StreamError::InvalidArgument)?;
         self.accepted = cursor;
-        self.pending = None;
-        Ok(())
+        Ok(admitted)
     }
 
     /// Prepares one member using the original session reservation. The caller

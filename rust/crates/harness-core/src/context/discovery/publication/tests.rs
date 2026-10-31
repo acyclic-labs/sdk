@@ -213,7 +213,6 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         hex::encode(metadata.source.generation.as_resource().key()),
         original.version()
     );
-    let retained = metadata.clone();
     let ready = pending.cursor();
     let checkpoint = pending.encode_checkpoint(&session)?;
     hidden
@@ -252,7 +251,11 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     assert_eq!(source.accepted(), cursor);
     // The journal adapter alone calls this after its actual receipt. This
     // source control tests the private acknowledgement fence, not that adapter.
-    source.confirm_publication(ready)?;
+    let admitted = source.confirm_publication(ready)?;
+    assert_eq!(admitted.encode_checkpoint(&session)?, checkpoint);
+    let [SkillPublicationChange::Skill(retained)] = admitted.changes() else {
+        panic!("admission lost its original metadata owner")
+    };
     assert!(
         source
             .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
