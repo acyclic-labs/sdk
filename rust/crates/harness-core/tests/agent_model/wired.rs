@@ -381,7 +381,9 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
-            None,
+            Some(acyclic_harness_core::AgentId::from_bytes(
+                path.id().to_bytes(),
+            )),
             &mut None,
         )?;
         let verifier = issuer.verifier(&mut None)?;
