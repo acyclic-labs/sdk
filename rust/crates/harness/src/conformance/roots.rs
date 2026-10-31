@@ -188,6 +188,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         },
     )?;
     let request = || RootRequest {
+        profile: None,
         agent: agent.clone(),
         fresh: vec![private.clone(), shared.clone()],
         retained: Vec::new(),

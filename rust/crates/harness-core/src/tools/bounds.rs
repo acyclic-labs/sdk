@@ -11,18 +11,13 @@ pub(super) fn limits(context: &ToolContext) -> (u64, usize) {
     (limits.render_bytes, limits.path_bytes)
 }
 
-/// Refuses an operand the model must correct: a command longer than one
-/// rendered part, or a shell `cwd` longer than a path.
-pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usize)) -> Result<()> {
+/// Checks the task's path admission. Command intent is retained in the
+/// original invocation; presentation demand does not limit executable input.
+pub(super) fn operands(arguments: &Value, path: usize) -> Result<()> {
     let text = |field: &str| arguments.get(field).and_then(Value::as_str).unwrap_or("");
-    if text("command").len() as u64 > render {
-        return Err(Error::Invalid(format!(
-            "{name} command exceeds its {render}-byte bound"
-        )));
-    }
     if text("cwd").len() > path {
         return Err(Error::Invalid(format!(
-            "{name} cwd exceeds its {path}-byte bound"
+            "shell cwd exceeds its {path}-byte bound"
         )));
     }
     Ok(())
@@ -235,14 +230,6 @@ mod tests {
                 .unwrap()
                 .starts_with("{\"Paths\":[")
         );
-        assert!(operands("fs", &json!({"command": "x".repeat(257)}), (BOUND, 8)).is_err());
-        assert!(
-            operands(
-                "shell",
-                &json!({"command": "ls", "cwd": "d".repeat(9)}),
-                (BOUND, 8)
-            )
-            .is_err()
-        );
+        assert!(operands(&json!({"command": "ls", "cwd": "d".repeat(9)}), 8).is_err());
     }
 }

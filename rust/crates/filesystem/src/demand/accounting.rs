@@ -5,6 +5,7 @@ use std::sync::{Arc, Weak};
 
 /// Accounting for one bounded source operation.
 pub struct DemandWork {
+    pub(crate) retained_claims: crate::materializer::RetainedClaims,
     #[cfg(test)]
     pub(crate) write_probe: Option<super::WriteProbe>,
     pub(crate) work: WorkCounters,
@@ -25,6 +26,7 @@ impl DemandWork {
         #[cfg(test)]
         crate::initialize_test_native_io();
         Self {
+            retained_claims: Default::default(),
             #[cfg(test)]
             write_probe: None,
             work: WorkCounters::UNCHARGED,
@@ -307,6 +309,7 @@ impl DemandWork {
             self.poison_native_original_work();
             return Err(DemandError::OriginalWorkPoisoned);
         }
+        self.advance_retained_claim();
         Ok(())
     }
     pub(crate) fn reconcile_native_allocation(

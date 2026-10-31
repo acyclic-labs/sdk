@@ -475,14 +475,14 @@ pub(super) fn verify(
     if scope.issuer != verifier.id {
         return Err(unauthorized("foreign issuer"));
     }
-    verifier.admission.check(scope)?;
+    verifier.admission.check_with_work(scope, work)?;
     let capability = {
         let trust: &dyn verify::Trust = &*verifier.public.trust;
         let authenticated = authenticate(&verifier.public, trust, scope, timestamp, work)?;
         authorize_scope(trust, audience, scope, timestamp, &authenticated, work)?
     };
     // A foreign owner is never invoked while holding the public trust lock.
-    verifier.admission.check(scope)?;
+    verifier.admission.check_with_work(scope, work)?;
     Ok(capability)
 }
 pub(super) fn verify_trusted(

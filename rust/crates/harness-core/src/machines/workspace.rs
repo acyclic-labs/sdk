@@ -135,6 +135,16 @@ impl MachinesWorkspace {
 }
 
 impl ToolExecutor for MachinesWorkspace {
+    fn prepare_shell_script(
+        &self,
+        source: &str,
+        input: &serde_json::Value,
+        _context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<ShellInput> {
+        ShellInput::from_script(self.shell, source, input, work)
+    }
+
     fn read_path<'a>(
         &'a self,
         path: &'a str,

@@ -44,7 +44,7 @@ fn line_text(line: &str) -> &str {
 
 fn parse<'a>(
     diff: &'a str,
-    maximum_hunks: u32,
+    maximum_hunks: Option<u32>,
     meter: &mut NativeCustody,
 ) -> Result<Vec<Hunk<'a>>> {
     let mut hunks: Vec<Hunk<'_>> = Vec::new();
@@ -57,7 +57,7 @@ fn parse<'a>(
             ));
         }
         if line == "@@" || line.starts_with("@@ ") {
-            if hunks.len() as u64 >= u64::from(maximum_hunks) {
+            if maximum_hunks.is_some_and(|maximum| hunks.len() as u64 >= u64::from(maximum)) {
                 return Err(invalid(meter, "patch exceeds hunk bound"));
             }
             let anchor = line.strip_prefix("@@ ");
@@ -105,11 +105,18 @@ fn parse<'a>(
     Ok(hunks)
 }
 
-fn same(left: &str, right: &str, remaining: &mut u64, meter: &NativeCustody) -> Result<bool> {
+fn same(
+    left: &str,
+    right: &str,
+    remaining: &mut Option<u64>,
+    meter: &NativeCustody,
+) -> Result<bool> {
     let cost = left.len().max(right.len()).max(1) as u64;
-    *remaining = remaining
-        .checked_sub(cost)
-        .ok_or_else(|| invalid(meter, "patch exceeds context comparison work bound"))?;
+    if let Some(remaining) = remaining {
+        *remaining = remaining
+            .checked_sub(cost)
+            .ok_or_else(|| invalid(meter, "patch exceeds context comparison work bound"))?;
+    }
     charge(meter, 0, cost)?;
     Ok(left == right)
 }
@@ -118,7 +125,7 @@ fn unique_anchor(
     source: &[&str],
     cursor: usize,
     anchor: &str,
-    work: &mut u64,
+    work: &mut Option<u64>,
     meter: &NativeCustody,
 ) -> Result<usize> {
     let mut found = None;
@@ -139,7 +146,7 @@ fn locate(
     source: &[&str],
     cursor: usize,
     hunk: &Hunk<'_>,
-    work: &mut u64,
+    work: &mut Option<u64>,
     meter: &NativeCustody,
 ) -> Result<usize> {
     let start = match hunk.anchor {
@@ -221,14 +228,43 @@ pub(crate) fn apply_update(
     {
         return Err(invalid(meter, "patch limits must be positive and finite"));
     }
-    if source.len() as u64 > limits.maximum_bytes || diff.len() as u64 > limits.maximum_bytes {
+    apply_update_core(
+        source,
+        diff,
+        limits.maximum_bytes,
+        Some(limits.maximum_work),
+        Some(limits.maximum_hunks),
+        meter,
+    )
+}
+
+/// Uses only the original file capacity and original physical work credit.
+/// There is no additional per-tool hunk or comparison limit.
+pub(crate) fn apply_update_admitted(
+    source: &str,
+    diff: &str,
+    maximum_bytes: u64,
+    meter: &mut NativeCustody,
+) -> Result<String> {
+    apply_update_core(source, diff, maximum_bytes, None, None, meter)
+}
+
+fn apply_update_core(
+    source: &str,
+    diff: &str,
+    maximum_bytes: u64,
+    maximum_work: Option<u64>,
+    maximum_hunks: Option<u32>,
+    meter: &mut NativeCustody,
+) -> Result<String> {
+    if source.len() as u64 > maximum_bytes || diff.len() as u64 > maximum_bytes {
         return Err(invalid(meter, "patch input exceeds byte bound"));
     }
     retain(
         meter,
         std::mem::size_of::<Vec<Hunk<'_>>>() + std::mem::size_of::<Vec<&str>>(),
     )?;
-    let hunks = parse(diff, limits.maximum_hunks, meter)?;
+    let hunks = parse(diff, maximum_hunks, meter)?;
     let mut source_lines = Vec::new();
     reserve_vec(
         meter,
@@ -245,14 +281,14 @@ pub(crate) fn apply_update(
         );
     let mut output = String::new();
     let mut cursor = 0;
-    let mut work = limits.maximum_work;
+    let mut work = maximum_work;
     for hunk in &hunks {
         let start = locate(&source_lines, cursor, hunk, &mut work, meter)?;
         for line in source_lines
             .get(cursor..start)
             .ok_or_else(|| invalid(meter, "patch hunks overlap"))?
         {
-            append(&mut output, line, limits.maximum_bytes, meter)?;
+            append(&mut output, line, maximum_bytes, meter)?;
         }
         cursor = start;
         for &(kind, text) in &hunk.lines {
@@ -261,7 +297,7 @@ pub(crate) fn apply_update(
                     let original = source_lines
                         .get(cursor)
                         .ok_or_else(|| conflict(meter, "patch context extends beyond source"))?;
-                    append(&mut output, original, limits.maximum_bytes, meter)?;
+                    append(&mut output, original, maximum_bytes, meter)?;
                     cursor += 1;
                 }
                 b'-' => {
@@ -270,10 +306,10 @@ pub(crate) fn apply_update(
                 b'+' => {
                     // Inserting after an unterminated context/anchor line creates a line boundary, never concatenates two lines.
                     if !output.is_empty() && !output.ends_with('\n') {
-                        append(&mut output, ending, limits.maximum_bytes, meter)?;
+                        append(&mut output, ending, maximum_bytes, meter)?;
                     }
-                    append(&mut output, text, limits.maximum_bytes, meter)?;
-                    append(&mut output, ending, limits.maximum_bytes, meter)?;
+                    append(&mut output, text, maximum_bytes, meter)?;
+                    append(&mut output, ending, maximum_bytes, meter)?;
                 }
                 _ => return Err(invalid(meter, "invalid parsed patch prefix")),
             }
@@ -283,7 +319,7 @@ pub(crate) fn apply_update(
         .get(cursor..)
         .ok_or_else(|| conflict(meter, "patch extends beyond source"))?
     {
-        append(&mut output, line, limits.maximum_bytes, meter)?;
+        append(&mut output, line, maximum_bytes, meter)?;
     }
     Ok(output)
 }

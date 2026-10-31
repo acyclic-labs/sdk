@@ -60,6 +60,8 @@ pub struct VerifiedCaller {
 /// the creation.
 #[derive(Clone, Debug)]
 pub struct RootRequest {
+    /// Pinned stock profile, absent when the external host owns the loop.
+    pub profile: Option<crate::agent::AgentProfilePin>,
     /// The root agent.
     pub agent: AgentId,
     /// Volumes created, empty, in the root's own commit; the agent's private
@@ -949,6 +951,7 @@ where
     ) -> Result<Prepared, Error> {
         self.admit_root(&request)?;
         let RootRequest {
+            profile,
             agent,
             fresh,
             retained,
@@ -959,6 +962,7 @@ where
         let Spawn { child, request } = self.agents.prepare_root(
             intent,
             ForkAdopted {
+                profile,
                 agent,
                 parent: None,
                 forked_at: 0,

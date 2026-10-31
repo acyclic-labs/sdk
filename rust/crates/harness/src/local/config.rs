@@ -45,14 +45,16 @@ pub struct LocalHarnessConfig {
     /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
+    pub(super) profiles: Option<(
+        Arc<crate::profile::Profiles>,
+        Arc<dyn crate::profile::ProfileModels>,
+    )>,
     /// Resolves the model selection, approver models and search at open.
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     pub(super) models: Option<(Arc<ModelResolver>, Option<String>)>,
     pub(super) tools: Vec<Tool>,
     /// Standard tools enabled, by name.
     pub(super) default_tools: Vec<String>,
-    /// Open children each agent may have at once.
-    pub(super) max_children: Option<u32>,
     /// Hosts the agents for [`crate::server::serve`].
     pub(super) served: Option<Arc<dyn super::Verifier>>,
     pub(super) approval_policy: crate::approvals::ApprovalPolicy,
@@ -97,6 +99,21 @@ impl LocalHarnessConfig {
         Self::configuration(workspace.into(), Some(model))
     }
 
+    /// Uses the shared file-resolved profiles and their original provider
+    /// registry. Roles choose models at each durable turn, never through a
+    /// binary-specific model or tool override.
+    pub fn configured(
+        workspace: impl Into<PathBuf>,
+        profiles: Arc<crate::profile::Profiles>,
+        models: Arc<dyn crate::profile::ProfileModels>,
+    ) -> Result<Self> {
+        let root = profiles.root()?;
+        let binding = models.select(&root, crate::OperationId::from_bytes([0; 16]), 0)?;
+        let mut config = Self::configuration(workspace.into(), Some(binding));
+        config.profiles = Some((profiles, models));
+        Ok(config)
+    }
+
     /// Selects a checkout whose model resolves at open through `models`: `selection`, else the
     /// native settings' configured model, else the resolver's default. Approver
     /// models resolve through `models` too; the settings' search provider backs the preset's
@@ -121,21 +138,20 @@ impl LocalHarnessConfig {
         settings: Option<&crate::native_settings::SettingsConfig>,
         injected: bool,
     ) -> Result<Self> {
-        let Some((models, selection)) = self.models.take() else {
-            return Ok(self);
-        };
-        let selection = match selection {
-            Some(selection) => selection,
-            None => settings
-                .map(crate::native_settings::SettingsConfig::configured_model)
-                .transpose()?
-                .flatten()
-                .unwrap_or_else(|| models.default.clone()),
-        };
-        self.model = Some(models.resolve(&selection)?);
-        for model in self.approval_policy.models() {
-            self.approval_models
-                .insert(model.into(), models.resolve(model)?);
+        if let Some((models, selection)) = self.models.take() {
+            let selection = match selection {
+                Some(selection) => selection,
+                None => settings
+                    .map(crate::native_settings::SettingsConfig::configured_model)
+                    .transpose()?
+                    .flatten()
+                    .unwrap_or_else(|| models.default.clone()),
+            };
+            self.model = Some(models.resolve(&selection)?);
+            for model in self.approval_policy.models() {
+                self.approval_models
+                    .insert(model.into(), models.resolve(model)?);
+            }
         }
         #[cfg(feature = "search-http")]
         {
@@ -181,11 +197,11 @@ impl LocalHarnessConfig {
             without_user_settings: false,
             test_state: None,
             model,
+            profiles: None,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             models: None,
             tools: Vec::new(),
             default_tools: crate::tools::default_names(),
-            max_children: None,
             served: None,
             approval_policy: Default::default(),
             approval_issuer: None,
@@ -354,15 +370,16 @@ impl LocalHarnessConfig {
         self.served = Some(verifier);
         self
     }
-    /// Applies `preset`'s tool selection and approval policy.
+    /// Applies the shared agent defaults and the owner's approval policy.
     /// Web tools need the `search-http` feature.
     #[must_use]
     pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
-        self.default_tools.clone_from(&preset.tools);
-        self.max_children = preset.max_children;
+        if self.model.is_some() {
+            self.default_tools = crate::tools::default_names();
+        }
         #[cfg(feature = "search-http")]
         {
-            self.web_tools = preset.web_tools;
+            self.web_tools = self.model.is_some();
         }
         self.approval_policy = preset.approval_policy.clone();
         self
@@ -370,12 +387,6 @@ impl LocalHarnessConfig {
     /// The host-backed tools and approvals this configuration applies.
     pub(super) fn preset_value(&self) -> crate::preset::Preset {
         crate::preset::Preset {
-            tools: self.default_tools.clone(),
-            max_children: self.max_children,
-            #[cfg(feature = "search-http")]
-            web_tools: self.web_tools,
-            #[cfg(not(feature = "search-http"))]
-            web_tools: false,
             approval_policy: self.approval_policy.clone(),
         }
     }

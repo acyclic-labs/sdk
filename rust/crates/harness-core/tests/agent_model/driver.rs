@@ -127,6 +127,12 @@ struct Script {
 }
 
 impl TurnEffects for Script {
+    fn recorded_call<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<Option<TurnEffect>>> {
+        Box::pin(async { unused() })
+    }
     fn record<'a>(
         &'a self,
         _: &'a str,

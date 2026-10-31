@@ -20,7 +20,7 @@ impl ContextAccounting {
     }
 }
 
-pub(super) fn stock_context_capacity(
+pub(crate) fn stock_context_capacity(
     provider: &dyn ModelProvider,
     model: &Model,
     io: Option<&PreparationIo>,
@@ -48,7 +48,7 @@ pub(super) fn stock_context_capacity(
     provider.context_capacity(model)
 }
 
-pub(super) async fn stock_count_tokens(
+pub(crate) async fn stock_count_tokens(
     provider: &dyn ModelProvider,
     request: &crate::model::PreparedModelRequest,
     io: Option<&PreparationIo>,

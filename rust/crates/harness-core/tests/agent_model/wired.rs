@@ -83,34 +83,27 @@ fn executors_with_targets(
         model_steps: 1,
         ..Default::default()
     };
+    let admitted = acyclic_harness_core::conversation::Limits {
+        model_steps: u64::from(LIMITS.max_steps),
+        ..base
+    };
     let bindings = acyclic_harness_core::runtime::Bindings {
         targets,
         scope: acyclic_harness_core::runtime::RuntimeScope::new(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
-            if matching_limits {
-                acyclic_harness_core::conversation::Limits {
-                    model_steps: usize::try_from(LIMITS.max_steps)?,
-                    ..base
-                }
-            } else {
-                base
-            },
+            if matching_limits { admitted } else { base },
         )?,
         ..Default::default()
     }
     .build()?;
-    Ok(Arc::new(preset.executors(
-        (selection, model),
-        ToolRegistry::default(),
-        (
-            acyclic_harness_core::conversation::Limits {
-                model_steps: usize::try_from(LIMITS.max_steps)?,
-                ..base
-            },
-            CompactionPolicy::Disabled,
+    Ok(Arc::new(
+        acyclic_harness_core::filesystem::StockExecutors::new(
+            (selection, model),
+            ToolRegistry::default(),
+            (admitted, CompactionPolicy::Disabled),
+            Arc::new(Tasks(bindings)),
         ),
-        Arc::new(Tasks(bindings)),
-    )))
+    ))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {
@@ -562,6 +555,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
             .await?;
     }
     let forked = ForkAdopted {
+        profile: None,
         agent: id(6),
         parent: Some(parent.clone()),
         forked_at: 0,

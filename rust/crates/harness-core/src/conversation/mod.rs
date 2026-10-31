@@ -208,6 +208,8 @@ mod history;
 mod message;
 mod outcome;
 mod selection;
+#[cfg(feature = "filesystem")]
+mod source;
 mod state;
 mod volumes;
 pub use attachments::{
@@ -220,8 +222,8 @@ pub(crate) use content::content_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use content::require_owner_reader;
 pub use content::{
-    BoundedContentFuture, CompositeContentVerifier, ContentAccess, ContentHold, ContentIo,
-    ContentMountResolver, ContentPublisher, ContentResidencyVerifier,
+    BoundedContentFuture, CompositeContentVerifier, ContentAccess, ContentChange, ContentHold,
+    ContentIo, ContentMountResolver, ContentPublisher, ContentResidencyVerifier,
 };
 pub use directory::{
     MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
@@ -232,6 +234,8 @@ pub use files::{FileDescriptor, FileRef};
 pub(crate) use files::{PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
+#[cfg(feature = "filesystem")]
+pub use source::{ContentSource, ContentSourceAdapter};
 pub use volumes::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
 #[doc(hidden)]
 pub use volumes::{

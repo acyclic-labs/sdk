@@ -51,6 +51,9 @@ impl ToolRegistry {
             crate::executor::with_history_io(io, |work| {
                 tool.definition.validate_checked(work, check)
             })?;
+            if let Some(source) = &tool.skill_source {
+                source.verify(&tool.definition, io)?;
+            }
             check()?;
             self.admit_version_slot(io)?;
             let key = (
@@ -87,14 +90,10 @@ impl ToolRegistry {
                 Some((name, selection))
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let retained = if let Some(owned_io) = owned_io {
-                let (extra, retained) = self.registration_bytes(
-                    &key,
-                    &selection,
-                    previous,
-                    original,
-                    definition_bytes,
-                )?;
+            let (extra, retained) =
+                self.registration_bytes(&key, &selection, previous, original, definition_bytes)?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(owned_io) = owned_io {
                 let mut held = owned_io.into_native_custody(extra)?;
                 custody
                     .as_mut()
@@ -103,11 +102,15 @@ impl ToolRegistry {
                         reason: "tool registry custody is missing",
                     })?
                     .absorb(&mut held)?;
-                retained
-            } else {
-                0
-            };
+            }
             let data = Arc::make_mut(&mut self.data);
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                data.retained_bytes = retained
+                    .checked_sub(REGISTRY_BYTES as u64)
+                    .ok_or(OWNERSHIP_OVERFLOW)?;
+            }
+
             if let Some((name, selection)) = selection {
                 data.selected.insert(name, selection);
             } else if let Some(selection) = data.selected.get_mut(&key.0)
@@ -140,9 +143,8 @@ impl ToolRegistry {
         custody: &mut crate::NativeCustody,
         work: crate::NativeWork<'_>,
     ) -> Result<(u64, u64, u64)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let (original, definition_bytes, original_quota) = if let Some(work) = work {
-            use crate::filesystem::UploadRecord as _;
+        use crate::filesystem::UploadRecord as _;
+        if let Some(work) = work {
             work.remaining()?;
             if Arc::get_mut(&mut self.data).is_none() {
                 return Err(Error::NativeBoundary {
@@ -150,10 +152,26 @@ impl ToolRegistry {
                     reason: "shared native registry mutation requires a funded registry copy",
                 });
             }
-            let original = self.native_owned_bytes()?;
-            let definition_bytes = (std::mem::size_of::<ToolDefinition>() as u64)
-                .checked_add(tool.0.definition.logical_owned_bytes()?)
-                .ok_or(OWNERSHIP_OVERFLOW)?;
+        }
+        let original = self.native_owned_bytes()?;
+        let source_bytes = tool
+            .0
+            .skill_source
+            .as_ref()
+            .map(|source| {
+                source.logical_owned_bytes().and_then(|bytes| {
+                    bytes
+                        .checked_add(crate::executor::filesystem_skill_marker_bytes())
+                        .ok_or(OWNERSHIP_OVERFLOW)
+                })
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let definition_bytes = (std::mem::size_of::<ToolDefinition>() as u64)
+            .checked_add(tool.0.definition.logical_owned_bytes()?)
+            .and_then(|bytes| bytes.checked_add(source_bytes))
+            .ok_or(OWNERSHIP_OVERFLOW)?;
+        let original_quota = if let Some(work) = work {
             let registry = custody.as_mut().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "tool registration has no original registry custody",
@@ -176,9 +194,9 @@ impl ToolRegistry {
             tool.0.projection.supports_native_projection(Some(work))?;
             let original_quota = registry.bytes();
             registry.absorb(definition)?;
-            (original, definition_bytes, original_quota)
+            original_quota
         } else {
-            (0, 0, 0)
+            0
         };
         Ok((original, definition_bytes, original_quota))
     }
@@ -197,7 +215,8 @@ impl ToolRegistry {
                 std::mem::size_of::<(String, ModelSelection)>() as u64,
                 name.capacity() as u64,
                 match selected {
-                    ModelSelection::Revision(revision) => revision.capacity() as u64,
+                    ModelSelection::Revision(revision)
+                    | ModelSelection::CallableRevision(revision) => revision.capacity() as u64,
                     _ => 0,
                 },
             ]
@@ -217,7 +236,9 @@ impl ToolRegistry {
         .ok_or(OWNERSHIP_OVERFLOW)?;
         let released = if previous && selection.is_none() {
             match self.data.selected.get(&key.0) {
-                Some(ModelSelection::Revision(revision)) => revision.capacity() as u64,
+                Some(
+                    ModelSelection::Revision(revision) | ModelSelection::CallableRevision(revision),
+                ) => revision.capacity() as u64,
                 _ => 0,
             }
         } else {
@@ -236,7 +257,7 @@ impl ToolRegistry {
         if let Some(io) = io {
             io.retain_owned(VERSION_SLOT_BYTES as u64)?;
             let counters = acyclic_fs::WorkCounters {
-                items_examined: self.data.versions.len() as u64,
+                items_examined: 1,
                 ..Default::default()
             };
             io.preflight(counters)?;

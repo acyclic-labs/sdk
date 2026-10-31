@@ -42,6 +42,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await
     }
 
+    pub(in crate::filesystem) fn put_stream_content<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        grant: &'a ContentGrant,
+        path: &'a str,
+        source: std::pin::Pin<&'a mut dyn crate::conversation::ContentSource>,
+        media_type: &'a str,
+        display_name: &'a str,
+        maximum_bytes: u64,
+        key: &'a IdempotencyKey,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.put_content_input::<[u8]>(
+            volume,
+            grant,
+            path,
+            PublicationInput::Source(source),
+            media_type,
+            display_name,
+            maximum_bytes,
+            key,
+            None,
+            None,
+            access.ceiling,
+            access.io,
+        )
+    }
+
     /// Recovers the original upload generation and authenticated metadata.
     pub async fn content_for_operation(
         &self,

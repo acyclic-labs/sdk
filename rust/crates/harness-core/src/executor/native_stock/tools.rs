@@ -8,6 +8,28 @@ pub(in crate::executor) fn stock_tool_definitions(
     registry.definitions_for_grants(scope.grants(), io)
 }
 
+impl StockExecution<'_> {
+    pub(in crate::executor) fn tool_definitions(
+        &self,
+        io: Option<&PreparationIo>,
+    ) -> Result<Vec<crate::tool::ToolDefinition>> {
+        #[cfg(feature = "filesystem")]
+        if let Some((profiles, pin, key)) = &self.stock.profile {
+            let profile = profiles.for_model(pin, key)?;
+            let bound = profile.bind_tools(&self.stock.tools, io)?;
+            let mut definitions = crate::model::vec_with_capacity(bound.declarations().len(), io)?;
+            for binding in bound.declarations() {
+                definitions.push(crate::model::clone_tool_definition(
+                    &binding.tool().definition,
+                    io,
+                )?);
+            }
+            return Ok(definitions);
+        }
+        stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)
+    }
+}
+
 pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {

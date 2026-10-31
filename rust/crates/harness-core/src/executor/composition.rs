@@ -17,6 +17,10 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
+            #[cfg(feature = "filesystem")]
+            profile: None,
+            #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+            code_runtime: None,
             max_output_tokens: None,
             provider,
             context,
@@ -35,6 +39,21 @@ impl StockExecutor {
             reconciliation_only: false,
             live_reply: None,
         }
+    }
+
+    /// Binds the actor's immutable profile to this original executor. Role
+    /// availability is checked in the same dispatch policy as approvals.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_profile(
+        mut self,
+        profiles: Arc<crate::profile::Profiles>,
+        pin: crate::agent::AgentProfilePin,
+    ) -> Result<Self> {
+        let key = format!("{}/{}", self.model.provider, self.model.name);
+        let resolved = profiles.for_model(&pin, &key)?;
+        self.max_output_tokens = resolved.overlay().max_output_tokens;
+        self.profile = Some((profiles, pin, key));
+        Ok(self)
     }
 
     /// Stages each model dispatch's text while it streams; see [`LiveReply`].

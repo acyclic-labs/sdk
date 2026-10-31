@@ -178,6 +178,15 @@ fn role_changes_append_policy_without_rewriting_the_model_prefix() -> Result<()>
         other_policy.digest, base.digest,
         "pin the actual owner's approval policy"
     );
+    // The default watermark belongs to the shared model prefix. A role's
+    // smaller output reservation must not invalidate the inherited cache.
+    let default_watermark = profile(&FAMILY.replace("watermark_tokens: 700\n", ""), Some(200))?;
+    let smaller_output =
+        RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 100", 1))?;
+    let original = resolve(&default_watermark, &worker, &project, &agent)?;
+    let smaller = resolve(&default_watermark, &smaller_output, &project, &agent)?;
+    assert_eq!(original.prefix_digest(), smaller.prefix_digest());
+    assert_ne!(original.digest(), smaller.digest());
     Ok(())
 }
 

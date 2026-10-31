@@ -2,6 +2,29 @@ use super::*;
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Projects pinned skill source and its JSON input into this executor's
+    /// admitted target shell. This executes nothing: the returned ordinary
+    /// shell invocation still needs its original approval, journal and custody.
+    fn prepare_shell_script(
+        &self,
+        _source: &str,
+        _input: &serde_json::Value,
+        _context: Option<&crate::runtime::ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<crate::tools::ShellInput> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "target shell projection is not bound; recovery: bind the original admitted workspace executor",
+            });
+        }
+        let _ = work;
+        Err(Error::Unsupported(
+            "target shell projection is not bound; recovery: bind the original admitted workspace executor".into(),
+        ))
+    }
+
     /// Resolves an already validated content path in this exact workspace.
     /// Selection and read policy do not require a publication binding. The
     /// task's original reader still authenticates the selected volume/grants.

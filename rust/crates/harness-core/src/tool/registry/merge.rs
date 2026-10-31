@@ -23,6 +23,13 @@ impl ToolRegistry {
         }
         let data = Arc::make_mut(&mut self.data);
         let other = Arc::unwrap_or_clone(other.data);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            data.retained_bytes = data
+                .retained_bytes
+                .checked_add(other.retained_bytes)
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+        }
         data.versions.extend(other.versions);
         data.selected.extend(other.selected);
         data.catalog_revisions.extend(other.catalog_revisions);

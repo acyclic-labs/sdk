@@ -21,7 +21,7 @@ const options = {
     model_steps: 16n, model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
   principal: "do-conformance",
   // This host explicitly accepts every action its agents take.
-  preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, max_children: 8, approval_policy: { approvers: [{ kind: "rules", principal: "do-conformance", rules: [], fallback: "allow" }] } },
+  preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, approval_policy: { approvers: [{ kind: "rules", principal: "do-conformance", rules: [], fallback: "allow" }] } },
   handler_timeout_ms: 30_000n,
 };
 

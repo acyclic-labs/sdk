@@ -164,11 +164,10 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
             None,
             &mut None,
         )?;
-        let mut preset = Preset::graphcoder();
-        preset.tools.clear();
+        let preset = Preset::graphcoder();
         let limits = Limits::default();
         let turns = Turns {
-            executors: Arc::new(preset.executors(
+            executors: Arc::new(acyclic_harness::filesystem::StockExecutors::new(
                 (
                     Model::new("conformance".into(), "answer".into(), "1".into())?,
                     Arc::new(Answer),
@@ -206,6 +205,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                 Arc::new(User),
                 &IntentId::try_from("root")?,
                 RootRequest {
+                    profile: None,
                     agent: id,
                     fresh: vec![VolumeBinding {
                         name: PRIVATE_VOLUME.into(),

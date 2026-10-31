@@ -431,6 +431,8 @@ impl Opening {
             preset: self.preset,
             approval_models: self.config.approval_models,
             agent: self.config.model,
+            profiles: self.config.profiles,
+            context_manifest: self.config.context_manifest,
             served: self.config.served,
             active_directory: self.config.active_directory,
             skill_cache: context::skills::cache(),
@@ -560,21 +562,29 @@ impl PrivateVolumes {
 }
 
 fn configure_tools(
-    preset: &crate::preset::Preset,
+    _preset: &crate::preset::Preset,
     config: &mut LocalHarnessConfig,
 ) -> Result<ToolRegistry> {
-    let tools = preset.tools(
+    let mut tools = ToolRegistry::default();
+    crate::tools::bind_defaults(
+        &mut tools,
+        &mut Vec::new(),
+        None,
+        &config.default_tools,
+        true,
         |_| cfg!(any(test, feature = "native-execution")),
-        std::mem::take(&mut config.tools),
     )?;
+    for tool in std::mem::take(&mut config.tools) {
+        tools.register((tool, None), &mut None, None)?;
+    }
     #[cfg(feature = "search-http")]
-    if config.model.is_none() && preset.web_tools {
+    if config.model.is_none() && config.web_tools {
         return Err(Error::Invalid(
             "native host coordination cannot register web tools".into(),
         ));
     }
     #[cfg(feature = "search-http")]
-    let tools = if preset.web_tools {
+    let tools = if config.web_tools {
         let mut tools = tools;
         web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
         tools

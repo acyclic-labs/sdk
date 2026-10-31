@@ -9,10 +9,8 @@ use super::{AgentId, AgentPath, Error};
 use crate::conversation::{FileRef, VolumeRef};
 use serde::{Deserialize, Serialize};
 
-/// Largest agent record. Every part of one is bounded (paths by
-/// [`super::MAX_DEPTH`], file and volume references by the conversation
-/// maxima, texts by their own limits), so every record a step builds is
-/// within this; `checkpoint`'s bound test checks each kind at its worst.
+/// Protective frame for one agent record. The original encoder admits the
+/// complete serialized record, including its resolved profile identity.
 pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 /// Largest intent identity.
 pub const MAX_INTENT_BYTES: usize = 128;
@@ -27,7 +25,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// spawn brief by file reference. Version 3 binds goal runs to their committed
 /// terminal conversation entry. Version 4 lets a conversation entry name the
 /// execution-target roster its turn announced.
-pub const RECORD_VERSION: u32 = 4;
+/// Version 5 pins each stock agent's resolved role/model/profile at adoption.
+pub const RECORD_VERSION: u32 = 5;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -54,15 +53,28 @@ pub(crate) fn seal<T: Serialize + ?Sized>(record: &T) -> crate::Result<Vec<u8>> 
         record: &'a T,
         version: u32,
     }
-    crate::contract::canonical_json_bytes(&Sealed {
-        record,
-        version: RECORD_VERSION,
-    })
+    crate::executor::json::canonical_json_bytes_bounded(
+        &Sealed {
+            record,
+            version: RECORD_VERSION,
+        },
+        crate::executor::json::JsonBounds {
+            maximum_bytes: MAX_RECORD_BYTES as u64,
+            maximum_items: u64::MAX,
+            maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+        },
+        None,
+        &mut |_| Ok(()),
+    )
 }
 
 /// The record under the shared header. The version is checked before any of
 /// the record is decoded, so a record of another version is refused whole.
 pub(crate) fn open<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unopened> {
+    serde_json::from_str(payload(bytes)?).map_err(|_| Unopened::Malformed)
+}
+
+fn payload(bytes: &[u8]) -> Result<&str, Unopened> {
     let header: Header<'_> = serde_json::from_slice(bytes).map_err(|_| Unopened::Malformed)?;
     let found = header.version.unwrap_or(1);
     if found != RECORD_VERSION {
@@ -72,11 +84,42 @@ pub(crate) fn open<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unop
         }));
     }
     match header.record {
-        Some(record) if !header.unknown => {
-            serde_json::from_str(record.get()).map_err(|_| Unopened::Malformed)
-        }
+        Some(record) if !header.unknown => Ok(record.get()),
         _ => Err(Unopened::Malformed),
     }
+}
+
+/// The same version gate and record decode, under the invocation's original IO.
+#[cfg(feature = "filesystem")]
+pub(crate) fn open_with_io<T: crate::filesystem::PreparationRecord>(
+    bytes: &[u8],
+    io: &crate::filesystem::PreparationIo,
+) -> crate::Result<T> {
+    io.charge(acyclic_fs::WorkCounters {
+        items_examined: bytes.len() as u64,
+        ..Default::default()
+    })?;
+    // The header borrows RawValue; escaped identifier scratch and malformed
+    // JSON diagnostics remain covered before serde can allocate either.
+    let _header = io.reserve_decode(
+        (bytes.len() as u64)
+            .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())
+            .ok_or_else(|| io.invalid("agent header admission overflow"))?,
+    )?;
+    io.allocation_attempt(bytes.len() as u64)?;
+    let record = payload(bytes).map_err(|unopened| match unopened {
+        Unopened::Version(version) => crate::Error::UnsupportedRecordVersion(version),
+        Unopened::Malformed => crate::executor::stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Storage,
+            "versioned agent record is malformed",
+        ),
+    })?;
+    crate::filesystem::retain_decoded(io.decode(
+        std::marker::PhantomData::<T>,
+        record.as_bytes(),
+        crate::wire::ErrorCode::Storage,
+    )?)
 }
 
 /// The record of any agent stream as `T`, such as a JSON value for a
@@ -100,6 +143,15 @@ struct Header<'a> {
     unknown: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum HeaderKey {
+    Version,
+    Record,
+    #[serde(other)]
+    Unknown,
+}
+
 impl<'de> Deserialize<'de> for Header<'de> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Keys;
@@ -117,12 +169,12 @@ impl<'de> Deserialize<'de> for Header<'de> {
                     record: None,
                     unknown: false,
                 };
-                while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
-                    match &*key {
-                        "version" if header.version.is_none() => {
+                while let Some(key) = map.next_key::<HeaderKey>()? {
+                    match key {
+                        HeaderKey::Version if header.version.is_none() => {
                             header.version = Some(map.next_value()?);
                         }
-                        "record" if header.record.is_none() => {
+                        HeaderKey::Record if header.record.is_none() => {
                             header.record = Some(map.next_value()?);
                         }
                         _ => {
@@ -139,8 +191,11 @@ impl<'de> Deserialize<'de> for Header<'de> {
 }
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(try_from = "String", into = "String")]
+#[heap_layout(as = String)]
 pub struct IntentId(String);
 
 impl IntentId {
@@ -183,7 +238,9 @@ impl From<IntentId> for String {
 }
 
 /// Who wrote an inbox record.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Sender {
@@ -215,6 +272,54 @@ pub struct VolumeBinding {
     pub volume: VolumeRef,
 }
 
+/// Conversation selected by the role file at spawn admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnContext {
+    /// Root-only role, never admitted as a child.
+    TopLevel,
+    /// The brief and explicitly sent files only.
+    Fresh,
+    /// The parent's settled conversation at the original fork cut.
+    Fork,
+}
+
+/// Immutable profile identity selected before an agent is created.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProfilePin {
+    /// Role file identity.
+    pub role: String,
+    /// Provider-admitted model profile key.
+    pub model: String,
+    /// Resolved profile digest, including its original approval policy.
+    pub digest: [u8; 32],
+    /// Role-selected conversation mode.
+    pub context: SpawnContext,
+}
+
+impl AgentProfilePin {
+    /// Refuses a pin that cannot fit the versioned record frame. The final
+    /// adoption/effect encoder admits the complete record, including its pin,
+    /// at this same boundary; it never substitutes an identity-length cap.
+    pub fn validate_record(&self) -> crate::Result<()> {
+        seal(self).map(drop)
+    }
+}
+
+/// The host's immutable, admitted profile selection, shared by every turn.
+pub trait SpawnProfiles: acyclic_stream::ProviderPlatform {
+    /// Borrows a cached child pin after the same role permission check. A native
+    /// caller funds its owned copy before allocating; this never clones a pin.
+    fn child_ref(&self, _parent: &AgentProfilePin, _role: &str) -> crate::Result<&AgentProfilePin> {
+        Err(crate::Error::tool_rejected(
+            "host has no borrowed child-profile admission",
+        ))
+    }
+    /// Resolves a child and checks the parent's role permission before effects.
+    fn child(&self, parent: &AgentProfilePin, role: &str) -> crate::Result<AgentProfilePin>;
+}
+
 /// First record of every agent, written by the spawn fork or by root creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -223,6 +328,8 @@ pub struct ForkAdopted {
     pub agent: AgentId,
     /// Spawning agent, `None` for a root.
     pub parent: Option<AgentPath>,
+    /// Exact configured profile; external host loops have no stock profile.
+    pub profile: Option<AgentProfilePin>,
     /// Inbox sequence of this record; the agent's first consumed input.
     pub forked_at: u64,
     /// Tail of the inherited conversation at the fork cut.
@@ -256,7 +363,7 @@ pub struct Message {
 }
 
 /// Terminal result of an agent.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentOutcome {
@@ -276,7 +383,7 @@ pub enum AgentOutcome {
 }
 
 /// A child reached a terminal status.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct ChildDone {
@@ -355,7 +462,7 @@ pub struct Hook {
 /// How a context request selects the agent's later model context. Each one
 /// settles as a conversation entry, a checkpoint: every later turn's context
 /// is the latest checkpoint's summary, then the turns settled after it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContextAction {
@@ -418,7 +525,7 @@ pub enum InboxRecord {
 
 /// Current phase of an agent, appended to its status stream on change and on
 /// the step that creates its conversation stream.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -474,7 +581,7 @@ impl Phase {
 }
 
 /// One status stream record.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
