@@ -24,8 +24,7 @@ use super::{Clock, Error, PreparedPublish, Store};
 use crate::addressing::ActorReference;
 use crate::guest::{
     Effect, GuestError, GuestEventResult, SocketCloseInitiator, SocketHost, SocketPayload,
-    WebSocketAutoResponse, WebSocketId, validate_web_socket_attachment,
-    validate_web_socket_auto_response, validate_web_socket_tags,
+    WebSocketAutoResponse, WebSocketId,
 };
 use crate::sockets::{SocketFrame, SocketInput, SocketOpen, input_record, open_invocation};
 use acyclic_stream::StreamProviderExt as _;
@@ -520,6 +519,8 @@ struct Shared<P: StreamProvider + ?Sized> {
 
 /// The local runtime's socket host. Serve it as the session's
 /// [`SocketProvider`], and hand it to actors as their [`SocketHost`].
+/// Peer opens require `actors/invoke` for the namespace within the credential's
+/// certified account, checked before allocating or publishing the connection.
 pub struct Sockets<P: StreamProvider + ?Sized + 'static> {
     shared: Arc<Shared<P>>,
 }
@@ -1511,7 +1512,6 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         socket: &WebSocketId,
         tags: &[String],
     ) -> Result<(), GuestError> {
-        validate_web_socket_tags(tags)?;
         self.shared.with_entry(actor, socket, |entry| {
             entry.tags = tags.to_vec();
             Ok(())
@@ -1593,7 +1593,6 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         socket: &WebSocketId,
         bytes: Bytes,
     ) -> Result<(), GuestError> {
-        validate_web_socket_attachment(&bytes)?;
         self.shared.with_entry(actor, socket, |entry| {
             entry.attachment = Some(bytes);
             Ok(())
@@ -1617,7 +1616,6 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         let mut table = self.shared.lock();
         match value {
             Some(value) => {
-                validate_web_socket_auto_response(&value)?;
                 table.auto.insert(actor.clone(), value);
             }
             None => {

@@ -201,7 +201,9 @@ impl SocketOpen {
     }
 
     /// The canonical resource a session admits as `actors/invoke`: the
-    /// actor namespace, exactly as for an invocation.
+    /// actor namespace, exactly as for an invocation. The owning socket host
+    /// also binds the actor's account to the session's certified account;
+    /// this namespace spelling alone does not authenticate an actor reference.
     pub fn resource(&self) -> String {
         format!(
             "actors:/{}",
@@ -494,7 +496,6 @@ impl Delivery {
 
 /// The transition response that answers a socket Open.
 pub fn socket_reply(result: &GuestEventResult) -> Result<Bytes, GuestError> {
-    result.validate()?;
     serde_json::to_vec(result)
         .map(Bytes::from)
         .map_err(|error| GuestError::Encode(error.to_string()))
@@ -505,7 +506,6 @@ pub fn socket_reply(result: &GuestEventResult) -> Result<Bytes, GuestError> {
 pub fn socket_verdict(reply: &[u8], open: &SocketOpen) -> Result<GuestEventResult, GuestError> {
     let result: GuestEventResult =
         serde_json::from_slice(reply).map_err(|error| GuestError::Decode(error.to_string()))?;
-    result.validate()?;
     if let GuestEventResult::SocketAccept {
         subprotocol: Some(selected),
         ..

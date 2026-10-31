@@ -55,7 +55,7 @@ activation address.
 
 `ScopedDurableObjectState` (Rust) and `DurableObjectState` (TypeScript) pass that
 address to the host for the sole alarm, storage deletion and hibernating sockets.
-Alarm handlers receive validated retry metadata. Socket APIs cover tags,
+Socket APIs cover tags,
 attachments, auto-response and message/close/error delivery through `SocketHost`;
 `DurableHost` adds storage deletion. The host owns alarm persistence, activation
 fencing and the socket engine: Cloud's, and `local::Sockets` for the local

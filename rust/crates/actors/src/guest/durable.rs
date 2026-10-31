@@ -8,15 +8,6 @@ use std::{future::Future, sync::Arc};
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
-/// Maximum retained tags on one hibernating socket.
-pub const WEB_SOCKET_TAG_COUNT: usize = 10;
-/// Maximum Unicode scalar values in one tag.
-pub const WEB_SOCKET_TAG_CHARACTERS: usize = 256;
-/// Maximum opaque socket attachment bytes.
-pub const WEB_SOCKET_ATTACHMENT_BYTES: usize = 2048;
-/// Maximum Unicode scalar values in either auto-response string.
-pub const WEB_SOCKET_AUTO_RESPONSE_CHARACTERS: usize = 2048;
-
 /// Runtime-owned hibernatable socket identity, unrelated to the actor's identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct WebSocketId(pub String);
@@ -27,39 +18,6 @@ pub struct WebSocketAutoResponse {
     pub request: String,
     /// Exact outgoing text frame.
     pub response: String,
-}
-/// Admit the CF hibernation tag contract before invoking the host.
-pub fn validate_web_socket_tags(tags: &[String]) -> Result<(), GuestError> {
-    if tags.len() > WEB_SOCKET_TAG_COUNT
-        || tags
-            .iter()
-            .any(|tag| tag.chars().count() > WEB_SOCKET_TAG_CHARACTERS)
-    {
-        return Err(GuestError::Handler(
-            "WebSocket tags exceed 10 tags or 256 characters".into(),
-        ));
-    }
-    Ok(())
-}
-/// Admit an attachment independently of its serialization format.
-pub fn validate_web_socket_attachment(bytes: &[u8]) -> Result<(), GuestError> {
-    if bytes.len() > WEB_SOCKET_ATTACHMENT_BYTES {
-        return Err(GuestError::Handler(
-            "WebSocket attachment exceeds 2048 bytes".into(),
-        ));
-    }
-    Ok(())
-}
-/// Admit the exact text pair the host may answer without activating the actor.
-pub fn validate_web_socket_auto_response(value: &WebSocketAutoResponse) -> Result<(), GuestError> {
-    if value.request.chars().count() > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS
-        || value.response.chars().count() > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS
-    {
-        return Err(GuestError::Handler(
-            "WebSocket auto-response exceeds 2048 characters".into(),
-        ));
-    }
-    Ok(())
 }
 /// Hibernatable socket effects. A host keeps sockets, tags, attachments and the
 /// auto-response pair outside the actor heap, so a hibernated actor holding
