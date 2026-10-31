@@ -4,7 +4,7 @@ import ts from 'typescript';
 // This is a conservative source rule, not a liveness proof. Loops require an
 // exact finite-work or producer-event disposition. In particular, changing a
 // helper's spelling does not exempt the loop or its underlying timer reference.
-const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|recv_timeout|park_timeout|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|waitForTimeout|waitForFunction|waitUntil)$/;
+const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|Sleep(?:Ex)?|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_timeout|park_timeout|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil)$/;
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const loop = new Set(['for', 'while', 'loop', 'do']);
 const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
@@ -18,10 +18,12 @@ const classes = new Set([
  'idempotent-identity', 'event-wait', 'finite-work', 'injected-child-stall',
 ]);
 
+export const temporalModule = name => /^(?:node:)?timers(?:\/promises)?$/.test(name);
+
 export function sourceInScope(file) {
  // This declarative file is validated as exact dispositions, never executed.
  if (file === 'scripts/no-polling-dispositions.json') return false;
- return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/)[\s\S]+\.(?:rs|[cm]?js|tsx?|[ch]|cc|cpp|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
+ return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
 }
 
 /** @param {import('typescript').Expression | undefined} expression @returns {string | undefined} */
@@ -40,7 +42,9 @@ function constantString(expression) {
 }
 
 function scriptTokens(file, source) {
- const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+ // Both snapshots share a virtual root; no host filesystem lookup participates
+ // in resolving a source binding, and the dependency pass reuses this AST.
+ const parsed = ts.createSourceFile('/' + file, source, ts.ScriptTarget.Latest, true);
  const diagnostics = /** @type {typeof parsed & {parseDiagnostics: readonly import('typescript').Diagnostic[]}} */ (parsed).parseDiagnostics;
  if (diagnostics.length) throw new Error(file + ': ' + ts.flattenDiagnosticMessageText(diagnostics[0].messageText, '\n'));
  /** @type {import('typescript').Node[]} */
@@ -48,17 +52,24 @@ function scriptTokens(file, source) {
  const out = [];
  while (stack.length) {
   const node = /** @type {import('typescript').Node} */ (stack.pop());
-  const line = parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
+  const start = node.getStart(parsed);
+  const line = parsed.getLineAndCharacterOfPosition(start).line + 1;
+  if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier
+   && ts.isStringLiteralLike(node.moduleSpecifier) && temporalModule(node.moduleSpecifier.text)) {
+   out.push({value: node.moduleSpecifier.text, kind: 'indirection', line, start});
+  }
   if (ts.isElementAccessExpression(node)) {
    const property = constantString(node.argumentExpression);
-   if (property !== undefined && (temporal.test(property) || policyName.test(property))) out.push({value: property, kind: 'word', line});
-   else if (property === undefined && ts.isIdentifier(node.expression) && hostObjects.has(node.expression.text)) out.push({value: node.getText(parsed), kind: 'indirection', line});
+   if (property !== undefined && (temporal.test(property) || policyName.test(property))) out.push({value: property, kind: 'word', line, start});
+   else if (property === 'wait' || property === 'yield') out.push({value: property, kind: 'indirection', line, start});
+   else if (property === undefined && ts.isIdentifier(node.expression) && hostObjects.has(node.expression.text)) out.push({value: node.getText(parsed), kind: 'indirection', line, start});
   }
+  if (ts.isPropertyAccessExpression(node) && (node.name.text === 'wait' || node.name.text === 'yield')) out.push({value: node.name.text, kind: 'indirection', line, start});
   if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
    const callee = node.expression;
-   if (ts.isElementAccessExpression(callee)
-    || (ts.isIdentifier(callee) && (callee.text === 'eval' || callee.text === 'Function'))
-    || (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'Reflect')) out.push({value: callee.getText(parsed), kind: 'indirection', line});
+   if (ts.isElementAccessExpression(callee) || callee.kind === ts.SyntaxKind.ImportKeyword
+    || (ts.isIdentifier(callee) && (callee.text === 'eval' || callee.text === 'Function' || callee.text === 'require'))
+    || (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'Reflect')) out.push({value: callee.getText(parsed), kind: 'indirection', line, start});
   }
   const children = node.getChildren(parsed);
   if (children.length) {
@@ -72,9 +83,9 @@ function scriptTokens(file, source) {
   // The parser preserves executable template substitutions and regex boundaries.
   const value = kind === 'literal' ? /** @type {import('typescript').LiteralLikeNode} */ (node).text
    : ts.isIdentifier(node) ? node.text : node.getText(parsed);
-  out.push({value, kind, line});
+  out.push({value, kind, line, start});
  }
- return out;
+ return {stream: out, parsed};
 }
 
 // Nested comments, raw strings and lifetimes have Rust lexical boundaries.
@@ -85,7 +96,7 @@ function nativeTokens(source, rust) {
  let line = 1;
  const emit = (end, kind) => {
   const value = source.slice(at, end);
-  if (kind) out.push({value, kind, line});
+  if (kind) out.push({value, kind, line, start: at});
   line += (value.match(/\n/g) ?? []).length;
   at = end;
  };
@@ -126,8 +137,9 @@ function nativeTokens(source, rust) {
  return out;
 }
 
-export function pollingSites(file, source) {
- const stream = /\.(?:[cm]?js|tsx?)$/.test(file) ? scriptTokens(file, source) : nativeTokens(source, file.endsWith('.rs'));
+export function pollingUnit(file, source) {
+ const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source) : undefined;
+ const stream = parsed?.stream ?? nativeTokens(source, file.endsWith('.rs'));
  // A changed producer/condition elsewhere in the source unit must reopen the
  // disposition; a short context hash could preserve approval of a changed loop.
  const unit = createHash('sha256').update(JSON.stringify(stream.map(t => [t.kind, t.value]))).digest('hex');
@@ -175,9 +187,13 @@ export function pollingSites(file, source) {
    : undefined;
   if (!kind) continue;
   const fingerprint = createHash('sha256').update(JSON.stringify([kind, i, unit])).digest('hex');
-  sites.push({file, line: t.line, kind, fingerprint});
+  sites.push({file, line: t.line, kind, fingerprint, start: t.start});
  }
- return sites;
+ return {stream, fingerprint: unit, sites, parsed: parsed?.parsed};
+}
+
+export function pollingSites(file, source) {
+ return pollingUnit(file, source).sites;
 }
 
 export function validateDispositions(dispositions) {
