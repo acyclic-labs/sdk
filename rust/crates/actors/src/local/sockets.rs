@@ -1533,10 +1533,13 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
             if !matches!(entry.phase, Phase::Open) {
                 return Err(host_error("WebSocket is not open"));
             }
-            match entry
-                .outbound
-                .try_send(SocketFrame::Message(payload).encode())
-            {
+            let frame = SocketFrame::Message(payload).encode();
+            if frame.len() > acyclic_stream::MAX_RECORD_BYTES {
+                return Err(host_error(
+                    "WebSocket frame exceeds the channel record bound",
+                ));
+            }
+            match entry.outbound.try_send(frame) {
                 Ok(()) => Ok(false),
                 Err(mpsc::error::TrySendError::Full(_)) => Ok(true),
                 Err(mpsc::error::TrySendError::Closed(_)) => {
