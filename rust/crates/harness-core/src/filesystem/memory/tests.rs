@@ -512,9 +512,14 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
             let baseline = work.live_allocation_bytes();
             {
                 let (result, _custody) = read.executor.execute_with_native_context(&context, &invocation, &work)?.await?;
+                eprintln!("range execution live={} custody={}", work.live_allocation_bytes(), _custody.bytes());
                 assert_eq!(result.value["text"], "xxxxxxxxxxxxxxxx");
-                let projected = read.projection.project(&invocation, &result, Some(&work))?;
-                assert!(projected.0["value"]["version"].as_str().is_some());
+                {
+                    let projected = read.projection.project(&invocation, &result, Some(&work))?;
+                    assert!(projected.0["value"]["version"].as_str().is_some());
+                    eprintln!("range projection live={} custody={}", work.live_allocation_bytes(), projected.1.as_ref().map_or(0, |custody| custody.bytes()));
+                }
+                eprintln!("range projection dropped live={}", work.live_allocation_bytes());
             }
             assert!(work.receipt().source_bytes_read < 64 * 1024);
             assert!(work.receipt().bytes_copied < 64 * 1024);
