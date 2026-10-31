@@ -1,19 +1,17 @@
 //! Pinned sources and bounded context rendering.
-use super::context_contract;
 use super::{
-    Context, ContextInput, ContextMessages, ContextPlacement, ContextStage,
-    append_context_messages, copy_context, restrict_context_limits, validate_projected_context,
+    Context, ContextMessages, ContextPlacement, append_context_messages, copy_context,
+    validate_projected_context,
 };
 use crate::{
     Error, Result,
-    conversation::{ContentResidencyVerifier, FileRef, Limits},
+    conversation::{FileRef, Limits},
     executor::PreparationIo,
     model::ModelMessage,
     store::history::HistoryIo,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
 mod attribute;
 pub use attribute::ContextAttribute;
 mod input;
