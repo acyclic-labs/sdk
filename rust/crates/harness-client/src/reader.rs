@@ -20,7 +20,6 @@ mod demand;
 mod driver;
 
 pub use backing::RecordBytes;
-use cache::Key;
 pub use cache::{Listing, RecordCache, SnapshotError};
 pub use credential::CredentialStatus;
 use credential::{Access, Credentials};
@@ -747,15 +746,20 @@ impl Reader {
     /// passed-through values no want covers any longer are released.
     pub fn plan(&mut self, wants: impl IntoIterator<Item = (Want, Priority)>) {
         let wants: Vec<(Want, Priority)> = wants.into_iter().collect();
+        let pass_mark = self.cache.clock();
         // Rows of one page each state the same page want; display it once.
         let mut displayed = BTreeSet::new();
         for (want, priority) in &wants {
             if *priority == Priority::Visible && displayed.insert(want) {
-                self.display(want);
+                self.touch_want(want, true);
             }
         }
-        self.cache
-            .retain_passed(|cache, key| wants.iter().any(|(want, _)| covers(cache, want, key)));
+        for (want, _) in &wants {
+            if displayed.insert(want) {
+                self.touch_want(want, false);
+            }
+        }
+        self.cache.retain_passed(pass_mark);
         self.demand.begin_plan();
         for (want, priority) in wants {
             let Some((key, paging)) = self.resolve(&want) else {
@@ -785,11 +789,16 @@ impl Reader {
         }
     }
 
-    /// Mark one visible want's cached values and facts in use this frame.
-    fn display(&mut self, want: &Want) {
+    /// Retain a want's pass-throughs; only displayed wants protect cached
+    /// values and facts against eviction.
+    fn touch_want(&mut self, want: &Want, displayed: bool) {
         if let Some((stream, from, to)) = window(&self.cache, want) {
             let stream = stream.clone();
-            self.cache.touch_range(&stream, from, to);
+            if displayed {
+                self.cache.touch_range(&stream, from, to);
+            } else {
+                self.cache.retain_range(&stream, from, to);
+            }
         }
         if let Want::Listing {
             parent,
@@ -799,12 +808,20 @@ impl Reader {
         } = want
         {
             for (stream, last) in projected(&self.cache, want) {
-                self.cache.touch_record(&stream, last);
+                if displayed {
+                    self.cache.touch_record(&stream, last);
+                } else {
+                    self.cache.retain_range(&stream, last, last + 1);
+                }
             }
-            self.cache.touch_listing(parent, *index);
-            self.cache.touch_stream(parent);
-            if let Some(witness) = witness {
-                self.cache.touch_stream(witness);
+            if displayed {
+                self.cache.touch_listing(parent, *index);
+                self.cache.touch_stream(parent);
+                if let Some(witness) = witness {
+                    self.cache.touch_stream(witness);
+                }
+            } else {
+                self.cache.retain_listing(parent, *index);
             }
         }
     }
@@ -1563,22 +1580,6 @@ fn projected(cache: &RecordCache, want: &Want) -> Vec<(StreamPath, u64)> {
         .collect()
 }
 
-/// Whether `want` reads the value cached or passed through under `key`.
-fn covers(cache: &RecordCache, want: &Want, key: &Key) -> bool {
-    match (want, key) {
-        (Want::Listing { parent, index, .. }, Key::Listing(path, at)) => {
-            parent == path && index == at
-        }
-        (Want::Listing { .. }, Key::Record(..)) => projected(cache, want)
-            .iter()
-            .any(|(stream, last)| cache.resolve(stream, *last) == *key),
-        (_, Key::Record(_, sequence)) => window(cache, want).is_some_and(|(stream, from, to)| {
-            (from..to).contains(sequence) && cache.resolve(stream, *sequence) == *key
-        }),
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod reader_tests {
     use super::*;
@@ -2302,6 +2303,45 @@ mod reader_tests {
         let residency = reader.residency();
         assert!(residency.cache_bytes <= 64 * 1024);
         assert!(residency.passed_bytes > 64 * 1024);
+        // One still-wanted value among unrelated retained values and
+        // interests must not require their Cartesian product. Prefetch
+        // retains a pass-through without protecting cold cached entries.
+        let shared = OwnedBytes::from(vec![0_u8; 64 * 1024]);
+        for index in 0..32 {
+            let path = StreamPath::new(format!("cold/{index}")).unwrap();
+            assert!(
+                !reader
+                    .cache
+                    .insert_record(&path, 0, shared.clone(), Some(reader.frame_mark),)
+            );
+        }
+        drop(shared);
+        let wants = (0..100_000)
+            .map(|index| {
+                (
+                    Want::Range {
+                        stream: StreamPath::new(format!("unrelated/{index}")).unwrap(),
+                        from: 0,
+                        to: 1,
+                    },
+                    Priority::Prefetch,
+                )
+            })
+            .chain([(want[0].0.clone(), Priority::Prefetch)]);
+        reader.begin_frame(6);
+        reader.cache.take_retention_visits();
+        reader.plan(wants);
+        assert!(
+            reader.cache.record(&stream, 0).is_some(),
+            "prefetch lost its retained result"
+        );
+        assert_eq!(
+            reader.cache.take_retention_visits(),
+            33,
+            "retention enumerated unrelated wants for each retained value"
+        );
+        assert_eq!(reader.cache.record(&stream, 0).unwrap().len(), 64 * 1024);
+        assert_eq!(reader.residency().passed_bytes, residency.passed_bytes);
         assert!(frame(&mut reader, 6, &[]).is_empty());
         assert!(reader.cache.record(&stream, 0).is_none());
         assert_eq!(reader.residency().passed_bytes, 0);
@@ -2391,6 +2431,15 @@ mod reader_tests {
                 let head = StreamPath::new(format!("test/agents/{name}/conversation")).unwrap();
                 assert!(reader.cache.record(&head, 0).is_some(), "{name} at {now}");
             }
+        }
+        let prefetch = [(want[0].0.clone(), Priority::Prefetch)];
+        assert!(frame(&mut reader, 6, &prefetch).is_empty());
+        for name in ["a", "b"] {
+            let head = StreamPath::new(format!("test/agents/{name}/conversation")).unwrap();
+            assert!(
+                reader.cache.record(&head, 0).is_some(),
+                "prefetch head {name}"
+            );
         }
         assert!(reader.residency().cache_bytes <= 64 * 1024);
     }
