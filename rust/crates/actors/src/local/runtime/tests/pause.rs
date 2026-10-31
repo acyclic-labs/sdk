@@ -381,8 +381,19 @@ async fn replacement_and_producer_loss() -> TestResult {
         runtime.store.load(&address).await?.anchor,
         replacement.anchor
     );
-    assert!(runtime.release(&address));
+    assert!(matches!(
+        runtime.drain_actor(&address).await,
+        Err(Error::Conflict)
+    ));
 
+    // A fresh host can claim the replacement. The old slot's error receipt
+    // may still be retiring on its original executor; that is not permission
+    // for the stale epoch to deliver, nor an immediate hibernation guarantee.
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     let (entered, release) = provider.arm(Fault::Load);
     let mut pause = Box::pin(runtime.pause(&address, true));
     assert!(futures::poll!(pause.as_mut()).is_pending());

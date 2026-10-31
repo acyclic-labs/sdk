@@ -254,7 +254,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Stop hosting an idle actor (hibernate). Returns false while a delivery
-    /// or an unknown publication still owns participant custody; wake it to
+    /// control or an unknown publication still owns participant custody; wake it to
     /// settle before releasing. Its durable state is untouched.
     pub fn release(&self, actor: &ActorReference) -> bool {
         let mut actors = self
