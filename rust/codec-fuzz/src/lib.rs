@@ -289,7 +289,7 @@ pub fn auth(bytes: &[u8]) {
         assert_eq!(BlockProto::from(value).encode_to_vec(), bytes);
     }
     if let Ok(value) = authority::decode_capability(bytes) {
-        for version in [0, 2, u32::MAX] {
+        for version in [0, 1, 3, u32::MAX] {
             let mut refused = CapabilityProto::from(value.clone());
             refused.version = version;
             // Removing every block also makes the body semantically invalid:
@@ -298,23 +298,26 @@ pub fn auth(bytes: &[u8]) {
                 if without_blocks {
                     refused.blocks.clear();
                 }
-                let encoded = refused.encode_to_vec();
-                assert_eq!(
-                    authority::decode_capability(&encoded),
-                    Err(acyclic_auth::Error::UnsupportedVersion(version))
-                );
-                assert!(matches!(
-                    acyclic_auth::verify::verify(
-                        &encoded,
-                        &acyclic_auth::testing::Snapshot::default(),
-                        acyclic_auth::testing::NOW,
-                    ),
-                    Err(acyclic_auth::verify::VerifyError::Version(found)) if found == version
-                ));
+                let encoded = refused.encode_canonical();
+                let header_len = 1 + prost::encoding::encoded_len_varint(u64::from(version));
+                for input in [encoded.as_slice(), &encoded[..header_len]] {
+                    assert_eq!(
+                        authority::decode_capability(input),
+                        Err(acyclic_auth::Error::UnsupportedVersion(version))
+                    );
+                    assert!(matches!(
+                        acyclic_auth::verify::verify(
+                            input,
+                            &acyclic_auth::testing::Snapshot::default(),
+                            acyclic_auth::testing::NOW,
+                        ),
+                        Err(acyclic_auth::verify::VerifyError::Version(found)) if found == version
+                    ));
+                }
             }
         }
         assert_eq!(
-            authority::decode_capability(&CapabilityProto::from(value.clone()).encode_to_vec()),
+            authority::decode_capability(&CapabilityProto::from(value.clone()).encode_canonical()),
             Ok(value)
         );
     }

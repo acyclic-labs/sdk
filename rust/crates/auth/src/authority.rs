@@ -105,23 +105,35 @@ pub fn decode_caveat(bytes: &[u8]) -> Result<Caveat, Error> {
 
 /// Strict envelope ingress, including block position, version and depth checks.
 pub fn decode_capability(bytes: &[u8]) -> Result<Capability, Error> {
-    let wire = CapabilityProto::decode(bytes).map_err(|_| Error::Invalid)?;
-    if wire.version != crate::VERSION {
-        return Err(Error::UnsupportedVersion(wire.version));
-    }
-    if wire.encode_to_vec() != bytes {
+    use crate::verify::{VerifyError, wire};
+    let envelope = wire::decode(bytes).map_err(|error| match error {
+        VerifyError::Version(version) => Error::UnsupportedVersion(version),
+        _ => Error::Invalid,
+    })?;
+    let signed = envelope
+        .blocks
+        .into_iter()
+        .map(SignedBlock::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    if signed.is_empty() {
         return Err(Error::Invalid);
     }
-    let value = Capability::try_from(wire)?;
-    let blocks = value
-        .blocks
+    let blocks = signed
         .iter()
         .map(|b| decode_block(&b.payload))
         .collect::<Result<Vec<_>, _>>()?;
     if !valid_chain(&blocks) {
         return Err(Error::Invalid);
     }
-    Ok(value)
+    let proof = match envelope.proof {
+        wire::Proof::Secret(mut bytes) => TipProof::Secret(std::mem::take(&mut *bytes)),
+        wire::Proof::Sealed(bytes) => TipProof::Sealed(bytes.to_vec()),
+    };
+    Ok(Capability {
+        blocks: signed,
+        proof,
+        version: crate::VERSION,
+    })
 }
 
 /// Root is index zero; each `max_depth` is an absolute terminal index ceiling.

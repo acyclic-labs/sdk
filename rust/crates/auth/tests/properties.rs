@@ -93,13 +93,13 @@ proptest! {
         for proof in [TipProof::Secret(vec![2;32]),TipProof::Sealed(vec![2;64])] {
             let cap=Capability {version:VERSION,blocks:vec![SignedBlock {payload:bytes.clone(),signature:vec![3;64]}],proof};
             let wire:CapabilityProto=cap.clone().into();
-            prop_assert_eq!(decode_capability(&wire.encode_to_vec()),Ok(cap));
+            prop_assert_eq!(decode_capability(&wire.encode_canonical()),Ok(cap));
         }
     }
     #[test]
     fn arbitrary_wire_round_trip(bytes in prop::collection::vec(any::<u8>(),0..2048)) {
         if let Ok(cap)=decode_capability(&bytes) {
-            let wire:CapabilityProto=cap.into();prop_assert_eq!(wire.encode_to_vec(),bytes.clone());
+            let wire:CapabilityProto=cap.into();let encoded=wire.encode_canonical();prop_assert_eq!(encoded.as_slice(),bytes.as_slice());
         }
         if let Ok(block)=decode_block(&bytes) {
             let wire:BlockProto=block.into();prop_assert_eq!(wire.encode_to_vec(),bytes);
@@ -127,7 +127,7 @@ proptest! {
         let signed=blocks.into_iter().map(|b| SignedBlock {payload:BlockProto::from(b).encode_to_vec(),signature:vec![1;64]}).collect::<Vec<_>>();
         for proof in [TipProof::Secret(vec![2;32]),TipProof::Sealed(vec![2;64])] {
             let cap=Capability {version:VERSION,blocks:signed.clone(),proof};
-            prop_assert_eq!(decode_capability(&CapabilityProto::from(cap).encode_to_vec()).is_ok(),len<=effective as usize);
+            prop_assert_eq!(decode_capability(&CapabilityProto::from(cap).encode_canonical()).is_ok(),len<=effective as usize);
         }
     }
     #[test]
@@ -184,12 +184,12 @@ proptest! {
         let payload=BlockProto::from(root()).encode_to_vec();
         let signed=SignedBlock {payload,signature:vec![1;64]};
         let cap=Capability {version,blocks:vec![signed.clone()],proof:TipProof::Secret(vec![2;32])};
-        let mut bytes=CapabilityProto::from(cap).encode_to_vec();
+        let mut bytes=CapabilityProto::from(cap).encode_canonical();
         let parsed=decode_capability(&bytes);
         if version==VERSION {prop_assert!(parsed.is_ok());} else {prop_assert_eq!(parsed,Err(Error::UnsupportedVersion(version)));
             bytes.extend([0x50,1]);prop_assert_eq!(decode_capability(&bytes),Err(Error::UnsupportedVersion(version)));}
         let cap=Capability {version:VERSION,blocks:vec![signed.clone(),signed],proof:TipProof::Secret(vec![2;32])};
-        prop_assert!(decode_capability(&CapabilityProto::from(cap).encode_to_vec()).is_err());
+        prop_assert!(decode_capability(&CapabilityProto::from(cap).encode_canonical()).is_err());
     }
 
     #[test]
