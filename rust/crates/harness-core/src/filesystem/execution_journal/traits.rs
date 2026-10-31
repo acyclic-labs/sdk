@@ -55,7 +55,7 @@ where
     fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
-        io: Option<&'a PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<crate::executor::ExecutionAttempt<'a>> {
         self.require_operation(operation, io)?;
         let namespace = crate::executor::with_history_io(io, |work| {

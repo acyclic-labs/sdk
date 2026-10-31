@@ -12,7 +12,7 @@ impl ExecutionJournal for ReplayOnly<'_> {
     fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
-        io: Option<&'a PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<crate::executor::ExecutionAttempt<'a>> {
         self.0.acquire_execution(operation, io)
     }

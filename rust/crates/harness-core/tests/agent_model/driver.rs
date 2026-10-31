@@ -40,7 +40,7 @@ impl ExecutionJournal for Unused {
     fn acquire_execution<'a>(
         &'a self,
         _: OperationId,
-        _: Option<&'a PreparationIo>,
+        _: Option<&PreparationIo>,
     ) -> acyclic_harness_core::Result<acyclic_harness_core::executor::ExecutionAttempt<'a>> {
         unused()
     }
