@@ -4,7 +4,7 @@ use super::*;
 /// Heap storage needed to copy compact public evidence from an authenticated owner.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrustEvidenceStorage<'a> {
-    allocation_bytes: [u64; 6],
+    allocation_bytes: [u64; 7],
     keys: &'a [KeyCertificate],
     /// Fixed-size identities copied into the compact representation.
     pub copied_bytes: u64,
@@ -40,7 +40,7 @@ struct Key {
 pub struct TrustEvidence {
     environment: String,
     account: String,
-    environment_issuer: BlockId,
+    environment_issuers: Vec<BlockId>,
     issuers: Vec<BlockId>,
     ids: Vec<BlockId>,
     keys: Vec<Key>,
@@ -58,7 +58,7 @@ struct Certificate<'a> {
 struct View<'a, C, N> {
     environment: &'a str,
     account: &'a str,
-    environment_issuer: &'a BlockId,
+    environment_issuers: &'a [BlockId],
     issuers: &'a [BlockId],
     ids: &'a [BlockId],
     certificates: C,
@@ -76,7 +76,10 @@ where
         let certificates = descendant.certificates()?;
         if self.environment != certificates.birth.birth.environment
             || self.account != certificates.birth.birth.account_id
-            || self.environment_issuer != &descendant.environment_issuer
+            || !descendant
+                .environment_issuers
+                .iter()
+                .all(|key| self.environment_issuers.contains(key))
             || self.issuers != descendant.issuers
             || self.not_before > descendant.not_before
             || self.expires_at < descendant.expires_at
@@ -111,7 +114,11 @@ where
             return Err(VerifyError::Time);
         }
         let environments = trust.environment_keys(self.environment)?;
-        if !environments.contains(self.environment_issuer) {
+        if !self
+            .environment_issuers
+            .iter()
+            .all(|key| environments.contains(key))
+        {
             return Err(VerifyError::Trust);
         }
         let account = trust.account(self.account)?;
@@ -237,7 +244,7 @@ impl VerifiedCapability {
         Ok(View {
             environment: &certificates.birth.birth.environment,
             account: &certificates.birth.birth.account_id,
-            environment_issuer: &self.environment_issuer,
+            environment_issuers: &self.environment_issuers,
             issuers: &self.issuers,
             ids: &self.ids,
             certificates: certificates.keys.iter().map(|certificate| Certificate {
@@ -275,6 +282,7 @@ impl VerifiedCapability {
             bytes(self.evidence_id_count().and_then(slots::<BlockId>))?,
             bytes(slots::<BlockId>(self.blocks.len()))?,
             bytes(slots::<BlockId>(self.issuers.len()))?,
+            bytes(slots::<BlockId>(self.environment_issuers.len()))?,
             bytes(Some(certificates.birth.birth.environment.len()))?,
             bytes(Some(certificates.birth.birth.account_id.len()))?,
         ];
@@ -332,7 +340,7 @@ impl VerifiedCapability {
         Ok(TrustEvidence {
             environment: certificates.birth.birth.environment.clone(),
             account: certificates.birth.birth.account_id.clone(),
-            environment_issuer: self.environment_issuer,
+            environment_issuers: self.environment_issuers.clone(),
             issuers: self.issuers.clone(),
             ids,
             keys,
@@ -354,7 +362,7 @@ impl TrustEvidence {
         View {
             environment: &self.environment,
             account: &self.account,
-            environment_issuer: &self.environment_issuer,
+            environment_issuers: &self.environment_issuers,
             issuers: &self.issuers,
             ids: &self.ids,
             certificates: self.keys.iter().map(|key| Certificate {
@@ -390,6 +398,9 @@ impl TrustEvidence {
             .and_then(|size| size.checked_add(self.environment.capacity()))
             .and_then(|size| size.checked_add(self.account.capacity()))
             .and_then(|size| size.checked_add(slots::<BlockId>(self.issuers.capacity())?))
+            .and_then(|size| {
+                size.checked_add(slots::<BlockId>(self.environment_issuers.capacity())?)
+            })
             .and_then(|size| size.checked_add(slots::<BlockId>(self.ids.capacity())?));
         bytes(base.and_then(|base| {
             self.keys

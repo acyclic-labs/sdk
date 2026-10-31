@@ -731,3 +731,48 @@ fn simulated_waits_in_every_state_wake_on_the_next_transition() {
         "the checker must catch a waiter that registers after the transition"
     );
 }
+
+#[test]
+fn a_removed_allowance_signer_refuses_cached_admission() {
+    let world = world();
+    let trust = follower(&world);
+    let second = Issuer::new("test", key(9));
+    let mut frontier = EnvironmentFrontier::genesis("test", world.issuer.anchor());
+    let both = [world.issuer.anchor()[0], second.anchor()[0]];
+    let record = world
+        .issuer
+        .environment_keyring(&mut frontier, &both, NOW)
+        .unwrap();
+    assert_eq!(trust.apply(&record, NOW), Ok(Applied::Changed));
+    let mint = |issuer: &Issuer, next: u8| {
+        let allowance = issuer.allowance("account", 500, NOW + 100, vec![]).unwrap();
+        world
+            .signer
+            .mint(
+                vec![Caveat {
+                    kind: CaveatKind::Allowance(allowance),
+                }],
+                key(next),
+                &trust,
+                NOW,
+            )
+            .unwrap()
+    };
+    // Born under the first key; its allowance is signed by the second.
+    let dependent = mint(&second, 100);
+    // Control: the same chain with an allowance by the surviving key.
+    let control = mint(&world.issuer, 101);
+    assert!(dependent.check(&trust, NOW).is_ok());
+    let record = world
+        .issuer
+        .environment_keyring(&mut frontier, &both[..1], NOW)
+        .unwrap();
+    assert_eq!(trust.apply(&record, NOW), Ok(Applied::Changed));
+    assert_eq!(dependent.check(&trust, NOW).err(), Some(VerifyError::Trust));
+    assert_eq!(
+        verify::verify(&dependent.encode(), &trust, NOW).err(),
+        Some(VerifyError::Signature)
+    );
+    assert!(control.check(&trust, NOW).is_ok());
+    assert!(verify::verify(&control.encode(), &trust, NOW).is_ok());
+}

@@ -171,7 +171,9 @@ pub struct VerifiedCapability {
     signed: Vec<SignedBlockProto>,
     ids: Vec<BlockId>,
     issuers: Vec<BlockId>,
-    environment_issuer: BlockId,
+    /// The Birth signer, then each distinct allowance signer: every
+    /// environment key this chain's admission depends on.
+    environment_issuers: Vec<BlockId>,
     signing_keys: HashSet<BlockId>,
     proof: Proof,
     principal: Principal,
@@ -237,7 +239,13 @@ fn verify_proof(
 
 /// Authenticate every environment-signed allowance against current environment
 /// trust and the chain's own account. Unsigned or foreign allowances refuse.
-fn allowances(blocks: &[Block], trust: &(impl Trust + ?Sized)) -> Result<(), VerifyError> {
+/// Authenticate every allowance caveat and return the environment keys that
+/// signed them, so cached admission rechecks each one against current trust.
+fn allowances(
+    blocks: &[Block],
+    trust: &(impl Trust + ?Sized),
+    signers: &mut Vec<BlockId>,
+) -> Result<(), VerifyError> {
     let birth = &blocks
         .first()
         .and_then(|block| block.certificates.as_ref())
@@ -262,11 +270,15 @@ fn allowances(blocks: &[Block], trust: &(impl Trust + ?Sized)) -> Result<(), Ver
         AllowanceProto::from(signed.allowance.clone())
             .encode(&mut message)
             .map_err(|_| VerifyError::Malformed)?;
-        if !keys.iter().any(|key| {
-            public_key(key)
-                .is_ok_and(|key| verify_signature(&key, &message, &signed.signature).is_ok())
-        }) {
-            return Err(VerifyError::Signature);
+        let signer = keys
+            .iter()
+            .find(|key| {
+                public_key(key.as_slice())
+                    .is_ok_and(|key| verify_signature(&key, &message, &signed.signature).is_ok())
+            })
+            .ok_or(VerifyError::Signature)?;
+        if !signers.contains(signer) {
+            signers.push(*signer);
         }
     }
     Ok(())
@@ -337,13 +349,14 @@ fn verify_certified(
     let proof = verify_proof(envelope.proof, signer, &previous, &mut message)?;
     // No expensive claims/subset conversion happens until every signature is valid.
     let blocks = admit_blocks(wire)?;
-    allowances(&blocks, trust)?;
+    let mut environment_issuers = vec![environment];
+    allowances(&blocks, trust, &mut environment_issuers)?;
     let mut verified = VerifiedCapability {
         blocks,
         signed: envelope.blocks,
         ids,
         issuers,
-        environment_issuer: environment,
+        environment_issuers,
         signing_keys: seen,
         proof,
         principal: Principal {
@@ -466,7 +479,7 @@ impl VerifiedCapability {
                 signed,
                 ids,
                 issuers: self.issuers.clone(),
-                environment_issuer: self.environment_issuer,
+                environment_issuers: self.environment_issuers.clone(),
                 signing_keys,
                 proof: Proof::Append(next),
                 principal: self.principal.clone(),
