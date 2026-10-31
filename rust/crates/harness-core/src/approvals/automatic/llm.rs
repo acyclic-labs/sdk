@@ -26,6 +26,11 @@ pub(super) async fn review_model(
     limits: Limits,
 ) -> Result<(RuleVerdict, Option<String>)> {
     let (model, provider) = binding;
+    #[cfg(feature = "filesystem")]
+    let scope = crate::filesystem::PreparationScope::new(execution.1)?;
+    #[cfg(feature = "filesystem")]
+    let io = scope.io();
+    #[cfg(not(feature = "filesystem"))]
     let io = execution.1;
     let mut messages = Vec::new();
     crate::executor::stock_vec_push(
@@ -80,8 +85,19 @@ pub(super) async fn review_model(
         selected_context: None,
         max_steps: 1,
     };
-    let result = executor.infer(execution.0, &input, execution.1).await?;
-    let review: Review = result.decode(limits, execution.1)?;
+    drop(binding);
+    let result = executor.infer(execution.0, &input, io).await?;
+    let review: Review = result.decode(limits, io)?;
+    drop(result);
+    drop(input);
+    drop(executor);
+    #[cfg(feature = "filesystem")]
+    scope.finish(
+        review
+            .reason
+            .as_ref()
+            .map_or(0, |reason| reason.capacity() as u64),
+    )?;
     Ok((review.verdict, review.reason))
 }
 
@@ -101,122 +117,163 @@ mod tests {
     async fn review_uses_original_count_dispatch_terminal_and_replay() -> Result<()> {
         let allow = r#"{"verdict":"allow","reason":null}"#;
         let deny = r#"{"verdict":"deny","reason":"final decision"}"#;
-        for case in 0..8 {
-            let storage = MemoryHarnessStorage::new(AgentId::new(), 1_000_000).await?;
-            let journal = storage.journal();
-            let mut events = vec![ScriptedEvent::Event(ModelEvent::Content {
-                delta: allow.into(),
-            })];
-            match case {
-                0 | 7 => {
-                    events.push(ScriptedEvent::Event(ModelEvent::MessageCompleted {
-                        text: if case == 7 {
-                            format!(r#"{{"verdict":"deny","reason":"{}"}}"#, "x".repeat(600))
-                        } else {
-                            deny.into()
-                        },
-                    }));
-                    events.push(ScriptedEvent::Event(ModelEvent::Content {
-                        delta: allow.into(),
-                    }));
+        for native in [false, true] {
+            for case in 0..8 {
+                let storage = MemoryHarnessStorage::new(AgentId::new(), 1_000_000).await?;
+                let journal = storage.journal();
+                let mut events = vec![ScriptedEvent::Event(ModelEvent::Content {
+                    delta: allow.into(),
+                })];
+                match case {
+                    0 | 7 => {
+                        events.push(ScriptedEvent::Event(ModelEvent::MessageCompleted {
+                            text: if case == 7 {
+                                format!(r#"{{"verdict":"deny","reason":"{}"}}"#, "x".repeat(600))
+                            } else {
+                                deny.into()
+                            },
+                        }));
+                        events.push(ScriptedEvent::Event(ModelEvent::Content {
+                            delta: allow.into(),
+                        }));
+                    }
+                    1 => events.push(ScriptedEvent::Event(ModelEvent::MessageCompleted {
+                        text: String::new(),
+                    })),
+                    3 => events.push(ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                        "call".into(),
+                        "shell".into(),
+                        serde_json::json!({}),
+                    )))),
+                    _ => {}
                 }
-                1 => events.push(ScriptedEvent::Event(ModelEvent::MessageCompleted {
-                    text: String::new(),
-                })),
-                3 => events.push(ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                    "call".into(),
-                    "shell".into(),
-                    serde_json::json!({}),
-                )))),
-                _ => {}
-            }
-            if case != 4 {
-                events.push(ScriptedEvent::Event(ModelEvent::Completed {
+                if case != 4 {
+                    events.push(ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: serde_json::json!({"usage":{"input_tokens":100,"output_tokens":8}}),
                 }));
-                // Completion must not wait for a transport EOF whose producer is still live.
-                events.push(ScriptedEvent::Pending {});
-            }
-            let counts = Arc::new(AtomicUsize::new(0));
-            let counter = counts.clone();
-            let provider = Arc::new(
-                ScriptedModelProvider::new([ScriptedTurn::Events(events)])
-                    .with_context_capacity(ModelContextCapacity {
-                        context_tokens: if case == 6 { 32 } else { 8192 },
-                        output_tokens: Some(16),
-                    })
-                    .with_token_counter(move |request| {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                        Ok(ModelTokenCount::from_upper_bounds(
-                            if case == 5 {
-                                [0; 32]
-                            } else {
-                                request.request_digest()
-                            },
-                            100,
-                            vec![0; request.request().messages.len()],
-                        ))
-                    }),
-            );
-            let bound: Arc<dyn ModelProvider> = provider.clone();
-            let model = Model::new("test".into(), "review".into(), "1".into())?;
-            let request = ApprovalRequest::new("original", b"{\"action\":\"exact\"}", 4096)?;
-            let limits = Limits {
-                render_bytes: if case == 7 { 512 } else { 4096 },
-                ..Limits::default()
-            };
-            let first = review_model(
-                (journal.as_ref(), None),
-                &request,
-                "reviewer",
-                (&model, &bound),
-                limits,
-            )
-            .await;
-            if case == 0 {
-                assert_eq!(first?, (RuleVerdict::Deny, Some("final decision".into())));
-            } else if case == 2 {
-                assert_eq!(first?, (RuleVerdict::Allow, None));
-            } else {
-                assert!(first.is_err(), "case {case} must refuse");
-            }
-            let replay = review_model(
-                (journal.as_ref(), None),
-                &request,
-                "reviewer",
-                (&model, &bound),
-                limits,
-            )
-            .await;
-            if case == 0 {
-                assert_eq!(replay?, (RuleVerdict::Deny, Some("final decision".into())));
-            } else if case == 2 {
-                assert_eq!(replay?, (RuleVerdict::Allow, None));
-            } else {
-                assert!(replay.is_err(), "case {case} replay must refuse");
-            }
-            assert_eq!(
-                provider.requests().len(),
-                usize::from(case != 5 && case != 6)
-            );
-            assert_eq!(counts.load(Ordering::SeqCst), if case == 5 { 2 } else { 1 });
-            if case == 0 {
-                let changed =
-                    ApprovalRequest::new("original", b"{\"action\":\"different\"}", 4096)?;
-                assert!(
-                    review_model(
-                        (journal.as_ref(), None),
-                        &changed,
-                        "reviewer",
-                        (&model, &bound),
-                        limits
-                    )
-                    .await
-                    .is_err()
+                    // Completion must not wait for a transport EOF whose producer is still live.
+                    events.push(ScriptedEvent::Pending {});
+                }
+                let counts = Arc::new(AtomicUsize::new(0));
+                let counter = counts.clone();
+                let provider = Arc::new(
+                    ScriptedModelProvider::new([ScriptedTurn::Events(events)])
+                        .with_context_capacity(ModelContextCapacity {
+                            context_tokens: if case == 6 { 32 } else { 8192 },
+                            output_tokens: Some(16),
+                        })
+                        .with_token_counter(move |request| {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                            Ok(ModelTokenCount::from_upper_bounds(
+                                if case == 5 {
+                                    [0; 32]
+                                } else {
+                                    request.request_digest()
+                                },
+                                100,
+                                vec![0; request.request().messages.len()],
+                            ))
+                        }),
                 );
-                assert_eq!(provider.requests().len(), 1);
-                assert_eq!(counts.load(Ordering::SeqCst), 1);
-                assert_eq!(provider.requests()[0].max_output_tokens, None);
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let work = native
+                    .then(|| {
+                        acyclic_fs::NativeMaterializationWork::new(
+                            acyclic_fs::performance::work_budget(8_000_000, 8_000_000),
+                            &cancellation,
+                        )
+                    })
+                    .transpose()
+                    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                let io = work
+                    .as_ref()
+                    .map(PreparationIo::from_native_work)
+                    .transpose()?;
+                let bound: Arc<dyn ModelProvider> = provider.clone();
+                let model = Model::new("test".into(), "review".into(), "1".into())?;
+                let request = ApprovalRequest::new("original", b"{\"action\":\"exact\"}", 4096)?;
+                let limits = Limits {
+                    render_bytes: if case == 7 { 512 } else { 4096 },
+                    ..Limits::default()
+                };
+                let first = review_model(
+                    (journal.as_ref(), io.as_ref()),
+                    &request,
+                    "reviewer",
+                    (&model, &bound),
+                    limits,
+                )
+                .await;
+                if case == 0 {
+                    let first = first?;
+                    assert_eq!(first, (RuleVerdict::Deny, Some("final decision".into())));
+                    let retained = first
+                        .1
+                        .as_ref()
+                        .map_or(0, |reason| reason.capacity() as u64);
+                    if let Some(io) = &io {
+                        assert_eq!(io.owned_bytes()?, retained);
+                    }
+                    let hold = io.as_ref().map(|io| io.guard_owned(retained)).transpose()?;
+                    drop(first);
+                    drop(hold);
+                } else if case == 2 {
+                    assert_eq!(first?, (RuleVerdict::Allow, None));
+                } else {
+                    assert!(first.is_err(), "case {case} must refuse");
+                }
+                let replay = review_model(
+                    (journal.as_ref(), io.as_ref()),
+                    &request,
+                    "reviewer",
+                    (&model, &bound),
+                    limits,
+                )
+                .await;
+                if case == 0 {
+                    let replay = replay?;
+                    assert_eq!(replay, (RuleVerdict::Deny, Some("final decision".into())));
+                    let retained = replay
+                        .1
+                        .as_ref()
+                        .map_or(0, |reason| reason.capacity() as u64);
+                    if let Some(io) = &io {
+                        assert_eq!(io.owned_bytes()?, retained);
+                    }
+                    let hold = io.as_ref().map(|io| io.guard_owned(retained)).transpose()?;
+                    drop(replay);
+                    drop(hold);
+                } else if case == 2 {
+                    assert_eq!(replay?, (RuleVerdict::Allow, None));
+                } else {
+                    assert!(replay.is_err(), "case {case} replay must refuse");
+                }
+                assert_eq!(
+                    provider.requests().len(),
+                    usize::from(case != 5 && case != 6)
+                );
+                assert_eq!(counts.load(Ordering::SeqCst), if case == 5 { 2 } else { 1 });
+                if case == 0 {
+                    let changed =
+                        ApprovalRequest::new("original", b"{\"action\":\"different\"}", 4096)?;
+                    assert!(
+                        review_model(
+                            (journal.as_ref(), io.as_ref()),
+                            &changed,
+                            "reviewer",
+                            (&model, &bound),
+                            limits
+                        )
+                        .await
+                        .is_err()
+                    );
+                    assert_eq!(provider.requests().len(), 1);
+                    assert_eq!(counts.load(Ordering::SeqCst), 1);
+                    assert_eq!(provider.requests()[0].max_output_tokens, None);
+                }
+                if let Some(io) = &io {
+                    assert_eq!(io.owned_bytes()?, 0, "review scratch survived case {case}");
+                }
             }
         }
         Ok(())
