@@ -114,6 +114,7 @@ impl Export {
         if !self.details {
             sample.error_kind = None;
             sample.work = None;
+            sample.publication = None;
             sample.binding = None;
         }
         let record = ExportRecord {
@@ -136,6 +137,7 @@ impl Sink for Export {
             span_id: sample.span_id.clone(),
             parent_id: sample.parent_id.cloned(),
             durability: sample.durability,
+            publication: self.details.then_some(sample.publication).flatten(),
             work: self.details.then_some(sample.work).flatten(),
             binding: self.details.then(|| sample.binding.cloned()).flatten(),
             metadata: sample.metadata,
@@ -155,6 +157,9 @@ impl Sink for Export {
     }
 
     fn work_details(&self) -> bool {
+        self.details
+    }
+    fn publication_details(&self) -> bool {
         self.details
     }
     fn binding_details(&self) -> bool {

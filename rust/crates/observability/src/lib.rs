@@ -13,6 +13,11 @@ mod durability;
 pub use durability::{DurabilityAttempt, DurabilityRequest, DurabilitySyscall};
 
 #[cfg(not(target_arch = "wasm32"))]
+mod publication;
+#[cfg(not(target_arch = "wasm32"))]
+pub use publication::{Publication, PublicationControl, PublicationData, PublicationPurpose};
+
+#[cfg(not(target_arch = "wasm32"))]
 mod work;
 #[cfg(not(target_arch = "wasm32"))]
 pub use work::WorkSummary;
