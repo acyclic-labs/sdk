@@ -345,6 +345,83 @@ where
         })
     }
 
+    fn read_private_range<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+        range: acyclic_fs::ByteRange,
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::FilePathSelection,
+                acyclic_stream::OwnedBytes,
+                Option<crate::conversation::ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.verify_exact_file(None, io)?;
+            let mut history = io.map(PreparationIo::history_io);
+            let grant = ContentGrant::verify_directory_read(
+                self.authority.verifier(),
+                self.authority.scope(),
+                volume,
+                granted_prefix,
+                &mut history
+                    .as_mut()
+                    .map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
+            )?;
+            let grant_hold = io
+                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
+                .transpose()?;
+            if range.length > self.maximum_bytes {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "path range exceeds the bound reader allowance",
+                )
+                .tool_input());
+            }
+            let (bytes, generation, byte_length) = self
+                .host
+                .read_private_range(
+                    volume,
+                    &grant,
+                    path,
+                    expected_generation,
+                    range,
+                    crate::conversation::ContentAccess { ceiling, io },
+                )
+                .await?;
+            let generation = self.host.generation_ref_id(generation, io)?;
+            let selection = crate::executor::with_history_io(io, |work| {
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+                let selected = crate::conversation::FilePathSelection {
+                    volume: volume.copy_in_quota(&mut quota)?,
+                    path: crate::core::copy_text(path, &mut quota)?,
+                    generation,
+                    byte_length,
+                };
+                quota.transfer();
+                Ok::<_, Error>(selected)
+            })?;
+            let hold = io
+                .map(|io| io.guard_owned(selection.logical_owned_bytes()?))
+                .transpose()?;
+            drop(grant);
+            drop(grant_hold);
+            Ok((selection, bytes, hold))
+        })
+    }
+
     fn read_private_path<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,

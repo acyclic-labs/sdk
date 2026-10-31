@@ -114,7 +114,7 @@ pub fn output<T: JsonSchema>() -> Result<Value> {
 
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum JsonProjection<T> {
+pub(crate) enum JsonProjection<T> {
     Json { value: T },
 }
 
@@ -187,13 +187,13 @@ impl ProjectionMode {
 
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-enum ReferencePolicy {
+pub(crate) enum ReferencePolicy {
     Reference,
 }
 
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum ReferencePart<'a> {
+pub(crate) enum ReferencePart<'a> {
     Text {
         text: &'a str,
     },
@@ -205,7 +205,7 @@ enum ReferencePart<'a> {
 
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum ReferenceProjection<'a> {
+pub(crate) enum ReferenceProjection<'a> {
     Parts { parts: [ReferencePart<'a>; 2] },
 }
 
@@ -319,7 +319,7 @@ mod tests {
             value: json!(FileResult { file: file.clone() }),
         };
         let read = ToolResult {
-            value: json!({"file":file,"text":"exact"}),
+            value: json!({"file":{"content":file},"text":"exact"}),
         };
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             for (projector, result, schema) in [
@@ -331,7 +331,7 @@ mod tests {
                 (
                     &FileProjection::Read(mode) as &dyn ToolProjection,
                     &read,
-                    FileProjection::model_schema(mode)?,
+                    FileProjection::Read(mode).schema()?,
                 ),
             ] {
                 let projection = projector.project(&invocation, result, None)?.0;
@@ -367,7 +367,7 @@ mod tests {
                 .project(
                     &invocation,
                     &ToolResult {
-                        value: json!({"file":file,"text":"changed"})
+                        value: json!({"file":{"content":file},"text":"changed"})
                     },
                     None
                 )

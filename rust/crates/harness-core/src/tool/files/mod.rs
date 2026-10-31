@@ -46,10 +46,12 @@ pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
 }
 
 mod inputs;
+mod source;
 pub(crate) use inputs::FileView;
 pub use inputs::{
     EditFileInput, FileResult, PatchFileInput, ReadFileInput, ReadFileResult, WriteFileInput,
 };
+pub use source::FileReadSource;
 mod executor;
 mod version;
 pub(crate) use executor::FileTool;

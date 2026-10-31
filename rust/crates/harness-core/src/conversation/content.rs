@@ -283,6 +283,37 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Reads one interval and returns the very same immutable selection.
+    /// Implementations must not reselect head or derive identity by reading the
+    /// rest of the body. Unsupported providers refuse before reading.
+    fn read_private_range<'a, 'io>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _granted_prefix: &'a str,
+        _path: &'a str,
+        _expected_generation: Option<&'a GenerationRef>,
+        _range: acyclic_fs::ByteRange,
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                FilePathSelection,
+                acyclic_stream::OwnedBytes,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "generation-bound path range resolution is unavailable",
+        ))
+    }
+
     /// Resolves the named private file at the caller's pinned generation.
     fn read_private_path<'a, 'io>(
         &'a self,
@@ -616,6 +647,37 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             io,
         )
     }
+    fn read_private_range<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+        range: acyclic_fs::ByteRange,
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                FilePathSelection,
+                acyclic_stream::OwnedBytes,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        self.bound_reader(volume, access.io)?.read_private_range(
+            volume,
+            granted_prefix,
+            path,
+            expected_generation,
+            range,
+            access,
+        )
+    }
+
     fn read_private_path<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,

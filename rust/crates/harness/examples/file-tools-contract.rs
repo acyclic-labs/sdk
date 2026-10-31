@@ -3,8 +3,10 @@
 
 use acyclic_harness::{
     AgentId, OperationId, Result,
-    conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    resources::ProviderRef,
+    conversation::{
+        FileDescriptor, FilePathSelection, FileRef, VolumeClass, VolumeOwner, VolumeRef,
+    },
+    resources::{GenerationRef, ProviderRef},
     tool::{
         Tool, ToolInvocation, ToolProjection, ToolResult,
         files::{self, FileProjection, FileResult, ReadFileInput, ReadFileResult},
@@ -47,7 +49,7 @@ fn invocation(name: &str, arguments: Value) -> ToolInvocation {
 fn definitions() -> Result<Vec<Value>> {
     let mut reference_read = files::read()?;
     let read_projector = FileProjection::Read(ProjectionMode::Reference);
-    reference_read.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
+    reference_read.definition.projection_schema = read_projector.schema()?;
     reference_read.projection = std::sync::Arc::new(read_projector);
     let mut reference_write = files::write()?;
     let reference_projector = FileProjection::Publication(ProjectionMode::Reference);
@@ -104,7 +106,29 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let read_invocation = invocation("read", value(&read_input)?);
     let read_result = ToolResult {
         value: value(ReadFileResult {
-            file: file.clone(),
+            file: files::FileReadSource::Content(file.clone()),
+            text: read.into(),
+        })?,
+    };
+    let authored_input = ReadFileInput {
+        version: None,
+        ..read_input.clone()
+    };
+    let authored_invocation = invocation("read", value(&authored_input)?);
+    let authored_result = ToolResult {
+        value: value(ReadFileResult {
+            file: files::FileReadSource::Authored(FilePathSelection {
+                volume: file.volume().clone(),
+                path: file.path().into(),
+                generation: GenerationRef::new(
+                    file.volume().provider(),
+                    b"generation-1",
+                    None,
+                    None,
+                )?
+                .0,
+                byte_length: source.len() as u64,
+            }),
             text: read.into(),
         })?,
     };
@@ -134,7 +158,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let exact_invocation = invocation("read", value(&exact_input)?);
     let exact_result = ToolResult {
         value: value(ReadFileResult {
-            file: file.clone(),
+            file: files::FileReadSource::Content(file.clone()),
             text: source.into(),
         })?,
     };
@@ -148,6 +172,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         json!({
             "tool_definitions":definitions,
             "source":{"file":file,"text":source},
+            "authored_range_read":{
+                "input":authored_input,"canonical":authored_result.value,
+                "full":FileProjection::Read(ProjectionMode::Full).project(&authored_invocation,&authored_result,None)?.0,
+                "reference":FileProjection::Read(ProjectionMode::Reference).project(&authored_invocation,&authored_result,None)?.0,
+            },
             "range_read":{
                 "input":read_input,"canonical":read_result.value,
                 "full":FileProjection::Read(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,

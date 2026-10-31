@@ -120,13 +120,13 @@ static FS: ToolSpec = ToolSpec {
 
 pub(crate) static READ: ToolSpec = ToolSpec {
     name: "read",
-    revision: "portable-7",
+    revision: "portable-8",
     description: "Read UTF-8 from a project path. Reuse the returned opaque version to pin a later read or edit; optionally select [start, end) byte offsets",
     hook_names: &["Read"],
     binding: ToolBinding::Volume,
     input: schema::input::<ReadFileInput>,
     output: schema::output::<ReadFileResult>,
-    projection_schema: FileProjection::model_schema,
+    projection_schema: |mode| FileProjection::Read(mode).schema(),
     executor: |_| Arc::new(FileTool::Read),
     projection: |mode| Arc::new(FileProjection::Read(mode)),
 };

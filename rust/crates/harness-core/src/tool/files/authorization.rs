@@ -200,7 +200,12 @@ impl FileTool {
         version.map_or(Ok((None, None)), |version| {
             let (file, custody) =
                 super::version::decode_tool_version(context, path, version, work)?;
-            Ok((Some(file), custody))
+            match file {
+                FileReadSource::Content(file) => Ok((Some(file), custody)),
+                // A selected generation grants no authority. The ordinary path
+                // authorization below must still establish the directory grant.
+                FileReadSource::Authored(_) => Ok((None, custody)),
+            }
         })
     }
 }

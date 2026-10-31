@@ -169,6 +169,31 @@ impl FileTool {
         let invalid = |reason| rejection(work, reason);
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+        if (input.0.range.is_some() && input.0.version.is_none())
+            || input
+                .0
+                .version
+                .as_deref()
+                .is_some_and(super::version::is_authored)
+        {
+            let selected_version = input
+                .0
+                .version
+                .as_deref()
+                .map(|version| {
+                    super::version::decode_tool_version(Some(context), &input.0.path, version, work)
+                })
+                .transpose()?;
+            let authored = selected_version
+                .as_ref()
+                .and_then(|(source, _)| match source {
+                    FileReadSource::Authored(selected) => Some(selected),
+                    FileReadSource::Content(_) => None,
+                });
+            return self
+                .read_path_range(context, &input.0, authored, work, io)
+                .await;
+        }
         let (file, resolved, _source_custody) = self
             .source(context, &input.0.path, input.0.version.as_deref(), work, io)
             .await?;
@@ -191,7 +216,6 @@ impl FileTool {
         }) {
             return Err(invalid("file selection exceeds text rendering bound"));
         }
-        let was_resolved = resolved.is_some();
         let bytes = if let Some(bytes) = resolved {
             bytes
         } else if let Some(range) = input.0.range {
@@ -220,36 +244,61 @@ impl FileTool {
         } else {
             context.read_file(&file, io).await?
         };
-        let selected = if let Some(range) = input.0.range.filter(|_| was_resolved) {
-            let end = if empty && range.start < length {
-                range.start.checked_add(1)
-            } else {
-                Some(range.end)
-            };
-            let start = usize::try_from(range.start).ok();
-            let end = end.and_then(|end| usize::try_from(end).ok());
-            start
-                .zip(end)
-                .and_then(|(start, end)| bytes.get(start..end))
-                .ok_or_else(|| invalid("read range exceeds the file"))?
-        } else {
-            bytes.as_ref()
-        };
-        let source = read_text(selected, empty, work)?;
-        #[derive(Serialize)]
-        struct Read<'a> {
-            file: &'a FileRef,
-            text: &'a str,
+        let source = read_text(bytes.as_ref(), empty, work)?;
+        read_result(FileReadSource::Content(file), source, work)
+    }
+
+    async fn read_path_range(
+        &self,
+        context: &ToolContext,
+        input: &ReadFileInput,
+        original: Option<&crate::conversation::FilePathSelection>,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(ToolResult, crate::NativeCustody)> {
+        let invalid = |reason| rejection(work, reason);
+        let range = input
+            .range
+            .or_else(|| {
+                original.map(|file| super::text::TextRange {
+                    start: 0,
+                    end: file.byte_length,
+                })
+            })
+            .ok_or_else(|| invalid("path range is missing"))?;
+        let count = range
+            .end
+            .checked_sub(range.start)
+            .ok_or_else(|| invalid("read range is reversed"))?;
+        let maximum = context
+            .effective_scope()
+            .limits()
+            .render_bytes
+            .min(context.effective_scope().limits().file_bytes);
+        if count > maximum {
+            return Err(invalid("file selection exceeds text rendering bound"));
         }
-        let encoded = super::value(
-            &Read {
-                file: &file,
-                text: source,
-            },
-            u64::MAX,
-            work,
-        )?;
-        Ok((ToolResult { value: encoded.0 }, encoded.1))
+        let empty = count == 0;
+        let (selected, bytes, retained) = context
+            .read_tool_path_range(
+                &input.path,
+                original.map(|file| &file.generation),
+                acyclic_fs::ByteRange {
+                    offset: range.start,
+                    length: if empty { 1 } else { count },
+                },
+                io,
+            )
+            .await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let _source_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = retained;
+        if range.end > selected.byte_length || original.is_some_and(|file| file != &selected) {
+            return Err(invalid("read result belongs to another selection"));
+        }
+        let text = read_text(bytes.as_ref(), empty, work)?;
+        read_result(FileReadSource::Authored(selected), text, work)
     }
 
     async fn source(
@@ -267,9 +316,30 @@ impl FileTool {
         if let Some(version) = version {
             let (file, custody) =
                 super::version::decode_tool_version(Some(context), path, version, work)?;
-            return Ok((file, None, custody));
+            match file {
+                FileReadSource::Content(file) => return Ok((file, None, custody)),
+                FileReadSource::Authored(selected) => {
+                    let (file, bytes, retained) = context
+                        .read_tool_path(path, Some(&selected.generation), io)
+                        .await?;
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    let file_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
+                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                    let file_custody = {
+                        let _ = retained;
+                        None
+                    };
+                    if file.descriptor().byte_length() != selected.byte_length {
+                        return Err(rejection(
+                            work,
+                            "file version length differs from its selection",
+                        ));
+                    }
+                    return Ok((file, Some(bytes), file_custody));
+                }
+            }
         }
-        let (file, bytes, retained) = context.read_tool_path(path, io).await?;
+        let (file, bytes, retained) = context.read_tool_path(path, None, io).await?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -564,6 +634,20 @@ pub(super) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Er
     } else {
         Error::Invalid(reason.into())
     }
+}
+
+fn read_result(
+    file: FileReadSource,
+    text: &str,
+    work: crate::NativeWork<'_>,
+) -> Result<(ToolResult, crate::NativeCustody)> {
+    #[derive(Serialize)]
+    struct Read<'a> {
+        file: FileReadSource,
+        text: &'a str,
+    }
+    let encoded = super::value(&Read { file, text }, u64::MAX, work)?;
+    Ok((ToolResult { value: encoded.0 }, encoded.1))
 }
 
 pub(super) fn read_text<'a>(

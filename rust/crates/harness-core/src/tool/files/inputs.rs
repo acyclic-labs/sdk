@@ -87,8 +87,7 @@ pub struct FileResult {
 #[serde(deny_unknown_fields)]
 pub struct ReadFileResult {
     /// Original immutable source, used for grant and replay validation.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
-    pub file: FileRef,
+    pub file: FileReadSource,
     /// Exact selected UTF-8 text.
     pub text: String,
 }

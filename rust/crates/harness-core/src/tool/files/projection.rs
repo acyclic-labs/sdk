@@ -14,6 +14,23 @@ pub enum FileProjection {
 }
 
 impl FileProjection {
+    /// Exact model envelope, including a bounded source without a body digest.
+    pub fn schema(self) -> Result<Value> {
+        match self {
+            Self::Read(ProjectionMode::Reference) => {
+                let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+                    .for_serialize()
+                    .into_generator();
+                let content = generator.subschema_for::<schema::ReferenceProjection<'_>>();
+                let authored = generator.subschema_for::<schema::JsonProjection<FileView<'_>>>();
+                Ok(json!({"oneOf":[content,authored],"$defs":generator.take_definitions(true)}))
+            }
+            Self::Read(ProjectionMode::Full) => ProjectionMode::Full.schema::<FileView<'_>>(),
+            Self::Publication(mode) => Self::model_schema(mode),
+            Self::Search(mode) => mode.schema::<SearchResult>(),
+        }
+    }
+
     pub(crate) fn model_schema(mode: ProjectionMode) -> Result<Value> {
         mode.schema::<FileView<'_>>()
     }
@@ -49,7 +66,7 @@ impl ToolProjection for FileProjection {
                 let io: Option<&crate::executor::PreparationIo> = None;
                 if let Some(range) = input.0.range {
                     if range.end.checked_sub(range.start) != Some(text.len() as u64)
-                        || range.end > file.descriptor().byte_length()
+                        || range.end > file.byte_length()
                     {
                         return Err(crate::executor::with_history_io(io, |history| {
                             crate::store::guarded_boundary(
@@ -60,8 +77,18 @@ impl ToolProjection for FileProjection {
                         }));
                     }
                 } else {
-                    crate::executor::with_history_io(io, |history| {
-                        file.descriptor().verify(text.as_bytes(), history)
+                    crate::executor::with_history_io(io, |history| match file {
+                        FileReadSource::Content(file) => {
+                            file.descriptor().verify(text.as_bytes(), history)
+                        }
+                        FileReadSource::Authored(file) if file.byte_length == text.len() as u64 => {
+                            Ok(())
+                        }
+                        FileReadSource::Authored(_) => Err(crate::store::guarded_boundary(
+                            history,
+                            crate::wire::ErrorCode::Invalid,
+                            "read result length differs from its selection",
+                        )),
                     })?;
                 }
                 // The original executor validates the exact mounted path and
@@ -77,7 +104,7 @@ impl ToolProjection for FileProjection {
                     }
                 }
                 if mode == ProjectionMode::Full {
-                    let version = super::version::encode_version(file, work)?;
+                    let version = super::version::encode_source(file, work)?;
                     return schema::project_json(
                         &FileView {
                             path: &input.0.path,
@@ -87,6 +114,17 @@ impl ToolProjection for FileProjection {
                         work,
                     );
                 }
+                let FileReadSource::Content(file) = file else {
+                    let version = super::version::encode_source(file, work)?;
+                    return schema::project_json(
+                        &FileView {
+                            path: &input.0.path,
+                            version: &version.0,
+                            text: None,
+                        },
+                        work,
+                    );
+                };
                 if let Some(range) = input.0.range {
                     return schema::summary_reference(
                         file,
