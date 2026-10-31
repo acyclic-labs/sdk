@@ -214,7 +214,7 @@ fn function_and_freeform_events_cannot_share_an_item() {
 }
 
 #[test]
-fn responses_call_identity_is_fixed_before_any_input_mutation() {
+fn responses_call_identity_and_completed_input_are_immutable() {
     for kind in ["function_call", "custom_tool_call"] {
         let original = json!({"type":kind,"id":"item","call_id":"call","name":"tool"});
         for field in ["type", "id", "call_id", "name"] {
@@ -260,6 +260,7 @@ fn responses_call_identity_is_fixed_before_any_input_mutation() {
                 0,
                 &original,
                 super::Output::admit(&original).unwrap(),
+                false,
             )
             .unwrap();
             let event = json!({"type":event_kind,"output_index":0,"item_id":"other",
@@ -272,6 +273,101 @@ fn responses_call_identity_is_fixed_before_any_input_mutation() {
             assert_eq!(state.budget.used(), used);
             assert!(state.calls[&0].arguments.is_empty());
         }
+        let (input_key, delta_kind, done_kind, input) = if kind == "function_call" {
+            (
+                "arguments",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "{}",
+            )
+        } else {
+            (
+                "input",
+                "response.custom_tool_call_input.delta",
+                "response.custom_tool_call_input.done",
+                "日本語\n*** End Patch",
+            )
+        };
+        let mut completed = original.clone();
+        completed[input_key] = json!(input);
+        let added = json!({"type":"response.output_item.added","output_index":0,"item":original});
+        let input_done =
+            json!({"type":done_kind,"output_index":0,"item_id":"item",(input_key):input});
+        let item_done =
+            json!({"type":"response.output_item.done","output_index":0,"item":completed});
+        let terminal = json!({"type":"response.completed","response":{"status":"completed","output":[completed]}});
+        let mut changed = completed.clone();
+        changed[input_key] = json!("replacement");
+        for completion in [&input_done, &item_done] {
+            for mutation in [
+                json!({"type":delta_kind,"output_index":0,"item_id":"item","delta":""}),
+                json!({"type":done_kind,"output_index":0,"item_id":"item",(input_key):"replacement"}),
+                json!({"type":"response.output_item.added","output_index":0,"item":changed}),
+                json!({"type":"response.output_item.done","output_index":0,"item":changed}),
+                json!({"type":"response.completed","response":{"status":"completed","output":[changed]}}),
+            ] {
+                let mut state = State::new(16384);
+                for frame in [&added, completion] {
+                    super::super::parse(&mut state, crate::Adapter::Responses, &frame.to_string())
+                        .unwrap();
+                }
+                let used = state.budget.used();
+                assert!(
+                    super::super::parse(
+                        &mut state,
+                        crate::Adapter::Responses,
+                        &mutation.to_string()
+                    )
+                    .is_err()
+                );
+                assert_eq!(state.budget.used(), used);
+                assert_eq!(state.calls[&0].arguments, input);
+
+                let wire = format!(
+                    "data: {added}\n\ndata: {completion}\n\ndata: {mutation}\n\ndata: {terminal}\n\n"
+                );
+                let events = futures::executor::block_on(
+                    super::super::events(
+                        crate::Adapter::Responses,
+                        crate::tests::chunks(&wire, 1),
+                        16384,
+                        crate::tests::parser_dispatch(),
+                    )
+                    .collect::<Vec<_>>(),
+                );
+                assert_eq!(events.len(), 1);
+                assert!(events[0].is_err());
+            }
+        }
+        for delta in [Value::Null, json!(false), json!(0), json!({}), json!([])] {
+            let mut state = State::new(16384);
+            super::super::parse(&mut state, crate::Adapter::Responses, &added.to_string()).unwrap();
+            let used = state.budget.used();
+            let event = json!({"type":delta_kind,"output_index":0,"item_id":"item","delta":delta});
+            assert!(
+                super::super::parse(&mut state, crate::Adapter::Responses, &event.to_string())
+                    .is_err()
+            );
+            assert_eq!(state.budget.used(), used);
+            assert!(state.calls[&0].arguments.is_empty());
+        }
+        // Repeated identical completions preserve the original input and batch.
+        let mut state = State::new(16384);
+        for frame in [&added, &input_done, &input_done, &item_done, &terminal] {
+            super::super::parse(&mut state, crate::Adapter::Responses, &frame.to_string()).unwrap();
+        }
+        assert_eq!(
+            super::super::finish(
+                state,
+                crate::Adapter::Responses,
+                crate::tests::parser_dispatch()
+            )
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, ModelEvent::ToolCall(_)))
+            .count(),
+            1
+        );
         // Negative control: the same admitted item completes normally, including
         // an empty freeform input and terminal-only delivery of the same call.
         let mut final_item = original.clone();
@@ -335,5 +431,37 @@ fn malformed_or_omitted_custom_input_cannot_publish_a_partial_batch() {
         );
         assert_eq!(events.len(), 1);
         assert!(events[0].is_err());
+    }
+    // An explicit empty completed input is valid; an unfinished or omitted
+    // input cannot be invented from the initial placeholder at terminal EOF.
+    for initial_input in [None, Some(json!("")), Some(json!("unfinished"))] {
+        let mut unfinished = call.clone();
+        unfinished.as_object_mut().unwrap().remove("input");
+        if let Some(input) = initial_input {
+            unfinished["input"] = input;
+        }
+        let added = json!({"type":"response.output_item.added","output_index":0,"item":unfinished});
+        let terminal = json!({"type":"response.completed","response":{"status":"completed"}});
+        let wire = format!("data: {added}\n\ndata: {terminal}\n\n");
+        let events = futures::executor::block_on(
+            super::super::events(
+                crate::Adapter::Responses,
+                crate::tests::chunks(&wire, 1),
+                16384,
+                crate::tests::parser_dispatch(),
+            )
+            .collect::<Vec<_>>(),
+        );
+        assert_eq!(events.len(), 1);
+        assert!(events[0].is_err());
+    }
+    let mut omitted = call;
+    omitted.as_object_mut().unwrap().remove("input");
+    for frame in frames(omitted).into_iter().skip(1) {
+        let mut state = State::new(16384);
+        assert!(
+            super::super::parse(&mut state, crate::Adapter::Responses, &frame.to_string()).is_err()
+        );
+        assert!(state.calls.is_empty());
     }
 }

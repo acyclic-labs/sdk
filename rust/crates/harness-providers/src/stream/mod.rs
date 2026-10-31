@@ -35,6 +35,8 @@ pub(crate) struct Call {
     arguments: String,
     metadata: Value,
     freeform: bool,
+    // Responses completion seals input across its delta, item and terminal views.
+    input_complete: bool,
 }
 
 pub(crate) struct State<'work> {
@@ -135,6 +137,11 @@ pub(crate) fn finish(
     // Validate the whole tool batch before exposing any call to the executor.
     let mut seen = BTreeSet::new();
     for call in state.calls.values() {
+        if adapter == Adapter::Responses && call.freeform && !call.input_complete {
+            return Err(invalid(
+                "Responses custom-tool completion failed; recovery: return its complete input before completing the response",
+            ));
+        }
         if (adapter != Adapter::Gemini && call.id.trim().is_empty())
             || call.name.trim().is_empty()
             || (!call.id.is_empty() && !seen.insert(call.id.as_str()))

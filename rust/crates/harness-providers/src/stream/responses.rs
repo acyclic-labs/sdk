@@ -61,7 +61,13 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                 )?;
             }
             if matches!(kind, Output::Function | Output::Freeform) {
-                admit_call(state, index(value, "output_index")?, item, kind)?;
+                admit_call(
+                    state,
+                    index(value, "output_index")?,
+                    item,
+                    kind,
+                    value["type"] == "response.output_item.done",
+                )?;
             }
         }
         Some("response.custom_tool_call_input.delta" | "response.custom_tool_call_input.done") => {
@@ -72,10 +78,11 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             validate_item_id(&state.calls[&index], value.get("item_id"))?;
             let (call, budget) = state.call(index)?;
             if value["type"] == "response.custom_tool_call_input.delta" {
-                budget.append(&mut call.arguments, value.get("delta"))?;
+                append_input(call, budget, &value["delta"])?;
             } else {
-                budget.string(
-                    &mut call.arguments,
+                complete_input(
+                    call,
+                    budget,
                     value["input"]
                         .as_str()
                         .ok_or_else(|| invalid("freeform tool input must be a string"))?,
@@ -89,7 +96,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             }
             validate_item_id(&state.calls[&index], value.get("item_id"))?;
             let (call, budget) = state.call(index)?;
-            budget.append(&mut call.arguments, value.get("delta"))?;
+            append_input(call, budget, &value["delta"])?;
         }
         Some("response.function_call_arguments.done") => {
             let index = index(value, "output_index")?;
@@ -98,8 +105,9 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             }
             validate_item_id(&state.calls[&index], value.get("item_id"))?;
             let (call, budget) = state.call(index)?;
-            budget.string(
-                &mut call.arguments,
+            complete_input(
+                call,
+                budget,
                 value["arguments"]
                     .as_str()
                     .ok_or_else(|| invalid("tool arguments must be a string"))?,
@@ -129,7 +137,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                     match kind {
                         Output::Message => state.complete_message(position, item)?,
                         Output::Function | Output::Freeform => {
-                            admit_call(state, position, item, kind)?;
+                            admit_call(state, position, item, kind, true)?;
                             calls += 1;
                         }
                         Output::Reasoning => {}
@@ -166,7 +174,13 @@ fn validate_item_id(call: &super::Call, value: Option<&Value>) -> Result<()> {
 
 /// Added, done and authoritative terminal items share one identity admission.
 /// A later frame may complete input, but cannot replace the original callable.
-fn admit_call(state: &mut State, index: u64, item: &Value, kind: Output) -> Result<()> {
+fn admit_call(
+    state: &mut State,
+    index: u64,
+    item: &Value,
+    kind: Output,
+    complete: bool,
+) -> Result<()> {
     let id = string(&item["call_id"])?;
     let name = string(&item["name"])?;
     if id.trim().is_empty() || name.trim().is_empty() {
@@ -184,6 +198,11 @@ fn admit_call(state: &mut State, index: u64, item: &Value, kind: Output) -> Resu
                 .ok_or_else(|| invalid("Responses tool input must be a string"))
         })
         .transpose()?;
+    if complete && arguments.is_none() {
+        return Err(invalid(
+            "Responses tool completion omitted input; recovery: return its complete input string",
+        ));
+    }
     if let Some(call) = state.calls.get(&index) {
         if call.freeform != (kind == Output::Freeform) {
             return Err(invalid("Responses tool kind changed"));
@@ -192,6 +211,11 @@ fn admit_call(state: &mut State, index: u64, item: &Value, kind: Output) -> Resu
             return Err(invalid("Responses tool identity changed"));
         }
         validate_item_id(call, item.get("id"))?;
+        if call.input_complete && arguments.is_some_and(|input| input != call.arguments) {
+            return Err(invalid(
+                "Responses completed tool input changed; recovery: preserve its original complete input",
+            ));
+        }
     } else if let Some(id) = crate::protocol::present(item.get("id")) {
         if string(id)?.is_empty() {
             return Err(invalid("incomplete Responses tool item identity"));
@@ -204,9 +228,47 @@ fn admit_call(state: &mut State, index: u64, item: &Value, kind: Output) -> Resu
     if let Some(id) = crate::protocol::present(item.get("id")) {
         budget.string(&mut call.item_id, string(id)?)?;
     }
-    if let Some(arguments) = arguments {
+    if let Some(arguments) = arguments.filter(|_| !call.input_complete) {
         budget.string(&mut call.arguments, arguments)?;
     }
+    call.input_complete |= complete;
+    Ok(())
+}
+
+fn append_input(
+    call: &mut super::Call,
+    budget: &mut super::budget::Budget<'_>,
+    delta: &Value,
+) -> Result<()> {
+    if call.input_complete {
+        return Err(invalid(
+            "Responses tool delta followed completed input; recovery: end deltas before completing input",
+        ));
+    }
+    budget.append_str(
+        &mut call.arguments,
+        delta.as_str().ok_or_else(|| {
+            invalid("Responses tool delta decode failed; recovery: return a string delta")
+        })?,
+    )
+}
+
+fn complete_input(
+    call: &mut super::Call,
+    budget: &mut super::budget::Budget<'_>,
+    input: &str,
+) -> Result<()> {
+    if call.input_complete {
+        return if call.arguments == input {
+            Ok(())
+        } else {
+            Err(invalid(
+                "Responses completed tool input changed; recovery: preserve its original complete input",
+            ))
+        };
+    }
+    budget.string(&mut call.arguments, input)?;
+    call.input_complete = true;
     Ok(())
 }
 
