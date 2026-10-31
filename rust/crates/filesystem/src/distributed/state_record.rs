@@ -193,14 +193,21 @@ impl StateRecord {
 pub mod codec_fuzz {
     use super::*;
 
-    /// Accepted state records have one exact encoding, including the complete ID.
+    /// Records with a canonical publication path have one exact encoding,
+    /// including the complete ID. An opaque origin alone grants no path authority.
     pub fn check(bytes: &[u8]) -> bool {
         let Ok(value) = StateRecord::decode(bytes::Bytes::copy_from_slice(bytes).into()) else {
             return true;
         };
+        let Some(path) = std::str::from_utf8(&value.published_at)
+            .ok()
+            .and_then(|path| acyclic_stream::StreamPath::new(path).ok())
+        else {
+            return true;
+        };
         let cancellation = crate::CancellationToken::new();
         let mut work = crate::AuthorityWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
-        work.encode_state(&value.state, &value.operation)
+        work.encode_state(&value.state, &value.operation, &path)
             .is_ok_and(|encoded| encoded.as_ref() == bytes)
     }
 
@@ -209,6 +216,7 @@ pub mod codec_fuzz {
         let cancellation = crate::CancellationToken::new();
         let mut work = crate::AuthorityWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let operation = acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(b"codec"))?;
+        let path = acyclic_stream::StreamPath::new("codec/state")?;
         let mut seeds = Vec::new();
         for sealed in [false, true] {
             let root_file_id = FileId::from_bytes([1; 16]);
@@ -229,7 +237,7 @@ pub mod codec_fuzz {
             };
             seeds.push((
                 format!("state-root-{sealed}"),
-                work.encode_state(&record, &operation)?.to_vec(),
+                work.encode_state(&record, &operation, &path)?.to_vec(),
             ));
         }
         for (name, kind) in [
@@ -244,7 +252,7 @@ pub mod codec_fuzz {
             };
             seeds.push((
                 name.into(),
-                work.encode_state(&record, &operation)?.to_vec(),
+                work.encode_state(&record, &operation, &path)?.to_vec(),
             ));
         }
         Ok(seeds)
