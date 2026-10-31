@@ -2831,3 +2831,33 @@ Required work per selected publication, counted from source:
 | Annotated release tag | One API read per tag, but a depth counter refused after eleven ancestors | Same one read per actual immutable ancestor; no counter or total cap; exact source/object checks remain |
 
 One original compiler/publisher exit and each actual registry response own progress. No background producer is invented for index propagation. Payload hashing/packaging, metadata enumeration and actual tag ancestry remain proportional to requested input; registry version-history scans and logical subprocess-output ceilings remain separate pending complexity/capacity obligations. No new syscall, durability barrier, round trip or payload copy is added on verified paths. The new real Node/shell control exercises exact original flags/quoted arguments and a naive-quote negative; the real Git control uses fourteen actual annotated tags and a later HEAD. Their output comes from those binaries, with no fabricated external-tool or registry fixture. Source-rule controls restore the removed two/five-second mechanisms. These new controls are prepared, not executed or qualified yet; Windows/macOS execution is not claimed.
+
+## Composed fork admission and pause ownership
+
+The composition onto `4228d02213` preserves the new original Actor fork and
+Machines fork-admission/provenance paths. It removes the newly added Actor
+fork subscription total check, consistently with create and add-subscription.
+Scope, child identity, subscription grammar, duplicate names and exact resend
+identity remain validated once at admission. Removing the comparison performs
+zero extra reads, allocations, copies, syscalls or durability barriers.
+
+| Source site at `4228d02213` | Kind | Disposition | Status |
+| --- | --- | --- | --- |
+| `rust/crates/actors/src/contract.rs:227` | Arbitrary subscription total | Delete the fork-only total refusal; preserve the original scope, identity, grammar and duplicate-name boundary checks | Actioned |
+| `rust/crates/actors/src/conformance.rs` (`verify` / `forked`) | Conformance timing wrapper | Await the same real fork conformance through its original applied-state event; preserve source/provenance, exact resend and independent child state negatives | Actioned |
+| `rust/crates/machines/src/grpc/recovery.rs` (`decode_fork_admissions`) | Arbitrary child total | Preserve original fork admission and settled provenance; reject empty/malformed admission without the former maximum child count | Actioned |
+| `rust/crates/machines/src/simulation/tests/forks.rs` (`checkpoint_fork_lifetimes_and_endpoints_are_independent`) | Finite paged traversal | Advance actual machine-list cursors to completion; duplicate and nonadvancing cursors fail immediately. The existing 1,025-child control preserves every child's checkpoint contract and independent lifetime | Event primitive |
+| `rust/crates/actors/src/local/runtime.rs` (`pause_with`) | Conditional control retry | Preserve the original pinned slot, serialized control, active-delivery cancellation and cleanup join. Read once, conditionally commit once, and return the original Conflict; resume releases the same paused owner and wakes it | Actioned |
+| `compatibility/descriptors/actors-v1.bin` | Composed schema capture | Regenerate from the original Rust exporter after fork fields and retry-counter removal are composed; retained main capture does not yet describe this schema | Pending |
+| `rust/crates/actors/tests/fixtures/actors/v1/actors-v1.bin` | Composed schema capture | Copy the same actual Rust exporter descriptor after canonical capture | Pending |
+| `rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin` | Independent composed schema capture | Regenerate independently with pinned Buf, then use the original canonicalizer; do not substitute Rust output | Pending |
+
+The preserved pause join has one producer: the active delivery releases its
+original lock after cleanup and retained publication. No second control slot,
+worker, timer or fallback read is introduced. The Machines listing uses one
+request per actual page, with no interval or readiness recheck. Its test index
+is built once from admitted pages; it is not a per-child repeated list scan.
+
+The earlier descriptor capture receipt qualifies its original schema only.
+These three captures and their manifest digests require a fresh canonical
+capture for the composed source; no current descriptor comparison is claimed.
