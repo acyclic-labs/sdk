@@ -42,6 +42,118 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 }
 
 #[test]
+fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{Export, Outcome, Sink};
+    use std::sync::{Arc, mpsc};
+    use tokio::sync::{Semaphore, oneshot};
+    let credit = Arc::new(Semaphore::new(1));
+    let (export, mut output) = Export::channel(credit.clone(), true);
+    let metrics = Metrics::default();
+    let query = metrics.query("acyclic.test.export");
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry().with(Operations((metrics, export.clone()))),
+    );
+    let baseline = export.stats();
+    let (send, receive) = mpsc::channel::<()>();
+    drop(send);
+    let nested = std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        receive.recv().err().ok_or("producer unexpectedly alive")?,
+    );
+    let nested_kind = acyclic_native_runtime::obs::kind(&nested);
+    let original = std::io::Error::other(nested);
+    // The flattening negative control loses the actual channel producer cause.
+    assert_ne!(acyclic_native_runtime::obs::kind(&original), nested_kind);
+    let original = tracing::dispatcher::with_default(&dispatch, || {
+        let span = tracing::info_span!(
+            "acyclic.test.export",
+            outcome = tracing::field::Empty,
+            error.kind = tracing::field::Empty
+        );
+        span.record("error.kind", nested_kind);
+        span.record("error.kind", "other");
+        acyclic_observability::finish(&span, Err::<(), _>(original), |_| "other")
+    })
+    .err()
+    .ok_or("original failure lost")?;
+    assert_eq!(
+        original
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<std::io::Error>())
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::BrokenPipe)
+    );
+    let held = ready(output.recv())?.ok_or("terminal output absent")?;
+    assert_eq!(held.sample().outcome, Outcome::Err);
+    assert_eq!(held.sample().error_kind, Some(nested_kind));
+    let refused = acyclic_test_support::measure(|| export.record(&held.sample()));
+    assert_eq!(
+        refused.count_total, 0,
+        "refused output copied evidence before credit"
+    );
+    assert_eq!(
+        credit.available_permits(),
+        0,
+        "dequeue released consumer-owned credit"
+    );
+
+    // The output consumer holds its only credit. Cancelling original work must
+    // still retire its receiver and update the independent selected query.
+    let (send, receive) = oneshot::channel::<()>();
+    tracing::dispatcher::with_default(&dispatch, || {
+        let span = tracing::info_span!(
+            "acyclic.test.export",
+            outcome = tracing::field::Empty,
+            error.kind = tracing::field::Empty
+        );
+        let future = acyclic_observability::observe(&span, receive, |_| "producer_closed");
+        let mut future = Box::pin(future);
+        assert!(
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        drop(future);
+    });
+    assert!(
+        send.send(()).is_err(),
+        "blocked output retained cancelled work"
+    );
+    assert_eq!((query.snapshot().err, query.snapshot().incomplete), (1, 1));
+    drop(held);
+    let after = export.stats();
+    assert_eq!(after.retained, 0);
+    assert_eq!(after.high_water, 1);
+    assert_eq!(after.full, Some(2));
+    // A sampled maximum misses the whole admitted/retired record interval.
+    assert_eq!(baseline.retained.max(after.retained), 0);
+    assert!(after.high_water > baseline.retained.max(after.retained));
+    assert_eq!(credit.available_permits(), 1);
+
+    drop(output);
+    tracing::dispatcher::with_default(&dispatch, || {
+        let span = tracing::info_span!("acyclic.test.export", outcome = tracing::field::Empty);
+        acyclic_observability::record_outcome(&span, None);
+    });
+    assert_eq!(export.stats().closed, Some(1));
+    assert_eq!(query.snapshot().ok, 1);
+    assert_eq!(credit.available_permits(), 1);
+    let (producer, mut receiver) = Export::channel(credit, false);
+    let dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(producer.clone())));
+    tracing::dispatcher::with_default(&dispatch, || operation(true));
+    let record = ready(receiver.recv())?.ok_or("detail-free terminal absent")?;
+    assert_eq!(record.sample().error_kind, None);
+    drop(dispatch);
+    drop(producer);
+    assert!(ready(receiver.recv())?.is_none());
+    drop(record);
+    Ok(())
+}
+
+#[test]
 fn one_terminal_sample_survives_retained_handles_and_producer_loss()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::{
@@ -176,6 +288,79 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
     );
     eprintln!("enabled operation allocations={}", enabled.count_total);
     assert_eq!(query.snapshot().ok, 1);
+    Ok(())
+}
+
+#[test]
+#[ignore = "on-demand trace cost measurement"]
+fn trace_on_off_cost() -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::Export;
+    use std::{sync::Arc, time::Instant};
+    use tokio::sync::Semaphore;
+    const COUNT: usize = 100_000;
+    tracing::dispatcher::with_default(&tracing::Dispatch::none(), || {
+        operation(false);
+        let start = Instant::now();
+        let allocations = acyclic_test_support::measure(|| {
+            for _ in 0..COUNT {
+                operation(std::hint::black_box(false));
+            }
+        });
+        assert_eq!(allocations.count_total, 0);
+        eprintln!(
+            "trace=off operations={COUNT} elapsed_ns={} allocations={}",
+            start.elapsed().as_nanos(),
+            allocations.count_total
+        );
+    });
+    let metrics = Metrics::default();
+    let query = metrics.query("acyclic.test.operation");
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(metrics)));
+    tracing::dispatcher::with_default(&dispatch, || {
+        operation(false);
+        let start = Instant::now();
+        let allocations = acyclic_test_support::measure(|| {
+            for _ in 0..COUNT {
+                operation(std::hint::black_box(false));
+            }
+        });
+        eprintln!(
+            "trace=metrics operations={COUNT} elapsed_ns={} allocations={}",
+            start.elapsed().as_nanos(),
+            allocations.count_total
+        );
+    });
+    assert_eq!(query.snapshot().ok, COUNT as u64 + 1);
+    let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
+    let dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export.clone())));
+    tracing::dispatcher::with_default(&dispatch, || -> Result<(), std::io::Error> {
+        operation(true);
+        drop(ready(output.recv())?);
+        let start = Instant::now();
+        let mut result = Ok(());
+        let allocations = acyclic_test_support::measure(|| {
+            result = (|| -> Result<(), std::io::Error> {
+                for _ in 0..COUNT {
+                    operation(std::hint::black_box(true));
+                    drop(ready(output.recv())?.ok_or_else(|| {
+                        std::io::Error::other("export producer closed before its terminal record")
+                    })?);
+                }
+                Ok(())
+            })();
+        });
+        result?;
+        eprintln!(
+            "trace=detail-export operations={COUNT} elapsed_ns={} allocations={}",
+            start.elapsed().as_nanos(),
+            allocations.count_total
+        );
+        Ok(())
+    })?;
+    assert_eq!(export.stats().full, Some(0));
+    assert_eq!(export.stats().retained, 0);
+    assert_eq!(export.stats().high_water, 1);
     Ok(())
 }
 

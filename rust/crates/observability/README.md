@@ -51,6 +51,28 @@ Operations have no count or duration cap. If the fixed-width metric counters
 lose precision, the snapshot marks `overflowed` and SLO verdicts stay unknown
 for that cohort. Export sinks still receive every terminal sample.
 
+`Export::channel` supplies the nonblocking output adapter for a host's existing
+export loop. Its caller provides a `tokio::sync::Semaphore` containing admitted
+record credit; there is no default capacity. The permit follows each record
+through preparation, delivery and consumer processing. Dequeue does not release
+credit. Recording never waits for credit or output I/O, and refuses without
+copying when credit is exhausted or the receiver is closed. `Export::stats`
+distinguishes those losses from operation outcomes. It reports the current and
+exact high-water count of admitted records, updated on every admission rather
+than sampled. These are exporter resources, not process-wide OS counters.
+
+An exporter can opt into the first recorded static `error.kind`. Later generic
+failures cannot replace it. It remains diagnostic evidence, never a metric
+label, and does not change uncertainty or an operation's original result.
+Metrics alone retain no failure string. Detail retains one failure category per
+active operation, with one owned copy when first recorded; delivery copies the
+category and declared RPC method only after acquiring record credit. No
+payload, resource path, credential or formatted error belongs in those fields.
+The host must retain `ExportRecord` until its own output completes, then drop it
+to release credit. Dropping the receiver refuses later output immediately;
+dropping all exporters ends the receiver's channel wait. There is no telemetry
+worker or per-agent timer, and no observer can retain the original operation.
+
 On a volume-query file replacement, construct the replacement `SloQuery` from
 the newly authorized bytes. Select its completion event alongside the volume's
 existing change event. Removal ends that file's view; malformed replacements
@@ -61,7 +83,14 @@ Run the independent operation lifecycle and allocation witnesses with:
 ```sh
 cargo test --locked -p acyclic-observability --test operations one_terminal_sample_survives_retained_handles_and_producer_loss -- --exact
 cargo test --locked -p acyclic-observability --test operations disabled_operation_allocates_nothing_with_enabled_negative_control -- --exact
+cargo test --locked -p acyclic-observability --test operations credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink -- --exact
 ```
+
+Measure the disabled, selected-metrics, and credited detail-export costs with
+`cargo test --locked -p acyclic-observability --test operations trace_on_off_cost -- --ignored --exact --nocapture`.
+The last case includes the host's dequeue and record retirement. Report these
+costs separately; they provide no claim about unobserved physical I/O or a
+different trace exporter's work.
 
 On Linux with `strace`, count actual kernel crossings over the marked operation
 interval. The same binary's real file open/close is the negative control:

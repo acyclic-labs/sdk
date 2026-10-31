@@ -186,6 +186,9 @@ pub struct Sample<'a> {
     pub elapsed: Duration,
     /// Explicit result or incomplete close.
     pub outcome: Outcome,
+    /// First recorded static, path-free failure category, when requested by a
+    /// sink. It is diagnostic evidence, never a metric label or a new verdict.
+    pub error_kind: Option<&'a str>,
 }
 
 /// Receives terminal samples from the one operation lifecycle implementation.
@@ -194,12 +197,20 @@ pub struct Sample<'a> {
 pub trait Sink: Clone + Send + Sync + 'static {
     /// Records the one latency histogram observation and outcome counter update.
     fn record(&self, sample: &Sample<'_>);
+    /// Opt into retaining one original static failure category per operation.
+    /// Metrics alone require no failure-string allocation.
+    fn error_details(&self) -> bool {
+        false
+    }
 }
 
 impl<A: Sink, B: Sink> Sink for (A, B) {
     fn record(&self, sample: &Sample<'_>) {
         self.0.record(sample);
         self.1.record(sample);
+    }
+    fn error_details(&self) -> bool {
+        self.0.error_details() || self.1.error_details()
     }
 }
 
@@ -590,10 +601,24 @@ struct Operation {
     rpc: Option<String>,
     started: Instant,
     completed: bool,
+    error_kind: Option<Box<str>>,
 }
 
 #[derive(Default)]
-struct Terminal(Option<Outcome>);
+struct Terminal {
+    outcome: Option<Outcome>,
+    has_error_kind: bool,
+}
+
+struct FirstCause<'a>(&'a mut Option<Box<str>>);
+impl Visit for FirstCause<'_> {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "error.kind" && self.0.is_none() {
+            *self.0 = Some(value.into());
+        }
+    }
+    fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
+}
 
 #[derive(Default)]
 struct Method(Option<String>);
@@ -609,12 +634,14 @@ impl Visit for Method {
 impl Visit for Terminal {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "outcome" {
-            self.0 = match value {
+            self.outcome = match value {
                 "ok" => Some(Outcome::Ok),
                 "err" => Some(Outcome::Err),
                 "incomplete" => Some(Outcome::Incomplete),
                 _ => None,
             };
+        } else if field.name() == "error.kind" {
+            self.has_error_kind = true;
         }
     }
     fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
@@ -635,15 +662,20 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             rpc: method.0,
             started: Instant::now(),
             completed: false,
+            error_kind: None,
         };
         let mut terminal = Terminal::default();
         attributes.record(&mut terminal);
-        if let Some(outcome) = terminal.0 {
+        if self.0.error_details() {
+            attributes.record(&mut FirstCause(&mut operation.error_kind));
+        }
+        if let Some(outcome) = terminal.outcome {
             self.0.record(&Sample {
                 metadata,
                 rpc: operation.rpc.as_deref(),
                 elapsed: operation.started.elapsed(),
                 outcome,
+                error_kind: operation.error_kind.as_deref(),
             });
             operation.completed = true;
         }
@@ -653,7 +685,9 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
     fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
         let mut terminal = Terminal::default();
         values.record(&mut terminal);
-        let Some(outcome) = terminal.0 else { return };
+        if terminal.outcome.is_none() && !(terminal.has_error_kind && self.0.error_details()) {
+            return;
+        }
         let Some(span) = context.span(id) else { return };
         let mut extensions = span.extensions_mut();
         let Some(operation) = extensions.get_mut::<Operation>() else {
@@ -662,10 +696,17 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         if operation.completed {
             return;
         }
+        if operation.error_kind.is_none() && self.0.error_details() {
+            values.record(&mut FirstCause(&mut operation.error_kind));
+        }
+        let Some(outcome) = terminal.outcome else {
+            return;
+        };
         operation.completed = true;
         let metadata = operation.metadata;
         let rpc = operation.rpc.take();
         let started = operation.started;
+        let error_kind = operation.error_kind.take();
         drop(extensions);
         // Notification may run arbitrary wakers. Never call them while holding
         // the registry's extension lock.
@@ -674,6 +715,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             rpc: rpc.as_deref(),
             elapsed: started.elapsed(),
             outcome,
+            error_kind: error_kind.as_deref(),
         });
     }
 
@@ -690,6 +732,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 rpc: operation.rpc.as_deref(),
                 elapsed: operation.started.elapsed(),
                 outcome: Outcome::Incomplete,
+                error_kind: operation.error_kind.as_deref(),
             });
         }
     }

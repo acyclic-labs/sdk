@@ -21,6 +21,15 @@ retain its explicit `cancelled` error contract through the same guard.
 The layer's `Sink` contract is the OpenTelemetry export boundary. Exporters
 receive the original static metadata, method, elapsed duration and outcome;
 they share the same lifecycle implementation. Sinks must not wait for I/O.
+`Export::channel` is the shared adapter for credited output. The host supplies
+record credit and drains its receiver in its existing export loop. Full credit
+and receiver closure refuse samples immediately and increment separate loss
+counters; neither changes the operation result or prevents cancellation.
+Records retain credit through consumer processing. Exact retained-record high
+water is updated at admission, so between-snapshot spikes remain visible.
+Optional first `error.kind` detail survives later generic errors and is never a
+metric label. This records the original declared cause; it does not diagnose a
+provider from an operation ID or reconstruct a terminal result.
 Native `WaitReport` remains the live-wait projection on this registry, preserving
 its own producer, retirement and diagnostic request/acknowledgement guarantees.
 

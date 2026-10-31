@@ -14,6 +14,10 @@ pub use operations::{
     Completion, Metrics, Operations, Outcome, Query, QueryError, Sample, Sink, Snapshot, finish,
     observe, observe_output, record_outcome,
 };
+#[cfg(not(target_arch = "wasm32"))]
+mod export;
+#[cfg(not(target_arch = "wasm32"))]
+pub use export::{Export, ExportReceiver, ExportRecord, ExportStats};
 
 mod slo;
 pub use slo::{LatencySlo, Slo, SloError, Verdict};
