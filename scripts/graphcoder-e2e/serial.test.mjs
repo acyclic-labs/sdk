@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { collect, runSuites, partition, collectPartitions,acceptanceBinding, variants } from "./serial.mjs";
-import {mkdtemp,mkdir,readFile,writeFile,rename,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rename,rm,rmdir} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
@@ -54,7 +54,7 @@ test('installed host admission launches package entries and binds their actual c
  } finally {
   if(retained) {
    await rm(dependency,{force:true});await rename(retained,dependency);
-   await rm(dirname(retained),{recursive:true});
+   await rmdir(dirname(retained));
   }
   await scope.close();
  }
