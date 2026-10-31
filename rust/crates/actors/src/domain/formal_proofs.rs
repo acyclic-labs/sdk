@@ -172,7 +172,6 @@ fn subscription(cursors: CursorValues) -> crate::wire::SubscriptionObservation {
         completed_cursor: cursors.1,
         recoverable_cursor: cursors.2,
         placement_anchor: false,
-        retry_count: 0,
         failure_code: String::new(),
         failed_cursor: cursors.3,
     }
