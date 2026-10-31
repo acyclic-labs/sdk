@@ -373,13 +373,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         let actor = self.actor(agent)?;
         self.runtime.track(actor.clone()).map_err(actor_error)?;
         self.runtime
-            .pause(&actor, paused)
+            .pause_with(&actor, paused, async {
+                match &self.lifecycle {
+                    Some(lifecycle) if paused => lifecycle.pause(agent).await,
+                    _ => Ok(()),
+                }
+            })
             .await
-            .map_err(actor_error)?;
-        match &self.lifecycle {
-            Some(lifecycle) if paused => lifecycle.pause(agent).await,
-            _ => Ok(()),
-        }
+            .map_err(actor_error)?
     }
 
     /// Host an agent created elsewhere (for example after reopening), so its

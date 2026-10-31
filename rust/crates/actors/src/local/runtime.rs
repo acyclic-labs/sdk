@@ -269,6 +269,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// waits for its cleanup before returning. Its input/unknown publication
     /// remains with the same slot. Resume reopens admission and wakes it.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
+        self.pause_with(actor, paused, std::future::ready(())).await
+    }
+
+    /// Apply pause/resume and finish the original owner's resource transition
+    /// under the same delivery/control fence. A concurrent resume cannot pass
+    /// a resource parking operation that has not yet completed.
+    pub async fn pause_with<T>(
+        &self,
+        actor: &ActorReference,
+        paused: bool,
+        transition: impl std::future::Future<Output = T>,
+    ) -> Result<T, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.pause",
             Error::kind,
@@ -311,6 +323,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         }
                     }
                 }
+                let result = transition.await;
                 if !paused {
                     *slot
                         .pause_stop
@@ -319,7 +332,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         crate::guest::CancellationToken::new();
                     self.wake(actor);
                 }
-                Ok(())
+                Ok(result)
             }
         )
     }
