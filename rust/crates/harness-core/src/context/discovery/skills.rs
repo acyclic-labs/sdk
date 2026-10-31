@@ -15,6 +15,22 @@ pub const BUILTIN_SKILLS: &[(&str, &[u8])] = &[
         "advisor-consultation",
         include_bytes!("../../skills/advisor-consultation/SKILL.md"),
     ),
+    (
+        "verify-before-done",
+        include_bytes!("../../skills/verify-before-done/SKILL.md"),
+    ),
+    (
+        "fresh-context-review",
+        include_bytes!("../../skills/fresh-context-review/SKILL.md"),
+    ),
+    (
+        "debugging",
+        include_bytes!("../../skills/debugging/SKILL.md"),
+    ),
+    (
+        "writing-skills",
+        include_bytes!("../../skills/writing-skills/SKILL.md"),
+    ),
 ];
 
 /// Frontmatter only; the body is not fetched or injected by discovery.
