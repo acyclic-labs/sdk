@@ -12,6 +12,7 @@ use acyclic_stream::StreamProviderExt as _;
 mod dispatcher;
 mod interrupt;
 mod limits;
+mod pause;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
@@ -132,6 +133,8 @@ struct Inner {
     last_input: Option<String>,
     /// The exact request and participant custody survive an unknown acknowledgement.
     pending: Option<(Arc<Snapshot>, PreparedPublish)>,
+    /// An abandoned control result retains its original uncertain publication.
+    control_failure: Option<Box<Error>>,
 }
 
 enum Event {
@@ -267,7 +270,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let Ok(mut inner) = slot.inner.try_lock() else {
             return false;
         };
-        if inner.pending.is_some() {
+        if inner.pending.is_some() || inner.control_failure.is_some() {
             return false;
         }
         inner.released = true;
@@ -284,21 +287,28 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Durably pause or resume. Pause cancels the original active delivery and
-    /// waits for its cleanup before returning. Its input/unknown publication
-    /// remains with the same slot. Resume reopens admission and wakes it.
+    /// waits for its cleanup before returning. Once admitted, the operation
+    /// outlives its waiter. Its input/unknown publication remains with the same
+    /// slot. Resume reopens admission and wakes it.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
         self.pause_with(actor, paused, std::future::ready(())).await
     }
 
     /// Apply pause/resume and finish the original owner's resource transition
     /// under the same delivery/control fence. A concurrent resume cannot pass
-    /// a resource parking operation that has not yet completed.
+    /// a resource parking operation that has not yet completed. The future
+    /// must own its resources: losing the waiter does not cancel the decision
+    /// or transition. An abandoned error, including its exact Unknown request,
+    /// is retained in the placement and returned to the next control caller.
     pub async fn pause_with<T>(
         &self,
         actor: &ActorReference,
         paused: bool,
-        transition: impl std::future::Future<Output = T>,
-    ) -> Result<T, Error> {
+        transition: impl std::future::Future<Output = T> + acyclic_stream::ProviderTask + 'static,
+    ) -> Result<T, Error>
+    where
+        T: acyclic_stream::ProviderTask + 'static,
+    {
         acyclic_observability::async_operation!(
             "acyclic.actors.pause",
             Error::kind,
@@ -308,55 +318,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 let placement = self.pin(actor)?.ok_or(Error::Invalid(
                     "actor placement retired during pause admission",
                 ))?;
-                let slot = &placement.0;
-                let _control = slot.control.lock().await;
-                if paused {
-                    let cancellation = {
-                        let mut control = slot
-                            .delivery_control
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        control.paused = true;
-                        control.cancellation.clone()
-                    };
-                    if let Some(cancellation) = cancellation {
-                        cancellation.cancel();
+                let store =
+                    Store::new(Arc::clone(self.store.provider()), self.store.root().clone());
+                let actor = actor.clone();
+                let (send, receive) = futures::channel::oneshot::channel();
+                PlatformExecutor.spawn_owned(Box::pin(async move {
+                    let slot = &placement.0;
+                    let _control = slot.control.lock().await;
+                    let result = pause::apply(&store, &actor, slot, paused, transition).await;
+                    // An abandoned waiter cannot discard the exact Unknown
+                    // publication. The next control caller receives it first.
+                    if let Err(Err(error)) = send.send(result) {
+                        slot.inner.lock().await.control_failure = Some(Box::new(error));
                     }
-                }
-                // The running delivery owns this lock through handler cleanup
-                // and retained publication. No later delivery can pass its stop.
-                let _delivery = slot.inner.lock().await;
-                let _refresh = RefreshOnDrop(Some(Arc::clone(slot)), true);
-                loop {
-                    let snapshot = self.store.load(actor).await?;
-                    let state = snapshot
-                        .state()
-                        .ok_or(Error::Invalid("actor state was never created"))?;
-                    if state.paused() == paused {
-                        break;
-                    }
-                    let operation = if paused { "pause" } else { "resume" };
-                    match self
-                        .store
-                        .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
-                        .await
-                    {
-                        Err(Error::Conflict) => {}
-                        result => {
-                            result?;
-                            break;
-                        }
-                    }
-                }
-                let result = transition.await;
-                if !paused {
-                    slot.delivery_control
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .paused = false;
-                    self.wake(actor);
-                }
-                Ok(result)
+                }));
+                receive
+                    .await
+                    .unwrap_or(Err(Error::Stream(StreamError::Unavailable)))
             }
         )
     }
