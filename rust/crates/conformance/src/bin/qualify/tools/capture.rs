@@ -122,6 +122,8 @@ pub(super) async fn bench_inner(
     use acyclic_fs::{NativeWatch, NativeWatchOptions, WatchBatch};
 
     let cancel = CancellationToken::new();
+    let arrival = acyclic_fs::NativeMaterializationWork::new(WorkCounters::UNBOUNDED, &cancel)
+        .map_err(|(cause, _)| cause)?;
     let fs_engine = LocalFs::local(local_options(store_dir)?)
         .await
         .map_err(engine_err("open store"))?;
@@ -211,17 +213,18 @@ pub(super) async fn bench_inner(
         let mutated_at = Instant::now();
         fs::write(&target, format!("round {round} at {mutated_at:?}\n"))?;
 
-        // Poll until the watcher reports the change (event-arrival latency).
+        // Observe actual native delivery, including a batch retained before entry.
         let batch = loop {
+            watch
+                .wait_for_changes_with_native_work(&arrival)
+                .map_err(engine_err("native batch arrival"))?;
             let batch = watch
                 .poll(4_096, WorkCounters::UNBOUNDED, &cancel)
                 .map_err(engine_err("poll"))?
                 .value;
             match &batch {
                 WatchBatch::Changes { changes, .. } if !changes.is_empty() => break batch,
-                WatchBatch::Changes { .. } => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
+                WatchBatch::Changes { .. } => {}
                 WatchBatch::RescanRequired { reason, .. } => {
                     return Err(format!("rescan required mid-bench: {reason:?}").into());
                 }

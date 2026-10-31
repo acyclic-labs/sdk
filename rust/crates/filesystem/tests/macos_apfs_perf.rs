@@ -56,7 +56,6 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
         CaptureOptions, NativeWatch, NativeWatchOptions, WatchBatch, WatchChange, capture_baseline,
         capture_root_identity, capture_watch_batch, host_path_to_namespace,
     };
-    use std::time::Duration;
 
     let root = tempfile::tempdir()?;
     std::fs::create_dir_all(root.path().join("before/nested"))?;
@@ -106,11 +105,12 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
         FilesystemProfile::Portable,
         config.limits,
     )?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let cancellation = CancellationToken::new();
+    let arrival = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
     loop {
-        let batch = watch
-            .poll(128, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value;
+        watch.wait_for_changes_with_native_work(&arrival)?;
+        let batch = watch.poll(128, WorkBudget::UNBOUNDED, &cancellation)?.value;
         let saw_destination = match &batch {
             WatchBatch::Changes { changes, .. } => changes.iter().any(
                 |change| matches!(change, WatchChange::Modified(path) if path == &destination),
@@ -125,16 +125,12 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
             &options,
             &acyclic_fs::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            &cancellation,
         )
         .await?;
         if saw_destination {
             break;
         }
-        if Instant::now() >= deadline {
-            return Err("destination hint timed out".into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
     }
     assert!(
         has_record(&mut checkout, "after/nested/file.txt", config.limits).await?,
