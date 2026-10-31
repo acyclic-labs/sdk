@@ -74,8 +74,8 @@ diagnostic joins, rather than metric labels or globally unique identities.
 
 For a join to an admitted operation, the original owner can use
 `Binding::attach(&original_span, original_ids, caller_owned_permit)` on its
-existing observed operation before
-creating children. The key is a fixed-size `Copy + Send + Sync + 'static` value
+existing observed operation before creating children. The key is a fixed-size
+`Copy + Send + Sync + 'static` value
 containing that owner's exact opaque authority, operation, generation and
 physical-owner IDs. The adapter does not discover or authorize those IDs.
 An opt-in detail sink carries the same token along each immediate registry
@@ -89,8 +89,8 @@ unobserved operation return typed errors. Counters-only sinks propagate no token
 One shared identity allocation at explicit binding admission holds the fixed
 key and its caller-supplied credit. Operation spans reuse their existing
 collector record for the token; a non-operation bridge also needs the registry's
-ordinary extension storage when it inherits a token. Clones share the identity through diagnostic
-retirement, retaining neither a span nor physical work. Each admitted export
+ordinary extension storage when it inherits a token. Clones share the identity
+through diagnostic retirement, retaining neither a span nor physical work. Each admitted export
 record still owns its separate output credit through processing. Neither token
 nor record retirement completes the operation or certifies a provider range,
 physical coverage or report acknowledgement.
@@ -101,6 +101,18 @@ record these fields before their terminal outcome. Missing and unrepresentable
 totals remain unknown. These semantic units do not count hidden copies, locks,
 quorum requests, OS syscalls or device drains. No measurement can treat their
 absence as zero physical work.
+
+Provider request budgets use the existing Stream `Requests` delta. Declare the
+original operation's requested class with `auxiliary(Some(RequestClass::List))`,
+for example, and check its requested count separately with `class(List)`.
+Requested HEAD/LIST calls are then distinct from auxiliary probes; surplus calls
+of the same class still count against the requested budget. Absent requested
+semantics (`None`) and lost counter precision return unknown. Saturation remains
+unknown through later deltas, rather than wrapping to zero. `control()` names
+raw non-payload methods and cannot establish the caller's requested semantics.
+This fixed six-component partition counts only the original wrapped provider
+boundary, including failed calls; physical retries or hidden backend work still
+require their original producers.
 
 The original `acyclic.runtime.durability` producer's fields project into
 `Sample::durability: Option<DurabilityAttempt>`. Its fixed fields preserve
