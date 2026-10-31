@@ -117,8 +117,8 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
     // The original delivery retains this lock through physical cleanup and
     // publication settlement. A later control cannot pass either transition.
     let delivery = slot.inner.lock().await;
+    let mut epoch = (delivery.epoch != 0).then_some(delivery.epoch);
     let result = async {
-        let mut epoch = (delivery.epoch != 0).then_some(delivery.epoch);
         loop {
             let snapshot = store.load(actor).await?;
             let state = snapshot
