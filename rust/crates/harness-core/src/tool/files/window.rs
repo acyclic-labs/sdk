@@ -29,6 +29,7 @@ impl Window {
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
+        let source_hold;
         let original = input
             .version
             .as_deref()
@@ -38,12 +39,13 @@ impl Window {
             .transpose()?;
         let original = match original {
             Some((FileReadSource::Content(file), hold)) => {
+                source_hold = hold;
                 let range = content_range(&file, range, work)?;
                 let bytes = context.read_file_range(&file, range, io).await?;
                 return Ok(Self {
                     source: FileReadSource::Content(file),
                     bytes,
-                    _hold: hold,
+                    _hold: source_hold,
                 });
             }
             original => original,

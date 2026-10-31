@@ -273,7 +273,9 @@ pub(crate) async fn spill(
     let work = io.and_then(crate::executor::PreparationIo::original_native_work);
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let work = None;
-    let (version, _version_hold) = super::files::encode_version(&file, work)?;
+    let _version_hold;
+    let (version, version_hold) = super::files::encode_version(&file, work)?;
+    _version_hold = version_hold;
     render(
         projection,
         encoded,

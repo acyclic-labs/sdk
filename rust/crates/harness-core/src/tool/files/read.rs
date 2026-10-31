@@ -32,10 +32,10 @@ impl FileTool {
         if input.0.selection.is_none() {
             return self.read_path_range(context, &input.0, work, io).await;
         }
-        let (file, _resolved, _source_custody) = self
+        let source = self
             .source(context, &input.0.path, input.0.version.as_deref(), work, io)
             .await?;
-        self.media_result(file, input.0.selection.clone(), work)
+        self.media_result(source.file, input.0.selection.clone(), work)
     }
 
     async fn read_path_range(
@@ -90,14 +90,14 @@ impl FileTool {
                 };
                 // Native input needs complete bytes. Resolve only this already
                 // selected generation; a concurrent head cannot substitute it.
-                let (file, _complete, retained) = context
-                    .read_tool_path(&input.path, Some(&selected.generation), io)
-                    .await?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let _media_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                let _ = retained;
-                return self.media_result(file, media, work);
+                let source = super::executor::Source::read(
+                    context,
+                    &input.path,
+                    Some(&selected.generation),
+                    io,
+                )
+                .await?;
+                return self.media_result(source.file, media, work);
             }
         }
         let source = page_text(
