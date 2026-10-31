@@ -234,7 +234,7 @@ impl CodexLogin {
         failure: &mut Option<RefreshFailure>,
     ) -> Result<(String, Option<String>)> {
         let path = self.path.clone();
-        let (mut original, mut auth) = io.blocking(permit, move |io| load(&path, io)).await?;
+        let (_, mut auth) = io.blocking(permit, move |io| load(&path, io)).await?;
         self.check_account(&auth)?;
         for attempt in 0..2 {
             let access = token(&auth, "access_token")?;
@@ -264,12 +264,11 @@ impl CodexLogin {
             if response.status != 200 {
                 if attempt == 0 && matches!(response.status, 400 | 401) {
                     let path = self.path.clone();
-                    let (bytes, current) = io.blocking(permit, move |io| load(&path, io)).await?;
+                    let (_, current) = io.blocking(permit, move |io| load(&path, io)).await?;
                     self.check_account(&current)?;
                     if token(&current, "refresh_token").ok() != Some(refresh)
                         || token(&current, "access_token").ok() != Some(access)
                     {
-                        original = bytes;
                         auth = current;
                         continue;
                     }
@@ -286,22 +285,20 @@ impl CodexLogin {
                     failure,
                 );
             }
-            let updated =
-                RefreshFailure::share(refresh_document(response.body, io).await, failure)?;
-            for field in ["access_token", "refresh_token", "id_token"] {
-                if let Some(value) = updated.get(field) {
-                    auth["tokens"][field] = value.clone();
-                }
-            }
-            auth["last_refresh"] = json!(
+            let tokens = RefreshFailure::share(refresh_document(response.body, io).await, failure)?;
+            let last_refresh = json!(
                 (self.clock)()
                     .format(&Rfc3339)
                     .map_err(|_| invalid("Codex refresh timestamp failed"))?
             );
+            let updated = RefreshUpdate {
+                tokens,
+                last_refresh,
+            };
             let path = self.path.clone();
             auth = io
                 .blocking(permit, move |io| {
-                    persist_if_unchanged(&path, &original, auth, io)
+                    persist_if_unchanged(&path, &auth, updated, io)
                 })
                 .await?
                 .into_document();
@@ -500,6 +497,13 @@ enum RefreshPublication {
     },
 }
 
+/// The original parsed baseline remains immutable until publication. OAuth
+/// updates own only the admitted response and publication timestamp.
+struct RefreshUpdate {
+    tokens: Value,
+    last_refresh: Value,
+}
+
 impl RefreshPublication {
     fn into_document(self) -> Value {
         match self {
@@ -514,17 +518,17 @@ impl RefreshPublication {
 
 fn persist_if_unchanged(
     path: &Path,
-    original: &[u8],
-    auth: Value,
+    original: &Value,
+    updated: RefreshUpdate,
     io: &mut CredentialIo,
 ) -> Result<RefreshPublication> {
-    persist_with(path, original, auth, || Ok(()), io)
+    persist_with(path, original, updated, || Ok(()), io)
 }
 
 fn persist_with(
     path: &Path,
-    original: &[u8],
-    auth: Value,
+    original: &Value,
+    updated: RefreshUpdate,
     before_replace: impl FnOnce() -> Result<()>,
     io: &mut CredentialIo,
 ) -> Result<RefreshPublication> {
@@ -548,9 +552,8 @@ fn persist_with(
         .ok_or_else(|| invalid("Codex auth path needs a parent"))?;
     // Stage on the same filesystem. A metadata edit does not take credential
     // ownership: preserve it while publishing the rotated token fields.
-    let baseline = document(original, io)?;
     let (mut observed, current) = load(path, io)?;
-    let Some(mut auth) = merge_refresh(&baseline, &observed, &current, &auth, io)? else {
+    let Some(mut auth) = merge_refresh(original, &observed, &current, &updated, io)? else {
         return Ok(RefreshPublication::Observed(current));
     };
     let mut file = crate::credential_file::create(parent)
@@ -560,7 +563,7 @@ fn persist_with(
     let bytes = read(path, io)?;
     if bytes != observed {
         let current = document(&bytes, io)?;
-        let Some(merged) = merge_refresh(&baseline, &bytes, &current, &auth, io)? else {
+        let Some(merged) = merge_refresh(original, &bytes, &current, &updated, io)? else {
             return Ok(RefreshPublication::Observed(current));
         };
         auth = merged;
@@ -628,7 +631,7 @@ fn merge_refresh(
     original: &Value,
     current_wire: &[u8],
     current: &Value,
-    refreshed: &Value,
+    refreshed: &RefreshUpdate,
     io: &mut CredentialIo,
 ) -> Result<Option<Value>> {
     const FIELDS: [&str; 4] = ["account_id", "access_token", "refresh_token", "id_token"];
@@ -648,8 +651,8 @@ fn merge_refresh(
     let mut replacement_bytes = 0u64;
     for value in fields
         .iter()
-        .map(|field| &refreshed["tokens"][field])
-        .chain(std::iter::once(&refreshed["last_refresh"]))
+        .map(|field| &refreshed.tokens[field])
+        .chain(std::iter::once(&refreshed.last_refresh))
     {
         // Unchanged omitted fields may be null; refresh responses themselves
         // have already admitted nonempty token strings.
@@ -667,11 +670,13 @@ fn merge_refresh(
     )?;
     let mut merged = current.clone();
     for field in fields {
-        if merged["tokens"][field] != refreshed["tokens"][field] {
-            merged["tokens"][field] = refreshed["tokens"][field].clone();
+        if let Some(value) = refreshed.tokens.get(field) {
+            if merged["tokens"][field] != *value {
+                merged["tokens"][field] = value.clone();
+            }
         }
     }
-    merged["last_refresh"] = refreshed["last_refresh"].clone();
+    merged["last_refresh"] = refreshed.last_refresh.clone();
     Ok(Some(merged))
 }
 
