@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 
 pub use acyclic_host_platform::shell::{PLATFORM, ShellSpec};
+mod tail;
+pub use tail::OutputTail;
 
 /// Prepares the bounded model presentation before a backend commits its output.
 /// A streaming backend uses the resulting omission count to retain a complete
