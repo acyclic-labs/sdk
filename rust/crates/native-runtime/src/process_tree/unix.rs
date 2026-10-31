@@ -45,19 +45,27 @@ fn exit_status_id(
     // child's ID. WNOWAIT retains the leader until group termination,
     // preventing its PID/PGID from being reused for an unrelated group.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    let (waited, recorded) =
-        super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
-            // SAFETY: `info` is writable storage owned by this frame and
-            // `id` names the exclusively owned child.
-            if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        })?;
-    match waited {
-        Err(error) => return Err(error),
-        Ok(()) => recorded?,
+    // An interrupted blocking wait still owns this child's one exit event.
+    // Resume that OS wait without a clock, readiness query or changed PID.
+    // Nonblocking observations remain one physical attempt.
+    loop {
+        let (waited, recorded) =
+            super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
+                // SAFETY: `info` is writable storage owned by this frame and
+                // `id` names the exclusively owned child.
+                if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            })?;
+        recorded?;
+        match waited {
+            Ok(()) => break,
+            Err(error)
+                if flags & libc::WNOHANG == 0 && error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
     }
     // SAFETY: WEXITED waitid initialized the child-status union.
     if unsafe { info.si_pid() } == 0 {
