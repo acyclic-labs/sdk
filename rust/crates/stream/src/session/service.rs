@@ -65,7 +65,6 @@ impl<P: StreamProvider> wire::stream_session_service_server::StreamSessionServic
             self.node.clone(),
             self.limits,
             incoming,
-            Arc::new(crate::runtime::PlatformExecutor),
             self.lifetime.clone().map(|mut lifetime| {
                 Box::pin(async move {
                     let _ = lifetime.changed().await;

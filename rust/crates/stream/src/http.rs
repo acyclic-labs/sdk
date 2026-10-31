@@ -9,7 +9,7 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde_json::Value;
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc};
 use tracing::{Span, field::Empty};
 mod session;
 mod shared;
@@ -92,7 +92,7 @@ impl HttpStream {
         let authorization = token.map(credential_header).transpose()?;
         let mut client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(30));
+            .retry(reqwest::retry::never());
         if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > MAX_CA_CERTIFICATE_BYTES {
                 return Err(ConnectError);
@@ -611,14 +611,11 @@ mod tests {
                 bytes = 777_u64,
                 http.status = 777_u64
             );
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                provider
-                    .tail(StreamPath::new("filtered/test")?)
-                    .instrument(parent),
-            )
-            .await?;
-            tokio::time::timeout(std::time::Duration::from_secs(10), server).await??;
+            let result = provider
+                .tail(StreamPath::new("filtered/test")?)
+                .instrument(parent)
+                .await;
+            server.await?;
             assert_eq!(result, Err(StreamError::Unavailable));
             Ok(())
         }

@@ -1,5 +1,5 @@
 //! Original-ledger admission for the shared wire projections and parsers.
-use crate::{Adapter, HttpTransport as _, ResolvedModel, dispatch, sse, stream};
+use crate::{Adapter, ResolvedModel, dispatch, sse, stream};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness_core::{
     Error, NativeFutureBundle, Result,

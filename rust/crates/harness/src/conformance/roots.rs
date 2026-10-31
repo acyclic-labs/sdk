@@ -18,10 +18,7 @@ use acyclic_harness_core::{
     model::ModelContent,
     resources::ProviderRef,
 };
-use acyclic_stream::{
-    BoxProviderFuture, UnixMillisClock,
-    runtime::{Executor as _, PlatformExecutor},
-};
+use acyclic_stream::{BoxProviderFuture, UnixMillisClock, testing::Counted};
 use std::sync::Arc;
 
 /// Root preparation never runs a turn.
@@ -104,7 +101,8 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         },
         _ => audience.clone(),
     };
-    let issuer = AuthorityRoot::new("conformance", [7; 32], issued.clone());
+    let clock = Arc::new(super::fixtures::AuthorityClock::new());
+    let issuer = AuthorityRoot::with_clock("conformance", [7; 32], issued.clone(), clock.clone());
     let agent = crate::conformance::fixtures::adopted().agent;
     let private = volume(PRIVATE_VOLUME, agent.clone())?;
     let shared = volume("shared", agent.clone())?;
@@ -146,7 +144,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     match case {
         Case::Revoked => issuer.revoke_workload(&scope)?,
         Case::Expired => {
-            let now = acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000;
+            let now = clock.now_unix_millis() / 1000;
             let deadline = now + 1;
             scope = scope.with_workload_expiry(
                 deadline,
@@ -154,22 +152,20 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
                 &issued,
                 now,
             )?;
-            let delay = (deadline * 1000)
-                .saturating_sub(acyclic_stream::SystemUnixMillisClock.now_unix_millis());
-            PlatformExecutor.sleep(u32::try_from(delay + 1)?).await;
         }
         _ => {}
     }
     let objects = storage.objects().await?;
-    let observed = objects.provider.clone();
     let capabilities = objects.capabilities;
+    let objects = Counted::new(objects.into_store(storage.as_ref())?);
+    let object_requests = objects.ledger();
     let bound = Bound::admitted(
         issuer,
         VerifiedCaller { audience, scope },
         Placement {
             filesystem: acyclic_fs::Fs::new(
                 acyclic_fs::StreamAuthorityStore::new(stream.clone()),
-                objects.into_store(storage.as_ref())?,
+                objects,
                 capabilities,
             ),
             provider: private.volume.provider().clone(),
@@ -195,6 +191,16 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         policy: None,
     };
     let intent = vectors::intent("root")?;
+    if case == Case::Expired {
+        // Exercise the original preparation before advancing its issuing clock.
+        // A failed or manufactured admission cannot pass this positive control.
+        let _before_expiry = bound.prepare_root(&intent, request()).await?;
+        if object_requests.requests().data() == 0 {
+            return Err("successful root preparation escaped object dispatch observation".into());
+        }
+        clock.advance_to((clock.now_unix_millis() / 1000 + 1) * 1000);
+    }
+    let before = object_requests.requests();
     let prepared = bound.prepare_root(&intent, request()).await;
     let requests = stream.requests.requests();
     let io = requests.data() + requests.control();
@@ -233,13 +239,11 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         }
         (_, Ok(_)) => Err(format!("{case:?}: admission prepared a root it does not cover").into()),
         (_, Err(_)) => {
-            // A refusal writes no volume object either.
-            use acyclic_objects::Blobs as _;
-            let written = observed.list(None, 1).await?.digests.len();
-            if written != 0 {
-                return Err(
-                    format!("{case:?}: a refused admission wrote {written} objects").into(),
-                );
+            // The successful control may already have prepared immutable objects.
+            // Refusal must dispatch no object work, even a deduplicated put.
+            let refused = object_requests.requests().since(before);
+            if refused.data() + refused.control() != 0 {
+                return Err(format!("{case:?}: a refused admission dispatched object work").into());
             }
             Ok(())
         }

@@ -588,9 +588,6 @@ pub enum MountSourceError {
     /// Original owned native record parser cause; no diagnostic allocation.
     #[error("native record JSON error: {0}")]
     NativeRecordJson(#[source] serde_json::Error, Option<crate::NativeAllocation>),
-    /// Actual record lock acquisition timed out.
-    #[error("native record lock timed out: {}", .0.display())]
-    NativeRecordLockTimeout(PathBuf, Option<crate::NativeAllocation>),
     /// The existing record belongs to a different original owner.
     #[error("native record ownership conflict: {}", .0.display())]
     NativeRecordOwnershipConflict(PathBuf, Option<crate::NativeAllocation>),
@@ -603,9 +600,6 @@ pub enum MountSourceError {
     /// A native operation is unsupported before dispatch.
     #[error("native operation is unsupported")]
     NativeUnsupported,
-    /// Existing publication attempt exhausted its bounded rebase loop.
-    #[error("publication raced with repeated head advances; retry retained operation")]
-    PublicationRetryLimit,
     /// Original fallible allocation failure, without allocating a diagnostic.
     #[error("native source allocation failed: {0}")]
     Allocation(#[from] std::collections::TryReserveError),

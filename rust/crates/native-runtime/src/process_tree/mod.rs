@@ -16,12 +16,11 @@ pub use external_host::run_external_process_host;
 #[cfg(test)]
 mod capture_events_tests;
 #[cfg(windows)]
-#[path = "capture_wait_windows.rs"]
-mod capture_wait;
-#[cfg(windows)]
 mod custodian;
 mod events;
 mod wake;
+#[cfg(windows)]
+mod windows_event;
 pub use wake::ProcessWake;
 mod control;
 pub use control::{ControlledCapture, ProcessControl};
@@ -124,20 +123,26 @@ pub struct ProcessTree {
     /// The process-event hub every wait of this tree arms, held from before
     /// its child is created.
     _events: events::Events,
+    // Original first-arm completion, retained by this tree through failed setup.
+    #[cfg(all(test, feature = "test-support", not(loom)))]
+    capture_armed: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// One armed wait on a process tree's retained pipes and direct child, served
 /// by the shared process-event hub: epoll, kqueue or an I/O completion port.
-/// It holds no thread and fires once.
-pub struct ProcessReadiness(events::Wait);
+/// It holds no thread and settles once, retaining the original OS wait error
+/// if its shared event producer fails.
+pub struct ProcessReadiness(events::Wait<'static>);
+
+pub use events::ProcessWaitOutcome;
 
 impl std::future::Future for ProcessReadiness {
-    type Output = ();
+    type Output = ProcessWaitOutcome;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
+    ) -> std::task::Poll<Self::Output> {
         std::pin::Pin::new(&mut self.0).poll(context)
     }
 }
@@ -172,9 +177,6 @@ impl ProcessTree {
             eprintln!("step=retire native process owner: {error}; recovery: {recovery}");
         }
     }
-
-    /// Maximum observation time for each physical termination phase.
-    pub const TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Kernel observations that decide a macOS process group whose kill was
     /// refused, for a group of up to 255 members: two listings and one probe
@@ -504,6 +506,39 @@ impl ProcessTree {
     /// owner then reads without waiting, as before; no thread or timer runs
     /// while it waits.
     pub fn readiness(&mut self) -> io::Result<ProcessReadiness> {
+        self.readiness_for(true)
+    }
+
+    /// Waits only for queued stdin progress or the original child's exit.
+    /// Call after [`Self::pump_stdin`] returns false. Unread output cannot
+    /// wake this wait; its owner must consume output separately if the child
+    /// needs that output drained before accepting input.
+    pub fn stdin_readiness(&mut self) -> io::Result<ProcessReadiness> {
+        if !self
+            .queued_stdin
+            .as_ref()
+            .is_some_and(PendingStdin::writing)
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        if self.child.is_none() {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        #[cfg(windows)]
+        if self.writer.0.is_none() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.readiness_for(false)
+    }
+
+    fn readiness_for(&mut self, output: bool) -> io::Result<ProcessReadiness> {
+        #[cfg(unix)]
+        let retired = self.child.is_none() && self.native_child.is_none();
+        #[cfg(windows)]
+        let retired = self.child.is_none();
+        if retired {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
         let writing = self
             .queued_stdin
             .as_ref()
@@ -511,15 +546,13 @@ impl ProcessTree {
         #[cfg(unix)]
         {
             use std::os::fd::AsFd as _;
-            if self.child.is_some() {
-                self.prepare_exit_source()?;
-            }
-            let mut sources = Vec::with_capacity(4);
+            self.prepare_exit_source()?;
+            let mut sources = Vec::with_capacity(if output { 4 } else { 2 });
             if let Some(child) = &self.child {
-                if let Some(pipe) = &child.stdout {
+                if output && let Some(pipe) = &child.stdout {
                     sources.push(events::Source::Readable(pipe.as_fd()));
                 }
-                if let Some(pipe) = &child.stderr {
+                if output && let Some(pipe) = &child.stderr {
                     sources.push(events::Source::Readable(pipe.as_fd()));
                 }
                 if writing && let Some(pipe) = &child.stdin {
@@ -532,27 +565,29 @@ impl ProcessTree {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsHandle as _;
-            let Some(child) = &self.child else {
-                return events::arm(&[], None).map(ProcessReadiness);
-            };
+            let child = self.child.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
             let [stdout, stderr] = &mut self.readers;
-            if stdout.is_none()
+            if output
+                && stdout.is_none()
                 && let Some(pipe) = &child.stdout
             {
                 *stdout = Some(events::PipeOperation::reader(pipe)?);
             }
-            if stderr.is_none()
+            if output
+                && stderr.is_none()
                 && let Some(pipe) = &child.stderr
             {
                 *stderr = Some(events::PipeOperation::reader(pipe)?);
             }
-            let mut sources = Vec::with_capacity(4);
-            if child.stdout.is_some()
+            let mut sources = Vec::with_capacity(if output { 4 } else { 2 });
+            if output
+                && child.stdout.is_some()
                 && let Some(reader) = &self.readers[0]
             {
                 sources.push(events::Source::Pipe(reader));
             }
-            if child.stderr.is_some()
+            if output
+                && child.stderr.is_some()
                 && let Some(reader) = &self.readers[1]
             {
                 sources.push(events::Source::Pipe(reader));
@@ -689,8 +724,36 @@ impl ProcessTree {
         Ok(())
     }
 
-    /// Observes direct-child exit within `timeout`, retaining descendant ownership.
-    pub fn wait(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
+    /// Observes direct-child exit on the caller's original schedule, retaining
+    /// descendant ownership. An unbounded schedule waits only on OS exit.
+    pub fn wait(&mut self, schedule: impl Into<CaptureSchedule>) -> io::Result<ExitStatus> {
+        let deadline = match schedule.into() {
+            CaptureSchedule::Unbounded => None,
+            CaptureSchedule::Deadline(deadline) => Some(deadline),
+            CaptureSchedule::Overflow => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "process deadline overflow",
+                ));
+            }
+        };
+        self.wait_exit_until(deadline, None)
+    }
+
+    /// Waits for direct-child exit, retaining descendant ownership.
+    /// The OS wakes the caller on exit or returns its terminal wait error.
+    pub fn wait_exit(
+        &mut self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<ExitStatus> {
+        self.wait_exit_until(None, meter)
+    }
+
+    fn wait_exit_until(
+        &mut self,
+        deadline: Option<Instant>,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<ExitStatus> {
         let operation = obs::span!(
             INFO,
             "acyclic.runtime.wait",
@@ -699,21 +762,27 @@ impl ProcessTree {
         );
         operation.in_scope(|| {
             operation.finish((|| {
-                let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
-                })?;
                 if self.is_reaped() {
                     return Err(io::Error::other("process output was already collected"));
                 }
-                self.close_stdin();
+                self.capture_close_stdin(meter)?;
                 #[cfg(windows)]
-                return platform::wait_for_exit(
-                    self.child.as_mut().ok_or(io::ErrorKind::NotFound)?,
-                    deadline,
-                );
+                {
+                    let child = self.child.as_mut().ok_or(io::ErrorKind::NotFound)?;
+                    process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+                        match deadline {
+                            Some(deadline) => platform::wait_for_exit(child, deadline),
+                            None => child.wait(),
+                        }
+                    })
+                }
                 #[cfg(unix)]
                 {
-                    exit_wait::wait(self.owned_child_id()?, deadline)
+                    let id = self.owned_child_id()?;
+                    match deadline {
+                        Some(deadline) => exit_wait::wait_metered(id, deadline, meter),
+                        None => platform::await_exiting_id(id, meter),
+                    }
                 }
             })())
         })
@@ -814,7 +883,11 @@ impl ProcessTree {
                 match pump.turn(self, &mut check, &mut observe, meter) {
                     pump::Turn::Done(result) => break result,
                     pump::Turn::Wait => match pump.arm_with_wake(self, wake) {
-                        Ok(wait) => wait.block(),
+                        Ok(wait) => {
+                            if let Err(error) = wait.block().into_result() {
+                                break Err(error);
+                            }
+                        }
                         Err(error) => break Err(error),
                     },
                 }
@@ -876,7 +949,11 @@ impl ProcessTree {
                         pump::Turn::Done(result) => break result,
                         pump::Turn::Wait => {
                             match pump.arm_with_wake(&mut tree, Some(wakes.as_slice())) {
-                                Ok(wait) => wait.block(),
+                                Ok(wait) => {
+                                    if let Err(error) = wait.block().into_result() {
+                                        break Err(error);
+                                    }
+                                }
                                 Err(error) => break Err(error),
                             }
                         }
@@ -977,25 +1054,6 @@ impl ProcessTree {
         }
     }
 
-    /// Arms one wait on the direct child's exit, waking by `deadline`.
-    #[cfg(all(unix, test))]
-    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
-        self.prepare_exit_source()?;
-        let exit = self.exit_source()?;
-        events::arm(exit.as_slice(), Some(deadline))
-    }
-
-    /// Arms one wait on the direct child's exit, waking by `deadline`.
-    #[cfg(windows)]
-    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
-        use std::os::windows::io::AsHandle as _;
-        let exit = self
-            .child
-            .as_ref()
-            .map(|child| events::Source::Exit(child.as_handle()));
-        events::arm(exit.as_slice(), Some(deadline))
-    }
-
     /// Terminates containment and reaps the direct child.
     pub fn terminate(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
         if meter.is_some() {
@@ -1019,16 +1077,7 @@ impl ProcessTree {
             self.capture_terminate_descendants(meter)?;
             self.capture_close_stdin(meter)?;
             if self.child.is_some() {
-                let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
-                while self.try_wait(meter)?.is_none() {
-                    if Instant::now() >= deadline {
-                        return Err(io::ErrorKind::TimedOut.into());
-                    }
-                    process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                        self.arm_exit(deadline)?.block();
-                        Ok(())
-                    })?;
-                }
+                self.wait_exit(meter)?;
                 if let Some(child) = self.child.as_mut() {
                     if child.stdout.is_some() {
                         process_control_attempt(meter, crate::NativeOperationKind::Write, || {
@@ -1065,8 +1114,7 @@ impl ProcessTree {
         self.guard.terminate_with_meter(meter)?;
         self.capture_close_stdin(meter)?;
         if self.child.is_some() || self.native_child.is_some() {
-            let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
-            exit_wait::wait_metered(self.owned_child_id()?, deadline, meter)?;
+            platform::await_exiting_id(self.owned_child_id()?, meter)?;
             // Only actually retained standard pipes require a release call.
             // Denial keeps the observed leader unreaped and its remaining
             // streams owned by this same tree, rather than hiding their drops
@@ -1125,6 +1173,7 @@ impl ProcessTree {
     }
 
     /// Requests graceful Unix group termination, then performs mandatory tree cleanup after direct-child exit or `grace`.
+    /// After forced termination, waits on the original process exit without an additional deadline.
     pub fn terminate_after(&mut self, grace: Duration) -> io::Result<ExitStatus> {
         let operation = obs::span!(
             INFO,
@@ -1143,7 +1192,7 @@ impl ProcessTree {
                     Ok(status) => status,
                     Err(error) if error.kind() == io::ErrorKind::TimedOut => {
                         self.terminate_descendants()?;
-                        self.wait(Duration::from_secs(5))?
+                        self.wait_exit(None)?
                     }
                     Err(error) => {
                         self.terminate(None)?;

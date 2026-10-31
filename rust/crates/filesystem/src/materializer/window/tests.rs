@@ -34,9 +34,8 @@ fn window_prompt_child() -> std::io::Result<()> {
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io::Result<()> {
-    use acyclic_native_runtime::{CaptureInput, ProcessInput, ProcessTreeStorage};
+    use acyclic_native_runtime::{CaptureInput, CaptureSchedule, ProcessInput, ProcessTreeStorage};
     use std::process::{Command, Stdio};
-    use std::time::Duration;
 
     let prompt = b"original window prompt";
     for queued in [true, false] {
@@ -69,23 +68,15 @@ async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io:
         let before = work.receipt().output_bytes;
         if queued {
             process.io(&meter)?.queue_stdin(prompt.to_vec())?;
-            tokio::time::timeout(Duration::from_secs(3), async {
-                loop {
-                    let ready = process.io(&meter)?.readiness()?;
-                    if process.io(&meter)?.pump_stdin()? {
-                        return Ok::<_, std::io::Error>(());
-                    }
-                    ready.await;
-                }
-            })
-            .await
-            .map_err(std::io::Error::other)??;
+            while !process.io(&meter)?.pump_stdin()? {
+                process.io(&meter)?.stdin_readiness()?.await.into_result()?;
+            }
             process.require_stdin_complete()?;
         }
         let _buffers = window.claim(8192, 2, WorkCounters::UNCHARGED).unwrap();
         let output = process
             .wait_with_output(
-                Duration::from_secs(3),
+                CaptureSchedule::Unbounded,
                 4096,
                 (!queued).then_some(CaptureInput::Literal(prompt)),
                 || Ok(()),

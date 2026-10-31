@@ -17,9 +17,9 @@ pub enum Durability {
 
 /// Flushes file contents and metadata according to `durability`.
 ///
-/// On Apple platforms, Full requires `F_FULLFSYNC`. If the filesystem only
-/// supports a weaker fallback, the fallback is performed and Unsupported is
-/// returned; success never acknowledges weaker durability than requested.
+/// On Apple platforms, Full requires `F_FULLFSYNC`; an unsupported full flush
+/// returns directly without performing a weaker barrier. An interruption is
+/// returned to the caller without reissuing the operation.
 pub fn sync_file(
     file: &File,
     durability: Durability,
@@ -50,14 +50,11 @@ fn sync_file_impl(
         #[cfg(any(windows, target_os = "linux"))]
         return sync_full(file, durability, Some(meter));
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        loop {
+        {
             meter.check()?;
             meter.admit_durability()?;
-            let result = crate::persistence_syscall(|| sync_file_unsequenced(file, durability));
-            match result {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                result => return result.and_then(|()| meter.check()),
-            }
+            return crate::persistence_syscall(|| sync_file_unsequenced(file, durability))
+                .and_then(|()| meter.check());
         }
     }
     let operation = obs::span!(
@@ -73,40 +70,34 @@ fn sync_file_impl(
     })
 }
 
-/// One retry/charging policy for the shared Linux/Windows full-flush primitive.
+/// One admission and native full flush on the original held descriptor.
 #[cfg(any(windows, target_os = "linux"))]
 fn sync_full(
     file: &File,
     requested: Durability,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
-    loop {
-        if let Some(meter) = meter {
-            meter.check()?;
-            meter.admit_durability()?;
-        }
-        #[cfg(target_os = "linux")]
-        let descriptor = {
-            use std::os::fd::AsFd as _;
-            file.as_fd()
-        };
-        #[cfg(windows)]
-        let descriptor = {
-            use std::os::windows::io::AsHandle as _;
-            file.as_handle()
-        };
-        match crate::persistence_syscall(|| {
-            crate::held_sync::sync_descriptor_requested_once(descriptor, requested)
-        }) {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => {
-                return result.and_then(|()| match meter {
-                    Some(meter) => meter.check(),
-                    None => Ok(()),
-                });
-            }
-        }
+    if let Some(meter) = meter {
+        meter.check()?;
+        meter.admit_durability()?;
     }
+    #[cfg(target_os = "linux")]
+    let descriptor = {
+        use std::os::fd::AsFd as _;
+        file.as_fd()
+    };
+    #[cfg(windows)]
+    let descriptor = {
+        use std::os::windows::io::AsHandle as _;
+        file.as_handle()
+    };
+    crate::persistence_syscall(|| {
+        crate::held_sync::sync_descriptor_requested_once(descriptor, requested)
+    })
+    .and_then(|()| match meter {
+        Some(meter) => meter.check(),
+        None => Ok(()),
+    })
 }
 
 pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
@@ -163,13 +154,7 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
                 #[cfg(target_os = "linux")]
                 {
                     use std::os::fd::AsFd as _;
-                    loop {
-                        match crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability)
-                        {
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                            result => return result,
-                        }
-                    }
+                    return crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability);
                 }
                 #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
                 {
@@ -307,6 +292,8 @@ fn read_declared_source(
 }
 
 /// Writes positionally; a metered held handle must support positional I/O and own its file admission.
+/// Successful short writes advance through the payload. The first native error,
+/// including interruption, ends the request; an earlier prefix may be written.
 pub fn write_all_at(
     file: &File,
     offset: u64,
@@ -315,34 +302,14 @@ pub fn write_all_at(
 ) -> io::Result<()> {
     let Some((meter, held)) = meter else {
         return with_file_admission(file, || {
-            #[cfg(not(feature = "test-support"))]
-            return write_all_at_impl(file, offset, bytes);
-            #[cfg(feature = "test-support")]
+            #[cfg(windows)]
+            return windows::write_all_at(file, offset, bytes);
+            #[cfg(not(windows))]
             {
-                validate_prepared_read_range(offset, bytes.len())?;
-                let mut offset = offset;
-                let mut bytes = bytes;
-                while !bytes.is_empty() {
-                    let count = match write_file_with(bytes, |offered| {
-                        write_all_at_impl(file, offset, offered)?;
-                        Ok(offered.len())
-                    }) {
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                        result => result?,
-                    };
-                    if count == 0 {
-                        return Err(io::ErrorKind::WriteZero.into());
-                    }
-                    offset += count as u64;
-                    bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
-                }
-                Ok(())
+                write_all_in_place(file, offset, bytes, None)
             }
         });
     };
-    offset
-        .checked_add(bytes.len() as u64)
-        .ok_or(io::ErrorKind::InvalidInput)?;
     #[cfg(windows)]
     if !held {
         return windows::with_overlapped(file, 0x0012_0116, false, Some(meter), |file| {
@@ -395,61 +362,101 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> NativeCompletion<V
     }
 }
 
-/// Resizes an already-held, ordered handle. Each retry is separately admitted.
+/// Resizes an already-held, ordered handle with one admission and native call.
+/// An interruption returns directly to the caller.
 pub fn set_len(file: &File, size: u64, meter: &dyn NativeReadMeter) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:set_len", || set_len_impl(file, size, meter));
+    return testing::durable_operation("file:set_len", || resize_file(file, size, Some(meter)));
     #[cfg(not(feature = "test-support"))]
-    set_len_impl(file, size, meter)
+    resize_file(file, size, Some(meter))
 }
 
-fn set_len_impl(file: &File, size: u64, meter: &dyn NativeReadMeter) -> io::Result<()> {
-    i64::try_from(size).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    loop {
+pub(super) fn resize_file(
+    file: &File,
+    size: u64,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
+    let size = i64::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?;
+    #[cfg(unix)]
+    let size = libc::off_t::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?;
+    if let Some(meter) = meter {
         meter.check()?;
         meter.admit_write(0)?;
-        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-        let result = {
-            use std::os::fd::AsRawFd as _;
-            let size = libc::off_t::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?;
-            // SAFETY: ftruncate acts only on this live descriptor.
-            #[allow(unsafe_code, reason = "ftruncate acts only on the held descriptor")]
-            if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        };
-        #[cfg(windows)]
-        let result = windows::set_len_once(file, size);
-        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let result = file.set_len(size);
-        match result {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => return result.and_then(|()| meter.check()),
-        }
     }
+    #[cfg(unix)]
+    let result = {
+        use std::os::fd::AsRawFd as _;
+        // SAFETY: ftruncate acts only on this live descriptor with the validated length.
+        #[allow(unsafe_code, reason = "ftruncate acts only on the held descriptor")]
+        if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    };
+    #[cfg(windows)]
+    let result = windows::set_len_once(file, size);
+    #[cfg(not(any(windows, unix)))]
+    let result = file.set_len(size as u64);
+    result.and_then(|()| match meter {
+        Some(meter) => meter.check(),
+        None => Ok(()),
+    })
 }
 
 pub(crate) fn write_bounded_in_place(
     file: &File,
-    mut offset: u64,
-    mut bytes: &[u8],
+    offset: u64,
+    bytes: &[u8],
     meter: &dyn NativeReadMeter,
 ) -> io::Result<()> {
+    write_all_in_place(file, offset, bytes, Some(meter))
+}
+
+pub(crate) fn write_all_in_place(
+    file: &File,
+    mut offset: u64,
+    mut bytes: &[u8],
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
+    let end = offset
+        .checked_add(bytes.len() as u64)
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    #[cfg(unix)]
+    if offset > libc::off_t::MAX as u64 || end > libc::off_t::MAX as u64 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    #[cfg(not(unix))]
+    let _ = end;
     while !bytes.is_empty() {
-        meter.check()?;
-        let length = bytes.len().min(1024 * 1024);
+        if let Some(meter) = meter {
+            meter.check()?;
+        }
+        // Metered requests retain their original physical chunk size. An
+        // unmetered request offers its entire remaining native-sized range.
+        let length = if meter.is_some() {
+            bytes.len().min(1024 * 1024)
+        } else {
+            bytes.len().min(isize::MAX as usize)
+        };
+        #[cfg(windows)]
+        let length = length.min(u32::MAX as usize);
+        #[cfg(target_vendor = "apple")]
+        let length = length.min(i32::MAX as usize);
         let chunk = bytes.get(..length).ok_or(io::ErrorKind::InvalidData)?;
-        let result = write_file_with(chunk, |chunk| {
-            #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+        let count = write_file_with(chunk, |chunk| {
+            #[cfg(unix)]
             let result = (|| {
                 let length = chunk.len();
                 use std::os::fd::AsRawFd as _;
-                validate_prepared_read_range(offset, length)?;
-                let mut transfer =
-                    NativeByteReservation::new(meter, NativeOperationKind::Write, length)?;
-                meter.admit_write(0)?;
+                let mut transfer = meter
+                    .map(|meter| {
+                        NativeByteReservation::new(meter, NativeOperationKind::Write, length)
+                    })
+                    .transpose()?;
+                if let Some(meter) = meter {
+                    meter.admit_write(0)?;
+                }
                 #[allow(
                     unsafe_code,
                     reason = "writes the validated borrowed range on a held descriptor"
@@ -460,30 +467,30 @@ pub(crate) fn write_bounded_in_place(
                         file.as_raw_fd(),
                         chunk.as_ptr().cast(),
                         length,
-                        libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?,
+                        offset as libc::off_t,
                     )
                 };
                 if count < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 let count = usize::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?;
-                transfer.record(count)?;
+                if let Some(transfer) = &mut transfer {
+                    transfer.record(count)?;
+                }
                 Ok(count)
             })();
             #[cfg(windows)]
             let result = windows::write_at_known_overlapped(file, offset, chunk, meter);
-            #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+            #[cfg(not(any(windows, unix)))]
             let result: io::Result<usize> = Err(io::Error::from(io::ErrorKind::Unsupported));
             result
-        });
-        let count = match result {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => result?,
-        };
+        })?;
         if count > length {
-            std::process::abort();
+            return Err(io::ErrorKind::InvalidData.into());
         }
-        meter.check()?;
+        if let Some(meter) = meter {
+            meter.check()?;
+        }
         if count == 0 {
             return Err(io::ErrorKind::WriteZero.into());
         }
@@ -534,12 +541,6 @@ pub(crate) fn read_at_impl(
         ReadDestination::Slice(data) => file.read_at(data, offset),
         ReadDestination::Spare { .. } => Err(io::ErrorKind::Unsupported.into()),
     }
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-pub(crate) fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
-    use std::os::unix::fs::FileExt as _;
-    file.write_all_at(bytes, offset)
 }
 
 #[cfg(unix)]

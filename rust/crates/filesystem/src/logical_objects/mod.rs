@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub struct LogicalObjectStore<P: ?Sized, S = PlainObjects> {
     sealer: S,
     provider: Arc<P>,
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
     decoded: Arc<crate::cache::CachedObjectStore<()>>,
     epoch: Arc<Epoch>,
 }
@@ -27,7 +27,7 @@ impl<P: ?Sized> LogicalObjectStore<P> {
         Self {
             provider,
             sealer: PlainObjects,
-            maximum_object_bytes: 5 * 1024 * 1024 * 1024,
+            maximum_object_bytes: None,
             decoded: Arc::new(crate::cache::CachedObjectStore::with_default_options(())),
             epoch: Arc::default(),
         }
@@ -57,9 +57,9 @@ impl<P: ?Sized, S> LogicalObjectStore<P, S> {
         &self.epoch
     }
 
-    /// Applies the composition's existing positive per-object bound.
-    pub fn with_object_limit(mut self, maximum: u64) -> Result<Self, ObjectStoreError> {
-        if maximum == 0 || usize::try_from(maximum).is_err() {
+    /// Applies an optional positive per-object policy; `None` admits any size.
+    pub fn with_object_limit(mut self, maximum: Option<u64>) -> Result<Self, ObjectStoreError> {
+        if maximum.is_some_and(|maximum| maximum == 0 || usize::try_from(maximum).is_err()) {
             return Err(ObjectStoreError::Rejected(
                 "invalid object size limit".to_owned(),
             ));
@@ -212,7 +212,9 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
             context,
             work,
             async {
-                let maximum = self.sealer.stored_limit(id, self.maximum_object_bytes)?;
+                let maximum = self
+                    .sealer
+                    .stored_limit(id, self.maximum_object_bytes.unwrap_or(bytes.len() as u64))?;
                 if bytes.len() as u64 > maximum {
                     return Err(ObjectStoreError::TooLarge {
                         observed: bytes.len() as u64,
@@ -224,7 +226,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
                 let plaintext = self.open_prehashed(
                     id,
                     bytes.clone(),
-                    self.maximum_object_bytes,
+                    self.maximum_object_bytes.unwrap_or(u64::MAX),
                     Some(&sealed),
                     &mut work,
                 )?;

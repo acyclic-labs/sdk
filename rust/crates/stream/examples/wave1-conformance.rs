@@ -4,7 +4,7 @@ use acyclic_stream::{
     conformance::wave1::{self, Case, coverage},
     http::HttpStream,
 };
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 fn required(name: &'static str) -> Result<String, String> {
     std::env::var(name).map_err(|_| {
@@ -65,8 +65,8 @@ async fn run() -> Result<(), String> {
     }
     for case in cases {
         let start = Instant::now();
-        tokio::time::timeout(Duration::from_secs(9), wave1::verify_case(&provider, &namespace, case))
-            .await.map_err(|_| format!("step=history_deadline case={} timeout_seconds=9; recovery: use a fresh namespace and rerun {}", case.name(), wave1::RECOVERY))?
+        wave1::verify_case(&provider, &namespace, case)
+            .await
             .map_err(|error| error.to_string())?;
         println!(
             "{}",

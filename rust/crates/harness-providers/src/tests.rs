@@ -9,7 +9,7 @@ use acyclic_harness_core::{
 };
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -229,7 +229,10 @@ pub(super) struct Script {
 }
 
 impl HttpTransport for Script {
-    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+    fn delay(
+        &self,
+        wait: std::time::Duration,
+    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
         crate::fixtures::delay(wait)
     }
     fn now(&self) -> std::time::Duration {
@@ -686,9 +689,10 @@ async fn model_content_is_available_before_the_network_stream_completes() -> Res
         let chunk = Bytes::from(format!("data: {value}\n\n"));
         let body = futures::stream::once(async { Ok(chunk) }).chain(futures::stream::pending());
         let mut events = stream::events(adapter, Box::pin(body), 4096, parser_dispatch());
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.next())
-            .await
-            .map_err(|_| invalid("provider buffered content until completion"))?;
+        let event = events
+            .next()
+            .now_or_never()
+            .expect("published content is ready while the network stream remains open");
         assert_eq!(
             event.transpose()?,
             Some(ModelEvent::Content {

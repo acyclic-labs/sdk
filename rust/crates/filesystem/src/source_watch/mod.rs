@@ -146,10 +146,10 @@ pub(crate) trait HostChangeSink: Send + Sync {
         Err(DemandError::NativeWorkUnavailable)
     }
 
-    /// A delivery batch failed, so the changes it carried are lost. Called
-    /// from the failing callback, before any later batch is delivered, so a
-    /// sink can hold the loss as state instead of waiting for the one-shot
-    /// failure report.
+    /// A delivery batch failed or its producer permanently abandoned exact
+    /// delivery. Called before any later batch, so a sink can hold the loss
+    /// as state and wake observers without waiting for a one-shot failure
+    /// report or for the producer's final owner to drop.
     fn delivery_lost(&self) {}
 
     #[cfg(windows)]
@@ -171,6 +171,9 @@ pub(crate) trait HostChangeSink: Send + Sync {
 
 #[cfg(target_os = "linux")]
 pub(crate) trait NativeEventSink: Send + Sync {
+    /// Brackets the original inotify drain, so a rename is never exposed halfway.
+    fn batch_started(&self);
+    fn batch_finished(&self);
     fn logical_owned_bytes(&self) -> u64;
     fn event_measured(
         &self,

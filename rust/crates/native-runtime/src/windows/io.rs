@@ -356,7 +356,7 @@ pub(crate) fn write_at_known_overlapped(
     file: &File,
     offset: u64,
     bytes: &[u8],
-    meter: &dyn NativeReadMeter,
+    meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<usize> {
     let length = overlapped_range(offset, bytes.len())?;
     if length == 0 {
@@ -377,59 +377,25 @@ pub(crate) fn write_at_known_overlapped(
                 )
             }
         },
-        Some((meter, NativeOperationKind::Write, Some(bytes.len()))),
+        meter.map(|meter| (meter, NativeOperationKind::Write, Some(bytes.len()))),
     )
 }
 
-fn write_all_in_place(file: &File, mut offset: u64, mut bytes: &[u8]) -> io::Result<()> {
-    while !bytes.is_empty() {
-        let length = overlapped_range(offset, bytes.len())?;
-        let count = transfer_in_place(
-            file,
-            offset,
-            |handle, overlapped| {
-                // SAFETY: the borrowed suffix remains live through terminal completion.
-                unsafe {
-                    WriteFile(
-                        handle,
-                        bytes.as_ptr(),
-                        length,
-                        std::ptr::null_mut(),
-                        overlapped,
-                    )
-                }
-            },
-            None,
-        )?;
-        if count == 0 {
-            return Err(io::ErrorKind::WriteZero.into());
-        }
-        if count > bytes.len() {
-            return Err(io::Error::other("write completion exceeded buffer"));
-        }
-        offset += count as u64;
-        bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
-    }
-    Ok(())
-}
-
 pub(crate) fn write_batch_in_place(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
-    writes
-        .iter()
-        .try_for_each(|write| write_all_in_place(file, write.offset, &write.bytes))
+    writes.iter().try_for_each(|write| {
+        crate::file::write_all_in_place(file, write.offset, &write.bytes, None)
+    })
 }
 
 pub(crate) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     overlapped_range(offset, bytes.len())?;
     with_overlapped(file, FILE_GENERIC_WRITE, false, None, |file| {
-        write_all_in_place(file, offset, bytes)
+        crate::file::write_all_in_place(file, offset, bytes, None)
     })
 }
 
-pub(crate) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
-    let info = FILE_END_OF_FILE_INFO {
-        EndOfFile: i64::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?,
-    };
+pub(crate) fn set_len_once(file: &File, size: i64) -> io::Result<()> {
+    let info = FILE_END_OF_FILE_INFO { EndOfFile: size };
     // SAFETY: the initialized buffer and held handle remain live through the syscall.
     if unsafe {
         SetFileInformationByHandle(

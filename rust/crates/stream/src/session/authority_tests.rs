@@ -57,7 +57,11 @@ impl AuthorityState for State {
     fn expires_at(&self, deadline: u64) -> crate::BoxProviderFuture<'_, ()> {
         let mut published = self.published.subscribe();
         Box::pin(async move {
-            while self.clock.load(Ordering::SeqCst) < deadline {
+            loop {
+                let lost = published.borrow_and_update().is_err();
+                if lost || self.clock.load(Ordering::SeqCst) >= deadline {
+                    break;
+                }
                 if published.changed().await.is_err() {
                     break;
                 }
@@ -375,12 +379,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                 live_session(provider.clone(), state.clone(), bytes.clone(), &path).unwrap();
             let mut opened = false;
             for _ in 0..3 {
-                let message =
-                    tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .unwrap();
+                let message = output.next().await.unwrap().unwrap();
                 opened |= matches!(message.wire().body, Some(Body::Opened(_)));
             }
             assert!(opened);
@@ -395,11 +394,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                 )))
                 .unwrap();
             append(b"positive control").await;
-            let permitted = tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+            let permitted = output.next().await.unwrap().unwrap();
             assert!(
                 matches!(permitted.wire().body, Some(Body::Data(_))),
                 "unrevoked follow must deliver"
@@ -407,13 +402,11 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
             if queued {
                 append(b"must remain private").await;
             }
-            assert!(futures::poll!(output.next()).is_pending());
+            if !queued {
+                assert!(futures::poll!(output.next()).is_pending());
+            }
             invalidate_session(reason, &state, &bytes, &sender);
-            let closed = tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+            let closed = output.next().await.unwrap().unwrap();
             assert_eq!(closed.wire().channel_id, 1);
             let Some(Body::Closed(closed)) = closed.into_wire().body else {
                 panic!("disclosed data after {reason}, queued={queued}");

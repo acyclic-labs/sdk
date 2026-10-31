@@ -40,6 +40,14 @@ impl RetiredProactor {
         self.key.is_none()
     }
 
+    pub(super) fn waker(&self) -> std::task::Waker {
+        self.driver.waker()
+    }
+
+    pub(super) fn wait_event(&mut self) -> io::Result<()> {
+        self.driver.poll(None)
+    }
+
     /// Blocks on the ring until the retained request is terminal, without a wall-clock bound.
     #[cfg(test)]
     pub(super) fn wait_terminal(&mut self) -> io::Result<()> {

@@ -25,7 +25,7 @@ export class HttpStreamProvider implements StreamProvider {
   readonly #endpoint: string;
   readonly #credential: CredentialProvider;
   readonly #fetcher: typeof fetch;
-  readonly #maximum: number;
+  readonly #maximum: number | undefined;
   readonly #observer: AcyclicObserver | undefined;
   constructor(options: HttpStreamProviderOptions) {
     const endpoint = new URL(options.endpoint);
@@ -35,8 +35,8 @@ export class HttpStreamProvider implements StreamProvider {
     this.#sessions = new StreamSessions(webSocketSession(this.#endpoint, this.#credential, options.webSocketFactory), true, options.revisionScope);
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#observer = resolveObserver(options.observer);
-    this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
-    if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
+    this.#maximum = options.maximumResponseBytes;
+    if (this.#maximum !== undefined && (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1)) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const input = wireInspectIdempotencyRequest(key);
@@ -205,7 +205,7 @@ function parseHostedError(text: string): { readonly code?: string; readonly mess
 }
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
-async function boundedText(response: Response, maximum: number, sizes?: OperationSizes): Promise<string> {
+async function boundedText(response: Response, maximum: number | undefined, sizes?: OperationSizes): Promise<string> {
   const reader = response.body?.getReader();
   if (reader === undefined) return "";
   const chunks: Uint8Array[] = []; let total = 0;
@@ -214,7 +214,7 @@ async function boundedText(response: Response, maximum: number, sizes?: Operatio
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > maximum) { await reader.cancel().catch(() => undefined); throw new StreamError("response_too_large", "response exceeds configured bound", response.status); }
+      if (maximum !== undefined && total > maximum) { await reader.cancel().catch(() => undefined); throw new StreamError("response_too_large", "response exceeds configured bound", response.status); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }

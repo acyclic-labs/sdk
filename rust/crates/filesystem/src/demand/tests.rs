@@ -63,11 +63,16 @@ async fn native_source(
 }
 
 #[derive(Default)]
-struct RecordedChanges(Mutex<Vec<SourceChange>>, std::sync::atomic::AtomicBool);
+struct RecordedChanges(Mutex<(Vec<SourceChange>, bool)>, std::sync::Condvar);
 
 impl SourceChangeSink for RecordedChanges {
     fn delivery_lost(&self) {
-        self.1.store(true, std::sync::atomic::Ordering::Release);
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1 = true;
+        self.1.notify_all();
     }
 
     fn source_changed(
@@ -76,21 +81,28 @@ impl SourceChangeSink for RecordedChanges {
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), DemandError> {
         accounting.check().map_err(DemandError::from)?;
-        if let Ok(mut recorded) = self.0.lock() {
-            recorded.extend_from_slice(changes);
-        }
+        let mut state = self.0.lock().map_err(|_| DemandError::WorkerUnavailable)?;
+        state.0.extend_from_slice(changes);
+        self.1.notify_all();
         Ok(())
     }
 }
 
 impl RecordedChanges {
-    fn take(&self) -> Result<Vec<SourceChange>, Box<dyn Error>> {
-        if self.1.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(DemandError::SourceUnavailable.into());
+    fn wait(
+        &self,
+        reported: impl Fn(&[SourceChange]) -> bool,
+    ) -> Result<Vec<SourceChange>, Box<dyn Error>> {
+        let mut state = self.0.lock().map_err(|_| "recording poisoned")?;
+        loop {
+            if state.1 {
+                return Err(DemandError::SourceUnavailable.into());
+            }
+            if reported(&state.0) {
+                return Ok(std::mem::take(&mut state.0));
+            }
+            state = self.1.wait(state).map_err(|_| "recording poisoned")?;
         }
-        Ok(std::mem::take(
-            &mut *self.0.lock().map_err(|_| "recording poisoned")?,
-        ))
     }
 
     fn until(
@@ -102,13 +114,7 @@ impl RecordedChanges {
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         ))?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut changes = self.take()?;
-        while !reported(&changes) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            changes.extend(self.take()?);
-        }
-        Ok(changes)
+        self.wait(reported)
     }
 }
 
@@ -171,6 +177,14 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
     #[cfg(not(target_os = "macos"))]
     assert!(!changes.contains(&SourceChange::Everything));
     assert!(watch.is_exact());
+    drop(watch);
+    let lost = recorded
+        .wait(|_| true)
+        .expect_err("lost producer accepted a new observation");
+    assert!(matches!(
+        lost.downcast_ref::<DemandError>(),
+        Some(DemandError::SourceUnavailable)
+    ));
     Ok(())
 }
 
@@ -934,4 +948,107 @@ async fn a_held_root_binds_the_root_it_captured_across_a_replacement() {
 async fn negative_control_binding_by_path_attaches_the_replacement() {
     let replaced = !bound_across_replacement(true).await.unwrap();
     assert!(replaced || cfg!(windows));
+}
+
+/// The actual shared native worker may remain blocked after reply cancellation.
+/// Both the original callback and standalone accounting must release their wait;
+/// only the native terminal may return standalone admission to its caller.
+#[tokio::test]
+async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
+-> Result<(), Box<dyn Error>> {
+    struct CallbackRetired(std::sync::mpsc::Sender<Option<std::thread::ThreadId>>);
+    impl Drop for CallbackRetired {
+        fn drop(&mut self) {
+            let _ = self.0.send(None);
+        }
+    }
+    for native in [false, true] {
+        for outcome in ["complete", "cancel", "lost"] {
+            let temporary = tempfile::tempdir()?;
+            std::fs::write(temporary.path().join("file"), b"remote")?;
+            let source = native_source(temporary.path()).await?.remote();
+            let stop = CancellationToken::new();
+            let reference = source.reference();
+            let name = path("/file")?;
+            let node = lookup_node(&source, reference, &name, &stop).await?;
+            let file = source
+                .open_file(reference, &name, node.version, WorkBudget::UNBOUNDED, &stop)
+                .await?
+                .value;
+            let (entered, started) = std::sync::mpsc::channel();
+            let (release, held) = std::sync::mpsc::channel();
+            let (retired, ended) = std::sync::mpsc::channel();
+            let retired_callback = CallbackRetired(entered.clone());
+            source.hold_next_read(native::ReadGate {
+                entered,
+                release: held,
+                retired,
+            });
+            let (finished, result) = std::sync::mpsc::channel();
+            let caller_stop = stop.clone();
+            let caller = std::thread::spawn(move || {
+                let _retired = retired_callback;
+                let original = native.then(|| {
+                    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &caller_stop)
+                        .map_err(|(error, _)| error)
+                        .unwrap()
+                });
+                let mut accounting = match &original {
+                    Some(original) => {
+                        crate::kernel::KernelAccounting::native(original, &caller_stop)
+                    }
+                    None => crate::kernel::KernelAccounting::standalone(
+                        WorkBudget::UNBOUNDED,
+                        &caller_stop,
+                    ),
+                };
+                // The callback normally permits local inline operations. A
+                // remote held read must still enter the original shared worker.
+                let _inline = acyclic_native_runtime::InlineBlocking::enter();
+                let answer = file.read_range(0, 6, &mut accounting);
+                let fenced = matches!(
+                    accounting.remaining(),
+                    Err(crate::FsError::AccountingHandoffActive)
+                );
+                let _ = finished.send((answer, fenced, std::thread::current().id()));
+            });
+            let worker = started
+                .recv()?
+                .ok_or("original callback retired before its read submission")?;
+            let mut release = Some(release);
+            if outcome == "cancel" {
+                stop.cancel();
+            } else if outcome == "lost" {
+                drop(release.take());
+            } else {
+                release
+                    .as_ref()
+                    .ok_or("missing native release owner")?
+                    .send(())?;
+            }
+            let (answer, fenced, callback) = result.recv()?;
+            assert_ne!(worker, callback, "remote I/O ran on the callback thread");
+            match outcome {
+                "cancel" => {
+                    assert!(matches!(answer, Err(DemandError::Cancelled)));
+                    assert_eq!(
+                        fenced, !native,
+                        "cancellation returned standalone admission before the producer"
+                    );
+                    release
+                        .take()
+                        .ok_or("native producer lost its release")?
+                        .send(())?;
+                }
+                "lost" => assert!(matches!(answer, Err(DemandError::WorkerUnavailable))),
+                _ => {
+                    assert_eq!(answer?.bytes.as_ref(), b"remote");
+                    assert!(!fenced);
+                }
+            }
+            ended.recv()?;
+            caller.join().map_err(|_| "remote callback panicked")?;
+        }
+    }
+    Ok(())
 }

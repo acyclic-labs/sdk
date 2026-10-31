@@ -15,7 +15,11 @@ pub struct InlineBlocking {
 }
 
 impl InlineBlocking {
-    pub(crate) fn defer() -> Self {
+    /// Keeps host operations on their shared workers until this guard drops.
+    /// Use this when a synchronous caller must remain interruptible even if
+    /// its surrounding callback normally admits inline local I/O.
+    #[must_use]
+    pub fn defer() -> Self {
         Self {
             previous: INLINE_BLOCKING.replace(false),
         }

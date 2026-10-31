@@ -252,15 +252,12 @@ impl HttpObjects {
                 .join(route)
                 .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
             let (authorization, lease) = self.authorization().await?;
-            let mut request = self
+            let request = self
                 .transport
                 .post(url)
                 .header(AUTHORIZATION, authorization)
                 .header("content-type", "application/json")
                 .body(json::encode(input_name, input)?);
-            if self.context.is_none() {
-                request = request.timeout(std::time::Duration::from_secs(30));
-            }
             if let Some(context) = &self.context {
                 context.check()?;
             }

@@ -17,7 +17,7 @@ pub enum LazyWorkspaceError {
     /// Companion-store failure.
     #[error("lazy state failed: {0}")]
     Store(String),
-    /// Durable state exhausted its bounded retries.
+    /// Durable state conflicts with the requested identity or expected revision.
     #[error("lazy state changed concurrently")]
     Concurrent,
     /// The provider no longer matches the frozen source.
@@ -83,10 +83,6 @@ pub enum LazyWorkspaceError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     NativeRecordJson(#[source] serde_json::Error, Option<crate::NativeAllocation>),
-    /// The record lock timed out.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[error("record lock timed out: {}", " .0.display()")]
-    NativeRecordLockTimeout(std::path::PathBuf, Option<crate::NativeAllocation>),
     /// Another owner controls the record namespace.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("record ownership conflict: {}", " .0.display()")]

@@ -216,12 +216,6 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             idempotency_key: key(b"conformance-live-follow")?,
         })
         .await?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let live = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next())
-        .await
-        .map_err(|_| StreamError::Unavailable)?
-        .ok_or(StreamError::Unavailable)??;
-    #[cfg(target_arch = "wasm32")]
     let live = follow.next().await.ok_or(StreamError::Unavailable)??;
     if live.sequence != 1 || live.value != Bytes::from_static(b"live") {
         return Err(StreamError::Unavailable);

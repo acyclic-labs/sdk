@@ -302,6 +302,21 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         idempotency_key: "create-1".into(),
     };
 
+    let mut large = create.clone();
+    large.bindings = (0..65)
+        .map(|index| wire::Binding {
+            name: format!("storage-{index}"),
+            ..binding.clone()
+        })
+        .collect();
+    large.subscriptions = (0..65)
+        .map(|index| wire::SubscriptionSpec {
+            subscription_id: format!("events-{index}"),
+            ..subscription.clone()
+        })
+        .collect();
+    assert!(DeploymentRequest::try_from(large).is_ok());
+
     let mut duplicate = create.clone();
     duplicate.subscriptions.push(subscription.clone());
     assert_eq!(
@@ -325,24 +340,6 @@ fn wire_ingress_rechecks_request_admission_predicates() {
     assert_eq!(
         DeploymentRequest::try_from(invalid_idempotency),
         Err(DomainError::Contract(crate::ContractError::InvalidArgument))
-    );
-
-    let mut over_limit = create;
-    over_limit
-        .bindings
-        .extend((0..=crate::MAX_BINDINGS).map(|index| wire::Binding {
-            state_transaction: false,
-            guest_admission: None,
-            target_account: Vec::new(),
-            actor_namespace: None,
-            worker_service: None,
-            name: format!("binding-{index}"),
-            capability: "read".into(),
-            resource: "bucket/a".into(),
-        }));
-    assert_eq!(
-        DeploymentRequest::try_from(over_limit),
-        Err(DomainError::Contract(crate::ContractError::LimitExceeded))
     );
 
     let update = wire::UpdateNamespaceRequest {

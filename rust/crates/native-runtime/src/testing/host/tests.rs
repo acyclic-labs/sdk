@@ -574,10 +574,10 @@ proptest::proptest! {
 }
 
 #[test]
-fn saturated_native_submission_leaves_the_simulated_deadline_available() {
+fn saturated_native_submission_leaves_the_simulated_driver_available() {
     // Occupies every worker of the process-global host pool, so runs alone.
     if crate::tests::passed_in_exclusive_process(
-        "testing::host::tests::saturated_native_submission_leaves_the_simulated_deadline_available",
+        "testing::host::tests::saturated_native_submission_leaves_the_simulated_driver_available",
     )
     .unwrap()
     {
@@ -587,8 +587,6 @@ fn saturated_native_submission_leaves_the_simulated_deadline_available() {
         .unwrap()
         .exclusive_threads();
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
         .build()
         .unwrap();
     let (schedule, mut events) = Schedule::seeded(23);
@@ -611,13 +609,14 @@ fn saturated_native_submission_leaves_the_simulated_deadline_available() {
                 replies.push(receive.recv().await.unwrap());
             }
             // Unlike spawn_blocking, this uses submit's direct native-job path.
-            // All physical workers await this root; its timer must still run.
+            // All physical workers await this root; submission must return
+            // Pending so the driver can release them through their channels.
             let mut native = Box::pin(crate::run_blocking_io(|| 42, None).unwrap());
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(1), &mut native)
-                    .await
-                    .is_err()
-            );
+            std::future::poll_fn(|cx| {
+                assert!(native.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
             for (index, reply) in replies {
                 reply.send(index).unwrap();
             }

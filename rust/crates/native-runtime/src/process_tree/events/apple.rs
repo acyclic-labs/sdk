@@ -31,35 +31,42 @@ fn change(ident: usize, filter: i16, flags: u16, fflags: u32, token: u64) -> lib
 /// Whether this unreaped child has exited, without reaping it.
 fn exited(pid: usize) -> io::Result<bool> {
     let id = libc::id_t::try_from(pid).map_err(io::Error::other)?;
-    loop {
-        // SAFETY: plain fields; all-zero is a valid output value.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        // SAFETY: writable status storage owned by this frame; WNOWAIT leaves
-        // the child unreaped for its owner.
-        if unsafe {
-            libc::waitid(
-                libc::P_PID,
-                id,
-                &raw mut info,
-                libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
-            )
-        } == 0
-        {
-            // SAFETY: a successful WEXITED observation initialized the union.
-            return Ok(unsafe { info.si_pid() } != 0);
-        }
-        let error = io::Error::last_os_error();
-        match error.kind() {
-            io::ErrorKind::Interrupted => {}
-            // Not this process's child (or already reaped): it has no exit
-            // left to await.
-            _ if error.raw_os_error() == Some(libc::ECHILD) => return Ok(true),
-            _ => return Err(error),
-        }
+    // SAFETY: plain fields; all-zero is a valid output value.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: writable status storage owned by this frame; WNOWAIT leaves
+    // the child unreaped for its owner. Return the first native result.
+    if unsafe {
+        libc::waitid(
+            libc::P_PID,
+            id,
+            &raw mut info,
+            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+        )
+    } == 0
+    {
+        // SAFETY: a successful WEXITED observation initialized the union.
+        return Ok(unsafe { info.si_pid() } != 0);
+    }
+    let error = io::Error::last_os_error();
+    // Not this process's child (or already reaped): no exit remains to await.
+    if error.raw_os_error() == Some(libc::ECHILD) {
+        Ok(true)
+    } else {
+        Err(error)
     }
 }
 
 impl Poller {
+    /// Capture a real native refusal using a live pipe in place of a queue.
+    #[cfg(test)]
+    pub(super) fn refused_wait() -> io::Result<Self> {
+        let (reader, writer) = std::io::pipe()?;
+        drop(writer);
+        Ok(Self {
+            queue: reader.into(),
+        })
+    }
+
     pub(super) fn new() -> io::Result<Self> {
         // SAFETY: kqueue has no preconditions and returns a new fd.
         let queue = unsafe { libc::kqueue() };
@@ -164,14 +171,14 @@ impl Poller {
             )
         };
         if count < 0 {
-            let error = io::Error::last_os_error();
-            return if error.kind() == io::ErrorKind::Interrupted {
-                Ok(())
-            } else {
-                Err(error)
-            };
+            return Err(io::Error::last_os_error());
         }
         for event in events.iter().take(usize::try_from(count).unwrap_or(0)) {
+            if event.flags & libc::EV_ERROR != 0 && event.data != 0 {
+                return Err(io::Error::from_raw_os_error(
+                    i32::try_from(event.data).map_err(io::Error::other)?,
+                ));
+            }
             if event.filter != libc::EVFILT_USER {
                 ready.push(event.udata.addr() as u64);
             }

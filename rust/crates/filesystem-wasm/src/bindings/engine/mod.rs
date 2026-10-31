@@ -472,7 +472,7 @@ pub(in crate::bindings) fn memory_engine(
         CachedObjectStore::new(
             BrowserObjects::Memory(
                 LogicalObjectStore::new(Arc::new(objects))
-                    .with_object_limit(maximum_object_bytes)
+                    .with_object_limit(Some(maximum_object_bytes))
                     .map_err(js_error)?,
             ),
             cache,

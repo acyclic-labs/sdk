@@ -3,7 +3,7 @@ import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors
 import { rootCertificates } from "node:tls";
 import { createClient, Code, ConnectError } from "@connectrpc/connect";
 import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
+import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { BlobsService } from "../generated/proto/objects/v1/objects_pb.js";
@@ -15,9 +15,10 @@ import { ObjectsV1Error, ObjectsV1Provider, objectsV1Error, objectsRequest, obje
 export interface ObjectsV1GrpcOptions extends CredentialOptions {
   readonly endpoint: string;
   readonly caCertificate?: string;
+  /** Optional caller message capacity; omission retains the wire encoding maximum. */
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
-  /** The caller's deadline for one call, in milliseconds; defaults to 30 s. */
+  /** Optional caller deadline in milliseconds; omitted or zero is unbounded. */
   readonly timeoutMs?: number;
 }
 
@@ -35,26 +36,32 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   const credential = credentialProvider(options);
-  const maximum = options.maximumMessageBytes ?? 64 * 1024 * 1024;
-  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
-  const timeoutMs = options.timeoutMs ?? 30000;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0x7fff_ffff) throw new RangeError("timeoutMs must be a positive int32");
+  const maximum = options.maximumMessageBytes;
+  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("maximumMessageBytes must be a positive safe integer");
+  const timeoutMs = options.timeoutMs;
+  if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 0x7fff_ffff)) throw new RangeError("timeoutMs must be a non-negative int32");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate = credentialInterceptor(credential);
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: timeoutMs, acceptCompression: [], baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "objects"), readMaxBytes: maximum, writeMaxBytes: maximum });
+  const transportOptions: GrpcTransportOptions = { sessionManager: session, acceptCompression: [], baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "objects") };
+  if (timeoutMs !== undefined) transportOptions.defaultTimeoutMs = timeoutMs;
+  if (maximum !== undefined) {
+    transportOptions.readMaxBytes = maximum;
+    transportOptions.writeMaxBytes = maximum;
+  }
+  const transport = createGrpcTransport(transportOptions);
   return { blobs: createClient(BlobsService, transport), close: () => session.abort() };
 }
 
 /** Rust-verified provider over the generated gRPC Blobs service. */
 export class GrpcObjectsV1 extends ObjectsV1Provider {
   private readonly clients: ReturnType<typeof createObjectsV1GrpcClients>;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs: number | undefined;
   constructor(options: ObjectsV1GrpcOptions) {
     super();
     this.clients = createObjectsV1GrpcClients(options);
-    this.timeoutMs = options.timeoutMs ?? 30000;
+    this.timeoutMs = options.timeoutMs;
   }
   /** Releases the owned HTTP/2 connection and cancels outstanding calls. */
   close(): void { this.clients.close(); }

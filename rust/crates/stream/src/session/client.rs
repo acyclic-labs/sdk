@@ -22,7 +22,6 @@ pub use application::{ApplicationDelivery, ApplicationSubscription};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod cache;
 mod credit;
-mod deadline;
 mod observation;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use cache::Cache;
@@ -42,7 +41,7 @@ pub use cache::verify_cache;
 pub use pool::model::{
     verify_abandoned_reconnect, verify_cancel_before_open, verify_follow_data,
     verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
-    verify_registration_deadline, verify_terminal_cursor_dial,
+    verify_registration_cancellation, verify_terminal_cursor_dial,
 };
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use pool::retry_model::verify_initial_retry_yield;
@@ -74,7 +73,6 @@ pub struct Client {
 #[derive(Clone)]
 pub(crate) struct PoolHandle {
     connections: super::Connections,
-    executor: std::sync::Arc<dyn crate::runtime::Executor>,
     commands: mpsc::Sender<Command>,
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
@@ -352,7 +350,6 @@ impl Client {
         }));
         PoolHandle {
             connections,
-            executor,
             commands,
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
@@ -719,12 +716,8 @@ impl Client {
         };
         let registered = operation
             .clone()
-            .scope(deadline::until(
-                super::runtime::waiting("session-open", id, registration),
-                self.pool.executor.sleep(10_000),
-            ))
-            .await
-            .unwrap_or(Err(StreamError::DeadlineElapsed));
+            .scope(super::runtime::waiting("session-open", id, registration))
+            .await;
         if let Err(error) = registered {
             cursor.observation.finish(Some(&error));
             return Err(error);

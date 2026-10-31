@@ -2,52 +2,42 @@ use super::*;
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     /// Lists up to `maximum` exact filesystem authority identities, in order.
+    /// A changed hierarchy returns its original error without restarting the traversal.
     pub async fn authorities(&self, maximum: u32) -> Result<Vec<AuthorityId>, AuthorityStoreError> {
-        /// Restarts tolerated when authorities come and go mid-listing.
-        const RESTARTS: usize = 16;
         let parent = self.placement.authorities_parent().clone();
         let page = u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX);
-        'listing: for _ in 0..RESTARTS {
-            let mut authorities = Vec::new();
-            let mut after = None;
-            let mut hierarchy_version = None;
-            loop {
-                let listed = match self
-                    .provider
-                    .children_page(acyclic_stream::ChildrenPageRequest {
-                        tail_stream: None,
-                        parent: Some(parent.clone()),
-                        after: after.take(),
-                        hierarchy_version,
-                        limit: page,
-                    })
-                    .await
-                {
-                    Ok(listed) => listed,
-                    Err(acyclic_stream::StreamError::HierarchyChanged) => continue 'listing,
-                    Err(error) => return Err(map_stream_error(error)),
-                };
-                for child in &listed.children {
-                    let authority = self.placement.authority_child(&child.path)?;
-                    if !self.is_retired(authority).await? {
-                        authorities.push(authority);
-                    }
+        let mut authorities = Vec::new();
+        let mut after = None;
+        let mut hierarchy_version = None;
+        loop {
+            let listed = self
+                .provider
+                .children_page(acyclic_stream::ChildrenPageRequest {
+                    tail_stream: None,
+                    parent: Some(parent.clone()),
+                    after: after.take(),
+                    hierarchy_version,
+                    limit: page,
+                })
+                .await
+                .map_err(map_stream_error)?;
+            for child in &listed.children {
+                let authority = self.placement.authority_child(&child.path)?;
+                if !self.is_retired(authority).await? {
+                    authorities.push(authority);
                 }
-                if authorities.len() > maximum as usize {
-                    return Err(AuthorityStoreError::Rejected(
-                        "authority listing bound exceeded".to_owned(),
-                    ));
-                }
-                let Some(next) = listed.next_after else {
-                    return Ok(authorities);
-                };
-                after = Some(next);
-                hierarchy_version = Some(listed.hierarchy_version);
             }
+            if authorities.len() > maximum as usize {
+                return Err(AuthorityStoreError::Rejected(
+                    "authority listing bound exceeded".to_owned(),
+                ));
+            }
+            let Some(next) = listed.next_after else {
+                return Ok(authorities);
+            };
+            after = Some(next);
+            hierarchy_version = Some(listed.hierarchy_version);
         }
-        Err(AuthorityStoreError::Rejected(
-            "authorities kept changing while they were listed".to_owned(),
-        ))
     }
 
     pub(super) async fn is_retired(

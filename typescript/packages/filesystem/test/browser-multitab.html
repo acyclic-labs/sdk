@@ -14,11 +14,23 @@
   <body>
     <pre id="result">running</pre>
     <script type="module">
-      import("./browser-multitab.js").catch((error) => {
+      const query = new URLSearchParams(location.search);
+      const actor = query.get("actor");
+      const channel = actor === null ? undefined : new BroadcastChannel(`acyclic-fs-multitab-${query.get("run")}`);
+      globalThis.__reportActorFailure = error => {
+        const text = String(error.stack ?? error);
         const result = document.querySelector("#result");
         result.dataset.status = "failed";
-        result.textContent = String(error.stack ?? error);
+        result.textContent = text;
+        channel?.postMessage({ actor, event: "failed", error: text });
+      };
+      addEventListener("pagehide", () => {
+        if (!globalThis.__actorRetiring) globalThis.__reportActorFailure(new Error("actor document retired before completing its work"));
+        channel?.close();
       });
+      addEventListener("error", event => globalThis.__reportActorFailure(event.error ?? event.message));
+      addEventListener("unhandledrejection", event => globalThis.__reportActorFailure(event.reason));
+      import("./browser-multitab.js").catch(globalThis.__reportActorFailure);
     </script>
   </body>
 </html>

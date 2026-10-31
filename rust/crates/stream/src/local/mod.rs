@@ -16,7 +16,7 @@ use crate::OwnedBytes as Bytes;
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 #[cfg(not(loom))]
 use acyclic_native_runtime::spawn_persistence as spawn_blocking;
-#[cfg(all(not(loom), feature = "test-support"))]
+#[cfg(all(not(loom), any(test, feature = "test-support")))]
 use acyclic_native_runtime::testing::spawn;
 use acyclic_native_runtime::{OwnershipAnchor, PersistenceKey};
 use async_trait::async_trait;
@@ -25,7 +25,7 @@ use futures::{StreamExt as _, stream};
 use query_model::{spawn, spawn_blocking};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
-#[cfg(all(not(loom), not(feature = "test-support")))]
+#[cfg(all(not(loom), not(any(test, feature = "test-support"))))]
 use tokio::spawn;
 use tokio::sync::mpsc;
 
@@ -51,7 +51,7 @@ use crate::{
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
 /// The magic, the limits, then the journal's epoch.
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + LIMITS_BYTES + 8;
-const LIMITS_BYTES: usize = 8 * 8;
+const LIMITS_BYTES: usize = 6 * 8 + 2 * 8;
 const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAP-V01\0";
 /// The magic, limits and journal epoch; state and checksum follow.
 const SNAPSHOT_HEADER_BYTES: usize = SNAPSHOT_MAGIC.len() + LIMITS_BYTES + 8;
@@ -83,7 +83,7 @@ static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Send
 #[cfg(test)]
 type JournalPersistBlocker = (
     usize,
-    std::sync::mpsc::SyncSender<()>,
+    tokio::sync::oneshot::Sender<()>,
     std::sync::mpsc::Receiver<()>,
 );
 #[cfg(test)]

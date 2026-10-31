@@ -58,7 +58,10 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
             tokio::select! {
                 biased;
                 result = pipe.connect() => result.unwrap(),
-                () = exited => panic!("selected report producer exited before connecting"),
+                result = exited => {
+                    result.into_result().expect("original native producer event succeeded");
+                    panic!("selected report producer exited before connecting");
+                },
             }
             let mut pipe = BufReader::new(pipe);
             let mut line = String::new();

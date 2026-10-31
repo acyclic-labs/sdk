@@ -164,8 +164,6 @@ async fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
         ObjectCacheOptions {
             maximum_entries: 64,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 4,
-            maximum_waiters_per_object: 4,
         },
     )?;
     let cancellation = CancellationToken::new();
@@ -210,8 +208,6 @@ async fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_
         ObjectCacheOptions {
             maximum_entries: 32,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 4,
-            maximum_waiters_per_object: 4,
         },
     )?;
     let cancellation = CancellationToken::new();

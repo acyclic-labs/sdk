@@ -5,6 +5,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+/// Releases the original owned-task boundaries while the assertions await
+/// physical retirement; no independent task or readiness probe is introduced.
+async fn composition_events(
+    boundaries: &mut tokio::sync::mpsc::UnboundedReceiver<
+        acyclic_native_runtime::testing::Boundary,
+    >,
+    operation: impl std::future::Future<Output = TestResult>,
+) -> TestResult {
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            result = &mut operation => return result,
+            boundary = boundaries.recv() => boundary
+                .ok_or_else(|| std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "composition boundary producer ended",
+                ))?
+                .release(),
+        }
+    }
+}
+
 struct Gate {
     armed: AtomicBool,
     entered: tokio::sync::Notify,
@@ -326,106 +348,111 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
         gate: Arc::clone(&gate),
     }));
     let weak = Arc::downgrade(&owner.0);
-    let mut preparation = Box::pin(compose(
-        owner,
-        core,
-        root,
-        crate::kernel::DecodeLimits::default(),
-        &mut accounting,
-        &cancellation,
-    ));
-    tokio::select! {
-        () = gate.entered.notified() => {},
-        result = &mut preparation => panic!("composition returned before blocked object I/O: {result:?}"),
-    }
-    match delivery {
-        Delivery::Drop | Delivery::Collected => drop(preparation),
-        Delivery::Cancel => {
-            cancellation.cancel();
-            assert!(matches!(
-                preparation.await,
-                Err(crate::FsError::Cancelled(_))
-            ));
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    composition_events(&mut boundaries, async {
+        let mut preparation = Box::pin(schedule.scope(compose(
+            owner,
+            core,
+            root,
+            crate::kernel::DecodeLimits::default(),
+            &mut accounting,
+            &cancellation,
+        )));
+        tokio::select! {
+            () = gate.entered.notified() => {},
+            result = &mut preparation => panic!("composition returned before blocked object I/O: {result:?}"),
         }
-        Delivery::Complete | Delivery::Failure => {
-            gate.release.notify_one();
-            let result = preparation.await;
-            if matches!(delivery, Delivery::Failure) {
-                assert!(result.is_err());
-            } else {
-                assert_eq!(result?.kind, ObjectKind::GenerationRoot);
+        match delivery {
+            Delivery::Drop | Delivery::Collected => drop(preparation),
+            Delivery::Cancel => {
+                cancellation.cancel();
+                assert!(matches!(
+                    preparation.await,
+                    Err(crate::FsError::Cancelled(_))
+                ));
+            }
+            Delivery::Complete | Delivery::Failure => {
+                gate.release.notify_one();
+                let result = preparation.await;
+                if matches!(delivery, Delivery::Failure) {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(result?.kind, ObjectKind::GenerationRoot);
+                }
             }
         }
-    }
-    if matches!(
-        delivery,
-        Delivery::Drop | Delivery::Cancel | Delivery::Collected
-    ) {
-        assert!(
-            weak.upgrade().is_some(),
-            "client withdrawal destroyed the actual composition owner during object I/O"
-        );
-        assert!(
-            !released.is_released(),
-            "client withdrawal released the local root"
-        );
-        if native {
-            assert!(original.live_allocation_bytes() > baseline);
-        }
-        if let Some(collector) = collector.as_ref() {
-            let observer = CancellationToken::new();
-            let collected = collector.collect_local_garbage(None, &observer).await?;
+        if matches!(
+            delivery,
+            Delivery::Drop | Delivery::Cancel | Delivery::Collected
+        ) {
             assert!(
-                collected.removed > 0,
-                "durable orphan was not swept: {collected:?}"
+                weak.upgrade().is_some(),
+                "client withdrawal destroyed the actual composition owner during object I/O"
             );
             assert!(
-                !collector
-                    .objects()
-                    .contains(
-                        root,
+                !released.is_released(),
+                "client withdrawal released the local root"
+            );
+            assert!(futures::poll!(std::pin::pin!(schedule.drained())).is_pending());
+            if native {
+                assert!(original.live_allocation_bytes() > baseline);
+            }
+            if let Some(collector) = collector.as_ref() {
+                let observer = CancellationToken::new();
+                let collected = collector.collect_local_garbage(None, &observer).await?;
+                assert!(
+                    collected.removed > 0,
+                    "durable orphan was not swept: {collected:?}"
+                );
+                assert!(
+                    !collector
+                        .objects()
+                        .contains(
+                            root,
+                            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &observer)
+                        )
+                        .await?,
+                    "unpublished predecessor was retained after withdrawal"
+                );
+            }
+            gate.release.notify_one();
+        }
+        schedule.drained().await;
+        assert!(
+            weak.upgrade().is_none(),
+            "composition owner survived its physical task retirement"
+        );
+        if let Some(collector) = collector.take() {
+            let observer = CancellationToken::new();
+            assert_eq!(
+                collector
+                    .authority()
+                    .head(
+                        request.authority_id,
                         &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &observer)
                     )
                     .await?,
-                "unpublished predecessor was retained after withdrawal"
+                request.expected,
+                "abandoned composition published a collected predecessor"
+            );
+            drop(collector);
+        }
+        released.released().await;
+        if native {
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        } else {
+            assert_eq!(
+                accounting
+                    .standalone_parts()
+                    .ok_or("standalone ledger")?
+                    .0
+                    .live_bytes(),
+                ordinary_baseline.ok_or("standalone baseline")?
             );
         }
-        gate.release.notify_one();
-    }
-    if let Some(collector) = collector.take() {
-        while weak.strong_count() != 0 {
-            tokio::task::yield_now().await;
-        }
-        let observer = CancellationToken::new();
-        assert_eq!(
-            collector
-                .authority()
-                .head(
-                    request.authority_id,
-                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &observer)
-                )
-                .await?,
-            request.expected,
-            "abandoned composition published a collected predecessor"
-        );
-        drop(collector);
-    }
-    while weak.strong_count() != 0 || !released.is_released() {
-        tokio::task::yield_now().await;
-    }
-    if native {
-        assert_eq!(original.live_allocation_bytes(), baseline);
-    } else {
-        assert_eq!(
-            accounting
-                .standalone_parts()
-                .ok_or("standalone ledger")?
-                .0
-                .live_bytes(),
-            ordinary_baseline.ok_or("standalone baseline")?
-        );
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]

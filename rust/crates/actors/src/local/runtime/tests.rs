@@ -17,6 +17,8 @@ mod drain;
 mod invocation_failure;
 mod pause;
 
+mod conditional;
+
 fn root() -> Result<StreamPath, StreamError> {
     StreamPath::new("harness/actors")
 }
@@ -29,10 +31,10 @@ fn actor(id: &str) -> Result<ActorReference, Box<dyn std::error::Error>> {
     Ok(ActorReference::new(b"account", b"agents", id.as_bytes())?)
 }
 
-/// Retain only confirmed cursor progress; a competing writer still forces an
-/// authoritative reload. The former success reload fails the zero-control cut.
+/// Retain only confirmed cursor progress. A competing writer returns the
+/// original conflict without reloading or advancing the losing cursor.
 #[tokio::test]
-async fn dispatcher_uses_receipts_and_reloads_only_after_conflict() -> TestResult {
+async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() -> TestResult {
     let provider = Arc::new(Counted::new(MemoryStream::default()));
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
@@ -69,12 +71,35 @@ async fn dispatcher_uses_receipts_and_reloads_only_after_conflict() -> TestResul
     assert_eq!(first.anchor, stale.anchor);
     let replaced = runtime.advance_dispatcher(&store, first, 5).await?;
     let before = provider.requests();
-    let reconciled = runtime.advance_dispatcher(&store, stale, 7).await?;
+    assert!(matches!(
+        runtime.advance_dispatcher(&store, stale, 7).await,
+        Err(Error::Conflict)
+    ));
+    let lost = provider.requests().since(before);
+    assert_eq!(
+        lost.control(),
+        0,
+        "a lost publication must not reload state"
+    );
+    assert_eq!(lost.data(), 1, "a lost publication must not submit again");
+    let observed = store.load(&actor).await?;
+    assert_eq!(observed.tail, replaced.tail);
+    assert_eq!(observed.anchor, replaced.anchor);
+    assert_eq!(
+        observed
+            .state()
+            .and_then(|state| state.cursor("activation")),
+        Some(5)
+    );
+    // Only a new invocation may propose a cursor against this observed cut.
+    let before = provider.requests();
+    let reconciled = runtime.advance_dispatcher(&store, observed, 7).await?;
     assert_eq!(
         provider.requests().since(before).control(),
-        1,
-        "a real competing commit requires its original fresh state observation"
+        0,
+        "explicit publication uses its supplied state cut"
     );
+    assert_eq!(provider.requests().since(before).data(), 1);
     assert_eq!(reconciled.tail, replaced.tail + 1);
     assert_eq!(
         reconciled
@@ -992,11 +1017,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),
     );
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        runtime.pause(&address, true),
-    )
-    .await??;
+    runtime.pause(&address, true).await?;
     assert_eq!(
         store.load(&address).await?.state().map(State::epoch),
         Some(0)
@@ -1199,11 +1220,7 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
         2,
         "queued duplicates cannot occupy active delivery permits"
     );
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        runtime.drain_actor(&cold),
-    )
-    .await??;
+    runtime.drain_actor(&cold).await?;
     assert_eq!(
         records(&*provider, "out/duplicate-cold").await?,
         vec![Bytes::from_static(b"r0")]
@@ -1502,7 +1519,12 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
         .set_paused(&cut, 1, true, key("external-pause")?)
         .await?;
     runtime.wake(&address);
-    assert!(runtime.drain().await.is_empty());
+    let failures = runtime.drain().await;
+    assert!(
+        matches!(failures.as_slice(), [(_, Error::Conflict)]),
+        "{failures:?}"
+    );
+    assert_eq!(runtime.counts(), (0, 0));
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -1516,7 +1538,7 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
     store
         .set_paused(&cut, 1, false, key("external-resume")?)
         .await?;
-    runtime.wake(&address);
+    runtime.track(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -1524,7 +1546,10 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
         vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
     );
     let cut = store.load(&address).await?;
-    store.claim(&cut, 2, key("foreign-placement")?).await?;
+    let next_epoch = cut.state().ok_or("missing state")?.epoch() + 1;
+    store
+        .claim(&cut, next_epoch, key("foreign-placement")?)
+        .await?;
     provider
         .append(AppendRequest {
             path: inbox,
@@ -1672,8 +1697,7 @@ fn refused(failures: &[(ActorReference, Error)], reason: &str) -> bool {
 #[tokio::test]
 async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult {
     let stalled = run_limited(Limited::new(50, 1 << 16, true)?);
-    let (failures, published) =
-        tokio::time::timeout(std::time::Duration::from_secs(5), stalled).await??;
+    let (failures, published) = stalled.await?;
     assert!(refused(&failures, "timeout"), "{failures:?}");
     assert!(published.is_empty());
     // Control: the same package within its limits publishes.

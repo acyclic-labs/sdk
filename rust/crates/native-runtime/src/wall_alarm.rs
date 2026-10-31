@@ -590,7 +590,7 @@ mod tests {
             }),
         )?;
         received
-            .recv_timeout(std::time::Duration::from_secs(30))
+            .recv()
             .map_err(|_| io::Error::other("quiet alarm never fired"))
     }
 
@@ -609,11 +609,14 @@ mod tests {
             }),
         )?;
         received
-            .recv_timeout(std::time::Duration::from_secs(30))
+            .recv()
             .map_err(|_| io::Error::other("elapsed alarm never fired"))?;
         let (fired, fire) = counter();
-        drop(WallAlarm::register(now_unix_ms() + 20, fire)?);
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let pending = WallAlarm::register(u64::MAX, fire)?;
+        let key = pending.key;
+        assert!(locked(&alarms()?.index).entries.contains_key(&key));
+        drop(pending);
+        assert!(!locked(&alarms()?.index).entries.contains_key(&key));
         assert_eq!(fired.load(Ordering::SeqCst), 0, "a cancelled alarm fired");
         Ok(())
     }

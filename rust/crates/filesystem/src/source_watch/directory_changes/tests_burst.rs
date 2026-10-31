@@ -92,7 +92,7 @@ fn first_whole_burst(maximum: u64) -> Result<Option<usize>, Box<dyn std::error::
                 std::fs::File::create(root.path().join(name))?;
             }
         }
-        assert!(watch.fence_with_work(Duration::from_secs(10), &mut work)?);
+        assert!(watch.fence_with_work(&mut work)?);
         let rescanned = sink.rescans.load(Ordering::Acquire) > rescans;
         let seen = sink.names.lock().unwrap_or_else(PoisonError::into_inner);
         let missing = names.difference(&seen).count();

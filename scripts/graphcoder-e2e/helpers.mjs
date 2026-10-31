@@ -9,7 +9,7 @@ import { Processes } from "./process.mjs";
 import { qualified } from "./qualification.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 
-export async function runHelperSuite(files, { signal = AbortSignal.timeout(9000),
+export async function runHelperSuite(files, { signal,
   processes = new Processes(), publish = result => {
     process.stdout.write(result.stdout); process.stderr.write(result.stderr);
   } } = {}) {
@@ -21,20 +21,20 @@ export async function runHelperSuite(files, { signal = AbortSignal.timeout(9000)
     draining ??= processes.close();
     draining.catch(() => {}); // The finally barrier observes cleanup errors.
   };
-  signal.addEventListener("abort", cancel, { once: true });
+  signal?.addEventListener("abort", cancel, { once: true });
   try {
-    signal.throwIfAborted();
+    signal?.throwIfAborted();
     const env = { ...environment(join(scratch, "profile")), E2E_SCRATCH_ROOT: scratch };
     delete env.NODE_TEST_CONTEXT; // A new suite owns its runner, never its caller's worker context.
     const result = await processes.runOwned("node", ["--test", "--test-reporter=tap",
       ...(process.platform === "win32" ? ["--test-concurrency=1"] : []), ...files], { env });
     publish(result);
-    signal.throwIfAborted(); // A late successful summary cannot erase cancellation.
+    signal?.throwIfAborted(); // A late successful summary cannot erase cancellation.
     qualified(result, "node", files.length);
     assert.ok(performance.now() - start < 10000, "helper suite exceeded ten seconds");
     return result;
   } finally {
-    signal.removeEventListener("abort", cancel);
+    signal?.removeEventListener("abort", cancel);
     await (draining ?? processes.close());
     await rm(scratch, { recursive: true, force: true });
   }

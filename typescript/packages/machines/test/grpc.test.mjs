@@ -8,7 +8,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { createMachinesGrpcClient, createMachinesGrpcTransport, MAX_OUTPUT_READ_BYTES } from "../dist/grpc.js";
-import { createMachinesRpcTransport } from "../dist/transport.js";
+import { createMachinesClient, createMachinesRpcTransport } from "../dist/transport.js";
 import * as wire from "../generated/proto/machines/v1/machines_pb.js";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 
@@ -49,7 +49,7 @@ async function fixture(t, implementation, rawExec = false) {
   const client = createMachinesGrpcClient(options);
   const raw = createMachinesGrpcTransport(options);
   t.after(async () => { raw.close(); client.close(); await closeServer(); });
-  return { ...client, options, rpc: createMachinesRpcTransport(raw.transport) };
+  return { ...client, options, transport: raw.transport, rpc: createMachinesRpcTransport(raw.transport) };
 }
 
 function authenticate(context) {
@@ -311,7 +311,7 @@ test("exec carries binary stdin, cwd and authority and separates stderr before i
   await cancellation;
 });
 
-test("exec delivers output while command input is backpressured and drop cancels both directions", { timeout: 5000 }, async t => {
+test("exec delivers output while command input is backpressured and drop cancels both directions", async t => {
   const cancellation = Promise.withResolvers();
   let complete = false;
   const { machines } = await fixture(t, {
@@ -334,7 +334,7 @@ test("exec delivers output while command input is backpressured and drop cancels
 });
 
 for (const mode of ["early-exit", "malformed"]) {
-  test(`exec cancels ${mode} without canceling another active RPC`, { timeout: 5000 }, async t => {
+  test(`exec cancels ${mode} without canceling another active RPC`, async t => {
     let cancelled;
     let finishWatch;
     let watchCancelled = false;
@@ -423,6 +423,34 @@ test("console reads preserve uint64 offsets, discarded-byte gaps and temporary e
   assert.deepEqual(seen, [offset, next, next]);
 });
 
+test("exec retains the original caller deadline without a completion grace window", async t => {
+  let calls = 0;
+  const { transport } = await fixture(t, {
+    async *exec(query, context) {
+      authenticate(context);
+      assert.equal(query.timeoutMs, 60000n);
+      calls++;
+      yield { machine, output: { case: "exitCode", value: 0 } };
+    },
+  });
+  // Observe the original transport boundary, then delegate the same request
+  // to its authenticated TLS owner. No transport reply or clock is fabricated.
+  const deadlines = [];
+  const { machines } = createMachinesClient({
+    ...transport,
+    stream(method, signal, timeoutMs, ...rest) {
+      deadlines.push(timeoutMs);
+      return transport.stream(method, signal, timeoutMs, ...rest);
+    },
+  });
+  const request = { protocol, machine, argv: ["exit"], timeoutMs: 60000n };
+  for (const options of [undefined, { timeoutMs: 0 }, { timeoutMs: 30000 }]) {
+    assert.equal(await exec(machines, request, options), 0);
+  }
+  assert.deepEqual(deadlines, [60000, 60000, 30000]);
+  assert.equal(calls, 3);
+});
+
 test("an exec RPC deadline cancels the pending call without redispatch", async t => {
   let attempts = 0;
   let cancelled;
@@ -492,7 +520,7 @@ test("watch delivers before completion and cancellation reaches the server", asy
   await cancellation;
 });
 
-test("return interrupts a pending stream pull and terminal watch needs no EOF", { timeout: 5000 }, async t => {
+test("return interrupts a pending stream pull and terminal watch needs no EOF", async t => {
   const execCancelled = Promise.withResolvers();
   const watchCancelled = Promise.withResolvers();
   const { machines } = await fixture(t, {
@@ -544,7 +572,7 @@ test("watch refuses substituted identities, invalid status and incomplete EOF wi
   assert.equal(attempts, 4);
 });
 
-test("original guest deadlines bound stalled credentials even with timeout zero", { timeout: 5000 }, async t => {
+test("original guest deadlines bound stalled credentials even with timeout zero", async t => {
   let dispatched = 0;
   const { options } = await fixture(t, {
     readFile() { dispatched++; },

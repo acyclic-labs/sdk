@@ -8,15 +8,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
 
 const MODE: &str = "ACYCLIC_CUSTODY_TEST_MODE";
 const ROOT: &str = "ACYCLIC_CUSTODY_TEST_ROOT";
 
-/// A shell program that publishes its descendant's PID at the path given as
-/// its first argument, then waits; paths are arguments, never script text.
+/// A shell program that publishes its descendant through the original pipe,
+/// then waits for that descendant's physical exit.
 #[cfg(unix)]
-const PUBLISHING_PROGRAM: &str = r#"sleep 3600 & echo $! > "$1.tmp"; mv "$1.tmp" "$1"; wait"#;
+const PUBLISHING_PROGRAM: &str = r#""$ACYCLIC_CUSTODY_TEST_EXECUTABLE" --exact process_tree::custody_tests::custody_owner_helper --nocapture >/dev/null & child=$!; echo ACYCLIC_CHILD_PID="$child"; wait"#;
 
 // Exercise the same resolved shell as native host tools, with a real
 // grandchild. A directly spawned ping cannot detect packaged-shell breakaway.
@@ -32,33 +31,53 @@ exit $child.ExitCode
 fn program(root: &Path) -> Command {
     #[cfg(unix)]
     {
-        let pid = root.join("pid");
         let mut command =
             crate::shell_command(PUBLISHING_PROGRAM, Some("sh")).expect("resolve fixture shell");
         command
             .arg("sh")
-            .arg(pid)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        command
-    }
-    #[cfg(windows)]
-    {
-        let _ = root;
-        let mut command = crate::shell_command(PUBLISHING_PROGRAM, None)
-            .expect("resolve the native host's fixture shell");
-        command
+            .env(ROOT, root)
             .env(MODE, "member")
             .env(
                 "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
                 std::env::current_exe().expect("test executable"),
             )
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null());
         command
     }
+    #[cfg(windows)]
+    {
+        let mut command = crate::shell_command(PUBLISHING_PROGRAM, None)
+            .expect("resolve the native host's fixture shell");
+        command
+            .env(ROOT, root)
+            .env(MODE, "member")
+            .env(
+                "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
+                std::env::current_exe().expect("test executable"),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        command
+    }
+}
+
+/// A live tree whose original stdin owner controls EOF; no timer or probe runs.
+fn gated_command() -> Command {
+    let mut command = Command::new(std::env::current_exe().expect("test executable"));
+    command
+        .args([
+            "--exact",
+            "process_tree::capture_events_tests::event_capture_child",
+            "--nocapture",
+        ])
+        .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
 }
 
 /// The owner: spawns the program, publishes its PID, and lives until killed.
@@ -68,10 +87,11 @@ fn custody_owner_helper() {
         return;
     };
     let root = PathBuf::from(std::env::var_os(ROOT).expect("owner root"));
-    #[cfg(windows)]
+    if mode == "exit-before-publish" {
+        return;
+    }
     if mode == "member" {
-        fs::write(root.join("pid.tmp"), std::process::id().to_string()).expect("pid");
-        fs::rename(root.join("pid.tmp"), root.join("pid")).expect("publish grandchild pid");
+        publish_pid(std::process::id());
         loop {
             thread::park();
         }
@@ -83,17 +103,23 @@ fn custody_owner_helper() {
     let mut command = program(&root);
     let lease = (mode == "leased")
         .then(|| ProcessCustodyLease::acquire(&root.join("fleet")).expect("native lease"));
-    let tree = if let Some(lease) = &lease {
+    let mut uncontained = None;
+    let mut tree = if let Some(lease) = &lease {
         Some(ProcessTree::spawn_in_custody(&mut command, lease.custody()).expect("leased spawn"))
     } else if mode == "custodied" {
         let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
         Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
     } else {
-        let child = command.spawn().expect("uncontained spawn");
-        drop(child);
+        uncontained = Some(command.spawn().expect("uncontained spawn"));
         None
     };
-    fs::write(root.join("owner-ready"), b"ready").expect("ready");
+    let output = tree
+        .as_mut()
+        .and_then(ProcessTree::take_stdout)
+        .or_else(|| uncontained.as_mut()?.stdout.take())
+        .expect("original program publication pipe");
+    let pid = read_published_pid(output).expect("original program PID publication");
+    publish_pid(pid);
     let _tree = tree;
     loop {
         thread::park();
@@ -110,26 +136,38 @@ fn owner(mode: &str, root: &Path) -> std::process::Child {
         .env(MODE, mode)
         .env(ROOT, root)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("owner")
 }
 
-/// Waits for the owner's readiness, then reads the program's PID.
-fn published(root: &Path, owner: &mut std::process::Child) -> u32 {
-    while !(root.join("owner-ready").exists() && root.join("pid").exists()) {
-        assert!(
-            owner.try_wait().expect("owner").is_none(),
-            "owner exited early"
-        );
-        thread::sleep(Duration::from_millis(5));
+/// Publication follows both original spawn admission and descendant creation.
+fn published(owner: &mut std::process::Child) -> u32 {
+    read_published_pid(owner.stdout.take().expect("owner publication pipe"))
+        .expect("original owner's descendant publication")
+}
+
+fn publish_pid(pid: u32) {
+    use std::io::Write as _;
+    println!("\nACYCLIC_CHILD_PID={pid}");
+    std::io::stdout().flush().expect("publish original PID");
+}
+
+fn read_published_pid(output: impl std::io::Read) -> std::io::Result<u32> {
+    use std::io::{BufRead as _, Error, ErrorKind};
+    for line in std::io::BufReader::new(output).lines() {
+        let line = line?;
+        if let Some(pid) = line.strip_prefix("ACYCLIC_CHILD_PID=") {
+            return pid
+                .parse()
+                .map_err(|error| Error::new(ErrorKind::InvalidData, error));
+        }
     }
-    fs::read_to_string(root.join("pid"))
-        .expect("pid")
-        .trim()
-        .parse()
-        .expect("numeric pid")
+    Err(Error::new(
+        ErrorKind::UnexpectedEof,
+        "original child PID producer exited before publication",
+    ))
 }
 
 /// An exit watch on one process, independent of its parentage.
@@ -138,8 +176,6 @@ pub(super) struct Watch {
     fd: std::os::fd::OwnedFd,
     #[cfg(windows)]
     handle: windows_sys::Win32::Foundation::HANDLE,
-    #[cfg(unix)]
-    pid: u32,
 }
 
 impl Watch {
@@ -161,7 +197,7 @@ impl Watch {
         }
         // SAFETY: the descriptor pidfd_open just returned.
         let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        Some(Self { fd, pid })
+        Some(Self { fd })
     }
 
     #[cfg(windows)]
@@ -218,27 +254,54 @@ impl Watch {
         assert_eq!(polled, 1, "poll: {}", std::io::Error::last_os_error());
     }
 
-    /// Whether the process exits within `bound`, which only detects a
-    /// process that never exits.
+    /// Blocks on the retained process handle's terminal event.
     #[cfg(windows)]
-    fn exits_within(&self, bound: Duration) -> bool {
+    fn wait(&self) {
         use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-        use windows_sys::Win32::System::Threading::WaitForSingleObject;
-        let bound = u32::try_from(bound.as_millis()).expect("bound");
-        // SAFETY: an owned process handle.
-        unsafe { WaitForSingleObject(self.handle, bound) == WAIT_OBJECT_0 }
+        use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+        // SAFETY: the original process handle remains owned by this watch.
+        let status = unsafe { WaitForSingleObject(self.handle, INFINITE) };
+        assert_eq!(
+            status,
+            WAIT_OBJECT_0,
+            "process wait: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     fn kill(&self) {
         #[cfg(unix)]
-        // SAFETY: the published, still-watched process.
-        unsafe {
-            libc::kill(libc::pid_t::try_from(self.pid).expect("pid"), libc::SIGKILL);
+        {
+            use std::os::fd::AsRawFd as _;
+            // SAFETY: the retained pidfd names the original process even after
+            // exit/reaping; no numeric PID can be reused by an unrelated child.
+            let killed = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    self.fd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0_u32,
+                )
+            };
+            if killed != 0 {
+                let error = std::io::Error::last_os_error();
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(libc::ESRCH),
+                    "pidfd kill: {error}"
+                );
+            }
         }
         #[cfg(windows)]
-        // SAFETY: an owned handle with terminate access.
-        unsafe {
-            windows_sys::Win32::System::Threading::TerminateProcess(self.handle, 1);
+        {
+            // SAFETY: the retained original handle has terminate access.
+            let killed =
+                unsafe { windows_sys::Win32::System::Threading::TerminateProcess(self.handle, 1) };
+            if killed == 0 {
+                let error = std::io::Error::last_os_error();
+                assert!(self.exited(), "terminate watched process: {error}");
+            }
         }
     }
 }
@@ -254,7 +317,7 @@ impl Drop for Watch {
 fn killed_owner_leaves(mode: &str) -> (tempfile::TempDir, Watch) {
     let root = tempfile::tempdir().expect("root");
     let mut owner = owner(mode, root.path());
-    let pid = published(root.path(), &mut owner);
+    let pid = published(&mut owner);
     let watch = Watch::new(pid).expect("the published program is running");
     owner.kill().expect("kill owner");
     owner.wait().expect("reap owner");
@@ -263,6 +326,17 @@ fn killed_owner_leaves(mode: &str) -> (tempfile::TempDir, Watch) {
 
 #[test]
 fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
+    let root = tempfile::tempdir().expect("unpublished owner root");
+    let mut unpublished = owner("exit-before-publish", root.path());
+    let error = read_published_pid(unpublished.stdout.take().expect("publication pipe"))
+        .expect_err("missing owner published a PID");
+    assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    assert!(
+        unpublished
+            .wait()
+            .expect("reap unpublished owner")
+            .success()
+    );
     let (root, watch) = killed_owner_leaves("custodied");
     let processes = root.path().join("processes");
     ProcessCustody::open(&processes)
@@ -281,7 +355,7 @@ fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
 fn leased_successor_fences_the_killed_native_owner_before_admission() {
     let root = tempfile::tempdir().expect("root");
     let mut owner = owner("leased", root.path());
-    let watch = Watch::new(published(root.path(), &mut owner)).expect("running program");
+    let watch = Watch::new(published(&mut owner)).expect("running program");
     #[cfg(windows)]
     let records = root.path().join("fleet/trees");
     #[cfg(windows)]
@@ -348,7 +422,14 @@ const CHURNED: u32 = 100;
 /// marks that it has, and then lives until killed. Each is this executable
 /// started as a custodian with no owner to read, which exits before `main`.
 #[cfg(windows)]
-fn churn(root: &Path) {
+fn churn(_root: &Path) {
+    use std::io::{Read as _, Write as _};
+    println!("\nACYCLIC_CHURN_READY");
+    std::io::stdout().flush().expect("publish churn admission");
+    let mut start = [0];
+    std::io::stdin()
+        .read_exact(&mut start)
+        .expect("original churn caller");
     for _ in 0..CHURNED {
         let status = Command::new(std::env::current_exe().expect("test executable"))
             .env("ACYCLIC_PROCESS_CUSTODIAN", "1")
@@ -359,10 +440,26 @@ fn churn(root: &Path) {
             .expect("member");
         assert!(!status.success(), "an ownerless custodian ran");
     }
-    fs::write(root.join("churned"), b"churned").expect("churned");
+    println!("ACYCLIC_CHURN_DONE");
+    std::io::stdout()
+        .flush()
+        .expect("publish completed members");
     loop {
         thread::park();
     }
+}
+
+#[cfg(windows)]
+fn churn_event(output: &mut impl std::io::BufRead, expected: &str) -> std::io::Result<()> {
+    for line in output.lines() {
+        if line? == expected {
+            return Ok(());
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "original member producer exited before publication",
+    ))
 }
 
 /// A custodian holds state for live members only: a tree that starts and
@@ -373,28 +470,31 @@ fn a_custodians_handles_track_live_members_not_every_member() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let custody = ProcessCustody::acquire(&processes).expect("custody");
-    let churned = root.path().join("churned");
     let mut command = Command::new(std::env::current_exe().expect("test executable"));
     command
         .args([
             "--exact",
             "process_tree::custody_tests::custody_owner_helper",
+            "--nocapture",
         ])
         .env(MODE, "churn")
         .env(ROOT, root.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
     let custodian = custodian_of(&processes);
+    let mut output = std::io::BufReader::new(tree.take_stdout().expect("churn publication pipe"));
+    churn_event(&mut output, "ACYCLIC_CHURN_READY").expect("original member admission");
     let before = handle_count(custodian);
-    while !churned.exists() {
-        assert!(
-            tree.try_wait(None).expect("tree").is_none(),
-            "tree exited early"
-        );
-        thread::sleep(Duration::from_millis(5));
+    {
+        use std::io::Write as _;
+        tree.take_stdin()
+            .expect("churn start pipe")
+            .write_all(&[1])
+            .expect("start original members");
     }
+    churn_event(&mut output, "ACYCLIC_CHURN_DONE").expect("original member completion");
     let after = handle_count(custodian);
     eprintln!("custodian handles: {before} before, {after} after {CHURNED} members");
     tree.terminate(None).expect("terminate");
@@ -413,22 +513,15 @@ fn a_killed_custodians_tree_dies_with_its_owner() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let mut owner = owner("custodied", root.path());
-    let watch = Watch::new(published(root.path(), &mut owner)).expect("running program");
+    let watch = Watch::new(published(&mut owner)).expect("running program");
     let custodian = Watch::new(custodian_of(&processes)).expect("the custodian is running");
     custodian.kill();
-    assert!(
-        custodian.exits_within(Duration::from_secs(30)),
-        "killed custodian"
-    );
+    custodian.wait();
     let survived = !watch.exited();
     owner.kill().expect("kill owner");
     owner.wait().expect("reap owner");
-    let exited = watch.exits_within(Duration::from_secs(30));
-    if !exited {
-        watch.kill();
-    }
+    watch.wait();
     assert!(survived, "the custodian's death killed a live owner's tree");
-    assert!(exited, "the tree outlived its owner and its custodian");
     ProcessCustody::open(&processes)
         .expect("reopen custody")
         .fence_stale()
@@ -444,12 +537,7 @@ fn trees_of_two_custody_directories_in_one_process_never_share_a_job() {
     let root = tempfile::tempdir().expect("root");
     let spawn = |directory: &str| {
         let custody = ProcessCustody::acquire(&root.path().join(directory)).expect("custody");
-        let mut command = Command::new("ping");
-        command
-            .args(["-n", "30", "127.0.0.1"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        let mut command = gated_command();
         let tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
         (custody, tree)
     };
@@ -483,18 +571,24 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
         ("kill -TERM $$", None, Some(libc::SIGTERM)),
     ] {
         let mut command = crate::shell_command(
-            &format!(r#"sleep 3600 & echo $! > "$1"; {script}"#),
+            &format!(r#""$ACYCLIC_CUSTODY_TEST_EXECUTABLE" --exact process_tree::custody_tests::custody_owner_helper --nocapture >/dev/null & echo $! > "$1"; {script}"#),
             Some("sh"),
         )
         .expect("resolve fixture shell");
         command
             .arg("sh")
             .arg(&pid)
+            .env(MODE, "member")
+            .env(ROOT, root.path())
+            .env(
+                "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
+                std::env::current_exe().expect("test executable"),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
-        let status = tree.wait(Duration::from_secs(30)).expect("wait");
+        let status = tree.wait_exit(None).expect("wait");
         let descendant = Watch::new(
             fs::read_to_string(&pid)
                 .expect("pid")
@@ -530,11 +624,7 @@ fn an_idle_custody_holds_no_descriptor() -> std::io::Result<()> {
     let processes = root.path().join("processes");
     let custody = ProcessCustody::acquire(&processes)?;
     assert_eq!(descriptors_naming(&processes)?, 0);
-    let mut command = crate::shell_command("sleep 30", Some("sh"))?;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    let mut command = gated_command();
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
     // Negative control: the count sees the descriptor a running tree holds.
     assert_eq!(descriptors_naming(&processes)?, 1);
@@ -559,7 +649,7 @@ fn a_replaced_custody_directory_refuses_to_record() -> std::io::Result<()> {
         .stderr(Stdio::null());
     // Control: the fenced directory records the tree.
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
-    tree.wait(Duration::from_secs(30))?;
+    tree.wait_exit(None)?;
     tree.terminate(None)?;
     fs::rename(&processes, root.path().join("fenced"))?;
     fs::create_dir(&processes)?;
@@ -593,18 +683,7 @@ fn a_second_owner_in_one_process_shares_the_live_custody() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let first = ProcessCustody::acquire(&processes).expect("first owner");
-    #[cfg(unix)]
-    let mut command = crate::shell_command("sleep 30", Some("sh")).expect("resolve fixture shell");
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = Command::new("ping");
-        command.args(["-n", "30", "127.0.0.1"]);
-        command
-    };
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    let mut command = gated_command();
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &first).expect("spawn");
     let watch = Watch::new(tree_pid(&tree)).expect("running tree");
     let second = ProcessCustody::acquire(&processes).expect("second owner");
@@ -624,24 +703,11 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let custody = ProcessCustody::open(&processes).expect("custody");
-    let pid = root.path().join("pid");
-    let mut command =
-        crate::shell_command(PUBLISHING_PROGRAM, Some("sh")).expect("resolve fixture shell");
-    command.arg("sh").arg(&pid);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    let mut command = program(root.path());
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
-    while !pid.exists() {
-        thread::sleep(Duration::from_millis(5));
-    }
     let descendant = Watch::new(
-        fs::read_to_string(&pid)
-            .expect("pid")
-            .trim()
-            .parse()
-            .expect("numeric pid"),
+        read_published_pid(tree.take_stdout().expect("descendant publication pipe"))
+            .expect("original descendant publication"),
     )
     .expect("running descendant");
     let warden = libc::pid_t::try_from(tree_pid(&tree)).expect("warden pid");
@@ -663,16 +729,19 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
 /// A program whose descendant leaves the tree's process group and session,
 /// publishing its own PID.
 #[cfg(target_os = "linux")]
-fn escaping_program(pid: &Path) -> Command {
+fn escaping_program(root: &Path) -> Command {
     let mut command = crate::shell_command(
-        r#"setsid sh -c 'echo $$ > "$1.tmp"; mv "$1.tmp" "$1"; exec sleep 3600' sh "$1" & wait"#,
+        r#"setsid sh -c 'echo ACYCLIC_CHILD_PID=$$; exec "$ACYCLIC_CUSTODY_TEST_EXECUTABLE" --exact process_tree::custody_tests::custody_owner_helper --nocapture >/dev/null' sh & wait"#,
         Some("sh"),
     )
     .expect("resolve fixture shell");
-    command.arg("sh").arg(pid);
+    command.arg("sh").env(MODE, "member").env(ROOT, root).env(
+        "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
+        std::env::current_exe().expect("test executable"),
+    );
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     command
 }
@@ -680,20 +749,10 @@ fn escaping_program(pid: &Path) -> Command {
 /// Starts `command`, waits for its escaped descendant, and cancels the tree.
 /// Returns the descendant's watch once cancellation has returned.
 #[cfg(target_os = "linux")]
-fn cancel_after_escape(mut tree: ProcessTree, pid: &Path) -> Watch {
-    while !pid.exists() {
-        assert!(
-            tree.try_wait(None).expect("try_wait").is_none(),
-            "the tree exited before its descendant escaped"
-        );
-        thread::sleep(Duration::from_millis(5));
-    }
+fn cancel_after_escape(mut tree: ProcessTree) -> Watch {
     let escaped = Watch::new(
-        fs::read_to_string(pid)
-            .expect("pid")
-            .trim()
-            .parse()
-            .expect("numeric pid"),
+        read_published_pid(tree.take_stdout().expect("escape publication pipe"))
+            .expect("original escaped descendant publication"),
     )
     .expect("running descendant");
     tree.terminate(None).expect("terminate");
@@ -709,9 +768,9 @@ fn cancelled_custodied_tree_leaves_no_descendant_outside_its_group() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let custody = ProcessCustody::open(&processes).expect("custody");
-    let pid = root.path().join("pid");
-    let tree = ProcessTree::spawn_in_custody(&mut escaping_program(&pid), &custody).expect("spawn");
-    let escaped = cancel_after_escape(tree, &pid);
+    let tree =
+        ProcessTree::spawn_in_custody(&mut escaping_program(root.path()), &custody).expect("spawn");
+    let escaped = cancel_after_escape(tree);
     let survived = !escaped.exited();
     escaped.kill();
     assert!(!survived, "a cancelled tree's escaped descendant survived");
@@ -724,9 +783,8 @@ fn cancelled_custodied_tree_leaves_no_descendant_outside_its_group() {
 #[test]
 fn a_cancelled_uncustodied_tree_leaves_its_escaped_descendant() {
     let root = tempfile::tempdir().expect("root");
-    let pid = root.path().join("pid");
-    let tree = ProcessTree::spawn(&mut escaping_program(&pid)).expect("spawn");
-    let escaped = cancel_after_escape(tree, &pid);
+    let tree = ProcessTree::spawn(&mut escaping_program(root.path())).expect("spawn");
+    let escaped = cancel_after_escape(tree);
     let survived = !escaped.exited();
     escaped.kill();
     assert!(survived, "the oracle cannot observe an escaped descendant");
@@ -737,14 +795,17 @@ const ANCHOR_MODE: &str = "ACYCLIC_CUSTODY_ANCHOR_MODE";
 
 /// A stand-in warden: holds a record lock until exit, forks a child, and
 /// publishes the child's PID. "anchor" forks the warden's group anchor;
-/// "paused" forks a child that keeps every inherited descriptor and only
-/// sleeps.
+/// "paused" forks a child that retains the record descriptor and waits for
+/// a signal.
 #[cfg(target_os = "linux")]
 #[test]
 fn anchor_parent_helper() {
     let Ok(mode) = std::env::var(ANCHOR_MODE) else {
         return;
     };
+    if mode == "exit-before-publish" {
+        return;
+    }
     let root = PathBuf::from(std::env::var_os(ROOT).expect("helper root"));
     let record = fs::File::create(root.join("record")).expect("record");
     crate::FileLock::try_hold_until_exit(record, crate::FileLockMode::Exclusive)
@@ -752,56 +813,66 @@ fn anchor_parent_helper() {
     let child = if mode == "anchor" {
         super::warden::spawn_anchor().expect("anchor")
     } else {
-        // SAFETY: the child only sleeps, which is async-signal-safe.
+        // SAFETY: the child only closes stdout and waits for signals;
+        // both operations are async-signal-safe.
         match unsafe { libc::fork() } {
-            0 => loop {
-                // SAFETY: sleeping until a signal.
-                unsafe { libc::pause() };
-            },
+            0 => {
+                // This negative control retains the record, but only its
+                // original parent may hold the PID-publication pipe open.
+                // SAFETY: close and _exit are async-signal-safe after fork.
+                if unsafe { libc::close(libc::STDOUT_FILENO) } != 0 {
+                    unsafe { libc::_exit(125) };
+                }
+                loop {
+                    // SAFETY: waiting until a signal is async-signal-safe.
+                    unsafe { libc::pause() };
+                }
+            }
             pid => pid,
         }
     };
     assert!(child > 0, "fork: {}", std::io::Error::last_os_error());
-    fs::write(root.join("child.tmp"), child.to_string()).expect("child pid");
-    fs::rename(root.join("child.tmp"), root.join("child")).expect("child pid");
+    println!("\nACYCLIC_CHILD_PID={child}");
     loop {
         thread::park();
     }
 }
 
-/// Kills a stand-in warden that forked a child in `mode`, then reports
-/// whether the record lock was free once the child was gone or, for a
-/// child that outlives the warden, while it still lives.
 #[cfg(target_os = "linux")]
-fn record_free_after_killed_parent(mode: &str) -> bool {
-    let root = tempfile::tempdir().expect("root");
-    let mut parent = Command::new(std::env::current_exe().expect("test executable"))
+fn anchor_parent(mode: &str, root: &Path) -> std::process::Child {
+    Command::new(std::env::current_exe().expect("test executable"))
         .args([
             "--exact",
             "process_tree::custody_tests::anchor_parent_helper",
             "--nocapture",
         ])
         .env(ANCHOR_MODE, mode)
-        .env(ROOT, root.path())
+        .env(ROOT, root)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("helper");
-    let child = published_child(root.path(), &mut parent);
+        .expect("helper")
+}
+
+/// Kills a stand-in warden after its original PID publication and checks
+/// the actual record lock once physical exit has settled.
+#[cfg(target_os = "linux")]
+fn record_free_after_killed_parent(mode: &str) -> bool {
+    let root = tempfile::tempdir().expect("root");
+    let mut parent = anchor_parent(mode, root.path());
+    let child = published_child(&mut parent).expect("original child PID publication");
     let watch = Watch::new(child).expect("running child");
     parent.kill().expect("kill helper");
     parent.wait().expect("reap helper");
-    // An anchor exits with its parent; a paused child never does, so only
-    // the anchor is awaited, and only a failure meets the bound.
-    let bound = if mode == "anchor" { 10_000 } else { 0 };
-    let mut ready = libc::pollfd {
-        fd: std::os::fd::AsRawFd::as_raw_fd(&watch.fd),
-        events: libc::POLLIN,
-        revents: 0,
+    // Reaping the original parent is the settle cut. Its anchor must end;
+    // the paused negative control still owns its inherited record lock.
+    let exited = if mode == "anchor" {
+        watch.wait();
+        true
+    } else {
+        watch.exited()
     };
-    // SAFETY: one initialized pollfd.
-    let exited = unsafe { libc::poll(&raw mut ready, 1, bound) } == 1;
     let record = fs::File::open(root.path().join("record")).expect("record");
     let free = match crate::FileLock::try_acquire(record, crate::FileLockMode::Exclusive) {
         Ok(_lock) => true,
@@ -814,19 +885,14 @@ fn record_free_after_killed_parent(mode: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn published_child(root: &Path, parent: &mut std::process::Child) -> u32 {
-    while !root.join("child").exists() {
-        assert!(
-            parent.try_wait().expect("helper").is_none(),
-            "helper exited early"
-        );
-        thread::sleep(Duration::from_millis(5));
-    }
-    fs::read_to_string(root.join("child"))
-        .expect("child pid")
-        .trim()
-        .parse()
-        .expect("numeric pid")
+fn published_child(parent: &mut std::process::Child) -> std::io::Result<u32> {
+    let output = parent.stdout.take().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "child PID publication pipe is missing",
+        )
+    })?;
+    read_published_pid(output)
 }
 
 /// A warden killed while its group anchor lives leaves no holder of its
@@ -834,14 +900,19 @@ fn published_child(root: &Path, parent: &mut std::process::Child) -> u32 {
 #[cfg(target_os = "linux")]
 #[test]
 fn an_anchor_never_outlives_or_holds_for_its_killed_warden() {
+    let root = tempfile::tempdir().expect("root");
+    let mut parent = anchor_parent("exit-before-publish", root.path());
+    let error = published_child(&mut parent).expect_err("missing producer published a PID");
+    assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    assert!(parent.wait().expect("reap unpublished parent").success());
     assert!(
         record_free_after_killed_parent("anchor"),
         "a killed warden's anchor kept its record locked"
     );
 }
 
-/// Negative control: a child that keeps the inherited descriptors and only
-/// sleeps holds the record locked after its parent is killed.
+/// Negative control: a child that retains the record descriptor and waits
+/// for a signal holds the record locked after its parent is killed.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_paused_child_keeps_its_killed_parents_record_locked() {

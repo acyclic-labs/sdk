@@ -31,6 +31,8 @@ pub(crate) async fn credential_event<T>(
 /// An authenticated endpoint. The pool owns all protocol, credit and recovery.
 pub trait Transport: ProviderPlatform {
     /// Opens one bidirectional platform connection from the canonical frame source.
+    /// `Unavailable` denotes a transient transport failure and permits backoff;
+    /// every other error terminates the opening interests.
     fn session(&self, source: Requests) -> BoxProviderFuture<'_, Result<Responses, StreamError>>;
     /// Withdraws an unadmitted write owned wholly by this logical channel.
     /// Synchronous socket writes need no hook; asynchronous platform queues

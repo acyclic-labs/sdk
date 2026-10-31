@@ -8,7 +8,6 @@ use super::*;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use futures::channel::mpsc;
 use futures::stream::BoxStream;
-use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -85,10 +84,7 @@ async fn append(
 async fn next(
     output: &mut BoxStream<'static, Result<Frame, StreamError>>,
 ) -> Result<wire::SessionFrame, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(tokio::time::timeout(Duration::from_secs(1), output.next())
-        .await?
-        .ok_or("session ended")??
-        .into_wire())
+    Ok(output.next().await.ok_or("session ended")??.into_wire())
 }
 
 #[tokio::test]
@@ -380,7 +376,6 @@ async fn host_shutdown_closes_all_channels_without_data_credit() -> TestResult {
         "node".into(),
         Limits::default(),
         receiver.boxed(),
-        Arc::new(crate::runtime::PlatformExecutor),
         Some(Box::pin(async {
             let _ = stopped.await;
         })),

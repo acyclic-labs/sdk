@@ -22,10 +22,10 @@ import { StreamError, idempotencyKey } from "./types.js";
 class RustStreamProvider implements StreamProvider {
   readonly #inner: Promise<WasmStream>;
 
-  protected constructor(database?: { readonly name: string; readonly maximumCommands: number; readonly maximumJournalBytes: bigint }) {
+  protected constructor(database?: { readonly name: string; readonly maximumCommands?: number; readonly maximumJournalBytes?: bigint }) {
     if (database !== undefined && (typeof database.name !== "string" || database.name.length === 0
-      || !Number.isSafeInteger(database.maximumCommands) || database.maximumCommands <= 0 || database.maximumCommands > 0xffff_ffff
-      || typeof database.maximumJournalBytes !== "bigint" || database.maximumJournalBytes <= 0n || database.maximumJournalBytes > 0xffff_ffff_ffff_ffffn)) {
+      || (database.maximumCommands !== undefined && (!Number.isSafeInteger(database.maximumCommands) || database.maximumCommands <= 0 || database.maximumCommands > 0xffff_ffff))
+      || (database.maximumJournalBytes !== undefined && (typeof database.maximumJournalBytes !== "bigint" || database.maximumJournalBytes <= 0n || database.maximumJournalBytes > 0xffff_ffff_ffff_ffffn)))) {
       throw new StreamError("invalid_argument", "browser database and journal bounds must be positive and representable");
     }
     this.#inner = ensureStreamWasm().then(() => database === undefined
@@ -162,7 +162,7 @@ class RustStreamProvider implements StreamProvider {
 /** Durable account-local provider using strict IndexedDB publication and Rust recovery. */
 export class BrowserStreamProvider extends RustStreamProvider {
   constructor(name: string, options: { readonly maximumCommands?: number; readonly maximumJournalBytes?: bigint } = {}) {
-    super({ name, maximumCommands: options.maximumCommands ?? 65_536, maximumJournalBytes: options.maximumJournalBytes ?? 256n * 1024n * 1024n });
+    super({ name, ...options });
   }
 }
 

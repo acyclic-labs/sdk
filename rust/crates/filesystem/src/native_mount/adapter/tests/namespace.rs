@@ -131,18 +131,32 @@ fn direct_checkout_view_lease_excludes_concurrent_mutation()
     let lease = source.acquire_view_lease()?;
     let writer = Arc::clone(&source);
     let (completed, receive) = std::sync::mpsc::sync_channel(1);
+    let (parked, pending) = std::sync::mpsc::sync_channel(1);
     let task = std::thread::spawn(move || {
+        super::runtime::BEFORE_PARK.with_borrow_mut(|hook| {
+            assert!(hook.is_none());
+            *hook = Some(Box::new(move || {
+                parked.send(()).expect("pending mutation receiver");
+            }));
+        });
         let result = boundary(writer.cancellation(), |work| {
             writer.create_directory(&native_test_path("leased"), metadata(), work)
         });
+        // Completing before Pending must close the receipt instead of retaining
+        // its producer in the thread-local hook.
+        drop(super::runtime::BEFORE_PARK.with_borrow_mut(Option::take));
         assert!(completed.send(result).is_ok(), "mutation result receiver");
     });
+    pending.recv()?;
     assert!(
-        receive.recv_timeout(Duration::from_millis(50)).is_err(),
+        matches!(
+            receive.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
         "mutation crossed a retained native callback view"
     );
     drop(lease);
-    receive.recv_timeout(Duration::from_secs(5))??;
+    receive.recv()??;
     task.join().map_err(|_| "mutation thread panicked")?;
     Ok(())
 }
@@ -177,9 +191,7 @@ fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error:
         let result = reader.read_range(&path, 0, 6);
         assert!(completed.send(result).is_ok(), "read result receiver");
     });
-    let read = receive.recv_timeout(Duration::from_secs(5)).map_err(|_| {
-        std::io::Error::other("a callback read waited for another callback's read")
-    })??;
+    let read = receive.recv()??;
     assert_eq!(read.as_ref(), b"shared");
     drop(held);
     task.join().map_err(|_| "read thread panicked")?;
@@ -189,119 +201,97 @@ fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error:
 #[test]
 fn concurrent_observations_never_see_a_mutation_half_applied()
 -> Result<(), Box<dyn std::error::Error>> {
-    const ROUNDS: u8 = 32;
     let (source, _) = sources(
         FilesystemProfile::Portable,
         ConsistencyMode::TrackingSafe,
         MountPublication::CloseAndSync,
     )?;
-    let source = Arc::new(source);
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
-    let pair = ["first.bin", "second.bin"].map(native_test_path);
-    for path in &pair {
+    let paths = ["first.bin", "second.bin"].map(native_test_path);
+    for path in &paths {
         source.create_file(path, metadata(), None, &work)?;
         source.write_range(path, 0, Bytes::from_static(&[0]))?;
     }
-    let pair = [source.path(&pair[0])?, source.path(&pair[1])?];
-    let done = Arc::new(AtomicBool::new(false));
-    let readers = (0..4)
-        .map(|_| {
-            let source = Arc::clone(&source);
-            let pair = pair.clone();
-            let done = Arc::clone(&done);
-            std::thread::spawn(move || -> Result<(), MountSourceError> {
-                let owner = ViewGate::callback_owner()?;
-                loop {
-                    let finished = done.load(Ordering::Acquire);
-                    let [first, second] = source.runtime.wait(|| async {
-                        let work = capture_meter(BOUNDARY_BUDGET, &source.cancellation)?;
-                        let observation = source
-                            .checkout
-                            .observe(
-                                owner,
-                                &mut NativeDemandCarrier::Native(&work),
-                                work.cancellation(),
-                                None,
-                            )
-                            .await?;
-                        let mut checkout = observation.observer(
-                            &mut crate::kernel::allocation::KernelAccounting::native(
-                                &work,
-                                work.cancellation(),
-                            ),
-                            work.cancellation(),
-                        )?;
-                        let mut values = [0; 2];
-                        for (value, path) in values.iter_mut().zip(&pair) {
-                            *value = checkout
-                                .read_file_range(
-                                    path,
-                                    ByteRange {
-                                        offset: 0,
-                                        length: 1,
-                                    },
-                                    &work,
-                                    work.cancellation(),
-                                )
-                                .await?
-                                .bytes[0];
-                            tokio::task::yield_now().await;
-                        }
-                        Ok(values)
-                    })?;
-                    assert_eq!(first, second, "an observation crossed a mutation");
-                    if finished {
-                        return Ok(());
-                    }
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    for round in 1..=ROUNDS {
-        source.runtime.wait(|| {
-            Box::pin(async {
-                let mut candidate = source
-                    .checkout
-                    .candidate(
-                        None,
-                        &mut NativeDemandCarrier::Native(&work),
-                        work.cancellation(),
-                        Some(&source.cancellation),
-                    )
-                    .await?;
-                for path in &pair {
-                    candidate
-                        .checkout
-                        .change_content(
-                            path.clone(),
-                            ContentChange::Write {
-                                offset: 0,
-                                bytes: OwnedBytes::from(vec![round]),
-                            },
-                            ContentTimes::Preserve,
-                            &work,
-                            &source.cancellation,
-                        )
-                        .await
-                        .map_err(engine_error)?;
-                    tokio::task::yield_now().await;
-                }
-                source
-                    .checkout
-                    .install_change(
-                        candidate,
-                        ViewChange::Everything,
-                        &work,
-                        &source.cancellation,
-                        source.native_callback_guard.clone(),
-                    )
-                    .await
-            })
-        })?;
-    }
-    done.store(true, Ordering::Release);
-    for reader in readers {
-        reader.join().map_err(|_| "observation thread panicked")??;
+    let pair = [source.path(&paths[0])?, source.path(&paths[1])?];
+    source.runtime.wait(|| async {
+        let mut candidate = source
+            .checkout
+            .candidate(
+                None,
+                &mut NativeDemandCarrier::Native(&work),
+                work.cancellation(),
+                Some(&source.cancellation),
+            )
+            .await?;
+        candidate
+            .checkout
+            .change_content(
+                pair[0].clone(),
+                ContentChange::Write {
+                    offset: 0,
+                    bytes: OwnedBytes::from_static(&[1]),
+                },
+                ContentTimes::Preserve,
+                &work,
+                &source.cancellation,
+            )
+            .await
+            .map_err(engine_error)?;
+        // Enter the original observation at the half-written candidate cut.
+        let observation = source
+            .checkout
+            .observe(
+                ViewGate::callback_owner()?,
+                &mut NativeDemandCarrier::Native(&work),
+                work.cancellation(),
+                None,
+            )
+            .await?;
+        let mut checkout = observation.observer(
+            &mut crate::kernel::allocation::KernelAccounting::native(&work, work.cancellation()),
+            work.cancellation(),
+        )?;
+        let range = ByteRange {
+            offset: 0,
+            length: 1,
+        };
+        let first = checkout
+            .read_file_range(&pair[0], range, &work, work.cancellation())
+            .await?;
+        candidate
+            .checkout
+            .change_content(
+                pair[1].clone(),
+                ContentChange::Write {
+                    offset: 0,
+                    bytes: OwnedBytes::from_static(&[1]),
+                },
+                ContentTimes::Preserve,
+                &work,
+                &source.cancellation,
+            )
+            .await
+            .map_err(engine_error)?;
+        let install = source.checkout.install_change(
+            candidate,
+            ViewChange::Everything,
+            &work,
+            &source.cancellation,
+            source.native_callback_guard.clone(),
+        );
+        tokio::pin!(install);
+        assert!(futures::poll!(install.as_mut()).is_pending());
+        let second = checkout
+            .read_file_range(&pair[1], range, &work, work.cancellation())
+            .await?;
+        assert_eq!(first.bytes.as_ref(), &[0]);
+        assert_eq!(second.bytes.as_ref(), &[0]);
+        drop(checkout);
+        drop(observation);
+        install.await
+    })?;
+    for path in &paths {
+        assert_eq!(source.read_range(path, 0, 1)?.as_ref(), &[1]);
     }
     Ok(())
 }

@@ -116,20 +116,18 @@ fn a_released_handle_never_unlocks_a_later_holder_of_its_description() -> io::Re
 #[cfg(unix)]
 #[test]
 fn a_dropped_lock_is_free_while_a_spawned_process_shares_its_description() -> io::Result<()> {
-    struct Sharing(std::process::Child);
-    impl Drop for Sharing {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-    let share = |file: &File| -> io::Result<Sharing> {
-        Ok(Sharing(
-            std::process::Command::new("sleep")
-                .arg("60")
+    let share = |file: &File| -> io::Result<LockHolder> {
+        let (control, lifetime) = io::pipe()?;
+        Ok(LockHolder {
+            child: std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "file_lock::tests::lock_holder_helper"])
+                .env(HOLDER_MODE, "share")
                 .stdin(file.try_clone()?)
+                .stdout(std::process::Stdio::null())
+                .stderr(control)
                 .spawn()?,
-        ))
+            lifetime: Some(lifetime),
+        })
     };
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("raw-control");
@@ -161,6 +159,46 @@ const HOLDER_MODE: &str = "ACYCLIC_FILE_LOCK_HOLDER_MODE";
 #[cfg(unix)]
 const HOLDER_PATH: &str = "ACYCLIC_FILE_LOCK_HOLDER_PATH";
 
+#[cfg(unix)]
+struct LockHolder {
+    child: std::process::Child,
+    lifetime: Option<io::PipeWriter>,
+}
+
+#[cfg(unix)]
+impl Drop for LockHolder {
+    fn drop(&mut self) {
+        drop(self.lifetime.take());
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Stderr carries a lifetime pipe so stdin can retain the inherited lock.
+/// The original parent owns its only writer; losing it terminates this wait.
+#[cfg(unix)]
+fn wait_for_holder_owner() -> io::Result<()> {
+    let mut byte = 0_u8;
+    // SAFETY: this helper's stderr is the inherited readable lifetime pipe,
+    // and the one-byte destination lives until this blocking read returns.
+    #[allow(
+        unsafe_code,
+        reason = "waits on the inherited lifetime pipe without duplicating it"
+    )]
+    let count = unsafe { libc::read(libc::STDERR_FILENO, (&raw mut byte).cast(), 1) };
+    if count < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Err(if count == 0 {
+        io::Error::new(io::ErrorKind::BrokenPipe, "lock holder lifetime owner lost")
+    } else {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "lock holder lifetime pipe carried data",
+        )
+    })
+}
+
 /// A process that takes the lock, reports readiness, and lives until killed.
 /// "held" keeps the lock until exit; "dropped" releases it through the guard.
 #[cfg(unix)]
@@ -169,6 +207,9 @@ fn lock_holder_helper() -> io::Result<()> {
     let Ok(mode) = std::env::var(HOLDER_MODE) else {
         return Ok(());
     };
+    if mode == "share" {
+        return wait_for_holder_owner();
+    }
     let path = std::path::PathBuf::from(std::env::var_os(HOLDER_PATH).expect("holder path"));
     let file = open(&path)?;
     if mode == "held" {
@@ -176,16 +217,15 @@ fn lock_holder_helper() -> io::Result<()> {
     } else {
         drop(FileLock::try_acquire(file, FileLockMode::Exclusive)?);
     }
-    std::fs::write(path.with_extension("ready"), b"ready")?;
-    loop {
-        std::thread::park();
-    }
+    acyclic_test_support::readiness::signal(&mut std::io::stdout().lock(), "LOCK_READY")?;
+    wait_for_holder_owner()
 }
 
 /// Starts a holder in `mode` and returns it once it has taken its lock.
 #[cfg(unix)]
-fn holder(mode: &str, path: &Path) -> io::Result<std::process::Child> {
-    let mut child = std::process::Command::new(std::env::current_exe()?)
+fn holder(mode: &str, path: &Path) -> io::Result<LockHolder> {
+    let (control, lifetime) = io::pipe()?;
+    let child = std::process::Command::new(std::env::current_exe()?)
         .args([
             "--exact",
             "file_lock::tests::lock_holder_helper",
@@ -194,14 +234,20 @@ fn holder(mode: &str, path: &Path) -> io::Result<std::process::Child> {
         .env(HOLDER_MODE, mode)
         .env(HOLDER_PATH, path)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(control)
         .spawn()?;
-    while !path.with_extension("ready").exists() {
-        assert!(child.try_wait()?.is_none(), "the holder exited early");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    Ok(child)
+    let mut holder = LockHolder {
+        child,
+        lifetime: Some(lifetime),
+    };
+    let output = holder
+        .child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("holder stdout missing"))?;
+    acyclic_test_support::readiness::wait(&mut io::BufReader::new(output), "LOCK_READY")?;
+    Ok(holder)
 }
 
 /// A lock held until exit stays held for the holder's whole life, after
@@ -215,8 +261,8 @@ fn a_lock_held_until_exit_is_freed_only_by_the_exit() -> io::Result<()> {
     let control = directory.path().join("dropped");
     let mut released = holder("dropped", &control)?;
     let free_while_alive = is_free(&control)?;
-    released.kill()?;
-    released.wait()?;
+    released.child.kill()?;
+    released.child.wait()?;
     assert!(
         free_while_alive,
         "the oracle cannot observe a released lock"
@@ -225,12 +271,60 @@ fn a_lock_held_until_exit_is_freed_only_by_the_exit() -> io::Result<()> {
     let path = directory.path().join("held");
     let mut held = holder("held", &path)?;
     let free_while_alive = is_free(&path)?;
-    held.kill()?;
-    held.wait()?;
+    held.child.kill()?;
+    held.child.wait()?;
     assert!(
         !free_while_alive,
         "a lock held until exit was released early"
     );
     assert!(is_free(&path)?, "the holder's exit did not free its lock");
+
+    // Losing the original parent endpoint must terminate the real child,
+    // including its held-until-exit description, without a timer or signal.
+    let path = directory.path().join("owner-lost");
+    let mut orphan = holder("held", &path)?;
+    assert!(!is_free(&path)?);
+    drop(orphan.lifetime.take());
+    assert!(!orphan.child.wait()?.success());
+    assert!(
+        is_free(&path)?,
+        "owner loss did not retire the physical holder"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_conflicting_lock_wait_completes_on_release_or_owner_drop() -> io::Result<()> {
+    for explicit in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("lock");
+        let owner = FileLock::acquire(open(&path)?, FileLockMode::Exclusive)?;
+        let waiter = FileLock::new(open(&path)?);
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (completed, completion) = std::sync::mpsc::channel();
+        let waiting = std::thread::spawn(move || -> io::Result<()> {
+            // Real contention is the negative control for the wait's safety.
+            assert_eq!(
+                waiter.try_lock(FileLockMode::Exclusive).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            entered.send(()).map_err(io::Error::other)?;
+            waiter.lock(FileLockMode::Exclusive)?;
+            completed.send(()).map_err(io::Error::other)
+        });
+        observed.recv().map_err(io::Error::other)?;
+        assert_eq!(
+            completion.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        if explicit {
+            owner.unlock()?;
+        }
+        drop(owner);
+        completion.recv().map_err(io::Error::other)?;
+        waiting
+            .join()
+            .map_err(|_| io::Error::other("lock waiter panicked"))??;
+    }
     Ok(())
 }

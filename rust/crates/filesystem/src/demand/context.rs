@@ -10,17 +10,30 @@ use std::sync::Arc;
 // gate counters (60). Resource allowances follow the leaf, ancestors first.
 /// The original ledger, with its cancellation readable without the leaf lock. Every
 /// handle on the ledger shares this one token instead of carrying its own copy.
-pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>, CancellationToken);
+pub(crate) struct NativeDemandReadMeter(
+    pub(crate) Mutex<DemandWork>,
+    CancellationToken,
+    // A standalone handoff retains its original shared-ledger allocation.
+    pub(crate) Option<crate::kernel::allocation::retained::StandaloneLease>,
+);
 impl std::fmt::Debug for NativeDemandReadMeter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeDemandReadMeter")
+            .field("owns_handoff", &self.2.is_some())
             .finish_non_exhaustive()
     }
 }
 impl NativeDemandReadMeter {
     pub(crate) fn new(work: DemandWork) -> Self {
         let cancellation = work.cancellation.clone();
-        Self(Mutex::new(work), cancellation)
+        Self(Mutex::new(work), cancellation, None)
+    }
+    pub(crate) fn with_backing(
+        work: DemandWork,
+        backing: crate::kernel::allocation::retained::StandaloneLease,
+    ) -> Self {
+        let cancellation = work.cancellation.clone();
+        Self(Mutex::new(work), cancellation, Some(backing))
     }
     /// The original ledger's cancellation.
     pub(crate) const fn cancellation(&self) -> &CancellationToken {

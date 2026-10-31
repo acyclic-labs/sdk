@@ -45,6 +45,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
         .start_paused(true)
         .build()
         .unwrap();
+    let transport_error = runtime.block_on(tests::closed_transport()).unwrap();
     proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
         .run(
             &prop::collection::vec("[a-zA-Z0-9_-]{1,32}", 2..8),
@@ -66,7 +67,6 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                     let mut sent = 0;
                     let (response, _) = client
                         .unary(
-                            ATTEMPT_TIMEOUT,
                             wire::TailRequest {
                                 path: "same/path".into(),
                                 ..Default::default()
@@ -81,7 +81,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                                 );
                                 sent += 1;
                                 Box::pin(futures::future::ready(if sent < tokens.len() {
-                                    Err(Status::unavailable("retry"))
+                                    Err(transport_error.clone())
                                 } else {
                                     Ok(Response::new(wire::TailResponse {
                                         tail: 7,
@@ -97,7 +97,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                     prop_assert_eq!(index.load(Ordering::Relaxed), tokens.len());
                     // Exhaustion fails before transport; the static credential cannot be used.
                     let result: Result<((), Completion), StreamError> = client
-                        .unary(ATTEMPT_TIMEOUT, (), |_, _| {
+                        .unary((), |_, _| {
                             unreachable!("provider failure reached transport")
                         })
                         .await;

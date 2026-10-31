@@ -42,7 +42,7 @@ impl LocalStream {
             let worker = worker_context.scope(completion.observe_output(
                 publication_scope(async move {
                     let _input = input;
-                    let result = loop {
+                    let result = {
                         let revision = *stream.inner.revision.borrow();
                         let replay = match provider.has_replay(&request.idempotency_key).await {
                             Ok(replay) => replay,
@@ -55,13 +55,11 @@ impl LocalStream {
                         if !replay && let Err(error) = before().await {
                             return Ok(Err(error));
                         }
-                        let Ok(visibility) = stream.inner.visibility.try_write() else {
-                            drop(stream.inner.visibility.write().await);
-                            continue;
-                        };
+                        let visibility = stream.inner.visibility.write().await;
                         if revision != *stream.inner.revision.borrow() {
-                            drop(visibility);
-                            continue;
+                            return work
+                                .finish(Err(StreamError::PrefixNotRetained))
+                                .map(|result| result.map_err(E::from));
                         }
                         let publication = stream.inner.publication.write().await;
                         let mut result = async {
@@ -88,7 +86,7 @@ impl LocalStream {
                             Ok(required) => stream.await_publication(required).await.and(result),
                             Err(error) => Err(error),
                         };
-                        break result;
+                        result
                     };
                     // Keep the callback's captured lease through the physical terminal.
                     drop(before);

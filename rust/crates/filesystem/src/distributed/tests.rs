@@ -636,6 +636,8 @@ pub(super) struct ReleaseSpy {
     after_conflict: Option<crate::GuardedAppend>,
     corrupt_recovered_locator: Option<(StreamPath, u8)>,
     commit_attempts: std::sync::atomic::AtomicUsize,
+    listing_mutation: Option<AuthorityId>,
+    listing_pages: std::sync::atomic::AtomicUsize,
 }
 
 impl ReleaseSpy {
@@ -655,6 +657,8 @@ impl ReleaseSpy {
             after_conflict: None,
             corrupt_recovered_locator: None,
             commit_attempts: std::sync::atomic::AtomicUsize::new(0),
+            listing_mutation: None,
+            listing_pages: std::sync::atomic::AtomicUsize::new(0),
         }
     }
     pub(super) fn losing_ack(inner: Arc<MemoryStream>) -> Self {
@@ -770,13 +774,30 @@ impl StreamProvider for ReleaseSpy {
 
     async fn heads(
         &self,
-        request: acyclic_stream::HeadsRequest,
+        mut request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         self.reads.store(true, SeqCst);
         if self.deny_probes_after_commit && self.writes.load(SeqCst) {
             return Err(StreamError::InvalidArgument);
         }
-        self.inner.heads(request).await
+        let mutation = if let Some(authority) = self.listing_mutation
+            && let Some(page) = request.children.as_mut()
+        {
+            page.limit = 1;
+            (self.listing_pages.fetch_add(1, SeqCst) == 0).then_some(authority)
+        } else {
+            None
+        };
+        let view = self.inner.heads(request).await?;
+        if let Some(authority) = mutation {
+            let token = CancellationToken::new();
+            let mut work = AuthorityWork::new(BUDGET, &token);
+            StreamAuthorityStore::new(self.inner.clone())
+                .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
+                .await
+                .map_err(|_| StreamError::InvalidArgument)?;
+        }
+        Ok(view)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.reads.store(true, SeqCst);
@@ -857,6 +878,34 @@ impl StreamProvider for ReleaseSpy {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl acyclic_stream::NativeStreamProvider for ReleaseSpy {}
+
+#[tokio::test]
+async fn authority_listing_returns_a_changed_cut_before_an_explicit_fresh_listing() -> TestResult {
+    let stream = Arc::new(MemoryStream::default());
+    let original = StreamAuthorityStore::new(stream.clone());
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(BUDGET, &token);
+    let identities = [81, 82, 83].map(|id| AuthorityId::from_bytes([id; 16]));
+    for authority in &identities[..2] {
+        original
+            .create_authority(*authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
+            .await?;
+    }
+    let mut spy = ReleaseSpy::new(stream);
+    spy.listing_mutation = Some(identities[2]);
+    let spy = Arc::new(spy);
+    let store = StreamAuthorityStore::new(spy.clone());
+    assert!(matches!(
+        store.authorities(3).await,
+        Err(AuthorityStoreError::NativeStream(
+            StreamError::HierarchyChanged
+        ))
+    ));
+    assert_eq!(spy.listing_pages.load(SeqCst), 2);
+    assert_eq!(store.authorities(3).await?, identities);
+    assert_eq!(spy.listing_pages.load(SeqCst), 5);
+    Ok(())
+}
 
 fn competing_requests(
     authority: AuthorityId,

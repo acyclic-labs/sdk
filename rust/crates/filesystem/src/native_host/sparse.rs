@@ -93,18 +93,12 @@ pub fn punch_hole(
 ) -> io::Result<()> {
     let fd = file.as_raw_fd();
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    loop {
-        if let Some(meter) = meter {
-            meter.admit_read(0)?;
-        }
-        // SAFETY: fstatfs fills live, correctly sized storage for the held descriptor.
-        if unsafe { libc::fstatfs(fd, stats.as_mut_ptr()) } == 0 {
-            break;
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
+    if let Some(meter) = meter {
+        meter.admit_read(0)?;
+    }
+    // SAFETY: fstatfs fills live, correctly sized storage for the held descriptor.
+    if unsafe { libc::fstatfs(fd, stats.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
     }
     // SAFETY: `fstatfs` succeeded and initialized the struct.
     let block = u64::from(unsafe { stats.assume_init() }.f_bsize);
@@ -144,18 +138,14 @@ pub fn punch_hole(
         fp_offset,
         fp_length,
     };
-    loop {
-        if let Some(meter) = meter {
-            meter.admit_write(0)?;
-        }
-        // SAFETY: the argument struct outlives this value-only fcntl call.
-        if unsafe { libc::fcntl(fd, libc::F_PUNCHHOLE, &arg) } == 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
+    if let Some(meter) = meter {
+        meter.admit_write(0)?;
+    }
+    // SAFETY: the argument struct outlives this value-only fcntl call.
+    if unsafe { libc::fcntl(fd, libc::F_PUNCHHOLE, &arg) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
@@ -249,12 +239,9 @@ pub(crate) fn truncate_file<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(), W::Error> {
     i64::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
-    loop {
-        match work.attempt_io(WRITE, || file.set_len(length)) {
-            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
-            result => return result,
-        }
-    }
+    work.attempt_io(WRITE, || {
+        acyclic_native_runtime::truncate_file(file, length)
+    })
 }
 
 #[cfg(windows)]
@@ -274,10 +261,7 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
             source_bytes_read: remaining.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;
-        let count = match work.attempt_io(READ, || source.seek_read(remaining, offset)) {
-            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => result?,
-        };
+        let count = work.attempt_io(READ, || source.seek_read(remaining, offset))?;
         if count == 0 {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
         }
@@ -295,10 +279,7 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
     let mut offset = target_offset;
     let mut input = &*buffer;
     while !input.is_empty() {
-        let count = match work.attempt_io(WRITE, || target.seek_write(input, offset)) {
-            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => result?,
-        };
+        let count = work.attempt_io(WRITE, || target.seek_write(input, offset))?;
         if count == 0 {
             return Err(io::Error::from(io::ErrorKind::WriteZero).into());
         }

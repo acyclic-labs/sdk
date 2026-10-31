@@ -59,13 +59,7 @@ impl<State: Send + 'static, Bindings: Send + Sync + 'static> GuestActivation<Sta
         self.admit_delivery(context)?;
         let _delivery = self.deliveries.read().await;
         self.state
-            .deliver(async |state| {
-                let result = (self.definition.event)(&state, event, context).await?;
-                if let Some(value) = &result {
-                    value.validate()?;
-                }
-                Ok(result)
-            })
+            .deliver(async |state| (self.definition.event)(&state, event, context).await)
             .await
     }
     /// HTTP delivery shares initialization with the event union.

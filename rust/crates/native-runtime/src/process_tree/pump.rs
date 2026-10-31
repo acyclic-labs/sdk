@@ -3,63 +3,40 @@
 //! A turn moves every byte that is ready, observes exit and checks intent.
 //! When nothing more can move, it returns, and the caller arms one wait on
 //! exactly the sources that can make progress: the open output pipes, stdin
-//! while input remains, the child's exit until it is observed, and the next
-//! check or the deadline. A synchronous caller parks on that wait; an async
-//! caller awaits it, holding no thread while the child runs.
+//! while input remains, the child's exit until it is observed, an explicit
+//! control signal or the caller's deadline. A synchronous caller parks on that
+//! wait; an async caller awaits it, holding no thread while the child runs.
 
 use super::events::{self, Source};
 use super::*;
 use std::process::{ChildStderr, ChildStdout};
 
-/// When a capture stops and how often it rechecks its owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CaptureSchedule {
-    /// Also run the check this often while nothing else happens. `None`
-    /// checks only when output, input, exit or the deadline wakes capture.
-    pub check_every: Option<Duration>,
-    /// Original deadline, fixed before submission. `None` is unbounded.
-    pub deadline: Option<Instant>,
-    deadline_overflow: bool,
+/// The original caller's timing policy, fixed before submission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaptureSchedule {
+    /// Progress depends only on pipes, process exit and owner control.
+    #[default]
+    Unbounded,
+    /// The caller's original request deadline.
+    Deadline(Instant),
+    /// An unrepresentable relative deadline, refused before capture.
+    Overflow,
 }
 
 impl CaptureSchedule {
     /// A capture bounded by `timeout` that checks only on its own events.
     #[must_use]
     pub fn new(timeout: Duration) -> Self {
-        let deadline = capture_now().checked_add(timeout);
-        Self {
-            check_every: None,
-            deadline,
-            deadline_overflow: deadline.is_none(),
-        }
-    }
-
-    /// Waits only on original pipe, process-exit and owner-control events.
-    /// No deadline or periodic readiness check is registered.
-    #[must_use]
-    pub const fn unbounded() -> Self {
-        Self {
-            check_every: None,
-            deadline: None,
-            deadline_overflow: false,
+        match capture_now().checked_add(timeout) {
+            Some(deadline) => Self::Deadline(deadline),
+            None => Self::Overflow,
         }
     }
 
     /// Uses the original caller's deadline without restarting it on a worker.
     #[must_use]
     pub const fn until(deadline: Instant) -> Self {
-        Self {
-            check_every: None,
-            deadline: Some(deadline),
-            deadline_overflow: false,
-        }
-    }
-
-    /// Also checks every `interval` while the child is quiet.
-    #[must_use]
-    pub const fn checking_every(mut self, interval: Duration) -> Self {
-        self.check_every = Some(interval);
-        self
+        Self::Deadline(deadline)
     }
 }
 
@@ -153,8 +130,6 @@ impl<H: CaptureHandler> CaptureOutcome<H> {
 
 pub(super) struct Pump<'a> {
     deadline: Option<Instant>,
-    check_every: Option<Duration>,
-    next_check: Instant,
     remaining: usize,
     output: [Vec<u8>; 2],
     input: Option<PendingStdin<'a>>,
@@ -210,14 +185,16 @@ impl<'a> Pump<'a> {
                 "queued stdin already belongs to the native session",
             )));
         }
-        let now = capture_now();
-        if schedule.deadline_overflow {
-            return Err(ProcessCaptureFailure::before_capture(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "process deadline overflow",
-            )));
-        }
-        let deadline = schedule.deadline;
+        let deadline = match schedule {
+            CaptureSchedule::Unbounded => None,
+            CaptureSchedule::Deadline(deadline) => Some(deadline),
+            CaptureSchedule::Overflow => {
+                return Err(ProcessCaptureFailure::before_capture(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "process deadline overflow",
+                )));
+            }
+        };
         if input.is_none() {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;
@@ -255,8 +232,6 @@ impl<'a> Pump<'a> {
         };
         Ok(Self {
             deadline,
-            check_every: schedule.check_every,
-            next_check: now,
             remaining: max_bytes,
             output,
             input,
@@ -279,7 +254,7 @@ impl<'a> Pump<'a> {
 
     /// While output credit is withheld, only owner control or the deadline
     /// can advance capture. Readable output must not wake this wait.
-    pub(super) fn arm_control(&self, wakes: &[ProcessWake]) -> io::Result<events::Wait> {
+    pub(super) fn arm_control(&self, wakes: &[ProcessWake]) -> io::Result<events::Wait<'static>> {
         let sources = wakes
             .iter()
             .map(|wake| {
@@ -297,20 +272,26 @@ impl<'a> Pump<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        let deadline = self
-            .deadline
-            .map(|at| Instant::now() + at.saturating_duration_since(capture_now()));
-        events::arm(&sources, deadline)
+        events::arm(&sources, self.wake_at())
     }
 
     pub(super) fn check_deadline(&self) -> io::Result<()> {
-        if self.deadline.is_some_and(|at| capture_now() >= at) {
+        if self
+            .deadline
+            .is_some_and(|deadline| capture_now() >= deadline)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "process output deadline exceeded; effects may have occurred",
             ));
         }
         Ok(())
+    }
+
+    fn wake_at(&self) -> Option<Instant> {
+        // Tests can freeze the capture clock; native events use wall time.
+        self.deadline
+            .map(|deadline| Instant::now() + deadline.saturating_duration_since(capture_now()))
     }
 
     /// Moves everything that is ready. Never waits.
@@ -347,13 +328,7 @@ impl<'a> Pump<'a> {
             if self.streaming {
                 self.check_deadline()?;
             }
-            let now = capture_now();
-            if self.check_every.is_none_or(|_| now >= self.next_check) {
-                check()?;
-                if let Some(interval) = self.check_every {
-                    self.next_check = capture_now() + interval;
-                }
-            }
+            check()?;
             let mut progressed = self
                 .input
                 .as_mut()
@@ -430,19 +405,11 @@ impl<'a> Pump<'a> {
         &self,
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
-    ) -> io::Result<events::Wait> {
-        let wake_at = match (self.check_every, self.deadline) {
-            (Some(_), Some(at)) => Some(self.next_check.min(at)),
-            (Some(_), None) => Some(self.next_check),
-            (None, at) => at,
-        };
-        // The capture clock is frozen in some tests; the hub runs on wall
-        // time, so arm the same remaining interval from now.
-        let wake_at =
-            wake_at.map(|at| Instant::now() + at.saturating_duration_since(capture_now()));
+    ) -> io::Result<events::Wait<'static>> {
+        let wake_at = self.wake_at();
         let writing = self.input.as_ref().is_some_and(PendingStdin::writing);
         #[cfg(unix)]
-        {
+        let wait = {
             use std::os::fd::AsFd as _;
             if self.status.is_none() {
                 tree.prepare_exit_source()?;
@@ -478,10 +445,10 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, wake_at)
-        }
+            events::arm(&sources, wake_at)?
+        };
         #[cfg(windows)]
-        {
+        let wait = {
             let mut sources = Vec::with_capacity(4);
             let [stdout, stderr] = &self.readers;
             if self.stdout.is_some()
@@ -515,8 +482,15 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, wake_at)
+            events::arm(&sources, wake_at)?
+        };
+        // Report the original registration only after every source is armed.
+        // Failed setup or owner loss drops the sender with the original tree.
+        #[cfg(all(test, feature = "test-support", not(loom)))]
+        if let Some(armed) = tree.capture_armed.take() {
+            let _ = armed.send(());
         }
+        Ok(wait)
     }
 
     /// Returns unread pipes to the tree so its cleanup releases them.

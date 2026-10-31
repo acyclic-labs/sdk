@@ -42,8 +42,6 @@ fn cache(maximum_entries: u32, maximum_bytes: BigInt) -> NativeObjectCacheOption
     NativeObjectCacheOptions {
         maximum_entries: NapiU32(maximum_entries),
         maximum_bytes,
-        maximum_in_flight: NapiU32(2),
-        maximum_waiters_per_object: NapiU32(2),
     }
 }
 
@@ -314,8 +312,6 @@ async fn materialization_writes_checkout_bytes()
         NativeObjectCacheOptions {
             maximum_entries: NapiU32(cache.maximum_entries),
             maximum_bytes: bigint(cache.maximum_bytes),
-            maximum_in_flight: NapiU32(cache.maximum_in_flight),
-            maximum_waiters_per_object: NapiU32(cache.maximum_waiters_per_object),
         },
     )
     .await?;

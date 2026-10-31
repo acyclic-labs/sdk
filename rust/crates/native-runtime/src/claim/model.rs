@@ -5,7 +5,7 @@
 use super::protocol::{self, Claim, Host, Liveness, Table};
 use super::record::Process;
 use crate::sync::Mutex;
-use loom::sync::Arc;
+use loom::sync::{Arc, Condvar};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,8 @@ struct Inode {
     bytes: Vec<u8>,
     /// The handle holding the file's lock.
     holder: Option<u64>,
+    /// Lock release or process death wakes the original OS-lock wait.
+    changed: Arc<Condvar>,
     /// Open handles, which keep the inode from reuse.
     open: usize,
 }
@@ -87,6 +89,7 @@ impl Drop for SimFile {
             inode.open = inode.open.saturating_sub(1);
             if inode.holder == Some(self.handle) {
                 inode.holder = None;
+                inode.changed.notify_all();
             }
         }
     }
@@ -195,6 +198,9 @@ fn kill(world: &Shared, pid: usize) {
         if inode.holder.is_some_and(|holder| handles.contains(&holder)) {
             inode.holder = None;
         }
+        // Process death also ends a blocked lock syscall of that process,
+        // even when the live holder keeps the lock.
+        inode.changed.notify_all();
     }
 }
 
@@ -243,10 +249,21 @@ impl Host for Sim {
     }
 
     fn lock(&self, file: &SimFile) -> io::Result<()> {
-        while !self.try_lock(file)? {
-            loom::thread::yield_now();
+        let mut world = self.running()?;
+        loop {
+            if !world.alive.get(self.pid).copied().unwrap_or(false) {
+                return Err(io::Error::other("process died"));
+            }
+            let inode = world.inode(file.inode)?;
+            if inode.holder.is_none_or(|holder| holder == file.handle) {
+                inode.holder = Some(file.handle);
+                return Ok(());
+            }
+            let changed = Arc::clone(&inode.changed);
+            world = changed
+                .wait(world)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        Ok(())
     }
 
     fn unlock(&self, file: &SimFile) -> io::Result<()> {
@@ -254,6 +271,7 @@ impl Host for Sim {
         let inode = world.inode(file.inode)?;
         if inode.holder == Some(file.handle) {
             inode.holder = None;
+            inode.changed.notify_all();
         }
         Ok(())
     }
@@ -422,6 +440,34 @@ fn racing_claims_and_a_crash_admit_one_live_owner() {
         if !Sim::new(&world, 2).hold("store") {
             report(findings, "a dead owner locked the store out".to_owned());
         }
+        Ok(())
+    });
+}
+
+/// A dead waiter ends without requiring the live holder to release. A live
+/// third process still cannot take that lock until its original holder drops.
+#[test]
+fn process_death_ends_a_lock_wait_without_releasing_another_holders_lock() {
+    explore(|findings| {
+        let world = Arc::new(Mutex::new(World::new(3, findings)));
+        let owner = Sim::new(&world, 0);
+        let waiter = Sim::new(&world, 1);
+        let contender = Sim::new(&world, 2);
+        let path = Path::new("held");
+        let held = owner.open(path, true).map_err(failed)?;
+        owner.lock(&held).map_err(failed)?;
+        let waiting = waiter.open(path, false).map_err(failed)?;
+        let waiting = loom::thread::spawn(move || waiter.lock(&waiting));
+        kill(&world, 1);
+        let error = waiting
+            .join()
+            .map_err(failed)?
+            .expect_err("a dead process acquired the live holder's lock");
+        assert_eq!(error.to_string(), "process died");
+        let competing = contender.open(path, false).map_err(failed)?;
+        assert!(!contender.try_lock(&competing).map_err(failed)?);
+        drop(held);
+        contender.lock(&competing).map_err(failed)?;
         Ok(())
     });
 }

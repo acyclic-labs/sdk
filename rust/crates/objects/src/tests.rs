@@ -4,7 +4,7 @@ use crate::{
 };
 use acyclic_stream::OwnedBytes;
 use std::ops::Range;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 pub(crate) mod availability;
 
@@ -164,11 +164,7 @@ async fn stores_sharing_a_medium_serve_each_others_revisions()
     // This run's own unissued index still waits on its exact applied index.
     let own = applied.at(applied.current().index + 1);
     let kept = first.admitted(RevisionCut::of(own)).await?;
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(100), applied.wait(&kept))
-            .await
-            .is_err()
-    );
+    assert!(futures::FutureExt::now_or_never(applied.wait(&kept)).is_none());
     Ok(())
 }
 
@@ -282,11 +278,14 @@ async fn a_dropped_root_reopens_while_a_forked_copy_of_its_lock_lives()
     Ok(())
 }
 
-/// Fails selected operations: bit 0 makes creates ambiguous, bit 1 fails reads of root batches.
+/// Fails selected operations: bit 0 makes creates ambiguous, bit 1 fails root
+/// reads, and bit 2 loses one replacement reply. Bit 3 applies that replacement
+/// before losing its reply; otherwise the original value remains.
 #[derive(Default)]
 struct Faulty {
     inner: MemoryMedium,
     faults: AtomicU8,
+    replacements: AtomicUsize,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -323,6 +322,16 @@ impl Medium for Faulty {
         observed: Observation<'a>,
         bytes: OwnedBytes,
     ) -> Result<Option<Observation<'a>>, MediumError> {
+        self.replacements.fetch_add(1, Ordering::SeqCst);
+        let faults = self.faults.fetch_and(!4, Ordering::SeqCst);
+        if faults & 4 != 0 {
+            if faults & 8 != 0 {
+                self.inner.replace(observed, bytes).await?;
+            }
+            return Err(MediumError::Ambiguous(
+                std::io::ErrorKind::ConnectionReset.into(),
+            ));
+        }
         self.inner.replace(observed, bytes).await
     }
     async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
@@ -365,6 +374,64 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
         blobs.put(body, Vec::new()).await?,
         Put::Created { .. }
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn ambiguous_revival_stops_at_its_original_conditional_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    for applied in [false, true] {
+        let store = Store::new(Faulty::default());
+        let blobs = store.account(b"revival")?;
+        let body = OwnedBytes::from(vec![19; 64]);
+        let digest = blobs
+            .put(body.clone(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("initial publication was not acknowledged")?
+            .digest;
+        // The actual collector creates the revival candidate; no stored
+        // envelope or conditional-write outcome is manufactured by the test.
+        assert_eq!(blobs.collect().await?.swept, 0);
+        let before = store.medium().replacements.load(Ordering::SeqCst);
+        store
+            .medium()
+            .faults
+            .store(4 | if applied { 8 } else { 0 }, Ordering::SeqCst);
+        assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
+        assert_eq!(
+            store.medium().replacements.load(Ordering::SeqCst) - before,
+            1,
+            "a lost reply cannot start another conditional write",
+        );
+        store.medium().faults.store(0, Ordering::SeqCst);
+        let hex = digest.to_hex();
+        let envelope = store
+            .medium()
+            .inner
+            .read(
+                &format!("{}/e/{}/{hex}", Digest::of(b"revival").to_hex(), &hex[..2]),
+                None,
+            )
+            .await?
+            .ok_or("original envelope disappeared")?;
+        assert_eq!(
+            crate::blob::Envelope::decode(&envelope)?.condemned == 0,
+            applied
+        );
+        // Both real storage outcomes admit an exact caller resend. The
+        // unapplied case is the negative control for a falsely acknowledged revival.
+        let resent = blobs.put(body.clone(), Vec::new()).await?;
+        assert!(matches!(resent, Put::AlreadyExists { .. }));
+        assert_eq!(
+            resent
+                .verified()
+                .ok_or("resend was not acknowledged")?
+                .digest,
+            digest
+        );
+        assert_eq!(blobs.get(digest, ByteRange::FULL, 64).await?.body(), &body);
+    }
     Ok(())
 }
 
@@ -458,9 +525,12 @@ impl Default for Shared {
 
 /// Drive one owned operation until the real medium reaches its selected cut.
 /// Unexpected completion fails immediately rather than waiting without a producer.
-async fn drive_to_park<F: Future>(operation: std::pin::Pin<&mut F>, reached: &tokio::sync::Notify) {
+async fn drive_to_park<F: Future>(
+    operation: std::pin::Pin<&mut F>,
+    reached: &mut tokio::sync::oneshot::Receiver<()>,
+) {
     tokio::select! {
-        () = reached.notified() => {},
+        reached = reached => reached.expect("selected medium cut lost its producer"),
         _ = operation => panic!("operation ended before its selected medium cut"),
     }
 }
@@ -469,8 +539,8 @@ struct Pause {
     operation: &'static str,
     fragment: String,
     skip: usize,
-    reached: std::sync::Arc<tokio::sync::Notify>,
-    release: std::sync::Arc<tokio::sync::Notify>,
+    reached: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl Shared {
@@ -489,8 +559,8 @@ impl Shared {
         operation: &'static str,
         fragment: impl Into<String>,
     ) -> (
-        std::sync::Arc<tokio::sync::Notify>,
-        std::sync::Arc<tokio::sync::Notify>,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
     ) {
         self.park_after(operation, fragment, 0)
     }
@@ -502,17 +572,17 @@ impl Shared {
         fragment: impl Into<String>,
         skip: usize,
     ) -> (
-        std::sync::Arc<tokio::sync::Notify>,
-        std::sync::Arc<tokio::sync::Notify>,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
     ) {
-        let reached = std::sync::Arc::new(tokio::sync::Notify::new());
-        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (reach, reached) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
         *self.pause.lock().unwrap() = Some(Pause {
             operation,
             fragment: fragment.into(),
             skip,
-            reached: reached.clone(),
-            release: release.clone(),
+            reached: reach,
+            release: released,
         });
         (reached, release)
     }
@@ -523,7 +593,7 @@ impl Shared {
             && crate::blob::Envelope::decode(bytes).is_ok_and(|envelope| envelope.dying.is_some())
     }
 
-    async fn after(&self, operation: &'static str, key: &str) {
+    async fn after(&self, operation: &'static str, key: &str) -> std::io::Result<()> {
         let parked = {
             let mut pause = self.pause.lock().unwrap();
             match &mut *pause {
@@ -539,9 +609,11 @@ impl Shared {
             }
         };
         if let Some(pause) = parked {
-            pause.reached.notify_one();
-            pause.release.notified().await;
+            let lost = || std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+            pause.reached.send(()).map_err(|()| lost())?;
+            pause.release.await.map_err(|_| lost())?;
         }
+        Ok(())
     }
 }
 
@@ -559,7 +631,9 @@ impl Medium for Shared {
         } else {
             self.inner.create(key, bytes).await
         };
-        self.after("create", key).await;
+        self.after("create", key)
+            .await
+            .map_err(MediumError::Ambiguous)?;
         created
     }
     async fn read(
@@ -568,17 +642,21 @@ impl Medium for Shared {
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
         let read = self.inner.read(key, range).await;
-        self.after("read", key).await;
+        self.after("read", key).await.map_err(MediumError::Failed)?;
         read
     }
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         let removed = self.inner.remove(key).await;
-        self.after("remove", key).await;
+        self.after("remove", key)
+            .await
+            .map_err(MediumError::Ambiguous)?;
         removed
     }
     async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
         let read = self.inner.observe(key.clone()).await;
-        self.after("read", &key).await;
+        self.after("read", &key)
+            .await
+            .map_err(MediumError::Failed)?;
         read
     }
 
@@ -593,7 +671,9 @@ impl Medium for Shared {
         } else {
             self.inner.replace(observed, bytes).await
         };
-        self.after("replace", &key).await;
+        self.after("replace", &key)
+            .await
+            .map_err(MediumError::Ambiguous)?;
         replaced
     }
     async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
@@ -603,7 +683,9 @@ impl Medium for Shared {
         } else {
             self.inner.remove_if(observed).await
         };
-        self.after("remove", &key).await;
+        self.after("remove", &key)
+            .await
+            .map_err(MediumError::Ambiguous)?;
         removed
     }
     async fn list(
@@ -613,7 +695,9 @@ impl Medium for Shared {
         limit: usize,
     ) -> Result<Vec<(String, u64)>, MediumError> {
         let listed = self.inner.list(prefix, after, limit).await;
-        self.after("list", prefix).await;
+        self.after("list", prefix)
+            .await
+            .map_err(MediumError::Failed)?;
         listed
     }
     async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
@@ -628,6 +712,192 @@ impl Medium for Shared {
     fn settle(&self) {
         self.inner.settle();
     }
+}
+
+#[tokio::test]
+async fn competing_revision_claims_return_the_original_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    for existing in [false, true] {
+        let medium = Shared::default();
+        let first = Store::new(medium.clone()).account(b"claims")?;
+        let second = Store::new(medium.clone()).account(b"claims")?;
+        if existing {
+            Store::new(medium.clone())
+                .account(b"claims")?
+                .flush(None)
+                .await?;
+        }
+        // The original read has already captured either absence or the old
+        // run. The other owner claims its real successor before CAS resumes.
+        let (mut reached, release) = medium.park("read", "incarnation");
+        let claim = first.flush(None);
+        tokio::pin!(claim);
+        drive_to_park(claim.as_mut(), &mut reached).await;
+        second.flush(None).await?;
+        let key = format!("{}/incarnation", Digest::of(b"claims").to_hex());
+        let winner = medium.inner.read(&key, None).await?;
+        release.send(()).expect("original claim remains alive");
+        assert_eq!(
+            claim.await.map_err(|error| error.code),
+            Err(ErrorCode::Conflict)
+        );
+        assert_eq!(medium.inner.read(&key, None).await?, winner);
+        assert!(first.revisions().await?.is_none());
+        // A new caller operation may claim the next run, without reusing the
+        // winner's revision scope or changing the account's incarnation.
+        first.flush(None).await?;
+        let first = first
+            .revisions()
+            .await?
+            .ok_or("first run was not claimed")?
+            .current();
+        let second = second
+            .revisions()
+            .await?
+            .ok_or("second run was not claimed")?
+            .current();
+        assert_eq!(first.incarnation, second.incarnation);
+        assert_ne!(first.scope, second.scope);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn competing_envelope_cuts_return_without_republication()
+-> Result<(), Box<dyn std::error::Error>> {
+    for removed in [false, true] {
+        let medium = Shared::default();
+        let first = Store::new(medium.clone()).account(b"envelopes")?;
+        let second = Store::new(medium.clone()).account(b"envelopes")?;
+        let body = OwnedBytes::from(vec![23; 64]);
+        let digest = first
+            .put(body.clone(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("original put was not acknowledged")?
+            .digest;
+        second.flush(None).await?;
+        if !removed {
+            // Collection produces the original stamped envelope to revive.
+            assert_eq!(first.collect().await?.swept, 0);
+        }
+        let (mut reached, release) = medium.park(if removed { "create" } else { "read" }, "/e/");
+        let put = first.put(body.clone(), Vec::new());
+        tokio::pin!(put);
+        drive_to_park(put.as_mut(), &mut reached).await;
+        if removed {
+            assert_eq!(second.delete(digest).await?, Delete::Deleted);
+        } else {
+            assert!(matches!(
+                second.put(body.clone(), Vec::new()).await?,
+                Put::AlreadyExists { .. }
+            ));
+        }
+        let hex = digest.to_hex();
+        let key = format!(
+            "{}/e/{}/{hex}",
+            Digest::of(b"envelopes").to_hex(),
+            &hex[..2]
+        );
+        let winner = medium.inner.read(&key, None).await?;
+        release
+            .send(())
+            .expect("original publication remains alive");
+        assert_eq!(
+            put.await.map_err(|error| error.code),
+            Err(ErrorCode::Conflict)
+        );
+        assert_eq!(medium.inner.read(&key, None).await?, winner);
+        let resent = first.put(body.clone(), Vec::new()).await?;
+        assert!(if removed {
+            matches!(resent, Put::Created { .. })
+        } else {
+            matches!(resent, Put::AlreadyExists { .. })
+        });
+        assert_eq!(first.get(digest, ByteRange::FULL, 64).await?.body(), &body);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_disappearing_payload_returns_without_recreating_an_orphan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let first = Store::new(medium.clone()).account(b"payloads")?;
+    let second = Store::new(medium.clone()).account(b"payloads")?;
+    first.flush(None).await?;
+    second.flush(None).await?;
+    let body = OwnedBytes::from(vec![29; 64]);
+    let digest = Digest::of(&body);
+    let (mut created, create_release) = medium.park("create", "/e/");
+    let first_put = first.put(body.clone(), Vec::new());
+    tokio::pin!(first_put);
+    drive_to_park(first_put.as_mut(), &mut created).await;
+    // The adopter observes the actual incomplete version before the original
+    // writer finishes its payload, then loses its own create to those bytes.
+    let (mut absent, read_release) = medium.park("read", "/p/");
+    let second_put = second.put(body.clone(), Vec::new());
+    tokio::pin!(second_put);
+    drive_to_park(second_put.as_mut(), &mut absent).await;
+    create_release
+        .send(())
+        .expect("original payload writer remains alive");
+    assert!(matches!(first_put.await?, Put::Created { .. }));
+    let (mut collided, collision_release) = medium.park("create", "/p/");
+    read_release
+        .send(())
+        .expect("original payload reader remains alive");
+    drive_to_park(second_put.as_mut(), &mut collided).await;
+    assert_eq!(first.delete(digest).await?, Delete::Deleted);
+    collision_release
+        .send(())
+        .expect("original payload create remains alive");
+    assert_eq!(
+        second_put.await.map_err(|error| error.code),
+        Err(ErrorCode::Conflict)
+    );
+    assert_eq!(
+        second.head(digest).await.map_err(|error| error.code),
+        Err(ErrorCode::NotFound)
+    );
+    let prefix = format!("{}/p/", Digest::of(b"payloads").to_hex());
+    assert!(medium.inner.list(&prefix, None, 1).await?.is_empty());
+    // Negative control: an explicit caller resend creates one readable version.
+    assert!(matches!(
+        second.put(body.clone(), Vec::new()).await?,
+        Put::Created { .. }
+    ));
+    assert_eq!(second.get(digest, ByteRange::FULL, 64).await?.body(), &body);
+    assert_eq!(medium.inner.list(&prefix, None, 2).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_lost_medium_gate_ends_at_its_original_write() -> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let account = Store::new(medium.clone()).account(b"lost-gate")?;
+    account.flush(None).await?;
+    let body = OwnedBytes::from(vec![31; 64]);
+    let (mut reached, release) = medium.park("create", "/e/");
+    let put = account.put(body.clone(), Vec::new());
+    tokio::pin!(put);
+    drive_to_park(put.as_mut(), &mut reached).await;
+    drop(release);
+    // The create already applied, so producer loss is an ambiguous write,
+    // never a fabricated definite refusal or an immortal notification wait.
+    assert_eq!(put.await?, Put::Unknown);
+    assert!(matches!(
+        account.put(body, Vec::new()).await?,
+        Put::AlreadyExists { .. }
+    ));
+    // A lost observer also releases the medium future with its typed cause.
+    let (reached, release) = medium.park("create", "probe");
+    drop(reached);
+    assert!(matches!(medium.create("probe", OwnedBytes::new()).await,
+        Err(MediumError::Ambiguous(error)) if error.kind() == std::io::ErrorKind::BrokenPipe));
+    drop(release);
+    assert!(medium.inner.read("probe", None).await?.is_some());
+    Ok(())
 }
 
 /// Which referencing write races the delete.
@@ -653,22 +923,24 @@ async fn delete_then_reference(
         .verified()
         .ok_or("unknown")?
         .digest;
-    let (reached, release) = medium.park_after("list", "/i/", 1);
-    let (deleted, written) = tokio::join!(deleting.delete(child), async {
-        reached.notified().await;
-        let written = match writer {
-            Writer::Put => writing
-                .put(vec![8; 32].into(), vec![child])
-                .await
-                .map(|put| put.verified().is_some()),
-            Writer::Retain => writing
-                .retain(&RootId::new(*b"root")?, vec![child])
-                .await
-                .map(|_| true),
-        };
-        release.notify_one();
-        written
-    });
+    let (mut reached, release) = medium.park_after("list", "/i/", 1);
+    let deleted = deleting.delete(child);
+    tokio::pin!(deleted);
+    drive_to_park(deleted.as_mut(), &mut reached).await;
+    let written = match writer {
+        Writer::Put => writing
+            .put(vec![8; 32].into(), vec![child])
+            .await
+            .map(|put| put.verified().is_some()),
+        Writer::Retain => writing
+            .retain(&RootId::new(*b"root")?, vec![child])
+            .await
+            .map(|_| true),
+    };
+    release
+        .send(())
+        .expect("parked medium operation remains alive");
+    let deleted = deleted.await;
     let written = match written {
         Ok(written) => written,
         Err(error) if error.code == ErrorCode::MissingReference => false,
@@ -707,14 +979,15 @@ async fn a_reference_indexed_first_refuses_the_delete() -> Result<(), Box<dyn st
         .verified()
         .ok_or("unknown")?
         .digest;
-    let (reached, release) = medium.park("create", "/i/");
-    let (written, deleted) = tokio::join!(writing.put(vec![8; 32].into(), vec![child]), async {
-        reached.notified().await;
-        let deleted = deleting.delete(child).await;
-        release.notify_one();
-        deleted
-    });
-    assert!(matches!(written?, Put::Created { .. }));
+    let (mut reached, release) = medium.park("create", "/i/");
+    let written = writing.put(vec![8; 32].into(), vec![child]);
+    tokio::pin!(written);
+    drive_to_park(written.as_mut(), &mut reached).await;
+    let deleted = deleting.delete(child).await;
+    release
+        .send(())
+        .expect("parked medium operation remains alive");
+    assert!(matches!(written.await?, Put::Created { .. }));
     assert_eq!(deleted?, Delete::Referenced);
     assert_eq!(writing.head(child).await?.length, 32);
     Ok(())
@@ -738,14 +1011,15 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
         .verified()
         .ok_or("unknown")?
         .digest;
-    let (reached, release) = medium.park("remove", "/e/");
-    let (deleted, put) = tokio::join!(deleting.delete(digest), async {
-        reached.notified().await;
-        let put = writing.put(body.clone(), Vec::new()).await;
-        release.notify_one();
-        put
-    });
-    assert_eq!(deleted?, Delete::Deleted);
+    let (mut reached, release) = medium.park("remove", "/e/");
+    let deleted = deleting.delete(digest);
+    tokio::pin!(deleted);
+    drive_to_park(deleted.as_mut(), &mut reached).await;
+    let put = writing.put(body.clone(), Vec::new()).await;
+    release
+        .send(())
+        .expect("parked medium operation remains alive");
+    assert_eq!(deleted.await?, Delete::Deleted);
     assert!(matches!(put?, Put::Created { .. }));
     assert_eq!(
         writing.get(digest, ByteRange::FULL, 32).await?.body(),
@@ -861,14 +1135,15 @@ async fn release_then_retain() -> Result<Delete, Box<dyn std::error::Error>> {
         .digest;
     let root = RootId::new(*b"root")?;
     retaining.retain(&root, vec![child]).await?;
-    let (reached, release) = medium.park("remove", "/r/");
-    let (released, retained) = tokio::join!(releasing.release(&root), async {
-        reached.notified().await;
-        let retained = retaining.retain(&root, vec![child]).await;
-        release.notify_one();
-        retained
-    });
-    assert!(released?.existed);
+    let (mut reached, release) = medium.park("remove", "/r/");
+    let released = releasing.release(&root);
+    tokio::pin!(released);
+    drive_to_park(released.as_mut(), &mut reached).await;
+    let retained = retaining.retain(&root, vec![child]).await;
+    release
+        .send(())
+        .expect("parked medium operation remains alive");
+    assert!(released.await?.existed);
     retained?;
     Ok(retaining.delete(child).await?.outcome)
 }
@@ -906,20 +1181,24 @@ async fn a_delete_never_removes_a_writers_pending_reference()
         .verified()
         .ok_or("unknown")?
         .digest;
-    let (deleter_reached, deleter_release) =
+    let (mut deleter_reached, deleter_release) =
         medium.park_after("list", format!("/i/{}/", child.to_hex()), 1);
     let deleted = deleting.delete(child);
     tokio::pin!(deleted);
-    drive_to_park(deleted.as_mut(), &deleter_reached).await;
-    let (writer_reached, writer_release) =
+    drive_to_park(deleted.as_mut(), &mut deleter_reached).await;
+    let (mut writer_reached, writer_release) =
         medium.park("create", format!("/i/{}/e", child.to_hex()));
     let written = writing.put(vec![8; 32].into(), vec![child]);
     tokio::pin!(written);
-    drive_to_park(written.as_mut(), &writer_reached).await;
-    deleter_release.notify_one();
+    drive_to_park(written.as_mut(), &mut writer_reached).await;
+    deleter_release
+        .send(())
+        .expect("parked medium operation remains alive");
     assert_eq!(deleted.await?, Delete::Deleted);
     assert!(reputting.put(body, Vec::new()).await?.verified().is_some());
-    writer_release.notify_one();
+    writer_release
+        .send(())
+        .expect("parked medium operation remains alive");
     assert!(written.await?.verified().is_some());
     assert_eq!(deleting.delete(child).await?, Delete::Referenced);
     assert_eq!(writing.head(child).await?.length, 32);
@@ -946,10 +1225,10 @@ async fn stalled_delete_then_reput(
         .verified()
         .ok_or("unknown")?
         .digest;
-    let (reached, release) = medium.park_after("list", format!("/i/{}/", digest.to_hex()), 1);
+    let (mut reached, release) = medium.park_after("list", format!("/i/{}/", digest.to_hex()), 1);
     let stalled = deleting.delete(digest);
     tokio::pin!(stalled);
-    drive_to_park(stalled.as_mut(), &reached).await;
+    drive_to_park(stalled.as_mut(), &mut reached).await;
     for _ in 0..3 {
         others.collect().await?;
     }
@@ -962,7 +1241,9 @@ async fn stalled_delete_then_reput(
         Put::Created { .. }
     ));
     others.retain(&RootId::new(*b"root")?, vec![digest]).await?;
-    release.notify_one();
+    release
+        .send(())
+        .expect("parked medium operation remains alive");
     let deleted = stalled
         .await
         .map(|deletion| deletion.outcome)
@@ -1073,15 +1354,17 @@ async fn stalled_put(
     let body = OwnedBytes::from(vec![fill; 64]);
     let digest = Digest::of(&body);
     let (operation, fragment, skip) = stall;
-    let (reached, release) = medium.park_after(operation, fragment, skip);
+    let (mut reached, release) = medium.park_after(operation, fragment, skip);
     let put = writer.put(body.clone(), Vec::new());
     tokio::pin!(put);
-    drive_to_park(put.as_mut(), &reached).await;
+    drive_to_park(put.as_mut(), &mut reached).await;
     for _ in 0..passes {
         collector.collect().await?;
     }
     let fenced = !stored_under(&medium, digest, "/e/").await?;
-    release.notify_one();
+    release
+        .send(())
+        .expect("parked medium operation remains alive");
     // A put reads nothing back, so it reports what it wrote.
     let outcome = put.await?;
     assert!(
@@ -1166,18 +1449,20 @@ async fn a_delayed_collector_never_removes_a_later_version()
     let collector = Store::new(medium.clone()).account(b"account")?;
     let body = OwnedBytes::from(vec![8; 64]);
     let digest = Digest::of(&body);
-    let (reached, release) = medium.park("create", "/p/");
+    let (mut reached, release) = medium.park("create", "/p/");
     let put = writer.put(body.clone(), Vec::new());
     tokio::pin!(put);
-    drive_to_park(put.as_mut(), &reached).await;
+    drive_to_park(put.as_mut(), &mut reached).await;
     collector.collect().await?;
     collector.collect().await?;
     // The third pass parks right after removing the envelope, before its payload.
-    let (removed, resume) = medium.park("remove", "/e/");
+    let (mut removed, resume) = medium.park("remove", "/e/");
     let collecting = collector.collect();
     tokio::pin!(collecting);
-    drive_to_park(collecting.as_mut(), &removed).await;
-    release.notify_one();
+    drive_to_park(collecting.as_mut(), &mut removed).await;
+    release
+        .send(())
+        .expect("parked medium operation remains alive");
     // Its version is gone; a commit of it fails its check.
     assert!(matches!(put.await?, Put::Created { .. }));
     // A later put of the same digest publishes a fresh version meanwhile.
@@ -1185,7 +1470,9 @@ async fn a_delayed_collector_never_removes_a_later_version()
         writer.put(body.clone(), Vec::new()).await?,
         Put::Created { .. }
     ));
-    resume.notify_one();
+    resume
+        .send(())
+        .expect("parked medium operation remains alive");
     collecting.await?;
     let read = writer.get(digest, ByteRange::FULL, 64).await?;
     assert_eq!(read.body().as_ref(), body.as_ref());
@@ -1254,14 +1541,16 @@ async fn equal_puts(
     let body = OwnedBytes::from(vec![9; 64]);
     let digest = Digest::of(&body);
     let (operation, fragment, skip) = stall;
-    let (reached, release) = medium.park_after(operation, fragment, skip);
+    let (mut reached, release) = medium.park_after(operation, fragment, skip);
     let stalled = first.put(body.clone(), Vec::new());
     tokio::pin!(stalled);
-    drive_to_park(stalled.as_mut(), &reached).await;
+    drive_to_park(stalled.as_mut(), &mut reached).await;
     *medium.ambiguous.lock().unwrap() = lossy.then_some("/p/");
     let other = second.put(body.clone(), Vec::new()).await?;
     *medium.ambiguous.lock().unwrap() = None;
-    release.notify_one();
+    release
+        .send(())
+        .expect("parked medium operation remains alive");
     let outcomes = [stalled.await?, other];
     if !lossy {
         let read = second.get(digest, ByteRange::FULL, 64).await?;
@@ -1314,10 +1603,10 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
         published.push(put.verified().ok_or("a put verifies")?.digest);
     }
     // Its envelope is created; its payload is still to come.
-    let (reached, release) = medium.park("create", "/e/");
+    let (mut reached, release) = medium.park("create", "/e/");
     let stalled = blobs.put(vec![99; 16].into(), Vec::new());
     tokio::pin!(stalled);
-    drive_to_park(stalled.as_mut(), &reached).await;
+    drive_to_park(stalled.as_mut(), &mut reached).await;
     let mut listed = Vec::new();
     let mut after = None;
     loop {
@@ -1332,7 +1621,9 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
     }
     published.sort();
     assert_eq!(listed, published, "the pending put is not listed");
-    release.notify_one();
+    release
+        .send(())
+        .expect("parked medium operation remains alive");
     assert!(matches!(stalled.await?, Put::Created { .. }));
     // Control: once published, it lists.
     assert_eq!(blobs.list(None, 100).await?.digests.len(), 5);
