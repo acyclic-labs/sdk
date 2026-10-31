@@ -32,7 +32,7 @@ pub trait IndexWork {
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error>;
 }
 
-type Link<V, A, const N: usize> = Option<Box<Node<V, A, N>>>;
+type Link<V, A, const N: usize> = Option<Node<V, A, N>>;
 
 enum Kind<V, A, const N: usize> {
     Leaf {
@@ -47,8 +47,8 @@ enum Kind<V, A, const N: usize> {
 }
 
 struct Node<V, A, const N: usize> {
-    kind: Kind<V, A, N>,
-    // Children and values must be destroyed before their funding.
+    kind: Box<Kind<V, A, N>>,
+    // The complete backing, including children and values, retires before funding.
     _allocation: A,
 }
 
@@ -56,7 +56,7 @@ struct Node<V, A, const N: usize> {
 ///
 /// Branch coordinates strictly increase: one traversal visits at most 8N
 /// branches and one leaf. Keys are ordered by their unsigned big-endian bytes.
-/// Nodes retain the original allocation token until after their values drop.
+/// Nodes retain original funding until after their complete backing retires.
 pub struct FixedIndex<V, A, const N: usize = 16> {
     root: Link<V, A, N>,
 }
@@ -127,7 +127,7 @@ impl<A> Funding<A> {
         branch: bool,
         accounting: &mut W,
     ) -> Result<Self, W::Error> {
-        let bytes = std::mem::size_of::<Node<V, A, N>>() as u64;
+        let bytes = std::mem::size_of::<Kind<V, A, N>>() as u64;
         let leaf = accounting.claim(bytes)?;
         let branch = if branch {
             match accounting.claim(bytes) {
@@ -152,10 +152,10 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
     ) -> Result<Option<&V>, W::Error> {
         accounting.check()?;
-        let mut cursor = self.root.as_deref();
+        let mut cursor = self.root.as_ref();
         while let Some(node) = cursor {
             accounting.charge_items(1)?;
-            match &node.kind {
+            match node.kind.as_ref() {
                 Kind::Leaf {
                     key: observed,
                     value,
@@ -168,7 +168,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                     low,
                     high: upper,
                 } => {
-                    cursor = if high(&key, *bit) { upper } else { low }.as_deref();
+                    cursor = if high(&key, *bit) { upper } else { low }.as_ref();
                 }
             }
         }
@@ -182,12 +182,12 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
     ) -> Result<Option<(&[u8; N], &V)>, W::Error> {
         accounting.check()?;
-        let mut cursor = self.root.as_deref();
+        let mut cursor = self.root.as_ref();
         while let Some(node) = cursor {
             accounting.charge_items(1)?;
-            match &node.kind {
+            match node.kind.as_ref() {
                 Kind::Leaf { key, value } => return Ok(Some((key, value))),
-                Kind::Branch { low, .. } => cursor = low.as_deref(),
+                Kind::Branch { low, .. } => cursor = low.as_ref(),
             }
         }
         Ok(None)
@@ -201,10 +201,10 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
     ) -> Result<Option<&mut V>, W::Error> {
         accounting.check()?;
-        let mut cursor = self.root.as_deref_mut();
+        let mut cursor = self.root.as_mut();
         while let Some(node) = cursor {
             accounting.charge_items(1)?;
-            match &mut node.kind {
+            match node.kind.as_mut() {
                 Kind::Leaf {
                     key: observed,
                     value,
@@ -217,7 +217,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                     low,
                     high: upper,
                 } => {
-                    cursor = if high(&key, *bit) { upper } else { low }.as_deref_mut();
+                    cursor = if high(&key, *bit) { upper } else { low }.as_mut();
                 }
             }
         }
@@ -237,21 +237,21 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         let Some(differing) = differing else {
             return Ok(None);
         };
-        let mut cursor = self.root.as_deref();
+        let mut cursor = self.root.as_ref();
         let mut successor = None;
         while let Some(node) = cursor {
             accounting.charge_items(1)?;
-            match &node.kind {
+            match node.kind.as_ref() {
                 Kind::Branch {
                     bit,
                     low,
                     high: upper,
                 } if differing.is_none_or(|difference| *bit < difference) => {
                     cursor = if high(&after, *bit) {
-                        upper.as_deref()
+                        upper.as_ref()
                     } else {
-                        successor = upper.as_deref();
-                        low.as_deref()
+                        successor = upper.as_ref();
+                        low.as_ref()
                     };
                 }
                 _ => {
@@ -267,9 +267,9 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         }
         while let Some(node) = successor {
             accounting.charge_items(1)?;
-            match &node.kind {
+            match node.kind.as_ref() {
                 Kind::Leaf { key, value } => return Ok(Some((key, value))),
-                Kind::Branch { low, .. } => successor = low.as_deref(),
+                Kind::Branch { low, .. } => successor = low.as_ref(),
             }
         }
         Ok(None)
@@ -311,23 +311,23 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             leaf: leaf_funding,
             branch: branch_funding,
         } = funding;
-        let leaf = Box::new(Node {
-            kind: Kind::Leaf { key, value },
+        let leaf = Node {
+            kind: Box::new(Kind::Leaf { key, value }),
             _allocation: leaf_funding,
-        });
+        };
         let replacement = match (differing.flatten(), branch_funding) {
             (Some(bit), Some(allocation)) => {
-                let mut branch = Box::new(Node {
-                    kind: Kind::Branch {
+                let mut branch = Node {
+                    kind: Box::new(Kind::Branch {
                         bit,
                         low: None,
                         high: None,
-                    },
+                    }),
                     _allocation: allocation,
-                });
+                };
                 let Kind::Branch {
                     low, high: upper, ..
-                } = &mut branch.kind
+                } = branch.kind.as_mut()
                 else {
                     unreachable!("new branch has branch kind")
                 };
@@ -353,12 +353,12 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
     ) -> Result<(Option<Option<Bit>>, u64), W::Error> {
         accounting.check()?;
-        let mut cursor = self.root.as_deref();
+        let mut cursor = self.root.as_ref();
         let mut depth = 0;
         while let Some(node) = cursor {
             accounting.charge_items(1)?;
             depth += 1;
-            match &node.kind {
+            match node.kind.as_ref() {
                 Kind::Leaf { key: observed, .. } => {
                     let bytes = N as u64;
                     accounting.charge_items(bytes)?;
@@ -369,7 +369,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                     low,
                     high: upper,
                 } => {
-                    cursor = if high(&key, *bit) { upper } else { low }.as_deref();
+                    cursor = if high(&key, *bit) { upper } else { low }.as_ref();
                 }
             }
         }
@@ -387,21 +387,16 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         loop {
             accounting.charge_items(1)?;
             depth += 1;
-            let descend = matches!(cursor.as_deref(), Some(Node {
-                kind: Kind::Branch { bit, .. }, ..
-            }) if *bit < before);
+            let descend = matches!(cursor.as_ref().map(|node| node.kind.as_ref()),
+                Some(Kind::Branch { bit, .. }) if *bit < before);
             if !descend {
                 return Ok((cursor, depth));
             }
-            match cursor.as_deref_mut() {
-                Some(Node {
-                    kind:
-                        Kind::Branch {
-                            bit,
-                            low,
-                            high: upper,
-                        },
-                    ..
+            match cursor.as_mut().map(|node| node.kind.as_mut()) {
+                Some(Kind::Branch {
+                    bit,
+                    low,
+                    high: upper,
                 }) => {
                     cursor = if high(&key, *bit) { upper } else { low };
                 }
@@ -411,9 +406,9 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
     }
 
     fn value_mut(&mut self, key: [u8; N]) -> &mut V {
-        let mut cursor = self.root.as_deref_mut();
+        let mut cursor = self.root.as_mut();
         while let Some(node) = cursor {
-            match &mut node.kind {
+            match node.kind.as_mut() {
                 Kind::Leaf {
                     key: observed,
                     value,
@@ -423,7 +418,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                     low,
                     high: upper,
                 } => {
-                    cursor = if high(&key, *bit) { upper } else { low }.as_deref_mut();
+                    cursor = if high(&key, *bit) { upper } else { low }.as_mut();
                 }
                 Kind::Leaf { .. } => break,
             }
@@ -439,17 +434,17 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         key: [u8; N],
         matches: impl FnOnce(&V) -> bool,
     ) -> Option<Entry<V, A, N>> {
-        let mut cursor = self.root.as_deref();
+        let mut cursor = self.root.as_ref();
         let mut parent = None;
         loop {
-            match cursor.map(|node| &node.kind) {
+            match cursor.map(|node| node.kind.as_ref()) {
                 Some(Kind::Branch {
                     bit,
                     low,
                     high: upper,
                 }) => {
                     parent = Some(*bit);
-                    cursor = if high(&key, *bit) { upper } else { low }.as_deref();
+                    cursor = if high(&key, *bit) { upper } else { low }.as_ref();
                 }
                 Some(Kind::Leaf {
                     key: observed,
@@ -466,22 +461,15 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         let mut link = &mut self.root;
         if let Some(parent) = parent {
             loop {
-                match link.as_deref() {
-                    Some(Node {
-                        kind: Kind::Branch { bit, .. },
-                        ..
-                    }) if *bit == parent => break,
+                match link.as_ref().map(|node| node.kind.as_ref()) {
+                    Some(Kind::Branch { bit, .. }) if *bit == parent => break,
                     _ => {}
                 }
-                match link.as_deref_mut() {
-                    Some(Node {
-                        kind:
-                            Kind::Branch {
-                                bit,
-                                low,
-                                high: upper,
-                            },
-                        ..
+                match link.as_mut().map(|node| node.kind.as_mut()) {
+                    Some(Kind::Branch {
+                        bit,
+                        low,
+                        high: upper,
                     }) => {
                         link = if high(&key, *bit) { upper } else { low };
                     }
@@ -496,7 +484,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             bit,
             low,
             high: upper,
-        } = &mut retired.kind
+        } = retired.kind.as_mut()
         {
             let (selected, sibling) = if high(&key, *bit) {
                 (upper, low)
@@ -510,8 +498,8 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             drop(retired);
             retired = leaf;
         }
-        let Node { kind, _allocation } = *retired;
-        let Kind::Leaf { key, value } = kind else {
+        let Node { kind, _allocation } = retired;
+        let Kind::Leaf { key, value } = *kind else {
             unreachable!("extraction detaches exactly the verified leaf")
         };
         Some(Entry {
@@ -536,11 +524,11 @@ impl<V, A, const N: usize> Drop for FixedIndex<V, A, N> {
         // depends on the key width or the number of retained identities.
         let mut cursor = self.root.take();
         while let Some(mut node) = cursor {
-            match &mut node.kind {
+            match node.kind.as_mut() {
                 Kind::Leaf { .. } => cursor = None,
                 Kind::Branch { low, high, .. } => match low.take() {
                     None => cursor = high.take(),
-                    Some(mut lower) => match &mut lower.kind {
+                    Some(mut lower) => match lower.kind.as_mut() {
                         Kind::Leaf { .. } => {
                             drop(lower);
                             cursor = Some(node);

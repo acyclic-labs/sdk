@@ -3,18 +3,18 @@ use proptest::prelude::*;
 use std::collections::BTreeMap;
 
 fn audit<V, A, const N: usize>(table: &FixedIndex<V, A, N>) {
-    let mut pending = vec![(table.root.as_deref(), None)];
+    let mut pending = vec![(table.root.as_ref(), None)];
     let mut leaves = 0_usize;
     let mut branches = 0_usize;
     while let Some((node, preceding)) = pending.pop() {
-        match node.map(|node| &node.kind) {
+        match node.map(|node| node.kind.as_ref()) {
             Some(Kind::Branch { bit, low, high }) => {
                 assert!(
                     bit.byte < N && bit.offset < 8 && preceding.is_none_or(|prior| prior < *bit)
                 );
                 assert!(low.is_some() && high.is_some());
-                pending.push((low.as_deref(), Some(*bit)));
-                pending.push((high.as_deref(), Some(*bit)));
+                pending.push((low.as_ref(), Some(*bit)));
+                pending.push((high.as_ref(), Some(*bit)));
                 branches += 1;
             }
             Some(Kind::Leaf { .. }) => leaves += 1,
@@ -151,7 +151,7 @@ proptest! {
             prop_assert_eq!(*observed, *expected.entry(key).or_insert(value));
             audit(&table);
             prop_assert_eq!(work.claims, (expected.len() * 2 - 1) as u64);
-            prop_assert_eq!(work.live.get(), work.claims * std::mem::size_of::<Node<usize, Allocation, 40>>() as u64);
+            prop_assert_eq!(work.live.get(), work.claims * std::mem::size_of::<Kind<usize, Allocation, 40>>() as u64);
             let claims = work.claims;
             for (key, value) in &expected {
                 let before = work.items;
