@@ -7,16 +7,17 @@ hook is not evidence of an executed campaign. Bounded harnesses and their exact
 obligations live in [the proof package](../proofs/id-codecs/README.md).
 
 With cargo-fuzz and its supported Rust toolchain installed, choose a target from
-the inventory and give the campaign an explicit budget:
+the inventory and give the campaign an explicit budget. The explicit fuzz directory
+selects this project even when a parent directory contains another fuzz workspace:
 
 ```sh
-cargo +nightly fuzz run ids -- -max_total_time=30
-cargo +nightly fuzz run session_frames -- -max_total_time=30
+cargo +nightly fuzz run --fuzz-dir . ids -- -max_total_time=30
+cargo +nightly fuzz run --fuzz-dir . session_frames -- -max_total_time=30
 ```
 
 Targets impose no input-length cutoff. Increase libFuzzer's `-max_len` when
 exploring larger valid frames or snapshots. Reproduce a crash with
-`cargo +nightly fuzz run TARGET artifacts/TARGET/crash-HASH`; retain its bytes
+`cargo +nightly fuzz run --fuzz-dir . TARGET artifacts/TARGET/crash-HASH`; retain its bytes
 and fix the production decoder before treating the campaign as complete.
 
 Capture and replay SDK writer output:
@@ -91,7 +92,7 @@ consumer's generation authority or protection against an aliasing bug.
 
 ```sh
 cargo run --features storage-schedules --example capture -- --accept-goldens
-cargo +nightly fuzz run --features storage-schedules object_schedule -- -max_total_time=30
+cargo +nightly fuzz run --fuzz-dir . --features storage-schedules object_schedule -- -max_total_time=30
 cargo run --features storage-schedules --example object_schedules -- corpus/object_schedule/medium-false-0-0-0
 ```
 
