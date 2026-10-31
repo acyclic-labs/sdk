@@ -231,6 +231,13 @@ impl<'de> Deserialize<'de> for Frontmatter {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field {
+            Name,
+            Description,
+            Other(String),
+        }
         struct Header;
         impl<'de> serde::de::Visitor<'de> for Header {
             type Value = Frontmatter;
@@ -247,21 +254,21 @@ impl<'de> Deserialize<'de> for Frontmatter {
                 let mut name = None;
                 let mut description = None;
                 let mut fields = BTreeMap::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "name" => {
+                while let Some(key) = map.next_key::<Field>()? {
+                    match key {
+                        Field::Name => {
                             if name.is_some() {
                                 return Err(M::Error::duplicate_field("name"));
                             }
                             name = Some(map.next_value()?);
                         }
-                        "description" => {
+                        Field::Description => {
                             if description.is_some() {
                                 return Err(M::Error::duplicate_field("description"));
                             }
                             description = Some(map.next_value()?);
                         }
-                        _ => match fields.entry(key) {
+                        Field::Other(key) => match fields.entry(key) {
                             std::collections::btree_map::Entry::Vacant(entry) => {
                                 entry.insert(map.next_value()?);
                             }
@@ -408,16 +415,21 @@ mod tests {
             fields: BTreeMap<String, serde_json::Value>,
         }
 
-        for entries in [32, 128] {
-            let header = serde_json::json!({
+        for entries in [0, 32, 128] {
+            let mut header = serde_json::json!({
                 "name": "inspect",
                 "description": "Inspect the selected files",
-                "input_schema": {"enum": (0..entries).map(|index| {
-                    serde_json::json!({"label": format!("field-{index}"), "value": "x".repeat(1024)})
-                }).collect::<Vec<_>>()},
-                "runtime": {"kind": "code", "script": "inspect.ts"},
             });
-            let prefix = format!("---\n{}\n---\nBODY", serde_saphyr::to_string(&header)?);
+            if entries != 0 {
+                header["input_schema"] = serde_json::json!({"enum": (0..entries).map(|index| {
+                    serde_json::json!({"label": format!("field-{index}"), "value": "x".repeat(1024)})
+                }).collect::<Vec<_>>()});
+                header["runtime"] = serde_json::json!({"kind": "code", "script": "inspect.ts"});
+            }
+            let prefix = format!(
+                "---\n{}\n---\nBODY",
+                serde_saphyr::to_string(&header).expect("generated header encodes")
+            );
             let mut direct = None;
             let direct_allocations = acyclic_test_support::measure(|| {
                 direct = Some(parse_frontmatter::<Frontmatter>(prefix.as_bytes()));
@@ -431,8 +443,12 @@ mod tests {
             assert_eq!(direct.name, buffered.name);
             assert_eq!(direct.description, buffered.description);
             assert_eq!(direct.fields, buffered.fields);
-            assert!(direct_allocations.bytes_total < buffered_allocations.bytes_total);
-            assert!(direct_allocations.bytes_max < buffered_allocations.bytes_max);
+            assert!(direct_allocations.bytes_total <= buffered_allocations.bytes_total);
+            assert!(direct_allocations.bytes_max <= buffered_allocations.bytes_max);
+            if entries != 0 {
+                assert!(direct_allocations.bytes_total < buffered_allocations.bytes_total);
+                assert!(direct_allocations.bytes_max < buffered_allocations.bytes_max);
+            }
             println!(
                 "header entries={entries} direct_total={} buffered_total={} direct_peak={} buffered_peak={}",
                 direct_allocations.bytes_total,
@@ -458,6 +474,7 @@ mod tests {
             "description: inspect\n",
             "name: [inspect]\ndescription: inspect\n",
             "name: inspect\nname: other\ndescription: inspect\n",
+            "name: inspect\ndescription: inspect\ndescription: other\n",
             "name: inspect\ndescription: inspect\nextra: 1\nextra: 2\n",
             "name: inspect\ndescription: &anchor inspect\nextra: *anchor\n",
         ] {
