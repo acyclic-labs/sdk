@@ -200,6 +200,15 @@ async fn a_fork_forks_its_parents_machine_when_the_target_can() -> Result {
             live_fork.then_some(parent_binding.machine)
         );
         assert_eq!(state(&machines, &parent).await?, MachineState::Running);
+
+        // A paused (or provider-idled) parent is a checkpoint: a later
+        // child forks it without waking it.
+        machines.suspend(&parent).await?;
+        let late = parent.child(&id(3))?;
+        machines.machine(&late, CLOUD).await?;
+        let binding = machines.binding(&late, CLOUD).await?.ok_or("no binding")?;
+        assert_eq!(binding.forked_from.is_some(), live_fork);
+        assert_eq!(state(&machines, &parent).await?, MachineState::Suspended);
     }
 
     // A child whose parent never ran the target creates its own.

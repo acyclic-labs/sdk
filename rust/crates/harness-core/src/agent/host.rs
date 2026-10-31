@@ -109,9 +109,21 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             (None, None) => None,
             _ => Some(Arc::new(AgentComposer::new(volumes, lifecycle.clone()))),
         };
-        let mut host = Self::hosting(provider, within, Arc::new(handler), clock, composer)?;
-        host.lifecycle = lifecycle;
-        Ok(host)
+        let host = Self::hosting(provider, within, Arc::new(handler), clock, composer)?;
+        Ok(match lifecycle {
+            Some(lifecycle) => host.with_lifecycle(lifecycle),
+            None => host,
+        })
+    }
+
+    /// Parks what each agent holds when [`Self::pause`] pauses it. A host
+    /// from [`Self::hosting`] releases the same resources on archive by
+    /// passing an [`AgentComposer`] with `lifecycle` and a handler built
+    /// with [`AgentHandler::with_close`].
+    #[must_use]
+    pub fn with_lifecycle(mut self, lifecycle: Arc<dyn AgentLifecycle>) -> Self {
+        self.lifecycle = Some(lifecycle);
+        self
     }
 
     /// Host for agents whose turns run in `handler`, such as the agent guest

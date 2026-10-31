@@ -3,7 +3,8 @@
 use crate::{
     Capability, CompatibilityPolicy, CreateMachine, ExecCommand, IdempotencyKey, Image,
     LifecycleClass, MachineId, MachineObservation, MachineState, MachinesProvider, MutationOutcome,
-    OperatingSystem, OperationPhase, Platform, ProviderError, Shell, SuspensionPolicy,
+    OperatingSystem, OperationPhase, Platform, Precondition, ProviderError, Shell,
+    SuspensionPolicy,
 };
 use acyclic_stream::testing::{Counted, RequestLedger, Requests};
 use futures::StreamExt as _;
@@ -586,7 +587,9 @@ async fn verify_provider(
 }
 
 /// Live fork of a running machine: declared fidelity, exact fresh child set, exact replay,
-/// rebinding rejection, and children joined before their source.
+/// rebinding rejection, and children joined before their source (a source destroy refuses
+/// with the typed [`Precondition::LiveForks`] while one lives). Then a suspended source
+/// forks as its own checkpoint and stays suspended.
 async fn live_fork(
     provider: &dyn MachinesProvider,
     machine: &MachineObservation,
@@ -655,6 +658,11 @@ async fn live_fork(
     {
         return Err("live fork source did not keep running".into());
     }
+    if provider.destroy_machine(machine.id, key(0x33)?).await
+        != Err(ProviderError::FailedPrecondition(Precondition::LiveForks))
+    {
+        return Err("a fork source with live forks was not refused as LiveForks".into());
+    }
     for (suffix, child) in [(0x31, first), (0x32, second)] {
         if provider
             .destroy_machine(child.id, key(suffix)?)
@@ -665,6 +673,41 @@ async fn live_fork(
             return Err("live fork child join substituted its outcome".into());
         }
     }
+    if !machine
+        .contract
+        .capabilities
+        .contains(&Capability::SuspendResume)
+    {
+        return Ok(());
+    }
+    provider
+        .suspend(machine.id, key(0x34)?)
+        .await
+        .map_err(|error| error.to_string())?;
+    let suspended = provider
+        .fork_machine(machine.id, NonZeroU32::MIN, key(0x35)?)
+        .await
+        .map_err(|error| error.to_string())?;
+    let MutationOutcome::MachineForked { children, .. } = &suspended else {
+        return Err("suspended fork returned the wrong outcome".into());
+    };
+    let [child] = children.as_slice() else {
+        return Err("suspended fork child set is not exact".into());
+    };
+    if child.state != MachineState::Running
+        || provider
+            .inspect_machine(machine.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .state
+            != MachineState::Suspended
+    {
+        return Err("a suspended source woke to fork, or its fork did not run".into());
+    }
+    provider
+        .destroy_machine(child.id, key(0x36)?)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

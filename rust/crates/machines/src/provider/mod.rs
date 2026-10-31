@@ -71,7 +71,10 @@ pub trait MachinesProvider: acyclic_stream::ProviderPlatform {
         count: NonZeroU32,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError>;
-    /// Forks a running machine into `count` fresh children without an intermediate checkpoint, idempotently under `key`.
+    /// Forks a running or suspended machine into `count` fresh running children without an
+    /// intermediate checkpoint, idempotently under `key`. A suspended source is its own
+    /// checkpoint and stays suspended. Destroying a source refuses with
+    /// [`Precondition::LiveForks`] while any of its forks lives.
     async fn fork_machine(
         &self,
         machine: MachineId,

@@ -419,7 +419,7 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
     use acyclic_machines::ProviderError as Machines;
     match cause {
         Machines::NotFound(_) => ErrorCode::NotFound,
-        Machines::Conflict(_) => ErrorCode::Conflict,
+        Machines::Conflict(_) | Machines::FailedPrecondition(_) => ErrorCode::Conflict,
         Machines::Unsupported(_) => ErrorCode::Unsupported,
         Machines::Invalid(_) | Machines::Rejected(_) => ErrorCode::Invalid,
         Machines::Indeterminate(_)

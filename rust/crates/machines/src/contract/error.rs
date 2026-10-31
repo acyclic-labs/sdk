@@ -1,5 +1,29 @@
 use super::*;
 
+/// A typed precondition a provider can refuse a mutation on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum Precondition {
+    /// Destroying a fork source waits for its live forks: destroy them first.
+    #[error("the machine has live forks; recovery: destroy its forks first")]
+    LiveForks,
+}
+
+impl Precondition {
+    /// Stable wire name, carried as the gRPC `FAILED_PRECONDITION` details.
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::LiveForks => "acyclic.machines.precondition.live_forks",
+        }
+    }
+
+    /// The precondition a wire name names.
+    pub fn from_wire(value: &[u8]) -> Option<Self> {
+        [Self::LiveForks]
+            .into_iter()
+            .find(|precondition| precondition.wire().as_bytes() == value)
+    }
+}
+
 /// Provider-boundary failure.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ProviderError {
@@ -13,6 +37,10 @@ pub enum ProviderError {
     Invalid(String),
     #[error("rejected: {0}")]
     Rejected(String),
+    /// The request is valid but the target's state refuses it until the
+    /// named precondition holds; nothing changed and the key is unspent.
+    #[error("failed precondition: {0}")]
+    FailedPrecondition(Precondition),
     #[error("Machines service is unavailable")]
     Unavailable,
     #[error("operation is indeterminate: {0}")]
@@ -40,6 +68,7 @@ impl ProviderError {
             Self::Unsupported(_) => "unsupported",
             Self::Invalid(_) => "invalid",
             Self::Rejected(_) => "rejected",
+            Self::FailedPrecondition(_) => "failed_precondition",
             Self::Unavailable => "unavailable",
             Self::Indeterminate(_) => "indeterminate",
             Self::OperationIndeterminate(_) => "operation_indeterminate",
