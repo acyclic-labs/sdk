@@ -63,6 +63,7 @@ pub use process_tree::{
 pub use process_tree::{ProcessPipeReader, ProcessPipeWriter};
 
 mod file;
+mod io_progress;
 #[cfg(all(target_os = "linux", not(any(test, feature = "test-support"))))]
 mod kernel_keyring;
 pub mod owner_record;
