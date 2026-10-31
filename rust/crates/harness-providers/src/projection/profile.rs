@@ -4,15 +4,18 @@ use acyclic_harness_core::{Result, model::ModelProfileBinding};
 use acyclic_model_render::{Cache, Effort, Reasoning};
 use serde_json::{Map, Value, json};
 
-pub(super) fn validate(adapter: Adapter, binding: &ModelProfileBinding) -> Result<()> {
+pub(crate) fn validate(adapter: Adapter, binding: &ModelProfileBinding) -> Result<()> {
     if binding.overlay_effort().is_some() {
         return Err(invalid(
             "role effort requires an admitted appended configuration item",
         ));
     }
-    if binding.cache() != Cache::Automatic {
+    if !matches!(
+        (adapter, binding.cache()),
+        (_, Cache::Automatic) | (Adapter::Anthropic, Cache::Ephemeral | Cache::Hour)
+    ) {
         return Err(invalid(
-            "explicit cache profiles require an admitted epoch cache binding",
+            "cache strategy is not admitted by the selected protocol",
         ));
     }
     let admitted = match (adapter, binding.reasoning()) {
@@ -35,6 +38,33 @@ pub(super) fn project(
     binding: &ModelProfileBinding,
     fields: &mut Map<String, Value>,
 ) {
+    match adapter {
+        Adapter::Responses => {
+            // Roles share this key because their directives and restrictions
+            // append to the conversation instead of replacing its prefix.
+            fields.insert(
+                "prompt_cache_key".into(),
+                json!(format!(
+                    "profile-v1:{}",
+                    blake3::Hash::from(binding.prefix_digest()).to_hex()
+                )),
+            );
+        }
+        Adapter::Anthropic => {
+            // The one top-level automatic breakpoint consumes one slot. No
+            // marker is injected into native thinking or empty content blocks.
+            let ttl = if binding.cache() == Cache::Hour {
+                "1h"
+            } else {
+                "5m"
+            };
+            fields.insert(
+                "cache_control".into(),
+                json!({"type":"ephemeral","ttl":ttl}),
+            );
+        }
+        Adapter::Chat | Adapter::Gemini => {}
+    }
     match (adapter, binding.reasoning()) {
         (Adapter::Responses, Reasoning::Effort(effort)) => {
             fields.insert(
@@ -133,6 +163,11 @@ mod tests {
                 adapter == Adapter::Gemini
             );
             let provider = provider.with_profile(&profile)?;
+            let (mut rotated, _) = crate::tests::provider(adapter, 200);
+            rotated.model.revision.push_str("-rotated");
+            let rotated = rotated.with_profile(&profile)?;
+            assert_ne!(provider.model(), rotated.model());
+            assert!(rotated.context_capacity(provider.model()).is_err());
             assert!(provider.context_capacity(&original).is_err());
             assert_eq!(
                 provider.context_capacity(provider.model())?.context_tokens,
@@ -153,7 +188,48 @@ mod tests {
             )?;
             let ephemeral = resolve(&ephemeral, &role, &project, &agent)?;
             let (fresh, _) = crate::tests::provider(adapter, 200);
-            assert!(fresh.with_profile(&ephemeral).is_err());
+            let cached = fresh.with_profile(&ephemeral);
+            assert_eq!(cached.is_ok(), adapter == Adapter::Anthropic);
+            if let Ok(cached) = cached {
+                let (request, _) = crate::tests::request(&cached)?;
+                let body = crate::projection::body(&cached, request.request())?;
+                assert_eq!(
+                    body["cache_control"],
+                    json!({"type":"ephemeral","ttl":"5m"})
+                );
+            }
+            if adapter == Adapter::Responses {
+                let key = body["prompt_cache_key"].clone();
+                let reviewer = RoleFile::parse(
+                    "---\nversion: 1\nname: reviewer\nmodel: fixture/model\ncontext: fresh\nmay_spawn: []\nmax_output_tokens: 64\n---\n",
+                )?;
+                let reviewer = resolve(&model, &reviewer, &project, &agent)?;
+                assert_ne!(profile.digest(), reviewer.digest());
+                assert_eq!(profile.prefix_digest(), reviewer.prefix_digest());
+                let (fresh, _) = crate::tests::provider(adapter, 200);
+                let fresh = fresh.with_profile(&reviewer)?;
+                let (request, _) = crate::tests::request(&fresh)?;
+                assert_eq!(
+                    crate::projection::body(&fresh, request.request())?["prompt_cache_key"],
+                    key
+                );
+
+                let changed_family = format!("{family}Changed frozen instructions.\n");
+                let changed = ModelProfile::parse(
+                    &changed_family,
+                    "---\nversion: 1\nkey: fixture/model\n---\n",
+                    provider.capacity,
+                    "renderer-v1",
+                )?;
+                let changed = resolve(&changed, &role, &project, &agent)?;
+                let (fresh, _) = crate::tests::provider(adapter, 200);
+                let fresh = fresh.with_profile(&changed)?;
+                let (request, _) = crate::tests::request(&fresh)?;
+                assert_ne!(
+                    crate::projection::body(&fresh, request.request())?["prompt_cache_key"],
+                    key
+                );
+            }
         }
         Ok(())
     }
