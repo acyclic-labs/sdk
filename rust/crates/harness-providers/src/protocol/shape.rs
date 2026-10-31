@@ -135,6 +135,20 @@ pub(crate) const RESPONSE_CALL: Shape = Shape {
         ("/arguments", Constraint::ObjectJson),
     ],
 };
+pub(crate) const RESPONSE_CUSTOM_CALL: Shape = Shape {
+    discriminator: ("type", "custom_tool_call"),
+    fields: &[
+        (
+            "/call_id",
+            Constraint::Name(Name {
+                maximum: 64,
+                ..CALL_ID
+            }),
+        ),
+        ("/name", FUNCTION_NAME),
+        ("/input", STRING),
+    ],
+};
 pub(crate) const THINKING: Shape = Shape {
     discriminator: ("type", "thinking"),
     fields: &[("/thinking", STRING), ("/signature", NONEMPTY)],

@@ -93,6 +93,12 @@ impl FileTool {
         let (file, custody) = match *self {
             Self::Read => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                if input.0.range.is_some() && input.0.lines.is_some() {
+                    return Err(error(
+                        crate::wire::ErrorCode::Invalid,
+                        "read cannot select bytes and lines together",
+                    ));
+                }
                 let source = self.path_source(
                     scope,
                     context,
@@ -117,7 +123,7 @@ impl FileTool {
                         .as_ref()
                         .map_or(Some(0), |file| Some(file.descriptor().byte_length())),
                 };
-                if length.is_none_or(|length| length > maximum) {
+                if input.0.lines.is_none() && length.is_none_or(|length| length > maximum) {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file selection exceeds text rendering bound",

@@ -174,6 +174,18 @@ pub(crate) fn exact_replace(
     maximum_bytes: u64,
     work: &mut NativeCustody,
 ) -> Result<String> {
+    replace(source, old_text, new_text, false, maximum_bytes, work)
+}
+
+/// The shared replacement engine for unique and all-occurrence edits.
+pub(crate) fn replace(
+    source: &str,
+    old_text: &str,
+    new_text: &str,
+    replace_all: bool,
+    maximum_bytes: u64,
+    work: &mut NativeCustody,
+) -> Result<String> {
     if maximum_bytes == 0 || maximum_bytes == u64::MAX {
         return Err(invalid(work, "edit byte bound must be positive and finite"));
     }
@@ -184,38 +196,59 @@ pub(crate) fn exact_replace(
     {
         return Err(invalid(work, "exact edit has invalid text or byte bounds"));
     }
-    charge(work, 0, 1)?;
-    let start = source
-        .find(old_text)
-        .ok_or_else(|| conflict(work, "exact edit text is missing"))?;
-    let first_character_bytes = old_text.chars().next().map_or(0, char::len_utf8);
-    let next_start = start + first_character_bytes;
-    charge(work, 0, 1)?;
-    if source
-        .get(next_start..)
-        .is_some_and(|tail| tail.contains(old_text))
-    {
-        return Err(conflict(work, "exact edit text is ambiguous"));
-    }
+    charge(work, 0, source.len() as u64)?;
+    let (start, count) = if replace_all {
+        let mut matches = source.match_indices(old_text);
+        let (start, _) = matches
+            .next()
+            .ok_or_else(|| conflict(work, "exact edit text is missing"))?;
+        (start, 1 + matches.count())
+    } else {
+        let start = source
+            .find(old_text)
+            .ok_or_else(|| conflict(work, "exact edit text is missing"))?;
+        // Unique replacement rejects overlapping matches too. Advancing one
+        // complete character preserves UTF-8 and finds every later start.
+        let next_start = start + old_text.chars().next().map_or(0, char::len_utf8);
+        charge(work, 0, (source.len() - next_start) as u64)?;
+        if source[next_start..].contains(old_text) {
+            return Err(conflict(work, "exact edit text is ambiguous"));
+        }
+        (start, 1)
+    };
     let output_bytes = source
         .len()
-        .checked_sub(old_text.len())
-        .and_then(|length| length.checked_add(new_text.len()))
+        .checked_sub(
+            old_text
+                .len()
+                .checked_mul(count)
+                .ok_or_else(|| invalid(work, "exact edit size overflow"))?,
+        )
+        .and_then(|length| {
+            new_text
+                .len()
+                .checked_mul(count)
+                .and_then(|added| length.checked_add(added))
+        })
         .filter(|length| *length as u64 <= maximum_bytes)
         .ok_or_else(|| invalid(work, "exact edit output exceeds byte bound"))?;
     let mut output = String::new();
     reserve_string(work, &mut output, output_bytes)?;
-    let end = start + old_text.len();
-    let prefix = source
-        .get(..start)
-        .ok_or_else(|| invalid(work, "exact edit match is not UTF-8 aligned"))?;
-    let suffix = source
-        .get(end..)
-        .ok_or_else(|| invalid(work, "exact edit match is not UTF-8 aligned"))?;
     charge(work, (output_bytes) as u64, 0)?;
-    output.push_str(prefix);
-    output.push_str(new_text);
-    output.push_str(suffix);
+    let mut cursor = 0;
+    if replace_all {
+        charge(work, 0, source.len() as u64)?;
+        for (position, _) in source.match_indices(old_text) {
+            output.push_str(&source[cursor..position]);
+            output.push_str(new_text);
+            cursor = position + old_text.len();
+        }
+    } else {
+        output.push_str(&source[..start]);
+        output.push_str(new_text);
+        cursor = start + old_text.len();
+    }
+    output.push_str(&source[cursor..]);
     Ok(output)
 }
 
@@ -284,6 +317,10 @@ mod tests {
                                 })
                                 .collect();
                             let result = exact_replace(&source, &needle, "X", 64, &mut work);
+                            assert_eq!(
+                                replace(&source, &needle, "X", true, 64, &mut work).unwrap(),
+                                source.replace(&needle, "X")
+                            );
                             if matches.len() == 1 {
                                 assert_eq!(result.ok(), Some(source.replacen(&needle, "X", 1)));
                             } else {

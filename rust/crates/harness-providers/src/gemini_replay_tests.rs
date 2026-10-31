@@ -181,6 +181,47 @@ fn signed_answer_fixture_replays_once_with_exact_native_parts() {
 }
 
 #[test]
+fn parallel_signed_calls_preserve_the_entire_provider_part() {
+    let (provider, _) = provider(Adapter::Gemini, 200);
+    let (prepared, dispatch) = request(&provider).unwrap();
+    let mut request = prepared.request().clone();
+    // Generated adversarial inputs, not a captured external transcript.
+    // Missing provider IDs, unusual key order and escaped signature bytes
+    // expose reconstruction even when the decoded JSON is equivalent.
+    let signed = [
+        r#"{ "thoughtSignature":"one\u003d", "functionCall": {"args":{"path":"a"},"name":"read"} }"#.to_owned(),
+        r#"{"functionCall":{"name":"read","args":{"path":"b"}},"thoughtSignature":"two=="}"#.to_owned(),
+    ];
+    let input = format!(
+        "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{},{}]}},\"finishReason\":\"STOP\"}}]}}\n\n",
+        signed[0], signed[1]
+    );
+    let events = futures::executor::block_on(
+        stream::events_named(
+            Adapter::Gemini,
+            chunks(&input, 1),
+            4096,
+            dispatch,
+            None,
+            Some(provider.reasoning_origin(provider.key.as_deref(), None)),
+        )
+        .try_collect(),
+    )
+    .unwrap();
+    let mut answer = String::new();
+    append(events, &mut request, &mut answer);
+    finish(&mut request, &answer);
+    assert!(
+        crate::validate_input(
+            Adapter::Gemini,
+            &projection::body(&provider, &request).unwrap()
+        )
+        .is_empty()
+    );
+    round_trip(&provider, request, &answer, &signed);
+}
+
+#[test]
 fn shrunk_split_answer_fixture_preserves_text_for_every_target() {
     let request: ModelRequest =
         serde_json::from_str(include_str!("fixtures/split-answer.json")).unwrap();

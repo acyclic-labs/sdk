@@ -5,9 +5,65 @@ use std::path::{Component, Path};
 
 pub use acyclic_host_platform::shell::{PLATFORM, ShellSpec};
 
-/// The one model-visible `shell` description on every OS. Each target's
-/// command language and path style come from the conversation's roster, so
-/// the tool contract never changes with the host or the target.
+/// Source or literal argv, executed by the same target-owned process engine.
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(untagged)]
+pub enum ShellCommand {
+    /// Source in the selected target's command language.
+    Source(String),
+    /// Executable followed by literal arguments.
+    Argv(Vec<String>),
+}
+
+impl From<String> for ShellCommand {
+    fn from(source: String) -> Self {
+        Self::Source(source)
+    }
+}
+impl From<&str> for ShellCommand {
+    fn from(source: &str) -> Self {
+        Self::Source(source.into())
+    }
+}
+impl ShellCommand {
+    /// Prepares one process invocation. Literal arguments never pass through a
+    /// command language, including on Windows PowerShell 5.1.
+    pub fn prepare(
+        self,
+        shell: &ShellSpec,
+    ) -> Result<(Option<String>, Vec<String>, Option<Vec<u8>>)> {
+        if !self.valid() {
+            return Err(Error::Invalid(
+                "shell command is empty or contains NUL".into(),
+            ));
+        }
+        Ok(match self {
+            Self::Source(source) => {
+                let (arguments, stdin) = shell.prepare(source);
+                (None, arguments.collect(), stdin)
+            }
+            Self::Argv(mut argv) => {
+                let program = argv.remove(0);
+                (Some(program), argv, None)
+            }
+        })
+    }
+    fn valid(&self) -> bool {
+        match self {
+            Self::Source(source) => !source.is_empty() && !source.contains('\0'),
+            Self::Argv(argv) => {
+                argv.first().is_some_and(|program| !program.is_empty())
+                    && argv.iter().all(|argument| !argument.contains('\0'))
+            }
+        }
+    }
+}
+
+/// Shared command capability description. Native profiles supply their lab's
+/// model-visible name and schema; execution keeps the selected target's
+/// command language and path style from the conversation's roster.
 pub const DESCRIPTION: &str = "Run a command on an execution target, in that target's listed shell language and path style. `target` names a target from the roster (the latest targets.json announced in the conversation), or user:<owner> for that user's home device; omitted, the command runs on your home target. The command runs in the calling task's composed workspace view; writes outside it are not captured. No OS sandbox in release 1";
 /// Prepares the bounded model presentation before a backend commits its output.
 /// A streaming backend uses the resulting omission count to retain a complete
@@ -98,10 +154,9 @@ pub(super) fn presentation(fields: &serde_json::Map<String, serde_json::Value>) 
 )]
 #[serde(deny_unknown_fields)]
 pub struct ShellInput {
-    /// Source for the platform shell. Only explicitly supplied ordinary process
+    /// Shell source or literal argv. Only explicitly supplied ordinary process
     /// variables and volume discovery hints are available; host settings are not inherited.
-    #[schemars(length(min = 1))]
-    pub command: String,
+    pub command: ShellCommand,
     /// Optional directory relative to the task view. Parent traversal is forbidden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
@@ -120,8 +175,7 @@ impl ShellInput {
     /// Validates the command and relative directory before any native I/O.
     pub fn validate(&self) -> Result<()> {
         let cwd = Path::new(self.cwd.as_deref().unwrap_or(""));
-        if self.command.is_empty()
-            || self.command.contains('\0')
+        if !self.command.valid()
             || self.cwd.as_ref().is_some_and(|cwd| cwd.contains('\0'))
             || cwd
                 .components()

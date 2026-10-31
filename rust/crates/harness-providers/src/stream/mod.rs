@@ -33,6 +33,7 @@ pub(crate) struct Call {
     name: String,
     arguments: String,
     metadata: Value,
+    freeform: bool,
 }
 
 pub(crate) struct State<'work> {
@@ -157,7 +158,16 @@ pub(crate) fn finish(
             continue;
         }
         let (_, call) = batch.next().ok_or_else(|| invalid("missing call item"))?;
-        let arguments = json(call.arguments.as_bytes())?;
+        let arguments = if call.freeform {
+            state
+                .budget
+                .add(std::mem::size_of::<(String, Value)>() + "input".len(), 1)?;
+            let mut fields = serde_json::Map::new();
+            fields.insert("input".into(), Value::String(call.arguments));
+            Value::Object(fields)
+        } else {
+            json(call.arguments.as_bytes())?
+        };
         if !arguments.is_object() {
             return Err(invalid("tool arguments must be a JSON object"));
         }
@@ -170,13 +180,15 @@ pub(crate) fn finish(
         let native = !call.metadata.is_null();
         state.budget.add(
             ModelDispatch::TOOL_CALL_ID_BYTES
-                + (3 + usize::from(native)) * std::mem::size_of::<(String, Value)>()
+                + (3 + usize::from(native) + usize::from(call.freeform))
+                    * std::mem::size_of::<(String, Value)>()
                 + "provider_call".len()
                 + "provider".len()
                 + "id".len()
                 + family(adapter).len()
-                + if native { "native".len() } else { 0 },
-            3 + usize::from(native),
+                + if native { "native".len() } else { 0 }
+                + if call.freeform { "freeform".len() } else { 0 },
+            3 + usize::from(native) + usize::from(call.freeform),
         )?;
         let mut binding = serde_json::Map::new();
         binding.insert("provider".into(), Value::String(family(adapter).into()));
@@ -190,6 +202,9 @@ pub(crate) fn finish(
         );
         let mut metadata = serde_json::Map::new();
         metadata.insert("provider_call".into(), Value::Object(binding));
+        if call.freeform {
+            metadata.insert("freeform".into(), Value::Bool(true));
+        }
         if native {
             metadata.insert("native".into(), call.metadata);
         }

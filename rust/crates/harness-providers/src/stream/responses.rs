@@ -1,12 +1,13 @@
 use super::{ModelEvent, Result, State, Value, index, invalid, string, text};
 
 /// Only these output item kinds have a semantic path through this decoder.
-/// Server and custom tools require native item retention before they can run.
+/// Server tools require native item retention before they can run.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Output {
     Message,
     Reasoning,
     Function,
+    Freeform,
 }
 
 impl Output {
@@ -14,11 +15,15 @@ impl Output {
         match item["type"].as_str() {
             Some("message") => Ok(Self::Message),
             Some("reasoning") => Ok(Self::Reasoning),
-            Some("function_call") => {
+            Some("function_call" | "custom_tool_call") => {
                 if crate::protocol::present(item.get("namespace")).is_some() {
                     return Err(invalid("namespaced Responses calls require native replay"));
                 }
-                Ok(Self::Function)
+                Ok(if item["type"] == "custom_tool_call" {
+                    Self::Freeform
+                } else {
+                    Self::Function
+                })
             }
             _ => Err(invalid(
                 "unsupported Responses output item requires native replay",
@@ -55,18 +60,36 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                     false,
                 )?;
             }
-            if kind == Output::Function {
+            if matches!(kind, Output::Function | Output::Freeform) {
                 let (call, budget) = state.call(index(value, "output_index")?)?;
+                if !call.name.is_empty() && call.freeform != (kind == Output::Freeform) {
+                    return Err(invalid("Responses tool kind changed"));
+                }
+                call.freeform = kind == Output::Freeform;
                 budget.string(&mut call.id, string(&item["call_id"])?)?;
                 budget.string(&mut call.name, string(&item["name"])?)?;
-                if let Some(arguments) = item["arguments"].as_str() {
+                if let Some(arguments) =
+                    item[if call.freeform { "input" } else { "arguments" }].as_str()
+                {
                     budget.string(&mut call.arguments, arguments)?;
                 }
             }
         }
+        Some("response.custom_tool_call_input.delta" | "response.custom_tool_call_input.done") => {
+            let index = index(value, "output_index")?;
+            if !state.calls.get(&index).is_some_and(|call| call.freeform) {
+                return Err(invalid("freeform tool input without custom item"));
+            }
+            let (call, budget) = state.call(index)?;
+            if value["type"] == "response.custom_tool_call_input.delta" {
+                budget.append(&mut call.arguments, value.get("delta"))?;
+            } else {
+                budget.string(&mut call.arguments, string(&value["input"])?)?;
+            }
+        }
         Some("response.function_call_arguments.delta") => {
             let index = index(value, "output_index")?;
-            if !state.calls.contains_key(&index) {
+            if !state.calls.get(&index).is_some_and(|call| !call.freeform) {
                 return Err(invalid("tool delta without item"));
             }
             let (call, budget) = state.call(index)?;
@@ -74,7 +97,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         }
         Some("response.function_call_arguments.done") => {
             let index = index(value, "output_index")?;
-            if !state.calls.contains_key(&index) {
+            if !state.calls.get(&index).is_some_and(|call| !call.freeform) {
                 return Err(invalid("tool done without item"));
             }
             let (call, budget) = state.call(index)?;

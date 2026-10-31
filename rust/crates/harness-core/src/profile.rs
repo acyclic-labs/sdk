@@ -13,6 +13,8 @@ mod tests;
 
 mod binding;
 pub use binding::{BoundTools, ToolBinding};
+mod native;
+pub use native::NativeToolProfile;
 
 /// One capability's model-specific shape, in declaration order.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]

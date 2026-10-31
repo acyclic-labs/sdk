@@ -112,7 +112,7 @@ static RUN_JS: ToolSpec = ToolSpec {
 
 static SHELL: ToolSpec = ToolSpec {
     name: super::shell::PLATFORM.name,
-    revision: "2",
+    revision: "3",
     description: super::shell::DESCRIPTION,
     hook_names: &[],
     binding: ToolBinding::Workspace,
@@ -170,7 +170,7 @@ pub(crate) static WRITE: ToolSpec = ToolSpec {
 
 pub(crate) static EDIT: ToolSpec = ToolSpec {
     name: "edit",
-    revision: "portable-6",
+    revision: "portable-7",
     description: "Replace one exact UTF-8 match in a project path. Reuse a prior read's opaque version to reject an edit against a changed source",
     hook_names: &["Edit"],
     binding: ToolBinding::Volume,

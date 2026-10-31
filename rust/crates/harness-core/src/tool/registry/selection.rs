@@ -181,9 +181,16 @@ impl ToolRegistry {
     ) -> Result<Vec<ToolDefinition>> {
         self.definitions_for_names(
             || {
-                grants
-                    .iter()
-                    .filter_map(|grant| grant.strip_prefix("tool:call:"))
+                self.data.selected.iter().filter_map(|(name, selection)| {
+                    let capability = match selection {
+                        ModelSelection::Revision(revision) => {
+                            lookup::get(&self.data.versions, name, revision)
+                                .map_or(name.as_str(), |tool| tool.definition.capability())
+                        }
+                        _ => name.as_str(),
+                    };
+                    grants.allows_tool(capability).then_some(name.as_str())
+                })
             },
             io,
         )

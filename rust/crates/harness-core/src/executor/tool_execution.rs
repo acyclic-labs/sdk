@@ -541,7 +541,10 @@ impl StockExecution<'_> {
     ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
     {
         let capability = with_history_io(self.io, |work| {
-            preparation_format(format_args!("tool:call:{}", tool.definition.name), work)
+            preparation_format(
+                format_args!("tool:call:{}", tool.definition.capability()),
+                work,
+            )
         })?;
         if !self.stock.tool_scope.grants().contains(&capability) {
             return Ok(Err(ToolCallRejection::Unavailable));

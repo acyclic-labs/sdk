@@ -1,7 +1,7 @@
 use super::wire::Item;
 use acyclic_harness_core::model::ModelRole;
 use serde::Deserialize;
-use serde_json::{Value, value::RawValue};
+use serde_json::value::RawValue;
 use std::{borrow::Cow, collections::VecDeque};
 
 #[derive(Deserialize)]
@@ -10,8 +10,6 @@ struct Part<'a> {
     #[serde(default, borrow)]
     text: Cow<'a, str>,
     thought: Option<bool>,
-    #[serde(borrow)]
-    thought_signature: Option<&'a RawValue>,
     function_call: Option<serde::de::IgnoredAny>,
 }
 
@@ -20,36 +18,53 @@ struct Part<'a> {
 // duplicate prefix across text chunks and tool steps, without merging parts.
 #[derive(Default)]
 pub(super) struct Replay<'a> {
-    pub signature: Option<Value>,
+    pub call: Option<&'a RawValue>,
     visible: VecDeque<Cow<'a, str>>,
     offset: usize,
 }
 
 impl<'a> Replay<'a> {
-    pub fn begin(&mut self, role: ModelRole) {
+    pub fn begin(&mut self, role: ModelRole) -> acyclic_harness_core::Result<()> {
         if role != ModelRole::Assistant {
-            self.signature = None;
+            self.finish()?;
         }
         if role == ModelRole::User {
             self.visible.clear();
             self.offset = 0;
         }
+        Ok(())
     }
 
-    pub fn native(&mut self, bytes: &'a [u8], suppress_display: bool) -> Option<Item<'a>> {
-        let raw: &RawValue = serde_json::from_slice(bytes).ok()?;
-        let part: Part<'_> = serde_json::from_str(raw.get()).ok()?;
-        if part.function_call.is_some() {
-            self.signature = part
-                .thought_signature
-                .and_then(|signature| crate::json(signature.get().as_bytes()).ok());
-            return None;
+    pub fn finish(&self) -> acyclic_harness_core::Result<()> {
+        if self.call.is_some() {
+            return Err(crate::invalid("retained Gemini call has no canonical call"));
         }
-        self.signature = None;
+        Ok(())
+    }
+
+    pub fn native(
+        &mut self,
+        bytes: &'a [u8],
+        suppress_display: bool,
+    ) -> acyclic_harness_core::Result<Option<Item<'a>>> {
+        // One original part must be consumed by its immediately following
+        // canonical call. Never overwrite, drop or reorder signed calls.
+        self.finish()?;
+        let raw: &RawValue = serde_json::from_slice(bytes)
+            .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
+        let part: Part<'_> = serde_json::from_str(raw.get())
+            .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
+        if part.function_call.is_some() {
+            // A signature authenticates this exact part, including the call.
+            // Retain its bytes rather than reconstructing a signed envelope.
+            self.call = Some(raw);
+            return Ok(None);
+        }
+        self.call = None;
         if suppress_display && part.thought != Some(true) && !part.text.is_empty() {
             self.visible.push_back(part.text);
         }
-        Some(Item::Native(raw))
+        Ok(Some(Item::Native(raw)))
     }
 
     pub fn remaining<'text>(&mut self, mut text: &'text str) -> &'text str {
@@ -79,14 +94,22 @@ impl<'a> Replay<'a> {
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn assert_visible_replay(events: &[acyclic_harness_core::model::ModelEvent]) {
     use acyclic_harness_core::model::ModelEvent;
+    use serde_json::Value;
     let mut replay = Replay::default();
     let mut native_text = String::new();
     for event in events {
+        if matches!(event, ModelEvent::ToolCall(_)) {
+            replay.call.take();
+        }
         if let ModelEvent::ReasoningBlock { block } = event {
-            if let Some(item) = replay.native(
-                &block.continuity,
-                block.outcome == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
-            ) {
+            if let Some(item) = replay
+                .native(
+                    &block.continuity,
+                    block.outcome
+                        == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
+                )
+                .unwrap()
+            {
                 let bytes = serde_json::to_vec(&item).unwrap();
                 assert_eq!(bytes, block.continuity, "native part bytes changed");
                 let part: Value = crate::projection::arguments::literal(&bytes).unwrap();
@@ -98,6 +121,7 @@ pub(crate) fn assert_visible_replay(events: &[acyclic_harness_core::model::Model
             }
         }
     }
+    replay.finish().unwrap();
     let visible: String = events
         .iter()
         .filter_map(|event| match event {

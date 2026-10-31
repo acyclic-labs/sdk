@@ -167,6 +167,77 @@ fn projection_contract_is_required_validated_and_pinned() -> Result<()> {
     assert!(serde_json::from_value::<ToolDefinition>(missing).is_err());
     Ok(())
 }
+
+#[test]
+fn native_metadata_is_admitted_once_and_hidden_from_model_schema() -> Result<()> {
+    let mut definition = ToolDefinition {
+        name: "apply_patch".into(),
+        revision: "native-v1".into(),
+        description: "patch".into(),
+        input_schema: json!({
+            "type":"object","properties":{"input":{"type":"string"}},
+            "required":["input"],"additionalProperties":false,
+            "x-harness-capability":"edit","x-harness-freeform":{"type":"text"}
+        }),
+        output_schema: json!({}),
+        projection_schema: json_projection_schema(json!({})),
+    };
+    definition.validate(&mut None)?;
+    assert_eq!(definition.capability(), "edit");
+    let digest = definition.digest()?;
+    let declaration = definition.model_declaration("apply_patch".into());
+    let wire = serde_json::to_value(
+        acyclic_model_render::ToolDeclarations::new(
+            acyclic_model_render::Family::Responses,
+            vec![declaration],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        wire,
+        json!([{"type":"custom","name":"apply_patch","description":"patch","format":{"type":"text"}}])
+    );
+    for (pointer, bad) in [
+        ("/x-harness-capability", json!(false)),
+        (
+            "/x-harness-freeform",
+            json!({"type":"grammar","syntax":"unknown","definition":"start: /.+/"}),
+        ),
+        ("/properties/input/type", json!("object")),
+        ("/required", json!([])),
+        ("/additionalProperties", json!(true)),
+    ] {
+        let mut changed = definition.clone();
+        *changed.input_schema.pointer_mut(pointer).unwrap() = bad;
+        assert!(
+            changed.validate(&mut None).is_err(),
+            "invalid native boundary {pointer}"
+        );
+    }
+    definition.input_schema["x-harness-capability"] = json!("write");
+    assert_ne!(
+        definition.digest()?,
+        digest,
+        "approval identity must bind the capability"
+    );
+    definition
+        .input_schema
+        .as_object_mut()
+        .unwrap()
+        .remove("x-harness-freeform");
+    let declaration = definition.model_declaration("apply_patch".into());
+    let wire = serde_json::to_value(
+        acyclic_model_render::ToolDeclarations::new(
+            acyclic_model_render::Family::Responses,
+            vec![declaration],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(wire[0]["parameters"].get("x-harness-capability").is_none());
+    Ok(())
+}
 impl ToolApprovalVerifier for Approved {
     fn verify<'a>(
         &'a self,

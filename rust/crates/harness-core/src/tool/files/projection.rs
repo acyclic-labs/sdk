@@ -76,7 +76,7 @@ impl ToolProjection for FileProjection {
                             )
                         }));
                     }
-                } else {
+                } else if input.0.lines.is_none() {
                     crate::executor::with_history_io(io, |history| match file {
                         FileReadSource::Content(file) => {
                             file.descriptor().verify(text.as_bytes(), history)

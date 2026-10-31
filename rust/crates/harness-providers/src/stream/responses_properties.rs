@@ -33,7 +33,7 @@ proptest! {
         let terminal = json!({"type":"response.completed","response":{"status":"completed"}});
         for item in [
             json!({"type":format!("unsupported_{suffix}")}),
-            json!({"type":"custom_tool_call","call_id":"call","name":"tool","input":suffix}),
+            json!({"type":"custom_tool_call","call_id":"call","name":"tool","input":suffix,"namespace":namespace}),
             json!({"type":"web_search_call","id":"search","status":"completed"}),
             json!({"type":"function_call","call_id":"call","name":"tool","arguments":"{}","namespace":namespace}),
             json!({"type":null}),
@@ -84,5 +84,131 @@ proptest! {
         prop_assert!(observed.iter().all(|event| event.is_ok()));
         prop_assert!(observed.iter().any(|event| matches!(event, Ok(ModelEvent::ToolCall(_)))));
         prop_assert!(observed.iter().any(|event| matches!(event, Ok(ModelEvent::Completed { .. }))), "ordinary streams must still terminate successfully");
+    }
+}
+
+// Generated protocol inputs exercise UTF-8 fragmentation, literal freeform
+// input, parallel indices and producer loss; these are not external fixtures.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn freeform_input_survives_fragmentation_and_native_replay(
+        input in ".{0,128}", width in 1usize..32,
+    ) {
+        use acyclic_harness_core::model::{ModelContent, ModelContentPart, ModelMessage, ModelRole, ToolResultContent};
+        let (provider, _) = crate::tests::provider(crate::Adapter::Responses, 200);
+        let (prepared, dispatch) = crate::tests::request(&provider).unwrap();
+        let mut request = prepared.request().clone();
+        let frames = [
+            json!({"type":"response.output_item.added","output_index":1,"item":{
+                "type":"custom_tool_call","call_id":"patch_call","name":"apply_patch","input":""
+            }}),
+            json!({"type":"response.custom_tool_call_input.delta","output_index":1,"delta":input}),
+            json!({"type":"response.custom_tool_call_input.done","output_index":1,"input":input}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{
+                "type":"function_call","call_id":"shell_call","name":"shell","arguments":"{}"
+            }}),
+            json!({"type":"response.completed","response":{"status":"completed"}}),
+        ];
+        let wire: String = frames.iter().map(|frame| format!("data: {frame}\n\n")).collect();
+        let events = futures::executor::block_on(super::super::events(
+            crate::Adapter::Responses, crate::tests::chunks(&wire, width), 32768, dispatch,
+        ).collect::<Vec<_>>());
+        let mut calls = Vec::new();
+        for event in events {
+            match event.unwrap() {
+                ModelEvent::ToolCall(call) => calls.push(call),
+                ModelEvent::Completed { .. } => {},
+                _ => prop_assert!(false, "unexpected event"),
+            }
+        }
+        prop_assert_eq!(calls.len(), 2);
+        prop_assert_eq!(&calls[0].call_id, &dispatch.tool_call_id(0));
+        prop_assert_eq!(&calls[1].call_id, &dispatch.tool_call_id(1));
+        prop_assert_eq!(&calls[1].arguments, &json!({"input":input}));
+        let original_call = calls[1].clone();
+        for call in &calls {
+            request.messages.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::ToolCall(call.clone())),
+            });
+        }
+        for call in calls {
+            request.messages.push(ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: call.call_id, name: call.name,
+                    content: ToolResultContent::Json { value: json!({"ok":true}) },
+                }),
+            });
+        }
+        let prepared = acyclic_harness_core::model::PreparedModelRequest::prepare(
+            request, acyclic_harness_core::conversation::Limits::default(), None,
+        ).unwrap();
+        let restored = acyclic_harness_core::model::PreparedModelRequest::decode(
+            prepared.bytes(), acyclic_harness_core::conversation::Limits::default(), None,
+        ).unwrap();
+        let body = crate::projection::body(&provider, restored.request()).unwrap();
+        prop_assert!(crate::validate_input(crate::Adapter::Responses, &body).is_empty());
+        let native = body["input"].as_array().unwrap();
+        let patch = native.iter().find(|item| item["type"] == "custom_tool_call").unwrap();
+        prop_assert_eq!(&patch["input"], &json!(input));
+        prop_assert_eq!(&patch["call_id"], &json!("patch_call"));
+        prop_assert!(patch.get("arguments").is_none());
+        prop_assert!(native.iter().any(|item| item["type"] == "custom_tool_call_output" && item["call_id"] == "patch_call"));
+        let mut wrong_kind = body.clone();
+        let output = wrong_kind["input"].as_array_mut().unwrap().iter_mut()
+            .find(|item| item["type"] == "custom_tool_call_output").unwrap();
+        output["type"] = json!("function_call_output");
+        prop_assert!(crate::validate_input(crate::Adapter::Responses, &wrong_kind).contains(&"OAR-TOOL-04"));
+        for adapter in [crate::Adapter::Chat, crate::Adapter::Anthropic, crate::Adapter::Gemini] {
+            prop_assert!(!crate::call_ids::CallIds::new(restored.request(), adapter).freeform(&original_call.call_id));
+            prop_assert!(crate::projection::body(&crate::tests::provider(adapter, 200).0, restored.request()).is_ok());
+        }
+        // Dropping the terminal producer ends with the transport's typed
+        // interruption, and no tool in the incomplete batch becomes executable.
+        let unfinished: String = frames[..4].iter().map(|frame| format!("data: {frame}\n\n")).collect();
+        let observed = futures::executor::block_on(super::super::events(
+            crate::Adapter::Responses, crate::tests::chunks(&unfinished, width), 32768, dispatch,
+        ).collect::<Vec<_>>());
+        prop_assert_eq!(observed.len(), 1);
+        prop_assert!(matches!(&observed[0], Err(acyclic_harness_core::Error::ModelUnavailable {
+            failure: acyclic_harness_core::ModelTransportFailure::Interrupted, ..
+        })), "producer loss must return a typed transport interruption");
+    }
+}
+
+#[test]
+fn function_and_freeform_events_cannot_share_an_item() {
+    for (kind, events) in [
+        (
+            "custom_tool_call",
+            [
+                json!({"type":"response.function_call_arguments.delta","delta":"{}"}),
+                json!({"type":"response.function_call_arguments.done","arguments":"{}"}),
+            ],
+        ),
+        (
+            "function_call",
+            [
+                json!({"type":"response.custom_tool_call_input.delta","delta":"patch"}),
+                json!({"type":"response.custom_tool_call_input.done","input":"patch"}),
+            ],
+        ),
+    ] {
+        for mut event in events {
+            let mut state = State::new(16384);
+            let added = json!({"type":"response.output_item.added","output_index":0,
+                "item":{"type":kind,"name":"tool","call_id":"call"}});
+            super::super::parse(&mut state, crate::Adapter::Responses, &added.to_string()).unwrap();
+            event["output_index"] = json!(0);
+            let used = state.budget.used();
+            assert!(
+                super::super::parse(&mut state, crate::Adapter::Responses, &event.to_string())
+                    .is_err()
+            );
+            assert_eq!(state.budget.used(), used);
+            assert!(state.calls[&0].arguments.is_empty());
+        }
     }
 }

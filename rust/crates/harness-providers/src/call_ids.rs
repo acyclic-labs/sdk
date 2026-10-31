@@ -12,11 +12,16 @@ const PREFIX: &str = "harness_call_";
 struct Binding<'a> {
     canonical: &'a str,
     wire: Cow<'a, str>,
+    freeform: bool,
+    omit_gemini_id: bool,
 }
 
 pub(crate) struct CallIds<'a>(Vec<Binding<'a>>);
 
-fn ids(request: &ModelRequest, adapter: Adapter) -> impl Iterator<Item = (&str, Option<&str>)> {
+fn ids(
+    request: &ModelRequest,
+    adapter: Adapter,
+) -> impl Iterator<Item = (&str, Option<&str>, bool, bool)> {
     request
         .messages
         .iter()
@@ -27,9 +32,20 @@ fn ids(request: &ModelRequest, adapter: Adapter) -> impl Iterator<Item = (&str, 
                 let native = (binding["provider"].as_str() == Some(family(adapter)))
                     .then(|| binding["id"].as_str())
                     .flatten();
-                Some((call.call_id.as_str(), native))
+                Some((
+                    call.call_id.as_str(),
+                    native,
+                    adapter == Adapter::Responses
+                        && binding["provider"].as_str() == Some(family(adapter))
+                        && call.metadata["freeform"] == true,
+                    adapter == Adapter::Gemini
+                        && binding["provider"].as_str() == Some(family(adapter))
+                        && binding.get("id").is_some_and(serde_json::Value::is_null),
+                ))
             }
-            ModelContentPart::ToolResult { call_id, .. } => Some((call_id.as_str(), None)),
+            ModelContentPart::ToolResult { call_id, .. } => {
+                Some((call_id.as_str(), None, false, false))
+            }
             _ => None,
         })
 }
@@ -41,13 +57,17 @@ fn unchanged(id: &str) -> bool {
 impl<'a> CallIds<'a> {
     pub(crate) fn new(request: &'a ModelRequest, adapter: Adapter) -> Self {
         let mut bindings = Vec::with_capacity(ids(request, adapter).count());
-        bindings.extend(ids(request, adapter).map(|(canonical, native)| {
-            let candidate = native.filter(|id| unchanged(id)).unwrap_or(canonical);
-            Binding {
-                canonical,
-                wire: Cow::Borrowed(if unchanged(candidate) { candidate } else { "" }),
-            }
-        }));
+        bindings.extend(ids(request, adapter).map(
+            |(canonical, native, freeform, omit_gemini_id)| {
+                let candidate = native.filter(|id| unchanged(id)).unwrap_or(canonical);
+                Binding {
+                    canonical,
+                    freeform,
+                    omit_gemini_id,
+                    wire: Cow::Borrowed(if unchanged(candidate) { candidate } else { "" }),
+                }
+            },
+        ));
         // Calls carry the original binding; results only carry the canonical ID.
         // Prefer a valid original binding, independent of traversal order.
         bindings.sort_unstable_by(|a, b| {
@@ -56,6 +76,8 @@ impl<'a> CallIds<'a> {
             a.canonical
                 .cmp(b.canonical)
                 .then_with(|| b_native.cmp(&a_native))
+                .then_with(|| b.freeform.cmp(&a.freeform))
+                .then_with(|| b.omit_gemini_id.cmp(&a.omit_gemini_id))
                 .then(a.wire.cmp(&b.wire))
         });
         bindings.dedup_by_key(|binding| binding.canonical);
@@ -77,12 +99,26 @@ impl<'a> CallIds<'a> {
         Self(bindings)
     }
 
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
     pub(crate) fn wire<'b>(&'b self, id: &str) -> Result<Cow<'b, str>> {
+        self.binding(id).map(|(wire, _, _)| wire)
+    }
+
+    pub(crate) fn binding<'b>(&'b self, id: &str) -> Result<(Cow<'b, str>, bool, bool)> {
         let index = self
             .0
             .binary_search_by(|binding| binding.canonical.cmp(id))
             .map_err(|_| invalid("missing tool call ID binding"))?;
-        Ok(Cow::Borrowed(self.0[index].wire.as_ref()))
+        Ok((
+            Cow::Borrowed(self.0[index].wire.as_ref()),
+            self.0[index].freeform,
+            self.0[index].omit_gemini_id,
+        ))
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn freeform(&self, id: &str) -> bool {
+        self.binding(id).is_ok_and(|(_, freeform, _)| freeform)
     }
 
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
@@ -109,7 +145,7 @@ impl<'a> CallIds<'a> {
                     "distinct canonical exchanges collided"
                 );
             }
-            for (id, _) in ids(request, adapter) {
+            for (id, _, _, _) in ids(request, adapter) {
                 let wire = table.wire(id).unwrap();
                 assert_eq!(reverse[wire.as_ref()], id);
             }

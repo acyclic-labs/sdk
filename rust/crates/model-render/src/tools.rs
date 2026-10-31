@@ -17,6 +17,15 @@ pub enum ToolDeclaration<'a, P> {
         /// Borrowed model input schema view.
         parameters: P,
     },
+    /// A Responses custom tool over the original canonical JSON executor.
+    Freeform {
+        /// Provider-valid name already chosen by the canonical name binder.
+        name: Cow<'a, str>,
+        /// Model-facing description.
+        description: &'a str,
+        /// Borrowed native text or grammar format.
+        format: P,
+    },
     /// Provider-owned web search, without a client function or executor.
     WebSearch,
 }
@@ -43,6 +52,11 @@ impl<'a, P> ToolDeclarations<'a, P> {
         let mut search = false;
         let mut search_function = false;
         for declaration in &declarations {
+            if matches!(declaration, ToolDeclaration::Freeform { .. })
+                && family != Family::Responses
+            {
+                return Err(RenderError::InvalidItem("freeform tools require Responses"));
+            }
             if let ToolDeclaration::Function { name, .. } = declaration {
                 search_function |= name == "web_search";
             }
@@ -128,6 +142,16 @@ impl<P: Serialize> Serialize for Declaration<'_, '_, P> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         match self.tool {
+            ToolDeclaration::Freeform {
+                name,
+                description,
+                format,
+            } => {
+                map.serialize_entry("type", "custom")?;
+                map.serialize_entry("name", name)?;
+                map.serialize_entry("description", description)?;
+                map.serialize_entry("format", format)?;
+            }
             ToolDeclaration::WebSearch => match self.family {
                 Family::Responses => map.serialize_entry("type", "web_search")?,
                 Family::Anthropic => {

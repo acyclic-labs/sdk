@@ -169,6 +169,9 @@ impl FileTool {
         let invalid = |reason| rejection(work, reason);
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+        if input.0.range.is_some() && input.0.lines.is_some() {
+            return Err(invalid("read cannot select bytes and lines together"));
+        }
         if (input.0.range.is_some() && input.0.version.is_none())
             || input
                 .0
@@ -206,14 +209,16 @@ impl FileTool {
             .0
             .range
             .map_or(Some(length), |range| range.end.checked_sub(range.start));
-        if selected_length.is_none_or(|length| {
-            length
-                > context
-                    .effective_scope()
-                    .limits()
-                    .render_bytes
-                    .min(context.effective_scope().limits().file_bytes)
-        }) {
+        if input.0.lines.is_none()
+            && selected_length.is_none_or(|length| {
+                length
+                    > context
+                        .effective_scope()
+                        .limits()
+                        .render_bytes
+                        .min(context.effective_scope().limits().file_bytes)
+            })
+        {
             return Err(invalid("file selection exceeds text rendering bound"));
         }
         let bytes = if let Some(bytes) = resolved {
@@ -245,6 +250,7 @@ impl FileTool {
             context.read_file(&file, io).await?
         };
         let source = read_text(bytes.as_ref(), empty, work)?;
+        let source = self.select_read_lines(context, &input.0, source, work)?;
         read_result(FileReadSource::Content(file), source, work)
     }
 
@@ -270,11 +276,12 @@ impl FileTool {
             .end
             .checked_sub(range.start)
             .ok_or_else(|| invalid("read range is reversed"))?;
-        let maximum = context
-            .effective_scope()
-            .limits()
-            .render_bytes
-            .min(context.effective_scope().limits().file_bytes);
+        let limits = context.effective_scope().limits();
+        let maximum = if input.lines.is_some() {
+            limits.file_bytes
+        } else {
+            limits.render_bytes.min(limits.file_bytes)
+        };
         if count > maximum {
             return Err(invalid("file selection exceeds text rendering bound"));
         }
@@ -298,7 +305,31 @@ impl FileTool {
             return Err(invalid("read result belongs to another selection"));
         }
         let text = read_text(bytes.as_ref(), empty, work)?;
+        let text = self.select_read_lines(context, input, text, work)?;
         read_result(FileReadSource::Authored(selected), text, work)
+    }
+
+    fn select_read_lines<'a>(
+        &self,
+        context: &ToolContext,
+        input: &ReadFileInput,
+        source: &'a str,
+        work: crate::NativeWork<'_>,
+    ) -> Result<&'a str> {
+        let selected = if let Some(lines) = input.lines {
+            let scan = super::edit::allocation(work, 0)?;
+            super::edit::charge(&scan, 0, source.len() as u64)?;
+            lines.select(source)
+        } else {
+            source
+        };
+        if selected.len() as u64 > context.effective_scope().limits().render_bytes {
+            return Err(rejection(
+                work,
+                "file selection exceeds text rendering bound",
+            ));
+        }
+        Ok(selected)
     }
 
     async fn source(
@@ -373,10 +404,11 @@ impl FileTool {
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-        let edited = super::edit::exact_replace(
+        let edited = super::edit::replace(
             source,
             &input.0.old_text,
             &input.0.new_text,
+            input.0.replace_all,
             maximum,
             &mut allocation,
         )?;

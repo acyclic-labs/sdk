@@ -147,7 +147,7 @@ pub fn tool_approval_request(
     let (prompt, custody) = paid;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut custody = custody;
-    let subject = copy_approval_subject(invocation, work, route, target)?;
+    let subject = copy_approval_subject(invocation, definition.capability(), work, route, target)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut subject = subject;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -171,6 +171,7 @@ pub fn tool_approval_request(
 
 fn copy_approval_subject(
     invocation: &ToolInvocation,
+    capability: &str,
     work: Option<&NativeWork>,
     route: crate::interaction::ApprovalRoute,
     target: Option<&crate::agent::TargetRecord>,
@@ -182,7 +183,7 @@ fn copy_approval_subject(
         let mut io = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(work)?,
         );
-        let tool = io.clone_text(&invocation.name)?;
+        let tool = io.clone_text(capability)?;
         let call_id = io.clone_text(&invocation.call_id)?;
         let arguments = crate::executor::json::json_value_copy_bounded(
             &invocation.arguments,
@@ -216,7 +217,7 @@ fn copy_approval_subject(
     Ok((
         ApprovalSubject::Tool {
             route,
-            tool: invocation.name.clone(),
+            tool: capability.to_owned(),
             call_id: invocation.call_id.clone(),
             arguments: invocation.arguments.clone(),
             target: target.map(|target| crate::interaction::ApprovalTarget {

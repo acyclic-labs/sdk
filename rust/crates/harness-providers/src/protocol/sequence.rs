@@ -16,7 +16,7 @@ impl ResponseItem {
     pub fn of(item: &Value) -> Self {
         match item["type"].as_str().unwrap_or("message") {
             "reasoning" => Self::Reasoning,
-            "function_call" => Self::Output,
+            "function_call" | "custom_tool_call" => Self::Output,
             "configuration_update" => Self::Configuration,
             "message" if item["role"] == "assistant" => Self::Output,
             _ => Self::Other,

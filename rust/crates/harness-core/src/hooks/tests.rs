@@ -577,16 +577,28 @@ fn registry() -> Result<ToolRegistry> {
 }
 
 #[test]
-fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
-    let registry = registry()?;
+fn tool_matchers_use_capabilities_and_exact_identifiers() -> Result<()> {
+    let mut registry = registry()?;
+    for (name, capability) in [
+        ("Bash", "shell"),
+        ("run_shell_command", "shell"),
+        ("Edit", "edit"),
+        ("replace", "edit"),
+        ("apply_patch", "edit"),
+    ] {
+        let mut tool = registry.get(capability, None, None)?.unwrap().clone();
+        tool.definition.name = name.into();
+        tool.definition.input_schema["x-harness-capability"] = json!(capability);
+        registry.register((tool, None), &mut None, None)?;
+    }
     let mut hooks = Hooks::default();
     hooks.add_json(
         json!({"hooks":{"PreToolUse":[
             {"matcher":"Bash","hooks":[{"type":"command","command":"guard"}]},
             {"matcher":"PowerShell","hooks":[{"type":"command","command":"windows-guard"}]},
             {"matcher":"shell","hooks":[{"type":"command","command":"shell-guard"}]},
-            {"matcher":"Edit","hooks":[{"type":"command","command":"edit"}]},
-            {"matcher":"Edit|Write","hooks":[{"type":"command","command":"changes"}]},
+            {"matcher":"edit","hooks":[{"type":"command","command":"edit"}]},
+            {"matcher":"edit|write","hooks":[{"type":"command","command":"changes"}]},
             {"matcher":"fs","hooks":[{"type":"command","command":"fs"}]}
         ]}})
         .to_string()
@@ -594,11 +606,16 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
     )?;
     for (name, commands) in [
         ("shell", vec!["shell-guard"]),
+        ("Bash", vec!["shell-guard"]),
+        ("run_shell_command", vec!["shell-guard"]),
         ("edit", vec!["edit", "changes"]),
+        ("Edit", vec!["edit", "changes"]),
+        ("replace", vec!["edit", "changes"]),
+        ("apply_patch", vec!["edit", "changes"]),
         ("write", vec!["changes"]),
         ("fs", vec!["fs"]),
-        // Regex alternation keeps regex semantics; plain Edit is anchored.
-        ("NotebookEdit", vec!["changes"]),
+        // The tool's incidental spelling grants no edit capability.
+        ("NotebookEdit", vec![]),
         ("read", vec![]),
     ] {
         assert_eq!(
@@ -647,7 +664,7 @@ async fn tool_catalog_routes_approval_hooks() -> Result<()> {
     let registry = crate::tools::defaults()?;
     for spec in crate::tools::catalog() {
         let mut hooks = Hooks::default();
-        let matcher = spec.hook_names.first().copied().unwrap_or(spec.name);
+        let matcher = spec.name;
         hooks.add_json(
             json!({"hooks":{"PreToolUse":[{
                 "matcher":matcher,"hooks":[{"type":"command","command":"approve"}]

@@ -144,6 +144,58 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         64_000,
         TOOLS_AND_IMAGES,
     ),
+    // https://ai.google.dev/gemini-api/docs/models (verified 2026-10-31).
+    // Argon long decode is a separate asynchronous mode; streamGenerateContent
+    // retains the documented synchronous output capacity.
+    (
+        "gemini",
+        "gemini-4-argon",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-3.8-flash",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-3.6-flash",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-3.5-flash-lite",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-3.1-flash-lite",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-3.1-pro-preview",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-3-flash-preview",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
     (
         "gemini",
         "gemini-2.5-pro",

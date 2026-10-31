@@ -16,6 +16,52 @@ pub struct ReadFileInput {
     /// Optional exact UTF-8 byte interval; omission reads the complete file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<super::text::TextRange>,
+    /// Zero-based line selection, mutually exclusive with a byte interval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<LineSelection>,
+}
+
+/// A line page without an implicit upper bound.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct LineSelection {
+    /// Number of complete lines to skip.
+    pub offset: u64,
+    /// Maximum lines to return; absent selects through EOF.
+    pub limit: Option<u64>,
+}
+
+impl LineSelection {
+    pub(super) fn select<'a>(&self, source: &'a str) -> &'a str {
+        let mut start = source.len();
+        let mut end = source.len();
+        let mut position = 0;
+        for (index, line) in source.split_inclusive('\n').enumerate() {
+            if index as u64 == self.offset {
+                start = position;
+            }
+            if self
+                .limit
+                .is_some_and(|limit| (index as u64).saturating_sub(self.offset) >= limit)
+                && index as u64 >= self.offset
+            {
+                end = position;
+                break;
+            }
+            position += line.len();
+        }
+        &source[start..end]
+    }
 }
 
 /// Single-operation UTF-8 publication arguments.
@@ -49,6 +95,9 @@ pub struct EditFileInput {
     pub old_text: String,
     /// Exact replacement, including an empty deletion.
     pub new_text: String,
+    /// Replace every non-overlapping occurrence; absent requires one unique match.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace_all: bool,
 }
 
 /// Explicit single-file V4A update arguments.
@@ -134,8 +183,8 @@ mod codec_tests {
             let file = FileRef::new(volume, path.clone(), "version".into(),
                 FileDescriptor::new([1; 32], 128, "text/plain".into()).unwrap(), "file".into(), &mut None).unwrap();
             let version = super::super::version::encode_version(&file, None).unwrap().0;
-            round_trip(ReadFileInput { path: path.clone(), version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }) });
-            round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement });
+            round_trip(ReadFileInput { path: path.clone(), version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), lines: None });
+            round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, replace_all: false });
             round_trip(WriteFileInput { path, content: text });
         }
     }

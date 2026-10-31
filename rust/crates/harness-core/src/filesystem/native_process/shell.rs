@@ -98,10 +98,27 @@ pub fn prepare<T>(
             ))
         },
     );
-    let (arguments, standard_input) = crate::tools::shell::PLATFORM.prepare(input.command);
-    invocation.argv = arguments.collect();
-    invocation.standard_input =
-        standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
+    let shell = &crate::tools::shell::PLATFORM;
+    let (program, arguments, standard_input) = input.command.prepare(shell)?;
+    if let Some(program) = program {
+        let search =
+            acyclic_native_runtime::ExecutableSearch::from_environment(&invocation.cwd, |name| {
+                invocation
+                    .environment
+                    .iter()
+                    .find(|(key, _)| {
+                        if cfg!(windows) {
+                            key.eq_ignore_ascii_case(name)
+                        } else {
+                            key.as_str() == name
+                        }
+                    })
+                    .map(|(_, value)| value.into())
+            });
+        invocation.executable = search.resolve(program).map_err(io)?;
+    }
+    invocation.argv = arguments;
+    invocation.standard_input = standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
     super::invocation::validate(
         &invocation.executable,
         &invocation.cwd,

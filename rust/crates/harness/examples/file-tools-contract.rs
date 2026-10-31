@@ -101,6 +101,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         path: file.path().into(),
         version: Some(serde_json::to_string(&file)?),
         range: Some(TextRange { start: 5, end: 9 }),
+        lines: None,
     };
     let read = "🦀";
     let read_invocation = invocation("read", value(&read_input)?);
@@ -154,6 +155,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         path: file.path().into(),
         version: Some(serde_json::to_string(&file)?),
         range: None,
+        lines: None,
     };
     let exact_invocation = invocation("read", value(&exact_input)?);
     let exact_result = ToolResult {

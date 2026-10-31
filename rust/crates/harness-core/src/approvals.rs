@@ -99,7 +99,7 @@ pub enum Approver {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRule {
-    /// Optional exact tool name.
+    /// Optional exact capability, independent of the model's tool variant.
     #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub tool: Option<String>,
     /// Optional exact arguments, including all object fields.

@@ -199,7 +199,7 @@ impl Preset {
         Ok(tools
             .definitions(None)?
             .into_iter()
-            .map(|definition| definition.name)
+            .map(|definition| definition.capability().to_owned())
             .chain(agent_tools)
             .map(|name| crate::contract::capability::tool_call(&name))
             .collect())

@@ -211,6 +211,7 @@ pub(crate) fn body_named<'a>(
             ));
         }
     }
+    gemini.finish()?;
     sequence::finish(adapter, &mut messages)?;
     let tools = request
         .tools
@@ -324,7 +325,7 @@ fn project_message<'a>(
     let mut calls = Vec::new();
     let mut results = Vec::new();
     let mut ordered = Vec::new();
-    gemini.begin(message.role);
+    gemini.begin(message.role)?;
     let mut chat_reasoning = None;
     if let ModelContent::Text(text) = &message.content {
         project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
@@ -373,14 +374,16 @@ fn project_message<'a>(
                 metadata: _,
             }) => {
                 let name = names.wire(name)?;
-                let call_id = call_ids.wire(call_id)?;
+                let (call_id, freeform, omit_gemini_id) = call_ids.binding(call_id)?;
                 let call = call::Call {
                     adapter,
                     id: call_id.into_owned(),
                     name,
                     arguments,
-                    signature: if adapter == Adapter::Gemini {
-                        gemini.signature.take()
+                    freeform,
+                    omit_gemini_id,
+                    native: if adapter == Adapter::Gemini {
+                        gemini.call.take()
                     } else {
                         None
                     },
@@ -406,7 +409,7 @@ fn project_message<'a>(
                             continuity,
                             block.outcome
                                 == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
-                        ) {
+                        )? {
                             ordered.push(part);
                         }
                     }
@@ -426,13 +429,15 @@ fn project_message<'a>(
                 content,
             } => {
                 let name = names.wire(name)?;
-                let call_id = call_ids.wire(call_id)?;
+                let (call_id, freeform, omit_gemini_id) = call_ids.binding(call_id)?;
                 let result = Item::Result(result::ToolResult {
                     adapter,
                     id: call_id.into_owned(),
                     name,
                     payload: result_text(content, files)?,
                     error: matches!(content, ToolResultContent::Error { .. }),
+                    freeform,
+                    omit_gemini_id,
                 });
                 if adapter == Adapter::Chat {
                     results.push(result);

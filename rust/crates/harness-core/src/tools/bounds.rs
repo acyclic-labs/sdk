@@ -15,7 +15,19 @@ pub(super) fn limits(context: &ToolContext) -> (u64, usize) {
 /// rendered part, or a shell `cwd` longer than a path.
 pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usize)) -> Result<()> {
     let text = |field: &str| arguments.get(field).and_then(Value::as_str).unwrap_or("");
-    if text("command").len() as u64 > render {
+    let command_bytes = match arguments.get("command").and_then(Value::as_array) {
+        Some(argv) => {
+            argv.iter()
+                .filter_map(Value::as_str)
+                .try_fold(0usize, |bytes, argument| {
+                    bytes
+                        .checked_add(argument.len())
+                        .ok_or_else(|| Error::Invalid("shell command length overflow".into()))
+                })?
+        }
+        None => text("command").len(),
+    };
+    if command_bytes as u64 > render {
         return Err(Error::Invalid(format!(
             "{name} command exceeds its {render}-byte bound"
         )));
