@@ -6,8 +6,7 @@ use super::{
     protocol::{Completion, Pending, Refusal, State},
 };
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitId, CommitMutation, CommitRequest, IdempotencyKey, Record,
-    StreamPath,
+    AppendRecord, CommitCondition, CommitId, CommitMutation, CommitRequest, Record, StreamPath,
 };
 use serde::{Deserialize, Serialize};
 
@@ -207,14 +206,15 @@ impl Snapshot {
         Ok(())
     }
 
-    /// Encodes the epoch and pending identity as one conditional append. The
-    /// caller composes this request with its actor checkpoint before submitting
-    /// once. There is no flush, head lookup or publication inside this method.
-    pub fn publication(
+    /// Adds the epoch, pending identity and result to the caller's existing
+    /// conditional commit. Its actor checkpoint, request identity and deadline
+    /// stay on that same request. Encoding failure leaves the request unchanged.
+    /// There is no separate request, flush, head lookup or publication here.
+    pub fn append_to(
         &self,
         path: StreamPath,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<CommitRequest, SnapshotError> {
+        request: &mut CommitRequest,
+    ) -> Result<(), SnapshotError> {
         let condition = if let Some((sequence, commit_id)) = self.anchor {
             CommitCondition::Head {
                 path: path.clone(),
@@ -234,14 +234,12 @@ impl Snapshot {
                 completion: self.outcome.as_ref(),
             }),
         });
-        Ok(CommitRequest {
-            deadline_unix_millis: None,
-            conditions: vec![condition],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![AppendRecord::from(serde_json::to_vec(&wire)?)],
-            }],
-            idempotency_key,
-        })
+        let record = AppendRecord::from(serde_json::to_vec(&wire)?);
+        request.conditions.push(condition);
+        request.mutations.push(CommitMutation::Append {
+            path,
+            records: vec![record],
+        });
+        Ok(())
     }
 }
