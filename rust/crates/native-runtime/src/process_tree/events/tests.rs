@@ -12,6 +12,23 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
     let now = Instant::now();
     let earlier = now + Duration::from_secs(1);
     let distant = now + Duration::from_secs(2);
+    // Exercise the same lifecycle transition used when a native adapter
+    // reports immediate readiness. No settled source may lend its timer to a
+    // concurrent registration while its original Wait remains alive.
+    let immediate = Arc::new(Signal::default());
+    {
+        let mut registry = hub.registry();
+        registry.next += 1;
+        let token = registry.next;
+        assert!(
+            registry
+                .registered(&hub.poller, token, &immediate, Some(earlier), true)
+                .is_none()
+        );
+        assert!(registry.armed.is_empty());
+        assert!(registry.positions.is_empty());
+        assert!(registry.timers.is_empty());
+    }
     let mut later = arm_on(&hub, &[], Some(distant))?;
     let mut ready = Vec::new();
     hub.poller.wait(None, &mut ready)?;

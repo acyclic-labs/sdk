@@ -85,6 +85,34 @@ struct Registry {
 }
 
 impl Registry {
+    fn registered(
+        &mut self,
+        poller: &platform::Poller,
+        token: u64,
+        signal: &Arc<Signal>,
+        wake_at: Option<Instant>,
+        ready: bool,
+    ) -> Option<Failure> {
+        if ready {
+            return None;
+        }
+        let earliest = wake_at.filter(|at| self.timers.first().is_none_or(|(first, _)| at < first));
+        if let Some(at) = wake_at {
+            self.timers.insert((at, token));
+        }
+        self.positions.insert(token, self.armed.len());
+        self.armed.push((
+            token,
+            Armed {
+                signal: Arc::clone(signal),
+                wake_at,
+            },
+        ));
+        earliest
+            .and_then(|_| poller.notify().err())
+            .and_then(|error| self.fail(error))
+    }
+
     fn remove(&mut self, token: u64) -> Option<Armed> {
         let position = self.positions.remove(&token)?;
         let (_, armed) = self.armed.swap_remove(position);
@@ -318,20 +346,6 @@ fn arm_on<'a>(
             .ok_or_else(|| io::Error::other("process readiness tokens exhausted"))?;
         registrations.reserve(sources.len());
         let token = registry.next;
-        let earliest =
-            wake_at.filter(|at| registry.timers.first().is_none_or(|(first, _)| at < first));
-        if let Some(at) = wake_at {
-            registry.timers.insert((at, token));
-        }
-        let position = registry.armed.len();
-        registry.positions.insert(token, position);
-        registry.armed.push((
-            token,
-            Armed {
-                signal: Arc::clone(&signal),
-                wake_at,
-            },
-        ));
         // Registration and producer retirement share this lifecycle lock.
         // No native registration may be dispatched after its producer ends.
         let registration = (|| {
@@ -345,20 +359,10 @@ fn arm_on<'a>(
         })();
         match registration {
             Ok(ready) => {
-                let failure = if !ready && earliest.is_some() {
-                    hub.poller
-                        .notify()
-                        .err()
-                        .and_then(|error| registry.fail(error))
-                } else {
-                    None
-                };
+                let failure = registry.registered(&hub.poller, token, &signal, wake_at, ready);
                 (token, ready, failure)
             }
-            Err(error) => {
-                registry.remove(token);
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         }
     };
     let wait = Wait {

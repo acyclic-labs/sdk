@@ -229,6 +229,12 @@ impl<'a> PendingStdin<'a> {
                 meter.check()?;
             }
         }
+        if self.interactive && !self.writing() {
+            // The original pipe operation has completed. Retire its payload
+            // even when this was the final transfer and no producer is called again.
+            self.bytes = std::borrow::Cow::Owned(Vec::new());
+            self.written = 0;
+        }
         if self.complete && self.written == self.bytes.len() && !self.stopped {
             let open = tree
                 .child
@@ -304,10 +310,6 @@ impl<'a> PendingStdin<'a> {
         if !self.interactive || self.complete || self.writing() {
             return Ok(());
         }
-        // Retire the original payload before returning its transfer credit to
-        // the producer through the next callback.
-        self.bytes = std::borrow::Cow::Owned(Vec::new());
-        self.written = 0;
         let next = next()?;
         if next.bytes.len() > self.maximum {
             return Err(io::Error::new(
@@ -399,6 +401,60 @@ impl std::fmt::Display for ProcessCaptureFailure {
 impl std::error::Error for ProcessCaptureFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.error)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn final_interactive_payload_retires_at_original_pipe_completion() -> io::Result<()> {
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .args([
+                "--exact",
+                "process_tree::stream::tests::child",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_TEST_STREAM_CAPTURE", "credit")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command)?;
+        let mut input = PendingStdin::owned(super::super::OwnedCaptureInput::Interactive {
+            initial: Vec::new(),
+            maximum: 4,
+        })?;
+        input.receive(
+            &mut || {
+                Ok(ProcessInput {
+                    bytes: vec![7; 4],
+                    complete: true,
+                })
+            },
+            &mut |_| {},
+        )?;
+        assert_eq!(input.bytes.len(), 4);
+        input.poll(&mut tree, None)?;
+        assert!(!input.writing());
+        assert!(input.finished());
+        let std::borrow::Cow::Owned(bytes) = &input.bytes else {
+            panic!("interactive input lost its original owned representation");
+        };
+        assert_eq!(
+            bytes.capacity(),
+            0,
+            "final transfer retained its payload backing"
+        );
+        input.receive(
+            &mut || panic!("final transfer requested more input"),
+            &mut |_| {},
+        )?;
+        assert!(!tree.is_reaped());
+        tree.terminate(None)?;
+        assert!(tree.is_reaped());
+        Ok(())
     }
 }
 
