@@ -51,10 +51,12 @@ test("host manifests and shims fit the native hook budget without tool ledgers",
   assert(lines(source("../../pi/index.ts")) <= 300);
   assert(lines(source("../../claude/.claude-plugin/plugin.json")) <= 300);
   const claude = JSON.parse(source("../../claude/.claude-plugin/plugin.json"));
-  assert.deepEqual(Object.keys(claude.hooks), ["SessionStart", "Stop", "SessionEnd"]);
+  assert.deepEqual(Object.keys(claude.hooks), ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"]);
+  assert.equal(claude.hooks.PermissionRequest[0].matcher, "mcp__plugin_acyclic_acyclic-sessions__.*");
   assert(claude.mcpServers["acyclic-sessions"]);
   const hooks = JSON.parse(codex).hooks;
-  assert.deepEqual(Object.keys(hooks), ["SessionStart", "Stop", "SessionEnd"]);
+  assert.deepEqual(Object.keys(hooks), ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"]);
+  assert.equal(hooks.PermissionRequest[0].matcher, "^mcp__acyclic[-_]sessions__");
   assert(Object.values(hooks).every((groups: any) => groups.every((group: any) => group.hooks.every((hook: any) => hook.type === "command"))));
   const mcp = JSON.parse(source("../../.mcp.json"));
   assert.deepEqual(mcp.mcpServers["acyclic-sessions"].env_vars, ["ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"]);

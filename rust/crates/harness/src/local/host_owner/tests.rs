@@ -646,6 +646,7 @@ async fn permission_prompts_reach_the_approval_chain_only_for_coordination_tools
             tool: Some(tool.into()),
             arguments: None,
             selectors: Vec::new(),
+            target: None,
             verdict,
         }],
         fallback: RuleVerdict::Ask,
@@ -710,6 +711,7 @@ async fn permission_prompts_reach_the_approval_chain_only_for_coordination_tools
         ("codex", "mcp__other__spawn"),
         ("codex", "mcp__acyclic-sessions__unknown"),
         ("codex", "mcp__plugin_acyclic_acyclic-sessions__spawn"),
+        ("claude-code", "mcp__acyclic-sessions__spawn"),
         ("pi", "mcp__acyclic-sessions__spawn"),
     ] {
         assert_eq!(prompt(&ruled, host, tool), None, "{host} {tool}");
