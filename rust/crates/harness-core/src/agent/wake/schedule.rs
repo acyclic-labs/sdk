@@ -71,7 +71,9 @@ pub struct Schedule {
 /// One alarm delivery's file mutation and inbox publication, committed together.
 pub struct ScheduleFire {
     /// Stable occurrence identity, unchanged on restart or delivery replay.
-    pub record: InboxRecord,
+    /// `None` retires an expired, exhausted or session-owned definition without
+    /// publishing an event. It must still be removed from the due index.
+    pub record: Option<InboxRecord>,
     /// Replacement document; `None` removes the completed definition.
     pub next: Option<Schedule>,
 }
@@ -116,14 +118,20 @@ impl Schedule {
     }
 
     /// Lower one due occurrence. Missed work never causes a timer retry loop.
-    /// An expired, cancelled or exhausted file produces no Notice.
+    /// `None` means not due. An expired, cancelled or exhausted file returns a
+    /// removal without a Notice, so it cannot pin the earliest alarm forever.
     pub fn fire(&self, now: u64, session_closed: bool) -> Result<Option<ScheduleFire>, Error> {
         self.validate()?;
-        if self.next_due_unix_ms > now
-            || self.remaining == Some(0)
+        if self.remaining == Some(0)
             || self.expires_unix_ms.is_some_and(|end| now >= end)
             || session_closed && self.lifetime == Lifetime::Session
         {
+            return Ok(Some(ScheduleFire {
+                record: None,
+                next: None,
+            }));
+        }
+        if self.next_due_unix_ms > now {
             return Ok(None);
         }
         let id = event_id(
@@ -172,6 +180,9 @@ impl Schedule {
                 next.next_due_unix_ms = due;
                 next
             });
-        Ok(Some(ScheduleFire { record, next }))
+        Ok(Some(ScheduleFire {
+            record: Some(record),
+            next,
+        }))
     }
 }

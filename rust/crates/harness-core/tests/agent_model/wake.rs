@@ -118,6 +118,19 @@ async fn monitor_resume_uses_source_commit_identity_and_provider_filter() -> Res
         }
     };
     assert_eq!(matched, replayed);
+    let stale = Monitor {
+        cursor: MonitorCursor {
+            next: cursor.next,
+            preceding: Some([0x55; 32]),
+        },
+        ..monitor.clone()
+    };
+    assert!(matches!(
+        stale.follow(&stream).await,
+        Err(Error::Stream(
+            acyclic_stream::StreamError::PrefixNotRetained
+        ))
+    ));
     let mut resumed = Monitor { cursor, ..monitor }.follow(&stream).await?;
     // Append after follow registration: delivery is the primitive's event.
     stream
@@ -199,11 +212,29 @@ fn schedule_restart_preserves_trigger_identity_and_explicit_lifetime() -> Result
             .next_due_unix_ms,
         140
     );
-    assert!(schedule.fire(135, true)?.is_none());
+    assert!(schedule.fire(99, false)?.is_none());
+    let retired = schedule
+        .fire(99, true)?
+        .ok_or("closed schedule not retired")?;
+    assert!(retired.record.is_none() && retired.next.is_none());
+    let expired = Schedule {
+        expires_unix_ms: Some(80),
+        ..schedule.clone()
+    };
+    let retired = expired
+        .fire(99, false)?
+        .ok_or("expired schedule not retired")?;
+    assert!(retired.record.is_none() && retired.next.is_none());
     let daemon = Schedule {
         lifetime: Lifetime::Daemon,
         ..schedule
     };
-    assert!(daemon.fire(135, true)?.is_some());
+    assert!(
+        daemon
+            .fire(135, true)?
+            .ok_or("daemon not due")?
+            .record
+            .is_some()
+    );
     Ok(())
 }

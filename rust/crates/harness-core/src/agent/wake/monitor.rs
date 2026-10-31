@@ -62,7 +62,8 @@ pub struct MonitorCursor {
     pub preceding: Option<[u8; 32]>,
 }
 
-/// `monitors/<id>.json`: one authorized follow, with no event-count ceiling.
+/// `monitors/<deadline>-<id>.json`: one authorized follow, with no event-count
+/// ceiling. Bounded and unbounded declarations occupy separate indexed folders.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Monitor {
@@ -99,6 +100,17 @@ pub struct MonitorFollow {
 }
 
 impl Monitor {
+    /// The directory index is also the deadline index. Reading the first
+    /// bounded declaration never traverses the unbounded monitors.
+    #[must_use]
+    pub fn path(&self) -> String {
+        let id = blake3::hash(self.id.as_str().as_bytes());
+        match self.deadline_unix_ms {
+            Some(deadline) => format!("monitors/bounded/{deadline:020}-{}.json", id.to_hex()),
+            None => format!("monitors/unbounded/{}.json", id.to_hex()),
+        }
+    }
+
     /// Registers a replay-to-live follow through the admitted provider.
     /// Deadline expiry and deletion drop this follow; no timer is created here.
     pub async fn follow<P: StreamProvider + ?Sized>(

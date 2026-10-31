@@ -8,15 +8,21 @@ use super::AgentPath;
 /// that inbox and its descendants. Unrelated string prefixes never match.
 #[must_use]
 pub fn peer_send_allowed(grants: &crate::Capabilities, recipient: &AgentPath) -> bool {
-    grants.iter().any(|grant| {
-        if let Some(path) = grant.strip_prefix("agent.send:") {
-            return path == recipient.as_str();
+    if grants.contains(&format!("agent.send:{recipient}")) {
+        return true;
+    }
+    // Indexed membership for the canonical ancestry, never a scan over the
+    // caller's grants or over any agent roster. One buffer serves every prefix.
+    let mut label = format!("agent.send-subtree:{recipient}");
+    loop {
+        if grants.contains(&label) {
+            return true;
         }
-        grant
-            .strip_prefix("agent.send-subtree:")
-            .and_then(|path| AgentPath::try_from(path.to_owned()).ok())
-            .is_some_and(|root| root.contains(recipient))
-    })
+        let Some((parent, _)) = label.rsplit_once("/children/") else {
+            return false;
+        };
+        label.truncate(parent.len());
+    }
 }
 
 /// Boundary chosen by the sender. Both modes append to the original inbox.
