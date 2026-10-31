@@ -106,7 +106,7 @@ async fn real_journal_pages_pin_a_head_while_the_source_advances()
 }
 
 #[tokio::test]
-async fn a_lost_conditional_proposal_keeps_its_exact_command()
+async fn a_lost_conditional_proposal_returns_before_an_explicit_resend()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let source = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
@@ -128,6 +128,23 @@ async fn a_lost_conditional_proposal_keeps_its_exact_command()
     );
     let mut request = append(&path, 2);
     request.if_tail = None;
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(request.clone()), None, 1)
+            .await,
+        Err(StreamError::PrefixNotRetained)
+    ));
+    assert_eq!(replica.journal.proposals.len(), 1);
+    assert_eq!(source.tail(path.clone()).await?, 2);
+    assert!(
+        source
+            .inspect_idempotency(request.idempotency_key.clone())
+            .await?
+            .is_none()
+    );
+    assert_eq!(replica.provider.tail(path.clone()).await?, 1);
+    assert!(!replica.is_failed());
+    // A distinct caller invocation refreshes and submits the same identity.
     let crate::WriteOutcome::Append(AppendOutcome::Committed(receipt)) = replica
         .execute(WriteRequest::Append(request.clone()), None, 1)
         .await?
@@ -252,5 +269,174 @@ async fn a_prepared_stamp_matches_recovery_when_the_acceptance_clock_advances()
     drop(source);
     let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
     assert_eq!(reopened.read_commit(receipt.commit_id).await?, live);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_cached_refusal_observes_once_without_reconsidering_the_command()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let wall = Arc::new(super::TestClock::default());
+    wall.0.store(10, Ordering::SeqCst);
+    let source =
+        LocalStream::open_with_clock(root.path(), LocalStreamLimits::default(), wall.clone())
+            .await?;
+    let path = StreamPath::new("current-refusal/events")?;
+    let clock = Arc::new(ReplicaClock::default());
+    let mut replica = Replicated::new(
+        Advancing {
+            port: port::LocalPort::new(source.clone()),
+            advance: None,
+            pages: Vec::new(),
+            proposals: Vec::new(),
+            lose_reply: false,
+            advance_clock: None,
+        },
+        MemoryStream::new_with_commit_clock(MemoryLimits::default(), clock.clone(), clock.clone()),
+        clock,
+        HEADER_BYTES as u64,
+    )
+    .with_acceptance_clock();
+    replica.refresh(1).await?;
+    source.append(append(&path, 0)).await?;
+    let request = append(&path, 1);
+    let reads = replica.journal.pages.len();
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(request.clone()), None, 1)
+            .await,
+        Err(StreamError::PrefixNotRetained)
+    ));
+    assert_eq!(replica.journal.pages.len() - reads, 1);
+    assert!(replica.journal.proposals.is_empty());
+    assert_eq!(source.tail(path.clone()).await?, 1);
+    assert!(
+        source
+            .inspect_idempotency(request.idempotency_key.clone())
+            .await?
+            .is_none()
+    );
+    assert!(!replica.is_failed());
+    // An explicit new invocation can now publish at the observed cut.
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(request), None, 1)
+            .await?
+            .outcome,
+        WriteOutcome::Append(AppendOutcome::Committed(_))
+    ));
+    assert_eq!(replica.journal.proposals.len(), 1);
+    let refused = append(&path, 99);
+    let reads = replica.journal.pages.len();
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(refused), None, 1)
+            .await?
+            .outcome,
+        WriteOutcome::Append(AppendOutcome::TailConflict { actual_tail: 2 })
+    ));
+    assert_eq!(replica.journal.pages.len() - reads, 1);
+    assert_eq!(replica.journal.proposals.len(), 1);
+
+    // The original trusted journal clock, not a request-selected clock, proves
+    // expiry even when the cached conditions already refuse publication.
+    replica.set_proposal_clock(0);
+    let expired = CommitRequest {
+        deadline_unix_millis: Some(1),
+        conditions: vec![CommitCondition::Tail {
+            path: path.clone(),
+            expected: 0,
+        }],
+        mutations: vec![CommitMutation::Append {
+            path: path.clone(),
+            records: vec!["late".into()],
+        }],
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    let reads = replica.journal.pages.len();
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Commit(expired.clone()), None, 1)
+            .await,
+        Err(StreamError::DeadlineElapsed)
+    ));
+    assert_eq!(replica.journal.pages.len() - reads, 1);
+    assert_eq!(replica.journal.proposals.len(), 1);
+    assert!(
+        source
+            .inspect_idempotency(expired.idempotency_key)
+            .await?
+            .is_none()
+    );
+    assert_eq!(source.tail(path).await?, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_lost_acceptance_clock_proposal_refreshes_only_the_next_invocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let source = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+    let path = StreamPath::new("acceptance-cut/events")?;
+    let clock = Arc::new(ReplicaClock::default());
+    let mut replica = Replicated::new(
+        Advancing {
+            port: port::LocalPort::new(source.clone()),
+            advance: None,
+            pages: Vec::new(),
+            proposals: Vec::new(),
+            lose_reply: false,
+            advance_clock: None,
+        },
+        MemoryStream::new_with_commit_clock(MemoryLimits::default(), clock.clone(), clock.clone()),
+        clock,
+        HEADER_BYTES as u64,
+    )
+    .with_acceptance_clock();
+    replica.refresh(1).await?;
+    source.append(append(&path, 0)).await?;
+    let mut request = append(&path, 1);
+    request.if_tail = None;
+    let reads = replica.journal.pages.len();
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(request.clone()), None, 1)
+            .await,
+        Err(StreamError::PrefixNotRetained)
+    ));
+    assert_eq!(replica.journal.pages.len(), reads);
+    assert_eq!(replica.journal.proposals.len(), 1);
+    assert_eq!(source.tail(path.clone()).await?, 1);
+    assert!(
+        source
+            .inspect_idempotency(request.idempotency_key.clone())
+            .await?
+            .is_none()
+    );
+    assert!(!replica.is_failed());
+    // The known stale bit requires a current observation in the next explicit
+    // caller operation, without waiting for a background notification task.
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(request.clone()), None, 1)
+            .await?
+            .outcome,
+        WriteOutcome::Append(AppendOutcome::Committed(AppendReceipt {
+            start: 1,
+            tail: 2,
+            ..
+        }))
+    ));
+    assert_eq!(replica.journal.pages.len() - reads, 1);
+    assert_eq!(replica.journal.proposals.len(), 2);
+    assert_eq!(replica.journal.proposals[0], replica.journal.proposals[1]);
+    let reads = replica.journal.pages.len();
+    // Retained replay at a current cut needs neither SQL nor a new proposal.
+    replica
+        .execute(WriteRequest::Append(request), None, 1)
+        .await?;
+    assert_eq!(replica.journal.pages.len(), reads);
+    assert_eq!(replica.journal.proposals.len(), 2);
+    assert_eq!(source.tail(path).await?, 2);
     Ok(())
 }
