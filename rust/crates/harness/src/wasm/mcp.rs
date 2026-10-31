@@ -39,12 +39,12 @@ pub fn mcp_callback_operation(
         .map_err(js_error)
 }
 
-/// Validates the complete bounded replacement before the host selects it.
+/// Validates the complete replacement with optional host allowances before the host selects it.
 #[wasm_bindgen(js_name=validateMcpCatalog)]
 pub fn validate_mcp_catalog(
     #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | null | undefined")] maximum_tools: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | null | undefined")] maximum_bytes: JsValue,
 ) -> Result<(), JsValue> {
     from_js::<McpCatalog>(catalog)?
         .validate(from_js(maximum_tools)?, from_js(maximum_bytes)?)
@@ -58,8 +58,8 @@ mod browser;
 #[wasm_bindgen(js_name = mcpModelDefinitions, unchecked_return_type = "ToolDefinition[]")]
 pub fn mcp_model_definitions(
     #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | null | undefined")] maximum_tools: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | null | undefined")] maximum_bytes: JsValue,
 ) -> Result<JsValue, JsValue> {
     let catalog: McpCatalog = from_js(catalog)?;
     definitions_to_js(
@@ -76,8 +76,8 @@ pub fn search_mcp_catalog(
     query: String,
     after: Option<String>,
     #[wasm_bindgen(unchecked_param_type = "number")] maximum_results: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | null | undefined")] maximum_tools: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | null | undefined")] maximum_bytes: JsValue,
 ) -> Result<JsValue, JsValue> {
     let catalog: McpCatalog = from_js(catalog)?;
     let definitions = catalog
