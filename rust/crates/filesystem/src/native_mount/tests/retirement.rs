@@ -389,10 +389,12 @@ fn failed_view_startup_retains_directory_until_original_physical_retirement()
             if handoff { 4 } else { 3 }
         );
     }
+    #[cfg(unix)]
     replaced_view_parent_is_not_adopted()?;
     Ok(())
 }
 
+#[cfg(unix)]
 fn replaced_view_parent_is_not_adopted() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let parent = root.path().join("admitted");
