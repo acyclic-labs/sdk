@@ -585,6 +585,7 @@ async fn actor_delivery(
                 .entries
                 .arm(expected_actor, expected_epoch, expected.clone())?;
         let entries_before = fixture.entries.calls();
+        let before = rows.start(None);
         let started = Instant::now();
         let drained = {
             // The scope closes its producer on success, error or cancellation.
@@ -620,18 +621,31 @@ async fn actor_delivery(
                 "result": "rejected",
             }))?;
         } else {
+            let entered = entered?;
+            let observed = Measurements::stop_at(before, entered.counters)?;
+            if index == 4 {
+                let completion = rows.stop(before)?;
+                Measurements::require_entry_prefix(&observed, &completion)?;
+                if Measurements::require_entry_prefix(&completion, &completion).is_ok() {
+                    return Err("whole-drain accounting was accepted as handler entry".into());
+                }
+                emit(serde_json::json!({
+                    "schema": 1, "kind": "negative_control",
+                    "control": "substituted whole-drain request ledger for handler entry",
+                    "result": "rejected; later original data publication excluded",
+                }))?;
+            }
             rows.record(
                 Operation::ActorWake,
                 Terms {
                     wakes: 1,
                     ..Terms::default()
                 },
-                entered?
+                entered
+                    .at
                     .checked_duration_since(started)
                     .ok_or("handler entry preceded delivery")?,
-                // Entry is a prefix of drain. Completion work cannot be
-                // attributed to that prefix by a whole-drain ledger delta.
-                Observation::default(),
+                observed,
             )?;
             completed.push(ns(elapsed));
         }

@@ -107,13 +107,28 @@ struct Row {
     provider_requests: Vec<Option<[u64; 7]>>,
 }
 
-pub(super) struct Before {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Counters {
     requests: Requests,
     allocations: Option<AllocationInfo>,
+}
+
+impl Counters {
+    pub(super) fn capture(requests: &RequestLedger) -> Self {
+        Self {
+            requests: requests.requests(),
+            allocations: acyclic_test_support::current_allocations(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Before {
+    counters: Counters,
     requested_query: Option<RequestClass>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct Observation {
     work: Work,
     coordinator_allocations: Option<[u64; 2]>,
@@ -142,14 +157,17 @@ impl Measurements {
 
     pub(super) fn start(&self, requested_query: Option<RequestClass>) -> Before {
         Before {
-            requests: self.requests.requests(),
-            allocations: acyclic_test_support::current_allocations(),
+            counters: Counters::capture(&self.requests),
             requested_query,
         }
     }
 
     pub(super) fn stop(&self, before: Before) -> Result<Observation> {
-        let requests = self.requests.requests().since(before.requests);
+        Self::stop_at(before, Counters::capture(&self.requests))
+    }
+
+    pub(super) fn stop_at(before: Before, after: Counters) -> Result<Observation> {
+        let requests = after.requests.since(before.counters.requests);
         // A requested query supplies the operation's data. Exclude exactly
         // that original dispatch, preserving every additional probe, even
         // another call in the same class.
@@ -167,9 +185,7 @@ impl Measurements {
             .control()
             .checked_sub(direct)
             .ok_or("requested query exceeds observed provider calls")?;
-        let allocations = before
-            .allocations
-            .zip(acyclic_test_support::current_allocations());
+        let allocations = before.counters.allocations.zip(after.allocations);
         Ok(Observation {
             // Request accounting observes the public provider boundary. It
             // does not infer physical syscalls, locks or transport traffic.
@@ -197,6 +213,17 @@ impl Measurements {
     pub(super) fn require_one_control(observation: &Observation) -> Result {
         if observation.work.0[4] != Some(1) {
             return Err("redundant query was hidden by requested-data classification".into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_entry_prefix(prefix: &Observation, completion: &Observation) -> Result {
+        if !prefix
+            .provider_requests
+            .zip(completion.provider_requests)
+            .is_some_and(|(prefix, completion)| prefix[0] < completion[0])
+        {
+            return Err("handler-entry accounting included its later data publication".into());
         }
         Ok(())
     }

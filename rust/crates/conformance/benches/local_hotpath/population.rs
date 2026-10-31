@@ -154,7 +154,7 @@ impl Fixture {
                 approval_policy: Default::default(),
             },
         )?;
-        let entries = Arc::new(Entries::default());
+        let entries = Arc::new(Entries::new(requests.clone()));
         let handler = Arc::new(Observed {
             handler: bound.handler(),
             entries: entries.clone(),
