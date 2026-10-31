@@ -207,12 +207,8 @@ impl Fixture {
                     "agents": agents, "result": "typed invalid argument before submission",
                 }))?;
             }
-            match Box::pin(fixture.bound.submit_root(prepared)).await? {
-                RootSubmission::Created(child) if child == expected => {}
-                outcome => {
-                    return Err(format!("population root {index} publication: {outcome:?}").into());
-                }
-            }
+            let outcome = Box::pin(fixture.bound.submit_root(prepared)).await?;
+            require_root(&outcome, &expected)?;
         }
         let runtime = fixture.bound.agents().runtime();
         // Registration queues initial replay. Prove that the idle oracle
@@ -237,6 +233,16 @@ impl Fixture {
         )?;
         Ok(fixture)
     }
+}
+
+pub(super) fn require_root(outcome: &RootSubmission, expected: &AgentPath) -> Result {
+    if !matches!(outcome, RootSubmission::Created(child) if child == expected) {
+        return Err(format!(
+            "root publication differs: expected={expected:?}, observed={outcome:?}"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn require_idle(agents: usize, observed: (usize, usize)) -> Result {
