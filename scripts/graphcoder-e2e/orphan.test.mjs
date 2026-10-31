@@ -75,6 +75,7 @@ test("orphan oracle rejects real live processes and accepts their confirmed exit
     const records = [{ path: "probe", body: { pid: identities[0], parent_pid: identities[1] } }];
     // Negative control: the barrier alone must never qualify a live process.
     assert.throws(() => fenced(records, "probe"), /survived owner recovery/);
+    for (const child of children) child.child.stdin.end();
     await Promise.all(children.map(child => child.closed));
     fenced(records, "probe");
     assert.throws(() => fenced([], "probe"), /committed exactly once/);
