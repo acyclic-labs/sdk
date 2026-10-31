@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "owner": "del-tooling",
+  "owner": "SDK tooling",
   "decision": "Retire two orphan qualifier selectors together with exact historical source mapping; retain every live selected test and all current assertion bodies",
   "retirement": {
     "commit": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
