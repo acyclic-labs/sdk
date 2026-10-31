@@ -1,214 +1,135 @@
 {
   "id": "fs-conflict-continue",
   "workspace": {
-    "kind": ["git", "plain"],
+    "kind": [
+      "git",
+      "plain"
+    ],
     "files": {
       "seed.txt": "base\n"
     }
   },
   "model": {
-    "steps": [
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "branch",
-            "name": "fs",
-            "arguments": {
-              "command": "branch topic"
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "topic",
-            "name": "fs",
-            "arguments": {
-              "command": "switch topic"
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "topic-text",
-            "name": "shell",
-            "arguments": {
-              "command": "node \"{{support}}/write-project.mjs\" \"seed.txt\" dG9waWMK"
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "topic-add",
-            "name": "fs",
-            "arguments": {
-              "command": "add seed.txt"
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "topic-commit",
-            "name": "fs",
-            "arguments": {
-              "command": "commit -m \"topic\""
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "main",
-            "name": "fs",
-            "arguments": {
-              "command": "switch main"
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "main-text",
-            "name": "shell",
-            "arguments": {
-              "command": "node \"{{support}}/write-project.mjs\" \"seed.txt\" bWFpbgo="
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "main-add",
-            "name": "fs",
-            "arguments": {
-              "command": "add seed.txt"
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "main-commit",
-            "name": "fs",
-            "arguments": {
-              "command": "commit -m \"main\""
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "conflict",
-            "name": "fs",
-            "arguments": {
-              "command": "merge topic"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "tool_result": "conflict"
-        },
-        "tools": [
-          {
-            "id": "resolve",
-            "name": "shell",
-            "arguments": {
-              "command": "node \"{{support}}/write-project.mjs\" \"seed.txt\" cmVzb2x2ZWQK"
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "resolve-add",
-            "name": "fs",
-            "arguments": {
-              "command": "add seed.txt"
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "continue",
-            "name": "fs",
-            "arguments": {
-              "command": "merge --continue"
-            }
-          }
-        ]
-      },
-      {
-        "when": {},
-        "tools": [
-          {
-            "id": "show",
-            "name": "fs",
-            "arguments": {
-              "command": "show HEAD:seed.txt"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "tool_result": "resolved"
-        },
-        "text": [
-          "done"
-        ]
-      }
-    ]
+    "steps": []
   },
   "inputs": [
     {
-      "mode": "headless",
-      "text": "hello",
-      "answer": "done"
+      "format": "workspace-fs",
+      "steps": [
+        {
+          "args": [
+            "branch",
+            "topic"
+          ]
+        },
+        {
+          "args": [
+            "switch",
+            "topic"
+          ]
+        },
+        {
+          "write": {
+            "path": "seed.txt",
+            "content": "topic\n"
+          }
+        },
+        {
+          "args": [
+            "add",
+            "seed.txt"
+          ]
+        },
+        {
+          "args": [
+            "commit",
+            "-m",
+            "topic"
+          ]
+        },
+        {
+          "args": [
+            "switch",
+            "main"
+          ]
+        },
+        {
+          "write": {
+            "path": "seed.txt",
+            "content": "main\n"
+          }
+        },
+        {
+          "args": [
+            "add",
+            "seed.txt"
+          ]
+        },
+        {
+          "args": [
+            "commit",
+            "-m",
+            "main"
+          ]
+        },
+        {
+          "args": [
+            "show",
+            "HEAD:seed.txt"
+          ],
+          "stdout": "main\n"
+        },
+        {
+          "args": [
+            "show",
+            "topic:seed.txt"
+          ],
+          "stdout": "topic\n"
+        },
+        {
+          "args": [
+            "merge",
+            "topic"
+          ],
+          "error": "conflict"
+        },
+        {
+          "write": {
+            "path": "seed.txt",
+            "content": "resolved\n"
+          }
+        },
+        {
+          "args": [
+            "add",
+            "seed.txt"
+          ]
+        },
+        {
+          "args": [
+            "merge",
+            "--continue"
+          ]
+        },
+        {
+          "args": [
+            "show",
+            "HEAD:seed.txt"
+          ],
+          "stdout": "resolved\n"
+        }
+      ],
+      "mode": "qualification"
     }
   ],
   "assert": {
-    "requests": 15,
+    "requests": 0,
     "files": {
       "seed.txt": "resolved\n"
     },
-    "model_contains": [
+    "wire_contains": [
       "conflict",
       "resolved"
-    ],
-    "tool_errors": [
-      "conflict"
-    ],
-    "tool_contains": [
-      "conflict"
     ]
   },
   "ntfs": true

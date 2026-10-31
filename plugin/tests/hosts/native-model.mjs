@@ -47,7 +47,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
  const native=await nativeHost(host,fixture.env);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
- assert.ok(fixture.env.E2E_MOCK_URL,'step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs');
+ assert.ok(fixture.url,'step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs');
  const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
  env.PATH=[dirname(native.entry),native.path,env.PATH].join(delimiter);
  let step='stage native package';
@@ -89,7 +89,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='open native root through the workspace API';
   const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
   assert.equal(opened.code,0,opened.stderr);
-  const {policy,args}=await launch(host,{url:fixture.env.E2E_MOCK_URL,root,packageRoot,workspace,env,tools,nativePermissions,prompt});
+  const {policy,args}=await launch(host,{url:fixture.url,root,packageRoot,workspace,env,tools,nativePermissions,prompt});
   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
   const completed=await run(native.program,[...native.args,...args]);

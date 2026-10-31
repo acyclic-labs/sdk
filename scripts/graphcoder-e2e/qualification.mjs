@@ -35,6 +35,11 @@ export function qualified(result, format, minimum) {
 }
 
 export async function qualification(processes, input, fixture, capture) {
+  if (input.format === "workspace-fs") {
+    const { workspaceFs } = await import("./workspace-fs.mjs");
+    await workspaceFs(processes, input, fixture, capture);
+    return;
+  }
   if (input.format === "scripted-host") {
     const { scriptedScenario, runScriptedScenario } = await import("../../plugin/tests/hosts/qualify-scripted.mjs");
     const plugin = fixture.env.E2E_PLUGIN_BINARY, codex = fixture.env.E2E_CODEX;
