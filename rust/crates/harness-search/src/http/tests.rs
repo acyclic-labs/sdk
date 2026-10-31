@@ -30,7 +30,7 @@ async fn adapters_use_the_documented_protocol_and_normalize_ranked_results() -> 
                 snippet: "first\nsecond".into(),
             }]
         );
-        let input = server.await.map_err(|e| Error::Storage(e.to_string()))??;
+        let input = joined(server).await?;
         assert!(
             input
                 .to_ascii_lowercase()
@@ -104,7 +104,7 @@ async fn response_matrix_rejects_status_errors_malformed_payloads_and_oversized_
                     ));
                 }
             }
-            server.await.map_err(|e| Error::Storage(e.to_string()))??;
+            joined(server).await?;
         }
     }
     Ok(())
@@ -128,7 +128,7 @@ fn invalid_credentials_and_endpoints_are_rejected_without_echoing_them() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn dropping_a_search_cancels_the_in_flight_exchange() -> Result<()> {
     for exa in [true, false] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -165,29 +165,34 @@ async fn dropping_a_search_cancels_the_in_flight_exchange() -> Result<()> {
         } else {
             Arc::new(TinyFish::with_endpoint("test-only-placeholder", &endpoint)?)
         };
-        let search = tokio::spawn(async move {
-            provider
-                .search(&SearchRequest {
-                    query: "test".into(),
-                    max_results: 5,
-                })
-                .await
-        });
-        waiting.await.map_err(|e| Error::Storage(e.to_string()))?;
-        search.abort();
-        assert!(search.await.is_err_and(|error| error.is_cancelled()));
-        tokio::time::timeout(Duration::from_secs(1), server)
-            .await
-            .map_err(|_| Error::Invalid("HTTP exchange survived cancellation".into()))?
-            .map_err(|e| Error::Storage(e.to_string()))??;
+        let request = SearchRequest {
+            query: "test".into(),
+            max_results: 5,
+        };
+        let mut search = provider.search(&request);
+        tokio::select! {
+            biased;
+            result = &mut search => panic!("held search completed: {result:?}"),
+            result = waiting => { result.map_err(|e| Error::Storage(e.to_string()))?; },
+        }
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        assert!(futures::poll!(search.as_mut()).is_pending());
+        drop(search);
+        server.await.map_err(|e| Error::Storage(e.to_string()))??;
     }
     Ok(())
 }
 
-pub(super) async fn serve(
-    status: u16,
-    body: String,
-) -> Result<(String, tokio::task::JoinHandle<Result<String>>)> {
+type Server = tokio::task::JoinHandle<Result<(String, tokio::net::TcpListener)>>;
+
+pub(super) async fn joined(server: Server) -> Result<String> {
+    let (input, listener) = server.await.map_err(|e| Error::Storage(e.to_string()))??;
+    // The caller's original result has settled before this fixture is joined.
+    assert!(futures::poll!(std::pin::pin!(listener.accept())).is_pending());
+    Ok(input)
+}
+
+pub(super) async fn serve(status: u16, body: String) -> Result<(String, Server)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| Error::Storage(e.to_string()))?;
@@ -239,12 +244,8 @@ pub(super) async fn serve(
         );
         // Early body rejection may close the socket before all bytes are written.
         let _ = socket.write_all(output.as_bytes()).await;
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
-                .await
-                .is_err()
-        );
-        String::from_utf8(input).map_err(|e| Error::Invalid(e.to_string()))
+        let input = String::from_utf8(input).map_err(|e| Error::Invalid(e.to_string()))?;
+        Ok((input, listener))
     });
     Ok((format!("http://{address}/"), task))
 }

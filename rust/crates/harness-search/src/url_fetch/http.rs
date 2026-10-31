@@ -6,7 +6,7 @@ use crate::tool::edit::{allocation, charge, reserve_string};
 use crate::{Error, NativeCustody, NativeWork, Result};
 use acyclic_stream::BoxProviderFuture;
 use reqwest::Url;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 #[cfg(all(test, feature = "filesystem"))]
 mod native_tests;
@@ -41,13 +41,7 @@ impl HttpFetch {
         request: &FetchRequest,
         work: NativeWork<'_>,
     ) -> Result<(FetchResponse, NativeCustody)> {
-        // The deadline covers the entire redirect chain, not thirty seconds per hop.
-        await_io(
-            tokio::time::timeout(Duration::from_secs(30), self.retrieve(request, work)),
-            work,
-        )
-        .await?
-        .map_err(|_| transport_error(work, "fetch HTTP request timed out"))?
+        await_io(self.retrieve(request, work), work).await?
     }
 
     async fn retrieve(

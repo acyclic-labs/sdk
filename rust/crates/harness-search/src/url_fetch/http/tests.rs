@@ -80,9 +80,8 @@ pub(super) async fn read_request(socket: &mut tokio::net::TcpStream) -> Result<S
 }
 
 pub(super) async fn joined(server: Server) -> Result<String> {
-    tokio::time::timeout(Duration::from_secs(2), server)
+    server
         .await
-        .map_err(|_| Error::Invalid("fixture server did not finish".into()))?
         .map_err(|error| Error::Storage(error.to_string()))?
 }
 
@@ -239,12 +238,7 @@ async fn fetch_relative_redirects_are_bounded() -> Result<()> {
                     .await
                     .map_err(|e| Error::Storage(e.to_string()))?;
             }
-            assert!(
-                tokio::time::timeout(Duration::from_millis(30), listener.accept())
-                    .await
-                    .is_err()
-            );
-            Ok::<_, Error>(())
+            Ok::<_, Error>(listener)
         });
         let result = HttpFetch::new()?
             .fetch(&FetchRequest {
@@ -261,7 +255,8 @@ async fn fetch_relative_redirects_are_bounded() -> Result<()> {
         } else {
             assert!(result.unwrap_err().to_string().contains("redirect limit"));
         }
-        server.await.map_err(|e| Error::Storage(e.to_string()))??;
+        let listener = server.await.map_err(|e| Error::Storage(e.to_string()))??;
+        assert!(futures::poll!(std::pin::pin!(listener.accept())).is_pending());
     }
     Ok(())
 }
@@ -468,7 +463,7 @@ pub(super) async fn stalled_server() -> Result<(
     Ok((format!("http://{address}/"), waiting, server))
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn dropping_fetch_closes_the_real_in_flight_connection() -> Result<()> {
     let (url, waiting, server) = stalled_server().await?;
     let provider = HttpFetch::new()?;
@@ -479,10 +474,9 @@ async fn dropping_fetch_closes_the_real_in_flight_connection() -> Result<()> {
         result = &mut future => panic!("stalled fetch completed: {result:?}"),
         result = waiting => { result.map_err(|e| Error::Storage(e.to_string()))?; },
     }
+    tokio::time::advance(std::time::Duration::from_secs(31)).await;
+    assert!(futures::poll!(future.as_mut()).is_pending());
     drop(future);
-    tokio::time::timeout(Duration::from_secs(1), server)
-        .await
-        .map_err(|_| Error::Invalid("fetch socket survived future drop".into()))?
-        .map_err(|e| Error::Storage(e.to_string()))??;
+    server.await.map_err(|e| Error::Storage(e.to_string()))??;
     Ok(())
 }

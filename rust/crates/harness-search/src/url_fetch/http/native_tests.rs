@@ -111,11 +111,7 @@ async fn native_fetch_budget_denial_precedes_connect() -> Result<()> {
         assert_eq!(work.receipt().backend_read_operations, 0);
         drop(error);
         assert_eq!(work.live_allocation_bytes(), baseline, "{denied}");
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), listener.accept())
-                .await
-                .is_err()
-        );
+        assert!(futures::poll!(std::pin::pin!(listener.accept())).is_pending());
     }
     Ok(())
 }
@@ -233,10 +229,7 @@ async fn native_cancellation_closes_the_socket_and_releases_original_custody() -
     assert!(error.is_native_failure(), "{error:?}");
     drop(error);
     assert_eq!(work.live_allocation_bytes(), baseline);
-    tokio::time::timeout(Duration::from_secs(1), server)
-        .await
-        .map_err(|_| Error::Invalid("native fetch survived cancellation".into()))?
-        .map_err(|e| Error::Storage(e.to_string()))??;
+    server.await.map_err(|e| Error::Storage(e.to_string()))??;
     Ok(())
 }
 

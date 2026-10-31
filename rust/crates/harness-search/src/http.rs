@@ -3,7 +3,6 @@ use crate::{Error, Result};
 use acyclic_stream::BoxProviderFuture;
 use reqwest::{Url, header::HeaderValue};
 use serde::Deserialize;
-use std::time::Duration;
 mod codec;
 pub(crate) mod transport;
 
@@ -74,15 +73,11 @@ impl HttpSearch {
             work,
             &mut failure,
         );
-        let result = await_io(
-            tokio::time::timeout(Duration::from_secs(30), exchange),
-            work,
-        )
-        .await?;
+        let result = await_io(exchange, work).await?;
         if let Some(error) = failure {
             return Err(error);
         }
-        result.map_err(|_| transport_error(work, "search HTTP request timed out"))?
+        result
     }
 }
 
