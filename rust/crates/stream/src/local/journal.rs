@@ -54,6 +54,8 @@ impl Journal {
             true,
         )?;
         let mut journal = Self {
+            #[cfg(test)]
+            append_admissions: 0,
             _ownership_anchor: None,
             claim,
             file,
@@ -310,6 +312,10 @@ impl Journal {
 
     /// Pins the next offset under the caller's publication fence and batch lease.
     fn begin_append(&mut self, required: bool) -> Result<u64, LocalStreamError> {
+        #[cfg(test)]
+        {
+            self.append_admissions += 1;
+        }
         if !self.volatile && (!required || self.limits.durability == LocalDurability::Barrier) {
             forget_incarnation(&self.root)?;
             self.volatile = true;
