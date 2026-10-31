@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use protocol::{Completion, Demand, Refusal, State};
 
 /// Deliberately enumerates every source item. Unlike the implementation this
@@ -192,7 +193,6 @@ proptest::proptest! {
 async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
     use acyclic_stream::{
         AppendRecord, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream,
-        StreamProvider,
     };
 
     let provider = MemoryStream::default();
@@ -491,7 +491,7 @@ fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
 
 #[tokio::test]
 async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across_reopen() {
-    use acyclic_stream::{CommitOutcome, MemoryStream, StreamProvider};
+    use acyclic_stream::{CommitOutcome, MemoryStream};
 
     let provider = MemoryStream::default();
     let source = StreamPath::new("account/agent/conversation").unwrap();
