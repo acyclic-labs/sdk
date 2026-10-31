@@ -1005,8 +1005,7 @@ impl Reader {
                 self.hierarchy = None;
                 self.cache.clear_listings();
                 self.anchors.clear();
-                self.demand
-                    .retain(|key, _| !matches!(key, OpKey::Children(..)));
+                self.demand.clear_children();
                 let cancelled: Vec<_> = self
                     .inflight
                     .iter()
@@ -1138,9 +1137,11 @@ impl Reader {
             }
             // The asynchronous driver can poll again before the next UI frame
             // replans demand. Do not reissue those same obsolete boundaries.
-            self.demand.retain(|key, _| !later(key));
-            if let Some(anchors) = self.anchors.get_mut(parent) {
-                anchors.at.retain(|at, _| *at <= index);
+            self.demand.remove_children_after(parent, index);
+            if let Some(first) = index.checked_add(1)
+                && let Some(anchors) = self.anchors.get_mut(parent)
+            {
+                anchors.at.split_off(&first);
             }
         }
         if let Some(next) = &next {
@@ -1441,8 +1442,8 @@ impl Reader {
 
     fn invalidate(&mut self, stream: &StreamPath, inherited: bool) {
         let affected = self.cache.remove_stream(stream, inherited);
-        self.demand.retain(|key, _| !affected.contains(key.path()));
         for path in &affected {
+            self.demand.remove_path(path);
             if self.follows.remove(path).is_some() {
                 self.follow_changes.insert(path.clone());
             }
@@ -2060,6 +2061,7 @@ mod reader_tests {
     fn denial_discards_aliases_cancels_reads_and_requires_explicit_retry() {
         let stream = StreamPath::new("test/source").unwrap();
         let child = StreamPath::new("test/child").unwrap();
+        let grandchild = StreamPath::new("test/grandchild").unwrap();
         let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
         reader.cache.observe_origin(&stream, None);
         reader.begin_frame(0);
@@ -2088,7 +2090,52 @@ mod reader_tests {
         );
         let snapshot = reader.snapshot().unwrap();
         assert!(reader.restore(&snapshot).is_err());
+        reader.cache.observe_origin(
+            &grandchild,
+            Some(ForkOrigin {
+                source: child.clone(),
+                forked_at: 1,
+                commit_id: CommitId::from_bytes([3; 32]),
+            }),
+        );
+        let want = |reader: &mut Reader, key| {
+            reader.demand.want(
+                key,
+                Priority::Prefetch,
+                Paging::default(),
+                &mut reader.next_ticket,
+            );
+        };
+        // Invalidation must leave dormant history and its accumulated age
+        // alone, including paths next to the denied path in each key range.
+        for index in 0..100_000 {
+            want(
+                &mut reader,
+                OpKey::Head(StreamPath::new(format!("test/source/unrelated-{index}")).unwrap()),
+            );
+        }
+        let unrelated = OpKey::Head(StreamPath::new("test/source/unrelated-0").unwrap());
+        let ticket = reader.demand.get(&unrelated).unwrap().ticket;
+        for key in [
+            OpKey::Head(stream.clone()),
+            OpKey::Children(stream.clone(), u32::MAX),
+            OpKey::Read(child.clone(), 0),
+            OpKey::Read(child.clone(), u64::MAX),
+            OpKey::Head(child.clone()),
+            OpKey::Children(child.clone(), 0),
+            OpKey::Children(child.clone(), u32::MAX),
+            OpKey::Read(grandchild.clone(), 0),
+        ] {
+            want(&mut reader, key);
+        }
         reader.complete(ops[0].id(), Outcome::Failed(Failure::Denied), 0);
+        assert_eq!(
+            reader.demand.take_invalidation_visits(),
+            10,
+            "authority invalidation visited unrelated demand"
+        );
+        assert_eq!(reader.demand.len(), 100_000);
+        assert_eq!(reader.demand.get(&unrelated).unwrap().ticket, ticket);
         reader.complete(
             ops[1].id(),
             Outcome::Records(vec![Fetched {
@@ -2100,11 +2147,54 @@ mod reader_tests {
         );
         assert!(reader.cache.record(&stream, 0).is_none());
         assert!(reader.cache.record(&child, 0).is_none());
+        assert!(reader.cache.record(&grandchild, 0).is_none());
         assert!(reader.cache.record(&stream, 10).is_none());
         assert_eq!(
             reader.issues().collect::<Vec<_>>(),
             vec![(&stream, ReadIssue::AccessDenied)]
         );
+        // A changed page boundary invalidates only later pages of that
+        // parent, even at the largest logical page, without walking history.
+        let parent = StreamPath::new("test/pages").unwrap();
+        let next = StreamPath::new("test/pages/next").unwrap();
+        reader.listed(&parent, 0, &Paging::default(), Vec::new(), None, None);
+        for key in [
+            OpKey::Read(parent.clone(), u64::MAX),
+            OpKey::Head(parent.clone()),
+            OpKey::Children(parent.clone(), 0),
+            OpKey::Children(parent.clone(), 1),
+            OpKey::Children(parent.clone(), u32::MAX),
+        ] {
+            want(&mut reader, key);
+        }
+        reader.anchor(&parent, 1, next.clone());
+        reader.anchor(&parent, u32::MAX, next.clone());
+        reader.listed(&parent, 0, &Paging::default(), Vec::new(), Some(next), None);
+        assert_eq!(
+            reader.demand.take_invalidation_visits(),
+            2,
+            "page invalidation visited unrelated demand"
+        );
+        assert_eq!(reader.demand.len(), 100_003);
+        assert!(
+            reader
+                .demand
+                .contains_key(&OpKey::Children(parent.clone(), 0))
+        );
+        assert_eq!(
+            reader.anchors[&parent]
+                .at
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        reader.demand.remove_children_after(&parent, u32::MAX);
+        assert_eq!(reader.demand.take_invalidation_visits(), 0);
+        reader.demand.clear_children();
+        assert_eq!(reader.demand.take_invalidation_visits(), 1);
+        assert_eq!(reader.demand.len(), 100_002);
+        assert_eq!(reader.demand.get(&unrelated).unwrap().ticket, ticket);
         let want = Want::Range {
             stream: stream.clone(),
             from: 0,

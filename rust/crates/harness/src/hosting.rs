@@ -46,12 +46,11 @@ use acyclic_harness_client::{
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    BoxProviderFuture, ChildrenPageRequest, CommitId, ProviderPlatform, ReadRequest, StreamError,
-    StreamPath,
+    BoxProviderFuture, ChildrenPageRequest, CommitId, HeadProjection, HeadsRequest,
+    ProviderPlatform, RevisionCut, StreamError, StreamPath,
     session::{CallAuthorization, CallProvider},
 };
 use bytes::Bytes;
-use futures::TryStreamExt as _;
 use std::sync::Arc;
 
 /// What a hosting platform decides at every dispatch: the owner's current
@@ -497,18 +496,27 @@ where
                     }
                     None => (None, None),
                 };
-                let listed = match agents
-                    .provider()
-                    .children_page(ChildrenPageRequest {
+                let provider = agents.provider();
+                let request = HeadsRequest {
+                    retained: Default::default(),
+                    durable_through: None,
+                    projection: HeadProjection::Watermarks,
+                    paths: Default::default(),
+                    children: Some(ChildrenPageRequest {
                         tail_stream: None,
                         parent: Some(agent.children()?),
                         after,
                         hierarchy_version,
                         limit: page.items(),
-                    })
-                    .await
-                {
-                    Ok(listed) => listed,
+                    }),
+                    limit: page.items(),
+                    at_least: Default::default(),
+                };
+                let view = match provider.heads(request.clone()).await {
+                    Ok(view) => {
+                        view.validate_for(&request).map_err(Error::Stream)?;
+                        view
+                    }
                     Err(StreamError::NotFound) => {
                         return Ok(AgentReply::Children {
                             items: Vec::new(),
@@ -517,11 +525,43 @@ where
                     }
                     Err(error) => return Err(Error::Stream(error)),
                 };
+                let listed = view
+                    .children
+                    .ok_or(Error::Stream(StreamError::InvalidResponse))?;
                 let mut items = Vec::with_capacity(listed.children.len());
+                let mut paths = acyclic_stream::HeadSet::with_capacity(listed.children.len());
                 for child in listed.children {
                     let agent = AgentPath::try_from(child.path.as_str().to_owned())?;
-                    let status = self.status(&agent).await?;
-                    items.push(ChildAgent { agent, status });
+                    paths.push(agent.status()?);
+                    items.push(ChildAgent {
+                        agent,
+                        status: None,
+                    });
+                }
+                if !items.is_empty() {
+                    // Status is published outside each child's fork destination.
+                    // Observe its actual canonical path, at or after the page's
+                    // creation cut, in one bounded view for the returned rows.
+                    let request = HeadsRequest {
+                        retained: Default::default(),
+                        durable_through: None,
+                        projection: HeadProjection::History,
+                        paths,
+                        children: None,
+                        limit: page.items(),
+                        at_least: RevisionCut::of(view.snapshot),
+                    };
+                    let statuses = provider
+                        .heads(request.clone())
+                        .await
+                        .map_err(Error::Stream)?;
+                    statuses.validate_for(&request).map_err(Error::Stream)?;
+                    for (item, head) in items.iter_mut().zip(statuses.heads) {
+                        let record = head
+                            .and_then(|head| head.last)
+                            .ok_or(Error::Record("admitted child has no published status"))?;
+                        item.status = Some(StatusRecord::decode(&record.value)?);
+                    }
                 }
                 Ok(AgentReply::Children {
                     items,
@@ -661,34 +701,6 @@ where
             Ok(tail) => Ok(tail),
             Err(StreamError::NotFound) => Ok(0),
             Err(error) => Err(Error::Stream(error)),
-        }
-    }
-
-    /// `agent`'s last published status, if any.
-    async fn status(&self, agent: &AgentPath) -> Result<Option<StatusRecord>, Error> {
-        let provider = self.bound.agents().provider();
-        let path = agent.status()?;
-        let tail = match provider.tail(path.clone()).await {
-            Ok(tail) => tail,
-            Err(StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(Error::Stream(error)),
-        };
-        let Some(last) = tail.checked_sub(1) else {
-            return Ok(None);
-        };
-        let mut records = provider
-            .read(ReadRequest {
-                key: None,
-                path,
-                from: last,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await
-            .map_err(Error::Stream)?;
-        match records.try_next().await.map_err(Error::Stream)? {
-            Some(record) => Ok(Some(StatusRecord::decode(&record.value)?)),
-            None => Ok(None),
         }
     }
 }

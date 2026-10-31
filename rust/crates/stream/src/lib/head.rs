@@ -117,7 +117,12 @@ pub struct Heads {
 }
 
 impl Heads {
-    pub(crate) fn validate_for(&self, request: &HeadsRequest) -> Result<(), StreamError> {
+    /// Checks response selection, projection and applied cut against the
+    /// original request, including each returned head's record bounds.
+    ///
+    /// # Errors
+    /// Returns `InvalidResponse` when a returned fact does not match the request.
+    pub fn validate_for(&self, request: &HeadsRequest) -> Result<(), StreamError> {
         let child_count = self.children.as_ref().map_or(0, |page| page.children.len());
         if self.projection != request.projection
             || self.heads.len() != request.paths.len()
