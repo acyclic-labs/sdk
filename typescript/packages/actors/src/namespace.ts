@@ -62,6 +62,12 @@ export class ActorNamespaceBinding {
   }
   getByName(name: string, options: ActorGetOptions = {}): ActorStub { return this.get(this.idFromName(name), options); }
 }
+type PendingCall = {
+  previous: PendingCall | undefined;
+  next: PendingCall | undefined;
+  release: (() => void) | undefined;
+  linked: boolean;
+};
 /** Ordered calls on one stub; a failed call permanently breaks that stub. */
 export class ActorStub {
   readonly #id: NamespaceActorId;
@@ -69,7 +75,8 @@ export class ActorStub {
   readonly #binding: string;
   readonly #hint: LocationHint | undefined;
   #tail: Promise<void> = Promise.resolve();
-  #settled: Promise<void> = Promise.resolve();
+  #pendingHead: PendingCall | undefined;
+  #pendingTail: PendingCall | undefined;
   #broken = false;
   readonly #session = randomId();
   #sequence = 0n;
@@ -86,12 +93,48 @@ export class ActorStub {
   get id(): NamespaceActorId { return this.#id; }
   get name(): string | undefined { return this.#id.name; }
   get reference(): ActorReference { return this.#id.reference; }
+  #appendPending(release?: () => void): PendingCall {
+    const node: PendingCall = { previous: this.#pendingTail, next: undefined, release, linked: true };
+    if (this.#pendingTail) this.#pendingTail.next = node;
+    else this.#pendingHead = node;
+    this.#pendingTail = node;
+    return node;
+  }
+  #unlinkPending(node: PendingCall): void {
+    if (!node.linked) return;
+    if (node.previous) node.previous.next = node.next;
+    else this.#pendingHead = node.next;
+    if (node.next) node.next.previous = node.previous;
+    else this.#pendingTail = node.previous;
+    node.previous = undefined; node.next = undefined; node.linked = false;
+  }
+  #releasePending(): void {
+    // A marker releases after all its predecessors, independently of later calls.
+    // Only actual waiters are visited; completed call nodes never accumulate.
+    while (this.#pendingHead?.release) {
+      const release = this.#pendingHead.release;
+      const marker = this.#pendingHead;
+      this.#unlinkPending(marker);
+      release();
+    }
+  }
+  #finishPending(node: PendingCall): void {
+    this.#unlinkPending(node);
+    this.#releasePending();
+  }
+  #waitPending(signal: AbortSignal): Promise<void> {
+    let marker!: PendingCall;
+    const settled = new Promise<void>(resolve => { marker = this.#appendPending(resolve); });
+    this.#releasePending();
+    return awaitSignal(settled, signal, () => this.#finishPending(marker));
+  }
   #call(request: (signal: AbortSignal) => Promise<Semantic.InvokeActorRequest>, options?: ActorsCallOptions): Promise<Semantic.InvokeActorResponse> {
     if (this.#broken) return Promise.reject(new Error("actor stub is broken; obtain a new stub"));
     const signal = options?.signal ? AbortSignal.any([options.signal, this.#lifetime.signal]) : this.#lifetime.signal;
     const cancelled = () => { this.#break(signal.reason); };
     signal.addEventListener("abort",cancelled,{once:true});
     if (signal.aborted) cancelled();
+    const pending = this.#appendPending();
     const admitted = this.#tail.then(async () => {
       if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
       const input = await request(signal);
@@ -106,11 +149,10 @@ export class ActorStub {
     const result = Promise.race([admitted.then(({response}) => response),this.#failure]).then(response => {
       if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
       return response;
-    }, error => { this.#break(error); throw error; }).finally(() => {signal.removeEventListener("abort",cancelled);});
-    // One constant-size join retains every preceding completion and its failure.
-    // Admission remains independent of response order; fork captures this cut.
-    this.#settled = Promise.all([this.#settled, result]).then(() => undefined);
-    void this.#settled.catch(() => undefined);
+    }, error => { this.#break(error); throw error; }).finally(() => {
+      signal.removeEventListener("abort",cancelled);
+      this.#finishPending(pending);
+    });
     return result;
   }
   #break(error: unknown): void {
@@ -152,7 +194,7 @@ export class ActorStub {
     if (target.equals(reference)) throw new TypeError("an actor cannot fork into itself");
     const { idempotencyKey = randomId(), ...callOptions } = options;
     const signal = callOptions.signal ? AbortSignal.any([callOptions.signal, this.#lifetime.signal]) : this.#lifetime.signal;
-    await awaitSignal(this.#settled, signal);
+    await this.#waitPending(signal);
     if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
     signal.throwIfAborted();
     await fork.call(this.#transport, { actorId: this.#id.toString() as Semantic.ActorId, childActorId: child.toString() as Semantic.ActorId,

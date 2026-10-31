@@ -10,16 +10,17 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
   const gates = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
   const entered = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
   const forks: string[] = [];
-  for (const name of ["success", "failed", "cancelled", "cancel-fork"]) {
+  for (const name of ["success", "late", "failed", "cancelled", "cancel-fork"]) {
     gates.set(name, Promise.withResolvers<void>());
     entered.set(name, Promise.withResolvers<void>());
   }
   const server = createServer(connectNodeAdapter({ routes(router) {
     router.service(ActorsService, {
       async invokeActor(request) {
-        if (request.rpcMethod === "slow") {
-          entered.get(request.actorId)!.resolve();
-          await gates.get(request.actorId)!.promise;
+        if (request.rpcMethod === "slow" || request.rpcMethod === "late") {
+          const key = request.rpcMethod === "late" ? "late" : request.actorId;
+          entered.get(key)!.resolve();
+          await gates.get(key)!.promise;
         }
         return { status: 200, headers: [], body: request.body };
       },
@@ -45,12 +46,16 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
     await entered.get("success")!.promise;
     await fast; // The second real HTTP2 response overtakes the first.
     const forked = success.fork(child, [], { idempotencyKey: "success" });
+    const late = success.rpc("late", new Uint8Array());
+    await entered.get("late")!.promise;
     await barrier();
     expect(forks).toEqual([]);
     gates.get("success")!.resolve();
     await slow;
     expect((await forked).equals(child.reference)).toBe(true);
     expect(forks).toEqual(["success"]);
+    gates.get("late")!.resolve();
+    await late;
 
     for (const name of ["failed", "cancelled"]) {
       const stub = namespace.getByName(name);
