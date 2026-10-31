@@ -289,3 +289,174 @@ fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
     assert!(lost.prepare([6; 32], 11, 12).is_ok());
     assert_eq!(state.prepare([6; 32], 11, 12), Err(Refusal::Busy));
 }
+
+#[tokio::test]
+async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across_reopen() {
+    use acyclic_stream::{
+        CommitOutcome, MemoryStream, ReadRequest, StreamProvider, StreamProviderExt as _,
+    };
+    use futures::TryStreamExt as _;
+
+    async fn last(provider: &MemoryStream, path: &StreamPath) -> acyclic_stream::Record {
+        let tail = provider.tail(path.clone()).await.unwrap();
+        let mut records = provider
+            .read(ReadRequest {
+                key: None,
+                path: path.clone(),
+                from: tail - 1,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .unwrap();
+        let record = records.try_next().await.unwrap().unwrap();
+        assert!(records.try_next().await.unwrap().is_none());
+        record
+    }
+
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("account/agent/conversation").unwrap();
+    let path = StreamPath::new("account/agent/epochs").unwrap();
+    let genesis = Epoch {
+        header: [1; 32],
+        profile: [2; 32],
+        summary: None,
+        key: SummaryKey {
+            source: source.clone(),
+            through: 0,
+            renderer: 1,
+            model: [3; 32],
+        },
+    };
+    let initial = Snapshot::genesis(genesis).unwrap();
+    let request = initial
+        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
+        .unwrap();
+    assert!(matches!(
+        provider.commit(request).await.unwrap(),
+        CommitOutcome::Committed(_)
+    ));
+    // A caller cannot attach an old genesis to a newer observed head.
+    assert!(matches!(
+        provider
+            .commit(
+                initial
+                    .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
+                    .unwrap()
+            )
+            .await
+            .unwrap(),
+        CommitOutcome::Conflict(_)
+    ));
+
+    let record = last(&provider, &path).await;
+    let mut first = Snapshot::decode(&record, &source, 12).unwrap();
+    let mut competing = first.clone();
+    let summary = first.prepare(10, 12).unwrap();
+    competing.prepare(11, 12).unwrap();
+    let request = first
+        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
+        .unwrap();
+    // A crash before commit leaves the previous complete snapshot intact.
+    assert_eq!(
+        Snapshot::decode(&last(&provider, &path).await, &source, 12)
+            .unwrap()
+            .state(),
+        State::default()
+    );
+    assert!(matches!(
+        provider.commit(request).await.unwrap(),
+        CommitOutcome::Committed(_)
+    ));
+    assert!(matches!(
+        provider
+            .commit(
+                competing
+                    .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
+                    .unwrap()
+            )
+            .await
+            .unwrap(),
+        CommitOutcome::Conflict(_)
+    ));
+
+    let prepared_record = last(&provider, &path).await;
+    let mut reopened = Snapshot::decode(&prepared_record, &source, 12).unwrap();
+    assert_eq!(reopened.state().demand(), Demand::Await(summary));
+    assert!(matches!(
+        reopened.prepare(11, 12),
+        Err(SnapshotError::Transition(Refusal::Busy))
+    ));
+    let mut next = reopened.epoch().clone();
+    next.key.through = 10;
+    next.header = [4; 32];
+    next.summary = Some(
+        super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "summary.txt").unwrap(),
+    );
+    let unchanged = reopened.clone();
+    assert!(matches!(
+        reopened.swap(0, next.clone(), 12),
+        Err(SnapshotError::Transition(Refusal::NotReady))
+    ));
+    assert_eq!(reopened, unchanged);
+
+    reopened.complete(summary, Completion::Ready).unwrap();
+    let mut wrong = next.clone();
+    wrong.key.through = 11;
+    assert!(matches!(
+        reopened.swap(0, wrong, 12),
+        Err(SnapshotError::Identity)
+    ));
+    reopened.swap(0, next, 12).unwrap();
+    let request = reopened
+        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
+        .unwrap();
+    assert!(matches!(
+        provider.commit(request).await.unwrap(),
+        CommitOutcome::Committed(_)
+    ));
+    let final_record = last(&provider, &path).await;
+    let settled = Snapshot::decode(&final_record, &source, 12).unwrap();
+    assert_eq!(settled.state().cursor(), 10);
+    assert_eq!(settled.state().generation(), 1);
+    assert!(check_partition(12, &[0..10], &[10, 11]));
+    // The unchanged stale producer cannot replace the committed epoch.
+    assert!(matches!(
+        provider
+            .commit(
+                competing
+                    .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
+                    .unwrap()
+            )
+            .await
+            .unwrap(),
+        CommitOutcome::Conflict(_)
+    ));
+
+    // Removing the exact-head condition is the real publication negative: the
+    // same stale producer now overwrites coverage in the authoritative stream.
+    let mut bypass = competing
+        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
+        .unwrap();
+    bypass.conditions = vec![acyclic_stream::CommitCondition::Present { path: path.clone() }];
+    assert!(matches!(
+        provider.commit(bypass).await.unwrap(),
+        CommitOutcome::Committed(_)
+    ));
+    assert_ne!(
+        Snapshot::decode(&last(&provider, &path).await, &source, 12)
+            .unwrap()
+            .state()
+            .cursor(),
+        settled.state().cursor()
+    );
+
+    let mut corrupt: serde_json::Value = serde_json::from_slice(&prepared_record.value).unwrap();
+    corrupt["snapshot"]["pending"]["summary"][0] = serde_json::json!(summary[0] ^ 1);
+    let mut corrupt_record = prepared_record;
+    corrupt_record.value = serde_json::to_vec(&corrupt).unwrap().into();
+    assert!(matches!(
+        Snapshot::decode(&corrupt_record, &source, 12),
+        Err(SnapshotError::Identity)
+    ));
+}

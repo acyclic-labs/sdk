@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 mod kernel;
 pub use kernel::{Boundary, Cut, fits, inherited, token_bound};
 pub mod protocol;
+mod snapshot;
+pub use snapshot::{Snapshot, SnapshotError};
 
 /// Immutable identity of a shared summary on the source's common ancestor.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -32,11 +34,15 @@ impl SummaryKey {
     /// path's explicit byte length make the encoding unambiguous across hosts.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
+        self.digest_through(self.through)
+    }
+
+    pub(super) fn digest_through(&self, through: u64) -> [u8; 32] {
         let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.epoch.summary.v1");
         let path = self.source.as_str().as_bytes();
         hash.update(&(path.len() as u64).to_le_bytes());
         hash.update(path);
-        hash.update(&self.through.to_le_bytes());
+        hash.update(&through.to_le_bytes());
         hash.update(&self.renderer.to_le_bytes());
         hash.update(&self.model);
         *hash.finalize().as_bytes()
@@ -79,15 +85,6 @@ impl Epoch {
         }
         Ok(())
     }
-}
-
-/// Versioned durable record. An unsupported version is refused, never migrated.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "version", content = "epoch", deny_unknown_fields)]
-pub enum EpochRecord {
-    /// First epoch format.
-    #[serde(rename = "1")]
-    V1(Epoch),
 }
 
 /// A malformed or inapplicable epoch cannot become a model view.
