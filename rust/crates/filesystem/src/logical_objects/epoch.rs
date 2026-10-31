@@ -29,6 +29,7 @@ pub struct Epoch {
 }
 
 const ROOT: &[u8] = b"fs-epoch/";
+const FORMAT: &[u8; 8] = b"FSEPOCH\x01";
 
 impl Epoch {
     /// Resumes the epoch recorded at `pointer`, or the first.
@@ -36,12 +37,27 @@ impl Epoch {
     pub(crate) fn open(pointer: PathBuf) -> std::io::Result<Self> {
         let (current, unreleased) = match std::fs::read(&pointer) {
             Ok(bytes) => {
-                let bytes: [u8; 16] = bytes.try_into().map_err(|_| {
+                let bytes: [u8; 24] = bytes.try_into().map_err(|_| {
                     std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed epoch pointer")
                 })?;
-                let (current, unreleased) = bytes.split_at(8);
+                if &bytes[..8] != FORMAT {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unsupported epoch pointer format",
+                    ));
+                }
+                let (current, unreleased) = bytes[8..].split_at(8);
                 let word = |half: &[u8]| u64::from_le_bytes(half.try_into().unwrap_or_default());
-                (word(current), word(unreleased))
+                {
+                    let (current, unreleased) = (word(current), word(unreleased));
+                    if unreleased > current {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid epoch release range",
+                        ));
+                    }
+                    (current, unreleased)
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (0, 0),
             Err(error) => return Err(error),
@@ -97,8 +113,9 @@ impl Epoch {
         let Some(pointer) = self.pointer.clone() else {
             return Ok(running);
         };
-        let mut bytes = [0_u8; 16];
-        let (current, unreleased) = bytes.split_at_mut(8);
+        let mut bytes = [0_u8; 24];
+        bytes[..8].copy_from_slice(FORMAT);
+        let (current, unreleased) = bytes[8..].split_at_mut(8);
         current.copy_from_slice(&next.to_le_bytes());
         unreleased.copy_from_slice(&self.unreleased().to_le_bytes());
         let write = tokio::task::spawn_blocking(move || {
@@ -111,7 +128,12 @@ impl Epoch {
                 }
                 std::fs::rename(&staged, &pointer)?;
                 acyclic_native_runtime::sync_parent(
-                    &pointer,
+                    pointer.parent().ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "epoch pointer has no parent",
+                        )
+                    })?,
                     acyclic_native_runtime::Durability::Full,
                 )
             })();

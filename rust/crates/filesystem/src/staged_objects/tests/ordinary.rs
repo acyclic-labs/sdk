@@ -31,7 +31,7 @@ async fn flush_vector_and_visit_denial_precede_provider_work()
                 &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
             )
             .await?;
-        let scope = PublicationScope::Closure {
+        let scope = PublicationScope {
             objects: &[id],
             proven_at: store.collection.sweeps(),
         };

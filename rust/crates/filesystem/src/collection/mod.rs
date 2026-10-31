@@ -131,7 +131,9 @@ impl Unswept {
 }
 
 /// The one collection allowed to run, from before it reads its epoch.
-pub(crate) struct Running(tokio::sync::OwnedMutexGuard<()>);
+pub(crate) struct Running {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
 
 pub(crate) struct Collecting {
     collection: Arc<Collection>,
@@ -193,7 +195,9 @@ impl Collection {
     /// Waits until no other collection runs. A collection owns the admitted
     /// set and the epoch until it ends.
     pub(crate) async fn run(&self) -> Running {
-        Running(Arc::clone(&self.running).lock_owned().await)
+        Running {
+            _guard: Arc::clone(&self.running).lock_owned().await,
+        }
     }
 
     /// Begins a collection. `opened` runs as the current generation retires:

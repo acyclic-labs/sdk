@@ -49,7 +49,7 @@ async fn native_flush_caller_cancellation_refuses_before_frame_allocation()
     assert!(matches!(
         store
             .flush_before_publish(
-                PublicationScope::Closure {
+                PublicationScope {
                     objects: &[id],
                     proven_at: store.collection.sweeps()
                 },
@@ -64,7 +64,7 @@ async fn native_flush_caller_cancellation_refuses_before_frame_allocation()
     drop(
         store
             .flush_before_publish(
-                PublicationScope::Closure {
+                PublicationScope {
                     objects: &[id],
                     proven_at: store.collection.sweeps(),
                 },

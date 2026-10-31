@@ -287,7 +287,7 @@ async fn a_dropped_publication_never_holds_a_collection() -> Result<(), Box<dyn 
         drop(abandoned);
         collector.await
     };
-    drop(collected?);
+    let _ = collected?;
     drop(main);
     close_local(fs).await?;
     Ok(())
