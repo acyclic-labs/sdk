@@ -565,10 +565,10 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
     };
     stream.append(append.clone()).await?;
     stream.append(append).await?;
-    let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), pending)
-        .await?
-        .ok_or("no wake")??;
+    let delivered = pending.await.ok_or("no wake")??;
     assert_eq!(delivered.value, record.into());
+    // Both append results have settled; the exact resend produces no second record.
+    assert!(futures::poll!(wake.next()).is_pending());
     Ok(())
 }
 

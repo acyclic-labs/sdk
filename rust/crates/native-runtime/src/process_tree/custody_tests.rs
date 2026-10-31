@@ -806,16 +806,14 @@ fn record_free_after_killed_parent(mode: &str) -> bool {
     let watch = Watch::new(child).expect("running child");
     parent.kill().expect("kill helper");
     parent.wait().expect("reap helper");
-    // An anchor exits with its parent; a paused child never does, so only
-    // the anchor is awaited, and only a failure meets the bound.
-    let bound = if mode == "anchor" { 10_000 } else { 0 };
-    let mut ready = libc::pollfd {
-        fd: std::os::fd::AsRawFd::as_raw_fd(&watch.fd),
-        events: libc::POLLIN,
-        revents: 0,
+    // Reaping the original parent is the settle cut. Its anchor must end;
+    // the paused negative control still owns its inherited record lock.
+    let exited = if mode == "anchor" {
+        watch.wait();
+        true
+    } else {
+        watch.exited()
     };
-    // SAFETY: one initialized pollfd.
-    let exited = unsafe { libc::poll(&raw mut ready, 1, bound) } == 1;
     let record = fs::File::open(root.path().join("record")).expect("record");
     let free = match crate::FileLock::try_acquire(record, crate::FileLockMode::Exclusive) {
         Ok(_lock) => true,
