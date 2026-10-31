@@ -52,6 +52,7 @@ members = [
   "rust/crates/machines-wasm",
   "rust/crates/manifest",
   "rust/crates/manifest/fuzz",
+  "rust/crates/model-render",
   "rust/crates/markdown",
   "rust/crates/markdown-work",
   "rust/crates/napi-progress-test",
