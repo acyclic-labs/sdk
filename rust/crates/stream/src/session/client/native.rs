@@ -173,7 +173,7 @@ impl transport::Transport for Grpc {
                         Ok(value)
                     })
                     .await??;
-                    Ok(value.map(|value| (value, (response, lease, failure, changed))))
+                    Ok(value.map(|value| (value.into(), (response, lease, failure, changed))))
                 },
             )) as Response)
         })

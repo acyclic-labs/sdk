@@ -305,7 +305,7 @@ async fn serve(host: Host, socket: WebSocket) {
                 }
             },
             frame = frames.next() => match frame {
-                Some(Ok(frame)) => if sender.send(Message::Binary(frame.encode_to_vec().into())).await.is_err() { break; },
+                Some(Ok(frame)) => if sender.send(Message::Binary(frame.wire().encode_to_vec().into())).await.is_err() { break; },
                 _ => break,
             }
         }

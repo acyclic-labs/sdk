@@ -1,7 +1,7 @@
 use super::*;
 use futures::FutureExt as _;
 
-fn subscription() -> wire::SessionSubscription {
+pub(super) fn subscription() -> wire::SessionSubscription {
     wire::SessionSubscription {
         channel: None,
         resume: Some(cursor(0)),
@@ -15,7 +15,9 @@ fn subscription() -> wire::SessionSubscription {
     }
 }
 
-async fn data(source: &mut ApplicationSubscription) -> Result<ApplicationDelivery, StreamError> {
+pub(super) async fn data(
+    source: &mut ApplicationSubscription,
+) -> Result<ApplicationDelivery, StreamError> {
     loop {
         let delivery = source.next().await?.ok_or(StreamError::Unavailable)?;
         if matches!(delivery.frame().body, Some(Body::Data(_))) {
@@ -185,6 +187,10 @@ async fn reconnect_fences_an_outstanding_application_decision() -> TestResult {
     let mut source = client.deliveries(subscription()).await?;
     let old = data(&mut source).await?;
     assert_eq!(sequence(&old)?, 0);
+    assert!(
+        old.original_record().is_none(),
+        "wire transport invented provider backing custody"
+    );
     fixture.reset()?;
     tokio::time::timeout(
         Duration::from_secs(1),

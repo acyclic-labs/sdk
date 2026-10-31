@@ -58,15 +58,7 @@ mod tests;
 type Ready = (String, Link, Response);
 type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
 type Response = transport::Responses;
-type Read = BoxProviderFuture<
-    'static,
-    (
-        String,
-        u64,
-        Response,
-        Option<Result<wire::SessionFrame, StreamError>>,
-    ),
->;
+type Read = BoxProviderFuture<'static, (String, u64, Response, Option<Result<Frame, StreamError>>)>;
 const QUEUE: usize = 2;
 const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 
@@ -111,27 +103,22 @@ impl PoolHandle {
 }
 struct Delivery {
     before: Option<wire::SessionFrame>,
-    item: Received,
+    item: Frame,
     sequence: u64,
     generation: u64,
     credit: Credit,
 }
 impl Delivery {
     /// A skipped cut shares the next data envelope and retains its data credit.
-    fn consume_before(&mut self, progress: &Progress) -> Result<Option<Received>, StreamError> {
+    fn consume_before(&mut self, progress: &Progress) -> Result<Option<Frame>, StreamError> {
         let Some(frame) = self.before.take() else {
             return Ok(None);
         };
         let fresh = consume_frame(progress, self.generation, self.sequence, &frame)?;
-        Ok(fresh.then_some(Received::Frame(frame)))
+        Ok(fresh.then_some(frame.into()))
     }
     fn consume(&self, progress: &Progress) -> Result<bool, StreamError> {
-        match &self.item {
-            Received::Data(data) => consume_data(progress, self.generation, self.sequence, data),
-            Received::Frame(frame) => {
-                consume_frame(progress, self.generation, self.sequence, frame)
-            }
-        }
+        consume_frame(progress, self.generation, self.sequence, self.item.wire())
     }
 }
 fn consume_frame(
@@ -179,10 +166,6 @@ fn consume_data(
     }
 }
 
-enum Received {
-    Data(wire::SessionData),
-    Frame(wire::SessionFrame),
-}
 enum Command {
     Credential { slot: u32, credential: Bytes },
     Open(Box<OpenCommand>),
@@ -458,18 +441,19 @@ impl Client {
             ),
             at_least: crate::wire_codec::cut_to_wire(&request.at_least),
         };
+        wire_codec::session::validate_follow(&follow, &cursor(request.from))?;
+        wire_codec::cut_from_wire(follow.at_least.clone())?;
         let mut records = super::runtime::boxed(
-            self.follow_data_with_ack(
-                follow,
-                request.from,
-                acknowledge,
-                crate::FollowFilter::default(),
+            data::Data::new(
+                self.open_kind(
+                    Kind::Follow(follow),
+                    request.from,
+                    acknowledge,
+                    Some(crate::FollowFilter::default().transport_filter()?),
+                )
+                .await?,
             )
-            .await?
-            .map(move |data| match data?.item {
-                Some(Item::Record(record)) => wire_codec::record(record, Some(&path)),
-                _ => Err(StreamError::Unavailable),
-            }),
+            .map(move |item| item?.into_record(&path)),
         );
         // The open resolves the stream as every provider read does: an absent
         // path or a start beyond the tail fails here, not in the stream.
@@ -499,15 +483,11 @@ impl Client {
         let filter = Some(request.filter.transport_filter()?);
         let (from, path) = (request.from, request.path.clone());
         Ok(super::runtime::boxed(
-            self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
-                .await?
-                .map(move |item| match item? {
-                    Received::Data(data) => match data.item {
-                        Some(Item::Record(record)) => wire_codec::record(record, Some(&path)),
-                        _ => Err(StreamError::Unavailable),
-                    },
-                    _ => Err(StreamError::Unavailable),
-                }),
+            data::Data::new(
+                self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
+                    .await?,
+            )
+            .map(move |item| item?.into_record(&path)),
         ))
     }
     async fn follow_updates(
@@ -532,32 +512,21 @@ impl Client {
             .await?;
         Ok(source.filter_map(move |item| {
             future::ready(match item {
-                Ok(Received::Data(data))
-                | Ok(Received::Frame(wire::SessionFrame {
-                    body: Some(Body::Data(data)),
-                    ..
-                })) => Some(match data.item {
-                    Some(Item::Record(record)) => {
-                        wire_codec::record(record, Some(&path)).map(crate::FollowUpdate::Record)
+                Ok(frame) => match frame.wire().body.as_ref() {
+                    Some(Body::Data(_)) => {
+                        Some(frame.into_record(&path).map(crate::FollowUpdate::Record))
                     }
-                    _ => Err(StreamError::Unavailable),
-                }),
-                Ok(Received::Frame(wire::SessionFrame {
-                    body: Some(Body::Watermark(mark)),
-                    ..
-                })) if progress => mark.after.map(|after| {
-                    wire_codec::commit_id(&mark.preceding_commit_id).map(|preceding| {
-                        crate::FollowUpdate::Progress {
-                            next: after.next,
-                            preceding,
-                        }
-                    })
-                }),
-                Ok(Received::Frame(wire::SessionFrame {
-                    body: Some(Body::Watermark(_)),
-                    ..
-                })) => None,
-                Ok(_) => Some(Err(StreamError::Unavailable)),
+                    Some(Body::Watermark(mark)) if progress => mark.after.as_ref().map(|after| {
+                        wire_codec::commit_id(&mark.preceding_commit_id).map(|preceding| {
+                            crate::FollowUpdate::Progress {
+                                next: after.next,
+                                preceding,
+                            }
+                        })
+                    }),
+                    Some(Body::Watermark(_)) => None,
+                    _ => Some(Err(StreamError::Unavailable)),
+                },
                 Err(error) => Some(Err(error)),
             })
         }))
@@ -602,7 +571,8 @@ impl Client {
                 Some(filter.transport_filter()?),
             )
             .await?,
-        ))
+        )
+        .map(|item| item?.into_data()))
     }
 
     async fn open_kind(
@@ -612,7 +582,7 @@ impl Client {
         acknowledge: bool,
         filter: Option<wire::SessionFilter>,
     ) -> Result<
-        impl futures::Stream<Item = Result<Received, StreamError>> + 'static + use<>,
+        impl futures::Stream<Item = Result<Frame, StreamError>> + 'static + use<>,
         StreamError,
     > {
         self.open_subscription(
@@ -634,8 +604,7 @@ impl Client {
     pub async fn subscribe(
         &self,
         subscription: wire::SessionSubscription,
-    ) -> Result<BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError>
-    {
+    ) -> Result<BoxProviderStream<'static, Result<Frame, StreamError>>, StreamError> {
         self.subscribe_with_ack(subscription, true).await
     }
 
@@ -643,16 +612,11 @@ impl Client {
         &self,
         subscription: wire::SessionSubscription,
         acknowledge: bool,
-    ) -> Result<BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError>
-    {
+    ) -> Result<BoxProviderStream<'static, Result<Frame, StreamError>>, StreamError> {
         let (kind, resume, filter, credential) = subscription_parts(subscription)?;
         Ok(super::runtime::boxed(
             self.open_subscription(kind, resume, acknowledge, true, filter, credential)
-                .await?
-                .map(|item| match item? {
-                    Received::Frame(frame) => Ok(frame),
-                    _ => Err(StreamError::Unavailable),
-                }),
+                .await?,
         ))
     }
 
@@ -665,7 +629,7 @@ impl Client {
         filter: Option<wire::SessionFilter>,
         credential: u32,
     ) -> Result<
-        impl futures::Stream<Item = Result<Received, StreamError>> + 'static + use<>,
+        impl futures::Stream<Item = Result<Frame, StreamError>> + 'static + use<>,
         StreamError,
     > {
         let cursor = self

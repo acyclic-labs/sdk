@@ -35,9 +35,9 @@ impl<K: Ord> Views<K> {
     }
 
     pub(super) fn insert(&mut self, key: K, view: RetainedView) {
-        self.bytes += view.view.retained_bytes();
+        self.bytes += view.view.metadata_bytes();
         if let Some(prior) = self.entries.insert(key, view) {
-            self.bytes -= prior.view.retained_bytes();
+            self.bytes -= prior.view.metadata_bytes();
         }
     }
 
@@ -47,7 +47,7 @@ impl<K: Ord> Views<K> {
     {
         let view = self.entries.get_mut(key)?;
         Some(ViewMut {
-            prior: view.view.retained_bytes(),
+            prior: view.view.metadata_bytes(),
             entry: view,
             bytes: &mut self.bytes,
         })
@@ -57,7 +57,7 @@ impl<K: Ord> Views<K> {
         self.entries.retain(|key, view| {
             let retained = keep(key, view);
             if !retained {
-                self.bytes -= view.view.retained_bytes();
+                self.bytes -= view.view.metadata_bytes();
             }
             retained
         });
@@ -68,7 +68,7 @@ impl<K: Ord> Views<K> {
         K: Borrow<Q>,
     {
         if let Some(view) = self.entries.remove(key) {
-            self.bytes -= view.view.retained_bytes();
+            self.bytes -= view.view.metadata_bytes();
         }
     }
 
@@ -100,6 +100,6 @@ impl DerefMut for ViewMut<'_> {
 
 impl Drop for ViewMut<'_> {
     fn drop(&mut self) {
-        *self.bytes = *self.bytes - self.prior + self.entry.view.retained_bytes();
+        *self.bytes = *self.bytes - self.prior + self.entry.view.metadata_bytes();
     }
 }

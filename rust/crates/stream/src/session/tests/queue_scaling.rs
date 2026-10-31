@@ -78,7 +78,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
         let mut before: VecDeque<_> = session
             .channels
             .values()
-            .flat_map(|c| c.pending.iter().map(|p| p.frame.clone()))
+            .flat_map(|c| c.pending.iter().map(|p| p.frame.wire().clone()))
             .collect();
         let mut before_time = std::time::Duration::ZERO;
         let mut after_time = std::time::Duration::ZERO;
@@ -96,6 +96,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                 .front()
                 .unwrap()
                 .frame
+                .wire()
                 .clone();
             let started = Instant::now();
             let (old, visits) = scanned_ready(&mut before, target, session.credit);
@@ -104,7 +105,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
             let head_visits = session.head_visits;
             let started = Instant::now();
             session.refresh_source(target);
-            let selected = session.ready().unwrap().unwrap();
+            let selected = session.ready().unwrap().unwrap().into_wire();
             after_time += started.elapsed();
             assert_eq!(selected, old);
             before.push_back(old);
@@ -166,9 +167,9 @@ fn global_byte_credit_selects_fitting_heads_without_overtaking_a_channel() {
         bytes: 100,
         frames: 100,
     };
-    assert_eq!(session.ready().unwrap().unwrap().channel_id, 3);
+    assert_eq!(session.ready().unwrap().unwrap().wire().channel_id, 3);
     assert!(session.ready().unwrap().is_none());
     session.credit.bytes = 10_000;
-    assert_eq!(session.ready().unwrap().unwrap().channel_id, 1);
-    assert_eq!(session.ready().unwrap().unwrap().channel_id, 1);
+    assert_eq!(session.ready().unwrap().unwrap().wire().channel_id, 1);
+    assert_eq!(session.ready().unwrap().unwrap().wire().channel_id, 1);
 }

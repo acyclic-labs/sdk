@@ -151,7 +151,7 @@ impl WasmSession {
             client.subscribe_with_ack(subscription, acknowledge).await
         })
         .try_flatten()
-        .map(|item| item.map(|frame| frame.encode_to_vec()))
+        .map(|item| item.map(|frame| frame.wire().encode_to_vec()))
         .boxed_local();
         Ok(WasmFollow {
             state: Rc::new(FollowState::new(stream, StreamError::Unavailable)),

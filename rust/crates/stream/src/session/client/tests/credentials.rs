@@ -45,7 +45,12 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
         });
         let mut response = endpoint.session(Box::pin(source)).await?;
         assert!(matches!(
-            response.next().await.ok_or("welcome producer ended")??.body,
+            response
+                .next()
+                .await
+                .ok_or("welcome producer ended")??
+                .into_wire()
+                .body,
             Some(Body::Welcome(_))
         ));
         for revision in [1, 2] {
@@ -75,7 +80,7 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                 .ok_or("session result producer ended")?;
             if revision == 1 || change == "unchanged" {
                 assert!(
-                    matches!(result?.body, Some(Body::InterestApplied(applied)) if applied.revision == revision)
+                    matches!(result?.into_wire().body, Some(Body::InterestApplied(applied)) if applied.revision == revision)
                 );
                 assert!(fixture.counts.received_bytes.load(Ordering::Relaxed) > received);
             } else {

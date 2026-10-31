@@ -135,7 +135,7 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
             .records
             .try_send(Ok(Delivery {
                 before: None,
-                item: Received::Frame(frame(
+                item: frame(
                     id,
                     1,
                     Body::Watermark(wire::SessionWatermark {
@@ -143,7 +143,8 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
                         durable: 1,
                         ..Default::default()
                     }),
-                )),
+                )
+                .into(),
                 sequence: 0,
                 generation: 1,
                 credit: Credit::new(
@@ -265,16 +266,9 @@ fn run(mut state: State, old: bool, redundant: bool) -> (Output, usize, Allocati
         .map(|receiver| {
             let mut received = Vec::new();
             while let Ok(value) = receiver.try_recv() {
-                received.push(value.map(|d| {
-                    (
-                        d.sequence,
-                        d.generation,
-                        match d.item {
-                            Received::Frame(frame) => frame.encode_to_vec(),
-                            Received::Data(data) => data.encode_to_vec(),
-                        },
-                    )
-                }));
+                received.push(
+                    value.map(|d| (d.sequence, d.generation, d.item.into_wire().encode_to_vec())),
+                );
             }
             received
         })
@@ -414,7 +408,7 @@ fn old_receive(pool: &mut Pool, node: &str, input: wire::SessionFrame) -> Result
     }
     match input.body {
         Some(Body::Opened(opened)) => old_opened(pool, id, &opened),
-        Some(Body::Data(data)) => pool.data(node, id, input.generation, data, length, epoch),
+        Some(Body::Data(data)) => pool.data(node, id, input.generation, data, length, epoch, None),
         Some(Body::Closed(closed)) => old_closed(pool, id, &closed),
         Some(Body::Moved(moved)) => {
             let destination = moved.node.ok_or(StreamError::Unavailable)?;

@@ -375,10 +375,10 @@ pub fn verify_link_isolation(broken: bool) {
             Err(StreamError::Unavailable)
         ));
         let delivery = healthy.try_recv().unwrap().unwrap();
-        let Received::Data(wire::SessionData {
+        let Some(Body::Data(wire::SessionData {
             item: Some(Item::Record(record)),
             ..
-        }) = &delivery.item
+        })) = &delivery.item.wire().body
         else {
             panic!("healthy route must deliver its record");
         };

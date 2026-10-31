@@ -371,7 +371,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                         .unwrap()
                         .unwrap()
                         .unwrap();
-                opened |= matches!(message.body, Some(Body::Opened(_)));
+                opened |= matches!(message.wire().body, Some(Body::Opened(_)));
             }
             assert!(opened);
             sender
@@ -391,7 +391,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                 .unwrap()
                 .unwrap();
             assert!(
-                matches!(permitted.body, Some(Body::Data(_))),
+                matches!(permitted.wire().body, Some(Body::Data(_))),
                 "unrevoked follow must deliver"
             );
             if queued {
@@ -404,8 +404,8 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                 .unwrap()
                 .unwrap()
                 .unwrap();
-            assert_eq!(closed.channel_id, 1);
-            let Some(Body::Closed(closed)) = closed.body else {
+            assert_eq!(closed.wire().channel_id, 1);
+            let Some(Body::Closed(closed)) = closed.into_wire().body else {
                 panic!("disclosed data after {reason}, queued={queued}");
             };
             assert_eq!(
@@ -429,7 +429,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
             // A closed generation cannot be revived by delayed credit.
             let result = futures::poll!(output.next());
             assert!(!matches!(
-                result,
+                result.map(|item| item.map(|item| item.map(Frame::into_wire))),
                 std::task::Poll::Ready(Some(Ok(wire::SessionFrame {
                     body: Some(Body::Data(_)),
                     ..

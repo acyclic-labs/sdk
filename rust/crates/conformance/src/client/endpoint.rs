@@ -315,7 +315,7 @@ async fn wait_reply(
             .await
             .ok_or_else(|| stream_failure("reply_liveness", StreamError::Unavailable))?
             .map_err(|error| stream_failure("reply_liveness", error))?;
-            match frame.body {
+            match frame.into_wire().body {
                 Some(wire::session_frame::Body::Data(_)) => break,
                 Some(wire::session_frame::Body::Closed(closed)) => {
                     return Err(stream_failure(

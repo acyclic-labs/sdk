@@ -205,7 +205,7 @@ impl Transport for Endpoint {
                                 // or decoding the queued browser buffer.
                                 let frame = decode_frame(frame)?;
                                 return Ok(Some((
-                                    frame,
+                                    frame.into(),
                                     (guard, receiver, source, incoming, changed),
                                 )));
                             }

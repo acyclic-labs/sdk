@@ -60,11 +60,11 @@ async fn qualify_prefix_credit(omit_held_data: bool) -> Result<(), Box<dyn std::
     assert_eq!(pool.routes.get(&3).ok_or("route")?.credit.frames, 0);
     let mut first = receiver.try_recv()??;
     let progress = Arc::clone(&pool.routes.get(&3).ok_or("route")?.progress);
-    let Some(Received::Frame(before)) = first.consume_before(&progress)? else {
+    let Some(before) = first.consume_before(&progress)? else {
         return Err("durability conflation erased the skipped prefix".into());
     };
     assert!(matches!(
-        before.body,
+        before.wire().body,
         Some(Body::Watermark(wire::SessionWatermark {
             after: Some(wire::SessionCursor { next: 2, .. }),
             ..

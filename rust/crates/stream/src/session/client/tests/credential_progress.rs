@@ -176,7 +176,12 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                 }
                 let mut response = endpoint.session(Box::pin(source)).await?;
                 assert!(matches!(
-                    response.next().await.ok_or(StreamError::Unavailable)??.body,
+                    response
+                        .next()
+                        .await
+                        .ok_or(StreamError::Unavailable)??
+                        .into_wire()
+                        .body,
                     Some(Body::Welcome(_))
                 ));
                 *pause.lock().unwrap() = Some(owner);
@@ -228,7 +233,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     let result = operation.await;
                     if stage == "reply" {
                         assert!(
-                            matches!(result?, Some(wire::SessionFrame { body: Some(Body::InterestApplied(applied)), .. }) if applied.revision == 7)
+                            matches!(result?.map(Frame::into_wire), Some(wire::SessionFrame { body: Some(Body::InterestApplied(applied)), .. }) if applied.revision == 7)
                         );
                     } else {
                         assert!(matches!(result, Err(StreamError::AccessDenied)));

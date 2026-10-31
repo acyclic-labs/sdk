@@ -17,7 +17,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         }) else {
             return Ok(());
         };
-        let (after, item, key) = match record {
+        let (after, item, key, original) = match record {
             Ok(Event::Opened(preceding, applied)) => {
                 self.controls.push_back(frame(
                     identity.channel_id,
@@ -42,6 +42,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 return Ok(());
             }
             Ok(Event::Record(record)) => {
+                let original = record.clone();
                 let next = record
                     .sequence
                     .checked_add(1)
@@ -73,7 +74,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         None,
                     )
                 };
-                (cursor(next), item, key)
+                (cursor(next), item, key, Some(original))
             }
             Ok(Event::CallChunk {
                 index,
@@ -88,6 +89,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         opaque: Bytes::copy_from_slice(&total.to_le_bytes()),
                     },
                     item(bytes),
+                    None,
                     None,
                 )
             }
@@ -120,7 +122,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 return Ok(());
             }
         };
-        self.enqueue(identity, after, item, key)
+        self.enqueue(identity, after, item, key, original)
     }
 
     fn enqueue(
@@ -129,6 +131,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         after: wire::SessionCursor,
         item: Item,
         key: Option<Bytes>,
+        original: Option<crate::Record>,
     ) -> Result<(), StreamError> {
         let next = after.next;
         let frame = frame(
@@ -155,7 +158,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         });
         let replaced = prior
             .and_then(|index| channel.pending.get(index))
-            .map_or(0, |pending| pending.frame.encoded_len());
+            .map_or(0, |pending| pending.frame.wire().encoded_len());
         let bytes = self.pending_bytes - replaced + frame.encoded_len();
         let count = self.pending_frames + usize::from(prior.is_none());
         if bytes > self.limits.pending_bytes || count > self.limits.pending_frames {
@@ -164,7 +167,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         if let Some(index) = prior {
             channel.pending.remove(index);
         }
-        channel.pending.push_back(Pending { frame, key });
+        channel.pending.push_back(Pending {
+            frame: Frame {
+                wire: frame,
+                record: original,
+            },
+            key,
+        });
         self.pending_bytes = bytes;
         self.pending_frames = count;
         self.refresh_source(identity.channel_id);
@@ -203,7 +212,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         Ok(())
     }
 
-    pub(super) fn ready(&mut self) -> Result<Option<wire::SessionFrame>, StreamError> {
+    pub(super) fn ready(&mut self) -> Result<Option<Frame>, StreamError> {
         if self.credit.frames == 0 || self.credit.bytes == 0 || self.runnable.is_empty() {
             return Ok(None);
         }
@@ -242,7 +251,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 },
                 reason,
             )?;
-            return Ok(self.controls.pop_front());
+            return Ok(self.controls.pop_front().map(Into::into));
         }
         if let Some(revalidate) = self
             .channels
@@ -257,14 +266,17 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     .ok_or(StreamError::Unavailable)?
                     .generation;
                 self.remove(id)?;
-                return Ok(Some(frame(
-                    id,
-                    generation,
-                    Body::Closed(wire::SessionClosed {
-                        code: error.code().into(),
-                        message: String::new(),
-                    }),
-                )));
+                return Ok(Some(
+                    frame(
+                        id,
+                        generation,
+                        Body::Closed(wire::SessionClosed {
+                            code: error.code().into(),
+                            message: String::new(),
+                        }),
+                    )
+                    .into(),
+                ));
             }
         }
         self.ready_after = selected;
@@ -277,11 +289,11 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             .pending
             .pop_front()
             .ok_or(StreamError::Unavailable)?;
-        wire_codec::session::consume_credit(&mut self.credit, &pending.frame)?;
-        wire_codec::session::consume_credit(&mut channel.credit, &pending.frame)?;
-        self.pending_bytes -= pending.frame.encoded_len();
+        wire_codec::session::consume_credit(&mut self.credit, pending.frame.wire())?;
+        wire_codec::session::consume_credit(&mut channel.credit, pending.frame.wire())?;
+        self.pending_bytes -= pending.frame.wire().encoded_len();
         self.pending_frames -= 1;
-        if let Some(Body::Data(data)) = &pending.frame.body {
+        if let Some(Body::Data(data)) = &pending.frame.wire().body {
             channel.sent = data.after.clone().ok_or(StreamError::Unavailable)?;
         }
         self.finish_if_drained(id)?;

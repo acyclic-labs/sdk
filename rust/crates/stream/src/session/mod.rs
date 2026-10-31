@@ -39,10 +39,12 @@ mod local;
 pub use connection::Connections;
 #[cfg(loom)]
 pub use connection::verify_connections;
+mod frame;
 mod gate;
 mod interest;
 mod policy;
 mod queue;
+pub use frame::Frame;
 mod runtime;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod service;
@@ -107,7 +109,7 @@ struct Channel {
     ending: Option<&'static str>,
 }
 struct Pending {
-    frame: wire::SessionFrame,
+    frame: Frame,
     key: Option<Bytes>,
 }
 enum Event {
@@ -145,7 +147,7 @@ struct Session<P: ?Sized> {
     channels: BTreeMap<u64, Channel>,
     sources: sources::Sources,
     terminals: sources::Sources,
-    incoming: transport::Responses,
+    incoming: transport::WireResponses,
     credit: wire::SessionWindow,
     controls: VecDeque<wire::SessionFrame>,
     pending_frames: usize,
@@ -171,9 +173,9 @@ impl<P: ?Sized> ServingSession<P> {
     fn close(
         mut channels: std::collections::btree_map::IntoIter<u64, Channel>,
         mut controls: std::collections::vec_deque::IntoIter<wire::SessionFrame>,
-    ) -> Option<(wire::SessionFrame, Self)> {
+    ) -> Option<(Frame, Self)> {
         if let Some(frame) = controls.next() {
-            return Some((frame, Self::Closing(channels, controls)));
+            return Some((frame.into(), Self::Closing(channels, controls)));
         }
         let (id, channel) = channels.next()?;
         Some((
@@ -184,7 +186,8 @@ impl<P: ?Sized> ServingSession<P> {
                     code: StreamError::Unavailable.code().into(),
                     message: String::new(),
                 }),
-            ),
+            )
+            .into(),
             Self::Closing(channels, controls),
         ))
     }
@@ -197,7 +200,7 @@ pub fn serve<P: StreamProvider + ?Sized>(
     authority: Arc<Authority>,
     node: String,
     limits: Limits,
-    incoming: transport::Responses,
+    incoming: transport::WireResponses,
 ) -> Result<transport::Responses, StreamError> {
     serve_on(
         provider,
@@ -213,7 +216,7 @@ fn serve_on<P: StreamProvider + ?Sized>(
     authority: Arc<Authority>,
     node: String,
     limits: Limits,
-    incoming: transport::Responses,
+    incoming: transport::WireResponses,
     executor: Arc<dyn crate::runtime::Executor>,
 ) -> Result<transport::Responses, StreamError> {
     serve_on_with_resources(provider, authority, None, node, limits, incoming, executor)
@@ -226,7 +229,7 @@ pub fn serve_with_resources<P: StreamProvider + ?Sized>(
     resources: Arc<dyn ResourceProvider>,
     node: String,
     limits: Limits,
-    incoming: transport::Responses,
+    incoming: transport::WireResponses,
 ) -> Result<transport::Responses, StreamError> {
     serve_on_with_resources(
         provider,
@@ -245,7 +248,7 @@ fn serve_on_with_resources<P: StreamProvider + ?Sized>(
     resources: Option<Arc<dyn ResourceProvider>>,
     node: String,
     limits: Limits,
-    incoming: transport::Responses,
+    incoming: transport::WireResponses,
     executor: Arc<dyn crate::runtime::Executor>,
 ) -> Result<transport::Responses, StreamError> {
     serve_on_with_products(
@@ -263,7 +266,7 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
     calls: Arc<dyn CallProvider>,
     node: String,
     limits: Limits,
-    incoming: transport::Responses,
+    incoming: transport::WireResponses,
     shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
 ) -> Result<transport::Responses, StreamError> {
     serve_on_with_products(
@@ -286,7 +289,7 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
     calls: Option<Arc<dyn CallProvider>>,
     node: String,
     limits: Limits,
-    incoming: transport::Responses,
+    incoming: transport::WireResponses,
     executor: Arc<dyn crate::runtime::Executor>,
     shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
 ) -> Result<transport::Responses, StreamError> {
@@ -370,14 +373,14 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
 }
 
 impl<P: StreamProvider + ?Sized> Session<P> {
-    async fn next_frame(&mut self) -> Result<Option<wire::SessionFrame>, StreamError> {
+    async fn next_frame(&mut self) -> Result<Option<Frame>, StreamError> {
         loop {
             self.fence_changed()?;
             if let Some(frame) = self.controls.pop_front() {
-                return Ok(Some(frame));
+                return Ok(Some(frame.into()));
             }
             if let Some(frame) = self.ready()? {
-                return Ok(Some(frame));
+                return Ok(Some(frame.into()));
             }
             if self.verifying.is_some() {
                 self.await_verdict().await?;

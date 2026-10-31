@@ -1,3 +1,4 @@
+use crate::reader::backing::BackingPool;
 use crate::{DemandError, DemandPolicy, StreamView, StreamViewPolicy, ViewDemand};
 use acyclic_stream::{
     BoxProviderFuture, BoxProviderStream, StreamError, StreamPath, session::Client, wire,
@@ -17,7 +18,7 @@ mod viewport_tests;
 mod views;
 use views::Views;
 
-type Follow = BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>;
+type Follow = BoxProviderStream<'static, Result<acyclic_stream::session::Frame, StreamError>>;
 
 enum SubscriptionState {
     Opening(BoxProviderFuture<'static, Result<Follow, StreamError>>),
@@ -98,6 +99,7 @@ pub struct WireSession {
     resource_views: Views<String>,
     view_policy: StreamViewPolicy,
     revision: u64,
+    backings: BackingPool,
 }
 
 impl WireSession {
@@ -129,6 +131,7 @@ impl WireSession {
             resource_views: Views::default(),
             view_policy,
             revision: 0,
+            backings: BackingPool::default(),
         }
     }
 
@@ -417,7 +420,14 @@ impl WireSession {
         (
             RetainedView {
                 request,
-                view: StreamView::new(self.view_policy, from, revision, filtered, followed),
+                view: StreamView::new(
+                    self.view_policy,
+                    from,
+                    revision,
+                    filtered,
+                    followed,
+                    self.backings.clone(),
+                ),
             },
             Subscription {
                 state: SubscriptionState::Opening(opening),
@@ -557,10 +567,11 @@ impl WireSession {
 
     /// Display payload/record charge across the bounded selected folds,
     /// including final views retained after a follow ends.
-    /// Reads two maintained totals without visiting any selected fold.
+    /// Shared payloads, including cloned rows, are charged once. Reads maintained
+    /// totals without visiting any selected fold.
     #[must_use]
-    pub const fn retained_bytes(&self) -> usize {
-        self.views.bytes() + self.resource_views.bytes()
+    pub fn retained_bytes(&self) -> usize {
+        self.views.bytes() + self.resource_views.bytes() + self.backings.bytes()
     }
 
     /// All retained folds, including terminal resources, share one finite cap.
@@ -686,12 +697,12 @@ fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
                 return Poll::Ready(Err(error));
             }
             if matches!(
-                frame.body.as_ref(),
+                frame.wire().body.as_ref(),
                 Some(wire::session_frame::Body::Closed(_))
             ) {
                 follows.remove(key);
             }
-            Poll::Ready(Ok(Some(frame)))
+            Poll::Ready(Ok(Some(frame.into_wire())))
         }
         Poll::Ready(Some(Err(error))) => {
             follows.remove(key);

@@ -299,7 +299,8 @@ impl Connection {
         Ok(
             tokio::time::timeout(std::time::Duration::from_secs(1), self.output.next())
                 .await?
-                .ok_or("session ended")??,
+                .ok_or("session ended")??
+                .into_wire(),
         )
     }
     fn grant(&self, id: u64) -> Result {
@@ -596,7 +597,7 @@ async fn semantic_path_widening_and_latest_delivery_cannot_open_filesystem_recor
         .await?;
         let refusal = connection.output.next().await.ok_or("missing refusal")?;
         match refusal {
-            Ok(frame) => assert!(matches!(frame.body, Some(Body::Closed(_)))),
+            Ok(frame) => assert!(matches!(frame.wire().body, Some(Body::Closed(_)))),
             Err(error) => assert!(matches!(error, StreamError::InvalidArgument)),
         }
         // Neither a channel opening nor a data frame may precede the refusal.

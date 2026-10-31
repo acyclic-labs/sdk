@@ -207,7 +207,7 @@ impl WasmStream {
         Ok(WasmFollow {
             state: Rc::new(FollowState::new(
                 frames
-                    .map(|frame| frame.map(|frame| frame.encode_to_vec()))
+                    .map(|frame| frame.map(|frame| frame.wire().encode_to_vec()))
                     .boxed_local(),
                 StreamError::Unavailable,
             )),

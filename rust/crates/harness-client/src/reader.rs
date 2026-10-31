@@ -13,7 +13,7 @@
 //! scheduler, one deadline ([`Reader::next_deadline`]) and one cache serve
 //! every agent; idle agents cost nothing.
 
-mod backing;
+pub(crate) mod backing;
 mod cache;
 mod credential;
 mod demand;

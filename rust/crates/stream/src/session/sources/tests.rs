@@ -207,7 +207,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
                                 progress: None,
                                 pending: (0..pending)
                                     .map(|_| Pending {
-                                        frame: Default::default(),
+                                        frame: wire::SessionFrame::default().into(),
                                         key: None,
                                     })
                                     .collect(),

@@ -39,7 +39,8 @@ impl transport::Transport for Peer {
                     node_id: "good".into(),
                     ..Default::default()
                 }),
-            ))])
+            )
+            .into())])
             .boxed();
             Ok(response)
         })

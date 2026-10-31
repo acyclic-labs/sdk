@@ -93,9 +93,9 @@ impl Client {
         let mut reply = Vec::new();
         let mut total = None;
         while let Some(item) = source.next().await {
-            let Received::Data(data) = item? else {
-                return Err(StreamError::InvalidResponse);
-            };
+            let data = item?
+                .into_data()
+                .map_err(|_| StreamError::InvalidResponse)?;
             let length = wire_codec::session::actor_call_total(&data)?;
             if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
                 return Err(StreamError::InvalidResponse);

@@ -1,3 +1,4 @@
+use crate::reader::backing::{BackingPool, RecordBytes};
 use acyclic_stream::{StreamError, StreamPath, StreamWatermarks, wire, wire_codec};
 use bytes::Bytes;
 use std::{
@@ -9,6 +10,13 @@ struct LatestEntry {
     value: wire::SessionLatestValue,
     charge: usize,
     next: u64,
+    payload: usize,
+}
+
+struct RecordEntry {
+    record: wire::Record,
+    charge: usize,
+    payload: usize,
 }
 
 /// Finite display-cache bounds for one selected stream. Transport credit and
@@ -44,7 +52,7 @@ impl Default for StreamViewPolicy {
 /// Historical backfill belongs to the provider's page window, not this live tail.
 pub struct StreamView {
     policy: StreamViewPolicy,
-    records: VecDeque<(wire::Record, usize)>,
+    records: VecDeque<RecordEntry>,
     latest: BTreeMap<Bytes, LatestEntry>,
     /// Delivery cursors are strictly increasing, so they also order eviction.
     /// Keys share their one compact allocation with the corresponding value.
@@ -52,6 +60,8 @@ pub struct StreamView {
     #[cfg(test)]
     latest_probes: std::sync::atomic::AtomicUsize,
     bytes: usize,
+    payload_bytes: usize,
+    backings: BackingPool,
     next: u64,
     revision: u64,
     watermarks: StreamWatermarks,
@@ -70,6 +80,7 @@ impl StreamView {
         revision: u64,
         filtered: bool,
         followed: Option<StreamPath>,
+        backings: BackingPool,
     ) -> Self {
         Self {
             policy,
@@ -79,6 +90,8 @@ impl StreamView {
             #[cfg(test)]
             latest_probes: std::sync::atomic::AtomicUsize::new(0),
             bytes: 0,
+            payload_bytes: 0,
+            backings,
             next,
             revision,
             watermarks: StreamWatermarks {
@@ -92,7 +105,7 @@ impl StreamView {
 
     /// Borrows only the retained visible records; no joined history allocation.
     pub fn records(&self) -> impl ExactSizeIterator<Item = &wire::Record> {
-        self.records.iter().map(|(record, _)| record)
+        self.records.iter().map(|entry| &entry.record)
     }
 
     /// Last delivered opaque value for a key, under this view's ordinary budget.
@@ -112,7 +125,7 @@ impl StreamView {
     /// Borrows one displayed record without copying its siblings.
     #[must_use]
     pub fn record(&self, index: usize) -> Option<&wire::Record> {
-        self.records.get(index).map(|(record, _)| record)
+        self.records.get(index).map(|entry| &entry.record)
     }
 
     /// Exclusive end of this disposable fold, not a new recovery ledger.
@@ -126,7 +139,7 @@ impl StreamView {
     pub fn first_sequence(&self) -> u64 {
         self.records
             .front()
-            .map_or(self.next, |(record, _)| record.sequence)
+            .map_or(self.next, |entry| entry.record.sequence)
     }
 
     /// Session-wide revision, including replacement views, so a deselect/reselect
@@ -136,10 +149,15 @@ impl StreamView {
         self.revision
     }
 
-    /// Retained payload and record/header allocation charge.
+    /// Per-entry display budget charge, including original payload capacity.
+    /// Shared allocations count once in the enclosing session's residency total.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
         self.bytes
+    }
+
+    pub(crate) fn metadata_bytes(&self) -> usize {
+        self.bytes - self.payload_bytes
     }
 
     /// Accepted/durable watermarks are never inferred from a missing delivery.
@@ -164,10 +182,10 @@ impl StreamView {
 
     pub(crate) fn apply(
         &mut self,
-        frame: &wire::SessionFrame,
+        frame: &acyclic_stream::session::Frame,
         revision: u64,
     ) -> Result<(), StreamError> {
-        match frame.body.as_ref() {
+        match frame.wire().body.as_ref() {
             Some(wire::session_frame::Body::Data(data)) => {
                 self.check_watermarks(data.accepted, data.durable)?;
                 if let Some(wire::session_data::Item::LatestValue(value)) = data.item.as_ref() {
@@ -188,12 +206,26 @@ impl StreamView {
                     if charge > self.policy.bytes {
                         return Err(StreamError::LimitExceeded);
                     }
+                    let payload = frame.original_record().map_or_else(
+                        || acyclic_stream::OwnedBytes::from(value.value.clone()),
+                        |record| record.value.clone(),
+                    );
+                    let metadata = charge - value.value.len();
+                    let payload = self.backings.retain(payload, self.policy.bytes - metadata);
+                    let capacity = payload.backing().capacity();
+                    let charge = metadata
+                        .checked_add(capacity)
+                        .ok_or(StreamError::LimitExceeded)?;
+                    if charge > self.policy.bytes {
+                        return Err(StreamError::LimitExceeded);
+                    }
                     #[cfg(test)]
                     self.latest_probes
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if let Some(old) = self.latest.remove(value.key.as_ref()) {
                         self.latest_order.remove(&old.next);
                         self.bytes -= old.charge;
+                        self.payload_bytes -= old.payload;
                     }
                     while self.latest.len() >= self.policy.records
                         || self.bytes > self.policy.bytes - charge
@@ -207,6 +239,7 @@ impl StreamView {
                             .remove(key.as_ref())
                             .ok_or(StreamError::InvalidResponse)?;
                         self.bytes -= old.charge;
+                        self.payload_bytes -= old.payload;
                     }
                     let key = Bytes::copy_from_slice(&value.key);
                     self.latest_order.insert(after.next, key.clone());
@@ -215,14 +248,16 @@ impl StreamView {
                         LatestEntry {
                             value: wire::SessionLatestValue {
                                 key,
-                                value: Bytes::copy_from_slice(&value.value),
+                                value: Bytes::from_owner(payload),
                                 attention: value.attention,
                             },
                             charge,
                             next: after.next,
+                            payload: capacity,
                         },
                     );
                     self.bytes += charge;
+                    self.payload_bytes += capacity;
                     self.next = after.next;
                     self.revision = revision;
                     self.advance_watermarks(data.accepted, data.durable);
@@ -249,23 +284,39 @@ impl StreamView {
                 }
                 // Use the canonical record/header validator, including its size
                 // bounds, before retaining anything from the delivery.
-                wire_codec::record(record.clone(), self.followed.as_ref())?;
+                let decoded = wire_codec::record(record.clone(), self.followed.as_ref())?;
                 let charge = record_charge(record)?;
                 if charge > self.policy.bytes {
                     return Err(StreamError::LimitExceeded);
                 }
-                // Rehome shared byte slices: a tiny visible value cannot keep an
-                // arbitrarily larger receive buffer alive behind its charge.
-                let owned = compact_record(record);
+                let payload = frame
+                    .original_record()
+                    .map_or(decoded.value, |record| record.value.clone());
+                let metadata = charge - record.value.len();
+                let payload = self.backings.retain(payload, self.policy.bytes - metadata);
+                let capacity = payload.backing().capacity();
+                let charge = metadata
+                    .checked_add(capacity)
+                    .ok_or(StreamError::LimitExceeded)?;
+                if charge > self.policy.bytes {
+                    return Err(StreamError::LimitExceeded);
+                }
+                let owned = compact_record(record, payload);
                 while self.records.len() >= self.policy.records
                     || self.bytes > self.policy.bytes - charge
                 {
-                    if let Some((_, old_charge)) = self.records.pop_front() {
-                        self.bytes -= old_charge;
+                    if let Some(old) = self.records.pop_front() {
+                        self.bytes -= old.charge;
+                        self.payload_bytes -= old.payload;
                     }
                 }
-                self.records.push_back((owned, charge));
+                self.records.push_back(RecordEntry {
+                    record: owned,
+                    charge,
+                    payload: capacity,
+                });
                 self.bytes += charge;
+                self.payload_bytes += capacity;
                 self.next = next;
                 self.revision = revision;
                 self.advance_watermarks(data.accepted, data.durable);
@@ -290,7 +341,7 @@ impl StreamView {
 }
 
 fn record_charge(record: &wire::Record) -> Result<usize, StreamError> {
-    let mut charge = size_of::<(wire::Record, usize)>();
+    let mut charge = size_of::<RecordEntry>();
     for bytes in std::iter::once(record.value.len())
         .chain(std::iter::once(record.commit_id.len()))
         .chain(std::iter::once(record.origin.len()))
@@ -306,10 +357,10 @@ fn record_charge(record: &wire::Record) -> Result<usize, StreamError> {
     Ok(charge)
 }
 
-fn compact_record(record: &wire::Record) -> wire::Record {
+fn compact_record(record: &wire::Record, payload: RecordBytes) -> wire::Record {
     wire::Record {
         sequence: record.sequence,
-        value: Bytes::copy_from_slice(&record.value),
+        value: Bytes::from_owner(payload),
         commit_id: Bytes::copy_from_slice(&record.commit_id),
         committed_at_micros: record.committed_at_micros,
         origin: record.origin.clone(),

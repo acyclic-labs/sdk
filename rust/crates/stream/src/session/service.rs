@@ -75,7 +75,11 @@ impl<P: StreamProvider> wire::stream_session_service_server::StreamSessionServic
         .map_err(|error| Status::invalid_argument(error.code()))?;
         Ok(Response::new(
             session
-                .map(|frame| frame.map_err(|error| Status::failed_precondition(error.code())))
+                .map(|frame| {
+                    frame
+                        .map(Frame::into_wire)
+                        .map_err(|error| Status::failed_precondition(error.code()))
+                })
                 .boxed(),
         ))
     }

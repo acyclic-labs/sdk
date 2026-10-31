@@ -83,11 +83,12 @@ async fn append(
     Ok(())
 }
 async fn next(
-    output: &mut BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
+    output: &mut BoxStream<'static, Result<Frame, StreamError>>,
 ) -> Result<wire::SessionFrame, Box<dyn std::error::Error + Send + Sync>> {
     Ok(tokio::time::timeout(Duration::from_secs(1), output.next())
         .await?
-        .ok_or("session ended")??)
+        .ok_or("session ended")??
+        .into_wire())
 }
 
 #[tokio::test]
@@ -411,6 +412,7 @@ async fn host_shutdown_closes_all_channels_without_data_credit() -> TestResult {
     drop(owner);
     let mut closed = BTreeSet::new();
     while let Some(frame) = output.next().await.transpose()? {
+        let frame = frame.into_wire();
         match frame.body {
             Some(Body::Closed(close)) => {
                 assert_eq!(
