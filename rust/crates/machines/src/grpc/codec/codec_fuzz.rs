@@ -65,10 +65,10 @@ pub fn check(name: &str, bytes: &[u8]) {
             }) {
                 let encoded =
                     encode_compatibility(&policy).expect("admitted policy is representable");
-                assert_eq!(decode_compatibility(Some(&encoded), &available), Ok(policy));
                 if let CompatibilityPolicy::Require(_) = policy {
                     assert!(decode_compatibility(Some(&encoded), &BTreeSet::new()).is_err());
                 }
+                assert_eq!(decode_compatibility(Some(&encoded), &available), Ok(policy));
             }
         }
         "acyclic.machines.v1.SuspensionPolicy" => {
