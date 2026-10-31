@@ -1,13 +1,12 @@
 //! One shell language and invocation contract shared by every host.
 /// Platform shell data shared by registration, execution and client routing.
 pub struct ShellSpec {
-    language: Language,
     /// Model-visible tool and approval-policy name.
     pub name: &'static str,
     /// Description of this target's shell language and result contract.
     pub description: &'static str,
     /// Command language the roster lists for targets using this contract.
-    pub language: &'static str,
+    pub language: Language,
     /// Whether commands use the Windows filesystem namespace.
     pub windows_paths: bool,
     /// Native executables in preference order; resolved once at host startup.
@@ -18,9 +17,24 @@ pub struct ShellSpec {
     pub stdin_bootstrap: Option<&'static str>,
 }
 
-enum Language {
+/// The command language shared by script quoting and target announcements.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Language {
+    /// Bash source and positional arguments.
     Bash,
+    /// PowerShell source and positional arguments.
     PowerShell,
+}
+
+impl Language {
+    /// Stable language name used by target rosters.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bash => "bash",
+            Self::PowerShell => "powershell",
+        }
+    }
 }
 
 impl ShellSpec {
@@ -101,7 +115,6 @@ pub const PLATFORM: ShellSpec = POWERSHELL;
 pub const POWERSHELL: ShellSpec = ShellSpec {
     language: Language::PowerShell,
     name: "shell",
-    language: "powershell",
     windows_paths: true,
     description: "Run PowerShell in your workspace, using PowerShell 7 when available, otherwise Windows PowerShell 5.1. Use PowerShell syntax and Windows paths; profiles are disabled. timeout_ms defaults to 300000 and cannot exceed it. Returns the exit code and output tail, about 30000 characters; overflow is saved in .volumes/scratch. Writes outside the workspace are not captured",
     executables: &["pwsh.exe", "powershell.exe"],
@@ -119,7 +132,6 @@ pub const PLATFORM: ShellSpec = BASH;
 pub const BASH: ShellSpec = ShellSpec {
     language: Language::Bash,
     name: "shell",
-    language: "bash",
     windows_paths: false,
     description: "Run bash in your workspace, without profile or rc files. Use bash syntax and Unix paths. timeout_ms defaults to 300000 and cannot exceed it. Returns the exit code and output tail, about 30000 characters; overflow is saved in .volumes/scratch. Writes outside the workspace are not captured",
     executables: &["bash"],

@@ -85,7 +85,7 @@ fn model_visible_shell_name_is_platform_independent() -> crate::Result<()> {
 fn windows_shell_name_keeps_powershell_execution() -> crate::Result<()> {
     model_visible_shell_name_is_platform_independent()?;
     assert_eq!(PLATFORM.executables, &["pwsh.exe", "powershell.exe"]);
-    assert_eq!(PLATFORM.language, "powershell");
+    assert_eq!(PLATFORM.language.as_str(), "powershell");
     assert_eq!(
         crate::native_environment::PlatformPolicy::Native.facts().1,
         "PowerShell"

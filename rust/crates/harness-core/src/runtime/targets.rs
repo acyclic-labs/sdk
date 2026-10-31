@@ -108,7 +108,7 @@ impl InProcessTargets {
             owner: owner.to_owned(),
             class,
             os: os.to_owned(),
-            shell: shell.language.to_owned(),
+            shell: shell.language.as_str().to_owned(),
             path_style: crate::agent::PathStyle::of(shell),
             state: crate::agent::TargetState::Online,
         }
