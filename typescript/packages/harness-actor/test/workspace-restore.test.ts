@@ -56,6 +56,8 @@ const storage = materializeActorState({
 });
 const env = { ...Object.fromEntries(Object.values(HARNESS_BINDINGS).map(name => [name, {}])),
   [HARNESS_BINDINGS.storage]: storage, [HARNESS_BINDINGS.streams]: { register() {}, dispatch() {}, open() {} },
+  // Restore admits the objects port before the workspace; it is never called.
+  [HARNESS_BINDINGS.objects]: { open() { throw new Error("objects unused"); } },
   [HARNESS_BINDINGS.authority]: capability, [HARNESS_BINDINGS.workspace]: source, [MODEL_FETCH]: {} };
 const restore = () => actor.restore(null, { env, actor: { id: "root" } } as never);
 

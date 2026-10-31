@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_objects::{
-    Blobs as _, ByteRange, RootId,
+    ByteRange, RootId,
     binary::{BinaryObjects, Transport as _, javascript::JavaScriptTransport},
 };
 use acyclic_stream::OwnedBytes;
@@ -70,7 +70,7 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
     let account = MemoryObjects::memory();
     let port = account_port(
         ObjectsV1Memory {
-            inner: account.clone(),
+            inner: Arc::new(account.clone()),
         }
         .into(),
     );

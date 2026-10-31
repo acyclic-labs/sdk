@@ -43,7 +43,7 @@
     "bindings": [
       { "name": "eventStorage", "capability": "", "resource": "", "stateTransaction": true },
       { "name": "sharedStreams", "capability": "harnessStreams", "resource": "streams:/" },
-      { "name": "immutableObjects", "capability": "harnessObjects", "resource": "objects:/harness" },
+      { "name": "objects", "capability": "harnessObjects", "resource": "objects:/harness" },
       { "name": "hostAccess", "capability": "", "resource": "", "guestAdmission": "hostAccess" },
       { "name": "platformAuthority", "capability": "", "resource": "", "guestAdmission": "platformAuthority" },
       { "name": "machinesWorkspace", "capability": "harnessMachines", "resource": "machines:/harness" }
@@ -51,7 +51,7 @@
     "machines": { "origin": "https://machines.example.com" },
     "grants": [
       { "name": "harnessStreams", "grant": { "resource": { "name": "streams:/", "prefix": true }, "actions": ["streams/append", "streams/follow", "streams/fork", "streams/list"] }, "limits": null },
-      { "name": "harnessObjects", "grant": { "resource": { "name": "objects:/harness", "prefix": true }, "actions": ["objects/get", "objects/put"] }, "limits": null },
+      { "name": "harnessObjects", "grant": { "resource": { "name": "objects:/harness", "prefix": true }, "actions": ["objects/head", "objects/get", "objects/put", "objects/retain"] }, "limits": null },
       { "name": "harnessMachines", "grant": { "resource": { "name": "machines:/harness", "prefix": true }, "actions": ["machines/exec"] }, "limits": null }
     ]
   }

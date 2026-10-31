@@ -9,7 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if feature("BINARY") || (grpc || feature("HTTP")) && native {
         println!("cargo::rustc-cfg=objects_client");
     }
-    if grpc || feature("JSON") {
+    if grpc || feature("JSON") || feature("BINARY") {
         println!("cargo::rustc-cfg=objects_server");
     }
     // Bodies share the caller's buffer end to end instead of copying it.

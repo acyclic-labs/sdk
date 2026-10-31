@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { GUEST_ABI_VERSION, materializeActorState, openGuestResponse, type GuestResponseFrame } from "@acyclic-labs/actors";
 import { ActorStateStorage, initializeHosting } from "@acyclic-labs/harness/hosting";
 import initializeManifest, { validate, verifyArtifact } from "../../workers/generated/wasm/acyclic_manifest.js";
-import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH } from "../src/bindings.js";
+import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH, OBJECTS_ENDPOINT } from "../src/bindings.js";
 import { actor } from "../src/harness-actor.js";
 import { harnessManifest, HarnessManifestError, MODEL_SECRET } from "../src/manifest.js";
 import owner from "./owner.json";
@@ -58,10 +58,22 @@ test("an anonymous provider declares and selects no credential", () => {
   expect(anonymous.environments[0]!.entries[0]!.secrets).toEqual([]);
 });
 
-test("the Machines endpoint and its credential stay host-only", () => {
+test("the Machines and Objects endpoints and their credential stay host-only", () => {
   const [declared] = manifest().environments[0]!.entries;
-  expect(declared!.hostFetch).toEqual([{ name: MACHINES_ENDPOINT, origin: { host: "machines.example.com", port: 443 },
-    credential: ACCOUNT_LEAF }]);
+  const cell = { host: "machines.example.com", port: 443 };
+  expect(declared!.hostFetch).toEqual([{ name: MACHINES_ENDPOINT, origin: cell, credential: ACCOUNT_LEAF },
+    { name: OBJECTS_ENDPOINT, origin: cell, credential: ACCOUNT_LEAF }]);
+  // The guest selects the `objects` binding, never its endpoint or the leaf.
+  expect(declared!.bindings).toContain(HARNESS_BINDINGS.objects);
+  expect(declared!.bindings).not.toContain(OBJECTS_ENDPOINT);
+  expect(manifest().environments[0]!.secrets.map(secret => secret.reference)).not.toContain(ACCOUNT_LEAF.reference);
+  // A Machines bearer leaves the Objects endpoint on the account leaf.
+  const bearer = { scheme: "bearer", reference: "secrets:/machines/token" } as const;
+  const own = harnessManifest({ ...deployment, machines: { ...deployment.machines, credential: bearer } },
+    spec, volumes, sha256(entry), [asset]);
+  validate(JSON.stringify(own));
+  expect(own.environments[0]!.entries[0]!.hostFetch).toEqual([{ name: MACHINES_ENDPOINT, origin: cell, credential: bearer },
+    { name: OBJECTS_ENDPOINT, origin: cell, credential: ACCOUNT_LEAF }]);
   const exposed = (machines: Parameters<typeof harnessManifest>[0]["machines"]) =>
     () => validate(JSON.stringify(harnessManifest({ ...deployment, machines }, spec, volumes, sha256(entry), [asset])));
   // Negative controls: the guest's model egress reaches the origin, or its model secret is the bearer.

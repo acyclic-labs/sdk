@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { initializeClientQueries } from "../src/client-query.js";
-import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmSessionAuthority, WasmStream } from "../generated/wasm/acyclic_harness_wasm.js";
+import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmObjects, WasmSessionAuthority, WasmStream } from "../generated/wasm/acyclic_harness_wasm.js";
 import { agentsFixture } from "./browser-agents-fixture.mjs";
 import { EventAgentHost, type EventHostAccess, type StreamLedger, type EventStorage } from "../src/event-host.js";
 
@@ -33,7 +33,7 @@ test("portable host disposal ends pending storage controls and refuses new work"
       let calls = 0;
       const wait = () => { ++calls; entered.resolve(); return new Promise<never>(() => {}); };
       const stream = WasmStream.connectProvider({ dispatch: wait, open: wait });
-      const objects = { length: wait, read: wait, put: wait };
+      const objects = new WasmObjects({ port: { open: () => ({ next: wait, close() {} }) } });
       const providers = WasmAgentProviders.injected(stream, objects, false, fixture.options);
       const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry);
       const host = WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry,
@@ -55,7 +55,7 @@ test("portable host disposal ends pending storage controls and refuses new work"
         await expect(operation(host)).rejects.toThrow("unavailable");
         expect(calls).toBe(before);
       } finally {
-        host.close(); host.free(); guest.free(); providers.free(); stream.free();
+        host.close(); host.free(); guest.free(); providers.free(); objects.free(); stream.free();
       }
     }
   } finally { authority.free(); fixture.free(); }
@@ -84,8 +84,7 @@ test("event owner loss releases metadata, placement and queued waits", async () 
       };
       const ledger: StreamLedger = {
         register: async () => { ++calls.placement; await wait("placement"); return { admitted: true }; },
-        dispatch: unexpected, open: unexpected,
-        objectLength: unexpected, objectRead: unexpected, objectPut: unexpected,
+        dispatch: unexpected, open: unexpected, objects: new WasmObjects({ port: { open: unexpected } }),
       };
       const host = new EventAgentHost(storage, ledger, phase, fixture.options, fixture.owner, fixture.registry,
         { trust, credential: new Uint8Array(), policy: () => true });
@@ -119,7 +118,7 @@ test("failed delivery ends current waiters and preserves recovery without revivi
   let calls = 0;
   const wait = () => { ++calls; entered.resolve(); return new Promise<never>(() => {}); };
   const stream = WasmStream.connectProvider({ dispatch: wait, open: wait });
-  const providers = WasmAgentProviders.injected(stream, { length: wait, read: wait, put: wait }, false, fixture.options);
+  const providers = WasmAgentProviders.injected(stream, new WasmObjects({ port: { open: () => ({ next: wait, close() {} }) } }), false, fixture.options);
   const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry);
   const host = WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry,
     authority, { manifest: guest.manifest(), onRecord: () => { throw new Error("unexpected guest delivery"); },
@@ -164,7 +163,7 @@ test("cancelled queued Session open retains its predecessor's admission fence", 
   const refused = new Error("original placement producer refused");
   const unexpected = async (): Promise<never> => { throw refused; };
   const ledger: StreamLedger = { register: unexpected, dispatch: unexpected, open: unexpected,
-    objectLength: unexpected, objectRead: unexpected, objectPut: unexpected };
+    objects: new WasmObjects({ port: { open: unexpected } }) };
   const host = new EventAgentHost(storage, ledger, "ordered", fixture.options, fixture.owner, fixture.registry,
     { trust, credential: new Uint8Array(), policy: () => true });
   const outcome = (promise: Promise<unknown>) => promise.then(() => undefined, error => error);
@@ -191,7 +190,7 @@ test("session trust is plain public data, verified in the host module and fenced
   const storage: EventStorage = { get: () => undefined, entries: () => [], transaction: action => action(),
     put: () => undefined, alarm: unexpected, flush: unexpected };
   const ledger: StreamLedger = { register: unexpected, dispatch: unexpected, open: unexpected,
-    objectLength: unexpected, objectRead: unexpected, objectPut: unexpected };
+    objects: new WasmObjects({ port: { open: unexpected } }) };
   const open = (descriptor: typeof trust & Partial<Pick<EventHostAccess["trust"], "changed">>) =>
     new EventAgentHost(storage, ledger, "trust", fixture.options, fixture.owner, fixture.registry,
       { trust: descriptor, credential: new Uint8Array(), policy: () => true });

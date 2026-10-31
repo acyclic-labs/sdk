@@ -1,3 +1,4 @@
+import type { WasmObjectsMedium } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EventStorage, StreamChange } from "./event-storage.js";
 export type { StreamChange } from "./event-storage.js";
 
@@ -189,70 +190,111 @@ export class SqliteJournal {
 
 }
 
-function objectKey(value: Uint8Array): string {
-  return Array.from(value, byte => byte.toString(16).padStart(2, "0")).join("");
-}
-
-/** Immutable, chunked filesystem objects; put resolves only after durability. */
-export class SqliteObjects {
+/** The durable keys beneath the one Objects v1 blob engine, chunked below
+ * SQLite's per-row bound. Each write is one transaction, atomic and visible
+ * once it returns; `flush` is the only durability wait. Persisted format v1. */
+export class SqliteMedium implements WasmObjectsMedium {
   constructor(private readonly storage: SqliteStorage, private readonly domain: string) {
     if (domain.length === 0 || domain.length > 256) throw new Error("STEP sqlite-object-open failed; recovery: choose a domain of 1 to 256 characters");
     storage.transactionSync(() => {
-      storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_objects (domain TEXT NOT NULL, key TEXT NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(domain, key))");
-      storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_object_chunks (domain TEXT NOT NULL, key TEXT NOT NULL, chunk INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(domain, key, chunk))");
+      storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_objects_v1_keys (domain TEXT NOT NULL, key TEXT NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(domain, key))");
+      storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_objects_v1_chunks (domain TEXT NOT NULL, key TEXT NOT NULL, chunk INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(domain, key, chunk))");
     });
   }
 
-  async length(key: Uint8Array): Promise<number | null> {
-    await this.storage.sync();
-    const [row] = this.storage.sql.exec("SELECT length FROM acyclic_objects WHERE domain = ? AND key = ?", this.domain, objectKey(key));
+  private length(key: string): number | null {
+    const [row] = this.storage.sql.exec("SELECT length FROM acyclic_objects_v1_keys WHERE domain = ? AND key = ?", this.domain, key);
     return row ? count(row.length) : null;
   }
 
-  async read(key: Uint8Array, maximum: bigint): Promise<Uint8Array | null> {
-    const length = await this.length(key);
-    if (length === null) return null;
-    if (BigInt(length) > maximum) throw new Error("STEP sqlite-object-read failed: size exceeds admission; recovery: repeat the read with an admitted maximum that covers the object");
-    const output = new Uint8Array(length);
-    let offset = 0;
-    let chunk = 0;
-    for (const row of this.storage.sql.exec("SELECT chunk, data FROM acyclic_object_chunks WHERE domain = ? AND key = ? ORDER BY chunk", this.domain, objectKey(key))) {
-      const data = bytes(row.data);
-      if (offset >= length || count(row.chunk) !== chunk || data.length !== Math.min(CHUNK_BYTES, length - offset)) throw new Error("STEP sqlite-object-read failed: corrupt chunk; recovery: restore this domain from a verified SQLite backup");
-      output.set(data, offset);
-      offset += data.length;
+  /** Bytes `start..end` of a `length`-byte value, reading only the chunks they cover. */
+  private value(key: string, length: number, start: number, end: number): Uint8Array {
+    const output = new Uint8Array(end - start);
+    if (start === end) return output;
+    const last = Math.floor((end - 1) / CHUNK_BYTES);
+    let chunk = Math.floor(start / CHUNK_BYTES);
+    for (const row of this.storage.sql.exec("SELECT chunk, data FROM acyclic_objects_v1_chunks WHERE domain = ? AND key = ? AND chunk BETWEEN ? AND ? ORDER BY chunk", this.domain, key, chunk, last)) {
+      const data = bytes(row.data), base = chunk * CHUNK_BYTES;
+      if (chunk > last || count(row.chunk) !== chunk || data.length !== Math.min(CHUNK_BYTES, length - base)) throw new Error("STEP sqlite-object-read failed: corrupt chunk; recovery: restore this domain from a verified SQLite backup");
+      const from = Math.max(start, base), to = Math.min(end, base + data.length);
+      output.set(data.subarray(from - base, to - base), from - start);
       chunk += 1;
     }
-    if (offset !== length) throw new Error("STEP sqlite-object-read failed: incomplete object; recovery: restore this domain from a verified SQLite backup");
+    if (chunk !== last + 1) throw new Error("STEP sqlite-object-read failed: incomplete value; recovery: restore this domain from a verified SQLite backup");
     return output;
   }
 
-  async put(keys: Uint8Array[], values: Uint8Array[]): Promise<void> {
-    if (keys.length === 0 || keys.length !== values.length) throw new Error("STEP sqlite-object-put failed: invalid batch; recovery: supply one value per canonical ObjectId");
-    this.storage.transactionSync(() => {
-      for (let index = 0; index < keys.length; index += 1) {
-        const key = objectKey(keys[index]!);
-        const value = values[index]!;
-        const [old] = this.storage.sql.exec("SELECT length FROM acyclic_objects WHERE domain = ? AND key = ?", this.domain, key);
-        if (old) {
-          if (count(old.length) !== value.length) throw new Error("STEP sqlite-object-put failed: immutable size changed; recovery: restore this domain from a verified SQLite backup");
-          let offset = 0;
-          let chunk = 0;
-          for (const row of this.storage.sql.exec("SELECT chunk, data FROM acyclic_object_chunks WHERE domain = ? AND key = ? ORDER BY chunk", this.domain, key)) {
-            const data = bytes(row.data);
-            if (offset >= value.length || count(row.chunk) !== chunk || data.length !== Math.min(CHUNK_BYTES, value.length - offset) || !equal(data, value.subarray(offset, offset + data.length))) throw new Error("STEP sqlite-object-put failed: immutable bytes changed; recovery: restore this domain from a verified SQLite backup");
-            offset += data.length;
-            chunk += 1;
-          }
-          if (offset !== value.length) throw new Error("STEP sqlite-object-put failed: immutable value incomplete; recovery: restore this domain from a verified SQLite backup");
-          continue;
-        }
-        this.storage.sql.exec("INSERT INTO acyclic_objects (domain, key, length) VALUES (?, ?, ?)", this.domain, key, value.length);
-        for (let offset = 0, chunk = 0; offset < value.length; offset += CHUNK_BYTES, chunk += 1) {
-          this.storage.sql.exec("INSERT INTO acyclic_object_chunks (domain, key, chunk, data) VALUES (?, ?, ?, ?)", this.domain, key, chunk, value.slice(offset, offset + CHUNK_BYTES).buffer);
-        }
-      }
-    });
-    await this.storage.sync();
+  private write(key: string, value: Uint8Array): void {
+    this.storage.sql.exec("INSERT INTO acyclic_objects_v1_keys (domain, key, length) VALUES (?, ?, ?)", this.domain, key, value.length);
+    for (let offset = 0, chunk = 0; offset < value.length; offset += CHUNK_BYTES, chunk += 1) {
+      this.storage.sql.exec("INSERT INTO acyclic_objects_v1_chunks (domain, key, chunk, data) VALUES (?, ?, ?, ?)", this.domain, key, chunk, value.slice(offset, offset + CHUNK_BYTES).buffer);
+    }
   }
+
+  private erase(key: string): void {
+    this.storage.sql.exec("DELETE FROM acyclic_objects_v1_chunks WHERE domain = ? AND key = ?", this.domain, key);
+    this.storage.sql.exec("DELETE FROM acyclic_objects_v1_keys WHERE domain = ? AND key = ?", this.domain, key);
+  }
+
+  private holds(key: string, expected: Uint8Array): boolean {
+    const length = this.length(key);
+    return length === expected.length && equal(this.value(key, length, 0, length), expected);
+  }
+
+  create(key: string, value: Uint8Array): boolean {
+    return this.storage.transactionSync(() => {
+      if (this.length(key) !== null) return false;
+      this.write(key, value);
+      return true;
+    });
+  }
+
+  read(key: string, start: number | null, end: number | null): Uint8Array | null {
+    const length = this.length(key);
+    if (length === null) return null;
+    const from = start ?? 0, to = end ?? length;
+    if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || from > to || to > length) {
+      throw new RangeError("STEP sqlite-object-read failed: range past the value; recovery: read within the stored length");
+    }
+    return this.value(key, length, from, to);
+  }
+
+  remove(key: string): boolean {
+    return this.storage.transactionSync(() => {
+      if (this.length(key) === null) return false;
+      this.erase(key);
+      return true;
+    });
+  }
+
+  replace(key: string, expected: Uint8Array, value: Uint8Array): boolean {
+    return this.storage.transactionSync(() => {
+      if (!this.holds(key, expected)) return false;
+      this.erase(key);
+      this.write(key, value);
+      return true;
+    });
+  }
+
+  removeIf(key: string, expected: Uint8Array): boolean {
+    return this.storage.transactionSync(() => {
+      if (!this.holds(key, expected)) return false;
+      this.erase(key);
+      return true;
+    });
+  }
+
+  list(prefix: string, after: string | null, limit: number): [string, number][] {
+    // Keys under one prefix are contiguous in SQLite's byte order, so the page
+    // ends at the first key outside it.
+    const page: [string, number][] = [];
+    for (const row of this.storage.sql.exec("SELECT key, length FROM acyclic_objects_v1_keys WHERE domain = ? AND key >= ? AND (? IS NULL OR key > ?) ORDER BY key LIMIT ?", this.domain, prefix, after, after, limit)) {
+      if (typeof row.key !== "string") throw new Error("STEP sqlite-object-list failed: invalid key; recovery: restore this domain from a verified SQLite backup");
+      if (!row.key.startsWith(prefix)) break;
+      page.push([row.key, count(row.length)]);
+    }
+    return page;
+  }
+
+  flush(): Promise<void> { return this.storage.sync(); }
 }

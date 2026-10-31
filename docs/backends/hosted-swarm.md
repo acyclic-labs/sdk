@@ -289,7 +289,7 @@ A host adapter outside the artifact's bundle hands the entry plain data and
 callbacks only; every WebAssembly object is constructed inside the bundle.
 `materializeBindings` from `@acyclic-labs/workers` selects each binding's
 producer after the Rust validator admits it, by the product of its
-`product:/path` resource name: `objects:/…` selects `immutableObjects`,
+`product:/path` resource name: `objects:/…` selects `objects`,
 `machines:/…` `machinesWorkspace` and `streams:/…` `streams`, at any path.
 Any other product, including look-alikes such as `objects-other:/x`, is
 refused before a producer runs.
@@ -313,10 +313,15 @@ is a `SessionTrust`, and the event host builds its session verifier from it:
 The descriptor holds only public keys, revocations and the signed scope; the
 scoped session `credential` is the existing separate field.
 
-`immutableObjects` maps onto Objects v1 with `immutableObjectsOverV1(provider,
-root)` from `@acyclic-labs/objects`. A key is a canonical object reference; its
-bytes 1 to 32 are the plaintext BLAKE3-256, which is the Objects v1 blob
-digest. `length` is one `HeadBlob`, `read` one `GetBlob`, and a put batch is
-one `PutBlob` per object, issued concurrently, then one `Retain` under `root`.
-The grant needs `objects/head`, `objects/get`, `objects/put` and
-`objects/retain`.
+`objects` is the admitted account's `ObjectsV1BinaryPort` from
+`@acyclic-labs/objects`, `{ open(route, input) }` owning one canonical binary
+Objects v1 request; every `ObjectsV1Provider` is one. The harness opens it as
+`new WasmObjects({ port })` and its volumes use the same blob client as every
+other Objects v1 host: a read is one `GetBlob`, an existence check one
+`HeadBlob`, a put one `PutBlob` per object (at most the shared batch window in
+flight), and a publication root, when set, one `Retain`. The grant needs
+`objects/head`, `objects/get`, `objects/put` and `objects/retain`. The host
+serves the binding through the entry's second host-only `hostFetch` endpoint,
+`objectsEndpoint`: the same origin as the Machines endpoint, always with the
+account leaf. Like the Machines endpoint, neither its origin nor its leaf ever
+reaches the guest.

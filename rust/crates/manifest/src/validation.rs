@@ -485,10 +485,14 @@ fn validate_entries<'a>(
                 u32::from(host.origin.port),
             )
             .map_err(|_| ManifestError::invalid(&ep, "https-authority"))?;
+            // A host credential lives in the platform's credential store,
+            // always below a store collection: `secrets:/<seg>(/<seg>)+`.
+            let reference = host.credential.reference.as_str();
             require(
-                acyclic_actors::domain::SecretSelection::valid_reference(
-                    host.credential.reference.as_str(),
-                ),
+                acyclic_actors::domain::SecretSelection::valid_reference(reference)
+                    && reference
+                        .strip_prefix("secrets:/")
+                        .is_some_and(|path| path.contains('/')),
                 &ep,
                 "secret-reference",
             )?;

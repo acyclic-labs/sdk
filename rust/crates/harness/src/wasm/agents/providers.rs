@@ -25,7 +25,7 @@ use acyclic_fs::{
     browser::IndexedDbObjectStore,
     storage::ObjectWrite,
 };
-use acyclic_objects::{Blobs, MemoryObjects};
+use acyclic_objects::{Blobs, MemoryObjects, RootId};
 use acyclic_stream::{
     BrowserStream, BrowserStreamLimits, MemoryLimits, MemoryStream, OwnedBytes, StreamError,
     StreamProvider,
@@ -33,14 +33,16 @@ use acyclic_stream::{
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
+/// The Objects root retaining every volume blob these providers publish.
+/// Retention is additive, so hosts sharing an account share it safely.
+const PUBLICATION_ROOT: [u8; 15] = *b"harness-volumes";
+
 /// The object store injected by one host.
 pub(super) enum Objects {
     /// The browser profile's IndexedDB objects.
     IndexedDb(IndexedDbObjectStore),
-    /// Any Rust objects provider.
+    /// Any Objects v1 provider, Rust or a host's account port.
     Provider(LogicalObjectStore<dyn Blobs>),
-    /// Any JavaScript immutable-object provider.
-    Injected(acyclic_fs::InjectedObjectStore),
 }
 
 macro_rules! each {
@@ -48,7 +50,6 @@ macro_rules! each {
         match $objects {
             Objects::IndexedDb($store) => $body,
             Objects::Provider($store) => $body,
-            Objects::Injected($store) => $body,
         }
     };
 }
@@ -247,14 +248,20 @@ impl Providers {
 
     /// A host's own stream and objects providers: the stream carries the
     /// agents and their volumes' authority, `objects` the volumes' blobs,
-    /// and `durable` says whether both outlive the host.
+    /// and `durable` says whether both outlive the host. Every published
+    /// closure is retained under [`PUBLICATION_ROOT`] before its record is
+    /// written, so no collection of a shared account removes a blob a
+    /// committed volume names.
     pub(super) fn over(
         stream: Arc<dyn StreamProvider>,
         objects: Arc<dyn Blobs>,
         durable: bool,
         options: &WasmBrowserAgentOptions,
     ) -> Result<Self, JsValue> {
+        let root = RootId::new(PUBLICATION_ROOT)
+            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let objects = LogicalObjectStore::new(objects)
+            .with_publication_root(root)
             .with_object_limit(options.maximum_object_bytes)
             .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Self::new(
@@ -400,27 +407,19 @@ impl WasmAgentProviders {
 
 #[wasm_bindgen]
 impl WasmAgentProviders {
-    /// Open storage injection: any Stream handle plus immutable length/read/put
-    /// promises. `durable` requires both providers to retain accepted writes.
+    /// Open storage injection: any Stream handle plus the host's Objects v1
+    /// storage, either an admitted account's original port or the host's own
+    /// durable keys holding one account under the one blob engine. `durable`
+    /// requires both providers to retain accepted writes.
     pub fn injected(
         stream: &acyclic_stream::WasmStream,
-        objects: JsValue,
+        objects: &super::WasmObjects,
         durable: bool,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
     ) -> Result<WasmAgentProviders, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
-        let stream = stream.provider();
-        let authority = StreamAuthorityStore::new(stream.clone());
-        let objects = acyclic_fs::InjectedObjectStore::new(objects, options.maximum_object_bytes)
-            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Ok(Self {
-            providers: Providers::new(
-                stream,
-                authority,
-                Objects::Injected(objects),
-                durable,
-                &options,
-            )?,
+            providers: Providers::over(stream.provider(), objects.blobs(), durable, &options)?,
         })
     }
 

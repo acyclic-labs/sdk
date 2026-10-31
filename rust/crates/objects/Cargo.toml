@@ -20,7 +20,8 @@ harness = false
 required-features = ["local"]
 
 [features]
-# Canonical binary messages over an already admitted account transport.
+# Canonical binary messages over an already admitted account transport, both
+# as a client and as the route dispatch serving one.
 binary = []
 # The original JavaScript request owner over canonical binary messages.
 javascript = ["binary", "acyclic-stream/js-bytes", "dep:wasm-bindgen"]

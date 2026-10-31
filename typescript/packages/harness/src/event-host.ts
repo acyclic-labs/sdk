@@ -13,7 +13,9 @@ export { EventStreamLedger, streamLedgerPort } from "./event-ledger.js";
 export { ActorStateStorage, type ActorState, type ActorStateView } from "./actor-state-storage.js";
 export { connectStreamProvider, streamProviderPort } from "./stream-provider.js";
 export type { StreamProviderPort, OwnedStreamProviderPort, StreamProviderCursor } from "./stream-provider.js";
-export type { StreamLedger, ImmutableObjects, ProviderReply, EventStreamProvider } from "./event-ledger.js";
+export type { StreamLedger, ProviderReply, EventStreamProvider } from "./event-ledger.js";
+export { WasmObjects } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { WasmObjectsMedium, WasmObjectsPort, WasmObjectsSource } from "../generated/wasm/acyclic_harness_wasm.js";
 export type { EventStorage, StreamChange, Placement } from "./event-storage.js";
 
 interface Identity {
@@ -74,12 +76,7 @@ export class EventAgentHost {
     let stream: WasmStream | undefined, providers: WasmAgentProviders | undefined;
     try {
       stream = WasmStream.connectProvider(streamLedgerPort(ledger, name));
-      const objects = {
-        length: (key: Uint8Array) => ledger.objectLength(key),
-        read: (key: Uint8Array, maximum: bigint) => ledger.objectRead(key, maximum),
-        put: (keys: Uint8Array[], values: Uint8Array[]) => ledger.objectPut(keys, values),
-      };
-      providers = WasmAgentProviders.injected(stream, objects, true, options);
+      providers = WasmAgentProviders.injected(stream, ledger.objects, true, options);
       const guest = AgentGuest.open(providers, options, owner, registry);
       const events = this.events;
       this.host = WasmAgentServer.open(providers, options, owner, registry, authority, {
