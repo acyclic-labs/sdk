@@ -45,7 +45,8 @@ pub struct DeploymentId {
 
 impl DeploymentId {
     fn validate(&self) -> Result<(), Error> {
-        crate::addressing::AccountId::new(&self.account).map_err(|_| Error::Invalid("account"))?;
+        crate::addressing::validate_account(&self.account)
+            .map_err(|_| Error::Invalid("account"))?;
         if self.name.is_empty() {
             return Err(Error::Invalid("deployment name"));
         }
