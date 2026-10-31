@@ -201,18 +201,39 @@ impl LogicalName {
         }
     }
 
-    pub(crate) fn append_unicode(&self, output: &mut String) -> Result<(), TreePageError> {
-        match self.encoding {
-            NameEncoding::Utf8 | NameEncoding::PosixBytes => output.push_str(
-                std::str::from_utf8(&self.bytes).map_err(|_| TreePageError::InvalidName)?,
+    /// Borrow a non-lossy Unicode projection without allocating an output.
+    /// Invalid POSIX text or unpaired Windows surrogates are typed failures.
+    /// Iteration costs one step per scalar and retains no copied name.
+    pub fn unicode_chars(
+        &self,
+    ) -> Result<impl Iterator<Item = Result<char, TreePageError>> + '_, TreePageError> {
+        let (text, units) = match self.encoding {
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => (
+                Some(std::str::from_utf8(&self.bytes).map_err(|_| TreePageError::InvalidName)?),
+                None,
             ),
-            NameEncoding::WindowsUtf16Le => {
-                for value in char::decode_utf16(
-                    utf16le_units(&self.bytes).ok_or(TreePageError::InvalidName)?,
-                ) {
-                    output.push(value.map_err(|_| TreePageError::InvalidName)?);
-                }
-            }
+            NameEncoding::WindowsUtf16Le => (
+                None,
+                Some(utf16le_units(&self.bytes).ok_or(TreePageError::InvalidName)?),
+            ),
+        };
+        Ok(text.into_iter().flat_map(str::chars).map(Ok).chain(
+            units
+                .into_iter()
+                .flat_map(char::decode_utf16)
+                .map(|value| value.map_err(|_| TreePageError::InvalidName)),
+        ))
+    }
+
+    pub(crate) fn append_unicode(&self, output: &mut String) -> Result<(), TreePageError> {
+        if matches!(self.encoding, NameEncoding::Utf8 | NameEncoding::PosixBytes) {
+            output.push_str(
+                std::str::from_utf8(&self.bytes).map_err(|_| TreePageError::InvalidName)?,
+            );
+            return Ok(());
+        }
+        for value in self.unicode_chars()? {
+            output.push(value?);
         }
         Ok(())
     }

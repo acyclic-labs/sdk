@@ -45,7 +45,7 @@ pub use agent_goal::GOAL_VOLUME;
 mod agent_internal;
 mod agent_steering;
 mod wake_files;
-pub use wake_files::{WakeDefinition, WakeFile};
+pub use wake_files::{WakeDefinition, WakeFile, WakeIndex};
 pub mod attestation;
 pub mod hosting;
 mod spawn_volumes;

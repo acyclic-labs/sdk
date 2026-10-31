@@ -7,6 +7,9 @@ use crate::{
 };
 use std::{marker::PhantomData, mem::size_of};
 
+mod head;
+pub use head::WakeIndex;
+
 owned_struct!(MonitorKeyRange { start, end });
 owned_struct!(MonitorCursor { next, preceding });
 owned_enum!(Lifetime { Session, Daemon });

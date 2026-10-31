@@ -7,6 +7,10 @@ fn windows_names_validate_utf16_without_lossy_normalization()
     let emoji: Vec<u8> = "😀.rs".encode_utf16().flat_map(u16::to_le_bytes).collect();
     let name = LogicalName::new(NameEncoding::WindowsUtf16Le, emoji.clone(), 255)?;
     assert_eq!(name.as_bytes(), emoji);
+    assert_eq!(
+        name.unicode_chars()?.collect::<Result<String, _>>()?,
+        "😀.rs"
+    );
     // Native Windows names are code units, not necessarily Unicode scalars.
     for opaque in [
         vec![0x00, 0xd8],
@@ -15,6 +19,11 @@ fn windows_names_validate_utf16_without_lossy_normalization()
     ] {
         let name = LogicalName::new(NameEncoding::WindowsUtf16Le, opaque.clone(), 255)?;
         assert_eq!(name.as_bytes(), opaque);
+        assert!(
+            name.unicode_chars()?
+                .collect::<Result<String, _>>()
+                .is_err()
+        );
         assert!(
             name.unicode_text(
                 crate::WorkBudget::UNBOUNDED,
@@ -276,6 +285,9 @@ fn borrowed_unicode_name_validation_matches_owned_native_validation()
             };
             let expected = LogicalName::new(encoding, bytes.clone(), 12).map(|_| bytes.len());
             assert_eq!(LogicalName::validate_unicode(encoding, value, 12), expected);
+            if let Ok(name) = LogicalName::new(encoding, bytes, 12) {
+                assert_eq!(name.unicode_chars()?.collect::<Result<String, _>>()?, value);
+            }
         }
     }
     let unicode = LogicalName::new(
@@ -289,5 +301,7 @@ fn borrowed_unicode_name_validation_matches_owned_native_validation()
     assert_eq!(output, "é𝄞");
     let opaque = LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8], 12)?;
     assert_eq!(opaque.unicode_utf8_bytes(), None);
+    let opaque = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 12)?;
+    assert!(opaque.unicode_chars().is_err());
     Ok(())
 }
