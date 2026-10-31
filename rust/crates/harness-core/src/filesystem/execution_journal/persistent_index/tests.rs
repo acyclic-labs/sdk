@@ -30,14 +30,18 @@ async fn check_roots(native: bool) -> Result<()> {
     let mut root = None;
     let mut versions = Vec::new();
     for index in 0..1_000_u32 {
-        root = Some(writer.set(root, key(index), &index.to_be_bytes()).await?);
+        root = Some(
+            writer
+                .set(root, key(index), &index.to_be_bytes(), false)
+                .await?,
+        );
         if [0, 99, 999].contains(&index) {
             versions.push((index, root));
         }
     }
     // Updating one key leaves every earlier root readable.
     let old = root;
-    root = Some(writer.set(root, key(0), b"replacement").await?);
+    root = Some(writer.set(root, key(0), b"replacement", false).await?);
     let tail = writer.tail()?;
     for (index, records) in writer.records().chunks(128).enumerate() {
         let outcome = provider
@@ -133,6 +137,7 @@ fn malformed_nodes_cannot_create_cycles_or_unbounded_paths() -> Result<()> {
     let (bytes, _) = Node::Leaf {
         key: [0; 32],
         value: b"value",
+        segmented: false,
     }
     .encode(None)?;
     for length in 0..node::LEAF_HEADER_BYTES {
@@ -148,6 +153,7 @@ async fn record_framing_never_substitutes_for_the_authenticated_value_digest() -
     let (bytes, _) = Node::Leaf {
         key: [1; 32],
         value: b"value",
+        segmented: false,
     }
     .encode(None)?;
     let digest = crate::model::hash_bytes(&bytes, None)?;

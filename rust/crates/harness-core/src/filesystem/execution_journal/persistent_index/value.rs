@@ -4,7 +4,8 @@ use acyclic_stream::StreamProviderExt as _;
 use read::ReadNode;
 
 const LINK_BYTES: usize = 41;
-const HEADER_BYTES: usize = 52;
+// The authenticated node tag owns the version and Inline/Segmented choice.
+const HEADER_BYTES: usize = 48;
 const CHUNK_BYTES: usize = acyclic_stream::MAX_RECORD_BYTES - node::LEAF_HEADER_BYTES - LINK_BYTES;
 
 struct Header {
@@ -13,17 +14,22 @@ struct Header {
 }
 
 impl Header {
-    fn parse(value: &[u8], sequence: u64, io: Option<&PreparationIo>) -> Result<Option<Self>> {
-        if value.get(..4) != Some(b"EXV1") {
-            return Ok(None);
-        }
+    fn encode(&self) -> [u8; HEADER_BYTES] {
+        let mut header = [0; HEADER_BYTES];
+        header[..8].copy_from_slice(&(self.length as u64).to_le_bytes());
+        header[8..16].copy_from_slice(&self.last.sequence.to_le_bytes());
+        header[16..].copy_from_slice(&self.last.digest);
+        header
+    }
+
+    fn parse(value: &[u8], sequence: u64, io: Option<&PreparationIo>) -> Result<Self> {
         let malformed = || invalid(io, "invalid segmented value header");
         let value: &[u8; HEADER_BYTES] = value.try_into().map_err(|_| malformed())?;
-        let length = u64::from_le_bytes(value[4..12].try_into().map_err(|_| malformed())?);
+        let length = u64::from_le_bytes(value[..8].try_into().map_err(|_| malformed())?);
         let length = usize::try_from(length).map_err(|_| malformed())?;
         let last = NodeRef {
-            sequence: u64::from_le_bytes(value[12..20].try_into().map_err(|_| malformed())?),
-            digest: value[20..].try_into().map_err(|_| malformed())?,
+            sequence: u64::from_le_bytes(value[8..16].try_into().map_err(|_| malformed())?),
+            digest: value[16..].try_into().map_err(|_| malformed())?,
         };
         // A chain cannot contain more pages than precede its root. Reject an
         // impossible advertised allocation before reserving its output buffer.
@@ -33,7 +39,7 @@ impl Header {
         {
             return Err(malformed());
         }
-        Ok(Some(Self { length, last }))
+        Ok(Self { length, last })
     }
 }
 
@@ -59,7 +65,11 @@ impl Value<'_> {
 
 fn leaf_value<'a>(read: &'a ReadNode<'_>, io: Option<&PreparationIo>) -> Result<&'a [u8]> {
     match read.node(io)? {
-        Node::Leaf { value, .. } => Ok(value),
+        Node::Leaf {
+            value,
+            segmented: false,
+            ..
+        } => Ok(value),
         _ => Err(invalid(io, "execution index value is not a leaf")),
     }
 }
@@ -96,7 +106,7 @@ impl<P: crate::store::JournalProvider + ?Sized> Writer<'_, P> {
         io: Option<&PreparationIo>,
     ) -> Result<NodeRef> {
         if value.len() <= acyclic_stream::MAX_RECORD_BYTES - node::LEAF_HEADER_BYTES {
-            return self.set(root, key, value).await;
+            return self.set(root, key, value, false).await;
         }
         let mut previous = None;
         for chunk in value.chunks(CHUNK_BYTES) {
@@ -113,7 +123,11 @@ impl<P: crate::store::JournalProvider + ?Sized> Writer<'_, P> {
                 crate::store::operations::owned_bytes_from_retained_vec(bytes, quota.work())
             })?;
             let hold = io.map(|io| io.guard_owned(held)).transpose()?;
-            previous = Some(self.stage(Node::Leaf { key, value: &bytes })?);
+            previous = Some(self.stage(Node::Leaf {
+                key,
+                value: &bytes,
+                segmented: false,
+            })?);
             // These immutable value segments are cold, rather than retained
             // forever when a later summary replaces their referring leaf.
             *self
@@ -127,12 +141,12 @@ impl<P: crate::store::JournalProvider + ?Sized> Writer<'_, P> {
         }
         let last =
             previous.ok_or_else(|| invalid(self.content.io.as_ref(), "missing value segments"))?;
-        let mut header = [0; HEADER_BYTES];
-        header[..4].copy_from_slice(b"EXV1");
-        header[4..12].copy_from_slice(&(value.len() as u64).to_le_bytes());
-        header[12..20].copy_from_slice(&last.sequence.to_le_bytes());
-        header[20..].copy_from_slice(&last.digest);
-        self.set(root, key, &header).await
+        let header = Header {
+            length: value.len(),
+            last,
+        }
+        .encode();
+        self.set(root, key, &header, true).await
     }
 }
 
@@ -141,14 +155,21 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Reader<'a, P> {
         &self,
         read: ReadNode<'a>,
     ) -> Result<Value<'a>> {
-        let value = leaf_value(&read, self.io)?;
-        let Some(Header { length, last }) = Header::parse(value, read.sequence(), self.io)? else {
-            return Ok(Value::Inline(read));
+        let (key, length, last) = match read.node(self.io)? {
+            Node::Leaf {
+                segmented: false, ..
+            } => return Ok(Value::Inline(read)),
+            Node::Leaf {
+                key,
+                value,
+                segmented: true,
+            } => {
+                let Header { length, last } = Header::parse(value, read.sequence(), self.io)?;
+                (key, length, last)
+            }
+            _ => return Err(invalid(self.io, "missing value key")),
         };
         let mut reference = last;
-        let Node::Leaf { key, .. } = read.node(self.io)? else {
-            return Err(invalid(self.io, "missing value key"));
-        };
         let mut history = self.io.map(PreparationIo::history_io);
         let mut work = history
             .as_mut()
@@ -162,7 +183,12 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Reader<'a, P> {
         let mut remaining = length;
         loop {
             let page = self.read(reference).await?;
-            let Node::Leaf { key: found, value } = page.node(self.io)? else {
+            let Node::Leaf {
+                key: found,
+                value,
+                segmented: false,
+            } = page.node(self.io)?
+            else {
                 return Err(invalid(self.io, "invalid value segment"));
             };
             if found != key || value.len() <= LINK_BYTES {
@@ -196,6 +222,48 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Reader<'a, P> {
     }
 }
 
+#[cfg(feature = "test-support")]
+pub(super) mod codec_fuzz {
+    use super::*;
+
+    pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8], sequence: u64) {
+        if let Ok(Node::Leaf {
+            value,
+            segmented: true,
+            ..
+        }) = Node::decode(bytes, sequence, None)
+        {
+            if let Ok(header) = Header::parse(value, sequence, None) {
+                assert_eq!(header.encode().as_slice(), value);
+                for end in 0..HEADER_BYTES {
+                    assert!(Header::parse(&value[..end], sequence, None).is_err());
+                }
+                assert!(Header::parse(value, header.last.sequence, None).is_err());
+            }
+        }
+    }
+
+    pub(in crate::filesystem::execution_journal) fn seed() -> Result<Vec<u8>> {
+        let header = Header {
+            length: CHUNK_BYTES * 2,
+            last: NodeRef {
+                sequence: 1,
+                digest: [9; 32],
+            },
+        }
+        .encode();
+        let (bytes, _) = Node::Leaf {
+            key: [6; 32],
+            value: &header,
+            segmented: true,
+        }
+        .encode(None)?;
+        Header::parse(&header, 2, None)?;
+        check(&bytes, 2);
+        Ok(bytes.to_vec())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,13 +271,12 @@ mod tests {
     #[test]
     fn segmented_header_rejects_impossible_allocations_before_reading_pages() -> Result<()> {
         let mut header = [0; HEADER_BYTES];
-        header[..4].copy_from_slice(b"EXV1");
-        header[4..12].copy_from_slice(&((CHUNK_BYTES * 2) as u64).to_le_bytes());
-        header[12..20].copy_from_slice(&1_u64.to_le_bytes());
-        assert!(Header::parse(&header, 2, None)?.is_some());
-        header[4..12].copy_from_slice(&u64::MAX.to_le_bytes());
+        header[..8].copy_from_slice(&((CHUNK_BYTES * 2) as u64).to_le_bytes());
+        header[8..16].copy_from_slice(&1_u64.to_le_bytes());
+        Header::parse(&header, 2, None)?;
+        header[..8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(Header::parse(&header, 2, None).is_err());
-        header[4..12].copy_from_slice(&((CHUNK_BYTES * 2) as u64).to_le_bytes());
+        header[..8].copy_from_slice(&((CHUNK_BYTES * 2) as u64).to_le_bytes());
         assert!(Header::parse(&header, 1, None).is_err());
         assert!(Header::parse(&header[..HEADER_BYTES - 1], 2, None).is_err());
         Ok(())
@@ -236,6 +303,37 @@ mod tests {
         } else {
             PreparationIo::from_budget(budget, &cancellation)?
         };
+        // Actual position tuple writers can begin with either former marker.
+        // Their authenticated Inline tag must keep both as literal data.
+        use crate::filesystem::execution_journal::checkpoint_maps::Entry;
+        for marker in [*b"EXV1", *b"EXV2"] {
+            let position = (u64::from(u32::from_le_bytes(marker)), [9; 32]);
+            let bytes = position.encode(Some(&io))?;
+            let hold = io.guard_bytes(&bytes)?;
+            assert_eq!(&bytes[..4], &marker);
+            if bytes.starts_with(b"EXV1") {
+                assert!(
+                    Header::parse(&bytes, 0, Some(&io)).is_err(),
+                    "the former marker classifier cannot read this valid inline tuple"
+                );
+            }
+            let mut writer = Writer::new(&provider, &path, 0, Some(&io), None)?;
+            let root = writer.set_value(None, [3; 32], &bytes, Some(&io)).await?;
+            let reader = writer.reader();
+            let read = reader
+                .get(Some(root), &[3; 32])
+                .await?
+                .expect("inline position");
+            let value = reader.value(read).await?;
+            assert_eq!(
+                <(u64, [u8; 32])>::decode(value.bytes(Some(&io))?, Some(&io))?,
+                position
+            );
+            drop(value);
+            drop(writer);
+            drop(bytes);
+            drop(hold);
+        }
         let input: Vec<_> = (0_u8..251)
             .cycle()
             .take(acyclic_stream::MAX_RECORD_BYTES + 123)
@@ -244,7 +342,7 @@ mod tests {
         // The original one-leaf path refuses this valid aggregate cell.
         let mut old = Writer::new(&provider, &path, 0, Some(&io), None)?;
         assert!(
-            old.set(None, key, &input).await.is_err(),
+            old.set(None, key, &input, false).await.is_err(),
             "one-leaf negative control accepted an oversized record"
         );
         drop(old);
