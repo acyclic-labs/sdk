@@ -10,6 +10,7 @@
     "remove_subscription",
     "resume_subscription",
     "checkpoint_actor",
+    "fork_actor",
     "invoke_actor",
     "delete_all"
   ],
@@ -24,6 +25,7 @@
     "remove_subscription",
     "resume_subscription",
     "checkpoint_actor",
+    "fork_actor",
     "invoke_actor",
     "delete_all"
   ],
@@ -75,6 +77,10 @@
     [
       "deleteWorker",
       "v1/workers/delete"
+    ],
+    [
+      "forkActor",
+      "v1/actors/fork"
     ]
   ],
   "wasm": [
@@ -88,6 +94,7 @@
     "remove_subscription",
     "resume_subscription",
     "checkpoint_actor",
+    "fork_actor",
     "invoke_actor",
     "delete_all"
   ]
