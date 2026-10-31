@@ -216,7 +216,11 @@ impl Store {
                 error.into()
             }
         })?;
-        let credentials: Credentials = serde_json::from_slice(&bytes.0)
+        Self::decode_credentials(&bytes.0, endpoint)
+    }
+
+    fn decode_credentials(bytes: &[u8], endpoint: &str) -> Result<Credentials, Error> {
+        let credentials: Credentials = serde_json::from_slice(bytes)
             .map_err(|_| Error::new("credential_error", "invalid credentials file"))?;
         if credentials.endpoint != endpoint {
             return Err(Error::new(
@@ -232,13 +236,13 @@ impl Store {
             return Ok(None);
         }
         private_file::validate_destination(&self.path)?;
-        let value: Value = serde_json::from_slice(&private_file::read(&self.path, u64::MAX - 1)?.0)
-            .map_err(|_| {
-                Error::new(
-                    "credential_error",
-                    "invalid credentials file; use a new --credentials path to preserve its keys",
-                )
-            })?;
+        let bytes = private_file::read(&self.path, u64::MAX - 1)?;
+        let value: Value = serde_json::from_slice(&bytes.0).map_err(|_| {
+            Error::new(
+                "credential_error",
+                "invalid credentials file; use a new --credentials path to preserve its keys",
+            )
+        })?;
         let object = value
             .as_object()
             .ok_or_else(|| Error::new("credential_error", "invalid credentials file"))?;
@@ -246,7 +250,7 @@ impl Store {
             return Ok(None);
         }
         // An unreadable or foreign agent identity must never be overwritten by login.
-        Ok(self.credentials(endpoint)?.agent)
+        Ok(Self::decode_credentials(&bytes.0, endpoint)?.agent)
     }
 
     fn login_agent_for(

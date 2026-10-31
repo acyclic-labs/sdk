@@ -1229,6 +1229,27 @@ fn fresh_login_replaces_unusable_oauth_credentials_but_preserves_agent_keys() {
     let original = fs::read(&path).expect("truncated contents");
     assert!(store.login_agent(endpoint).is_err());
     assert_eq!(fs::read(&path).expect("retained truncated file"), original);
+    let document = serde_json::to_string(&agent_credentials(endpoint)).expect("agent document");
+    let duplicate = format!(
+        "{{\"endpoint\":{},{}",
+        serde_json::to_string(endpoint).expect("endpoint"),
+        &document[1..]
+    );
+    let inspected: Value = serde_json::from_str(&duplicate).expect("JSON document");
+    assert!(serde_json::from_value::<Credentials>(inspected).is_ok());
+    fs::write(&path, &duplicate).expect("duplicate endpoint");
+    assert_eq!(
+        store
+            .login_agent(endpoint)
+            .err()
+            .expect("duplicate field")
+            .code,
+        "credential_error"
+    );
+    assert_eq!(
+        fs::read(&path).expect("retained duplicate document"),
+        duplicate.as_bytes()
+    );
 }
 
 #[tokio::test]
