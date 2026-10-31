@@ -5,7 +5,7 @@ use acyclic_stream::StreamProviderExt as _;
 use persistent_index::{NodeRef, Reader, Writer};
 use summary_map::{SummaryKey, SummaryMap};
 
-mod model_cell;
+pub(super) mod model_cell;
 
 trait Entry: serde::de::DeserializeOwned + Serialize + crate::HeapLayout {
     #[cfg(test)]
