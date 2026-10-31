@@ -50,7 +50,7 @@ pub struct Publication {
 impl Visit for Publication {
     fn record_str(&mut self, field: &Field, value: &str) {
         match field.name() {
-            "rpc" if self.purpose.is_none() => {
+            "rpc" => {
                 self.purpose = match value {
                     "model-dispatch" => Some(PublicationPurpose::ModelDispatch),
                     "tool-intent" => Some(PublicationPurpose::ToolIntent),
@@ -59,7 +59,7 @@ impl Visit for Publication {
                     _ => None,
                 };
             }
-            "data" if self.data.is_none() => {
+            "data" => {
                 self.data = match value {
                     "prepared-request" => Some(PublicationData::PreparedRequest),
                     "recorded-invocation" => Some(PublicationData::RecordedInvocation),
@@ -68,7 +68,7 @@ impl Visit for Publication {
                     _ => None,
                 };
             }
-            "control" if self.control.is_none() => {
+            "control" => {
                 self.control = match value {
                     "conditional-journal-append" => {
                         Some(PublicationControl::ConditionalJournalAppend)
