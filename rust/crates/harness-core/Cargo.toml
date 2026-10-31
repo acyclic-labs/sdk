@@ -74,6 +74,7 @@ futures.workspace = true
 hex = { workspace = true, optional = true }
 http.workspace = true
 jsonschema.workspace = true
+jiff = "=0.2.37"
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 regex-lite = { version = "0.1.9", optional = true }
 js-sys = { workspace = true, optional = true }
