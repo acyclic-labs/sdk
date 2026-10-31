@@ -55,7 +55,8 @@ pub fn root(mut change: impl FnMut(&mut Block)) -> Vec<u8> {
         proof: Some(TipProofProto::Secret(TIP.to_vec())),
         version: VERSION,
     }
-    .encode_to_vec()
+    .encode_canonical()
+    .to_vec()
 }
 
 pub fn request<'a>(

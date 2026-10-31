@@ -11,7 +11,7 @@ mod effective;
 pub use certificates::CertificateVerifier;
 mod signatures;
 mod signer;
-mod wire;
+pub(crate) mod wire;
 pub use current::{TrustEvidence, TrustEvidenceStorage};
 pub use effective::{Effective, ScopedFilter, ScopedPin};
 pub use signer::CertifiedSigner;
@@ -182,10 +182,7 @@ pub struct VerifiedCapability {
     expires_at: u64,
 }
 
-fn decode_blocks(envelope: &wire::Envelope) -> Result<Vec<BlockProto>, VerifyError> {
-    if envelope.version != VERSION {
-        return Err(VerifyError::Version(envelope.version));
-    }
+fn decode_blocks(envelope: &wire::Envelope<'_>) -> Result<Vec<BlockProto>, VerifyError> {
     if envelope.blocks.is_empty() {
         return Err(VerifyError::Malformed);
     }
@@ -210,7 +207,7 @@ fn admit_blocks(wire: Vec<BlockProto>) -> Result<Vec<Block>, VerifyError> {
 }
 
 fn verify_proof(
-    proof: wire::Proof,
+    proof: wire::Proof<'_>,
     signer: ed25519_dalek::VerifyingKey,
     previous: &BlockId,
     message: &mut Vec<u8>,
@@ -231,8 +228,8 @@ fn verify_proof(
             message.clear();
             message.extend_from_slice(SEAL_DOMAIN);
             message.extend_from_slice(previous);
-            verify_signature(&signer, message, &signature)?;
-            Ok(Proof::Sealed(signature))
+            verify_signature(&signer, message, signature)?;
+            Ok(Proof::Sealed(*signature))
         }
     }
 }
@@ -605,8 +602,7 @@ impl VerifiedCapability {
     pub fn encode_sealed(&self) -> Result<Zeroizing<Vec<u8>>, VerifyError> {
         Ok(wire::encode(
             &self.signed,
-            26,
-            &self.seal_signature()?,
+            Some((26, &self.seal_signature()?)),
             VERSION,
         ))
     }
@@ -617,7 +613,7 @@ impl VerifiedCapability {
             Proof::Append(_) => 32,
             Proof::Sealed(_) => 64,
         };
-        wire::encoded_len(&self.signed, proof_len, VERSION)
+        wire::encoded_len(&self.signed, Some(proof_len), VERSION)
     }
 
     /// Encodes this capability, zeroizing the returned append secret on drop.
@@ -625,9 +621,9 @@ impl VerifiedCapability {
         match &self.proof {
             Proof::Append(key) => {
                 let secret = Zeroizing::new(key.to_bytes());
-                wire::encode(&self.signed, 18, secret.as_slice(), VERSION)
+                wire::encode(&self.signed, Some((18, secret.as_slice())), VERSION)
             }
-            Proof::Sealed(signature) => wire::encode(&self.signed, 26, signature, VERSION),
+            Proof::Sealed(signature) => wire::encode(&self.signed, Some((26, signature)), VERSION),
         }
     }
 }

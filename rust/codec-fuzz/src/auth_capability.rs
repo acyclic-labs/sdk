@@ -27,7 +27,7 @@ pub(super) fn check(bytes: &[u8]) {
     let byte = bytes.len() % signature.len();
     signature[byte] ^= 1;
     assert!(matches!(
-        verifier.verify(&forged.encode_to_vec(), &trust, NOW),
+        verifier.verify(&forged.encode_canonical(), &trust, NOW),
         Err(VerifyError::Signature)
     ));
     let mut forged = wire.clone();
@@ -38,13 +38,13 @@ pub(super) fn check(bytes: &[u8]) {
     let byte = bytes.len() % proof.len();
     proof[byte] ^= 1;
     assert!(matches!(
-        verifier.verify(&forged.encode_to_vec(), &trust, NOW),
+        verifier.verify(&forged.encode_canonical(), &trust, NOW),
         Err(VerifyError::Signature)
     ));
     let mut missing = wire;
     missing.proof = None;
     assert!(matches!(
-        verifier.verify(&missing.encode_to_vec(), &trust, NOW),
+        verifier.verify(&missing.encode_canonical(), &trust, NOW),
         Err(VerifyError::Malformed)
     ));
 

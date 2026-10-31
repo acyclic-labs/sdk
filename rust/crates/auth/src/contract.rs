@@ -336,9 +336,23 @@ pub struct Capability {
     /// Possession of the tip secret or a final sealing signature.
     #[wire(oneof = "2, 3")]
     pub proof: TipProof,
-    /// Exactly 1; also included in every signature transcript.
+    /// Exactly 2; also included in every signature transcript.
     #[wire(tag = 4, uint32)]
     pub version: u32,
+}
+
+impl CapabilityProto {
+    /// Canonical opaque envelope bytes, with the version before any blocks or
+    /// proof. This writer does not authenticate or admit the supplied fields.
+    /// Returned secret bytes are zeroized on drop. Generic protobuf serialization
+    /// does not preserve this required envelope ordering.
+    pub fn encode_canonical(&self) -> zeroize::Zeroizing<Vec<u8>> {
+        let proof = self.proof.as_ref().map(|proof| match proof {
+            TipProofProto::Secret(bytes) => (18, bytes.as_slice()),
+            TipProofProto::Sealed(bytes) => (26, bytes.as_slice()),
+        });
+        crate::verify::wire::encode(&self.blocks, proof, self.version)
+    }
 }
 
 /// Sealed workload proof and runtime-authenticated admission time. This is

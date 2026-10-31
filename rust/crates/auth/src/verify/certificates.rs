@@ -292,7 +292,7 @@ mod tests {
             assert!(
                 owner
                     .verify(
-                        &wire::encode(&forged.blocks, 18, &tip, VERSION),
+                        &wire::encode(&forged.blocks, Some((18, &tip)), VERSION),
                         &trust,
                         100
                     )
@@ -330,7 +330,7 @@ mod tests {
                 assert!(
                     owner
                         .verify(
-                            &wire::encode(&forged.blocks, 26, &proof, VERSION),
+                            &wire::encode(&forged.blocks, Some((26, proof)), VERSION),
                             &trust,
                             100
                         )
@@ -338,15 +338,16 @@ mod tests {
                 );
             }
         }
-        let mut forged = wire::decode(&bytes)?;
-        let wire::Proof::Sealed(ref mut proof) = forged.proof else {
+        let forged = wire::decode(&bytes)?;
+        let wire::Proof::Sealed(proof) = forged.proof else {
             return Err(VerifyError::Malformed);
         };
+        let mut proof = *proof;
         *proof.first_mut().ok_or(VerifyError::Malformed)? ^= 1;
         assert!(
             owner
                 .verify(
-                    &wire::encode(&forged.blocks, 26, proof, VERSION),
+                    &wire::encode(&forged.blocks, Some((26, &proof)), VERSION),
                     &trust,
                     100
                 )

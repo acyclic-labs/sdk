@@ -68,18 +68,16 @@ fn scrub_child() {
     let cap = verify(&bytes, &trust, NOW).unwrap();
     match case.as_str() {
         "duplicate-secret" => {
-            let end = bytes.len() - 2;
-            bytes.splice(end..end, [vec![18, 32], vec![4; 32]].concat());
+            bytes.extend([vec![18, 32], vec![4; 32]].concat());
         }
         "duplicate-sealed" | "broken" => {
-            let end = bytes.len() - 2;
-            bytes.splice(end..end, [vec![26, 64], vec![0; 64]].concat());
+            bytes.extend([vec![26, 64], vec![0; 64]].concat());
         }
         "truncated" => {
             bytes.pop();
         }
         "bad-key" => {
-            let end = bytes.len() - 3;
+            let end = bytes.len() - 1;
             *bytes.get_mut(end).unwrap() = 5;
         }
         _ => {}
