@@ -3,6 +3,8 @@ use acyclic_stream::StreamProviderExt as _;
 
 mod observation;
 mod request;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod retained;
 mod sdk;
 pub(super) use observation::observe_commit;
 pub(crate) use request::{add_condition, commit_request};
@@ -17,20 +19,16 @@ pub(crate) enum CommitPhase {
     Committed,
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "Acknowledgment and same-key recovery settle one originally admitted commit quota."
-)]
-pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
-    (mut request, mut quota): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
-    client: &Arc<P>,
-    operation: Option<OperationId>,
-    mut phase: Option<&mut CommitPhase>,
-    deadline_unix_millis: Option<u64>,
-) -> Result<(acyclic_stream::CommitOutcome, u64)> {
-    if let Some(phase) = phase.as_deref_mut() {
-        *phase = CommitPhase::Uncommitted;
-    }
+struct Admission {
+    binding: acyclic_stream::request::CommitBinding,
+    vectors: u64,
+    acknowledgment: (u64, u64),
+}
+
+fn admit(
+    request: &mut acyclic_stream::CommitRequest,
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<Admission> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if quota
         .work()
@@ -43,7 +41,7 @@ pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
             "accepted completion requires its pre-action SDK dispatch",
         ));
     }
-    let binding = acyclic_stream::request::commit_binding_with(&mut request, |bytes| {
+    let binding = acyclic_stream::request::commit_binding_with(request, |bytes| {
         if let Some(io) = quota.work().as_deref_mut() {
             io.hashed_bytes(bytes)?;
         }
@@ -73,7 +71,37 @@ pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
             io.begin_write()?;
         }
     }
+    Ok(Admission {
+        binding,
+        vectors,
+        acknowledgment: (bytes, count),
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "Acknowledgment and same-key recovery settle one originally admitted commit quota."
+)]
+pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
+    (mut request, mut quota): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
+    client: &Arc<P>,
+    operation: Option<OperationId>,
+    mut phase: Option<&mut CommitPhase>,
+    deadline_unix_millis: Option<u64>,
+) -> Result<(acyclic_stream::CommitOutcome, u64)> {
+    if let Some(phase) = phase.as_deref_mut() {
+        *phase = CommitPhase::Uncommitted;
+    }
+    let Admission {
+        binding,
+        vectors,
+        acknowledgment,
+    } = admit(&mut request, &mut quota)?;
     let input = quota.retained() - vectors;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let (mut vectors, mut input) = (vectors, input);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut original_request = None;
     let key = request.idempotency_key.clone();
     if let Some(phase) = phase.as_deref_mut() {
         *phase = CommitPhase::Unknown;
@@ -86,9 +114,21 @@ pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
             .and_then(|io| io.original_native_work())
             .cloned()
         {
-            let result = client
-                .native_commit(request, deadline_unix_millis, original.runtime_meter())
-                .await;
+            // Move the existing construction custody before dispatch. Its exact
+            // request survives through result adoption and same-key recovery.
+            let (pending, producer) = retained::prepare(
+                request,
+                &mut quota,
+                Arc::clone(client),
+                &original,
+                deadline_unix_millis,
+            )?;
+            vectors = 0;
+            input = 0;
+            native_call_result(&original, producer.await)?
+                .map_err(|error| operations::stream_error_with_work(error, quota.work()))?;
+            let (result, retained_request) = retained::take(pending, &original)?;
+            original_request = Some(retained_request);
             return match native_call_result(&original, result)? {
                 Ok(output) => {
                     let (outcome, retained) = crate::store::history::adopt_native_sdk_output(
@@ -121,7 +161,7 @@ pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
     let outcome = match (committed, operation) {
         (Ok(outcome), _) => {
             let observed =
-                observe_commit(&outcome, (bytes, count), phase.as_deref_mut(), &mut quota);
+                observe_commit(&outcome, acknowledgment, phase.as_deref_mut(), &mut quota);
             released.and(observed)?;
             outcome
         }
@@ -155,6 +195,8 @@ pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
         io.check_cancellation()?;
     }
     quota.relinquish(input)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    drop(original_request);
     let retained = quota.retained();
     quota.transfer();
     Ok((outcome, retained))
