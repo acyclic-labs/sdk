@@ -32,11 +32,12 @@ use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::runtime::Executor;
 use acyclic_stream::session::{CallAuthorization, SocketChannel, SocketInbound, SocketProvider};
 use acyclic_stream::{
-    AppendRecord, BoxProviderStream, CommitCondition, CommitMutation, CommitOutcome,
-    IdempotencyKey, ReadRequest, RevisionCut, StreamError, StreamPath, StreamProvider,
+    AppendRecord, BoxProviderFuture, BoxProviderStream, CommitCondition, CommitMutation,
+    CommitOutcome, IdempotencyKey, ReadRequest, RevisionCut, StreamError, StreamPath,
+    StreamProvider,
 };
 use bytes::Bytes;
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
 use prost::Message as _;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -403,8 +404,30 @@ struct Entry {
     /// task that exists only while this queue is non-empty.
     inbound: VecDeque<PeerEvent>,
     draining: bool,
+    /// A peer Close is terminal even while earlier messages are committing.
+    peer_closed: bool,
+    /// Observers share the original close producer; they never own its work.
+    completion: Option<CloseCompletion>,
     /// Dropped with the entry, which abandons a wait for the open's verdict.
     _abandon: oneshot::Sender<()>,
+}
+
+type CloseCompletion = futures::future::Shared<BoxProviderFuture<'static, Result<(), Arc<Error>>>>;
+
+/// The claimed close owns retirement even if its executor drops the future.
+struct CloseOwner<P: StreamProvider + ?Sized + 'static> {
+    shared: Arc<Shared<P>>,
+    connection: String,
+    completed: Option<oneshot::Sender<Result<(), Arc<Error>>>>,
+}
+
+impl<P: StreamProvider + ?Sized + 'static> Drop for CloseOwner<P> {
+    fn drop(&mut self) {
+        if self.completed.is_some() {
+            self.shared.lock().remove(&self.connection);
+            // Closing this original producer returns typed loss to every waiter.
+        }
+    }
 }
 
 /// One peer event awaiting its turn.
@@ -604,17 +627,17 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
     /// Close every socket with Close(Runtime, 1001) and wait for each
     /// committed one; a socket whose open is still committing closes as soon
     /// as that commit settles.
-    pub async fn drain(&self) {
+    /// Cancelling this observer leaves each original close running. A decided
+    /// publication refusal or loss of its executor returns the original error.
+    pub async fn drain(&self) -> Result<(), Arc<Error>> {
         let close = Close::new(1001, "runtime draining", SocketCloseInitiator::Runtime);
         let connections: Vec<String> = self.shared.lock().sockets.keys().cloned().collect();
-        let started: Vec<String> = connections
+        let completions: Vec<_> = connections
             .into_iter()
-            .filter(|connection| self.shared.claim_close(connection, &close))
+            .filter_map(|connection| self.shared.begin_close(&connection, close.clone()))
             .collect();
-        futures::future::join_all(started.iter().map(|connection| {
-            Arc::clone(&self.shared).finish_close(connection.clone(), close.clone())
-        }))
-        .await;
+        futures::future::try_join_all(completions).await?;
+        Ok(())
     }
 
     /// Open sockets in this incarnation, including ones still opening.
@@ -635,47 +658,78 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Move `connection` toward its one close. True when the caller must
-    /// now run [`Self::finish_close`]; a close requested while the open is
+    /// Move `connection` toward its one close. The returned owner must
+    /// run [`Self::finish_close`]; a close requested while the open is
     /// still committing runs when that commit settles.
-    fn claim_close(&self, connection: &str, close: &Close) -> bool {
+    fn claim_close(
+        self: &Arc<Self>,
+        connection: &str,
+        close: &Close,
+    ) -> Option<(CloseOwner<P>, CloseCompletion)> {
         let mut table = self.lock();
         let Some(entry) = table.sockets.get_mut(connection) else {
-            return false;
+            return None;
         };
         match &mut entry.phase {
             Phase::Unborn => {
                 table.remove(connection);
-                false
+                None
             }
             Phase::Opening {
                 committed: false,
                 pending,
             } => {
                 pending.get_or_insert_with(|| close.clone());
-                false
+                None
             }
-            Phase::Closing => false,
+            Phase::Closing => None,
             phase @ (Phase::Opening {
                 committed: true, ..
             }
             | Phase::Open) => {
                 *phase = Phase::Closing;
-                true
+                let (completed, completion) = oneshot::channel();
+                let completion: BoxProviderFuture<'static, Result<(), Arc<Error>>> =
+                    Box::pin(async move {
+                        completion.await.unwrap_or_else(|_| {
+                            Err(Arc::new(Error::Stream(StreamError::Unavailable)))
+                        })
+                    });
+                let completion = completion.shared();
+                entry.completion = Some(completion.clone());
+                Some((
+                    CloseOwner {
+                        shared: Arc::clone(self),
+                        connection: connection.to_owned(),
+                        completed: Some(completed),
+                    },
+                    completion,
+                ))
             }
         }
     }
 
-    fn begin_close(self: &Arc<Self>, connection: &str, close: Close) {
-        if self.claim_close(connection, &close) {
+    fn begin_close(self: &Arc<Self>, connection: &str, close: Close) -> Option<CloseCompletion> {
+        if let Some((owner, completion)) = self.claim_close(connection, &close) {
             let shared = Arc::clone(self);
             let connection = connection.to_owned();
             self.executor
-                .spawn(Box::pin(shared.finish_close(connection, close)));
+                .spawn(Box::pin(shared.finish_close(connection, close, owner)));
+            Some(completion)
+        } else {
+            self.lock()
+                .sockets
+                .get(connection)
+                .and_then(|entry| entry.completion.clone())
         }
     }
 
-    async fn finish_close(self: Arc<Self>, connection: String, close: Close) {
+    async fn finish_close(
+        self: Arc<Self>,
+        connection: String,
+        close: Close,
+        mut owner: CloseOwner<P>,
+    ) {
         let target = {
             let table = self.lock();
             table.sockets.get(&connection).and_then(|entry| {
@@ -685,12 +739,9 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 })
             })
         };
-        if let Some(target) = target {
+        let result = if let Some(target) = target {
             let ledger = self.ledger.read().await;
-            // An unknown outcome is retried until decided. Only a decided
-            // failure leaves the socket in the ledger, so the next recovery
-            // closes it; the peer still receives its close now.
-            if let Ok(true) = commit_close(
+            let result = commit_close(
                 &self.store,
                 &*self.executor,
                 &self.layout,
@@ -699,15 +750,23 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 Some(ledger.segment),
                 &close,
             )
-            .await
-            {
+            .await;
+            if matches!(result, Ok(true)) {
                 self.live.fetch_sub(1, Ordering::AcqRel);
                 self.written.fetch_add(1, Ordering::AcqRel);
             }
             drop(ledger);
-        }
-        let entry = self.lock().remove(&connection);
-        if let Some(sender) = entry.and_then(|mut entry| entry.final_frame.take()) {
+            result.and_then(|committed| committed.then_some(()).ok_or(Error::Conflict))
+        } else {
+            Err(Error::Invalid("closing socket has no input"))
+        };
+        let final_frame = self
+            .lock()
+            .remove(&connection)
+            .and_then(|mut entry| entry.final_frame.take());
+        if result.is_ok()
+            && let Some(sender) = final_frame
+        {
             let _peer_gone = sender.send(
                 SocketFrame::Close {
                     code: close.code,
@@ -716,6 +775,9 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 }
                 .encode(),
             );
+        }
+        if let Some(completed) = owner.completed.take() {
+            let _observer_gone = completed.send(result.map_err(Arc::new));
         }
         self.compact_if_due();
     }
@@ -889,9 +951,6 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                     )
                 })
             });
-            if pending.is_some() {
-                entry.phase = Phase::Closing;
-            }
             pending
         };
         if let Some(close) = pending {
@@ -903,7 +962,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             } else {
                 drop(verdict);
             }
-            self.finish_close(connection, close).await;
+            let _completion = self.begin_close(&connection, close);
             return;
         }
         let Some(ticket) = ticket else {
@@ -956,7 +1015,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         // Claim the close before the peer can learn the verdict and leave, so
         // the actor's own close is the one delivered.
         if let Some(close) = close {
-            self.begin_close(&connection, close);
+            let _completion = self.begin_close(&connection, close);
         }
         let _peer_gone = verdict.send(frame);
     }
@@ -1046,6 +1105,9 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         let Some(entry) = sockets.get_mut(connection) else {
             return Ok(());
         };
+        if entry.peer_closed {
+            return Ok(());
+        }
         match entry.phase {
             Phase::Open => {}
             Phase::Closing => return Ok(()),
@@ -1063,7 +1125,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             .encode();
             if entry.outbound.try_send(frame).is_err() {
                 drop(table);
-                self.begin_close(
+                let _completion = self.begin_close(
                     connection,
                     Close::new(1013, "outbound backpressure", SocketCloseInitiator::Runtime),
                 );
@@ -1074,7 +1136,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         // stops reading is, never buffered without end.
         if entry.inbound.len() >= acyclic_stream::MAX_ITEMS {
             drop(table);
-            self.begin_close(
+            let _completion = self.begin_close(
                 connection,
                 Close::new(1013, "inbound backpressure", SocketCloseInitiator::Runtime),
             );
@@ -1094,14 +1156,17 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     fn peer_close(self: &Arc<Self>, connection: &str, close: Close) {
         {
             let mut table = self.lock();
-            if let Some(entry) = table.sockets.get_mut(connection)
-                && entry.draining
-            {
-                entry.inbound.push_back(PeerEvent::Close(close));
-                return;
+            if let Some(entry) = table.sockets.get_mut(connection) {
+                if std::mem::replace(&mut entry.peer_closed, true) {
+                    return;
+                }
+                if entry.draining {
+                    entry.inbound.push_back(PeerEvent::Close(close));
+                    return;
+                }
             }
         }
-        self.begin_close(connection, close);
+        let _completion = self.begin_close(connection, close);
     }
 
     /// Apply `connection`'s queued peer events in order, then exit.
@@ -1110,8 +1175,8 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             match self.next_peer_event(&connection) {
                 None => return,
                 Some(Step::Close(close)) => {
-                    if self.claim_close(&connection, &close) {
-                        self.finish_close(connection, close).await;
+                    if let Some((owner, _completion)) = self.claim_close(&connection, &close) {
+                        self.finish_close(connection, close, owner).await;
                     }
                     return;
                 }
@@ -1131,7 +1196,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                     )
                     .await;
                     if committed.is_err() {
-                        self.begin_close(
+                        let _completion = self.begin_close(
                             &connection,
                             Close::new(
                                 1011,
@@ -1254,7 +1319,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                             }
                             frame = &mut last => match frame {
                                 Ok(frame) => Some((Ok(frame), (shared, Outbound::Done))),
-                                Err(_) => None,
+                                Err(_) => Some((Err(StreamError::Unavailable), (shared, Outbound::Done))),
                             },
                         }
                     }
@@ -1348,6 +1413,8 @@ impl<P: StreamProvider + ?Sized + 'static> SocketProvider for Sockets<P> {
                     messages: 0,
                     inbound: VecDeque::new(),
                     draining: false,
+                    peer_closed: false,
+                    completion: None,
                     _abandon: abandon,
                 },
             );
@@ -1426,7 +1493,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         })?;
         if full {
             // A peer that stops reading is closed, never buffered without end.
-            self.shared.begin_close(
+            let _completion = self.shared.begin_close(
                 &socket.0,
                 Close::new(1013, "outbound backpressure", SocketCloseInitiator::Runtime),
             );
@@ -1442,7 +1509,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         reason: &str,
     ) -> Result<(), GuestError> {
         self.shared.with_entry(actor, socket, |_| Ok(()))?;
-        self.shared.begin_close(
+        let _completion = self.shared.begin_close(
             &socket.0,
             Close::new(code, reason, SocketCloseInitiator::Actor),
         );
