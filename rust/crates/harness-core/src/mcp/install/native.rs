@@ -96,7 +96,19 @@ pub(super) async fn connect(
             ));
         }
     };
-    let tools = discover(limits, |cursor| connection.list(cursor)).await?;
+    let enabled = server
+        .enabled_tools
+        .as_ref()
+        .map(|names| names.iter().map(String::as_str).collect::<BTreeSet<_>>());
+    let disabled: BTreeSet<_> = server.disabled_tools.iter().map(String::as_str).collect();
+    let tools = discover(
+        limits,
+        |name| {
+            enabled.as_ref().is_none_or(|names| names.contains(name)) && !disabled.contains(name)
+        },
+        |cursor| connection.list(cursor),
+    )
+    .await?;
     let transport = match connection {
         #[cfg(feature = "mcp-stdio")]
         Connection::Stdio(transport) => {
@@ -203,6 +215,7 @@ impl Connection {
 
 pub(super) async fn discover<F, Fut>(
     limits: McpClientLimits,
+    selected: impl Fn(&str) -> bool,
     list: F,
 ) -> Result<Vec<McpToolDefinition>>
 where
@@ -214,6 +227,7 @@ where
     let mut tools = Vec::new();
     let mut remaining = limits.catalog_bytes.map(u64::from);
     let mut pages = 0u64;
+    let mut advertised = 0u64;
     loop {
         pages = pages
             .checked_add(1)
@@ -227,9 +241,13 @@ where
             ));
         }
         let page = list(cursor).await?;
-        if limits.tools_per_server.is_some_and(|maximum| {
-            tools.len() as u64 + page.tools.len() as u64 > u64::from(maximum)
-        }) {
+        advertised = advertised
+            .checked_add(page.tools.len() as u64)
+            .ok_or_else(|| Error::Invalid("MCP tool count overflows".into()))?;
+        if limits
+            .tools_per_server
+            .is_some_and(|maximum| advertised > u64::from(maximum))
+        {
             return Err(Error::Invalid("MCP discovery exceeds tool bound".into()));
         }
         if let Some(allowance) = remaining {
@@ -240,7 +258,12 @@ where
                     .ok_or_else(|| Error::Invalid("MCP discovery exceeds byte bound".into()))?,
             );
         }
-        tools.extend(page.tools.into_iter().map(McpToolDefinition::from));
+        tools.extend(
+            page.tools
+                .into_iter()
+                .filter(|tool| selected(&tool.name))
+                .map(McpToolDefinition::from),
+        );
         cursor = page.next_cursor;
         let Some(next) = &cursor else {
             return Ok(tools);
