@@ -450,6 +450,16 @@ impl Follower {
         self.notify(None);
     }
 
+    /// Whether authenticated keyring and revocation frontiers are retained.
+    /// This is replay progress only: it does not assert serving, current trust
+    /// or permission. Readers must still use the `Trust` implementation.
+    pub fn initialized(&self, account: &str) -> Result<bool, VerifyError> {
+        let accounts = self.accounts.read().map_err(|_| VerifyError::Unavailable)?;
+        Ok(accounts
+            .get(account)
+            .is_some_and(|account| account.keyring.is_some() && account.revocations.is_some()))
+    }
+
     /// A record on `account`'s Stream was refused, whatever the cause,
     /// an undecodable record included: fence that account until a record
     /// for it applies.
@@ -592,8 +602,6 @@ fn keyring(
         {
             return Err(VerifyError::Trust);
         }
-    } else if next.previous_digest != [0; 32] {
-        return Err(VerifyError::Trust);
     }
     if next.issued_at_unix_seconds > now {
         return Err(VerifyError::Time);
@@ -604,6 +612,11 @@ fn keyring(
         KEYRING_DOMAIN,
         &KeyringSnapshotProto::from(next.clone()),
     )?;
+    // A current environment signature authenticates the complete checkpoint,
+    // including when replay starts after its historical signer was retired.
+    // A retained frontier must still extend exactly; an account root cannot
+    // bootstrap itself or rotate. Revocation trust remains unavailable until
+    // its independently authenticated checkpoint is replayed as well.
     // The environment attests every root it sets; the current root alone may
     // only re-sign itself, so it can narrow (raise its epoch, revoke keys or
     // blocks) but never rotate.

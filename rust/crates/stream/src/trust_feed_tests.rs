@@ -7,7 +7,15 @@ use acyclic_auth::verify::Trust as _;
 use bytes::Bytes;
 use ed25519_dalek::SigningKey;
 use futures::FutureExt as _;
-use std::{collections::HashSet, future::Future, pin::Pin, sync::Mutex};
+use std::{
+    collections::HashSet,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 const NOW: u64 = 1_000;
 
@@ -26,6 +34,7 @@ impl UnixMillisClock for Clock {
 struct Path {
     records: Vec<Bytes>,
     live: Vec<mpsc::UnboundedSender<Result<Record, StreamError>>>,
+    read: Arc<AtomicUsize>,
 }
 
 /// Streams in memory; a `slow` path never answers its tail.
@@ -93,6 +102,7 @@ impl Source for Src {
         let path = paths.entry(path.to_owned()).or_default();
         let (sender, live) = mpsc::unbounded();
         path.live.push(sender);
+        let read = Arc::clone(&path.read);
         let backlog = path
             .records
             .iter()
@@ -100,7 +110,13 @@ impl Source for Src {
             .skip(from as usize)
             .map(|(sequence, value)| Ok(record(sequence, value.clone())))
             .collect::<Vec<_>>();
-        future::ready(Ok(stream::iter(backlog).chain(live).boxed())).boxed()
+        future::ready(Ok(stream::iter(backlog)
+            .chain(live)
+            .inspect(move |_| {
+                read.fetch_add(1, Ordering::SeqCst);
+            })
+            .boxed()))
+        .boxed()
     }
 }
 
@@ -213,13 +229,51 @@ fn an_undecodable_account_record_fences_that_account_only() {
     assert!(step(&mut run).is_none());
     assert!(!served(&follower, "account"));
     assert_eq!(*follower.state().borrow(), FollowerState::Serving);
-    // Later records queue behind the refused one: the account stays fenced.
+    let read = Arc::clone(&fake.paths.lock().unwrap()[&path].read);
+    let before = read.load(Ordering::SeqCst);
+    // The original follow is paused at the refused record. Successors stay
+    // behind its provider's credit instead of accumulating in the feed.
     fake.push(
         &path,
         root.revoke_keys(&[("retired", NOW + 50)], NOW).unwrap(),
     );
     assert!(step(&mut run).is_none());
     assert!(!served(&follower, "account"));
+    assert_eq!(read.load(Ordering::SeqCst), before);
+}
+
+#[test]
+fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() {
+    let anchor = Issuer::new("test", key(1));
+    let current = Issuer::new("test", key(9));
+    let mut frontier = EnvironmentFrontier::genesis("test", anchor.anchor());
+    let environment = anchor
+        .environment_keyring(&mut frontier, &current.anchor(), NOW)
+        .unwrap();
+    let (mut root, mut history) = anchor.genesis("late", key(2), NOW).unwrap();
+    history.push(current.keyring(&mut root, NOW).unwrap());
+    let mut world = world(&anchor, vec![]);
+    let (fake, follower) = (Arc::clone(&world.fake), Arc::clone(&world.follower));
+    let mut run = Box::pin(world.feed.run());
+    assert!(step(&mut run).is_none());
+    fake.push(&environment_path("test"), environment);
+    assert!(step(&mut run).is_none());
+    for record in history {
+        fake.push(&account_path("test", "late"), record);
+    }
+    world.accounts.follow("late");
+    assert!(step(&mut run).is_none());
+    assert!(served(&follower, "late"));
+    // The current key authenticates the checkpoint; a historical signature
+    // alone cannot bootstrap another account after that key was retired.
+    let (_, historical) = anchor.genesis("foreign", key(3), NOW).unwrap();
+    for record in historical {
+        fake.push(&account_path("test", "foreign"), record);
+    }
+    world.accounts.follow("foreign");
+    assert!(step(&mut run).is_none());
+    assert!(!served(&follower, "foreign"));
+    assert!(served(&follower, "late"));
 }
 
 #[test]

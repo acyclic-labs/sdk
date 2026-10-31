@@ -14,11 +14,14 @@ use futures::{
     StreamExt as _,
     channel::mpsc,
     future::{self, BoxFuture, Either},
-    stream::{self, BoxStream, SelectAll},
+    stream::{BoxStream, FuturesUnordered},
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
 };
 
 /// Live records of one trust Stream.
@@ -71,13 +74,68 @@ impl Accounts {
 /// One event of one followed Stream, in Stream order.
 enum Event {
     /// The follow opened; trust is served once the Stream reaches `tail`.
-    Opened(u64),
+    Opened {
+        tail: u64,
+        position: u64,
+    },
     Record(Record),
+    /// No authenticated checkpoint at the observed cut; retry on trust change.
+    Refused,
     /// The follow ended: the Stream was lost.
     Ended(StreamError),
 }
 
 type Item = (Option<String>, Event);
+
+type Opening<'a> = BoxFuture<'a, Result<(u64, u64, Records), StreamError>>;
+
+enum Reading<'a> {
+    Opening(Opening<'a>),
+    Records(Records),
+}
+
+/// Each pending read owns its original follow. A refused record moves that
+/// owner into the blocked map, so no successor is read or queued behind it.
+struct Next<'a> {
+    key: Option<String>,
+    reading: Option<Reading<'a>>,
+}
+
+impl Future for Next<'_> {
+    type Output = (Item, Records);
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let (event, records) = match this.reading.as_mut().expect("pending original read") {
+            Reading::Opening(opening) => match futures::ready!(opening.as_mut().poll(cx)) {
+                Ok((tail, position, records)) => (Event::Opened { tail, position }, records),
+                Err(StreamError::AccessDenied) if this.key.is_some() => {
+                    (Event::Refused, futures::stream::empty().boxed())
+                }
+                Err(error) => (Event::Ended(error), futures::stream::empty().boxed()),
+            },
+            Reading::Records(records) => {
+                let event = match futures::ready!(records.as_mut().poll_next(cx)) {
+                    Some(Ok(record)) => Event::Record(record),
+                    Some(Err(error)) => Event::Ended(error),
+                    None => Event::Ended(StreamError::Unavailable),
+                };
+                let Some(Reading::Records(records)) = this.reading.take() else {
+                    unreachable!("original read retains its follow")
+                };
+                (event, records)
+            }
+        };
+        Poll::Ready(((this.key.take(), event), records))
+    }
+}
+
+fn read(key: Option<String>, records: Records) -> Next<'static> {
+    Next {
+        key,
+        reading: Some(Reading::Records(records)),
+    }
+}
 
 /// Fences the follower however a run ends, a dropped (cancelled) run included.
 struct Fence {
@@ -171,12 +229,19 @@ impl<S: Source> TrustFeed<S> {
         let environment = follower
             .environment()
             .map_err(|_| StreamError::Unavailable)?;
-        let mut follows: SelectAll<BoxStream<'_, Item>> = SelectAll::new();
+        let mut follows = FuturesUnordered::new();
         for (key, from) in next.iter() {
-            follows.push(open(&*source, &environment, key.clone(), *from));
+            follows.push(open(
+                &*source,
+                follower,
+                &**clock,
+                &environment,
+                key.clone(),
+                *from,
+            ));
         }
         let mut tails = HashMap::new();
-        let mut blocked: HashMap<String, VecDeque<Record>> = HashMap::new();
+        let mut blocked: HashMap<String, Option<(Record, Records)>> = HashMap::new();
         loop {
             let account = async {
                 match added {
@@ -190,59 +255,84 @@ impl<S: Source> TrustFeed<S> {
                 Either::Right((account, _)) => Either::Right(account),
             };
             match event {
-                Either::Left(Some((key, Event::Opened(tail)))) => {
-                    if next.get(&key).is_some_and(|from| *from >= tail) {
+                Either::Left(Some(((key, Event::Opened { tail, position }), records))) => {
+                    next.insert(key.clone(), position);
+                    if position >= tail {
                         serve(follower, key.as_deref());
                     } else {
-                        tails.insert(key, tail);
+                        tails.insert(key.clone(), tail);
                     }
+                    follows.push(read(key, records));
                 }
-                Either::Left(Some((None, Event::Record(record)))) => {
+                Either::Left(Some(((None, Event::Record(record)), records))) => {
                     let now = follower.protected_now(clock.now_unix_millis() / 1000);
                     let applied = follower
                         .apply(&record.value, now)
                         .map_err(|_| StreamError::AccessDenied)?;
                     advance(follower, next, &mut tails, None, record.sequence);
+                    follows.push(read(None, records));
                     if applied == Applied::Changed {
-                        // New environment keys may admit retained records.
-                        blocked.retain(|account, records| {
-                            while let Some(record) = records.front() {
-                                if follower.apply_queued(&record.value, now).is_err() {
-                                    follower.refuse(account);
-                                    return true;
+                        // One retained record and original follow per refused
+                        // account. Only an actual environment event retries it.
+                        for (account, pending) in std::mem::take(&mut blocked) {
+                            if let Some((record, records)) = pending {
+                                if follower.apply_queued(&record.value, now).is_ok() {
+                                    let key = Some(account.clone());
+                                    advance(
+                                        follower,
+                                        next,
+                                        &mut tails,
+                                        key.clone(),
+                                        record.sequence,
+                                    );
+                                    follower.release(&account);
+                                    follows.push(read(key, records));
+                                } else {
+                                    follower.refuse(&account);
+                                    blocked.insert(account, Some((record, records)));
                                 }
-                                let key = Some(account.clone());
-                                advance(follower, next, &mut tails, key, record.sequence);
-                                records.pop_front();
+                            } else {
+                                let from = next.get(&Some(account.clone())).copied().unwrap_or(0);
+                                follows.push(open(
+                                    &*source,
+                                    follower,
+                                    &**clock,
+                                    &environment,
+                                    Some(account),
+                                    from,
+                                ));
                             }
-                            follower.release(account);
-                            false
-                        });
+                        }
                     }
                 }
-                Either::Left(Some((Some(account), Event::Record(record)))) => {
-                    if let Some(records) = blocked.get_mut(&account) {
-                        records.push_back(record);
-                        continue;
-                    }
+                Either::Left(Some(((Some(account), Event::Record(record)), records))) => {
                     let now = follower.protected_now(clock.now_unix_millis() / 1000);
                     if follower.apply(&record.value, now).is_ok() {
-                        advance(follower, next, &mut tails, Some(account), record.sequence);
+                        let key = Some(account);
+                        advance(follower, next, &mut tails, key.clone(), record.sequence);
+                        follows.push(read(key, records));
                     } else {
                         // Fenced, and retained without advancing the offset:
                         // its environment signer may not have arrived yet.
                         follower.refuse(&account);
-                        blocked.entry(account).or_default().push_back(record);
+                        blocked.insert(account, Some((record, records)));
                     }
                 }
-                Either::Left(Some((_, Event::Ended(error)))) => return Err(error),
+                Either::Left(Some(((Some(account), Event::Refused), _))) => {
+                    follower.refuse(&account);
+                    blocked.insert(account, None);
+                }
+                Either::Left(Some(((None, Event::Refused), _))) => {
+                    return Err(StreamError::AccessDenied);
+                }
+                Either::Left(Some(((_, Event::Ended(error)), _))) => return Err(error),
                 // Every follow ends with an `Ended` event first.
                 Either::Left(None) => return Err(StreamError::Unavailable),
                 Either::Right(Some(account)) => {
                     let key = Some(account);
                     if !next.contains_key(&key) {
                         next.insert(key.clone(), 0);
-                        follows.push(open(&*source, &environment, key, 0));
+                        follows.push(open(&*source, follower, &**clock, &environment, key, 0));
                     }
                 }
                 // Every `Accounts` handle dropped: the followed set is final.
@@ -257,34 +347,74 @@ impl<S: Source> TrustFeed<S> {
 /// of the stream, so it never blocks the other follows.
 fn open<'a, S: Source>(
     source: &'a S,
+    follower: &'a Follower,
+    clock: &'a dyn UnixMillisClock,
     environment: &str,
     key: Option<String>,
     from: u64,
-) -> BoxStream<'a, Item> {
+) -> Next<'a> {
     let path = key.as_deref().map_or_else(
         || environment_path(environment),
         |account| account_path(environment, account),
     );
+    let account = key.clone();
     let opened = async move {
         let tail = source.tail(&path).await?;
-        let records = source.follow(&path, from).await?;
-        Ok::<_, StreamError>((tail, records))
+        let mut records = source.follow(&path, from).await?;
+        let mut position = from;
+        if let Some(account) = account.as_deref()
+            && from == 0
+            && tail != 0
+            && !follower
+                .initialized(account)
+                .map_err(|_| StreamError::Unavailable)?
+        {
+            // Cold history may predate the current environment key. A complete
+            // keyring signed by a current key authenticates the root; that
+            // root's complete revocation checkpoint authenticates its state.
+            // Until both exist the account remains fenced. Replay once from
+            // zero after finding them, preserving every later delta and gap.
+            let mut refused = false;
+            let mut replayed = false;
+            while position < tail {
+                let record = records.next().await.ok_or(StreamError::Unavailable)??;
+                let initialized = follower
+                    .initialized(account)
+                    .map_err(|_| StreamError::Unavailable)?;
+                let now = follower.protected_now(clock.now_unix_millis() / 1000);
+                match follower.apply_queued(&record.value, now) {
+                    Ok(_) => {
+                        if refused
+                            && !replayed
+                            && follower
+                                .initialized(account)
+                                .map_err(|_| StreamError::Unavailable)?
+                        {
+                            records = source.follow(&path, 0).await?;
+                            position = 0;
+                            replayed = true;
+                            continue;
+                        }
+                    }
+                    Err(_) if initialized => return Err(StreamError::AccessDenied),
+                    Err(_) => refused = true,
+                }
+                position = record.sequence.saturating_add(1);
+            }
+            if !follower
+                .initialized(account)
+                .map_err(|_| StreamError::Unavailable)?
+            {
+                return Err(StreamError::AccessDenied);
+            }
+            follower.release(account);
+        }
+        Ok((tail, position, records))
     };
-    stream::once(opened)
-        .flat_map(|opened| match opened {
-            Ok((tail, records)) => stream::once(future::ready(Event::Opened(tail)))
-                .chain(records.map(|record| match record {
-                    Ok(record) => Event::Record(record),
-                    Err(error) => Event::Ended(error),
-                }))
-                .chain(stream::once(future::ready(Event::Ended(
-                    StreamError::Unavailable,
-                ))))
-                .boxed(),
-            Err(error) => stream::once(future::ready(Event::Ended(error))).boxed(),
-        })
-        .map(move |event| (key.clone(), event))
-        .boxed()
+    Next {
+        key,
+        reading: Some(Reading::Opening(opened.boxed())),
+    }
 }
 
 /// `key`'s record at `sequence` applied: resume after it, and serve the
