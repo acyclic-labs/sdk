@@ -870,7 +870,7 @@ async fn optional_policies_preserve_unbounded_execution_and_finite_authority() -
     for maximum in [None, Some(1)] {
         let model = Arc::new(scripted_model());
         let executor = uncompacted_executor(
-            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into())?,
             model.clone(),
             ContextPipeline::default(),
             echo_tools(

@@ -58,14 +58,7 @@ fn content_grants_recheck_fresh_trust_without_reauthenticating_the_scope() -> Re
             .is_err()
     );
     let (issuer, verifier, scope, volume) = fixture()?;
-    let grant = ContentGrant::verify(
-        &verifier,
-        &scope,
-        &volume,
-        VolumeOperation::Read,
-        u64::MAX,
-        &mut None,
-    )?;
+    let grant = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read, &mut None)?;
     issuer.raise_minimum_epoch(2)?;
     assert!(grant.require(&volume, VolumeOperation::Read, None).is_err());
     Ok(())
