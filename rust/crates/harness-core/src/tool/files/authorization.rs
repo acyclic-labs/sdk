@@ -207,7 +207,11 @@ impl FileTool {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
         self.public_path(path, io)?;
-        if path.len() > scope.limits().path_bytes {
+        if scope
+            .limits()
+            .path_bytes
+            .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(super::executor::rejection(
                 work,
                 "file path exceeds original task bound",
