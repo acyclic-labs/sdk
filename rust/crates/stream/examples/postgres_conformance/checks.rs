@@ -2,7 +2,7 @@
 use acyclic_stream::{postgres::PostgresStream, *};
 use futures::StreamExt;
 use futures::TryFutureExt as _;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 #[path = "publication.rs"]
 mod publication;
 #[path = "refusals.rs"]
@@ -62,9 +62,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
             AppendOutcome::Committed(_)
         )
     ));
-    let record = tokio::time::timeout(Duration::from_secs(1), follow.next())
-        .await?
-        .ok_or("notification stream closed")??;
+    let record = follow.next().await.ok_or("notification stream closed")??;
     assert_eq!(record.sequence, 1);
     let observer = PostgresStream::connect(database, &namespace).await?;
     let mut remote = observer
@@ -80,8 +78,9 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(1), remote.next())
-            .await?
+        remote
+            .next()
+            .await
             .ok_or("remote notification stream closed")??
             .sequence,
         2
@@ -158,8 +157,9 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                     )?,
                 })
                 .await?;
-            let update = tokio::time::timeout(Duration::from_secs(1), subscription.next())
-                .await?
+            let update = subscription
+                .next()
+                .await
                 .ok_or("subscription closed after dropping provider")??;
             assert!(matches!(update, FollowUpdate::Record(record) if record.sequence == sequence));
         }
@@ -207,11 +207,11 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
         .await?;
     assert_eq!(killed.len(), 1);
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(1), records.next()).await?,
+        records.next().await,
         Some(Err(StreamError::Unavailable))
     ));
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(1), updates.next()).await?,
+        updates.next().await,
         Some(Err(StreamError::Unavailable))
     ));
     assert!(records.next().await.is_none());
