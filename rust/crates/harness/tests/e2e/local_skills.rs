@@ -173,6 +173,14 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
             1
         );
     }
+    for (name, _) in acyclic_harness::context::BUILTIN_SKILLS {
+        let skill = skills
+            .iter()
+            .find(|skill| skill.name == *name)
+            .ok_or("built-in skill absent from the first request")?;
+        assert_eq!(skill.source.root.directory, "skills");
+        assert_eq!(skill.source.path, format!("skills/{name}/SKILL.md"));
+    }
     assert!(!serde_json::to_string(&model.requests())?.contains("BODY-MUST-STAY-LAZY"));
     Ok(())
 }

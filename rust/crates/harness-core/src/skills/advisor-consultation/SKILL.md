@@ -1,6 +1,6 @@
 ---
 name: advisor-consultation
-description: Work with a persistent alloy advisor at consequential planning decisions, then obtain an independent final review.
+description: Work with a persistent alloy advisor at consequential planning decisions using versioned plan snapshots.
 ---
 
 Start an ordinary advisor-role actor with a self-contained brief: the task, constraints, current evidence, and the decision that needs advice. Reuse its stream throughout the task so later consultations build on earlier work.
@@ -9,4 +9,4 @@ Keep the worker's plan in `.volumes/scratch/plans/<name>.md`. Send it as a conte
 
 The worker owns integration. Merge or rebase the reply against its named base, preserving intervening changes and resolving stale assumptions before applying the revised plan. Continue independent work while advice is pending; use `wait` only when the next action depends on the reply. Consult at real decision points or when evidence changes the plan, rather than after every step or on a fixed schedule.
 
-Before finishing, start a fresh reviewer-role child from a different model family. Supply only a self-contained task brief, the actual diff, and test output. Ask for PASS or FAIL with concrete findings, and address any failures before finishing.
+Before finishing, use [fresh-context-review](../fresh-context-review/SKILL.md) for an independent final verdict. The advisor's ongoing involvement does not replace that fresh review.
