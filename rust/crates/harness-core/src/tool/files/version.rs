@@ -60,7 +60,8 @@ pub(super) fn decode_version(
             )?;
             (FileReadSource::Content(file), reservation)
         };
-        crate::executor::with_history_io(Some(&io), |history| file.validate(history))?;
+        crate::executor::with_history_io(Some(&io), |history| file.validate(history))
+            .map_err(Error::tool_input)?;
         if file.path() != path {
             return Err(Error::tool_rejected("file version belongs to another path"));
         }

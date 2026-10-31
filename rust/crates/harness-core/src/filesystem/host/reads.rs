@@ -219,7 +219,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>,
         range: acyclic_fs::ByteRange,
         access: crate::conversation::ContentAccess<'_, '_>,
-    ) -> Result<(acyclic_stream::OwnedBytes, GenerationRef, u64)> {
+    ) -> Result<(acyclic_stream::OwnedBytes, GenerationId, u64)> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
         self.require_private_directory(volume, grant, path, io)?;
         super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
@@ -280,9 +280,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?;
         super::super::access::require_current(&workspace, &view.0, io).await?;
         grant.recheck(Some(io))?;
-        let selected = self.generation_ref_id(generation.id(), Some(io))?;
         drop(requested_hold);
-        Ok((chunk.bytes, selected, length))
+        Ok((chunk.bytes, generation.id(), length))
     }
 
     /// Reads a finite private prefix at an explicitly pinned generation.

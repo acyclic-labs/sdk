@@ -216,7 +216,6 @@ impl FileTool {
         }) {
             return Err(invalid("file selection exceeds text rendering bound"));
         }
-        let was_resolved = resolved.is_some();
         let bytes = if let Some(bytes) = resolved {
             bytes
         } else if let Some(range) = input.0.range {
@@ -245,36 +244,8 @@ impl FileTool {
         } else {
             context.read_file(&file, io).await?
         };
-        let selected = if let Some(range) = input.0.range.filter(|_| was_resolved) {
-            let end = if empty && range.start < length {
-                range.start.checked_add(1)
-            } else {
-                Some(range.end)
-            };
-            let start = usize::try_from(range.start).ok();
-            let end = end.and_then(|end| usize::try_from(end).ok());
-            start
-                .zip(end)
-                .and_then(|(start, end)| bytes.get(start..end))
-                .ok_or_else(|| invalid("read range exceeds the file"))?
-        } else {
-            bytes.as_ref()
-        };
-        let source = read_text(selected, empty, work)?;
-        #[derive(Serialize)]
-        struct Read<'a> {
-            file: &'a FileReadSource,
-            text: &'a str,
-        }
-        let encoded = super::value(
-            &Read {
-                file: &FileReadSource::Content(file),
-                text: source,
-            },
-            u64::MAX,
-            work,
-        )?;
-        Ok((ToolResult { value: encoded.0 }, encoded.1))
+        let source = read_text(bytes.as_ref(), empty, work)?;
+        read_result(FileReadSource::Content(file), source, work)
     }
 
     async fn read_path_range(
@@ -327,20 +298,7 @@ impl FileTool {
             return Err(invalid("read result belongs to another selection"));
         }
         let text = read_text(bytes.as_ref(), empty, work)?;
-        #[derive(Serialize)]
-        struct Read<'a> {
-            file: &'a FileReadSource,
-            text: &'a str,
-        }
-        let encoded = super::value(
-            &Read {
-                file: &FileReadSource::Authored(selected),
-                text,
-            },
-            u64::MAX,
-            work,
-        )?;
-        Ok((ToolResult { value: encoded.0 }, encoded.1))
+        read_result(FileReadSource::Authored(selected), text, work)
     }
 
     async fn source(
@@ -676,6 +634,20 @@ pub(super) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Er
     } else {
         Error::Invalid(reason.into())
     }
+}
+
+fn read_result(
+    file: FileReadSource,
+    text: &str,
+    work: crate::NativeWork<'_>,
+) -> Result<(ToolResult, crate::NativeCustody)> {
+    #[derive(Serialize)]
+    struct Read<'a> {
+        file: FileReadSource,
+        text: &'a str,
+    }
+    let encoded = super::value(&Read { file, text }, u64::MAX, work)?;
+    Ok((ToolResult { value: encoded.0 }, encoded.1))
 }
 
 pub(super) fn read_text<'a>(

@@ -401,6 +401,7 @@ where
                     crate::conversation::ContentAccess { ceiling, io },
                 )
                 .await?;
+            let generation = self.host.generation_ref_id(generation, io)?;
             let selection = crate::executor::with_history_io(io, |work| {
                 let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let selected = crate::conversation::FilePathSelection {
