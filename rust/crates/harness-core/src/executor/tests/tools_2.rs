@@ -212,6 +212,26 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
         custody: None,
     };
     let storage: fn() -> Error = || Error::Storage("journal unavailable".into());
+    let refused: fn() -> Error = || Error::ToolRejected {
+        code: crate::wire::ErrorCode::Unauthorized,
+        reason: "original read grant is absent",
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let native_boundary: fn() -> Error = || Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid,
+        reason: "native producer invariant failed",
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let native_accounting: fn() -> Error = || {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap();
+        work.claim(u64::MAX, 0, acyclic_fs::WorkCounters::UNCHARGED)
+            .unwrap_err()
+            .into()
+    };
     for stage in [Stage::Authorize, Stage::Execute] {
         for (error, expected) in [
             (
@@ -228,9 +248,17 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
                 invalid,
                 Some("tool execution failed: invalid request: tool arguments are malformed"),
             ),
+            (
+                refused,
+                Some("tool execution failed: tool rejected: original read grant is absent"),
+            ),
             // Negative control: a harness fault never settles as a model-visible result.
             (storage, None),
             (unavailable, None),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            (native_boundary, None),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            (native_accounting, None),
         ] {
             let model = Arc::new(scripted_model());
             let tool = Arc::new(Failing(stage, error, AtomicUsize::new(0)));

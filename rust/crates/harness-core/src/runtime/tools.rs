@@ -541,7 +541,7 @@ impl ToolContext {
     ) -> Result<&VolumeRef> {
         let volume = &self.task().tool_read_content().volume;
         crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history)?;
+            crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
             if path.len() > self.effective_scope().limits().path_bytes
                 || crate::conversation::is_internal_path(path)
                 || !crate::core::directory_read_granted_with_work(
@@ -555,7 +555,8 @@ impl ToolContext {
                     history,
                     crate::wire::ErrorCode::Unauthorized,
                     "path read requires the original directory read grant",
-                ));
+                )
+                .tool_input());
             }
             Ok(())
         })?;
