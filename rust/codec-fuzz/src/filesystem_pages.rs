@@ -369,5 +369,6 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     }
     seeds.extend(populated::seeds()?);
     seeds.extend(publication_codec_fuzz::seeds()?);
+    seeds.extend(historical::seeds()?);
     Ok(seeds)
 }
