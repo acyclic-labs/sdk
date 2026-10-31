@@ -189,14 +189,14 @@ impl FileTool {
             .0
             .range
             .map_or(Some(length), |range| range.end.checked_sub(range.start));
-        if selected_length.is_none_or(|length| {
-            length
-                > context
-                    .effective_scope()
-                    .limits()
-                    .render_bytes
-                    .min(context.effective_scope().limits().file_bytes)
-        }) {
+        let maximum = context
+            .effective_scope()
+            .limits()
+            .render_bytes
+            .into_iter()
+            .chain(context.effective_scope().limits().file_bytes)
+            .min();
+        if selected_length.is_none_or(|length| maximum.is_some_and(|maximum| length > maximum)) {
             return Err(invalid("file selection exceeds text rendering bound"));
         }
         let was_resolved = resolved.is_some();
@@ -254,7 +254,7 @@ impl FileTool {
                 file: &file,
                 text: source,
             },
-            u64::MAX,
+            None,
             work,
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -553,7 +553,7 @@ impl ToolExecutor for FileTool {
                 return receipt
                     .0
                     .map(|file| {
-                        let encoded = super::value(&FileResult { file }, u64::MAX, None)?;
+                        let encoded = super::value(&FileResult { file }, None, None)?;
                         Ok(ToolResult { value: encoded.0 })
                     })
                     .transpose();
