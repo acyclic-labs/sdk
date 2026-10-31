@@ -261,10 +261,10 @@ async fn drive(
         .as_deref()
         .map(usage_export::Output::open)
         .transpose()?;
-    let mut output: Box<dyn std::io::Write> = if usage_stdout {
-        Box::new(std::io::stderr().lock())
+    let mut output = if usage_stdout {
+        acyclic_native_runtime::InheritedOutput::stderr()?
     } else {
-        Box::new(std::io::stdout().lock())
+        acyclic_native_runtime::InheritedOutput::stdout()?
     };
     let result = if let Some(prompt) = &args.prompt {
         phase(|| headless::prompt(&conversation, &operation, prompt, &mut output)).await
