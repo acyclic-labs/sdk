@@ -142,6 +142,9 @@ callback, preserving any earlier pending transaction group. Values are copied
 at the JavaScript boundary so later caller mutation cannot alter admitted work.
 Native read-only transactions borrow the admitted in-memory cut, allocate
 nothing and leave the binding clean; flushing a clean binding performs no I/O.
+`ActorStateBinding::get` borrows a value directly from the same cut, including
+staged writes, without creating a mutation transaction or cloning a byte handle.
+Both read forms preserve the binding's existing fence and pause checks.
 Both projections roll back only touched keys and the journal's original length;
 native rollback also handles callback unwind. Neither copies unrelated metadata,
 pending writes or staged journal frames on the first write. JavaScript still

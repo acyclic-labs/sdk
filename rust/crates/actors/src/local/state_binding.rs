@@ -126,6 +126,20 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 }
 impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
+    /// Borrow metadata from this admitted cut, including staged writes. No
+    /// transaction, allocation, byte-handle clone or provider I/O is required.
+    /// The borrow expires before this binding can mutate or publish its state.
+    pub fn get(&self, key: &str) -> Result<Option<&Bytes>, Error> {
+        if self.fenced {
+            return Err(Error::Conflict);
+        }
+        let state = self.snapshot.state.as_ref().ok_or(Error::Conflict)?;
+        if state.paused {
+            return Err(Error::Paused);
+        }
+        Ok(state.metadata.get(key))
+    }
+
     /// Seed the shared JavaScript projection from this exact admitted cut.
     pub fn seed(&self) -> Result<crate::guest::ActorStateSeed, Error> {
         if self.fenced || self.dirty {

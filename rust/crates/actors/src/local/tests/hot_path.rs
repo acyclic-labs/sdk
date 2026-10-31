@@ -47,6 +47,7 @@ impl acyclic_stream::PersistenceCut for PhysicalCut {
 #[tokio::test]
 async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
     resident_work().await?;
+    borrowed_read_guards().await?;
     observation_work().await?;
     let directory = tempfile::tempdir()?;
     let address = actor("hot-path")?;
@@ -361,6 +362,10 @@ async fn resident_work() -> TestResult {
         let before = provider.requests();
         let reads = acyclic_test_support::measure(|| {
             for _ in 0..128 {
+                assert_eq!(
+                    binding.get("key-000000").unwrap().map(Bytes::as_ref),
+                    Some(b"untouched".as_slice())
+                );
                 binding
                     .transaction(|state| {
                         assert_eq!(
@@ -408,6 +413,57 @@ async fn resident_work() -> TestResult {
             reads.count_total, cloned.count_total
         );
     }
+    Ok(())
+}
+
+async fn borrowed_read_guards() -> TestResult {
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let store = Store::new(provider.clone(), state_root()?);
+    let address = actor("borrowed-read")?;
+    place(&store, &address).await?;
+    let snapshot = store.load(&address).await?;
+    store
+        .set_paused(&snapshot, 1, true, key("borrowed-read/pause")?)
+        .await?;
+    let paused = store.bind_state(store.load(&address).await?, 1)?;
+    let before = provider.requests();
+    assert!(matches!(paused.get("missing"), Err(Error::Paused)));
+    assert_eq!(provider.requests().since(before).data(), 0);
+    assert_eq!(provider.requests().since(before).control(), 0);
+    store
+        .set_paused(&paused.finish()?, 1, false, key("borrowed-read/resume")?)
+        .await?;
+    let resumed = store.load(&address).await?;
+    let mut binding = store.bind_state(store.load(&address).await?, 1)?;
+    assert!(binding.get("missing")?.is_none());
+    binding.transaction(|state| {
+        state.put("value".into(), Bytes::from_static(b"pending"));
+        Ok(())
+    })?;
+    assert_eq!(
+        binding.get("value")?.map(Bytes::as_ref),
+        Some(b"pending".as_slice())
+    );
+    let refused: Result<(), Error> = binding.transaction(|state| {
+        state.put("value".into(), Bytes::from_static(b"discarded"));
+        Err(Error::Invalid("rollback borrowed read"))
+    });
+    assert!(refused.is_err());
+    assert_eq!(
+        binding.get("value")?.map(Bytes::as_ref),
+        Some(b"pending".as_slice())
+    );
+    store
+        .claim(&resumed, 2, key("borrowed-read/replace")?)
+        .await?;
+    assert!(matches!(
+        binding.flush(key("borrowed-read/stale")?).await,
+        Err(Error::Conflict)
+    ));
+    let before = provider.requests();
+    assert!(matches!(binding.get("value"), Err(Error::Conflict)));
+    assert_eq!(provider.requests().since(before).data(), 0);
+    assert_eq!(provider.requests().since(before).control(), 0);
     Ok(())
 }
 
