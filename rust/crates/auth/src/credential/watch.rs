@@ -25,7 +25,7 @@ impl Default for Epoch {
 }
 
 #[derive(Default)]
-pub(super) struct Changes(Mutex<Epoch>);
+pub(super) struct Changes(Mutex<Option<Epoch>>);
 
 /// One source observation and a one-shot change notification. Subscribe before
 /// reading authority-bound cached data. Await this to cancel outstanding work,
@@ -102,6 +102,7 @@ impl Changes {
             .0
             .lock()
             .map_err(|_| CredentialCacheError::Unavailable)?
+            .get_or_insert_with(Epoch::default)
             .changed
             .clone();
         // Subscribe before observing. A concurrent or reentrant invalidation
@@ -115,15 +116,16 @@ impl Changes {
     }
 
     pub(super) fn notify(&self) -> Result<(), CredentialCacheError> {
-        let previous = std::mem::take(
-            &mut *self
-                .0
-                .lock()
-                .map_err(|_| CredentialCacheError::Unavailable)?,
-        );
-        // A waker may reenter the source. Publish the next epoch and release
-        // its lock before the shared primitive delivers the previous event.
-        let _ = previous.send.send(());
+        let previous = self
+            .0
+            .lock()
+            .map_err(|_| CredentialCacheError::Unavailable)?
+            .take();
+        // A waker may reenter the source. Detach this epoch before delivery;
+        // only a new subscription needs to allocate the next event producer.
+        if let Some(previous) = previous {
+            let _ = previous.send.send(());
+        }
         Ok(())
     }
 }

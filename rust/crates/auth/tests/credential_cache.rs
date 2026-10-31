@@ -1,4 +1,6 @@
 //! Synthetic trusted-source vectors; no captured external credentials.
+acyclic_test_support::counting_allocator!();
+
 use acyclic_auth::credential::*;
 use futures::{
     FutureExt,
@@ -101,6 +103,59 @@ fn source_watch_retires_epochs_and_reports_last_producer_loss_without_waiting() 
             revision: Some(revision(1)),
         },
     );
+    // Record the atomic lease slots' thread initialization separately from
+    // steady-state notification work; no event has a subscriber yet.
+    let cold = acyclic_test_support::measure(|| source.invalidate().unwrap());
+    eprintln!("cold invalidation allocations={}", cold.count_total);
+    for count in [1, 100, 1000] {
+        let idle = acyclic_test_support::measure(|| {
+            for _ in 0..count {
+                source.invalidate().unwrap();
+            }
+        });
+        assert_eq!(idle.count_total, 0, "idle notifications: {count}");
+
+        let mut watches = Vec::with_capacity(count);
+        let first = acyclic_test_support::measure(|| {
+            watches.push(source.watch().unwrap());
+        });
+        assert!(first.count_total > 0, "the event must have a real producer");
+        let peers = acyclic_test_support::measure(|| {
+            for _ in 1..count {
+                watches.push(source.watch().unwrap());
+            }
+        });
+        assert_eq!(peers.count_total, 0, "shared registration: {count}");
+        for watch in &mut watches {
+            assert!(
+                Pin::new(watch)
+                    .poll(&mut Context::from_waker(futures::task::noop_waker_ref()))
+                    .is_pending()
+            );
+        }
+        let notification = acyclic_test_support::measure(|| source.invalidate().unwrap());
+        assert_eq!(notification.count_total, 0, "retirement: {count}");
+        eprintln!(
+            "watch cohort={count} first={} peers={} idle={} retire={}",
+            first.count_total, peers.count_total, idle.count_total, notification.count_total
+        );
+        for watch in watches {
+            assert!(matches!(watch.now_or_never(), Some(Ok(()))));
+        }
+        // A distinct source cannot retire a registration on this owner.
+        let mut unrelated = Box::pin(source.watch().unwrap());
+        let foreign = CredentialCache::new(
+            |_| future::ready(Ok(snapshot("synthetic-foreign", 1, 100))),
+            || CredentialValidity {
+                now_unix_seconds: 1,
+                revision: Some(revision(1)),
+            },
+        );
+        foreign.invalidate().unwrap();
+        pending(unrelated.as_mut());
+        drop(unrelated);
+        source.invalidate().unwrap();
+    }
     let mut first = Box::pin(source.watch().unwrap());
     let mut peer = Box::pin(source.watch().unwrap());
     let reenter = Arc::new(Reenter {
