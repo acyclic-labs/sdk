@@ -87,7 +87,17 @@ fn escaped_strings(bytes: &[u8]) -> Vec<u8> {
     while let Some(byte) = input.next() {
         if quoted && byte == b'\\' {
             output.push(byte);
-            output.push(input.next().expect("canonical escape has its second byte"));
+            let escape = input.next().expect("canonical escape has its second byte");
+            output.push(escape);
+            if escape == b'u' {
+                for _ in 0..4 {
+                    output.push(
+                        input
+                            .next()
+                            .expect("canonical Unicode escape has four digits"),
+                    );
+                }
+            }
         } else if byte == b'"' {
             quoted = !quoted;
             output.push(byte);
@@ -123,6 +133,11 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
     // of an exhausted or cancelled original invocation.
     let captured = include_bytes!("../../fuzz/corpus/http_failure/llamacpp-context");
     let value: serde_json::Value = serde_json::from_slice(&captured[2..]).unwrap();
+    let mut control = value.clone();
+    control["ignored"] = serde_json::Value::String("\u{000b}\\u000b".into());
+    let mut control_input = captured[..2].to_vec();
+    control_input.extend_from_slice(&serde_json::to_vec(&control).unwrap());
+    assert_http_failure_invariants(&control_input);
     let canonical = serde_json::to_vec(&value).unwrap();
     let escaped = escaped_strings(&canonical);
     // Move the captured refusal through the supported envelopes; a selected

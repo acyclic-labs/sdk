@@ -77,6 +77,14 @@ pub fn check(bytes: &[u8]) -> bool {
     if !crate::memory::check_snapshot_codec(bytes) {
         return false;
     }
+    #[cfg(any(
+        feature = "local",
+        feature = "postgres",
+        all(
+            any(feature = "wasm", feature = "wasm-journal"),
+            target_arch = "wasm32"
+        )
+    ))]
     if let Ok(command) = crate::journal::decode_command(bytes) {
         if command.encode_to_vec() != bytes {
             return false;
@@ -202,6 +210,14 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
             WriteRequest::Fork(request) => request.idempotency_key.clone(),
             WriteRequest::Commit(request) => request.idempotency_key.clone(),
         };
+        #[cfg(any(
+            feature = "local",
+            feature = "postgres",
+            all(
+                any(feature = "wasm", feature = "wasm-journal"),
+                target_arch = "wasm32"
+            )
+        ))]
         seeds.push((name.to_owned(), command.encode_to_vec()));
         #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         seeds.push((

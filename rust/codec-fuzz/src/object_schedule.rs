@@ -206,8 +206,16 @@ fn retained_cause(terminal: &Terminal) -> Option<&InjectedStorageFault> {
 /// No returned outcome is supplied by a replacement store or replay model.
 pub fn check(bytes: &[u8]) -> Result<Option<Report>, Box<dyn Error>> {
     let mut report = None;
-    check_sites(bytes, false, |value| report = Some(value))?;
+    check_selected_site(bytes, |value| report = Some(value))?;
     Ok(report)
+}
+
+/// Admit an input and report its selected fault site, if the operation needs IO.
+pub fn check_selected_site(
+    bytes: &[u8],
+    observe: impl FnMut(Report),
+) -> Result<bool, Box<dyn Error>> {
+    check_sites(bytes, false, observe)
 }
 
 /// Exercise every site in one original successful trace without retaining a
@@ -244,10 +252,15 @@ fn check_sites(
         );
         assert_eq!(baseline_medium.read(&key, None).await?, case.after());
         assert!(baseline.fault.is_none());
-        assert!(
-            !baseline.writes.is_empty(),
-            "original physical operation escaped the fault controller"
-        );
+        if baseline.writes.is_empty() {
+            assert!(case.flush, "original mutation escaped the fault controller");
+            drop(baseline_medium);
+            let reopened =
+                LocalMedium::open(baseline_root.path(), LocalObjectsLimits::default(), None)
+                    .await?;
+            assert_eq!(reopened.read(&key, None).await?, case.after());
+            return Ok(true);
+        }
         if case.compaction {
             assert!(
                 baseline
@@ -432,6 +445,23 @@ pub fn seeds() -> Vec<(String, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn already_durable_flush_has_no_fault_site() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, mut bytes) = super::seeds()
+            .into_iter()
+            .find(|(name, _)| name == "medium-true-2-1-1")
+            .expect("original sealed remove and flush producer");
+        let prefix = 20 + usize::from(bytes[3]);
+        bytes.resize(
+            prefix + acyclic_objects::codec_fuzz::compaction_chunk_bytes() + 1,
+            0,
+        );
+        assert!(super::check_each_site(&bytes, |_| {
+            panic!("an already durable flush has no physical cut")
+        })?);
+        Ok(())
+    }
+
     #[test]
     fn large_payload_compaction_reaches_original_maintenance()
     -> Result<(), Box<dyn std::error::Error>> {
