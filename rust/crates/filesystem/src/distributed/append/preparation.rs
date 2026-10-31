@@ -47,8 +47,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let commit = &request.commit;
         let (durable, encoded) = prepare_record(request, work)?;
         let sequence = durable.sequence;
-        let generation = generation_from_payload(authority_id, sequence, &commit.payload, work)?;
-        let encoded = work.publication_record(encoded, commit.operation_id, generation)?;
         let records = work.path(&self.placement, authority_id, "/records", None)?;
         let epochs = work.path(&self.placement, authority_id, "/epochs", None)?;
         let retirement = work.path(&self.placement, authority_id, "/retirement", None)?;
@@ -74,6 +72,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             Preparation::Ready(lease) => lease,
             Preparation::Outcome(outcome) => return Ok(Preparation::Outcome(outcome)),
         };
+        let generation = generation_from_payload(authority_id, sequence, &commit.payload, work)?;
+        let encoded = work.publication_record(encoded, commit.operation_id, generation)?;
         // Authority, operation locator, lineage, generation locator and changes.
         let mut mutations = work.vec(5)?;
         work.append_record(&mut mutations, records.clone(), [encoded])?;
