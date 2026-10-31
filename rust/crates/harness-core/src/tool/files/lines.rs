@@ -8,6 +8,11 @@ struct Lines {
     done: bool,
 }
 
+struct Selection {
+    interval: std::ops::Range<usize>,
+    consumed: usize,
+}
+
 impl Lines {
     fn finish(&mut self, unterminated: bool) {
         if self.line < self.offset && unterminated {
@@ -15,17 +20,26 @@ impl Lines {
         }
     }
 
-    fn select(&mut self, bytes: &[u8]) -> std::ops::Range<usize> {
+    fn select(
+        &mut self,
+        bytes: &[u8],
+        position: u64,
+        mut boundary: impl FnMut(u64, u64) -> Result<bool>,
+    ) -> Result<Selection> {
         let mut start = (self.line >= self.offset).then_some(0);
         if start.is_some() && self.limit == Some(0) {
             self.done = true;
-            return 0..0;
+            return Ok(Selection {
+                interval: 0..0,
+                consumed: 0,
+            });
         }
         for (index, byte) in bytes.iter().enumerate() {
             if *byte != b'\n' {
                 continue;
             }
             self.line += 1;
+            let page_full = boundary(self.line, position + index as u64 + 1)?;
             if self.line == self.offset && start.is_none() {
                 start = Some(index + 1);
             }
@@ -35,10 +49,22 @@ impl Lines {
                     .is_some_and(|limit| self.line - self.offset >= limit)
             {
                 self.done = true;
-                return start.unwrap_or(index + 1)..index + 1;
+                return Ok(Selection {
+                    interval: start.unwrap_or(index + 1)..index + 1,
+                    consumed: index + 1,
+                });
+            }
+            if page_full {
+                return Ok(Selection {
+                    interval: start.unwrap_or(index + 1)..index + 1,
+                    consumed: index + 1,
+                });
             }
         }
-        start.unwrap_or(bytes.len())..bytes.len()
+        Ok(Selection {
+            interval: start.unwrap_or(bytes.len())..bytes.len(),
+            consumed: bytes.len(),
+        })
     }
 }
 
@@ -60,57 +86,122 @@ pub(super) async fn read(
             "line projection requires source byte credit",
         ));
     }
+    let destination = super::index::OrdinalIndex::destination(context, io)?;
     let mut window = super::window::Window::first(
         context,
         input,
         acyclic_fs::ByteRange {
             offset: 0,
-            length: quantum,
+            length: if destination.is_some() && offset != 0 {
+                0
+            } else {
+                quantum
+            },
         },
         work,
         io,
     )
     .await?;
-    let (version, _version_hold) = super::version::encode_source(&window.source, work)?;
+    let _version_hold;
+    let (version, version_hold) = super::version::encode_source(&window.source, work)?;
+    _version_hold = version_hold;
+    let mut index = destination
+        .filter(|destination| destination.volume() != window.source.volume())
+        .map(|destination| {
+            super::index::OrdinalIndex::new(
+                context,
+                destination,
+                &version,
+                window.source.byte_length(),
+                work,
+            )
+        })
+        .transpose()?;
+    let (line, mut position) = if let Some(index) = &mut index {
+        index.seek(offset, work, io).await?
+    } else {
+        (0, 0)
+    };
+    if window.bytes.is_empty() && window.source.byte_length() != 0 {
+        window.bytes = window
+            .next(
+                context,
+                &input.path,
+                acyclic_fs::ByteRange {
+                    offset: position,
+                    length: quantum,
+                },
+                work,
+                io,
+            )
+            .await?;
+    }
     let budget = super::read::encoded_text_budget(&version, &input.path, maximum, work, io)?;
     let mut hold = edit::allocation(work, std::mem::size_of::<Vec<u8>>())?;
     let mut selected = Vec::new();
     let mut selector = Lines {
         offset,
         limit,
-        line: 0,
+        line,
         done: false,
     };
-    let mut position = 0;
     let mut start = None;
     loop {
         edit::charge(&hold, 0, window.bytes.len() as u64)?;
-        let interval = selector.select(&window.bytes);
-        if selector.line >= offset && start.is_none() {
-            start = Some(position + interval.start as u64);
-        }
-        let bytes = window
-            .bytes
-            .get(interval)
-            .ok_or_else(|| executor::rejection(work, "invalid line interval"))?;
-        let capacity = usize::try_from(budget.saturating_add(3)).unwrap_or(usize::MAX);
-        let shown = bytes
-            .get(..bytes.len().min(capacity.saturating_sub(selected.len())))
-            .ok_or_else(|| executor::rejection(work, "invalid line window"))?;
-        let length = selected
-            .len()
-            .checked_add(shown.len())
-            .ok_or_else(|| executor::rejection(work, "line window size overflow"))?;
-        edit::reserve_vec(&mut hold, &mut selected, length)?;
-        edit::charge(&hold, shown.len() as u64, 0)?;
-        selected.extend_from_slice(shown);
-        position += window.bytes.len() as u64;
-        if position == window.source.byte_length() {
-            selector.finish(window.bytes.last().is_some_and(|byte| *byte != b'\n'));
-            if start.is_none() && selector.line >= offset {
-                start = Some(position);
+        let mut consumed = 0;
+        while consumed < window.bytes.len() || (window.bytes.is_empty() && consumed == 0) {
+            let remaining = &window.bytes[consumed..];
+            // One scan both selects the view and records ordinal boundaries. A
+            // full index page yields to its original publication before continuing.
+            let selection = selector.select(remaining, position, |ordinal, position| {
+                index
+                    .as_mut()
+                    .map_or(Ok(false), |index| index.record(ordinal, position))
+            })?;
+            if selector.line >= offset && start.is_none() {
+                start = Some(position + selection.interval.start as u64);
+            }
+            let bytes = remaining
+                .get(selection.interval)
+                .ok_or_else(|| executor::rejection(work, "invalid line interval"))?;
+            let capacity = usize::try_from(budget.saturating_add(3)).unwrap_or(usize::MAX);
+            let shown = bytes
+                .get(..bytes.len().min(capacity.saturating_sub(selected.len())))
+                .ok_or_else(|| executor::rejection(work, "invalid line window"))?;
+            let length = selected
+                .len()
+                .checked_add(shown.len())
+                .ok_or_else(|| executor::rejection(work, "line window size overflow"))?;
+            edit::reserve_vec(&mut hold, &mut selected, length)?;
+            edit::charge(&hold, shown.len() as u64, 0)?;
+            selected.extend_from_slice(shown);
+            position += selection.consumed as u64;
+            consumed += selection.consumed;
+            if let Some(index) = &mut index {
+                index.publish(io).await?;
+            }
+            if position == window.source.byte_length() {
+                let unterminated = window.bytes.last().is_some_and(|byte| *byte != b'\n');
+                if unterminated && let Some(index) = &mut index {
+                    index.record(selector.line + 1, position)?;
+                    index.publish(io).await?;
+                }
+                selector.finish(unterminated);
+                if start.is_none() && selector.line >= offset {
+                    start = Some(position);
+                }
+            }
+            if selector.done
+                || selected.len() >= capacity
+                || position == window.source.byte_length()
+            {
+                break;
+            }
+            if selection.consumed == 0 {
+                return Err(executor::rejection(work, "source range made no progress"));
             }
         }
+        let capacity = usize::try_from(budget.saturating_add(3)).unwrap_or(usize::MAX);
         if selector.done || selected.len() >= capacity || position == window.source.byte_length() {
             break;
         }
@@ -172,13 +263,25 @@ mod checks {
             lines in prop::collection::vec("[^\\n]{0,80}\\n", 0..30),
             tail in "[^\\n]{0,80}",
             offset in 0usize..35, limit in prop::option::of(0usize..35), chunk in 1usize..120,
+            page_lines in 1u64..10,
         ) {
             let source = lines.concat() + &tail;
             let mut selector = Lines { offset: offset as u64, limit: limit.map(|n| n as u64), line: 0, done: false };
             let mut selected = Vec::new();
+            let mut position = 0;
             for bytes in source.as_bytes().chunks(chunk) {
-                let interval = selector.select(bytes);
-                selected.extend_from_slice(&bytes[interval]);
+                let mut consumed = 0;
+                while consumed < bytes.len() {
+                    let selection = selector.select(&bytes[consumed..], position, |line, byte| {
+                        assert_eq!(source.as_bytes()[byte as usize - 1], b'\n');
+                        Ok(line % page_lines == 0)
+                    }).unwrap();
+                    selected.extend_from_slice(&bytes[consumed + selection.interval.start..consumed + selection.interval.end]);
+                    consumed += selection.consumed;
+                    position += selection.consumed as u64;
+                    if selector.done { break; }
+                    prop_assert!(selection.consumed > 0);
+                }
                 if selector.done { break; }
             }
             selector.finish(!tail.is_empty());

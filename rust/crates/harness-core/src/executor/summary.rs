@@ -187,7 +187,7 @@ impl StockExecution<'_> {
         &self,
         destination: Option<(
             &crate::runtime::TaskContext,
-            crate::runtime::PrivateSummaries<'_>,
+            crate::runtime::PrivateContent<'_>,
         )>,
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
@@ -206,8 +206,15 @@ impl StockExecution<'_> {
             // A turn may compact more than once. Its file receipt must not alias
             // another step or any of the task's tool publications.
             let publication = summary_publication(operation_id, step, self.io)?;
-            let output = context
-                .stage_private_file_once(summaries, publication, &path, text.as_bytes(), self.io)
+            let (output, _) = context
+                .stage_private_file_once(
+                    summaries,
+                    publication,
+                    &path,
+                    text.as_bytes(),
+                    ("text/plain", "summary.txt"),
+                    self.io,
+                )
                 .await?;
             output
         } else {

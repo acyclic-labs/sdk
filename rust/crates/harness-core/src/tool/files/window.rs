@@ -8,7 +8,7 @@ pub(super) struct Window {
     _hold: crate::NativeCustody,
 }
 
-fn custody(
+pub(super) fn custody(
     io: Option<&crate::executor::PreparationIo>,
     retained: u64,
 ) -> Result<crate::NativeCustody> {

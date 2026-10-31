@@ -367,6 +367,8 @@ where
         'io: 'a,
     {
         let crate::conversation::ContentAccess { ceiling, io } = access;
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("generation-bound range", range.offset, range.length));
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.verify_exact_file(None, io)?;
             let mut history = io.map(PreparationIo::history_io);

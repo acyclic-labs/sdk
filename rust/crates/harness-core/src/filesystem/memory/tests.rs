@@ -7,6 +7,7 @@ const FINITE_CONTENT_BUDGET: acyclic_fs::WorkBudget =
 mod access;
 mod approvals;
 mod content;
+mod projections;
 mod publication_cost;
 mod publication_evidence;
 
