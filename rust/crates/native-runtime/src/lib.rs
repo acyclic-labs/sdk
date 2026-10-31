@@ -33,6 +33,10 @@ pub mod lines;
 mod stdin;
 #[cfg(not(target_arch = "wasm32"))]
 pub use stdin::{Stdin, stdin};
+#[cfg(not(target_arch = "wasm32"))]
+mod output;
+#[cfg(not(target_arch = "wasm32"))]
+pub use output::InheritedOutput;
 pub mod obs;
 mod process_tree;
 #[cfg(windows)]
