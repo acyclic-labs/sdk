@@ -16,16 +16,19 @@ use thiserror::Error;
 
 pub(crate) struct AttributeFormat;
 
-impl Format for AttributeFormat {
+impl acyclic_collections::page::Format for AttributeFormat {
     type Key = AttributeName;
     type Value = AttributeEntry;
-
-    fn kind() -> ObjectKind {
-        ObjectKind::AttributePage
-    }
+    type Reference = ObjectId;
 
     fn key(value: &Self::Value) -> &Self::Key {
         &value.name
+    }
+}
+
+impl Format for AttributeFormat {
+    fn kind() -> ObjectKind {
+        ObjectKind::AttributePage
     }
 
     fn decode<E: From<CanonicalDecodeError>>(

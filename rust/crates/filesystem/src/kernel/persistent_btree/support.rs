@@ -5,12 +5,8 @@ use super::{
     retire_allocation, split_allocation, usize_to_u64,
 };
 use thiserror::Error;
-pub(crate) trait Format: Send + Sync + 'static {
-    type Key: Clone + Eq + Ord + Send + Sync + 'static;
-    type Value: Clone + Eq + Send + Sync + 'static;
-
+pub(crate) trait Format: acyclic_collections::page::Format<Reference = ObjectId> {
     fn kind() -> ObjectKind;
-    fn key(value: &Self::Value) -> &Self::Key;
     fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
@@ -87,33 +83,9 @@ pub(crate) trait Format: Send + Sync + 'static {
 }
 
 /// One authenticated child page and its exact lower-bound key.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Child<K> {
-    /// Exact first key represented by the child subtree.
-    pub first: K,
-    /// Authenticated child page.
-    pub page: ObjectId,
-}
+pub type Child<K> = acyclic_collections::page::Child<K, ObjectId>;
 
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) enum Page<F: Format> {
-    Leaf(Vec<F::Value>),
-    Internal(Vec<Child<F::Key>>),
-}
-
-impl<F: Format> Clone for Page<F> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Leaf(values) => Self::Leaf(values.clone()),
-            Self::Internal(children) => Self::Internal(children.clone()),
-        }
-    }
-}
-
-pub(crate) enum PageRef<'a, F: Format> {
-    Leaf(&'a [F::Value]),
-    Internal(&'a [Child<F::Key>]),
-}
+pub(crate) use acyclic_collections::page::{Page, PageRef};
 
 pub(crate) trait Mutation<F: Format> {
     type Error: std::error::Error;
@@ -355,12 +327,7 @@ pub(crate) const TARGET_PAGE_BYTES: usize = 2 * 1024;
 const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
 
 pub(super) struct PageChunks<'a, T, L> {
-    items: &'a [T],
-    encoded_length: L,
-    start: usize,
-    remaining_bytes: usize,
-    maximum_items: usize,
-    maximum_bytes: usize,
+    inner: acyclic_collections::page::PageChunks<'a, T, L, PAGE_HEADER_BYTES, TARGET_PAGE_BYTES>,
 }
 
 impl<'a, T, L> PageChunks<'a, T, L>
@@ -372,74 +339,37 @@ where
         limits: DecodeLimits,
         encoded_length: L,
     ) -> Result<(Self, u64), Error<E>> {
-        let mut remaining_bytes = 0_usize;
-        for item in items {
-            remaining_bytes = remaining_bytes
-                .checked_add(encoded_length(item)?)
-                .ok_or(Error::PageItemTooLarge)?;
-        }
-        Ok((
-            Self {
-                items,
-                encoded_length,
-                start: 0,
-                remaining_bytes,
-                maximum_items: usize::try_from(limits.maximum_page_items)
-                    .map_err(|_| Error::InvalidLimits)?,
-                maximum_bytes: usize::try_from(limits.maximum_page_bytes)
-                    .map_err(|_| Error::InvalidLimits)?,
-            },
-            usize_to_u64(items.len()),
-        ))
+        let limits = acyclic_collections::page::PackingLimits {
+            maximum_items: usize::try_from(limits.maximum_page_items)
+                .map_err(|_| Error::InvalidLimits)?,
+            maximum_bytes: usize::try_from(limits.maximum_page_bytes)
+                .map_err(|_| Error::InvalidLimits)?,
+        };
+        let (inner, examined) = acyclic_collections::page::PageChunks::<
+            _,
+            _,
+            PAGE_HEADER_BYTES,
+            TARGET_PAGE_BYTES,
+        >::new(items, limits, encoded_length)
+        .map_err(packing_error)?;
+        Ok((Self { inner }, examined))
     }
 
     pub(super) fn next<E: std::error::Error>(
         &mut self,
     ) -> Result<Option<(&'a [T], u64)>, Error<E>> {
-        let items = self.items;
-        let Some(rest) = items.get(self.start..).filter(|rest| !rest.is_empty()) else {
-            return Ok(None);
-        };
-        let pages = self
-            .remaining_bytes
-            .div_ceil(TARGET_PAGE_BYTES)
-            .max(rest.len().div_ceil(self.maximum_items.max(1)))
-            .max(1);
-        let share = self.remaining_bytes.div_ceil(pages);
-        let mut count = 0_usize;
-        let mut payload = 0_usize;
-        for item in rest {
-            if count == self.maximum_items || (count >= 2 && payload >= share) {
-                break;
-            }
-            let item_bytes = (self.encoded_length)(item)?;
-            let next = payload
-                .checked_add(item_bytes)
-                .ok_or(Error::PageItemTooLarge)?;
-            if next.saturating_add(PAGE_HEADER_BYTES) > self.maximum_bytes {
-                break;
-            }
-            payload = next;
-            count += 1;
-        }
-        let page = rest
-            .get(..count)
-            .filter(|page| !page.is_empty())
-            .ok_or(Error::PageItemTooLarge)?;
-        self.start += count;
-        self.remaining_bytes = self.remaining_bytes.saturating_sub(payload);
-        Ok(Some((page, usize_to_u64(count))))
+        self.inner.next_page().map_err(packing_error)
     }
 }
 
-pub(crate) fn within_bounds<K: Ord>(
-    first: Option<&K>,
-    last: Option<&K>,
-    lower: Option<&K>,
-    upper: Option<&K>,
-) -> bool {
-    (lower.is_none() || first == lower)
-        && !matches!((last, upper), (Some(last), Some(upper)) if last >= upper)
+fn packing_error<E: std::error::Error>(
+    error: acyclic_collections::page::PackingError<CanonicalDecodeError>,
+) -> Error<E> {
+    match error {
+        acyclic_collections::page::PackingError::InvalidLimits => Error::InvalidLimits,
+        acyclic_collections::page::PackingError::ItemTooLarge => Error::PageItemTooLarge,
+        acyclic_collections::page::PackingError::Encode(error) => Error::Decode(error),
+    }
 }
 
 pub(crate) fn leaf_within<F: Format>(
@@ -447,7 +377,7 @@ pub(crate) fn leaf_within<F: Format>(
     lower: Option<&F::Key>,
     upper: Option<&F::Key>,
 ) -> bool {
-    within_bounds(
+    acyclic_collections::page::within_bounds(
         values.first().map(F::key),
         values.last().map(F::key),
         lower,
@@ -460,11 +390,5 @@ pub(crate) fn children_within<K: Ord>(
     lower: Option<&K>,
     upper: Option<&K>,
 ) -> bool {
-    let (first, last) = (children.first(), children.last());
-    within_bounds(
-        first.map(|child| &child.first),
-        last.map(|child| &child.first),
-        lower,
-        upper,
-    )
+    acyclic_collections::page::children_within(children, lower, upper)
 }

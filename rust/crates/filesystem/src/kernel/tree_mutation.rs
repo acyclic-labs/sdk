@@ -12,16 +12,19 @@ use thiserror::Error;
 
 pub(crate) struct TreeFormat;
 
-impl Format for TreeFormat {
+impl acyclic_collections::page::Format for TreeFormat {
     type Key = LogicalName;
     type Value = TreeEntry;
-
-    fn kind() -> ObjectKind {
-        ObjectKind::TreePage
-    }
+    type Reference = ObjectId;
 
     fn key(value: &Self::Value) -> &Self::Key {
         &value.name
+    }
+}
+
+impl Format for TreeFormat {
+    fn kind() -> ObjectKind {
+        ObjectKind::TreePage
     }
 
     fn decode<E: From<CanonicalDecodeError>>(
