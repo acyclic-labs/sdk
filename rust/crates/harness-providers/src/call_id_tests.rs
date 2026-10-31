@@ -118,7 +118,7 @@ fn assert_ids(input: Vec<String>) {
     ] {
         let (provider, request) = history(&input, adapter);
         CallIds::assert_round_trip(&request);
-        let table = CallIds::new(&request, adapter);
+        let table = CallIds::new(&request, adapter).unwrap();
         let expected: Vec<String> = input
             .iter()
             .map(|id| table.wire(id).unwrap().into_owned())
@@ -132,7 +132,7 @@ fn assert_ids(input: Vec<String>) {
         assert_eq!(body, projection::body(&provider, &replay).unwrap());
         let mut permuted = request.clone();
         permuted.messages.reverse();
-        let reordered = CallIds::new(&permuted, adapter);
+        let reordered = CallIds::new(&permuted, adapter).unwrap();
         for id in &input {
             assert_eq!(table.wire(id).unwrap(), reordered.wire(id).unwrap());
         }
@@ -160,8 +160,49 @@ fn punctuation_and_reserved_aliases_cannot_collide() {
     let lossy = |id: &str| id.replace([':', '/'], "_");
     assert_eq!(lossy("call:0"), lossy("call/0"));
     let (_, request) = history(&["call:0".into(), "call/0".into()], Adapter::Anthropic);
-    let table = CallIds::new(&request, Adapter::Anthropic);
+    let table = CallIds::new(&request, Adapter::Anthropic).unwrap();
     assert_ne!(table.wire("call:0").unwrap(), table.wire("call/0").unwrap());
+}
+
+#[test]
+fn gemini_history_extension_keeps_prior_wire_bytes_and_refuses_id_collisions() {
+    let (provider, mut request) = history(&["z/earlier".into()], Adapter::Gemini);
+    let before =
+        serde_json::to_vec(&projection::body(&provider, &request).unwrap()["contents"]).unwrap();
+    let later = ToolCall::new("a/later".into(), "echo".into(), json!({}));
+    request.messages.push(ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(later.clone())),
+    });
+    request.messages.push(ModelMessage {
+        role: ModelRole::Tool,
+        content: ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: later.call_id.clone(),
+            name: later.name.clone(),
+            content: ToolResultContent::Json { value: json!({}) },
+        }),
+    });
+    let body = projection::body(&provider, &request).unwrap();
+    let after = serde_json::to_vec(&body["contents"]).unwrap();
+    // Only the closing contents array leaves the prefix. Ranking the
+    // original invalid IDs would rename z/earlier after a/later is appended.
+    assert!(after.starts_with(&before[..before.len() - 1]));
+    let (calls, results) = projected_ids(&body, Adapter::Gemini);
+    assert_eq!(calls, ["z/earlier", "a/later"]);
+    assert_eq!(calls, results);
+
+    // Generated adversarial binding, not a captured provider response. Even a
+    // later opaque native ID cannot force an earlier exchange to be renamed.
+    let length = request.messages.len();
+    let ModelContent::Part(ModelContentPart::ToolCall(call)) =
+        &mut request.messages[length - 2].content
+    else {
+        panic!("original later call is absent")
+    };
+    call.metadata = json!({"provider_call":{"provider":"gemini","id":"z/earlier"}});
+    assert!(
+        matches!(projection::body(&provider, &request), Err(acyclic_harness_core::Error::Invalid(reason)) if reason.contains("call IDs collide"))
+    );
 }
 
 #[test]
@@ -192,7 +233,7 @@ fn native_replay_restores_the_original_binding_for_call_and_result() {
         let call = sampled(adapter, "original_call", dispatch);
         let (_, mut request) = history(std::slice::from_ref(&call.call_id), adapter);
         request.messages[1].content = ModelContent::Part(ModelContentPart::ToolCall(call.clone()));
-        let table = CallIds::new(&request, adapter);
+        let table = CallIds::new(&request, adapter).unwrap();
         assert_eq!(table.wire(&call.call_id).unwrap(), "original_call");
         CallIds::assert_round_trip(&request);
     }
@@ -283,7 +324,7 @@ proptest! {
                 prop_assert_ne!(&projected_calls[0],&projected_calls[1]);
             }
             prop_assert_eq!(&projected_calls,&results);
-            let table=CallIds::new(restored.request(),target);
+            let table=CallIds::new(restored.request(),target).unwrap();
             for (call,wire) in calls.iter().zip(&projected_calls) {
                 let mapped=table.wire(&call.call_id).unwrap();
                 prop_assert_eq!(mapped.as_ref(),wire);

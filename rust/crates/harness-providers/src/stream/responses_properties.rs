@@ -162,7 +162,7 @@ proptest! {
         output["type"] = json!("function_call_output");
         prop_assert!(crate::validate_input(crate::Adapter::Responses, &wrong_kind).contains(&"OAR-TOOL-04"));
         for adapter in [crate::Adapter::Chat, crate::Adapter::Anthropic, crate::Adapter::Gemini] {
-            prop_assert!(!crate::call_ids::CallIds::new(restored.request(), adapter).freeform(&original_call.call_id));
+            prop_assert!(!crate::call_ids::CallIds::new(restored.request(), adapter).unwrap().freeform(&original_call.call_id));
             prop_assert!(crate::projection::body(&crate::tests::provider(adapter, 200).0, restored.request()).is_ok());
         }
         // Dropping the terminal producer ends with the transport's typed

@@ -5,7 +5,7 @@ use acyclic_harness_core::{
 };
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, hash_map::Entry},
 };
 
 // ANT-TOOL-02, OAR-TOOL-03, OAC-TOOL-04, N-05. Restricted API IDs reserve
@@ -58,7 +58,10 @@ fn unchanged(id: &str) -> bool {
 }
 
 impl<'a> CallIds<'a> {
-    pub(crate) fn new(request: &'a ModelRequest, adapter: Adapter) -> Self {
+    pub(crate) fn new(request: &'a ModelRequest, adapter: Adapter) -> Result<Self> {
+        if adapter == Adapter::Gemini {
+            return Self::gemini(request);
+        }
         let mut bindings = Vec::with_capacity(ids(request, adapter).count());
         bindings.extend(ids(request, adapter).map(
             |(canonical, native, freeform, omit_gemini_id)| {
@@ -68,7 +71,7 @@ impl<'a> CallIds<'a> {
                     Binding {
                         freeform,
                         omit_gemini_id,
-                        native_gemini: (adapter == Adapter::Gemini).then_some(native).flatten(),
+                        native_gemini: None,
                         wire: Cow::Borrowed(if unchanged(candidate) { candidate } else { "" }),
                     },
                 )
@@ -81,7 +84,6 @@ impl<'a> CallIds<'a> {
             let b_native = !b.wire.is_empty() && b.wire != *b_key;
             a_key
                 .cmp(b_key)
-                .then_with(|| b.native_gemini.is_some().cmp(&a.native_gemini.is_some()))
                 .then_with(|| b_native.cmp(&a_native))
                 .then_with(|| b.freeform.cmp(&a.freeform))
                 .then_with(|| b.omit_gemini_id.cmp(&a.omit_gemini_id))
@@ -98,41 +100,73 @@ impl<'a> CallIds<'a> {
             }
             if bindings[start].1.wire.is_empty() || end - start > 1 {
                 for (offset, (_, binding)) in bindings[start..end].iter_mut().enumerate() {
-                    if binding.native_gemini.is_none() {
-                        binding.wire = Cow::Owned(format!("{PREFIX}{}", start + offset));
-                    }
+                    binding.wire = Cow::Owned(format!("{PREFIX}{}", start + offset));
                 }
             }
             start = end;
         }
-        // Gemini's returned ID is opaque. In particular, its native signed part
-        // must not be rewritten to another API's alphabet/length restrictions.
-        // Reuse in separate exchanges is valid: dispatch IDs remain distinct.
-        if adapter == Adapter::Gemini {
-            let native: HashSet<_> = bindings
-                .iter()
-                .filter_map(|(_, binding)| binding.native_gemini)
-                .collect();
-            let mut next = bindings.len() as u128;
-            for (_, binding) in &mut bindings {
-                if let Some(id) = binding.native_gemini {
-                    binding.wire = Cow::Borrowed(id);
-                } else if native.contains(binding.wire.as_ref()) {
-                    // Existing generated ordinals are below len. Each rejection
-                    // consumes one distinct native ordinal; total work is linear
-                    // in this request, with no retry or history-dependent lookup.
-                    loop {
-                        let alias = format!("{PREFIX}{next}");
-                        next += 1;
-                        if !native.contains(alias.as_str()) {
-                            binding.wire = Cow::Owned(alias);
-                            break;
-                        }
+        Ok(Self(bindings.into_iter().collect()))
+    }
+
+    fn gemini(request: &'a ModelRequest) -> Result<Self> {
+        let mut bindings = HashMap::new();
+        for (canonical, native, freeform, omit_gemini_id) in ids(request, Adapter::Gemini) {
+            match bindings.entry(canonical) {
+                Entry::Vacant(entry) => {
+                    entry.insert(Binding {
+                        // The API accepts opaque IDs, including our original
+                        // canonical IDs. It needs no restricted-API alias.
+                        wire: Cow::Borrowed(native.unwrap_or(canonical)),
+                        freeform,
+                        omit_gemini_id,
+                        native_gemini: native,
+                    });
+                }
+                Entry::Occupied(mut entry) => {
+                    let binding = entry.get_mut();
+                    if (native.is_some() && binding.omit_gemini_id)
+                        || (omit_gemini_id && binding.native_gemini.is_some())
+                    {
+                        return Err(invalid(
+                            "Gemini call has conflicting ID presence; recovery: retain its original provider call binding",
+                        ));
                     }
+                    if let Some(id) = native {
+                        if binding.native_gemini.is_some_and(|prior| prior != id) {
+                            return Err(invalid(
+                                "Gemini call has conflicting native IDs; recovery: retain its original provider call binding",
+                            ));
+                        }
+                        binding.wire = Cow::Borrowed(id);
+                        binding.native_gemini = Some(id);
+                    }
+                    binding.omit_gemini_id |= omit_gemini_id;
                 }
             }
         }
-        Self(bindings.into_iter().collect())
+        // Native IDs may repeat in separately answered exchanges. Every other
+        // binding is request-independent: appending history cannot rename it.
+        // Refuse a collision instead of changing any earlier signed/cache bytes.
+        let mut wires = HashMap::with_capacity(bindings.len());
+        for binding in bindings.values() {
+            if binding.omit_gemini_id {
+                continue;
+            }
+            let native = binding.native_gemini.is_some();
+            match wires.entry(binding.wire.as_ref()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(native);
+                }
+                Entry::Occupied(entry) if !native || !*entry.get() => {
+                    return Err(invalid(
+                        "Gemini native and projected call IDs collide; recovery: start an exchange without the conflicting foreign call",
+                    ));
+                }
+                Entry::Occupied(_) => {}
+            }
+        }
+        drop(wires);
+        Ok(Self(bindings))
     }
 
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
@@ -165,12 +199,23 @@ impl<'a> CallIds<'a> {
             Adapter::Chat,
             Adapter::Gemini,
         ] {
-            let table = Self::new(request, adapter);
+            let table = match Self::new(request, adapter) {
+                Ok(table) => table,
+                Err(_) => {
+                    assert_eq!(adapter, Adapter::Gemini);
+                    // Fuzzed transcripts can forge colliding native metadata.
+                    // Refusal must survive the original durable codec too.
+                    let bytes = serde_json::to_vec(request).unwrap();
+                    let restored = serde_json::from_slice(&bytes).unwrap();
+                    assert!(CallIds::new(&restored, adapter).is_err());
+                    continue;
+                }
+            };
             let mut reverse = std::collections::BTreeMap::new();
             for (&canonical, binding) in &table.0 {
                 let wire = table.wire(canonical).unwrap();
-                if let Some(native) = binding.native_gemini {
-                    assert_eq!(wire, native);
+                if adapter == Adapter::Gemini {
+                    assert_eq!(wire, binding.native_gemini.unwrap_or(canonical));
                     continue;
                 }
                 assert!(!wire.is_empty() && wire.len() <= 40);
@@ -185,7 +230,7 @@ impl<'a> CallIds<'a> {
             }
             for (id, _, _, _) in ids(request, adapter) {
                 let wire = table.wire(id).unwrap();
-                if table.0[id].native_gemini.is_none() {
+                if adapter != Adapter::Gemini {
                     assert_eq!(reverse[wire.as_ref()], id);
                 }
             }

@@ -143,7 +143,7 @@ pub(crate) fn body_named<'a>(
             "request output reservation differs from its admitted profile",
         ));
     }
-    let call_ids = crate::call_ids::CallIds::new(request, adapter);
+    let call_ids = crate::call_ids::CallIds::new(request, adapter)?;
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
     let mut gemini = gemini::Replay::default();
