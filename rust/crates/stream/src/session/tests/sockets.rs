@@ -128,6 +128,16 @@ fn receive_refusal_releases_owner_before_uncredited_frames_drain() -> TestResult
     assert_eq!(channel.pending.len(), 1);
     assert!(session.controls.is_empty());
     assert!(session.ready()?.is_none());
+    // Frames already in flight remain confined to the ended channel after
+    // its inbound handle has been released.
+    session.receive(frame(
+        1,
+        1,
+        Body::Data(wire::SessionData {
+            item: Some(Item::ActorSocket(Bytes::from_static(b"late"))),
+            ..Default::default()
+        }),
+    ))?;
     // Later credit still delivers the accepted frame before the failure.
     session.receive(window(0))?;
     session.receive(window(1))?;

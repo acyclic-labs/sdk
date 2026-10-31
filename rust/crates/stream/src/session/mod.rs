@@ -574,13 +574,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
             Body::Data(data) if input.channel_id != 0 => {
                 let channel = self.channel(input.channel_id, input.generation)?;
+                if channel.ending.is_some() {
+                    return Ok(());
+                }
                 let (Some(socket), Some(Item::ActorSocket(bytes))) = (&channel.socket, data.item)
                 else {
                     return Err(StreamError::InvalidArgument);
                 };
-                if channel.ending.is_some() {
-                    return Ok(());
-                }
                 if bytes.is_empty() || bytes.len() > crate::MAX_RECORD_BYTES {
                     return Err(StreamError::LimitExceeded);
                 }
