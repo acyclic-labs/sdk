@@ -248,7 +248,7 @@ where
                     summary.tools.insert((*step, call), state, io)?;
                 }
             }
-            ExecutionEvent::Started { .. } => {}
+            ExecutionEvent::Started { .. } | ExecutionEvent::ConversationItem { .. } => {}
         }
         Ok(())
     }
@@ -302,7 +302,8 @@ where
             ExecutionEvent::ToolStarted { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. }
-            | ExecutionEvent::Started { .. } => {}
+            | ExecutionEvent::Started { .. }
+            | ExecutionEvent::ConversationItem { .. } => {}
         }
         Ok(roots)
     }

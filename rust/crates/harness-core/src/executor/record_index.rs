@@ -68,7 +68,8 @@ impl ExecutionEvent {
     pub(crate) fn step(&self) -> Option<u32> {
         match self {
             Self::Started { .. } => None,
-            Self::ContextPrepared { step, .. }
+            Self::ConversationItem { step, .. }
+            | Self::ContextPrepared { step, .. }
             | Self::ContextCompacted { step, .. }
             | Self::ModelStarted { step, .. }
             | Self::Model { step, .. }
@@ -87,6 +88,10 @@ impl ExecutionEvent {
         Ok(match self {
             Started { request_digest } => Started {
                 request_digest: *request_digest,
+            },
+            ConversationItem { step, envelope } => ConversationItem {
+                step: *step,
+                envelope: file(envelope)?,
             },
             ContextPrepared { step, projection } => ContextPrepared {
                 step: *step,

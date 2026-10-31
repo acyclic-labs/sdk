@@ -261,6 +261,14 @@ pub enum ExecutionEvent {
         /// Digest of the input, stock executor version, model, stages, and tools.
         request_digest: [u8; 32],
     },
+    /// Appends an immutable conversation envelope at this original journal position.
+    ConversationItem {
+        /// Executor step admitting the item; this does not close an exchange.
+        step: u32,
+        /// Original private payload, including source cursor, intent and profile.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+        envelope: FileRef,
+    },
     /// Pins a response projection before any summary or response model admission.
     ContextPrepared {
         /// Zero-based response step.

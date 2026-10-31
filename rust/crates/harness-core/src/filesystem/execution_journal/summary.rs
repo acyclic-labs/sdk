@@ -50,6 +50,7 @@ impl ExecutionSummary {
             ExecutionEvent::Started { request_digest } => {
                 self.tail == 0 && *request_digest != [0; 32]
             }
+            ExecutionEvent::ConversationItem { .. } => self.tail > 0,
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.tail > 0
                     && !self.contexts.contains_key(step, io)?
@@ -360,7 +361,7 @@ impl ExecutionSummary {
                     io,
                 )?;
             }
-            ExecutionEvent::Started { .. } => {}
+            ExecutionEvent::Started { .. } | ExecutionEvent::ConversationItem { .. } => {}
         }
         self.retries.insert(key, (sequence, digest), io)?;
         self.pending_steps.push(
@@ -454,6 +455,8 @@ impl PreparationRecord for Observation {
                 "ExecutionEvent",
                 "kind",
                 "started",
+                "conversation_item",
+                "envelope",
                 "context_prepared",
                 "context_compacted",
                 "model_started",
