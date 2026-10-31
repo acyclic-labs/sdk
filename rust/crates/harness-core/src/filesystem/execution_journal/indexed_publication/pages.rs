@@ -24,9 +24,55 @@ pub(super) struct Cut<'a> {
 
 /// One already-encoded record and its original optimistic publication fence.
 /// This adds no submission, index or authority; its producer owns the payload.
-pub(super) struct Contribution<'a> {
-    pub(super) condition: CommitCondition,
-    pub(super) record: &'a OwnedBytes,
+pub(in crate::filesystem) struct Contribution<'a> {
+    pub(in crate::filesystem) condition: CommitCondition,
+    pub(in crate::filesystem) record: &'a OwnedBytes,
+}
+
+pub(in crate::filesystem::execution_journal) fn contribution_identity(
+    contributions: &[Contribution<'_>],
+    io: Option<&PreparationIo>,
+) -> Result<Option<[u8; 32]>> {
+    if contributions.is_empty() {
+        return Ok(None);
+    }
+    let domain = b"harness/v1/contributed-records\0";
+    let digests = (contributions.len() as u64)
+        .checked_mul(32)
+        .ok_or_else(|| invalid(io))?;
+    let bytes = crate::core::owned_sum([domain.len() as u64, 8, digests])?;
+    if let Some(io) = io {
+        io.charge(acyclic_fs::WorkCounters {
+            bytes_hashed: bytes,
+            ..Default::default()
+        })?;
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(&(contributions.len() as u64).to_le_bytes());
+    let mut previous = None;
+    for contribution in contributions {
+        let (path, _) = contribution.target()?;
+        if previous.is_some_and(|prior| prior >= path) {
+            return Err(invalid(io));
+        }
+        previous = Some(path);
+        let digest = acyclic_stream::request::conditioned_record_digest_with(
+            &contribution.condition,
+            contribution.record,
+            |bytes_hashed| {
+                if let Some(io) = io {
+                    io.charge(acyclic_fs::WorkCounters {
+                        bytes_hashed,
+                        ..Default::default()
+                    })?;
+                }
+                Ok::<(), Error>(())
+            },
+        )?;
+        hash.update(&digest);
+    }
+    Ok(Some(*hash.finalize().as_bytes()))
 }
 
 impl Contribution<'_> {

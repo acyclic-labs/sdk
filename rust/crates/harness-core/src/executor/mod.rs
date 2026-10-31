@@ -272,6 +272,8 @@ pub enum ExecutionEvent {
         /// Original private payload, including source cursor, intent and profile.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         envelope: FileRef,
+        /// Identity of records and original fences committed with this item.
+        publication: Option<[u8; 32]>,
     },
     /// Pins a response projection before any summary or response model admission.
     ContextPrepared {

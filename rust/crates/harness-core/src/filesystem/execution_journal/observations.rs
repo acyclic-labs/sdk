@@ -128,6 +128,72 @@ where
         }
     }
 
+    pub(super) fn append_contributed_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        expected_tail: u64,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        contributions: &'a [indexed_publication::Contribution<'a>],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        if io.is_none() {
+            return crate::conversation::BoundedContentFuture::new(None, || async move {
+                let span = crate::obs::obs_span!(
+                    "acyclic.harness.journal.append_if_tail",
+                    rev = expected_tail
+                );
+                crate::obs::traced_future(
+                    span,
+                    self.append_contributed(
+                        operation,
+                        Some(expected_tail),
+                        key,
+                        event,
+                        contributions,
+                        None,
+                    ),
+                )
+                .await
+            });
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                let local = PreparationIo::from_native_work(work)?;
+                let result = self
+                    .append_contributed(
+                        operation,
+                        Some(expected_tail),
+                        key,
+                        event,
+                        contributions,
+                        Some(&local),
+                    )
+                    .await;
+                let retained = local.owned_bytes()?;
+                drop(local.into_native_custody(retained)?);
+                return result;
+            }
+            let span = crate::obs::obs_span!(
+                "acyclic.harness.journal.append_if_tail",
+                rev = expected_tail
+            );
+            crate::obs::traced_future(
+                span,
+                self.append_contributed(
+                    operation,
+                    Some(expected_tail),
+                    key,
+                    event,
+                    contributions,
+                    io,
+                ),
+            )
+            .await
+        })
+    }
+
     pub(super) async fn append_validated(
         &self,
         operation_id: OperationId,
@@ -136,12 +202,37 @@ where
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
+        self.append_contributed(operation_id, expected_tail, claim_id, event, &[], io)
+            .await
+    }
+
+    pub(super) async fn append_contributed(
+        &self,
+        operation_id: OperationId,
+        expected_tail: Option<u64>,
+        claim_id: &str,
+        event: &ExecutionEvent,
+        contributions: &[indexed_publication::Contribution<'_>],
+        io: Option<&PreparationIo>,
+    ) -> Result<bool> {
         // Appending returns no caller-owned payload. Validation decoders and
         // their scratch must retire on success, refusal and cancellation;
         // authenticated caches retain their own independent ownership pools.
         let scope = crate::filesystem::PreparationScope::new(io)?;
         let io = scope.io();
         self.require_operation(operation_id, io)?;
+        let identity = indexed_publication::contribution_identity(contributions, io)?;
+        let bound = match event {
+            ExecutionEvent::ConversationItem { publication, .. } => *publication == identity,
+            _ => identity.is_none(),
+        };
+        if !bound || (!contributions.is_empty() && expected_tail.is_none()) {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "execution publication differs from its original contribution binding",
+            ));
+        }
         if claim_id.is_empty() {
             return Err(stock_boundary(
                 io,
@@ -264,7 +355,14 @@ where
                 retained_io,
             )?;
             let committed = self
-                .publish_indexed_observation(summary, retry_key, event, &bytes, retained_io)
+                .publish_contributed_observation(
+                    summary,
+                    retry_key,
+                    event,
+                    &bytes,
+                    contributions,
+                    retained_io,
+                )
                 .await?;
             if let Some(recovery) = committed {
                 #[cfg(feature = "test-support")]
@@ -281,6 +379,11 @@ where
                 return Ok(true);
             }
             drop(edit);
+            // A contributed fence can lose while the journal tail is unchanged.
+            // Its original producer must settle that conditional refusal.
+            if !contributions.is_empty() {
+                return Ok(false);
+            }
         }
     }
 }
