@@ -272,12 +272,43 @@ pub fn stream_persistence(bytes: &[u8]) {
 }
 
 pub fn ids(bytes: &[u8]) {
-    if let Ok(id) = acyclic_fs::ObjectId::try_from(bytes) {
-        assert_eq!(id.to_bytes().as_slice(), bytes);
-        assert_eq!(
-            acyclic_fs::ObjectId::try_from(id.to_bytes().as_slice()),
-            Ok(id)
-        );
+    match acyclic_fs::ObjectId::from_prefix(bytes) {
+        Ok((id, tail)) => {
+            let encoded = id.to_bytes();
+            assert_eq!(&bytes[..encoded.len()], encoded.as_slice());
+            assert_eq!(tail, &bytes[encoded.len()..]);
+            assert_eq!(tail.as_ptr(), bytes[encoded.len()..].as_ptr());
+            assert_eq!(
+                acyclic_fs::ObjectId::try_from(bytes).is_ok(),
+                tail.is_empty()
+            );
+            assert_eq!(
+                acyclic_fs::GenerationId::from_bytes(bytes).is_some(),
+                tail.is_empty() && id.kind == acyclic_fs::ObjectKind::GenerationRoot
+            );
+            assert_eq!(acyclic_fs::ObjectId::try_from(encoded.as_slice()), Ok(id));
+            for cut in 0..encoded.len() {
+                assert!(acyclic_fs::ObjectId::from_prefix(&bytes[..cut]).is_err());
+            }
+            // Concatenate actual writer outputs: the second identity must remain
+            // borrowed in full, regardless of the first identity's seal.
+            let mut pair = [0; 2 * acyclic_fs::ObjectId::ENCODED_LEN];
+            let width = encoded.len();
+            pair[..width].copy_from_slice(encoded.as_slice());
+            pair[width..2 * width].copy_from_slice(encoded.as_slice());
+            let pair = &pair[..2 * width];
+            let (first, second) = acyclic_fs::ObjectId::from_prefix(pair).unwrap();
+            assert_eq!(first, id);
+            assert_eq!(second, encoded.as_slice());
+            assert_eq!(second.as_ptr(), pair[width..].as_ptr());
+            assert!(acyclic_fs::ObjectId::try_from(pair).is_err());
+            assert!(acyclic_fs::GenerationId::from_bytes(pair).is_none());
+            assert!(acyclic_fs::ObjectId::try_from(id.digest.as_bytes().as_slice()).is_err());
+        }
+        Err(_) => {
+            assert!(acyclic_fs::ObjectId::try_from(bytes).is_err());
+            assert!(acyclic_fs::GenerationId::from_bytes(bytes).is_none());
+        }
     }
     if let Some(id) = acyclic_fs::GenerationId::from_bytes(bytes) {
         assert_eq!(id.to_bytes().as_slice(), bytes);
