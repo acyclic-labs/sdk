@@ -78,7 +78,7 @@ impl HttpTransport for Bounded {
         })
     }
 
-    fn delay(&self, duration: Duration) -> BoxProviderFuture<'static, ()> {
+    fn delay(&self, duration: Duration) -> BoxProviderFuture<'static, Result<()>> {
         self.inner.delay(duration)
     }
 
@@ -139,7 +139,7 @@ fn timeout(native: bool, total_ms: u64) -> Error {
 
 /// A platform timer: portable, or admitted on the native ledger.
 pub(crate) enum Wake {
-    Portable(BoxProviderFuture<'static, ()>),
+    Portable(BoxProviderFuture<'static, Result<()>>),
     #[cfg(not(target_arch = "wasm32"))]
     Native(acyclic_harness_core::NativeFutureBundle<'static, ()>),
 }
@@ -149,7 +149,7 @@ impl Future for Wake {
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Result<()>> {
         match self.get_mut() {
-            Self::Portable(timer) => timer.poll_unpin(context).map(Ok),
+            Self::Portable(timer) => timer.poll_unpin(context),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(timer) => timer.poll_unpin(context),
         }
