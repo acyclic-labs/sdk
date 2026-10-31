@@ -7,6 +7,7 @@ use serde_json::Value;
 pub(crate) enum ResponseItem {
     Reasoning,
     Output,
+    Configuration,
     Other,
     End,
 }
@@ -16,13 +17,24 @@ impl ResponseItem {
         match item["type"].as_str().unwrap_or("message") {
             "reasoning" => Self::Reasoning,
             "function_call" => Self::Output,
+            "configuration_update" => Self::Configuration,
             "message" if item["role"] == "assistant" => Self::Output,
             _ => Self::Other,
         }
     }
 
     pub fn allows(self, next: Self) -> bool {
-        self != Self::Reasoning || next == Self::Output
+        self.violation(next).is_none()
+    }
+
+    pub fn violation(self, next: Self) -> Option<&'static str> {
+        if self == Self::Configuration && next == Self::Configuration {
+            Some("OAR-CFG-02")
+        } else if self == Self::Reasoning && next != Self::Output {
+            Some("OAR-RSN-02")
+        } else {
+            None
+        }
     }
 }
 

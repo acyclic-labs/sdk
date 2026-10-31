@@ -25,9 +25,26 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
     for item in items {
         let kind = item["type"].as_str().unwrap_or("message");
         let current = ResponseItem::of(item);
-        check(previous.allows(current), "OAR-RSN-02", errors);
+        if let Some(rule) = previous.violation(current) {
+            check(false, rule, errors);
+        }
         previous = current;
         match kind {
+            "configuration_update" => {
+                check(
+                    item.as_object().is_some_and(|item| item.len() == 2)
+                        && item["reasoning"]
+                            .as_object()
+                            .is_some_and(|reasoning| reasoning.len() == 1)
+                        && matches!(
+                            item["reasoning"]["effort"].as_str(),
+                            Some("low" | "medium" | "high")
+                        ),
+                    "OAR-CFG-01",
+                    errors,
+                );
+                check(pending.is_empty(), "OAR-TOOL-04", errors);
+            }
             "message" => {
                 let role = item["role"].as_str().unwrap_or("");
                 let position = content::position(content::RESPONSES, role);

@@ -219,6 +219,24 @@ mod tests {
                 let prepared = PreparedModelRequest::prepare(request, Default::default(), None)?;
                 let mut request = prepared.request().clone();
                 let projected = crate::projection::body(&fixed, &request)?;
+                assert!(crate::validate_input(adapter, &projected).is_empty());
+                let mut adjacent = projected.clone();
+                adjacent["input"]
+                    .as_array_mut()
+                    .unwrap()
+                    .insert(1, projected["input"][0].clone());
+                assert!(crate::validate_input(adapter, &adjacent).contains(&"OAR-CFG-02"));
+                let mut malformed = projected.clone();
+                malformed["input"][0]["reasoning"]["effort"] = json!("adaptive");
+                assert!(crate::validate_input(adapter, &malformed).contains(&"OAR-CFG-01"));
+                let mut interrupted = projected.clone();
+                interrupted["input"].as_array_mut().unwrap().insert(
+                    0,
+                    json!({
+                        "type":"function_call", "call_id":"pending", "name":"read", "arguments":"{}"
+                    }),
+                );
+                assert!(crate::validate_input(adapter, &interrupted).contains(&"OAR-TOOL-04"));
                 assert_eq!(projected["reasoning"], body["reasoning"]);
                 assert_eq!(projected["tools"], body["tools"]);
                 assert_eq!(projected["prompt_cache_key"], body["prompt_cache_key"]);
