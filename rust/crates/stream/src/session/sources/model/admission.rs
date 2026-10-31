@@ -8,6 +8,7 @@ fn channel(latest: bool, pending: usize, credited: bool) -> Channel {
         generation: 1,
         latest,
         opaque_cursor: false,
+        followed: None,
         revalidate: None,
         progress: None,
         pending: (0..pending)
