@@ -251,6 +251,25 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[cfg(all(feature = "filesystem", feature = "hooks", not(target_arch = "wasm32")))]
+    #[test]
+    fn execution_refusal_keeps_its_reason_in_the_ordinary_tool_failure() -> Result<()> {
+        let error = acyclic_native_runtime::execution::ExecutionGrant::new(
+            std::path::Path::new("relative-workspace"),
+            acyclic_native_runtime::execution::ExecutionAccess::ReadOnly,
+            [],
+            acyclic_native_runtime::execution::ExecutionNetwork::Off,
+        )
+        .unwrap_err();
+        let error = Error::process_io(error);
+        assert_eq!(ToolErrorClass::of(&error), ToolErrorClass::Unauthorized);
+        let cause = ToolFailureCause::of(&error, &mut None)?;
+        let rendered = ToolFailureText(ToolFailureKind::ExecutorRejected, &cause).to_string();
+        assert_eq!(rendered.matches("tool execution failed: ").count(), 1);
+        assert!(rendered.contains("execution grant paths must be absolute"));
+        Ok(())
+    }
+
     /// Every failure kind; `entry` fails to compile when a kind is added without coverage.
     const KINDS: [ToolFailureKind; 7] = [
         ToolFailureKind::ExecutorRejected,

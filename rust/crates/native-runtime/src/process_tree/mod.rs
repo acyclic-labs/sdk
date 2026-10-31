@@ -143,6 +143,36 @@ impl std::future::Future for ProcessReadiness {
 }
 
 impl ProcessTree {
+    /// Starts an execution under a host-approved capability grant, using the
+    /// same process owner, capture, custody and retirement as every other
+    /// native launch. Refusals never fall back to an unconfined spawn.
+    ///
+    pub fn spawn_granted(
+        mut command: Command,
+        grant: &crate::execution::ExecutionGrant,
+        custody: Option<&ProcessCustody>,
+    ) -> io::Result<Self> {
+        let boundary = grant.prepare()?;
+        let mut retained = None;
+        let result = match custody {
+            Some(custody) => Self::spawn_in_custody_with_boundary(
+                &mut command,
+                custody,
+                None,
+                &mut retained,
+                Some(boundary),
+            ),
+            None => Self::spawn_with_boundary(&mut command, None, &mut retained, Some(boundary)),
+        };
+        if let Err(error) = result {
+            if let Some(tree) = retained.as_mut() {
+                tree.terminate(None).map_err(crate::execution::failure)?;
+            }
+            return Err(crate::execution::failure(error));
+        }
+        retained.ok_or_else(|| crate::execution::failure(io::ErrorKind::NotFound.into()))
+    }
+
     fn retire_owner(&mut self, retirement: &mut storage::Retirement) {
         let result = (|| {
             if self.guard.needs_kill() {
@@ -222,6 +252,16 @@ impl ProcessTree {
         meter: Option<&dyn crate::NativeReadMeter>,
         retained: &mut Option<Self>,
     ) -> io::Result<()> {
+        Self::spawn_in_custody_with_boundary(command, custody, meter, retained, None)
+    }
+
+    fn spawn_in_custody_with_boundary(
+        command: &mut Command,
+        custody: &ProcessCustody,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        retained: &mut Option<Self>,
+        boundary: Option<crate::execution::PreparedExecution>,
+    ) -> io::Result<()> {
         if retained.is_some() {
             return Err(io::ErrorKind::AlreadyExists.into());
         }
@@ -231,7 +271,7 @@ impl ProcessTree {
                 process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     custody.arm(command)
                 })?;
-            let spawned = Self::spawn_controlled(command, meter, retained);
+            let spawned = Self::spawn_with_boundary(command, meter, retained, boundary);
             if let Some(tree) = retained.as_mut()
                 && (tree.child.is_some() || tree.native_child.is_some())
             {
@@ -243,6 +283,9 @@ impl ProcessTree {
         }
         #[cfg(windows)]
         {
+            if let Some(boundary) = boundary {
+                boundary.install(command)?;
+            }
             // Event startup can fail. Finish it before acquiring a physical
             // custody record, so every later failure has a retained tree slot.
             let events = events::Events::start()?;
@@ -260,6 +303,15 @@ impl ProcessTree {
         command: &mut Command,
         meter: Option<&dyn crate::NativeReadMeter>,
         custody: &mut Option<Self>,
+    ) -> io::Result<()> {
+        Self::spawn_with_boundary(command, meter, custody, None)
+    }
+
+    fn spawn_with_boundary(
+        command: &mut Command,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        custody: &mut Option<Self>,
+        boundary: Option<crate::execution::PreparedExecution>,
     ) -> io::Result<()> {
         if custody.is_some() {
             return Err(io::ErrorKind::AlreadyExists.into());
@@ -285,6 +337,9 @@ impl ProcessTree {
         );
         let program = std::path::Path::new(command.get_program()).file_name();
         operation.record("program", program.and_then(|name| name.to_str()));
+        if let Some(boundary) = boundary {
+            boundary.install(command)?;
+        }
         operation.in_scope(|| operation.finish(platform::spawn_controlled(command, meter, custody)))
     }
 

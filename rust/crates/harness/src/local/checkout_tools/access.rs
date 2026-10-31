@@ -56,7 +56,12 @@ pub(super) async fn require_volume_access(
     surface: &'static str,
 ) -> Result<()> {
     crate::filesystem::require_unrestricted_volume_access(
-        workspace, volume, signed, ceiling, surface,
+        workspace,
+        volume,
+        signed,
+        ceiling,
+        acyclic_native_runtime::execution::ExecutionAccess::WorkspaceWrite,
+        surface,
     )
     .await
 }

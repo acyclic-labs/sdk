@@ -108,6 +108,8 @@ pub use namespace::{RenameMode, durable_rename, publish_new};
 mod command;
 #[cfg(windows)]
 mod executable;
+/// Host-authorized native execution capabilities and their OS enforcement.
+pub mod execution;
 mod service;
 mod shell;
 pub use command::ExecutableSearch;

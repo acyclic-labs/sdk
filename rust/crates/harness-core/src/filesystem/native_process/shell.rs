@@ -36,7 +36,7 @@ pub(crate) async fn run<T>(
         capture::OutputRetention::Collect,
     )
     .await
-    .map(|(output, ())| output)
+    .and_then(|(output, ())| output)
 }
 
 #[doc(hidden)]
