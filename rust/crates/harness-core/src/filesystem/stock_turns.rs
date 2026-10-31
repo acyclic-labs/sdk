@@ -123,9 +123,9 @@ pub struct StockExecutors {
 }
 
 impl Preset {
-    /// This preset's stock turns over `model` served by `provider`, with
-    /// `tools` (the host's registry of this preset's tools) under `limits`,
-    /// `compaction` and `context`. The preset's agent tools apply; `limits`
+    /// Stock turns over `model` served by `provider`, with
+    /// the host's registry under `limits`, `compaction` and `context`.
+    /// The shared agent tools apply; `limits`
     /// bounds execution capacity. The turn admission is the host's: pass the
     /// result to the turn host that carries it.
     #[must_use]
@@ -137,11 +137,10 @@ impl Preset {
         context: Arc<dyn TurnContext>,
     ) -> StockExecutors {
         StockExecutors::new(model, tools, (limits, compaction), context)
-            .with_agent_tools(&self.tools)
+            .with_agent_tools(&crate::tools::default_names())
     }
 
-    /// This preset's tools, the one construction every host takes them from:
-    /// the catalog tools it selects that the host can back (the volume tools
+    /// The shared defaults, backed by the host (the volume tools
     /// always; each workspace tool only when `workspace` admits its name),
     /// then the host's own `tools`. Its agent tools are bound
     /// per turn by [`Self::executors`].
@@ -158,7 +157,7 @@ impl Preset {
             &mut registry,
             &mut Vec::new(),
             None,
-            &self.tools,
+            &crate::tools::default_names(),
             true,
             workspace,
         )?;
@@ -174,8 +173,8 @@ impl Preset {
     /// # Errors
     /// When a definition of `tools` cannot be produced.
     pub fn tool_grants(&self, tools: &ToolRegistry) -> Result<Vec<String>> {
-        let agent_tools = self
-            .tools
+        let names = crate::tools::default_names();
+        let agent_tools = names
             .iter()
             .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
             .cloned();

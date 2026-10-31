@@ -69,31 +69,30 @@ fn executors_with_scope(
     matching_limits: bool,
 ) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
-    let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
-    preset.tools.clear();
-    preset.max_steps = Some(usize::try_from(LIMITS.max_steps)?);
     let base = acyclic_harness_core::conversation::Limits {
         model_steps: 1,
         ..Default::default()
     };
+    let admitted = acyclic_harness_core::conversation::Limits {
+        model_steps: u64::from(LIMITS.max_steps),
+        ..base
+    };
     let bindings = acyclic_harness_core::runtime::Bindings {
         scope: acyclic_harness_core::runtime::RuntimeScope::new(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
-            if matching_limits {
-                preset.execution_limits(base)
-            } else {
-                base
-            },
+            if matching_limits { admitted } else { base },
         )?,
         ..Default::default()
     }
     .build()?;
-    Ok(Arc::new(preset.executors(
-        (selection, model),
-        ToolRegistry::default(),
-        (base, CompactionPolicy::Disabled),
-        Arc::new(Tasks(bindings)),
-    )))
+    Ok(Arc::new(
+        acyclic_harness_core::filesystem::StockExecutors::new(
+            (selection, model),
+            ToolRegistry::default(),
+            (admitted, CompactionPolicy::Disabled),
+            Arc::new(Tasks(bindings)),
+        ),
+    ))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {

@@ -10,18 +10,12 @@ Run independent tool calls in parallel. Delegate with spawn {name, task, role}, 
 Plans and notes go in .volumes/scratch/plans/ and .volumes/scratch/memory.md; GOAL.md is used only when looping on a goal. Scratch at .volumes/scratch is private retained storage for large tool output and working files, never merged into the project.
 Follow the stated approval policy. A refused action is a tool failure: report it or choose an allowed action; never treat it as executed.";
 
-/// Host-backed tools and approvals. Instructions and execution capacity have
-/// one shared source rather than per-preset overrides.
+/// Owner approvals. Instructions, tools and execution profiles have one shared
+/// source rather than per-preset overrides.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct Preset {
-    /// Standard tools enabled, by name (see [`crate::tools::catalog`]); a
-    /// name outside the catalog is refused when the harness opens.
-    pub tools: Vec<String>,
-    /// Whether credential-free web retrieval is enabled; search also needs a
-    /// configured provider.
-    pub web_tools: bool,
     /// Ordered approval chain bound to every enabled tool.
     pub approval_policy: ApprovalPolicy,
 }
@@ -32,8 +26,6 @@ impl Preset {
     #[must_use]
     pub fn graphcoder() -> Self {
         Self {
-            tools: crate::tools::default_names(),
-            web_tools: true,
             approval_policy: ApprovalPolicy::accept_all("graphcoder-default"),
         }
     }

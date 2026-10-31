@@ -107,8 +107,6 @@ pub async fn open<B: Backend + ?Sized>(
         &mut None,
     )?;
     let preset = Preset {
-        tools: Vec::new(),
-        web_tools: false,
         approval_policy: policy,
     };
     let effects = Arc::new(AtomicUsize::new(0));

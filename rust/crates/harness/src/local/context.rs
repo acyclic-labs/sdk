@@ -137,11 +137,13 @@ impl LocalHarness {
                 .await?;
             let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
             let mode = match self.preset.approval_policy.approvers.as_slice() {
-                [crate::approvals::Approver::Rules {
-                    rules,
-                    fallback: crate::approvals::RuleVerdict::Allow,
-                    ..
-                }] if rules.is_empty() => "all admitted actions allowed",
+                [
+                    crate::approvals::Approver::Rules {
+                        rules,
+                        fallback: crate::approvals::RuleVerdict::Allow,
+                        ..
+                    },
+                ] if rules.is_empty() => "all admitted actions allowed",
                 _ => "policy-controlled approvals",
             };
             manifest.conventions.push(format!(
@@ -151,7 +153,7 @@ impl LocalHarness {
             // sees them through the manifest like every other tool. A turn
             // binds each over any registered tool of its name, so the manifest
             // lists it in that tool's place.
-            let agent_tools = crate::tools::agent_tool_definitions(&self.preset.tools)?;
+            let agent_tools = crate::tools::agent_tool_definitions(&crate::tools::default_names())?;
             manifest
                 .tools
                 .retain(|tool| agent_tools.iter().all(|agent| agent.name != tool.name));

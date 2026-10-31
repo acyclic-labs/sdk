@@ -378,14 +378,16 @@ impl LocalHarnessConfig {
         self.served = Some(verifier);
         self
     }
-    /// Applies `preset`'s tool selection and approval policy.
+    /// Applies the shared agent defaults and the owner's approval policy.
     /// Web tools need the `search-http` feature.
     #[must_use]
     pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
-        self.default_tools.clone_from(&preset.tools);
+        if self.model.is_some() {
+            self.default_tools = crate::tools::default_names();
+        }
         #[cfg(feature = "search-http")]
         {
-            self.web_tools = preset.web_tools;
+            self.web_tools = self.model.is_some();
         }
         self.approval_policy = preset.approval_policy.clone();
         self
@@ -393,11 +395,6 @@ impl LocalHarnessConfig {
     /// The host-backed tools and approvals this configuration applies.
     pub(super) fn preset_value(&self) -> crate::preset::Preset {
         crate::preset::Preset {
-            tools: self.default_tools.clone(),
-            #[cfg(feature = "search-http")]
-            web_tools: self.web_tools,
-            #[cfg(not(feature = "search-http"))]
-            web_tools: false,
             approval_policy: self.approval_policy.clone(),
         }
     }
