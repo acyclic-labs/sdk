@@ -17,6 +17,10 @@ writes, and narrower networking. It refuses an increase of authority.
 process creation, custody, capture, cancellation and retirement implementation.
 Enforcement is inherited by descendants. A preparation or launch refusal is
 `tool execution failed: <reason>`; it never retries without confinement.
+Refusals have a concrete native error type. The shared capture completion
+returns the refusal alongside its original custody; only a genuinely interrupted
+control check has no process result. The ordinary tool renderer owns its single
+failure prefix and preserves the unauthorized classification.
 Native host plugins continue to run their host's own loop and sandbox.
 
 Network `Off` denies new sockets. `On` admits Internet networking subject to
@@ -36,7 +40,8 @@ Read roots are explicit; host home, procfs, temporary directories and the
 filesystem root are never implicitly added. `/dev/null` and `/dev/urandom`
 provide null I/O and entropy. Only pipes and null may cross as stdio;
 nonstdio descriptors become close-on-exec. Landlock rule roots are held during
-active launch. Missing native facilities refuse execution.
+active launch, with object identities checked against the original grant.
+Missing native facilities refuse execution.
 
 macOS compiles a deny-by-default Seatbelt profile before fork, then applies
 the compiled policy after the original custody hook in the final child.
@@ -46,7 +51,7 @@ process signaling and arbitrary local IPC are not granted. The Seatbelt SPI
 must be validated against the supported macOS runtime before publication.
 
 Outstanding acceptance work: Windows AppContainer integration at G01's native
-launch seam; cross-platform inherited-handle and root-identity fencing;
+launch seam; macOS/Windows inherited-handle and root-identity race fencing;
 authenticated approval/role grants at all shell, executable-tool and process
 entry points; the shared OS-backed conformance suite; remote compilation of
 all affected targets. The current Windows adapter refuses confined execution.

@@ -241,6 +241,7 @@ impl Prepared {
         // SAFETY: irreversible privilege and filesystem attenuation of this
         // child only. No other thread exists in the post-fork child.
         child_status(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0).into() })?;
+        // SAFETY: the live owned ruleset is applied irreversibly to this child.
         child_status(unsafe {
             libc::syscall(
                 libc::SYS_landlock_restrict_self,
