@@ -107,9 +107,6 @@ fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result
         "target exemption also exempted its revoked ancestor"
     );
     revisions.borrow_and_update();
-    issuer.raise_minimum_epoch(2)?;
-    assert!(issuer.revoke_workload(&root).is_err());
-    revisions.borrow_and_update();
     clock
         .0
         .store((timestamp + CERTIFICATE_SECONDS) * 1000, Ordering::Release);
@@ -118,6 +115,9 @@ fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result
         "revocation exemption ignored original expiry"
     );
     assert!(!revisions.has_changed().map_err(unauthorized)?);
+    clock.0.store(timestamp * 1000, Ordering::Release);
+    issuer.raise_minimum_epoch(2)?;
+    assert!(issuer.revoke_workload(&root).is_err());
     let closed = changes.changed();
     drop(other);
     drop(issuer);
