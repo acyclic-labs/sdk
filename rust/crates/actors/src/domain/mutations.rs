@@ -522,6 +522,72 @@ impl CheckpointActorRequest {
     }
 }
 
+/// Fork request: `child_actor_id` starts from the parent Actor's exact
+/// committed state, in the parent's namespace and account, as one commit.
+/// The child binds its own inputs under exactly the parent's subscription ids.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = ForkActorRequest::validate_from_proto)]
+#[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/ForkActorRequest.ts")]
+#[ts(rename_all = "camelCase")]
+pub struct ForkActorRequest {
+    #[wire(tag = 1, string)]
+    pub(super) actor_id: ActorId,
+    #[wire(tag = 2, string)]
+    pub(super) child_actor_id: ActorId,
+    #[wire(tag = 3, message)]
+    subscriptions: Vec<SubscriptionSpec>,
+    #[wire(tag = 4)]
+    idempotency_key: String,
+
+    #[wire(tag = 90, string)]
+    #[ts(optional)]
+    pub(super) namespace: Option<ActorNamespace>,
+    #[wire(tag = 91, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
+}
+
+impl ForkActorRequest {
+    /// Builds and validates a fork request through the canonical admission path.
+    pub fn new(
+        actor_id: ActorId,
+        child_actor_id: ActorId,
+        subscriptions: Vec<SubscriptionSpec>,
+        idempotency_key: String,
+    ) -> Result<Self, DomainError> {
+        Self::try_from(wire::ForkActorRequest {
+            namespace: None,
+            account_id: Vec::new(),
+            actor_id: actor_id.as_str().to_owned(),
+            child_actor_id: child_actor_id.as_str().to_owned(),
+            subscriptions: subscriptions.into_iter().map(Into::into).collect(),
+            idempotency_key,
+        })
+    }
+
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        let wire: wire::ForkActorRequest = self.clone().into();
+        crate::validate_fork(&wire).map_err(DomainError::Contract)
+    }
+
+    /// Returns the parent Actor identity.
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
+    /// Returns the child Actor identity.
+    pub fn child_actor_id(&self) -> &ActorId {
+        &self.child_actor_id
+    }
+    /// Returns the child's subscriptions in request order.
+    pub fn subscriptions(&self) -> &[SubscriptionSpec] {
+        &self.subscriptions
+    }
+    /// Returns the idempotency key.
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
+}
+
 /// Deletion request. The canonical validator requires an Actor identity and a
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = DeleteAllRequest::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]

@@ -327,6 +327,18 @@ impl PreparedPublish {
     }
 }
 
+/// The commit key of one fork: the child's state path and the caller's key,
+/// so equal caller keys for different children never share an outcome.
+fn fork_key(child: &StreamPath, key: &str) -> Result<IdempotencyKey, Error> {
+    use sha2::Digest as _;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"acyclic.actors.fork.v1\0");
+    hash.update(child.as_str().as_bytes());
+    hash.update([0]);
+    hash.update(key.as_bytes());
+    Ok(IdempotencyKey::new(hash.finalize().to_vec())?)
+}
+
 /// One storage mechanism for memory, durable local and hosted Stream providers.
 pub struct Store<P: StreamProvider + ?Sized> {
     provider: Arc<P>,
@@ -487,6 +499,51 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             },
             self.activation(child),
         ])
+    }
+
+    /// Serve one `ForkActor` request: fork its parent's current committed
+    /// state into its child as one commit of [`Self::fork`]'s effects. Every
+    /// server answers the RPC with this one composition (the local host and a
+    /// hosted platform alike); `account` is the caller's authenticated
+    /// account, used when the request names none. The commit key binds the
+    /// child and the caller's key, so retrying an unchanged request commits
+    /// once. A child that exists, or a parent that moves between the read and
+    /// the commit, is [`Error::Conflict`]. Cost: one parent head read, one head
+    /// read per `current_head` subscription, and one commit; no state is copied.
+    pub async fn fork_actor(
+        &self,
+        account: &[u8],
+        request: &crate::wire::ForkActorRequest,
+    ) -> Result<ActorReference, Error> {
+        let invalid = || Error::Invalid("invalid fork request");
+        let request =
+            crate::domain::ForkActorRequest::try_from(request.clone()).map_err(|_| invalid())?;
+        let parent = request.reference(account).map_err(|_| invalid())?;
+        let child = request.child_reference(account).map_err(|_| invalid())?;
+        let mut subscriptions = BTreeMap::new();
+        for spec in request.subscriptions() {
+            let path = StreamPath::new(spec.stream_path().to_owned())?;
+            let cursor = match spec.start().cursor_value() {
+                Some(cursor) => cursor,
+                None => match self.provider.head(path.clone()).await {
+                    Ok(head) => head.tail,
+                    Err(StreamError::NotFound) => 0,
+                    Err(error) => return Err(error.into()),
+                },
+            };
+            subscriptions.insert(
+                spec.subscription_id().to_owned(),
+                Subscription { path, cursor },
+            );
+        }
+        let cut = self.load(&parent).await?;
+        let mut commit =
+            PreparedPublish::foreign(fork_key(&self.path(&child)?, request.idempotency_key())?);
+        for effect in self.fork(&cut, &child, subscriptions)? {
+            commit.join(effect)?;
+        }
+        self.submit(commit).await?;
+        Ok(child)
     }
 
     /// Read only the final state record; recovery work is independent of history length.

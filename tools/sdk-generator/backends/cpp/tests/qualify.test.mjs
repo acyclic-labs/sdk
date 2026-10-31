@@ -73,6 +73,6 @@ test("qualifier accepts the maintained consumer's source-derived completion mark
 
 test("qualifier rejects the retired 25-pair completion marker", t => {
   const f = fixture(t);
-  f.hooks.consumer = result => { result.stdout = result.stdout.replace("23 RPC message pairs", "25 RPC message pairs"); };
+  f.hooks.consumer = result => { result.stdout = result.stdout.replace("24 RPC message pairs", "25 RPC message pairs"); };
   assert.throws(() => qualify(f.args, f.options), /completion marker missing/);
 });

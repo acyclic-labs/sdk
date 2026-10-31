@@ -48,7 +48,7 @@ function installedFixture(t) {
     if (basename(exe) === "Consumer") {
       if (state.payloadDrift) write(join(args.output,"sdk/LICENSE"),"changed payload");
       return { status: 0, stdout: state.missingMarker ? "PASS only\n" :
-        "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata\nPASS Swift 23 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads\n" };
+        "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata\nPASS Swift 24 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads\n" };
     }
     assert.equal(basename(exe), "swiftc");
     const name = basename(argv.at(-1));

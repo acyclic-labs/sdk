@@ -8,7 +8,7 @@ pub use acyclic_auth::addressing;
 /// Rust-owned semantic projections for generated SDK metadata.
 pub use contract::{
     ContractError, MAX_BINDINGS, MAX_SUBSCRIPTIONS, domain, validate_add_subscription,
-    validate_delete, validate_deployment, validate_update,
+    validate_delete, validate_deployment, validate_fork, validate_update,
 };
 
 /// Authenticated operations over the platform's Rust-owned transport.
@@ -77,6 +77,7 @@ pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("deployWorker", "v1/workers/deploy"),
     ("invokeWorker", "v1/workers/invoke"),
     ("deleteWorker", "v1/workers/delete"),
+    ("forkActor", "v1/actors/fork"),
 ];
 
 #[cfg(test)]

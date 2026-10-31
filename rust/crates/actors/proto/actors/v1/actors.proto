@@ -158,6 +158,19 @@ message FetchBinding {
   repeated EgressRule egress = 2;
 }
 
+message ForkActorRequest {
+  string actor_id = 1;
+  string child_actor_id = 2;
+  repeated SubscriptionSpec subscriptions = 3;
+  string idempotency_key = 4;
+  optional string namespace = 90;
+  bytes account_id = 91;
+}
+
+message ForkActorResponse {
+  ActorObservation actor = 1;
+}
+
 message Header {
   string name = 1;
   string value = 2;
@@ -318,6 +331,9 @@ service ActorsService {
   }
   rpc CheckpointActor(CheckpointActorRequest) returns (CheckpointActorResponse) {
     option (acyclic.validation.v1.auth) = { action: "actors/checkpoint" extractor: "actors.checkpoint" };
+  }
+  rpc ForkActor(ForkActorRequest) returns (ForkActorResponse) {
+    option (acyclic.validation.v1.auth) = { action: "actors/fork" extractor: "actors.fork" };
   }
   rpc InvokeActor(InvokeActorRequest) returns (InvokeActorResponse) {
     option (acyclic.validation.v1.auth) = { action: "actors/invoke" extractor: "actors.invoke" };

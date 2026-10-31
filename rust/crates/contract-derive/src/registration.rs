@@ -82,7 +82,6 @@ impl File {
             "__{}_members",
             crate::options::identifier(name).to_snake_case()
         );
-        let validation = include_str!("../proto/validation/v1/options.proto");
         let checks = messages
             .iter()
             .chain(services.iter())
@@ -107,6 +106,7 @@ impl File {
                 #[doc = "Canonical protobuf package shared by wire names and rendering."]
                 pub const PACKAGE: &'static str = #package;
                 #[doc = "Render this file from its compiler-linked semantic type inventory."]
+                #[doc = "An authorized service imports `validation/v1/options.proto`, whose one source is `acyclic_proto_build::shared_protocols()`."]
                 pub fn render(root: &::std::path::Path) -> ::std::io::Result<()> {
                     let mut names = ::std::collections::BTreeSet::new();
                     let mut text = format!("syntax = \"proto3\";\n\npackage {};\n\noption go_package = \"{}\";\n\n", Self::PACKAGE, #go_package);
@@ -124,9 +124,6 @@ impl File {
                     }
                     if text.contains("(acyclic.validation.v1.auth)") {
                         text = text.replacen("\n\noption go_package", "\n\nimport \"validation/v1/options.proto\";\n\noption go_package", 1);
-                        let options = root.join("validation/v1/options.proto");
-                        ::std::fs::create_dir_all(options.parent().ok_or_else(|| ::std::io::Error::other("missing options directory"))?)?;
-                        ::std::fs::write(options, #validation)?;
                     }
                     let path = root.join(#path);
                     if let Some(parent) = path.parent() { ::std::fs::create_dir_all(parent)?; }

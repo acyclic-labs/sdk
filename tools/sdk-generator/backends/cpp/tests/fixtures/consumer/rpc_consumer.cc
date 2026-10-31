@@ -98,6 +98,11 @@ class ActorsServiceProbe final : public acyclic::actors::v1::ActorsService::Serv
   sample(*response, 2);
   return grpc::Status::OK;
  }
+ grpc::Status ForkActor(grpc::ServerContext*, const acyclic::actors::v1::ForkActorRequest* request, acyclic::actors::v1::ForkActorResponse* response) override {
+  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
+  sample(*response, 2);
+  return grpc::Status::OK;
+ }
  grpc::Status InvokeActor(grpc::ServerContext*, const acyclic::actors::v1::InvokeActorRequest* request, acyclic::actors::v1::InvokeActorResponse* response) override {
   if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
   sample(*response, 2);
@@ -282,6 +287,16 @@ int main(int argc, char** argv) { try {
   ++calls;
  }
  {
+  acyclic::actors::v1::ForkActorRequest request; sample(request, 1);
+  acyclic::actors::v1::ForkActorResponse expected; sample(expected, 2);
+  grpc::ClientContext context;
+  acyclic::actors::v1::ForkActorResponse response;
+  auto status = ActorsService_client->ForkActor(&context, request, &response);
+  check(status.ok(), "/acyclic.actors.v1.ActorsService/ForkActor failed: " + status.error_message());
+  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/ForkActor response payload differs");
+  ++calls;
+ }
+ {
   acyclic::actors::v1::InvokeActorRequest request; sample(request, 1);
   acyclic::actors::v1::InvokeActorResponse expected; sample(expected, 2);
   grpc::ClientContext context;
@@ -412,9 +427,9 @@ int main(int argc, char** argv) { try {
   ++calls;
  }
  server->Shutdown(); server->Wait();
- check(calls == 23, "incomplete client call inventory");
+ check(calls == 24, "incomplete client call inventory");
  std::lock_guard<std::mutex> lock(audit_mutex);
- check(observed.size()==23, "actual server method path inventory differs");
+ check(observed.size()==24, "actual server method path inventory differs");
  check(observed.at("/acyclic.actors.v1.ActorsService/DeleteWorker")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/DeleteWorker");
  check(observed.at("/acyclic.actors.v1.ActorsService/InvokeWorker")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InvokeWorker");
  check(observed.at("/acyclic.actors.v1.ActorsService/DeployNamespace")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/DeployNamespace");
@@ -425,6 +440,7 @@ int main(int argc, char** argv) { try {
  check(observed.at("/acyclic.actors.v1.ActorsService/RemoveSubscription")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/RemoveSubscription");
  check(observed.at("/acyclic.actors.v1.ActorsService/ResumeSubscription")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/ResumeSubscription");
  check(observed.at("/acyclic.actors.v1.ActorsService/CheckpointActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/CheckpointActor");
+ check(observed.at("/acyclic.actors.v1.ActorsService/ForkActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/ForkActor");
  check(observed.at("/acyclic.actors.v1.ActorsService/InvokeActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InvokeActor");
  check(observed.at("/acyclic.actors.v1.ActorsService/DeleteAll")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/DeleteAll");
  check(observed.count("/acyclic.stream.v1.StreamService/InspectIdempotency")==1 && observed.at("/acyclic.stream.v1.StreamService/InspectIdempotency")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/InspectIdempotency");
@@ -438,7 +454,7 @@ int main(int argc, char** argv) { try {
  check(observed.count("/acyclic.stream.v1.StreamService/ChildrenPage")==1 && observed.at("/acyclic.stream.v1.StreamService/ChildrenPage")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/ChildrenPage");
  check(observed.count("/acyclic.stream.v1.StreamService/Commit")==1 && observed.at("/acyclic.stream.v1.StreamService/Commit")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Commit");
  check(observed.count("/acyclic.stream.v1.StreamService/ReadCommit")==1 && observed.at("/acyclic.stream.v1.StreamService/ReadCommit")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/ReadCommit");
- std::cout << "PASS C++ 23 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n";
+ std::cout << "PASS C++ 24 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n";
  return 0;
  } catch (const std::exception& error) { std::cerr << error.what() << "\n"; return 1; }
 }

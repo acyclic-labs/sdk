@@ -35,9 +35,8 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
     const family = stem.split("/")[0];
     // A family's crate is wherever its published schema lives, so moving a
     // schema between crates moves its generation input with it. The shared
-    // handshake and validation options have one canonical owner each.
+    // handshake has one canonical owner; validation options live in compatibility.
     const crate = sourceRoot ?? (family === "protocol" ? "rust/crates/harness-core"
-      : family === "validation" ? "rust/crates/contract-derive"
       : compatibilityArtifacts[family].schemaDigest.slice(0, compatibilityArtifacts[family].schemaDigest.indexOf("/proto/")));
     return `${crate}/proto/${stem.replace(/_pb$/, ".proto")}`;
   });

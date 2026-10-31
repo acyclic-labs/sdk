@@ -36,7 +36,15 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
         .extern_path(".acyclic.actors.v1", "crate::wire");
     acyclic_proto_build::actor_services()
         .out_dir(&protoc_rust_root)
-        .compile_with_config(prost, &[protoc_proto], &[protoc_proto_root, include_path])
+        .compile_with_config(
+            prost,
+            &[protoc_proto],
+            &[
+                protoc_proto_root,
+                protoc_path(&acyclic_proto_build::shared_protocols()),
+                include_path,
+            ],
+        )
         .map_err(|error| io::Error::other(format!("Actors tonic generation failed: {error}")))?;
     fs::write(
         &descriptor,

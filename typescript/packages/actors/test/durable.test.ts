@@ -30,6 +30,34 @@ test("namespace get is local, references are scoped, and stub calls stay ordered
   expect(calls.at(-1)).toBe("fresh");
 });
 
+test("fork waits for the stub's earlier calls, names the child in the parent's namespace and returns its plain reference", async () => {
+  const events: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const transport = {
+    async invokeActor(request: { rpcMethod?: string }) { events.push(`invoke ${request.rpcMethod}`); await held; events.push("invoked"); return { status: 200, body: new Uint8Array(), headers: [] }; },
+    async forkActor(request: { actorId: string; childActorId: string; namespace?: string; idempotencyKey: string; subscriptions: readonly { subscriptionId: string }[] }) {
+      events.push(`fork ${request.actorId}->${request.childActorId} ${request.namespace} ${request.idempotencyKey} ${request.subscriptions.map(s => s.subscriptionId)}`);
+      return {};
+    },
+  };
+  const namespace = new ActorNamespaceBinding(bytes("account"), "ClassOne", transport as never, "OBJECTS");
+  const stub = namespace.getByName("same"), child = namespace.idFromName("child");
+  const call = stub.rpc("set", new Uint8Array());
+  const forked = stub.fork(child, [{ subscriptionId: "inbox", streamPath: "child/inbox", start: { currentHead: true }, placementAnchor: false } as never], { idempotencyKey: "k" });
+  release(); await call;
+  const reference = await forked;
+  expect(events).toEqual(["invoke set", "invoked", "fork same->child ClassOne k inbox"]);
+  expect(reference.equals(child.reference)).toBe(true);
+  // Negative controls: no fork capability, a child outside the namespace, and forking into itself.
+  const invokeOnly = new ActorNamespaceBinding(bytes("account"), "ClassOne", { invokeActor: transport.invokeActor } as never, "OBJECTS");
+  await expect(invokeOnly.getByName("same").fork(child, [])).rejects.toThrow("cannot fork");
+  const outside = new ActorNamespaceBinding(bytes("account"), "ClassTwo", transport as never, "OBJECTS").idFromName("child");
+  await expect(stub.fork(outside, [])).rejects.toThrow("outside");
+  await expect(stub.fork(namespace.idFromName("same"), [])).rejects.toThrow("itself");
+  expect(events.length).toBe(3);
+});
+
 test("slow request bodies cannot reorder calls on one stub", async () => {
   const calls: string[] = [];
   const namespace = new ActorNamespaceBinding(bytes("account"), "ClassOne", { async invokeActor(request) {

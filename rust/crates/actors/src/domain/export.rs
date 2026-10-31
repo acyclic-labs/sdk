@@ -16,6 +16,7 @@ macro_rules! typescript_message_roots {
             RemoveSubscriptionRequest,
             ResumeSubscriptionRequest,
             CheckpointActorRequest,
+            ForkActorRequest,
             InvocationOrder,
             InvokeActorRequest,
             DeleteAllRequest,
@@ -26,6 +27,7 @@ macro_rules! typescript_message_roots {
             RemoveSubscriptionResponse,
             ResumeSubscriptionResponse,
             CheckpointActorResponse,
+            ForkActorResponse,
             InvokeActorResponse,
             DeleteAllResponse,
         )

@@ -514,6 +514,7 @@ macro_rules! operations {
         ("RemoveSubscription", remove_subscription, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
         ("ResumeSubscription", resume_subscription, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
         ("CheckpointActor", checkpoint_actor, CheckpointActorRequest, CheckpointActorResponse),
+        ("ForkActor", fork_actor, ForkActorRequest, ForkActorResponse),
         ("InvokeActor", invoke_actor, InvokeActorRequest, InvokeActorResponse),
         ("DeleteAll", delete_all, DeleteAllRequest, DeleteAllResponse)
     } };

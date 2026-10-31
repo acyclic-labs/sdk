@@ -355,6 +355,7 @@ impl Client {
         (remove_subscription, 4, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
         (resume_subscription, 5, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
         (checkpoint_actor, 6, CheckpointActorRequest, CheckpointActorResponse),
+        (fork_actor, 12, ForkActorRequest, ForkActorResponse),
         (invoke_actor, 7, InvokeActorRequest, InvokeActorResponse),
         (delete_all, 8, DeleteAllRequest, DeleteAllResponse),
     }

@@ -263,6 +263,7 @@ operation_wrappers! {
     (remove_subscription, "RemoveSubscription"),
     (resume_subscription, "ResumeSubscription"),
     (checkpoint_actor, "CheckpointActor"),
+    (fork_actor, "ForkActor"),
     (invoke_actor, "InvokeActor"),
     (delete_all, "DeleteAll"),
 }

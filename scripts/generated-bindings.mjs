@@ -12,7 +12,7 @@ export const packagedTypeScriptBindings = [
   ["filesystem/v2/filesystem_pb", ["filesystem"]],
   ["protocol/v1/protocol_pb", ["filesystem"]],
   // inference_pb imports the proto2 custom options descriptor transitively.
-  ["validation/v1/options_pb", ["inference", "actors", "filesystem", "machines", "objects", "stream"]],
+  ["validation/v1/options_pb", ["inference", "actors", "filesystem", "machines", "objects", "stream"], "compatibility"],
   ["auth/v1/auth_pb", ["auth"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
@@ -69,9 +69,6 @@ export const compatibilityArtifacts = {
 export const nativeWasmVector = "rust/crates/harness/conformance/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
   [compatibilityArtifacts.actors.descriptorDigest, "rust/crates/actors/tests/fixtures/actors/v1/actors-v1.bin"],
-  ...["actors", "filesystem-wire", "inference", "machines", "objects", "stream"].map(crate => [
-    "rust/crates/contract-derive/proto/validation/v1/options.proto", `rust/crates/${crate}/proto/validation/v1/options.proto`,
-  ]),
   ...[
     "conversation-message", "conversation-kinds", "file-ref", "file-ref-security-cases", "private-directory-page", "task-outcome",
     "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant",

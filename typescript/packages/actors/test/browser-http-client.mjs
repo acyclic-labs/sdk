@@ -55,6 +55,7 @@ try {
       });
       if (method.name === "AddSubscription") Object.assign(init, { actorId: "browser-actor", subscription: { subscriptionId: "input", streamPath: "events/input", start: { start: { case: "cursor", value: 9007199254740993n } } }, idempotencyKey: "subscribe-browser" });
       if (method.name === "CheckpointActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "checkpoint-browser" });
+      if (method.name === "ForkActor") Object.assign(init, { actorId: "browser-actor", childActorId: "browser-actor-child", subscriptions: [{ subscriptionId: "input", streamPath: "events/child", start: { start: { case: "currentHead", value: true } } }], idempotencyKey: "fork-browser" });
       if (method.name === "InvokeWorker") Object.assign(init, { workerName: "example", method: "POST", url: "/invoke", headers: [{name:"content-type",value:"application/json"}], body: new Uint8Array([1]) });
       if (method.name === "DeleteWorker") Object.assign(init, { workerName: "example", idempotencyKey: "delete-worker" });
       if (method.name === "DeleteAll") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "delete-browser" });
@@ -68,7 +69,7 @@ try {
       methods++;
     }
   }
-  assert.equal(methods, 12);
+  assert.equal(methods, 13);
   const inspectActor = ActorsService.methods.find(method => method.name === "InspectActor");
   await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "unauthenticated");
   let refreshes = 0;
@@ -114,7 +115,7 @@ try {
   await assert.rejects(new HttpStreamProvider({ ...options, token: "wrong" }).tail(path), error => error.code === "access_denied");
   await assert.rejects(new HttpStreamProvider({ ...options, maximumResponseBytes: 8 }).readCommit(committed.commitId), error => error.code === "response_too_large");
   assert.equal((await stream.createToken({ expiresIn: "1m", allow: [{ path: "browser", subtree: true, operations: ["read"] }] })).token, "fixture-issued-token");
-  globalThis.sdkHttpResult = { status: "passed", detail: "Objects lifecycle/framing, 12 Actor/Worker operations, Stream follow/atomic Commit/replay, auth/errors/bounds" };
+  globalThis.sdkHttpResult = { status: "passed", detail: "Objects lifecycle/framing, 13 Actor/Worker operations, Stream follow/atomic Commit/replay, auth/errors/bounds" };
 } catch (error) {
   globalThis.sdkHttpResult = { status: "failed", detail: error.stack ?? String(error) };
 }

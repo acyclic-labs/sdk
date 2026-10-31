@@ -8,7 +8,12 @@ const decoder = new TextDecoder();
 const randomId = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
 export type LocationHint = "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc" | "afr" | "me";
 export interface ActorGetOptions { readonly locationHint?: LocationHint; }
-export type ActorInvocationTransport = Pick<ActorsClient, "invokeActor">;
+/** A client transport also forks; a host binding that only invokes cannot. */
+export type ActorInvocationTransport = Pick<ActorsClient, "invokeActor"> & Partial<Pick<ActorsClient, "forkActor">>;
+export interface ActorForkOptions extends ActorsCallOptions {
+  /** Retry identity; a retry of an unchanged fork commits once. Defaults to a fresh key. */
+  readonly idempotencyKey?: string;
+}
 
 /** Plain ID scoped to its namespace. A saved reference carries no transport. */
 export class NamespaceActorId {
@@ -63,6 +68,7 @@ export class ActorStub {
   readonly #binding: string;
   readonly #hint: LocationHint | undefined;
   #tail: Promise<void> = Promise.resolve();
+  #settled: Promise<unknown> = Promise.resolve();
   #broken = false;
   readonly #session = randomId();
   #sequence = 0n;
@@ -96,10 +102,12 @@ export class ActorStub {
       return {response};
     });
     this.#tail = admitted.then(() => undefined, error => { this.#break(error); });
-    return Promise.race([admitted.then(({response}) => response),this.#failure]).then(response => {
+    const result = Promise.race([admitted.then(({response}) => response),this.#failure]).then(response => {
       if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
       return response;
     }, error => { this.#break(error); throw error; }).finally(() => {signal.removeEventListener("abort",cancelled);});
+    this.#settled = result.catch(() => undefined);
+    return result;
   }
   #break(error: unknown): void {
     if (this.#broken) return;
@@ -122,6 +130,28 @@ export class ActorStub {
     void body.catch(() => undefined);
     const result = await this.#call(async () => this.#request(request.method, request.url, await body, Array.from(request.headers, ([name, value]) => ({ name, value }))), {...options,signal});
     return bindingResponse(result,request.method);
+  }
+  /**
+   * Fork this actor into `child`, in the same namespace, as one server commit:
+   * the child starts from this actor's committed state after every call this
+   * stub already made, without copying it. `subscriptions` binds the child's
+   * own inputs under exactly this actor's subscription ids. The result is a
+   * plain reference; obtain a stub for it from the namespace binding.
+   */
+  async fork(child: NamespaceActorId, subscriptions: readonly Semantic.SubscriptionSpec[], options: ActorForkOptions = {}): Promise<ActorReference> {
+    if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
+    const fork = this.#transport.forkActor;
+    if (fork === undefined) throw new TypeError("this binding's transport cannot fork actors");
+    const reference = this.reference;
+    const target = child.reference;
+    if (!target.equals(new ActorReference(reference.account, reference.namespace, target.id))) throw new TypeError("fork child is outside this actor's namespace");
+    if (target.equals(reference)) throw new TypeError("an actor cannot fork into itself");
+    await this.#tail; await this.#settled;
+    const { idempotencyKey = randomId(), ...callOptions } = options;
+    await fork.call(this.#transport, { actorId: this.#id.toString() as Semantic.ActorId, childActorId: child.toString() as Semantic.ActorId,
+      namespace: decoder.decode(reference.namespace) as Semantic.ActorNamespace, accountId: reference.account,
+      subscriptions: [...subscriptions], idempotencyKey }, callOptions);
+    return target;
   }
   /** Named RPC payload bytes use the same namespace binding, never a public HTTP credential. */
   async rpc(method: string, payload: Uint8Array, options?: ActorsCallOptions): Promise<Uint8Array> {

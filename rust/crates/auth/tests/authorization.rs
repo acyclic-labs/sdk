@@ -16,7 +16,7 @@ proptest! {
         let root=tempfile::tempdir().unwrap();
         let proto=format!("syntax = \"proto3\"; package test; import \"validation/v1/options.proto\"; message Empty {{}} service Test {{ rpc Call(Empty) returns (Empty) {{ option (acyclic.validation.v1.auth) = {{ {declaration} }}; }} }}");
         fs::write(root.path().join("test.proto"),proto).unwrap();
-        let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../contract-derive/proto");
+        let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../compatibility/proto");
         let output=root.path().join("test.bin");
         let status=Command::new(protoc_bin_vendored::protoc_bin_path().unwrap())
             .arg(format!("--proto_path={}",root.path().display()))

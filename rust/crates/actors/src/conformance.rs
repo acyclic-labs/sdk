@@ -488,11 +488,29 @@ async fn forked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
             },
         )])
     };
-    let mut fork = PreparedPublish::foreign(idempotency(&format!("{run}/forked/fork"))?);
-    for effect in store.fork(&cut, &child_actor, bindings(&child_inbox))? {
-        fork.join(effect)?;
+    // The served RPC: the one shared handler every server answers ForkActor with.
+    let request = |key: &str| crate::wire::ForkActorRequest {
+        actor_id: parent.actor.id().to_owned(),
+        child_actor_id: child_actor.id().to_owned(),
+        subscriptions: vec![crate::wire::SubscriptionSpec {
+            subscription_id: "inbox".into(),
+            stream_path: child_inbox.as_str().to_owned(),
+            start: Some(crate::wire::SubscriptionStart {
+                start: Some(crate::wire::subscription_start::Start::CurrentHead(true)),
+            }),
+            placement_anchor: false,
+        }],
+        idempotency_key: format!("{run}/forked/{key}"),
+        namespace: Some(parent.actor.namespace().as_str().to_owned()),
+        account_id: parent.actor.account().as_bytes().to_vec(),
+    };
+    if store.fork_actor(&[], &request("fork")).await? != child_actor {
+        return parent.violation("fork answered a different child".into());
     }
-    store.submit(fork).await?;
+    // A retry of the unchanged request settles to the same child, once.
+    if store.fork_actor(&[], &request("fork")).await? != child_actor {
+        return parent.violation("fork retry answered a different child".into());
+    }
     let forked = store.load(&child_actor).await?;
     let (Some(parent_state), Some(child_state)) = (inherited.as_ref(), forked.state()) else {
         return parent.violation("fork lost the parent's or the child's state".into());
@@ -503,12 +521,12 @@ async fn forked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     {
         return parent.violation("fork did not start from the parent's exact cut".into());
     }
-    // The same child, or a fork of a cut the parent has left, is refused.
-    let mut again = PreparedPublish::foreign(idempotency(&format!("{run}/forked/again"))?);
-    for effect in store.fork(&cut, &child_actor, bindings(&child_inbox))? {
-        again.join(effect)?;
-    }
-    if !matches!(store.submit(again).await, Err(Error::Conflict)) {
+    // The same child under another key, or a fork of a cut the parent has
+    // left, is refused.
+    if !matches!(
+        store.fork_actor(&[], &request("again")).await,
+        Err(Error::Conflict)
+    ) {
         return parent.violation("fork replaced an existing actor".into());
     }
     let mut child = Fixture {

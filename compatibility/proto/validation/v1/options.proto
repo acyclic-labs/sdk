@@ -81,7 +81,7 @@ message HttpRoute {
   repeated Authorization auth = 3;
 }
 
-option (products) = { name: "actors" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "actors/checkpoint" actions: "actors/connect" actions: "actors/deploy-namespace" actions: "actors/delete-all" actions: "actors/invoke" actions: "actors/read" actions: "actors/resume" actions: "actors/subscribe" actions: "actors/unsubscribe" actions: "actors/update-namespace" };
+option (products) = { name: "actors" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "actors/checkpoint" actions: "actors/connect" actions: "actors/deploy-namespace" actions: "actors/delete-all" actions: "actors/fork" actions: "actors/invoke" actions: "actors/read" actions: "actors/resume" actions: "actors/subscribe" actions: "actors/unsubscribe" actions: "actors/update-namespace" };
 option (products) = { name: "billing" resource_encoding: "percent-components" canonicalize_at_owner: false  };
 option (products) = { name: "execution" resource_encoding: "percent-components" canonicalize_at_owner: false  };
 option (products) = { name: "fs" resource_encoding: "percent-components" canonicalize_at_owner: true actions: "fs/admin" actions: "fs/append" actions: "fs/create" actions: "fs/delete" actions: "fs/fork" actions: "fs/list" actions: "fs/lock" actions: "fs/merge-into" actions: "fs/read" actions: "fs/read-history" actions: "fs/rename" actions: "fs/write" };
@@ -94,6 +94,7 @@ option (products) = { name: "workers" resource_encoding: "percent-components" ca
 option (extractors) = { name: "actors.checkpoint" resources_only: true possible_actions: "actors/checkpoint" };
 option (extractors) = { name: "actors.deploy-with-bindings" resources_only: true possible_actions: "actors/deploy-namespace" };
 option (extractors) = { name: "actors.delete" resources_only: true possible_actions: "actors/delete-all" };
+option (extractors) = { name: "actors.fork" resources_only: true possible_actions: "actors/fork" };
 option (extractors) = { name: "actors.invoke" resources_only: true possible_actions: "actors/invoke" };
 option (extractors) = { name: "actors.read" resources_only: true possible_actions: "actors/read" };
 option (extractors) = { name: "actors.resume" resources_only: true possible_actions: "actors/resume" };
@@ -151,6 +152,7 @@ option (extractors) = { name: "machines.read-output" resources_only: true possib
 option (extractors) = { name: "machines.read-usage" resources_only: true possible_actions: "machines/read-usage" };
 option (extractors) = { name: "machines.recover" resources_only: true possible_actions: "machines/recover" };
 option (extractors) = { name: "machines.update" resources_only: true possible_actions: "machines/update" };
+option (extractors) = { name: "streams.coherent-view" resources_only: false possible_actions: "streams/read" possible_actions: "streams/list" };
 option (extractors) = { name: "streams.commit-resources" resources_only: true possible_actions: "streams/read" };
 option (extractors) = { name: "streams.delivery-resource" resources_only: true possible_actions: "streams/follow" };
 option (extractors) = { name: "streams.idempotency-resources" resources_only: true possible_actions: "streams/read" };
