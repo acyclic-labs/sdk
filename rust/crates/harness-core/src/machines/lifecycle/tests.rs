@@ -230,7 +230,10 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
     });
     futures::pin_mut!(pause);
     assert!(futures::poll!(&mut pause).is_pending());
-    parked.acquire().await?.forget();
+    tokio::select! {
+        permit = parked.acquire() => permit?.forget(),
+        result = &mut pause => panic!("pause ended before resource parking: {result:?}"),
+    }
     let resume = host.pause(&first, false);
     futures::pin_mut!(resume);
     assert!(
