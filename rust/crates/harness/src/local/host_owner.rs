@@ -459,7 +459,10 @@ impl HostWorkspaceOwner {
                 .ok_or_else(|| Error::Unsupported("native hosts require a checkout".into()))?;
             let root = acyclic_fs::hold_root(&workspace.path)
                 .map_err(storage)?
-                .create_directories(Path::new(host_workspace::HOST_VIEW_ROOT))
+                .create_directories(
+                    Path::new(host_workspace::HOST_VIEW_ROOT),
+                    acyclic_fs::NativeDurability::Durable,
+                )
                 .map_err(storage)?;
             host_workspace::HostWorkspace::attach(
                 Arc::clone(workspace),

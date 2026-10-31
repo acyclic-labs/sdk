@@ -151,6 +151,7 @@ impl HostProcessLease {
             .map_err(storage)?
             .create_directories(
                 &PathBuf::from(".acyclic-sdk/host-processes").join(task.id().as_str()),
+                acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
         let ownership = FileLock::try_acquire(
@@ -260,7 +261,7 @@ struct EventLog {
 
 /// Removes `leaf` from `root`; an absent file is already removed.
 fn remove_absent(root: &acyclic_fs::HeldRoot, leaf: &Path) -> Result<()> {
-    match root.remove_file(leaf) {
+    match root.remove_file(leaf, acyclic_fs::NativeDurability::Durable) {
         Ok(()) | Err(acyclic_fs::demand::DemandError::Absent) => Ok(()),
         Err(acyclic_fs::demand::DemandError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>

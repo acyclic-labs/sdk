@@ -6,6 +6,17 @@ use std::io::Write as _;
 #[cfg(any(test, feature = "native-mount"))]
 use std::path::PathBuf;
 
+/// The completion guarantee for a held-root namespace operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeDurability {
+    /// Complete bytes or the removal are visible to subsequent lookups. No
+    /// persistence barrier is requested, so a crash may lose the change.
+    Visibility,
+    /// Complete bytes and their directory entries cross persistence barriers
+    /// before success. Ancestor names must already have durable admission.
+    Durable,
+}
+
 /// Two immutable records returned after their shared namespace barrier.
 #[cfg(any(test, feature = "native-mount"))]
 pub type PublishedPair<const A: usize, const B: usize> = ([u8; A], [u8; B]);
@@ -58,10 +69,14 @@ impl HostRoot {
     pub(crate) fn remove_record_file<W: NativeHostWork>(
         &self,
         leaf: &Path,
+        durability: NativeDurability,
         work: &mut W,
     ) -> Result<(), W::Error> {
         remove_leaf(&self.directory, leaf, false, work)?;
-        sync_directory_held(&self.directory, work)
+        match durability {
+            NativeDurability::Visibility => Ok(()),
+            NativeDurability::Durable => sync_directory_held(&self.directory, work),
+        }
     }
 
     /// Publishes variable-length immutable bytes using the same held-directory
@@ -71,11 +86,21 @@ impl HostRoot {
         &self,
         leaf: &Path,
         bytes: &[u8],
+        durability: NativeDurability,
         work: &mut W,
     ) -> Result<(), DemandError> {
         use std::io::Read as _;
         loop {
-            match open_leaf(&self.directory, leaf, &NativeOpenOptions::Read, work) {
+            // FlushFileBuffers requires a writable handle. Unix fsync admits
+            // the read handle already needed to verify immutable bytes.
+            #[cfg(windows)]
+            let options = match durability {
+                NativeDurability::Visibility => NativeOpenOptions::Read,
+                NativeDurability::Durable => NativeOpenOptions::ReadWrite,
+            };
+            #[cfg(unix)]
+            let options = NativeOpenOptions::Read;
+            match open_leaf(&self.directory, leaf, &options, work) {
                 Ok(mut file) => {
                     let mut offset = 0;
                     let mut chunk = [0; 4096];
@@ -100,14 +125,22 @@ impl HostRoot {
                         )
                         .into());
                     }
-                    return sync_directory_held(&self.directory, work);
+                    // An earlier visibility-only publisher may have won. A
+                    // durable admission must settle its bytes as well as name.
+                    return match durability {
+                        NativeDurability::Visibility => Ok(()),
+                        NativeDurability::Durable => {
+                            sync_file_held(&file, work)?;
+                            sync_directory_held(&self.directory, work)
+                        }
+                    };
                 }
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
                 Err(error) => return Err(error),
             }
             let temporary =
                 PathBuf::from(format!(".{}.next", crate::identity::fresh_uuid().simple()));
-            match publish_record(&self.directory, &temporary, leaf, bytes, work) {
+            match publish_record(&self.directory, &temporary, leaf, bytes, durability, work) {
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::AlreadyExists) => {}
                 result => return result,
             }
@@ -171,6 +204,7 @@ impl HostRoot {
     pub(crate) fn create_directories<W: NativeHostWork>(
         &self,
         relative: &Path,
+        durability: NativeDurability,
         work: &mut W,
     ) -> Result<Self, W::Error> {
         let mut held: Option<Dir> = None;
@@ -201,7 +235,7 @@ impl HostRoot {
             let sync = !publish_probe::skip_parent_sync();
             #[cfg(not(test))]
             let sync = true;
-            if sync {
+            if sync && durability == NativeDurability::Durable {
                 sync_directory_held(directory, work)?;
             }
             held = Some(child);
@@ -250,7 +284,14 @@ impl HostRoot {
             let candidate = candidate()?;
             let temporary =
                 PathBuf::from(format!(".{}.next", crate::identity::fresh_uuid().simple()));
-            match publish_record(&self.directory, &temporary, leaf, &candidate, work) {
+            match publish_record(
+                &self.directory,
+                &temporary,
+                leaf,
+                &candidate,
+                NativeDurability::Durable,
+                work,
+            ) {
                 // Another publisher won; its record is the one.
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::AlreadyExists) => {}
                 published => return published.map(|()| candidate),
@@ -282,6 +323,7 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
     temporary: &Path,
     leaf: &Path,
     bytes: &[u8],
+    durability: NativeDurability,
     work: &mut W,
 ) -> Result<(), DemandError> {
     #[cfg(test)]
@@ -303,7 +345,9 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
             rest
         };
         file.write_all(bytes)?;
-        sync_file_held(&file, work)?;
+        if durability == NativeDurability::Durable {
+            sync_file_held(&file, work)?;
+        }
         // Closed before the rename, which a host may refuse for an open file.
         drop(file);
         #[cfg(test)]
@@ -317,7 +361,10 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
         publish_probe::after_rename();
         #[cfg(test)]
         publish_probe::step(3)?;
-        sync_directory_held(directory, work)
+        match durability {
+            NativeDurability::Visibility => Ok(()),
+            NativeDurability::Durable => sync_directory_held(directory, work),
+        }
     })();
     #[cfg(test)]
     if publish_probe::killed(&result) {

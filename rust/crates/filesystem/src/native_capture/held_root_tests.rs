@@ -12,24 +12,41 @@ fn immutable_publication_cannot_follow_a_replaced_directory_or_leaf() -> Result<
     let held = hold_root(&path)?;
     std::fs::rename(&path, &moved)?;
     std::os::unix::fs::symlink(&outside, &path)?;
-    held.publish_immutable(std::path::Path::new("request"), b"retained")?;
+    held.publish_immutable(
+        std::path::Path::new("request"),
+        b"retained",
+        crate::NativeDurability::Durable,
+    )?;
     assert_eq!(std::fs::read(moved.join("request"))?, b"retained");
     assert!(!outside.join("request").exists());
     std::fs::write(outside.join("target"), b"unchanged")?;
     std::os::unix::fs::symlink(outside.join("target"), moved.join("link"))?;
     assert!(
-        held.publish_immutable(std::path::Path::new("link"), b"replaced")
-            .is_err()
+        held.publish_immutable(
+            std::path::Path::new("link"),
+            b"replaced",
+            crate::NativeDurability::Durable
+        )
+        .is_err()
     );
     assert_eq!(std::fs::read(outside.join("target"))?, b"unchanged");
-    held.remove_file(std::path::Path::new("request"))?;
+    held.remove_file(
+        std::path::Path::new("request"),
+        crate::NativeDurability::Durable,
+    )?;
     assert!(!moved.join("request").exists());
     assert!(!outside.join("request").exists());
-    held.remove_file(std::path::Path::new("link"))?;
+    held.remove_file(
+        std::path::Path::new("link"),
+        crate::NativeDurability::Durable,
+    )?;
     assert_eq!(std::fs::read(outside.join("target"))?, b"unchanged");
     assert!(
-        held.remove_file(std::path::Path::new("../outside/target"))
-            .is_err()
+        held.remove_file(
+            std::path::Path::new("../outside/target"),
+            crate::NativeDurability::Durable
+        )
+        .is_err()
     );
     Ok(())
 }
@@ -296,10 +313,16 @@ fn a_returned_record_has_a_durable_name_through_every_held_parent() {
             publish_probe::omit_parent_sync(omit_parents);
             publish_probe::omit_reader_sync(omit_reader);
             let first = root
-                .create_directories(std::path::Path::new("volumes"))
+                .create_directories(
+                    std::path::Path::new("volumes"),
+                    crate::NativeDurability::Durable,
+                )
                 .unwrap();
             let second = first
-                .create_directories(std::path::Path::new("incarnation"))
+                .create_directories(
+                    std::path::Path::new("incarnation"),
+                    crate::NativeDurability::Durable,
+                )
                 .unwrap();
             let expected = [root.identity(), first.identity(), second.identity()];
             // Pause the winner immediately after rename, before its flush.
@@ -339,7 +362,8 @@ fn held_directory_traversal_borrows_parents_without_duplicating_handles() {
         for duplicate in [false, true] {
             take_directory_clones();
             publish_probe::duplicate_parent_handles(duplicate);
-            root.create_directories(&relative).unwrap();
+            root.create_directories(&relative, crate::NativeDurability::Durable)
+                .unwrap();
             publish_probe::duplicate_parent_handles(false);
             assert_eq!(take_directory_clones(), if duplicate { depth } else { 0 });
         }
@@ -385,8 +409,11 @@ fn held_directories_are_created_in_the_held_root_across_a_replacement() {
         } else {
             held
         };
-        held.create_directories(std::path::Path::new("a/b"))
-            .unwrap();
+        held.create_directories(
+            std::path::Path::new("a/b"),
+            crate::NativeDurability::Durable,
+        )
+        .unwrap();
         let landed = (moved.join("a/b").is_dir(), root.join("a").exists());
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&moved).unwrap();

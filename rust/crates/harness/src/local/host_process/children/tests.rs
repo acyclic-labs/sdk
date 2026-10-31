@@ -64,6 +64,7 @@ fn children(host: &str, cwd: &Path, session: &str) -> Result<(NativeChildren, Ag
     let parent: AgentPath = serde_json::from_value(root["task"].clone())?;
     let held = acyclic_fs::hold_root(cwd)?.create_directories(
         &PathBuf::from(".acyclic-sdk/host-processes").join(parent.id().as_str()),
+        acyclic_fs::NativeDurability::Durable,
     )?;
     let ownership = FileLock::try_acquire(
         held.open_file(Path::new("fixture.lock"), true)?,

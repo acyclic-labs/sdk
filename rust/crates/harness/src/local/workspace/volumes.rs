@@ -36,7 +36,8 @@ pub(in crate::local) fn held_directories(
     root: &acyclic_fs::HeldRoot,
     relative: &Path,
 ) -> Result<acyclic_fs::HeldRoot> {
-    root.create_directories(relative).map_err(storage)
+    root.create_directories(relative, acyclic_fs::NativeDurability::Durable)
+        .map_err(storage)
 }
 
 pub(in crate::local) fn require_available(
@@ -607,7 +608,7 @@ pub(super) fn recover_volume_after_crash(
 pub(super) fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
     let root =
         acyclic_fs::hold_root(root).map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-    root.create_directories(relative)
+    root.create_directories(relative, acyclic_fs::NativeDurability::Durable)
         .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
     Ok(())
 }

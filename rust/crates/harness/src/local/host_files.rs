@@ -601,7 +601,7 @@ pub async fn serve_until(
         .to_path_buf();
     let held = acyclic_fs::hold_root(&workspace).map_err(storage)?;
     let directory = held
-        .create_directories(Path::new(DIRECTORY))
+        .create_directories(Path::new(DIRECTORY), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
     let _ownership = acyclic_native_runtime::FileLock::try_acquire(
         directory
@@ -611,10 +611,10 @@ pub async fn serve_until(
     )
     .map_err(storage)?;
     directory
-        .create_directories(Path::new("requests"))
+        .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
     directory
-        .create_directories(Path::new("status"))
+        .create_directories(Path::new("status"), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
     let session = uuid::Uuid::from_bytes(
         context::publication_operation(
@@ -882,7 +882,11 @@ impl Served {
         let root = directory
             .open_directory(Path::new("status"))
             .map_err(native_file_error)?;
-        match root.publish_immutable(Path::new(&format!("{operation}.json")), &bytes) {
+        match root.publish_immutable(
+            Path::new(&format!("{operation}.json")),
+            &bytes,
+            acyclic_fs::NativeDurability::Durable,
+        ) {
             Ok(()) => {}
             // The immutable publisher observed different existing bytes.
             // This operation's reader observes that same writable projection;
@@ -925,7 +929,10 @@ async fn serve_requests(
 
 fn remove_projection(path: &Path) -> Result<()> {
     let (parent, leaf) = projection_parent(path)?;
-    match parent.remove_file(&leaf).map_err(native_file_error) {
+    match parent
+        .remove_file(&leaf, acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)
+    {
         Ok(()) | Err(Error::NotFound(_)) => Ok(()),
         Err(error) => Err(error),
     }
@@ -964,7 +971,7 @@ fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     let (parent, leaf) = projection_parent(path)?;
     parent
-        .publish_immutable(&leaf, bytes)
+        .publish_immutable(&leaf, bytes, acyclic_fs::NativeDurability::Durable)
         .map_err(native_file_error)
 }
 
