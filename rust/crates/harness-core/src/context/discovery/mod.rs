@@ -27,7 +27,7 @@ pub use skills::discover_skills_at;
 pub use skills::{SkillMetadata, parse_skill_metadata};
 mod frontmatter;
 #[doc(hidden)]
-pub use frontmatter::{frontmatter_end, parse_frontmatter};
+pub use frontmatter::{frontmatter_end, parse_frontmatter, parse_frontmatter_with_body};
 mod capture;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use super::reserve_context_vec_native;

@@ -258,6 +258,12 @@ impl ApprovalRule {
 pub struct ApprovalGate {
     identity: ComponentIdentity,
 }
+impl ApprovalGate {
+    /// Borrows the original bound policy identity without copying its strings.
+    pub fn identity_ref(&self) -> &ComponentIdentity {
+        &self.identity
+    }
+}
 const PROMPT: &str = "Approve the exact tool action under the admitted approval policy.";
 impl ToolPolicy for ApprovalGate {
     fn identity(&self) -> ComponentIdentity {
