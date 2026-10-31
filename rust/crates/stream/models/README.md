@@ -12,6 +12,14 @@ On Linux, pass the wrapper explicitly through `the shell` as
 compile without that routing deliberately refuses this model target. Compiling
 the target does not execute or qualify its schedules or negative controls.
 
+The model target requires the existing `model-checking` feature. Ordinary
+workspace checks leave it unselected; explicit model checks still require the
+Loom compiler routing above. Publication models follow the same rule:
+
+```sh
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-publication-models --features model-checking --test publication
+```
+
 The workspace consolidation exposed stale consumers of removed production APIs.
 The model mapping follows the current main contract, also inspected by the
 Stream owner at `b5899587789ad2152b29beaab1ee85e843a25645`:
