@@ -28,6 +28,7 @@ pub async fn publish_generation<P: PublicationOwner>(
         None,
     )
     .await
+    .map(|output| output.receipt)
     .map_err(|failure| OperationFailure::new(publication_error(failure.error), *failure.work))
 }
 
@@ -50,7 +51,7 @@ pub(crate) async fn publish_generation_async_guarded<P, E, F, Fut>(
     before_publication: &mut F,
     resolved: Option<crate::foundation::DurableCommit>,
     mut prepare_roots: Option<PublicationRootPreparation<'_, E>>,
-) -> Result<PublicationReceipt, OperationFailure<E>>
+) -> Result<RetainedPublication<()>, OperationFailure<E>>
 where
     P: PublicationOwner,
     E: From<crate::FsError> + Send,
@@ -124,7 +125,11 @@ where
     )
     .await;
     result
-        .map(|output| output.0)
+        .map(|output| RetainedPublication {
+            receipt: output.receipt,
+            published: output.published,
+            allocation: (),
+        })
         .map_err(|error| OperationFailure::new(error, accounting.spent()))
 }
 
@@ -195,7 +200,7 @@ pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, P, E, 
     before_publication: &mut F,
     resolved: Option<crate::foundation::DurableCommit>,
     mut prepare_roots: Option<NativePublicationRootPreparation<'_, E>>,
-) -> Result<(PublicationReceipt, crate::NativeAllocation), E>
+) -> Result<RetainedPublication<crate::NativeAllocation>, E>
 where
     P: PublicationOwner,
     E: From<crate::FsError> + Send + 'static,
@@ -278,13 +283,17 @@ where
             .and_then(|slot| slot.take())
             .unwrap_or(error)
     })?;
-    match &mut output.1 {
+    match &mut output.allocation {
         ProofGuard::Native(guard) => {
             let allocation = guard
                 .split_off(guard.bytes())
                 .map_err(crate::FsError::from)
                 .map_err(E::from)?;
-            Ok((output.0, allocation))
+            Ok(RetainedPublication {
+                receipt: output.receipt,
+                published: output.published,
+                allocation,
+            })
         }
         ProofGuard::Standalone { .. } => {
             unreachable!("original proof retains its original guard")

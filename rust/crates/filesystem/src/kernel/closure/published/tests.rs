@@ -23,7 +23,11 @@ fn check<const ORDERED: bool>(deliveries: &[(u16, bool)]) {
     for (ticket, sequence, retry) in pending {
         let previous = slot.current(None);
         if ORDERED {
-            ticket.publish(&outcome(u64::from(sequence), retry));
+            let original = ticket.proof.clone();
+            let held = ticket
+                .publish(&outcome(u64::from(sequence), retry))
+                .unwrap();
+            assert!(Arc::ptr_eq(&held.current(None).unwrap(), &original));
         } else {
             ticket.install::<false, true>(Sequence::new(u64::from(sequence)));
         }
@@ -83,7 +87,18 @@ fn check_epochs<const REFRESH: bool>(deliveries: &[(u16, u8, bool)]) {
         let previous = slot.current_in_any_epoch();
         let ticket = Unpublished::new(slot.clone(), stamps[usize::from(epoch)], Arc::new(value));
         if REFRESH {
-            ticket.publish(&outcome(u64::from(sequence), retry));
+            let original = ticket.proof.clone();
+            let held = ticket
+                .publish(&outcome(u64::from(sequence), retry))
+                .unwrap();
+            if epoch == 3 {
+                assert!(Arc::ptr_eq(
+                    &held.current(Some(&epochs)).unwrap(),
+                    &original
+                ));
+            } else {
+                assert!(held.current(Some(&epochs)).is_none());
+            }
         } else {
             ticket.install::<true, false>(Sequence::new(u64::from(sequence)));
         }

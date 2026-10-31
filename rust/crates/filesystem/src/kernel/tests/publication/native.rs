@@ -353,7 +353,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         None,
     )
     .await?;
-    assert!(matches!(later.0.outcome, AppendOutcome::Committed(_)));
+    assert!(matches!(later.receipt.outcome, AppendOutcome::Committed(_)));
     let seals = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let owner_seals = seals.clone();
     let mut stale_owner = move |_: &crate::NativeMaterializationWork| {
@@ -382,7 +382,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     )
     .await?;
     assert!(matches!(
-        changed.0.outcome,
+        changed.receipt.outcome,
         AppendOutcome::IdempotencyConflict { .. }
     ));
     let publication = publish_generation_async_guarded_with_native_work(
@@ -406,10 +406,10 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     )
     .await?;
     assert!(matches!(
-        publication.0.outcome,
+        publication.receipt.outcome,
         AppendOutcome::AlreadyCommitted(_)
     ));
-    if let AppendOutcome::AlreadyCommitted(recovered) = &publication.0.outcome {
+    if let AppendOutcome::AlreadyCommitted(recovered) = &publication.receipt.outcome {
         assert_eq!(recovered.operation_id, request.operation_id);
         assert_eq!(recovered.previous_digest, request.expected.digest);
         assert_eq!(

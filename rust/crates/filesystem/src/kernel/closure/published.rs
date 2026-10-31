@@ -57,6 +57,19 @@ pub(crate) struct Unpublished<P, S = Arc<ProofSlot<P>>> {
     proof: P,
 }
 
+/// The original proof of one durable generation, independent of the latest slot.
+#[derive(Clone)]
+pub(crate) struct Published<P> {
+    began: CollectionEpoch,
+    proof: P,
+}
+
+impl<P: Clone> Published<P> {
+    pub(crate) fn current(&self, epochs: Option<&Epochs>) -> Option<P> {
+        (self.began == CollectionEpoch::read(epochs)).then(|| self.proof.clone())
+    }
+}
+
 impl<P, S: Deref<Target = ProofSlot<P>>> Unpublished<P, S> {
     /// A proof that began in `began`, read before its first object read.
     pub(crate) fn new(slot: S, began: CollectionEpoch, proof: P) -> Self {
@@ -64,12 +77,20 @@ impl<P, S: Deref<Target = ProofSlot<P>>> Unpublished<P, S> {
     }
 
     /// Makes the proof reusable when its generation is durable; otherwise discards it.
-    pub(crate) fn publish(self, outcome: &AppendOutcome) {
+    pub(crate) fn publish(self, outcome: &AppendOutcome) -> Option<Published<P>>
+    where
+        P: Clone,
+    {
         match outcome {
             AppendOutcome::Committed(commit) | AppendOutcome::AlreadyCommitted(commit) => {
+                let published = Published {
+                    began: self.began,
+                    proof: self.proof.clone(),
+                };
                 self.install::<true, true>(commit.sequence);
+                Some(published)
             }
-            _ => {}
+            _ => None,
         }
     }
 

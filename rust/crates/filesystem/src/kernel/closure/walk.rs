@@ -139,13 +139,13 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             .await
     }
 
-    /// A fork extends its source generation's published proof, kept in the
-    /// source volume's slot; the fork's own proof goes to its own volume.
+    /// A fork extends its source's original published proof, or its volume's
+    /// latest proof; the fork's own proof goes to its own volume.
     pub(crate) async fn prove_fork(
         &mut self,
         generation_root: ObjectId,
         cache: Option<&Mutex<CachedProofs>>,
-        source: crate::VolumeId,
+        source: (crate::VolumeId, Option<PublishedProof>),
     ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
         self.prove_reusing(generation_root, cache, Some(source), None)
             .await
@@ -155,7 +155,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         &mut self,
         generation_root: ObjectId,
         cache: Option<&Mutex<CachedProofs>>,
-        source: Option<crate::VolumeId>,
+        source: Option<(crate::VolumeId, Option<PublishedProof>)>,
         authority_root: Option<ObjectId>,
     ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
         let store = self.store;
@@ -175,14 +175,23 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         let generation_id = GenerationId::from_root(generation_root);
         let root_object_bytes = self.object_bytes;
         let slot = self.proof_slot(cache, root.0.volume_id)?;
+        let held = source.as_ref().and_then(|(volume, published)| {
+            published
+                .as_ref()
+                .and_then(|published| published.current(epochs))
+                .filter(|cached| cached.root.volume_id == *volume)
+                .filter(|cached| reusable(&root.0, cached, self.limits, None))
+        });
         let base = match source {
-            Some(source) => self.proof_slot(cache, source)?,
+            Some((source, _)) if held.is_none() => self.proof_slot(cache, source)?,
+            Some(_) => None,
             None => slot.clone(),
         };
-        let previous = base
-            .as_ref()
-            .and_then(|base| base.current(epochs))
-            .filter(|cached| reusable(&root.0, cached, self.limits, authority_root));
+        let previous = held.or_else(|| {
+            base.as_ref()
+                .and_then(|base| base.current(epochs))
+                .filter(|cached| reusable(&root.0, cached, self.limits, authority_root))
+        });
         if let Some(previous) = previous {
             let increment = match self.prove_increment(&root.0, &previous).await {
                 Err(crate::FsError::Closure(

@@ -484,6 +484,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             let publication = self.publication_closure.as_ref().and_then(|slot| {
                 slot.lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pin
                     .take()
             });
             #[cfg(not(target_arch = "wasm32"))]

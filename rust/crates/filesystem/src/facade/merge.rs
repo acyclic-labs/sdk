@@ -52,7 +52,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &mut accounting,
                 cancellation,
                 |request, intent, limits, _budget| async move {
-                    let (receipt, allocation) = publish_generation_async_guarded_with_native_work(
+                    let output = publish_generation_async_guarded_with_native_work(
                         self.clone(),
                         request,
                         intent,
@@ -67,11 +67,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     .await
                     .map_err(|error| OperationFailure::new(error, original.receipt()))?;
                     let result = OperationReceipt {
-                        value: checkout_commit_outcome(&receipt),
-                        work: receipt.work,
+                        value: checkout_commit_outcome(&output.receipt),
+                        work: output.receipt.work,
                     };
-                    drop(receipt);
-                    drop(allocation);
+                    drop(output);
                     Ok(result)
                 },
             )
