@@ -215,6 +215,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
 
 test("exec preserves nonzero exit status, cancellation, timeout and unavailable without redispatch", async t => {
   let attempts = 0;
+  const admittedDeadlines = [];
   let started;
   let cancelled;
   let completed;
@@ -225,6 +226,10 @@ test("exec preserves nonzero exit status, cancellation, timeout and unavailable 
     async *exec(query, context) {
       authenticate(context);
       attempts++;
+      const deadline = /^(\d{1,8})([HMSmun])$/.exec(context.requestHeader.get("grpc-timeout"));
+      assert.ok(deadline, "exec admission omitted its original deadline");
+      const nanos = { H: 3_600_000_000_000n, M: 60_000_000_000n, S: 1_000_000_000n, m: 1_000_000n, u: 1_000n, n: 1n };
+      admittedDeadlines.push(BigInt(deadline[1]) * nanos[deadline[2]]);
       if (query.argv[0] === "unavailable") throw new ConnectError("owner unknown", Code.Unavailable);
       if (query.argv[0] === "cancel") {
         context.signal.addEventListener("abort", cancelled, { once: true });
@@ -237,7 +242,14 @@ test("exec preserves nonzero exit status, cancellation, timeout and unavailable 
     },
   });
   const request = { protocol, machine, argv: ["exit"], timeoutMs: 1000n };
-  assert.equal(await exec(machines, request), -9);
+  for (const options of [undefined, { timeoutMs: 0 }, { timeoutMs: 400 }]) {
+    assert.equal(await exec(machines, request, options), -9);
+    const maximum = BigInt(options?.timeoutMs || Number(request.timeoutMs)) * 1_000_000n;
+    assert.ok(admittedDeadlines.at(-1) <= maximum, "exec RPC deadline exceeds original command or caller budget");
+  }
+  const expiryBudget = 10_000n;
+  assert.equal(await exec(machines, { ...request, timeoutMs: 60_000n, expiryUnixMs: BigInt(Date.now()) + expiryBudget }), -9);
+  assert.ok(admittedDeadlines.at(-1) <= expiryBudget * 1_000_000n, "exec RPC deadline exceeds authenticated expiry");
   await assert.rejects(exec(machines, { ...request, argv: ["unavailable"] }), error => error.code === Code.Unavailable);
   await assert.rejects(exec(machines, { ...request, argv: ["timeout"] }), error => error.code === Code.DeadlineExceeded);
   const controller = new AbortController();
@@ -247,7 +259,7 @@ test("exec preserves nonzero exit status, cancellation, timeout and unavailable 
   controller.abort();
   await rejection;
   await finishes;
-  assert.equal(attempts, 4);
+  assert.equal(attempts, 7);
 });
 
 test("exec yields output before the command completes", async t => {
