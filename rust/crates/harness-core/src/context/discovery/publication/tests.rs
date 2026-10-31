@@ -220,6 +220,24 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     .map_err(|(cause, _)| cause)?;
     let native_io = PreparationIo::from_native_work(&native_work)?;
     let before_native = native_io.receipt();
+    let mut direct = VolumeDiscovery {
+        reader: reader.as_ref(),
+        root: &metadata.source.root,
+        io: Some(&native_io),
+    };
+    // Bypassing ContextRoot must reach the same refusal before constructing a
+    // future, capturing a pin or invoking the authorized prefix reader.
+    let refused = acyclic_test_support::measure(|| {
+        assert!(matches!(
+            direct.skill_prefix(&metadata.source.path, &metadata.source.generation, 32_768,),
+            Err(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "skill discovery requires native YAML allocation admission",
+            })
+        ));
+    });
+    assert_eq!(refused.count_total, 0);
+    assert_eq!(refused.bytes_total, 0);
     assert!(matches!(
         metadata
             .source
