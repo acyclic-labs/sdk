@@ -502,20 +502,24 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
         )?);
         let streams = MemoryStream::default();
         let path = StreamPath::new("publication-members")?;
-        let receipt = streams
+        let acyclic_stream::AppendOutcome::Committed(receipt) = streams
             .append(acyclic_stream::AppendRequest {
                 path: path.clone(),
                 records: combined,
                 if_tail: Some(0),
                 idempotency_key: acyclic_stream::IdempotencyKey::unique(),
             })
-            .await?;
+            .await?
+        else {
+            panic!("the original empty stream must accept its one atomic append");
+        };
         let filter = FollowFilter::new(acyclic_stream::wire::SessionFilter {
             all_of: vec![],
             keys: vec![acyclic_stream::wire::KeyRange {
                 start: Bytes::from_static(b"key-000"),
                 end: Bytes::from_static(b"key-001"),
             }],
+            attributes: vec![],
         })?;
         let mut followed = streams
             .follow(acyclic_stream::FollowRequest {
