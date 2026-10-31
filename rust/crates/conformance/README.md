@@ -104,12 +104,12 @@ injected scan, real per-agent threads, virtual timer registrations and a lost
 event producer; these controls validate the observer, not production liveness.
 
 Select core operation names with `--operations`, for example
-`--operations actors.create,actors.durable_write,actors.warm_read,actors.wake`.
+`--operations 'actors.create,actors.durable_write,actors.warm_read,actors.wake'`.
 The default selects all 17 rows. Selection uses the same drivers, floor
 calibration and population setup; unrelated operation families are skipped.
 Dependent fixture operations remain outside the selected intervals. Reports
 name the requested operation set, and a subset never claims full core coverage.
-`--populations 1,1000` selects a subset of the qualification populations through
+`--populations '1,1000'` selects a subset of the qualification populations through
 the same setup and drivers. The default is `1,1000,100000`. Reports retain the
 selected population set; incomplete sets cannot qualify the three-population
 counting obligation.
