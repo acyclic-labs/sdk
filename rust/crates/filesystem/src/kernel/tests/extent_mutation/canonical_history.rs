@@ -26,8 +26,7 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
         &[],
         &[hole(0, 8)],
         &[(0, &edit)],
-        Some(&0),
-        None,
+        (Some(&0), None, Some(&8)),
         &mut output,
         &mut denied,
     );
@@ -37,6 +36,94 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
         "work refusal must precede the first output change"
     );
     assert_eq!(denied.spent().items_examined, 0);
+
+    // The original logical end is an input invariant, not the routing upper
+    // bound: the rightmost leaf must still be able to grow past that end.
+    let store = MemoryObjectStore::default();
+    let leaf = put(&store, &ExtentPage::Leaf(vec![hole(0, 100)]), 8).await?;
+    let left = put(&store, &ExtentPage::Leaf(vec![hole(0, 50)]), 8).await?;
+    let right = put(&store, &ExtentPage::Leaf(vec![hole(50, 50)]), 8).await?;
+    let internal = put(
+        &store,
+        &ExtentPage::Internal(vec![
+            ExtentChild {
+                first: 0,
+                page: left,
+            },
+            ExtentChild {
+                first: 50,
+                page: right,
+            },
+        ]),
+        8,
+    )
+    .await?;
+    for root in [leaf, internal] {
+        for size in [150, 250] {
+            let rejected = apply_extent_mutations(
+                &store,
+                (root, 200),
+                &[ExtentMutation::Resize {
+                    logical_bytes: size,
+                }],
+                1,
+                DecodeLimits::default(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect_err("the original rightmost end must match");
+            assert!(matches!(
+                rejected.error,
+                ExtentMutationError::ChildBoundsMismatch
+            ));
+            assert_eq!(rejected.work.page_writes, 0);
+        }
+        let grown = apply_batch(
+            &store,
+            (root, 100),
+            &[ExtentMutation::Resize { logical_bytes: 150 }],
+            DecodeLimits::default(),
+        )
+        .await?;
+        assert_eq!(grown.1, 150);
+        let coverage = flatten_extent_tree(&store, grown.0).await?;
+        assert_eq!(coverage.first().map(|extent| extent.offset), Some(0));
+        assert!(
+            coverage
+                .windows(2)
+                .all(|pair| pair[0].offset + pair[0].length == pair[1].offset)
+        );
+        assert_eq!(
+            coverage.last().map(|extent| extent.offset + extent.length),
+            Some(150)
+        );
+        assert!(
+            coverage
+                .iter()
+                .all(|extent| extent.kind == ExtentKind::Hole)
+        );
+    }
+    // Removing only the original end proof reproduces the accepted bad tree.
+    let truncate = ExtentEdit {
+        route: 149,
+        change: Change::Truncate(150),
+    };
+    let mut unchecked = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let omitted_end = persistent_btree::apply_with_accounting::<_, ExtentFormat, ExtentEdit>(
+        &store,
+        (leaf, None),
+        &[truncate],
+        1,
+        DecodeLimits::default(),
+        &mut unchecked,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(
+        flatten_extent_tree(&store, omitted_end.value).await?,
+        [hole(0, 100)]
+    );
 
     let mut copied = Vec::new();
     for count in [64_u64, 256] {

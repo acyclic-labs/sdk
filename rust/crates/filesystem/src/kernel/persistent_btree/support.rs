@@ -125,12 +125,13 @@ pub(crate) trait Mutation<F: Format> {
     /// from the left come first in `output`, so neighbours across a page
     /// boundary can join. Each step admits original work before rewriting. `output` has room for
     /// every carried item, every entry, and three per mutation.
+    /// Bounds are the routing lower/upper keys and the original root's optional
+    /// exclusive end. That final end validates input without clipping growth.
     fn rewrite_range(
         _carried: &[F::Value],
         _entries: &[F::Value],
         _mutations: &[(usize, &Self)],
-        _lower: Option<&F::Key>,
-        _upper: Option<&F::Key>,
+        _bounds: (Option<&F::Key>, Option<&F::Key>, Option<&F::Key>),
         _output: &mut Vec<F::Value>,
         _accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError>

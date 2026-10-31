@@ -294,6 +294,7 @@ where
     limits: DecodeLimits,
     accounting: &'accounting mut KernelAccounting<'work>,
     visited: Option<Owned<VisitedObjectSet>>,
+    expected_end: Option<&'a F::Key>,
     // Unfinished items, or the predecessor tail of a changed first key,
     // carried into the next page: leaf values and summaries by depth.
     carry_values: Owned<Vec<F::Value>>,
@@ -316,7 +317,7 @@ where
 
 pub(crate) async fn apply_with_accounting<S, F, M>(
     store: &S,
-    root: ObjectId,
+    (root, expected_end): (ObjectId, Option<&F::Key>),
     mutations: &[M],
     maximum_mutations: u32,
     limits: DecodeLimits,
@@ -330,7 +331,7 @@ where
 {
     apply_optional_root_with_accounting::<S, F, M>(
         store,
-        Some(root),
+        (Some(root), expected_end),
         mutations,
         maximum_mutations,
         limits,
@@ -342,7 +343,7 @@ where
 
 pub(crate) async fn apply_optional_root_with_accounting<S, F, M>(
     store: &S,
-    root: Option<ObjectId>,
+    (root, expected_end): (Option<ObjectId>, Option<&F::Key>),
     mutations: &[M],
     maximum_mutations: u32,
     limits: DecodeLimits,
@@ -400,6 +401,7 @@ where
         limits,
         accounting,
         visited,
+        expected_end,
         carry_values,
         carries,
         leaf_depth: None,
@@ -870,8 +872,7 @@ where
             carried,
             entries,
             mutations,
-            lower,
-            upper,
+            (lower, upper, self.expected_end),
             &mut output.value,
             self.accounting,
         )?;
@@ -1138,9 +1139,12 @@ where
     /// equal a page already read is that page, already stored: re-chunking
     /// has resynchronised with the old boundaries, so nothing is written.
     fn read_this_operation(&mut self, object: ObjectId) -> Result<bool, crate::FsError> {
-        self.visited
-            .value
-            .contains_with_accounting(object, self.accounting)
+        match self.visited.as_ref() {
+            Some(visited) => visited
+                .value
+                .contains_with_accounting(object, self.accounting),
+            None => Ok(false),
+        }
     }
 
     async fn write_page(&mut self, page: &PageRef<'_, F>) -> Result<ObjectId, crate::FsError> {
