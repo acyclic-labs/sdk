@@ -90,7 +90,7 @@ where
         admitted?;
         let destination_id =
             self.workspace_id_for_name(&fork.destination, accounting, cancellation)?;
-        let (fork_root, source_root, _, filtered) = self
+        let (fork_root, source_root, pending, filtered) = self
             .materialize_forked_generation_root(
                 source,
                 destination_id,
@@ -124,7 +124,7 @@ where
         let recorded = record_authority_work(accounting, &authority);
         Self::retire_fork_commit(prepared.changes, prepared.payload_bytes, accounting)?;
         recorded?;
-        commit.hold(prepared.hold);
+        commit.hold(prepared.hold.with_proof(pending));
         result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
         fork_root.retire(accounting)?;
         Ok(destination_id)

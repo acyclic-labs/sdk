@@ -172,3 +172,113 @@ async fn first_publication_reuses_the_public_forks_installed_proof()
     assert!(many_walked.object_probes > many.object_probes);
     Ok(())
 }
+
+async fn composed_publication_work(
+    files: u8,
+    discard_proof: bool,
+) -> Result<WorkCounters, Box<dyn std::error::Error>> {
+    use acyclic_stream::StreamProviderExt as _;
+    let cancel = CancellationToken::new();
+    let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
+    let fs = Fs::new(
+        crate::StreamAuthorityStore::new(stream.clone()),
+        crate::MemoryObjectStore::default(),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = fs
+        .create_workspace("composed-proof", B, &cancel)
+        .await?
+        .value;
+    for file in 0..files {
+        workspace
+            .write_text(&format!("/{file}"), &"x".repeat(5_000 + usize::from(file)))
+            .await?;
+    }
+    let source = workspace.head(B, &cancel).await?.value;
+    let forks = [crate::ForkSpec {
+        destination: crate::WorkspaceName::new("composed-child", &B, &cancel)?.value,
+        source: &source,
+        paths: None,
+        idempotency_key: crate::IdempotencyKey::new(),
+    }];
+    let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
+        deadline_unix_millis: None,
+        conditions: Vec::new(),
+        mutations: Vec::new(),
+        idempotency_key: acyclic_stream::IdempotencyKey::new(OwnedBytes::from_static(
+            b"composed-proof",
+        ))?,
+    });
+    fs.prepare_fork_many(&forks, &mut commit, B, &cancel)
+        .await?;
+    fs.seal_commit(&mut commit, B, &cancel)?;
+    let outcome = stream.commit(commit.request().clone()).await?;
+    // The original physical outcome is decided. Cancelled cache-refresh work
+    // must neither lose its receipt nor discard the original proof ticket.
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        fs.settle_commit(commit, outcome, B, &cancelled)
+            .await?
+            .value,
+        crate::FilesystemCommitOutcome::Committed(_)
+    ));
+    if discard_proof {
+        let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
+        drop(discarded);
+    }
+    let child = fs.open_workspace("composed-child", B, &cancel).await?.value;
+    let mut transaction = child
+        .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
+        .await?
+        .value;
+    transaction.write_text("/new", "child only").await?;
+    let receipt = transaction
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<crate::WorkspaceError>,
+        )
+        .await?;
+    assert!(matches!(
+        receipt.value,
+        crate::TransactionCommit::Committed(_)
+    ));
+    assert_eq!(
+        child.read("/new", 32, B, &cancel).await?.value.as_ref(),
+        b"child only"
+    );
+    assert_eq!(
+        child.read("/0", 6_000, B, &cancel).await?.value.as_ref(),
+        "x".repeat(5_000).as_bytes()
+    );
+    assert!(workspace.read("/new", 32, B, &cancel).await.is_err());
+    Ok(receipt.work)
+}
+
+#[tokio::test]
+async fn composed_fork_keeps_its_original_proof_through_durable_settlement()
+-> Result<(), Box<dyn std::error::Error>> {
+    let few = composed_publication_work(4, false).await?;
+    let many = composed_publication_work(32, false).await?;
+    // Same real publication with the authentic proof discarded: omitting
+    // committed handback must erase these savings when cache refresh is cancelled.
+    let few_walked = composed_publication_work(4, true).await?;
+    let many_walked = composed_publication_work(32, true).await?;
+    eprintln!(
+        "composed publication retained4={few:?} retained32={many:?} discarded4={few_walked:?} discarded32={many_walked:?}"
+    );
+    assert!(few.object_probes < few_walked.object_probes);
+    assert!(few.object_bytes_read < few_walked.object_bytes_read);
+    assert!(
+        many_walked.object_probes - many.object_probes
+            > few_walked.object_probes - few.object_probes
+    );
+    assert!(
+        many_walked.object_bytes_read - many.object_bytes_read
+            > few_walked.object_bytes_read - few.object_bytes_read
+    );
+    Ok(())
+}

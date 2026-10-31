@@ -78,7 +78,8 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
         let result = self.recorded_states(&commit, work).await;
         match result {
             Ok(commit_id) => {
-                self.refresh_committed(commit, commit_id, work).await;
+                self.refresh_committed(commit.recorded(), commit_id, work)
+                    .await;
                 StatePublicationOutcome::Recorded(commit_id)
             }
             Err(error) => StatePublicationOutcome::Unknown { commit, error },
