@@ -2,6 +2,8 @@ use super::*;
 use prost::Message;
 use std::fmt::Debug;
 
+mod guest;
+
 fn capabilities() -> BTreeSet<Capability> {
     BTreeSet::from([
         Capability::ElasticCpu,
@@ -33,6 +35,7 @@ where
 /// Admit arbitrary protobuf output with the caller's retained identity. These
 /// checks do not dispatch a request, replace a provider, or wait for a producer.
 pub fn check(name: &str, bytes: &[u8]) {
+    guest::check(name, bytes);
     let machine = MachineId::from_digest([1; 32]);
     let checkpoint = CheckpointId::from_digest([2; 32]);
     let operation = OperationId::from_digest([3; 32]);
