@@ -106,11 +106,7 @@ pub(super) struct Prepared {
 }
 
 impl Prepared {
-    pub(super) fn encode(
-        &self,
-        descriptors: &mut Vec<std::os::fd::RawFd>,
-        body: &mut Vec<u8>,
-    ) -> io::Result<()> {
+    pub(super) fn encode(&self, body: &mut Vec<u8>) -> io::Result<std::os::fd::RawFd> {
         // The original request carries one extra descriptor and its native
         // BPF bytes. Both images share Instruction; the child borrows these
         // bytes after decoding, with no policy allocation or translation.
@@ -124,8 +120,7 @@ impl Prepared {
             body.extend_from_slice(&[instruction.jt, instruction.jf]);
             body.extend_from_slice(&instruction.k.to_ne_bytes());
         }
-        descriptors.push(self.ruleset.as_raw_fd());
-        Ok(())
+        Ok(self.ruleset.as_raw_fd())
     }
 
     pub(super) fn new(grant: &Grant, roots: Vec<File>) -> io::Result<Self> {

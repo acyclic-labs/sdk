@@ -325,12 +325,8 @@ impl PreparedExecution {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn encode_linux(
-        &self,
-        descriptors: &mut Vec<std::os::fd::RawFd>,
-        body: &mut Vec<u8>,
-    ) -> io::Result<()> {
-        self.platform.encode(descriptors, body)
+    pub(crate) fn encode_linux(&self, body: &mut Vec<u8>) -> io::Result<std::os::fd::RawFd> {
+        self.platform.encode(body)
     }
 }
 

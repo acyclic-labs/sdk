@@ -102,31 +102,36 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<()> {
 /// Appends a slot per standard stream, and the descriptor each sent one
 /// carries. Returns the child's ends of new pipes, which the request
 /// carries, and the owner's ends.
+struct StreamEnds {
+    theirs: [Option<OwnedFd>; 3],
+    ours: [Option<OwnedFd>; 3],
+    count: usize,
+}
+
 fn slots(
     command: &ProcessCommand,
     open_streams: [bool; 3],
-    descriptors: &mut Vec<RawFd>,
+    descriptors: &mut [RawFd],
     body: &mut Vec<u8>,
-) -> io::Result<(Vec<OwnedFd>, [Option<OwnedFd>; 3])> {
-    let mut theirs = Vec::with_capacity(3);
+) -> io::Result<StreamEnds> {
+    let mut theirs: [Option<OwnedFd>; 3] = [None, None, None];
     let mut ours: [Option<OwnedFd>; 3] = [None, None, None];
+    let mut count = 0;
     let streams = [&command.stdin, &command.stdout, &command.stderr];
     for (index, stream) in streams.into_iter().enumerate() {
-        let slot = match stream.as_ref().map(|stdio| &stdio.0) {
-            Some(Stream::Null) => NULL,
+        let (slot, descriptor) = match stream.as_ref().map(|stdio| &stdio.0) {
+            Some(Stream::Null) => (NULL, None),
             None | Some(Stream::Inherit) => {
                 if open_streams.get(index).copied().unwrap_or(false) {
-                    descriptors
-                        .push(RawFd::try_from(index).map_err(|_| io::ErrorKind::InvalidInput)?);
-                    SENT
+                    (
+                        SENT,
+                        Some(RawFd::try_from(index).map_err(|_| io::ErrorKind::InvalidInput)?),
+                    )
                 } else {
-                    CLOSED
+                    (CLOSED, None)
                 }
             }
-            Some(Stream::Owned(fd)) => {
-                descriptors.push(fd.as_raw_fd());
-                SENT
-            }
+            Some(Stream::Owned(fd)) => (SENT, Some(fd.as_raw_fd())),
             Some(Stream::Piped) => {
                 let (read, write) = pipe()?;
                 let (child, parent) = if index == 0 {
@@ -134,17 +139,27 @@ fn slots(
                 } else {
                     (write, read)
                 };
-                descriptors.push(child.as_raw_fd());
-                theirs.push(child);
+                let descriptor = child.as_raw_fd();
+                *theirs.get_mut(index).ok_or(io::ErrorKind::InvalidInput)? = Some(child);
                 if let Some(end) = ours.get_mut(index) {
                     *end = Some(parent);
                 }
-                SENT
+                (SENT, Some(descriptor))
             }
         };
+        if let Some(descriptor) = descriptor {
+            *descriptors
+                .get_mut(count)
+                .ok_or(io::ErrorKind::InvalidInput)? = descriptor;
+            count += 1;
+        }
         body.push(slot);
     }
-    Ok((theirs, ours))
+    Ok(StreamEnds {
+        theirs,
+        ours,
+        count,
+    })
 }
 
 /// Appends a request's fixed fields after its stream slots, then its
@@ -153,8 +168,7 @@ fn encode(
     body: &mut Vec<u8>,
     command: &ProcessCommand,
     environment: &BTreeMap<&OsStr, &OsStr>,
-    descriptors: &mut Vec<RawFd>,
-) -> io::Result<()> {
+) -> io::Result<Option<RawFd>> {
     let identity = &command.unix;
     let flags = [
         (command.cwd.is_some(), HAS_CWD),
@@ -172,9 +186,11 @@ fn encode(
     put_settings(body)?;
     put_count(body, 1 + command.args.len());
     put_count(body, environment.len());
-    if let Some(boundary) = &command.boundary {
-        boundary.encode_linux(descriptors, body)?;
-    }
+    let boundary = command
+        .boundary
+        .as_ref()
+        .map(|boundary| boundary.encode_linux(body))
+        .transpose()?;
     put_string(body, &[command.program.as_bytes()])?;
     if let Some(cwd) = &command.cwd {
         put_string(body, &[cwd.as_os_str().as_bytes()])?;
@@ -193,7 +209,7 @@ fn encode(
     for (key, value) in environment {
         put_string(body, &[key.as_bytes(), b"=", value.as_bytes()])?;
     }
-    Ok(())
+    Ok(boundary)
 }
 
 /// Has the runner start `command` in `directory`'s custody. Returns the
@@ -243,20 +259,50 @@ pub(super) fn start(
             .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
             .open(".")?
     };
-    let mut descriptors = vec![
+    let mut descriptors = [
         directory.as_raw_fd(),
         reply_end.as_raw_fd(),
         here.as_raw_fd(),
+        -1,
+        -1,
+        -1,
+        -1,
     ];
-    let mut body = Vec::new();
-    let (theirs, ours) = slots(command, open_streams, &mut descriptors, &mut body)?;
-    encode(&mut body, command, &environment, &mut descriptors)?;
-    let mut message = Vec::with_capacity(8 + body.len());
-    put_count(&mut message, body.len());
-    message.extend_from_slice(&body);
+    // Reserve the original framing prefix in the one request buffer. No
+    // second buffer or full-body copy is needed to prepend its length.
+    let mut message = vec![0; 8];
+    let StreamEnds {
+        theirs,
+        ours,
+        count: streams,
+    } = slots(
+        command,
+        open_streams,
+        descriptors
+            .get_mut(3..6)
+            .ok_or(io::ErrorKind::InvalidInput)?,
+        &mut message,
+    )?;
+    let mut count = 3 + streams;
+    if let Some(boundary) = encode(&mut message, command, &environment)? {
+        *descriptors
+            .get_mut(count)
+            .ok_or(io::ErrorKind::InvalidInput)? = boundary;
+        count += 1;
+    }
+    let length = u64::try_from(message.len() - 8).map_err(|_| io::ErrorKind::InvalidInput)?;
+    message
+        .get_mut(..8)
+        .ok_or(io::ErrorKind::InvalidInput)?
+        .copy_from_slice(&length.to_ne_bytes());
     // Retain the original runner, including its group anchor and control
     // socket, until the original exec acknowledgement closes this reply.
-    let launch_owner = send(&descriptors, &message)?;
+    let launch_owner = send(
+        descriptors
+            .get(..count)
+            .ok_or(io::ErrorKind::InvalidInput)?,
+        &message,
+    )?;
     #[cfg(test)]
     LAUNCH_SENT.with(|notice| {
         if let Some(notice) = notice.borrow_mut().take() {
