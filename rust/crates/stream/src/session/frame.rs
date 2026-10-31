@@ -7,6 +7,7 @@ use crate::{Record, StreamError, StreamPath, wire, wire_codec};
 /// Wire transports construct this from their decoded frame and make no claim
 /// about the backing allocation. In-process publication retains the original
 /// record, including its native allocation guards, through the same session.
+#[derive(Debug)]
 pub struct Frame {
     pub(super) wire: wire::SessionFrame,
     pub(super) record: Option<Record>,
