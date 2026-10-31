@@ -157,5 +157,35 @@ async fn source_watch_preserves_fence_and_delivery_loss() -> Result<(), Box<dyn 
     assert!(peer_changed.as_mut().poll(&mut context).is_ready());
     watch.stop(&mut accounting)?;
     assert!(watch.is_stopped());
+    for stop in 0..3 {
+        let lost = Arc::new(Loss::default());
+        let watch = source
+            .watch(lost.clone(), &original, &cancellation)?
+            .ok_or("stop control source watch missing")?;
+        let mut changed = std::pin::pin!(lost.0.cancelled());
+        assert!(changed.as_mut().poll(&mut context).is_pending());
+        let before = wakes.0.load(Ordering::Relaxed);
+        match stop {
+            0 => watch.stop(&mut accounting)?,
+            1 => watch.stop_with_cleanup_wait(&cancellation)?,
+            _ => watch.stop_accepted_cleanup()?,
+        }
+        assert_eq!(
+            wakes.0.load(Ordering::Relaxed),
+            before + 1,
+            "successful stop must wake before returning: method {stop}"
+        );
+        assert!(changed.as_mut().poll(&mut context).is_ready());
+        assert!(
+            watch.is_stopped(),
+            "physical retirement precedes successful stop"
+        );
+        drop(watch);
+        assert_eq!(
+            wakes.0.load(Ordering::Relaxed),
+            before + 1,
+            "Drop cannot supply or duplicate the completed stop wake"
+        );
+    }
     Ok(())
 }
