@@ -40,7 +40,7 @@ fn save(
     match std::panic::catch_unwind(|| acyclic_codec_fuzz::exercise(target, bytes)) {
         Ok(result) => result?,
         Err(_) => return Err(format!(
-            "decoder oracle {target}/{name} panicked; recovery: cargo +nightly fuzz run {target} corpus/{target}/{name}"
+            "decoder oracle {target}/{name} panicked; recovery: cargo +nightly fuzz run --fuzz-dir . {target} corpus/{target}/{name}"
         ).into()),
     }
     manifest.push_str(&format!(

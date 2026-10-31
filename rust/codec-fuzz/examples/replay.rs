@@ -90,7 +90,7 @@ fn replay() -> Result<usize, Box<dyn Error>> {
                 Ok(result) => result?,
                 Err(_) => {
                     return Err(format!(
-                        "decoder oracle {name} panicked; recovery: cargo +nightly fuzz run {target} corpus/{name}"
+                        "decoder oracle {name} panicked; recovery: cargo +nightly fuzz run --fuzz-dir . {target} corpus/{name}"
                     ).into());
                 }
             }
