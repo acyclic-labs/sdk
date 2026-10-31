@@ -3604,3 +3604,25 @@ These publication results add no query, process, timer, allocation, copy or
 durability barrier. Successful publication verification is unchanged. A missing
 registry observation does not predict eventual indexing; only an explicit caller
 resend starts another invocation. Current source and controls are unqualified.
+
+## Retained native event failure and registration
+
+These rows identify the existing producer at source
+`be6a03e0e83de834d830cd87c525d0a80a8e4269`, before composition of the
+published `a1d9dd7612204dc4748ad5394c18a37909c2f335` corrections. The original
+deterministic deadline dispatch and checked exit callback must remain.
+
+| Source site | Kind | Disposition | Status |
+| --- | --- | --- | --- |
+| `rust/crates/native-runtime/src/process_tree/events/mod.rs:144` | Late subscription after producer failure | Return a settled wait holding the same retained ServiceFailed Arc; startup still refuses the failed service. | Actioned |
+| `rust/crates/native-runtime/src/process_tree/events/mod.rs:177` | OS event producer terminal | Check retained fatal health before entering the next OS wait. No replacement producer or readiness retry. | Actioned |
+| `rust/crates/native-runtime/src/process_tree/events/mod.rs:278` | Native token identity | Retain checked admission before allocation; do not reuse a live token or reserved native wake key. | Actioned |
+| `rust/crates/native-runtime/src/process_tree/events/mod.rs:304` | Timer registration notification failure | Retain the original OS error under the registration lock, then settle active and late waiters outside it. A descriptor-local refusal removes only its own registration. | Actioned |
+| `rust/crates/native-runtime/src/process_tree/events/tests.rs:254` | Producer-loss control | Preserve actual OS refusal, unwind, removed-signal delivery and retained-identity negatives; consume the same typed late terminal. Preserve explicit dispatch cuts without physical-time controls. | Actioned |
+| `rust/crates/native-runtime/src/process_tree/events/windows.rs:502` | Exit callback late-waiter control | Consume retained ServiceFailed and compare the same first Arc for active, early and late waits after the actual rejected post. Physical kernel operation retirement remains separate. | Actioned |
+
+These source changes retain the same event owner and add no readiness timer,
+thread, task, channel, syscall, round trip or durability barrier. Fatal delivery
+is proportional to live selected waiters. Hash indexing is expected constant
+time; timer ordering remains logarithmic. The composed source is formatted and
+diff-checked only, with no new compile or runtime qualification.
