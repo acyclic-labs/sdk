@@ -188,7 +188,7 @@ impl Transport for JavaScriptTransport {
                     let frame = decoder.read(&mut input).map_err(|_| unavailable())?;
                     chunk = chunk.slice(chunk.len() - input.len()..);
                     if let Some(frame) = frame {
-                        return Ok(Some((frame, (request, decoder, chunk))));
+                        return Ok::<_, Error>(Some((frame, (request, decoder, chunk))));
                     }
                     let reply = request.next().await?.ok_or_else(unavailable)?;
                     chunk = reply_body(&reply)?;
