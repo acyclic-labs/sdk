@@ -248,13 +248,17 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
     }
     let _guard = tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
     futures::executor::block_on(async {});
+    let mut result = None;
     let observed = acyclic_test_support::measure(|| {
-        futures::executor::block_on(Publication::ModelDispatch.observe(
-            OperationId::from_bytes([65; 16]),
-            0,
-            std::future::ready(Ok(())),
-        ))
+        result = Some(futures::executor::block_on(
+            Publication::ModelDispatch.observe(
+                OperationId::from_bytes([65; 16]),
+                0,
+                std::future::ready(Ok(())),
+            ),
+        ));
     });
+    result.expect("measured publication ran")?;
     assert_eq!(observed.count_total, 0, "disabled observation allocated");
     Ok(())
 }
