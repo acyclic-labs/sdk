@@ -52,7 +52,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             let request = store.prepare(
                 &snapshot,
-                &state,
+                state,
                 Vec::new(),
                 key(&snapshot, "dispatcher-open")?,
             )?;
@@ -89,7 +89,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // their CAS conflict is not misclassified as changed request bytes.
             let publication = store.prepare(
                 &previous,
-                &state,
+                state,
                 Vec::new(),
                 key(&previous, &format!("dispatch/{seen}"))?,
             )?;

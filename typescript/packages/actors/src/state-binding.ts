@@ -31,7 +31,8 @@ export interface ActorStateTransaction {
   /** Exact retained plus staged frame count. */
   readonly journalTail: bigint;
   /** Frames use the existing canonical Stream journal format. The original
-   * provider interprets them; Actors only retains the opaque admitted bytes. */
+   * provider interprets them; Actors only retains the opaque admitted bytes.
+   * A refused append leaves the previously staged journal unchanged. */
   appendJournal(expected: bigint, frames: readonly Uint8Array[]): void;
   /** Positive Unix-ms deadline, or null to clear. Delivery is GuestEvent.alarm
    * from the original Actor alarm owner, never a guest setTimeout. */
@@ -64,7 +65,7 @@ function copy(value: Uint8Array): Uint8Array {
  * conditional commit and acknowledgement custody stay with the original native
  * producer. Reuse this object for every name selecting the same state kind. */
 export function materializeActorState(host: ActorStateHost): ActorStateBinding {
-  let metadata = new Map(host.seed.metadata.map(({key, value}) => [key, copy(value)]));
+  const metadata = new Map(host.seed.metadata.map(({key, value}) => [key, copy(value)]));
   // durable: acknowledged journal cut. staged: the cut after every dispatched packet.
   let durable = position(BigInt(host.seed.journalTail)), staged = durable;
   let writes = new Map<string, Uint8Array>();
@@ -80,33 +81,50 @@ export function materializeActorState(host: ActorStateHost): ActorStateBinding {
       activeTransaction = true;
       let live = true;
       const scoped = () => { usable(); if (!live) throw new Error("actor state transaction expired"); };
-      // Copy on first write: a read-only transaction copies nothing and stages no packet.
-      let candidate: Map<string, Uint8Array> | undefined, changed: Map<string, Uint8Array> | undefined;
-      let frames: Uint8Array[] | undefined, nextAlarm: import("./generated/guest.js").ActorStateAlarm | undefined;
+      // Roll back only this callback's writes, preserving the earlier pending group.
+      const undo: [string, Uint8Array | undefined, Uint8Array | undefined][] = [];
+      const journalLength = journal.length, previousAlarm = alarm, wasPending = pending;
+      let accepted = false;
       const state: ActorStateTransaction = Object.freeze({
-        get(key: string) { scoped(); const value = (candidate ?? metadata).get(key); return value === undefined ? undefined : copy(value); },
-        put(key: string, value: Uint8Array) { scoped(); if (typeof key !== "string") throw new TypeError("actor state key must be a string"); const retained = copy(value); (candidate ??= new Map(metadata)).set(key, retained); (changed ??= new Map(writes)).set(key, retained); },
-        *entries() { scoped(); for (const [key,value] of candidate ?? metadata) { scoped(); yield [key,copy(value)] as const; } },
-        get journalTail() { scoped(); return staged + BigInt((frames ?? journal).length); },
+        get(key: string) { scoped(); const value = metadata.get(key); return value === undefined ? undefined : copy(value); },
+        put(key: string, value: Uint8Array) {
+          scoped(); if (typeof key !== "string") throw new TypeError("actor state key must be a string");
+          const retained = copy(value);
+          undo.push([key,metadata.get(key),writes.get(key)]);
+          metadata.set(key,retained); writes.set(key,retained); pending = true;
+        },
+        *entries() { scoped(); for (const [key,value] of metadata) { scoped(); yield [key,copy(value)] as const; } },
+        get journalTail() { scoped(); return staged + BigInt(journal.length); },
         appendJournal(expected: bigint, appended: readonly Uint8Array[]) {
           scoped();
-          if (position(expected) !== staged + BigInt((frames ?? journal).length)) throw new Error("actor journal conflict");
-          if (appended.length === 0 || expected + BigInt(appended.length) > U64_MAX) throw new RangeError("invalid actor journal append");
-          const owned = appended.map(copy);
-          frames ??= journal.slice();
-          for (const frame of owned) frames.push(frame);
+          if (position(expected) !== staged + BigInt(journal.length)) throw new Error("actor journal conflict");
+          if (!Array.isArray(appended)) throw new TypeError("actor journal frames must be an array");
+          const count = appended.length, start = journal.length;
+          if (count === 0 || expected + BigInt(count) > U64_MAX) throw new RangeError("invalid actor journal append");
+          // Copy directly without invoking an input array's overridable helpers.
+          // A caught refusal rolls back this append, preserving prior work.
+          try { for (let index = 0; index < count; index++) journal.push(copy(appended[index]!)); }
+          catch (error) { journal.length = start; throw error; }
+          pending = true;
         },
-        alarm(deadline: bigint | null) { scoped(); if (deadline !== null && position(deadline) === 0n) throw new RangeError("actor alarm deadline must be positive"); nextAlarm = deadline === null ? {type:"clear"} : {type:"set",deadline:deadline.toString()}; },
+        alarm(deadline: bigint | null) { scoped(); if (deadline !== null && position(deadline) === 0n) throw new RangeError("actor alarm deadline must be positive"); alarm = deadline === null ? {type:"clear"} : {type:"set",deadline:deadline.toString()}; pending = true; },
       });
       try {
         const value = operation(state);
         if (value !== null && (typeof value === "object" || typeof value === "function") && "then" in value) throw new TypeError("actor state transaction must finish synchronously");
-        if (candidate && changed) { metadata = candidate; writes = changed; }
-        if (frames) journal = frames;
-        if (nextAlarm) alarm = nextAlarm;
-        pending ||= candidate !== undefined || frames !== undefined || nextAlarm !== undefined;
+        accepted = true;
         return value;
-      } finally { live = false; activeTransaction = false; }
+      } finally {
+        live = false; activeTransaction = false;
+        if (!accepted) {
+          for (let index = undo.length; index > 0;) {
+            const [key,value,write] = undo[--index]!;
+            if (value === undefined) metadata.delete(key); else metadata.set(key,value);
+            if (write === undefined) writes.delete(key); else writes.set(key,write);
+          }
+          journal.length = journalLength; alarm = previousAlarm; pending = wasPending;
+        }
+      }
     },
     async flush(): Promise<void> {
       usable();

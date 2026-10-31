@@ -10,6 +10,169 @@ use std::sync::Arc;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+/// A reusable embedded book must not expire original grants on a rejected
+/// command. Admission uses actual committed inputs; only due grants may move.
+#[tokio::test]
+async fn reservation_rejection_preserves_due_grants_and_original_fence() -> TestResult {
+    use crate::guest::{SubscriptionCuts, Trigger};
+    use acyclic_stream::StreamProviderExt as _;
+
+    let provider = Arc::new(MemoryStream::default());
+    let actor = ActorReference::new(b"account", b"pools", b"atomic-step")?;
+    let (store, _) = open(&provider, &actor, "atomic-pool").await?;
+    let snapshot = store.load(&actor).await?;
+    let state = snapshot.state().ok_or("missing state")?;
+    let anchor = provider
+        .head(snapshot.path().clone())
+        .await?
+        .last
+        .ok_or("missing state anchor")?
+        .commit_id;
+    let owner = OwnerEvidence::new(
+        Bytes::from_static(b"owner"),
+        Bytes::from_static(b"original-evidence"),
+    )?;
+    let mut rejected_allocations = [None; 2];
+    let mut release_allocations = None;
+    for population in [1u64, 1_000] {
+        let mut original = Book::new(population + 3)?;
+        for generation in 1..=population + 2 {
+            let deadline_unix_ms = if generation <= 2 { 10 } else { 30 };
+            original.active.entry(deadline_unix_ms).or_default().insert(
+                generation,
+                Grant {
+                    pool: actor.encode().into(),
+                    state_path: snapshot.path().clone(),
+                    request_id: Bytes::copy_from_slice(&generation.to_be_bytes()),
+                    generation,
+                    units: 1,
+                    owner: owner.clone(),
+                    deadline_unix_ms,
+                },
+            );
+        }
+        original.used = population + 2;
+        original.generation = u64::MAX;
+        original.validate()?;
+        let unchanged = encode(&original)?;
+        let copying = acyclic_test_support::measure(|| {
+            std::hint::black_box(original.clone());
+        });
+        for units in [0, 1] {
+            let request_id = if units == 0 {
+                Bytes::from_static(b"zero")
+            } else {
+                Bytes::from_static(b"overflow")
+            };
+            let request = Request::Reserve {
+                request_id: request_id.clone(),
+                units,
+                owner: owner.clone(),
+                deadline_unix_ms: 40,
+            };
+            // Bypass the client-only argument check, retaining a real original
+            // input. Zero units must also be refused at the handler boundary.
+            let mut operation = b"reserve\0".to_vec();
+            operation.extend_from_slice(&request_id);
+            let invocation = Invocation::new(
+                actor.clone(),
+                "inbox".into(),
+                operation.into(),
+                encode(&request)?,
+            )?;
+            let ticket = store.enqueue_invoke(&invocation).await?;
+            let delivery = Delivery {
+                actor: actor.clone(),
+                epoch: state.epoch(),
+                trigger: Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: ticket.record().sequence,
+                },
+                now_unix_ms: 20,
+                record: Some(ticket.record().clone()),
+                subscriptions: SubscriptionCuts::new(
+                    snapshot.path().clone(),
+                    anchor,
+                    state.subscriptions().clone(),
+                ),
+            };
+            let mut book = original.clone();
+            let rejected = acyclic_test_support::measure(|| {
+                assert_eq!(book.step(&delivery).err(), Some(invalid()));
+            });
+            assert_eq!(encode(&book)?, unchanged);
+            let count = &mut rejected_allocations[usize::try_from(units)?];
+            if let Some(expected) = count {
+                assert_eq!(rejected.count_total, *expected);
+            } else {
+                *count = Some(rejected.count_total);
+            }
+            if population == 1_000 {
+                assert!(rejected.count_total < copying.count_total);
+            }
+
+            // The actual alarm transition is the eager-cleanup negative
+            // control: performing it before refusal changes the original book.
+            let alarm = Delivery {
+                record: None,
+                trigger: Trigger::Alarm {
+                    generation: 1,
+                    now_unix_ms: 20,
+                },
+                ..delivery.clone()
+            };
+            let mut eager = original.clone();
+            let step = eager.step(&alarm)?;
+            assert_eq!(
+                step.alarm,
+                AlarmChange::Set {
+                    deadline_unix_ms: 30
+                }
+            );
+            assert_eq!(eager.used(), population);
+            assert_ne!(encode(&eager)?, unchanged);
+            assert_eq!(eager.step(&delivery).err(), Some(invalid()));
+            assert_ne!(encode(&eager)?, unchanged);
+
+            // Releasing an exact live grant still progresses at an exhausted
+            // generation fence, reclaiming only that grant and due grants.
+            let mut valid = delivery;
+            let invocation = Request::Release {
+                grant: book
+                    .active
+                    .get(&30)
+                    .and_then(|grants| grants.get(&3))
+                    .ok_or("missing live grant")?
+                    .clone(),
+            }
+            .invocation(actor.clone(), "inbox".into())?;
+            let ticket = store.enqueue_invoke(&invocation).await?;
+            valid.trigger = Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: ticket.record().sequence,
+            };
+            valid.record = Some(ticket.record().clone());
+            let allocations = acyclic_test_support::measure(|| {
+                let step = book.step(&valid).unwrap();
+                assert_eq!(
+                    decode::<Decision>(&step.response.unwrap()).unwrap(),
+                    Decision::Released
+                );
+            });
+            if let Some(expected) = release_allocations {
+                assert_eq!(allocations.count_total, expected);
+            } else {
+                release_allocations = Some(allocations.count_total);
+            }
+            assert_eq!(book.used(), population - 1);
+            assert_eq!(book.generation, u64::MAX);
+            assert_eq!(book.deadline(), (population > 1).then_some(30));
+            book.validate()?;
+        }
+    }
+    Ok(())
+}
+
 async fn open(
     provider: &Arc<MemoryStream>,
     actor: &ActorReference,

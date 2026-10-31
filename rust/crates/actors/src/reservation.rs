@@ -155,7 +155,16 @@ enum Request {
 impl Request {
     fn operation(&self) -> Result<Bytes, GuestError> {
         match self {
-            Self::Reserve { request_id, .. } if !request_id.is_empty() => {
+            Self::Reserve {
+                request_id,
+                units,
+                owner,
+                ..
+            } if !request_id.is_empty()
+                && *units != 0
+                && !owner.identity.is_empty()
+                && !owner.evidence.is_empty() =>
+            {
                 let mut id = b"reserve\0".to_vec();
                 id.extend_from_slice(request_id);
                 Ok(id.into())
@@ -174,21 +183,6 @@ impl Request {
         actor: crate::addressing::ActorReference,
         subscription: String,
     ) -> Result<Invocation, GuestError> {
-        if let Self::Reserve {
-            units,
-            request_id,
-            owner,
-            ..
-        } = self
-        {
-            if *units == 0
-                || request_id.is_empty()
-                || owner.identity.is_empty()
-                || owner.evidence.is_empty()
-            {
-                return Err(invalid());
-            }
-        }
         Invocation::new(actor, subscription, self.operation()?, encode(self)?)
     }
 }
@@ -274,6 +268,7 @@ impl Book {
     /// Apply an admitted invocation or its original alarm. Commit the changed
     /// book, returned response and alarm together through Handler::Transition.
     /// The artifact delegates its alarm to this book for a reservation owner.
+    /// A rejected step leaves the book unchanged, including overdue grants.
     pub fn step(&mut self, delivery: &Delivery) -> Result<Step, GuestError> {
         let request = match delivery.invocation()? {
             Some(invocation) => {
@@ -306,15 +301,16 @@ impl Book {
             None => return Err(invalid()),
         };
         let previous_deadline = self.deadline();
-        while self
-            .deadline()
-            .is_some_and(|deadline| deadline <= delivery.now_unix_ms)
-        {
-            let (_, grants) = self.active.pop_first().ok_or_else(invalid)?;
-            for grant in grants.into_values() {
-                self.used = self.used.checked_sub(grant.units).ok_or_else(invalid)?;
-            }
-        }
+        // Preflight only due grants and the addressed grant. No fallible work
+        // may remain after removing the first original grant.
+        let expired = self
+            .active
+            .range(..=delivery.now_unix_ms)
+            .flat_map(|(_, grants)| grants.values())
+            .try_fold(0u64, |units, grant| units.checked_add(grant.units))
+            .ok_or_else(invalid)?;
+        let mut used = self.used.checked_sub(expired).ok_or_else(invalid)?;
+        let mut release = None;
         let decision = match request {
             None => None,
             Some(Request::Reserve {
@@ -322,59 +318,67 @@ impl Book {
                 units,
                 owner,
                 deadline_unix_ms,
-            }) => {
-                if units == 0
-                    || request_id.is_empty()
-                    || owner.identity.is_empty()
-                    || owner.evidence.is_empty()
+            }) => Some(if deadline_unix_ms <= delivery.now_unix_ms {
+                Decision::Expired
+            } else if units > self.capacity.checked_sub(used).ok_or_else(invalid)? {
+                Decision::Exhausted
+            } else {
+                let grant = Grant {
+                    pool: delivery.actor.encode().into(),
+                    state_path: delivery.subscriptions.state_path().clone(),
+                    request_id,
+                    generation: self.generation.checked_add(1).ok_or_else(invalid)?,
+                    units,
+                    owner,
+                    deadline_unix_ms,
+                };
+                used += units;
+                Decision::Granted(grant)
+            }),
+            Some(Request::Release { grant }) => Some(
+                if grant.deadline_unix_ms > delivery.now_unix_ms
+                    && grant.pool.as_ref() == delivery.actor.encode().as_slice()
+                    && grant.state_path == *delivery.subscriptions.state_path()
+                    && self
+                        .active
+                        .get(&grant.deadline_unix_ms)
+                        .and_then(|grants| grants.get(&grant.generation))
+                        == Some(&grant)
                 {
-                    return Err(invalid());
-                }
-                Some(if deadline_unix_ms <= delivery.now_unix_ms {
-                    Decision::Expired
-                } else if units > self.capacity.checked_sub(self.used).ok_or_else(invalid)? {
-                    Decision::Exhausted
+                    used = used.checked_sub(grant.units).ok_or_else(invalid)?;
+                    release = Some((grant.deadline_unix_ms, grant.generation));
+                    Decision::Released
                 } else {
-                    self.generation = self.generation.checked_add(1).ok_or_else(invalid)?;
-                    let grant = Grant {
-                        pool: delivery.actor.encode().into(),
-                        state_path: delivery.subscriptions.state_path().clone(),
-                        request_id,
-                        generation: self.generation,
-                        units,
-                        owner,
-                        deadline_unix_ms,
-                    };
-                    self.active
-                        .entry(deadline_unix_ms)
-                        .or_default()
-                        .insert(self.generation, grant.clone());
-                    self.used += units;
-                    Decision::Granted(grant)
-                })
-            }
-            Some(Request::Release { grant }) => {
-                let grants = self.active.get_mut(&grant.deadline_unix_ms);
-                Some(match grants {
-                    Some(grants)
-                        if grant.pool.as_ref() == delivery.actor.encode().as_slice()
-                            && grant.state_path == *delivery.subscriptions.state_path()
-                            && grants.get(&grant.generation) == Some(&grant) =>
-                    {
-                        grants.remove(&grant.generation);
-                        self.used = self.used.checked_sub(grant.units).ok_or_else(invalid)?;
-                        if grants.is_empty() {
-                            self.active.remove(&grant.deadline_unix_ms);
-                        }
-                        Decision::Released
-                    }
-                    _ => Decision::Stale,
-                })
-            }
+                    Decision::Stale
+                },
+            ),
         };
+        let response = decision.as_ref().map(encode).transpose()?;
+        while self
+            .deadline()
+            .is_some_and(|deadline| deadline <= delivery.now_unix_ms)
+        {
+            drop(self.active.pop_first());
+        }
+        if let Some(Decision::Granted(grant)) = &decision {
+            self.active
+                .entry(grant.deadline_unix_ms)
+                .or_default()
+                .insert(grant.generation, grant.clone());
+            self.generation = grant.generation;
+        }
+        if let Some((deadline, generation)) = release {
+            if let Some(grants) = self.active.get_mut(&deadline) {
+                grants.remove(&generation);
+                if grants.is_empty() {
+                    self.active.remove(&deadline);
+                }
+            }
+        }
+        self.used = used;
         let deadline = self.deadline();
         Ok(Step {
-            response: decision.as_ref().map(encode).transpose()?,
+            response,
             alarm: if deadline == previous_deadline {
                 AlarmChange::Keep
             } else {

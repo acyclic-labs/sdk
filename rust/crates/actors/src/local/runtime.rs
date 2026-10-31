@@ -298,23 +298,30 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Run every currently ready or due actor to quiescence, then return the
-    /// failures. Deterministic hosts and tests drive the runtime with this.
+    /// failures. Independent actors share the same active admission as `run`
+    /// and event delivery; no task is created for a dormant actor.
     pub async fn drain(&self) -> Vec<(ActorReference, Error)> {
         let now = self.clock.now_unix_ms();
         while self.ready.wake_due(now, self.limits.work) == self.limits.work {
             limits::yield_now().await;
         }
         let mut failures = Vec::new();
+        let mut running = FuturesUnordered::new();
         let mut steps = 0;
         loop {
-            let Some(work) = self.ready.take() else { break };
-            if let Err(failure) = self.execute(work).await {
-                failures.push(failure);
+            while running.len() < self.limits.active {
+                let Some(work) = self.ready.take() else { break };
+                running.push(self.execute(work));
+                steps += 1;
+                if steps == self.limits.work {
+                    limits::yield_now().await;
+                    steps = 0;
+                }
             }
-            steps += 1;
-            if steps == self.limits.work {
-                limits::yield_now().await;
-                steps = 0;
+            match running.next().await {
+                Some(Err(failure)) => failures.push(failure),
+                Some(Ok(())) => {}
+                None => break,
             }
         }
         failures
@@ -681,9 +688,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     )
                     .await
                 {
-                    Ok(()) => {
+                    Ok(claimed) => {
                         inner.epoch = epoch;
-                        inner.observed = None;
+                        inner.observed = Some(Arc::new(claimed));
                     }
                     Err(Error::Conflict) => inner.observed = None,
                     Err(error) => {
@@ -728,9 +735,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // another host may already have paused or replaced this placement.
             // Until canonical control invalidation is available, observe the
             // real provider before every handler attempt, including alarms.
-            let admitted = Arc::new(self.store.load(actor).await?);
-            if admitted.tail != snapshot.tail || admitted.anchor != snapshot.anchor {
-                inner.observed = Some(admitted);
+            if let Some(admitted) = self.store.observe(&snapshot).await? {
+                inner.observed = Some(Arc::new(admitted));
                 continue;
             }
             let epoch = inner.epoch;
@@ -759,7 +765,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 cancellation.clone(),
             );
             let result = {
-                let interrupted = self.interrupt(&mut inner, cancellation);
+                let interrupted = self.interrupt(&mut inner, cancellation.clone());
                 futures::pin_mut!(interrupted);
                 match futures::future::select(
                     handled,
@@ -781,20 +787,38 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             // Release any pending provider I/O before checkpoint publication.
             inner.follows.clear();
-            let transition = result?;
-            if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
-                > limits.checkpoint_bytes()
-            {
-                return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
-            }
-            let publication = self.store.prepare_publish(
-                &snapshot,
-                epoch,
-                &trigger,
-                record.as_ref(),
-                transition,
-                key(&snapshot, "publish")?,
-            )?;
+            let publication = match result {
+                Ok(transition) => {
+                    if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
+                        > limits.checkpoint_bytes()
+                    {
+                        return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+                    }
+                    self.store.prepare_publish(
+                        &snapshot,
+                        epoch,
+                        &trigger,
+                        record.as_ref(),
+                        transition,
+                        key(&snapshot, "publish")?,
+                    )?
+                }
+                Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
+                    let Some(publication) = self.store.prepare_invocation_failure(
+                        &snapshot,
+                        epoch,
+                        &trigger,
+                        record.as_ref(),
+                        &failure,
+                        key(&snapshot, "publish")?,
+                    )?
+                    else {
+                        return Err(Error::Handler(failure));
+                    };
+                    publication
+                }
+                Err(error) => return Err(error),
+            };
             match self.store.submit_retained(publication).await {
                 Ok(observed) => {
                     inner.observed = Some(Arc::new(

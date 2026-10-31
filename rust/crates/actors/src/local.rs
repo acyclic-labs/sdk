@@ -20,7 +20,7 @@ use crate::guest::{
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt, CommitRequest,
-    IdempotencyKey, Record, StreamError, StreamPath, StreamProvider,
+    IdempotencyKey, PathHead, Record, StreamError, StreamPath, StreamProvider,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
@@ -57,6 +57,15 @@ pub enum Error {
     /// The handler failed; nothing was published and the input stays queued.
     #[error(transparent)]
     Handler(#[from] GuestError),
+    /// A deterministic guest failure was committed with its consumed input.
+    /// Reconciliation returns this same terminal result, never a new attempt.
+    #[error("actor invocation failed: {source}")]
+    InvocationFailed {
+        /// Original typed guest failure, including its exact detail.
+        source: GuestError,
+        /// Original co-committed state and failure reply.
+        receipt: Box<InvocationReceipt>,
+    },
     /// A request contradicts the durable state machine.
     #[error("invalid actor transition: {0}")]
     Invalid(&'static str),
@@ -72,6 +81,7 @@ impl Error {
             Self::Conflict => "conflict",
             Self::Paused => "paused",
             Self::Handler(_) => "handler",
+            Self::InvocationFailed { .. } => "invocation_failed",
             Self::Invalid(_) => "invalid",
         }
     }
@@ -158,6 +168,13 @@ pub struct Snapshot {
     anchor: Option<CommitId>,
     state: Option<State>,
 }
+
+struct Publication<'a> {
+    trigger: &'a Trigger,
+    delivered: Option<&'a Record>,
+    transition: Transition,
+    key: IdempotencyKey,
+}
 impl Snapshot {
     /// Complete retained tuple, absent before creation.
     pub const fn state(&self) -> Option<&State> {
@@ -167,6 +184,29 @@ impl Snapshot {
     pub const fn path(&self) -> &StreamPath {
         &self.path
     }
+
+    fn from_head(path: StreamPath, head: Option<PathHead>) -> Result<Self, Error> {
+        let (tail, last) = head.map_or((0, None), |head| (head.tail, head.last));
+        if tail == 0 {
+            return Ok(Self {
+                path,
+                tail,
+                anchor: None,
+                state: None,
+            });
+        }
+        let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
+        if record.sequence != tail - 1 {
+            return Err(Error::Invalid("checkpoint cursor changed"));
+        }
+        let state = State::decode(&record.value)?;
+        Ok(Self {
+            path,
+            tail,
+            anchor: Some(record.commit_id),
+            state: Some(state),
+        })
+    }
 }
 
 /// A complete publication the caller may extend with its own conditions and
@@ -174,7 +214,9 @@ impl Snapshot {
 /// submitting it exactly once.
 pub struct PreparedPublish {
     own: Option<StreamPath>,
+    state: Option<State>,
     reply: Option<StreamPath>,
+    journal: Option<StreamPath>,
     request: CommitRequest,
     composition: Option<Box<dyn Composition>>,
     sealed: bool,
@@ -192,7 +234,7 @@ impl std::fmt::Debug for PreparedPublish {
 }
 impl PreparedPublish {
     /// Join the sealed authored state with its confirmed publication range.
-    fn retained(&self, receipt: &CommitReceipt) -> Result<Option<Snapshot>, Error> {
+    fn retained(&mut self, receipt: &CommitReceipt) -> Result<Option<Snapshot>, Error> {
         let Some(path) = &self.own else {
             return Ok(None);
         };
@@ -221,7 +263,7 @@ impl PreparedPublish {
                 CommitMutation::Append { path: own, records } if own == path => Some(records),
                 _ => None,
             });
-        let Some([record]) = authored.map(Vec::as_slice) else {
+        let Some([_]) = authored.map(Vec::as_slice) else {
             return Err(Error::Invalid("receipt changes actor state record count"));
         };
         if !self.sealed
@@ -235,7 +277,11 @@ impl PreparedPublish {
             path: path.clone(),
             tail: append.tail,
             anchor: Some(receipt.commit_id),
-            state: Some(State::decode(&record.value)?),
+            state: Some(
+                self.state
+                    .take()
+                    .ok_or(Error::Invalid("publication omitted its authored state"))?,
+            ),
         }))
     }
 
@@ -244,7 +290,9 @@ impl PreparedPublish {
     pub fn foreign(key: IdempotencyKey) -> Self {
         Self {
             own: None,
+            state: None,
             reply: None,
+            journal: None,
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,
@@ -268,6 +316,13 @@ impl PreparedPublish {
             return Err(Error::Invalid(
                 "sealed actor publication cannot accept effects",
             ));
+        }
+        if self
+            .journal
+            .as_ref()
+            .is_some_and(|journal| mutation_targets(&effect.mutation, journal))
+        {
+            return Err(Error::Invalid("effect changes the host's actor journal"));
         }
         if self
             .reply
@@ -461,40 +516,45 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     async fn load_path(&self, path: StreamPath) -> Result<Snapshot, Error> {
-        let (tail, last) = match self.provider.head(path.clone()).await {
-            Ok(head) => (head.tail, head.last),
-            Err(StreamError::NotFound) => (0, None),
-            Err(error) => return Err(error.into()),
-        };
-        if tail == 0 {
-            return Ok(Snapshot {
-                path,
-                tail,
-                anchor: None,
-                state: None,
-            });
+        let head = self.head(&path).await?;
+        Snapshot::from_head(path, head)
+    }
+
+    /// Observe the original path once. None confirms its tail and commit anchor
+    /// were unchanged at this observation, without decoding the retained state
+    /// again. A changed cut is decoded. This is not permission to start external
+    /// effects after a later control change; publication still uses its original
+    /// exact-head/epoch fence.
+    pub async fn observe(&self, previous: &Snapshot) -> Result<Option<Snapshot>, Error> {
+        let head = self.head(previous.path()).await?;
+        let tail = head.as_ref().map_or(0, |head| head.tail);
+        let anchor = head
+            .as_ref()
+            .filter(|head| head.tail != 0)
+            .and_then(|head| head.last.as_ref())
+            .map(|record| record.commit_id);
+        if tail == previous.tail && anchor == previous.anchor {
+            return Ok(None);
         }
-        let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
-        if record.sequence != tail - 1 {
-            return Err(Error::Invalid("checkpoint cursor changed"));
+        Snapshot::from_head(previous.path.clone(), head).map(Some)
+    }
+
+    async fn head(&self, path: &StreamPath) -> Result<Option<PathHead>, Error> {
+        match self.provider.head(path.clone()).await {
+            Ok(head) => Ok(Some(head)),
+            Err(StreamError::NotFound) => Ok(None),
+            Err(error) => Err(error.into()),
         }
-        let state = State::decode(&record.value)?;
-        Ok(Snapshot {
-            path,
-            tail,
-            anchor: Some(record.commit_id),
-            state: Some(state),
-        })
     }
 
     /// Establish a strictly newer epoch while preserving checkpoint, cursors,
-    /// alarm and pause state.
+    /// alarm and pause state. Returns the receipt-backed cut without a reread.
     pub async fn claim(
         &self,
         previous: &Snapshot,
         epoch: u64,
         key: IdempotencyKey,
-    ) -> Result<(), Error> {
+    ) -> Result<Snapshot, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.claim",
             Error::kind,
@@ -508,8 +568,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     return Err(Error::Conflict);
                 }
                 state.epoch = epoch;
-                self.submit(self.prepare(previous, &state, Vec::new(), key)?)
-                    .await
+                self.submit_retained(self.prepare(previous, state, Vec::new(), key)?)
+                    .await?
+                    .ok_or(Error::Invalid("claim receipt has no state"))
             }
         )
     }
@@ -535,7 +596,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     .ok_or(Error::Conflict)?
                     .clone();
                 state.paused = paused;
-                self.submit(self.prepare(previous, &state, Vec::new(), key)?)
+                self.submit(self.prepare(previous, state, Vec::new(), key)?)
                     .await
             }
         )
@@ -572,9 +633,36 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         epoch: u64,
         trigger: &Trigger,
         delivered: Option<&Record>,
-        mut transition: Transition,
+        transition: Transition,
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
+        let state = owned(previous, epoch)?;
+        self.prepare_publication(
+            previous,
+            state.clone(),
+            &state.alarm,
+            Publication {
+                trigger,
+                delivered,
+                transition,
+                key,
+            },
+        )
+    }
+
+    fn prepare_publication(
+        &self,
+        previous: &Snapshot,
+        mut state: State,
+        original_alarm: &Alarm,
+        publication: Publication<'_>,
+    ) -> Result<PreparedPublish, Error> {
+        let Publication {
+            trigger,
+            delivered,
+            mut transition,
+            key,
+        } = publication;
         let named = match trigger {
             Trigger::Record { sequence, .. } => Some(*sequence),
             Trigger::Alarm { .. } => None,
@@ -588,7 +676,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             previous,
             trigger,
             delivered,
-            transition.response.as_ref(),
+            transition.response.as_ref().map(Ok),
             &transition.effects,
         )? {
             transition.effects.push(reply);
@@ -596,7 +684,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         } else {
             None
         };
-        let state = next(owned(previous, epoch)?, trigger, &transition)?;
+        let previous_checkpoint = state.checkpoint.take();
+        let state = next(state, original_alarm, trigger, &transition)?;
         // The participant is a request from a possibly untrusted handler:
         // the host composer validates it before any custody exists.
         let composition = match &transition.participant {
@@ -609,14 +698,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     ))?
                     .open(
                         &self.actor(&previous.path)?,
-                        previous.state.as_ref().and_then(State::checkpoint),
+                        previous_checkpoint.as_ref(),
                         delivered,
                         &transition.checkpoint,
                         participant,
                     )?,
             ),
         };
-        let mut prepared = self.prepare(previous, &state, transition.effects, key)?;
+        let mut prepared = self.prepare(previous, state, transition.effects, key)?;
         prepared.reply = reply;
         prepared.composition = composition;
         Ok(prepared)
@@ -628,8 +717,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         self.submit_retained(prepared).await.map(|_| ())
     }
 
-    /// Retain only a state actually confirmed by the original provider receipt.
-    async fn submit_retained(
+    /// Submit once and return the exact authored state confirmed by the original
+    /// receipt. Foreign publications return None. No post-write read or decode
+    /// is needed. Unknown outcomes retain the entire publication in Error::Unknown.
+    pub async fn submit_retained(
         &self,
         mut prepared: PreparedPublish,
     ) -> Result<Option<Snapshot>, Error> {
@@ -661,6 +752,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         }).count() != 1 || request.mutations.iter().any(|mutation| {
                             matches!(mutation, CommitMutation::Fork { destination, .. } if covers(destination, reply))
                         })
+                    })
+                    || prepared.journal.as_ref().is_some_and(|journal| {
+                        request.mutations.iter().filter(|mutation| mutation_targets(mutation, journal)).count()
+                            != original.mutations.iter().filter(|mutation| mutation_targets(mutation, journal)).count()
                     })
                 {
                     return Err(Error::Invalid("composition changed the actor publication"));
@@ -723,7 +818,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     fn prepare(
         &self,
         previous: &Snapshot,
-        state: &State,
+        state: State,
         effects: Vec<Effect>,
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
@@ -743,9 +838,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 Some(self.activation(&self.actor(&previous.path)?)),
             ),
         };
+        let encoded = state.encode();
         let mut prepared = PreparedPublish {
             own: Some(previous.path.clone()),
+            state: Some(state),
             reply: None,
+            journal: None,
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,
@@ -754,7 +852,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 conditions: vec![own],
                 mutations: vec![CommitMutation::Append {
                     path: previous.path.clone(),
-                    records: vec![state.encode().into()],
+                    records: vec![encoded.into()],
                 }],
                 idempotency_key: key,
             },
@@ -772,6 +870,15 @@ fn covers(ancestor: &StreamPath, path: &StreamPath) -> bool {
             .as_str()
             .strip_prefix(ancestor.as_str())
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn mutation_targets(mutation: &CommitMutation, path: &StreamPath) -> bool {
+    match mutation {
+        CommitMutation::Append {
+            path: destination, ..
+        } => destination == path,
+        CommitMutation::Fork { destination, .. } => covers(destination, path),
+    }
 }
 
 fn condition_path(condition: &CommitCondition) -> &StreamPath {
@@ -793,8 +900,19 @@ fn owned(previous: &Snapshot, epoch: u64) -> Result<&State, Error> {
 
 /// The pure durable transition: consume exactly the trigger, then apply the
 /// alarm change. Checkpoint, cursor and alarm move together or not at all.
-fn next(state: &State, trigger: &Trigger, transition: &Transition) -> Result<State, Error> {
-    let mut state = state.clone();
+fn next(
+    mut state: State,
+    original_alarm: &Alarm,
+    trigger: &Trigger,
+    transition: &Transition,
+) -> Result<State, Error> {
+    consume(&mut state, original_alarm, trigger)?;
+    change_alarm(&mut state.alarm, transition.alarm)?;
+    state.checkpoint = Some(transition.checkpoint.clone());
+    Ok(state)
+}
+
+fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Result<(), Error> {
     if state.paused {
         return Err(Error::Paused);
     }
@@ -819,9 +937,8 @@ fn next(state: &State, trigger: &Trigger, transition: &Transition) -> Result<Sta
             generation,
             now_unix_ms,
         } => {
-            if state.alarm.generation != *generation
-                || !state
-                    .alarm
+            if original_alarm.generation != *generation
+                || !original_alarm
                     .pending()
                     .is_some_and(|deadline| deadline <= *now_unix_ms)
             {
@@ -830,12 +947,12 @@ fn next(state: &State, trigger: &Trigger, transition: &Transition) -> Result<Sta
             // Delivery consumption is distinct from the desired alarm.
             // Keep preserves its generation/deadline without permitting a
             // second successful firing to publish another transition.
-            state.alarm.delivered_generation = Some(*generation);
+            if state.alarm.generation == *generation {
+                state.alarm.delivered_generation = Some(*generation);
+            }
         }
     }
-    change_alarm(&mut state.alarm, transition.alarm)?;
-    state.checkpoint = Some(transition.checkpoint.clone());
-    Ok(state)
+    Ok(())
 }
 
 fn change_alarm(alarm: &mut Alarm, change: AlarmChange) -> Result<(), Error> {

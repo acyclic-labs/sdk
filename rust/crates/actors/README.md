@@ -104,6 +104,39 @@ time plus data/control request counts. A downstream service can instrument
 physical dispatch with the same ledger; counts at an API wrapper boundary alone
 do not establish physical network traffic. No benchmark is scheduled by CI.
 
+### Reservation transitions
+
+`reservation::Book::step` validates the request, accounts for due grants and
+encodes its decision before changing the book. An error leaves every grant,
+counter and generation unchanged. An exact live grant can still be released
+when the generation counter cannot admit another grant. The transition visits
+due grants and the addressed grant; it does not copy unrelated grants. The
+existing tree lookups and whole-checkpoint package encoding remain.
+
+### Finite delivery
+
+`local::Runtime::drain` drives ready actors concurrently through the same
+delivery and active-admission mechanism as continuous and event hosting. It
+retains at most `RuntimeLimits::active` executions; dormant actors own no task.
+Dropping the drain cancels its owned executions and releases their admission.
+Unconsumed inputs remain durable for the caller's next explicit wake.
+
+### Invocation failures
+
+`local::Store::invoke` and `wait_invocation` return `Error::InvocationFailed`
+when the guest rejects a committed, explicitly addressed invocation. The error
+retains its original typed `GuestError` and an `InvocationReceipt` proving that
+the input cursor and failure reply committed together. The failure keeps the
+previous checkpoint, metadata, journal and alarm; failed-attempt effects are
+discarded. Retrying the same invocation, including after reopening storage,
+returns that original cause and receipt without running the guest again.
+
+Failure uses the same conditional publication as a successful response. It adds
+no commit or durability barrier. Cancelled attempts and ordinary unmarked input
+failures remain queued and retain the runtime's existing error behavior. Provider
+errors keep their storage or unknown-outcome classification; an absent reply
+after proven consumption is an invalid publication, not a successful response.
+
 ### Guest durable state binding
 
 `domain::Binding::actor_state(name)` selects the executing actor's own state.
@@ -124,12 +157,32 @@ this same materializer and native producer, not a private guest storage API.
 append and alarm operations expire at callback return. Failure rolls back the
 callback, preserving any earlier pending transaction group. Values are copied
 at the JavaScript boundary so later caller mutation cannot alter admitted work.
+Native read-only transactions borrow the admitted in-memory cut, allocate
+nothing and leave the binding clean; flushing a clean binding performs no I/O.
+`ActorStateBinding::get` borrows a value directly from the same cut, including
+staged writes, without creating a mutation transaction or cloning a byte handle.
+Both read forms preserve the binding's existing fence and pause checks.
+Both projections roll back only touched keys and the journal's original length;
+native rollback also handles callback unwind. Neither copies unrelated metadata,
+pending writes or staged journal frames on the first write. JavaScript still
+copies byte values at its guest boundary; explicit enumeration visits its output.
 `flush` publishes all pending metadata, journal frames and alarm in **one**
 conditional Stream commit against the original actor head and journal tail.
 Only its confirmed result acknowledges durability. Failed/unknown publication
 fences the binding; an unknown result retains its original PreparedPublish and
 never dispatches the guest callback again. The delivery/checkpoint owner takes
 the updated Snapshot through `finish` before its next normal publication.
+
+When state and the delivery's checkpoint have the same durability boundary,
+use `ActorStateBinding::prepare_publish` instead of flushing first. It joins
+metadata, journal, alarm, consumed input, checkpoint, response and effects in
+the original conditional commit. `Store::submit_retained` returns the confirmed
+authored Snapshot without a reread or decode; `Store::claim` likewise returns
+its confirmed placement cut. The original owner and exact-head fences still
+apply. A retained cut is a snapshot, not a fresh observation of another owner.
+`Store::observe` performs the required fresh head observation before handler
+admission. An unchanged tail and commit anchor retain the original typed state
+without decoding it again; a changed cut is decoded before delivery continues.
 
 Metadata is retained with the actor checkpoint/epoch/alarm state. Journal frames
 stay in the canonical `<state-path>/journal` stream and are read in requested

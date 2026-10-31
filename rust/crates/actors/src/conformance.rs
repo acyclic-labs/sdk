@@ -449,6 +449,13 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     bounded_case(target, "invoked", BUDGET_MS, invoked(target, run)).await?;
     bounded_case(
         target,
+        "invocation-failure",
+        BUDGET_MS,
+        invocation_failure(target, run),
+    )
+    .await?;
+    bounded_case(
+        target,
         "shared-invocation",
         BUDGET_MS,
         shared_invocation(target, run),
@@ -588,6 +595,87 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         return fixture.violation("completed operation accepted changed bytes".into());
     }
     fixture.expect(&["r1"]).await?;
+    Ok(())
+}
+
+/// A failed guest settles the original call with the same typed cause on every
+/// host, including after restart, without publishing speculative guest state.
+pub(crate) async fn invocation_failure<T: Backend + ?Sized>(
+    target: &T,
+    run: &str,
+) -> Result<(), Failure> {
+    use crate::invocation::Invocation;
+    let mut fixture = Fixture::create(target, run, "invocation-failure").await?;
+    fixture.send("clear").await?;
+    let checkpoint = target
+        .store()
+        .load(&fixture.actor)
+        .await?
+        .state()
+        .and_then(|state| state.checkpoint())
+        .cloned();
+    let invocation = Invocation::new(
+        fixture.actor.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"failed"),
+        Bytes::from_static(b"unknown"),
+    )
+    .map_err(Error::from)?;
+    let failure = target.store().invoke(&invocation).await;
+    let Err(Error::InvocationFailed { source, receipt }) = failure else {
+        return fixture
+            .violation("handler failure did not settle as a terminal invocation failure".into());
+    };
+    if source != GuestError::Handler("unknown command".into())
+        || receipt.state().commit_id != receipt.reply().commit_id
+        || receipt.ticket().invocation() != &invocation
+    {
+        return fixture
+            .violation("handler failure changed its cause or publication identity".into());
+    }
+    if target
+        .store()
+        .load(&fixture.actor)
+        .await?
+        .state()
+        .and_then(|state| state.checkpoint())
+        != checkpoint.as_ref()
+    {
+        return fixture.violation("failed guest changed its committed checkpoint".into());
+    }
+    target.restart().await?;
+    match target.store().invoke(&invocation).await {
+        Err(Error::InvocationFailed {
+            source: repeated,
+            receipt: original,
+        }) if source == repeated && receipt == original => {}
+        _ => return fixture.violation("retry replaced the original committed failure".into()),
+    }
+    let successful = Invocation::new(
+        fixture.actor.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"after-failure"),
+        Bytes::from_static(b"clear"),
+    )
+    .map_err(Error::from)?;
+    if target
+        .store()
+        .invoke(&successful)
+        .await?
+        .response()
+        .as_ref()
+        != b"clear"
+        || target
+            .store()
+            .load(&fixture.actor)
+            .await?
+            .state()
+            .and_then(|state| state.checkpoint())
+            != checkpoint.as_ref()
+    {
+        return fixture
+            .violation("failed invocation blocked later input or changed the checkpoint".into());
+    }
     Ok(())
 }
 
