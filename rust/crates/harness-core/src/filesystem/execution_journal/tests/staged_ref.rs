@@ -8,7 +8,7 @@ proptest! {
     #[test]
     fn staged_lookup_preserves_identity_and_requires_read(
         identity in any::<[u8; 16]>(),
-        key in prop_oneof!["[a-z]{1,12}", "tool:[0-9]:[a-z]{1,12}:result"],
+        key in prop_oneof!["[a-z]{1,12}", "tool:[0-9]:[a-z]{1,12}:result", "tool:[0-9]:[a-z]{1,12}:result:[0-9a-f]{64}"],
         bytes in proptest::collection::vec(any::<u8>(), 0..128),
     ) {
         tokio::runtime::Builder::new_current_thread()

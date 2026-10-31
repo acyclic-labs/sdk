@@ -441,7 +441,11 @@ async fn observe(
             _ => None,
         })
         .ok_or("original completion missing")?;
-    assert!(file.path().starts_with(&format!("{directory}/")));
+    assert!(
+        file.path().starts_with(&format!("{directory}/")),
+        "original result {} is outside {directory}",
+        file.path()
+    );
     eprintln!("{agent}: original ToolCompleted result observed");
     loop {
         let update = changes.next().await.ok_or("tool-output producer lost")??;

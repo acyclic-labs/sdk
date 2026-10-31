@@ -93,7 +93,15 @@ where
             crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
         })?)?;
         let path = crate::executor::with_history_io(io, |work| {
-            if idempotency_key.starts_with("tool:") && idempotency_key.ends_with(":result") {
+            // Stock publication binds JSON bytes to the original operation key
+            // with one BLAKE3 suffix. The result kind precedes that suffix.
+            let kind_key = idempotency_key
+                .rsplit_once(':')
+                .filter(|(_, suffix)| {
+                    suffix.len() == 64 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                .map_or(idempotency_key, |(key, _)| key);
+            if kind_key.starts_with("tool:") && kind_key.ends_with(":result") {
                 return crate::executor::preparation_format(
                     format_args!(
                         "{}{}/{}.json",
