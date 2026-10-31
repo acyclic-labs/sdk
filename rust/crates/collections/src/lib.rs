@@ -14,6 +14,9 @@ pub use arc::arc_allocation_bytes;
 mod recent;
 pub use recent::RecentIndex;
 
+mod persistent;
+pub use persistent::PersistentIndex;
+
 /// Original caller admission and allocation custody for an index operation.
 ///
 /// Implementations borrow the issuing frame; they must not copy its remaining
