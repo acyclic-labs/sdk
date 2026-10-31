@@ -420,7 +420,7 @@ fn local_stream_code(error: &acyclic_stream::LocalStreamError) -> Code {
     match error {
         E::IncompleteFrame | E::Corrupt => Code::DataLoss,
         E::Io(error) => io_code(error),
-        E::AlreadyOpen | E::UnsupportedPreRevisionStore => Code::FailedPrecondition,
+        E::AlreadyOpen | E::UnsupportedVersion { .. } => Code::FailedPrecondition,
         E::InvalidLimits => Code::InvalidArgument,
         E::Replay(error) => stream_code(error),
         E::Executor => Code::Unavailable,
