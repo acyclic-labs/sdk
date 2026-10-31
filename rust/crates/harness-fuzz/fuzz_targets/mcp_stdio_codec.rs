@@ -35,8 +35,10 @@ fuzz_target!(|input: &[u8]| {
             }
             pending.extend_from_slice(chunk);
             loop {
+                let before = pending.len();
                 match decoder.decode(&mut pending) {
                     Ok(Some(value)) => {
+                        assert!(pending.len() < before, "decoded frame must consume input");
                         let expected = serde_json::to_value(&value).unwrap();
                         let mut output = BytesMut::new();
                         if decoder.encode(value, &mut output).is_ok() {
