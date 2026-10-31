@@ -41,8 +41,8 @@ use crate::{
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_harness_client::{
-    AgentBinding, AgentCall, AgentCommand, AgentReply, ChildAgent, MAX_AGENT_COMMAND_BYTES,
-    MAX_READ_BYTES, PendingApproval, ReadTarget,
+    AgentBinding, AgentCall, AgentCommand, AgentPageRequest, AgentReply, ChildAgent,
+    MAX_AGENT_COMMAND_BYTES, MAX_READ_BYTES, PendingApproval, ReadTarget,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
@@ -102,6 +102,26 @@ pub trait Platform: ProviderPlatform + 'static {
     ) -> BoxProviderFuture<'a, crate::Result<Option<crate::conversation::FileRef>>> {
         let _ = (key, text);
         Box::pin(async { Ok(None) })
+    }
+
+    /// A page of the selected workspace's pinned, authorized diff query.
+    /// The server has checked the session credential, current policy and agent
+    /// tree before delegation. The source must also check file read/list authority
+    /// before disclosing any path or content, including on continuation pages.
+    /// `authorization` is the original session admission, including its current
+    /// credential; a request field or cached principal cannot replace it.
+    fn diff<'a>(
+        &'a self,
+        authorization: &'a CallAuthorization,
+        agent: &'a AgentPath,
+        page: &'a AgentPageRequest,
+    ) -> BoxProviderFuture<'a, crate::Result<Vec<crate::context::DiffFilePage>>> {
+        let _ = (authorization, agent, page);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "workspace diff query is unavailable".into(),
+            ))
+        })
     }
 
     /// The approver principal the verified `principal` decides approvals as:
@@ -366,6 +386,7 @@ where
         command: &AgentCommand,
         by: &Sender,
         approver: &str,
+        authorization: &CallAuthorization,
     ) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
@@ -382,6 +403,16 @@ where
                     settled: self.tail(agent.conversation()?).await?,
                     statuses: self.tail(agent.status()?).await?,
                     phase: agents.state(agent).await?.phase,
+                })
+            }
+            AgentCommand::Diff { agent, page } => {
+                let agent = self.within_tree(agent)?;
+                Ok(AgentReply::Diff {
+                    items: self
+                        .platform
+                        .diff(authorization, agent, page)
+                        .await
+                        .map_err(|error| Error::Turn(Box::new(error)))?,
                 })
             }
             AgentCommand::Read {
@@ -817,7 +848,16 @@ where
             };
             server.platform.admitted().await?;
             let approver = server.platform.approver(&principal);
-            let result = server.dispatch(call.command(), &by, &approver).await;
+            let result = server
+                .dispatch(call.command(), &by, &approver, &authorization)
+                .await;
+            if matches!(&result, Ok(AgentReply::Diff { .. })) {
+                // The source may have awaited IO. No path or patch leaves after
+                // its original call credential or current host policy is revoked.
+                let principal = authorization.principal()?;
+                let policy = server.platform.policy(&principal, call.command()).await?;
+                authorization.authorize(&server.resource, &[], &attributes, policy)?;
+            }
             call.reply(&result).map_err(|_| StreamError::LimitExceeded)
         })
     }

@@ -27,6 +27,14 @@ impl Cursor {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, WatchBatch>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let rescan = self.watcher.begin_rescan().map_err(storage)?;
+            // The scan owns the continuity state it replaced, so a retry cannot
+            // erase a required recovery while importing display before-images.
+            let optional_before_images = if let Some(reason) = rescan.invalidation() {
+                require_rescan(reason)?;
+                false
+            } else {
+                optional_before_images
+            };
             #[cfg(all(test, not(loom)))]
             self.inject("begin")?;
             self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
@@ -40,6 +48,7 @@ impl Cursor {
                 cancellation,
             )
             .await;
+            self.before_images_complete = captured.is_ok();
             if let Err(failure) = captured {
                 // This first import exists only to retain display before-images.
                 // Failure leaves capture_baseline's private candidate unpublished.
@@ -74,8 +83,10 @@ pub(super) fn capture<'a>(
 ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
     crate::conversation::BoundedContentFuture::new(None, || async move {
         let mut initial = cursor.initial.take();
-        let optional_before_images =
-            physical.import_source && matches!(initial, Some(WatchBatch::Changes { .. }));
+        let optional_before_images = physical.import_source
+            && baseline
+            && (matches!(initial, Some(WatchBatch::Changes { .. }))
+                || initial.is_none() && cursor.baseline_pending && !cursor.before_images_complete);
         if let Some(WatchBatch::RescanRequired { reason, .. }) = initial {
             require_rescan(reason)?;
         }

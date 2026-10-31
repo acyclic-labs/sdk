@@ -33,6 +33,10 @@ mod pump;
 mod stream;
 pub use stream::{ProcessCaptureStream, ProcessChunk};
 #[cfg(windows)]
+mod stdio;
+#[cfg(windows)]
+pub use stdio::{ProcessPipeReader, ProcessPipeWriter};
+#[cfg(windows)]
 mod spawner;
 pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, CaptureWakes, OwnedCaptureInput};
 #[cfg(windows)]

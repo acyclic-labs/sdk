@@ -459,6 +459,79 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
     harness.disconnect().await
 }
 
+/// Neither a failed native capture nor a rejected publication can consume the
+/// initial import's identity. Both failures discard the actual watcher cursor.
+async fn refuse_initial_imports(tools: &CheckoutTools) -> Result<Option<Cursor>> {
+    let workspace = tools.workspace.view().workspace();
+    let cancellation = CancellationToken::new();
+    let original = workspace
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+    cursor.initial = Some(WatchBatch::RescanRequired {
+        epoch: 1,
+        reason: WatchInvalidationReason::RootChanged,
+    });
+    let mut slot = Some(cursor);
+    assert!(matches!(
+        run(tools, &mut slot).await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(slot.is_none(), "failed capture retained its cursor");
+
+    let calls = AtomicUsize::new(0);
+    let before_effect = || {
+        std::future::ready(if calls.fetch_add(1, Ordering::Relaxed) == 0 {
+            Ok(())
+        } else {
+            Err(Error::Unauthorized("import publication refused".into()))
+        })
+    };
+    assert!(
+        record_changes(
+            (&tools.capture_options, &tools.capture_policy),
+            (&tools.workspace, tools.workspace.view()),
+            &mut slot,
+            (OperationId::new(), 0),
+            PublicationPermit::Unrestricted,
+            &before_effect,
+            None,
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 2, "refuse the actual commit");
+    assert!(slot.is_none(), "failed publication retained its cursor");
+    assert_eq!(
+        workspace
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id(),
+        original
+    );
+    assert!(
+        workspace
+            .operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(
+                    baseline_operation(workspace.id()).into_bytes()
+                ),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .is_none(),
+        "a refusal published the baseline"
+    );
+    Ok(slot)
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(4))]
     #[test]
@@ -468,18 +541,34 @@ proptest::proptest! {
             let (directory, harness, tools) = fixture().await?;
             let original = format!("before-{seed}\n");
             std::fs::write(directory.path().join("marker"), original.as_bytes()).map_err(storage)?;
-            let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+            let mut slot = refuse_initial_imports(&tools).await?;
             let cancellation = CancellationToken::new();
             let workspace = tools.workspace.view().workspace();
             let empty = workspace.head(WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
             // No event mentions this file: it predates watcher registration.
             run(&tools, &mut slot).await?;
             let before = workspace.head(WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
+            let baseline = workspace.operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes()),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ).await.map_err(storage)?.value.expect("retained initial source import");
+            assert_eq!(baseline.id(), before.id());
             let bytes = before.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
             assert_eq!(bytes.as_ref(), original.as_bytes());
             std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
             run(&tools, &mut slot).await?;
             assert_eq!(contents(&tools).await?, b"after");
+            // Reopening the producer loses its in-memory cursor, but a rescan
+            // cannot replace the original baseline with the edited checkout.
+            slot = None;
+            run(&tools, &mut slot).await?;
+            let recovered = workspace.operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes()),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ).await.map_err(storage)?.value.expect("baseline after cursor loss");
+            assert_eq!(recovered.id(), before.id());
             let bytes = before.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
             assert_eq!(bytes.as_ref(), original.as_bytes());
             // Negative control: the registration's empty authored generation
@@ -490,6 +579,154 @@ proptest::proptest! {
             harness.disconnect().await
         }).unwrap();
     }
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (directory, harness, tools) = fixture().await?;
+    let marker = directory.path().join("marker");
+    let permissions = std::fs::metadata(&marker).map_err(storage)?.permissions();
+    std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0)).map_err(storage)?;
+    let outcome = async {
+        assert_eq!(
+            std::fs::read(&marker).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "the real source must refuse its before-image"
+        );
+        let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+        run(&tools, &mut slot).await?;
+        assert!(!slot.as_ref().unwrap().before_images_complete);
+        // A complete, retained watcher still permits another command despite
+        // the same unavailable display before-image.
+        run(&tools, &mut slot).await?;
+        assert!(!slot.as_ref().unwrap().before_images_complete);
+        let workspace = tools.workspace.view().workspace();
+        let cancellation = CancellationToken::new();
+        assert!(
+            workspace
+                .operation_generation(
+                    acyclic_fs::IdempotencyKey::from_bytes(
+                        baseline_operation(workspace.id()).into_bytes()
+                    ),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(storage)?
+                .value
+                .is_none()
+        );
+        // Both a pending phase-zero import and an incremental capture must
+        // recover lost continuity even when the display source is unreadable.
+        for phase in [0, 1] {
+            slot.as_mut()
+                .unwrap()
+                .watcher
+                .fence(Duration::ZERO)
+                .map_err(storage)?;
+            assert!(
+                tools
+                    .capture(
+                        (&tools.workspace, tools.workspace.view()),
+                        &mut slot,
+                        OperationId::new(),
+                        phase,
+                        PublicationPermit::Unrestricted,
+                    )?
+                    .await
+                    .is_err(),
+                "phase {phase} skipped required continuity recovery"
+            );
+            assert!(slot.is_none());
+            if phase == 0 {
+                slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+                run(&tools, &mut slot).await?;
+            }
+        }
+        let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+        cursor.initial = Some(WatchBatch::RescanRequired {
+            epoch: 1,
+            reason: WatchInvalidationReason::QueueOverflow,
+        });
+        slot = Some(cursor);
+        // The same unreadable source cannot recover lost continuity or a
+        // discarded watcher. Neither failure may publish a baseline receipt.
+        assert!(run(&tools, &mut slot).await.is_err());
+        assert!(slot.is_none());
+        assert!(run(&tools, &mut slot).await.is_err());
+        assert!(slot.is_none());
+        std::fs::set_permissions(&marker, permissions.clone()).map_err(storage)?;
+        run(&tools, &mut slot).await?;
+        let baseline = workspace
+            .operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(
+                    baseline_operation(workspace.id()).into_bytes(),
+                ),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .expect("complete recovered source import");
+        assert_eq!(
+            baseline
+                .read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(storage)?
+                .value
+                .as_ref(),
+            b"before"
+        );
+        Ok(())
+    }
+    .await;
+    std::fs::set_permissions(&marker, permissions).map_err(storage)?;
+    drop(tools);
+    harness.disconnect().await?;
+    outcome
+}
+
+#[tokio::test]
+async fn an_empty_source_retains_its_baseline_before_later_creation() -> Result<()> {
+    let (directory, harness, tools) = fixture().await?;
+    std::fs::remove_file(directory.path().join("marker")).map_err(storage)?;
+    let mut slot = refuse_initial_imports(&tools).await?;
+    run(&tools, &mut slot).await?;
+    let workspace = tools.workspace.view().workspace();
+    let cancellation = CancellationToken::new();
+    let key =
+        acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes());
+    let baseline = workspace
+        .operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .expect("empty baseline receipt");
+    std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
+    run(&tools, &mut slot).await?;
+    slot = None;
+    run(&tools, &mut slot).await?;
+    let recovered = workspace
+        .operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .expect("original empty baseline");
+    assert_eq!(recovered.id(), baseline.id());
+    assert!(
+        recovered
+            .read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .is_err()
+    );
+    assert_eq!(contents(&tools).await?, b"after");
+    drop(slot);
+    drop(tools);
+    harness.disconnect().await
 }
 
 fn capture_operation_bytes<Args, T>(_: impl FnOnce(Args) -> T) -> usize {

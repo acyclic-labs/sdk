@@ -91,4 +91,4 @@ use value::{BorrowedContext, ContextMessages};
 mod tests;
 
 mod diff;
-pub use diff::{DiffPath, DiffPublication};
+pub use diff::{DiffCursor, DiffFilePage, DiffKind, DiffPath, DiffPublication};

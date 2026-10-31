@@ -242,6 +242,15 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
     },
+    /// One visible page of the agent's authorized workspace diff query.
+    /// The host pins the initial cut; continuations retain that exact projection.
+    Diff {
+        /// Agent whose selected workspace the query observes.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Visible rows and complete encoded reply bytes, including continuation.
+        page: AgentPageRequest,
+    },
     /// Read one bounded range of a file the agent's turns produced, through
     /// the host's authorized reader of that agent's volumes.
     Read {
@@ -353,6 +362,7 @@ impl AgentCommand {
             | Self::Rewind { agent, .. }
             | Self::ClearAll { agent, .. }
             | Self::Children { agent, .. }
+            | Self::Diff { agent, .. }
             | Self::Approvals { agent, .. }
             | Self::Decide { agent, .. }
             | Self::Reply { agent, .. }
@@ -376,6 +386,7 @@ impl AgentCommand {
             Self::ClearAll { .. } => "clear_all",
             Self::Spawn { .. } => "spawn",
             Self::Children { .. } => "children",
+            Self::Diff { .. } => "diff",
             Self::Approvals { .. } => "approvals",
             Self::Decide { .. } => "decide",
             Self::Reply { .. } => "reply",
