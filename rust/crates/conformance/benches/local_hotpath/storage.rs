@@ -11,6 +11,7 @@ use acyclic_actors::{
 };
 use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_objects::{Blobs, ByteRange, Digest, Head, Kind};
+use acyclic_stream::testing::RequestClass;
 use acyclic_stream::{AppendOutcome, CommitCondition, CommitMutation, Stream, StreamPath};
 use acyclic_test_support::scale::Operation;
 use bytes::Bytes;
@@ -45,16 +46,17 @@ impl Wake for DeliveryWake {
 }
 
 macro_rules! timed {
-    ($rows:expr, $name:expr, $floor:expr, $future:expr) => {{
+    ($rows:expr, $name:expr, $floor:expr, $future:expr) => {{ timed!($rows, $name, $floor, None, $future) }};
+    ($rows:expr, $name:expr, $floor:expr, $requested_query:expr, $future:expr) => {{
         // Allocate the sampler's future before the interval; construction of
         // the operation itself remains inside it.
         let future = Box::pin(async { $future.await });
         if $rows.includes($name) {
-            let before = $rows.start();
+            let before = $rows.start($requested_query);
             let start = Instant::now();
             let result = future.await;
             let elapsed = start.elapsed();
-            let observed = $rows.stop(before);
+            let observed = $rows.stop(before)?;
             $rows.record($name, $floor, elapsed, observed)?;
             result
         } else {
@@ -187,6 +189,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             rows,
             Operation::ObjectHead,
             read(0),
+            Some(RequestClass::Head),
             fixture.objects.head(digest)
         )?;
         require_head(&head, digest)?;
@@ -198,11 +201,21 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             emit(
                 serde_json::json!({"schema": 1, "kind": "negative_control", "control": "changed real object HEAD identity", "result": "rejected"}),
             )?;
+            let before = rows.start(Some(RequestClass::Head));
+            fixture.objects.head(digest).await?;
+            fixture.objects.head(digest).await?;
+            Measurements::require_one_control(&rows.stop(before)?)?;
+            emit(serde_json::json!({
+                "schema": 1, "kind": "negative_control",
+                "control": "redundant real HEAD after requested data query",
+                "result": "one original data dispatch and one control probe",
+            }))?;
         }
         let page = timed!(
             rows,
             Operation::ObjectList,
             read(32),
+            Some(RequestClass::List),
             fixture.objects.list(None, 1)
         )?;
         if page.digests.len() != 1 || page.digests.first().copied() != first {
