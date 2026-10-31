@@ -135,6 +135,7 @@ pub(super) fn run(options: &Options) -> Result {
         "schema": 1, "kind": "proof_end", "native_root_cuts_complete": true,
         "native_timer_injection_control_complete": true,
         "composed_proof_complete": false, "population_cost_proven": false,
+        "same_owner_failed_producer_retry_complete": true,
         "same_owner_resubmission_proven": false,
         "open": ["same-owner resubmission after producer loss", "physical release of retained publication holds", "population-independent original work"],
     }))
@@ -172,6 +173,23 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
     // than leave an event waiter parked behind a dead persistence worker.
     if fixture.stream.commit(original.clone()).await != Err(StreamError::Unavailable) {
         return Err("cut journal did not terminate a later submission as unavailable".into());
+    }
+    // Re-enter the public composition with the SAME retained owner. The
+    // failed journal's original termination event must settle this observer,
+    // returning the original uncertain commit without another physical stage.
+    let stages_before_retry = cut.counts();
+    let retried = Box::pin(fixture.bound.submit_root(held)).await?;
+    if require_root(&retried, &expected_child).is_ok() {
+        return Err("failed root producer retry fabricated a created root".into());
+    }
+    let RootSubmission::Unknown(held) = retried else {
+        return Err("failed root producer retry discarded original uncertainty".into());
+    };
+    if held.request() != &original
+        || held.child() != &expected_child
+        || cut.counts() != stages_before_retry
+    {
+        return Err("same-owner root retry changed its request or reached a dead journal".into());
     }
     if fail_simulation {
         if cut.require_faithful().is_ok()
@@ -247,6 +265,8 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
         "request_digest": hex::encode(request_digest),
         "idempotency_key": hex::encode(original.idempotency_key.as_bytes()),
         "later_original_producer_result": "Unavailable", "recovered": recovered,
+        "same_owner_retry_result": "Unknown", "same_owner_retry_request_exact": true,
+        "same_owner_retry_additional_journal_stages": [0, 0, 0],
         "participants": original.mutations.len(),
         "negative_controls": if stage == 2 { vec!["Unknown is not Created", "omitted recovered participant"] } else { vec!["Unknown is not Created"] },
     }))
