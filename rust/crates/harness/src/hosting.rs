@@ -415,6 +415,15 @@ where
                         .map_err(|error| Error::Turn(Box::new(error)))?,
                 })
             }
+            AgentCommand::Usage {
+                agent,
+                input,
+                after,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let (input, page) = self.bound.usage_page(agent, *input, *after).await?;
+                Ok(AgentReply::Usage { input, page })
+            }
             AgentCommand::Read {
                 agent,
                 target,

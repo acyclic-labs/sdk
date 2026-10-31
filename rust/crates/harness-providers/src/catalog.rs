@@ -4,7 +4,7 @@ use crate::{
 use acyclic_harness_core::context::ModelContextCapacity;
 use std::collections::BTreeMap;
 
-pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-5";
+pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-6.1-sol";
 
 const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
     (
@@ -78,6 +78,58 @@ const TOOLS_AND_IMAGES: ModelFeatures = ModelFeatures {
 };
 
 const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
+    // https://platform.claude.com/docs/en/models/overview
+    (
+        "anthropic",
+        "claude-fable-5-1",
+        1_000_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "anthropic",
+        "claude-opus-5-5",
+        1_000_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-5-5",
+        1_000_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "anthropic",
+        "claude-haiku-5-5",
+        1_000_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+    ),
+    // https://developers.openai.com/api/docs/models
+    (
+        "openai",
+        "gpt-6-astra",
+        1_050_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "openai",
+        "gpt-6.1-sol",
+        1_050_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "openai",
+        "gpt-6.1-terra",
+        1_050_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+    ),
+    ("openai", "gpt-6-luna", 1_050_000, 128_000, TOOLS_AND_IMAGES),
     (
         "anthropic",
         "claude-sonnet-4-5",
@@ -148,24 +200,6 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     )
                 })
                 .collect();
-            let mut models: BTreeMap<String, crate::ModelSpec> = models;
-            if id == "openai" {
-                // Codex models_cache.json metadata, 2026-10-18. max_context_window
-                // is an input/context override ceiling, never an output capacity.
-                for (name, context) in [("gpt-6.1-sol", 500_000), ("gpt-6-luna", 272_000)] {
-                    models.insert(
-                        name.into(),
-                        crate::ModelSpec {
-                            max_context_tokens: Some(872_000),
-                            capacity: ModelContextCapacity {
-                                context_tokens: context,
-                                output_tokens: None,
-                            },
-                            features: TOOLS_AND_IMAGES,
-                        },
-                    );
-                }
-            }
             (
                 id.into(),
                 ProviderSpec {

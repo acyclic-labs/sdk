@@ -256,13 +256,14 @@ proptest! {
     // retains the subset's minimum capacity without contacting a provider.
     #[test]
     fn stock_alloy_subsets_preserve_declared_features_and_minimum_capacity(
-        indices in proptest::collection::btree_set(0usize..10, 1..=10),
+        models in {
+            let models = stock_models(&stock_registry().0);
+            let count = models.len();
+            proptest::sample::subsequence(models, 1..=count)
+        },
         tools in any::<bool>(), images in any::<bool>(), ordinal in any::<u64>(),
     ) {
         let (registry, transport) = stock_registry();
-        let stock = stock_models(&registry);
-        prop_assert_eq!(stock.len(), 10);
-        let models: Vec<_> = indices.into_iter().map(|index| stock[index].clone()).collect();
         let mut expected = ModelContextCapacity { context_tokens: u32::MAX, output_tokens: None};
         for selection in &models {
             let (provider, name) = selection.split_once('/').unwrap();

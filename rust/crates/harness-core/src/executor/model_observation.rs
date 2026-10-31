@@ -14,11 +14,24 @@ pub(crate) async fn append(
     key: &str,
     turn: (u32, ModelPurpose),
     model: &ModelEvent,
+    usage: Option<&super::model_usage::ModelCallUsage<'_>>,
     original: Option<&PreparationIo>,
 ) -> Result<()> {
     validate_journal(journal, original)?;
     let maximum = journal.inline_model_event_bytes();
     let (step, purpose) = turn;
+    let usage = if let Some(usage) = usage {
+        let key = with_history_io(original, |work| {
+            preparation_format(format_args!("{key}:usage"), work)
+        })?;
+        #[cfg(feature = "filesystem")]
+        let _key_hold = original
+            .map(|io| io.guard_owned(key.capacity() as u64))
+            .transpose()?;
+        Some(stage_json(journal, operation, &key, usage, original).await?)
+    } else {
+        None
+    };
     if maximum == 0 {
         let event = stage_json(journal, operation, key, model, original).await?;
         return journal
@@ -29,6 +42,7 @@ pub(crate) async fn append(
                     step,
                     purpose,
                     event,
+                    usage,
                 },
                 original,
             )?
@@ -63,6 +77,7 @@ pub(crate) async fn append(
             step,
             purpose,
             event: stock_string_copy(event, io)?,
+            usage,
         }
     } else {
         let event = stage_bytes(journal, operation, key, &bytes, true, io).await?;
@@ -70,6 +85,7 @@ pub(crate) async fn append(
             step,
             purpose,
             event,
+            usage,
         }
     };
     journal.append(operation, key, &event, io)?.await
@@ -80,7 +96,7 @@ pub(crate) async fn load(
     event: &ExecutionEvent,
     io: Option<&PreparationIo>,
 ) -> Result<Option<ModelEvent>> {
-    Ok(match event {
+    let model = match event {
         ExecutionEvent::Model { event, .. } => Some(retain_preparation(
             load_json::<ModelEvent>(journal, event, io).await?,
         )?),
@@ -97,5 +113,6 @@ pub(crate) async fn load(
             >(event.as_bytes(), io)?)?)
         }
         _ => None,
-    })
+    };
+    Ok(model)
 }

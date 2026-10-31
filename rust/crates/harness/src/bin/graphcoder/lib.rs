@@ -9,6 +9,7 @@ acyclic_test_support::counting_allocator!();
 mod args;
 mod headless;
 mod lifecycle;
+mod usage_export;
 mod view;
 
 use acyclic_harness::{
@@ -23,7 +24,7 @@ use acyclic_harness::{
 };
 use acyclic_harness_providers::{Credentials, Registry};
 use args::{Args, Command, InputFormat};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
 use std::{future::Future, process::ExitCode, sync::Arc};
 use tracing_subscriber::util::SubscriberInitExt as _;
@@ -40,7 +41,11 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// `seams` makes of the self-deployed defaults: the one entry point a
 /// self-deployed and a managed server share.
 pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
-    let args = Args::parse();
+    let matches = Args::command().get_matches();
+    let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
+        args.model = None;
+    }
     let report = acyclic_native_runtime::obs::WaitReport::default();
     if let Err(error) =
         lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok()).try_init()
@@ -98,7 +103,9 @@ fn configure(
     if let Some(directory) = &args.directory {
         config = config.active_directory(directory);
     }
-    if let Some(root) = &args.settings_root {
+    if args.default_config {
+        config = config.without_user_settings();
+    } else if let Some(root) = &args.settings_root {
         config = config
             .settings(SettingsConfig::new(&args.workspace, root).codex_home(root.join(".codex")));
     }
@@ -114,9 +121,12 @@ async fn run(
     // A server is this machine's harness alone: refuse every client mode
     // before any of them starts.
     if matches!(args.command, Some(Command::Serve(_)))
-        && (args.prompt.is_some() || args.endpoint.is_some() || args.host_workspace)
+        && (args.prompt.is_some()
+            || args.endpoint.is_some()
+            || args.host_workspace
+            || args.usage_jsonl.is_some())
     {
-        return Err("serve takes no prompt, endpoint or host workspace".into());
+        return Err("serve takes no prompt, endpoint, host workspace or usage export".into());
     }
     if args.host_workspace {
         let directory = args
@@ -148,12 +158,28 @@ async fn run(
         let connection = phase(|| Connection::connect_endpoint(endpoint.as_deref())).await?;
         return drive(&args, Conversation::open(connection)?).await;
     }
-    let credentials = args
-        .credentials
-        .as_deref()
-        .map(Credentials::from_file)
-        .transpose()?
-        .unwrap_or_default();
+    let credentials = if args.default_config {
+        let configured = args
+            .credentials
+            .as_deref()
+            .map(|path| -> Result<Credentials, Box<dyn std::error::Error>> {
+                let bytes = std::fs::read(path)?;
+                serde_json::from_slice::<Credentials>(&bytes)
+                    .map_err(|_| "invalid provider credential file".into())
+            })
+            .transpose()?;
+        Credentials::explicit(
+            configured
+                .map(|credentials| credentials.api_keys)
+                .unwrap_or_default(),
+        )
+    } else {
+        args.credentials
+            .as_deref()
+            .map(Credentials::from_file)
+            .transpose()?
+            .unwrap_or_default()
+    };
     let config = configure(&args, credentials)?;
     if let Some(Command::Serve(serve)) = &args.command {
         let tls = match (&serve.tls_certificate, &serve.tls_key, &serve.url) {
@@ -207,13 +233,51 @@ async fn drive(
         .operation
         .clone()
         .unwrap_or_else(|| OperationId::new().to_string());
-    let mut output = std::io::stdout().lock();
-    if let Some(prompt) = &args.prompt {
-        return phase(|| headless::prompt(&conversation, &operation, prompt, &mut output)).await;
+    if interactive {
+        if args.usage_jsonl.is_some() {
+            return Err("--usage-jsonl requires -p or --input-format jsonl".into());
+        }
+        return phase(|| view::run(conversation, args.inline, args.resume)).await;
     }
-    if !interactive {
-        return phase(|| headless::jsonl(&conversation, &operation, &mut output)).await;
+    let usage_stdout = args
+        .usage_jsonl
+        .as_ref()
+        .is_some_and(|path| path.as_os_str() == "-");
+    // Admit the explicit output before sending any model work. The snapshot
+    // replaces an earlier export, so replaying a prompt never appends duplicates.
+    let mut usage = args
+        .usage_jsonl
+        .as_deref()
+        .map(usage_export::Output::open)
+        .transpose()?;
+    let mut output: Box<dyn std::io::Write> = if usage_stdout {
+        Box::new(std::io::stderr().lock())
+    } else {
+        Box::new(std::io::stdout().lock())
+    };
+    let result = if let Some(prompt) = &args.prompt {
+        phase(|| headless::prompt(&conversation, &operation, prompt, &mut output)).await
+    } else {
+        phase(|| headless::jsonl(&conversation, &operation, &mut output)).await
+    };
+    if let Some(mut usage) = usage.take() {
+        // A refused/failed run can still have committed admissions. Exporting
+        // them never changes its result into success or fabricates completion.
+        let exported = conversation
+            .write_usage_jsonl(usage.writer())
+            .await
+            .and_then(|()| {
+                usage
+                    .finish()
+                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
+            });
+        if let Err(error) = exported {
+            if result.is_err() {
+                eprintln!("graphcoder: usage export failed: {error}");
+            } else {
+                return Err(error.into());
+            }
+        }
     }
-    drop(output);
-    phase(|| view::run(conversation, args.inline, args.resume)).await
+    result
 }

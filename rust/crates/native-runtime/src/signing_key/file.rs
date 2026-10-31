@@ -17,8 +17,15 @@ pub(super) fn entry(name: &str) -> io::Result<keyring::Entry> {
         io::Error::new(io::ErrorKind::NotFound,
             "signing custody configuration directory unavailable; recovery: configure an absolute application configuration directory")
     })?;
+    entry_in(name, config.join("acyclic/signing-seeds"))
+}
+
+pub(super) fn entry_in(name: &str, directory: PathBuf) -> io::Result<keyring::Entry> {
+    if !directory.is_absolute() {
+        return Err(super::failure("select", super::CustodyCause::InvalidPolicy));
+    }
     Ok(keyring::Entry::new_with_credential(Box::new(Credential {
-        directory: config.join("acyclic/signing-seeds"),
+        directory,
         name: name.into(),
     })))
 }

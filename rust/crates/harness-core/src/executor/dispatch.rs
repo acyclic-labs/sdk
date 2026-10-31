@@ -3,6 +3,14 @@ use super::*;
 use crate::wire::ErrorCode::Unsupported;
 use futures::{FutureExt as _, future::Either};
 
+struct ObservedCall<'a> {
+    operation_id: OperationId,
+    dispatch: crate::model::ModelDispatch,
+    model: &'a Model,
+    purpose: ModelPurpose,
+    clock: super::model_usage::CallClock,
+}
+
 struct PreparedDispatchStep {
     request: crate::model::PreparedModelRequest,
     admission: ModelEventAdmission,
@@ -86,6 +94,7 @@ impl StockExecution<'_> {
         };
         // Only a fresh provider generation streams; a continuation replays.
         let live = continuation.is_none() && purpose == ModelPurpose::Response;
+        let mut clock = super::model_usage::CallClock::unknown();
         let stream = if let Some(continuation) = continuation {
             #[cfg(feature = "filesystem")]
             {
@@ -110,6 +119,7 @@ impl StockExecution<'_> {
                 ))
                 .await?
             };
+            clock.start();
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let generated = if let Some(work) = self.native_work() {
                 Either::Right(
@@ -128,8 +138,13 @@ impl StockExecution<'_> {
         let observed = self
             .record_model_events(
                 journal,
-                input.operation_id,
-                (step, purpose, purpose_key),
+                ObservedCall {
+                    operation_id: input.operation_id,
+                    dispatch,
+                    model: &request.request().model,
+                    purpose,
+                    clock,
+                },
                 replayed,
                 &mut admission,
                 (stream, live),
@@ -391,8 +406,7 @@ impl StockExecution<'_> {
     async fn record_model_events(
         &self,
         journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        turn: (u32, ModelPurpose, &str),
+        call: ObservedCall<'_>,
         mut observed: Vec<ModelEvent>,
         admission: &mut ModelEventAdmission,
         (stream, live): (
@@ -400,7 +414,15 @@ impl StockExecution<'_> {
             bool,
         ),
     ) -> Result<Vec<ModelEvent>> {
-        let (step, purpose, purpose_key) = turn;
+        let ObservedCall {
+            operation_id,
+            dispatch,
+            model,
+            purpose,
+            clock,
+        } = call;
+        let step = dispatch.step;
+        let purpose_key = model_purpose_key(purpose);
         let io = self.io;
         let mut text = self
             .stock
@@ -426,6 +448,9 @@ impl StockExecution<'_> {
                     break;
                 };
                 let event = event?;
+                let latency_ns = matches!(event, ModelEvent::Completed { .. })
+                    .then(|| clock.elapsed_ns())
+                    .flatten();
                 let index = observed.len();
                 let key = with_history_io(io, |work| {
                     preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
@@ -442,6 +467,27 @@ impl StockExecution<'_> {
                 if let Some(text) = text.as_mut() {
                     text.observe(event);
                 }
+                let usage = match event {
+                    ModelEvent::Completed { metadata } => {
+                        Some(super::model_usage::ModelCallUsage {
+                            version: 1,
+                            completed: true,
+                            dispatch,
+                            purpose,
+                            provider: &model.provider,
+                            model: &model.name,
+                            agent_path: self
+                                .stock
+                                .task_context
+                                .as_ref()
+                                .and_then(|(context, _)| context.agent())
+                                .map(|(agent, _)| agent.as_str()),
+                            tokens: super::model_usage::ModelTokenUsage::reported(metadata),
+                            latency_ns,
+                        })
+                    }
+                    _ => None,
+                };
                 crate::obs::waiting(
                     "journal-commit",
                     operation_id,
@@ -451,6 +497,7 @@ impl StockExecution<'_> {
                         &key,
                         (step, purpose),
                         event,
+                        usage.as_ref(),
                         io,
                     ),
                 )
