@@ -57,11 +57,11 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
 /** Rust-verified provider over the generated gRPC Blobs service. */
 export class GrpcObjectsV1 extends ObjectsV1Provider {
   private readonly clients: ReturnType<typeof createObjectsV1GrpcClients>;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs: number | undefined;
   constructor(options: ObjectsV1GrpcOptions) {
     super();
     this.clients = createObjectsV1GrpcClients(options);
-    this.timeoutMs = options.timeoutMs ?? 30000;
+    this.timeoutMs = options.timeoutMs;
   }
   /** Releases the owned HTTP/2 connection and cancels outstanding calls. */
   close(): void { this.clients.close(); }
