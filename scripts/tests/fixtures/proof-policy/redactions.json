@@ -498,20 +498,6 @@
       "redacted_sha256": "7ff413eadaa164ffa2cb1247e05f5ee543751b6982f86a3ff7ee90b336382c98",
       "redacted_bytes": 12562
     },
-    "scripts/tests/fixtures/proof-policy/wave1-keys-source-9cf.rs": {
-      "original_blob": "0ad141074fbb876c1bf50143cd0000bce28cb088",
-      "original_sha256": "fcdb6c1abc598c7cd70e15f12300042f1db416a0f45d2a324dd01701ab826f70",
-      "original_bytes": 15030,
-      "redacted_sha256": "ac15d405ba73a4225209dd13094dbb4f1d9bb5c9e986650442ff913e396aaadc",
-      "redacted_bytes": 15010
-    },
-    "scripts/tests/fixtures/proof-policy/wave1-streams-source-cd2.rs": {
-      "original_blob": "5caa9ca2ce45d34677c2138c7d083c060d68c60d",
-      "original_sha256": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30",
-      "original_bytes": 15951,
-      "redacted_sha256": "383f086240d94d6ded8ca454283b9522999f634f4eabcab9de1e2792375392dc",
-      "redacted_bytes": 15931
-    },
     "scripts/tests/fixtures/proof-policy/actor-store-v1/run/inputs.log": {
       "original_blob": "6b0e188c7cc09f6fb9b4bf2307ae0b27fd6f7a17",
       "original_sha256": "015c9684478cf487f1d17dce4cfef9607269a2e856f9107c6b5420bf9979a52e",
