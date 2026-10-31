@@ -46,6 +46,9 @@ unsafe impl Sync for Prepared {}
 
 impl Prepared {
     pub(super) fn new(grant: &Grant) -> io::Result<Self> {
+        for root in std::iter::once(&grant.workspace).chain(&grant.read) {
+            root.verify(&std::fs::File::open(root).map_err(super::failure)?)?;
+        }
         let source = profile(grant)?;
         let source = CString::new(source).map_err(|_| refused("invalid Seatbelt profile"))?;
         let mut error = std::ptr::null_mut();
@@ -74,17 +77,22 @@ impl Prepared {
     }
 
     pub(super) fn install(self, command: &mut Command) {
+        let prepared = self;
         // SAFETY: the child applies already-compiled native data; policy
         // parsing, allocation and error formatting stay in the host.
         unsafe {
             command.pre_exec(move || {
-                if sandbox_apply(self.0.as_ptr()) == 0 {
+                if sandbox_apply(prepared.profile()) == 0 {
                     Ok(())
                 } else {
                     Err(io::Error::last_os_error())
                 }
             });
         }
+    }
+
+    fn profile(&self) -> *mut Profile {
+        self.0.as_ptr()
     }
 }
 

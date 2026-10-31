@@ -57,10 +57,62 @@ pub struct ExecutionGrant(Arc<Grant>);
 
 #[derive(Debug)]
 struct Grant {
-    workspace: PathBuf,
+    workspace: BoundPath,
     access: ExecutionAccess,
-    read: Vec<PathBuf>,
+    read: Vec<BoundPath>,
     network: ExecutionNetwork,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct BoundPath {
+    path: PathBuf,
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    identity: crate::FileIdentity,
+}
+
+impl BoundPath {
+    fn new(path: &Path) -> io::Result<Self> {
+        let path = canonical(path)?;
+        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+        let identity = {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                options.custom_flags(
+                    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+                );
+            }
+            crate::file_identity(&options.open(&path).map_err(failure)?).map_err(failure)?
+        };
+        Ok(Self {
+            path,
+            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+            identity,
+        })
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn verify(&self, file: &std::fs::File) -> io::Result<()> {
+        if crate::file_identity(file).map_err(failure)? != self.identity {
+            return Err(refused("execution grant root was replaced"));
+        }
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for BoundPath {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for BoundPath {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl ExecutionGrant {
@@ -73,13 +125,13 @@ impl ExecutionGrant {
         read: impl IntoIterator<Item = PathBuf>,
         network: ExecutionNetwork,
     ) -> io::Result<Self> {
-        let workspace = canonical(workspace)?;
+        let workspace = BoundPath::new(workspace)?;
         if !workspace.is_dir() {
             return Err(refused("execution workspace is not a directory"));
         }
         let read = read
             .into_iter()
-            .map(|path| canonical(&path))
+            .map(|path| BoundPath::new(&path))
             .collect::<io::Result<BTreeSet<_>>>()?
             .into_iter()
             .collect();

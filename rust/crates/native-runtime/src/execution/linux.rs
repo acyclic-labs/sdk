@@ -7,7 +7,7 @@
     reason = "checked Landlock and seccomp FFI in the native execution adapter"
 )]
 
-use super::{ExecutionAccess, ExecutionNetwork, Grant, failure, refused};
+use super::{BoundPath, ExecutionAccess, ExecutionNetwork, Grant, failure, refused};
 use std::{
     ffi::CString,
     fs::File,
@@ -33,6 +33,20 @@ const WRITE: u64 = (1 << 1)
     | (1 << 14);
 const FILE: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14);
 const CONNECT_TCP: u64 = 1 << 1;
+
+#[repr(C)]
+struct CapabilityHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Capabilities {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
 
 #[repr(C)]
 struct Ruleset {
@@ -65,6 +79,7 @@ impl Prepared {
     pub(super) fn new(grant: &Grant) -> io::Result<Self> {
         // ABI 6 supplies signal and abstract-UNIX scoping; earlier ABIs cannot
         // prove this contract. Never silently discard an unsupported right.
+        // SAFETY: VERSION accepts a null attribute and zero attribute length.
         let abi = syscall(|| unsafe {
             libc::syscall(
                 libc::SYS_landlock_create_ruleset,
@@ -86,6 +101,7 @@ impl Prepared {
             },
             scoped: 3,
         };
+        // SAFETY: initialized ABI 6 attributes, correct length, zero flags.
         let descriptor = syscall(|| unsafe {
             libc::syscall(
                 libc::SYS_landlock_create_ruleset,
@@ -115,14 +131,18 @@ impl Prepared {
         }
         // Null output and entropy are capabilities of computation. No arbitrary
         // device, host home, procfs or temporary tree is exposed.
-        prepared.path(Path::new("/dev/null"), (1 << 1) | (1 << 2))?;
-        prepared.path(Path::new("/dev/urandom"), 1 << 2)?;
+        prepared.path(
+            &BoundPath::new(Path::new("/dev/null"))?,
+            (1 << 1) | (1 << 2),
+        )?;
+        prepared.path(&BoundPath::new(Path::new("/dev/urandom"))?, 1 << 2)?;
         if let ExecutionNetwork::TcpPorts(ports) = &grant.network {
             for port in ports {
                 let rule = PortRule {
                     access: CONNECT_TCP,
                     port: u64::from(*port),
                 };
+                // SAFETY: live owned ruleset and initialized native port rule.
                 syscall(|| unsafe {
                     libc::syscall(
                         libc::SYS_landlock_add_rule,
@@ -137,7 +157,7 @@ impl Prepared {
         Ok(prepared)
     }
 
-    fn path(&mut self, path: &Path, access: u64) -> io::Result<()> {
+    fn path(&mut self, path: &BoundPath, access: u64) -> io::Result<()> {
         let name =
             CString::new(path.as_os_str().as_bytes()).map_err(|_| refused("invalid grant path"))?;
         // SAFETY: terminated path; O_PATH holds the object without reading it.
@@ -147,6 +167,7 @@ impl Prepared {
         }
         // SAFETY: successful open transferred ownership of fd.
         let file = unsafe { File::from_raw_fd(fd) };
+        path.verify(&file)?;
         let rule = PathRule {
             access: if file.metadata()?.is_dir() {
                 access
@@ -155,6 +176,8 @@ impl Prepared {
             },
             parent: file.as_raw_fd(),
         };
+        // SAFETY: the live root fd and packed path rule remain borrowed until
+        // the kernel copies this rule into the exclusively owned ruleset.
         syscall(|| unsafe {
             libc::syscall(
                 libc::SYS_landlock_add_rule,
@@ -184,6 +207,7 @@ impl Prepared {
         for fd in 0..3 {
             // SAFETY: fstat initializes this plain ABI output on success.
             let mut status: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: valid stdio descriptor and exclusively owned ABI output.
             if unsafe { libc::fstat(fd, &raw mut status) } != 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -197,6 +221,23 @@ impl Prepared {
                 return Err(io::Error::from_raw_os_error(libc::EPERM));
             }
         }
+        // SAFETY: clear all ambient and effective/permitted capabilities before
+        // admitting guest code, including when the launcher itself is root.
+        // no_new_privs then prevents exec from reacquiring them.
+        child_status(unsafe { libc::prctl(libc::PR_CAP_AMBIENT, 4, 0, 0, 0).into() })?;
+        let header = CapabilityHeader {
+            version: 0x2008_0522,
+            pid: 0,
+        };
+        let capabilities = [Capabilities {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2];
+        // SAFETY: version 3 uses precisely two initialized capability words.
+        child_status(unsafe {
+            libc::syscall(libc::SYS_capset, &raw const header, capabilities.as_ptr())
+        })?;
         // SAFETY: irreversible privilege and filesystem attenuation of this
         // child only. No other thread exists in the post-fork child.
         child_status(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0).into() })?;
@@ -406,6 +447,14 @@ fn denied_syscalls() -> Vec<libc::c_long> {
         libc::SYS_swapoff,
         libc::SYS_acct,
         libc::SYS_quotactl,
+        libc::SYS_open_tree,
+        libc::SYS_move_mount,
+        libc::SYS_fsopen,
+        libc::SYS_fsconfig,
+        libc::SYS_fsmount,
+        libc::SYS_fspick,
+        libc::SYS_mount_setattr,
+        libc::SYS_ioctl,
         // fchmodat2 is not exposed by every libc release; its number is shared
         // by both supported native ABIs. It must not bypass metadata denial.
         452,
