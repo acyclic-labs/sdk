@@ -31,6 +31,9 @@ fn cli_write_after_staging_before_final_comparison_is_adopted() -> Result<()> {
             },
             &mut CredentialIo::new(None)?,
         )?;
+        let RefreshPublication::Observed(adopted) = adopted else {
+            panic!("a concurrent credential owner cannot witness our publication")
+        };
         assert_eq!(adopted, cli);
         assert_eq!(std::fs::read(&path).expect("fixture read"), cli_bytes);
         assert_eq!(login.check_account(&adopted).is_err(), account_switch);
@@ -283,28 +286,48 @@ async fn metadata_only_cli_edit_keeps_rotated_tokens_and_unrelated_fields() -> R
 }
 
 #[test]
-fn metadata_only_edit_after_staging_is_merged_into_rotated_credentials() -> Result<()> {
-    let (root, _, _) = fixture(&jwt(0), 200)?;
-    let path = root.path().join("auth.json");
-    let original = std::fs::read(&path).unwrap();
-    let mut refreshed = auth("rotated-access");
-    refreshed["tokens"]["refresh_token"] = json!("rotated-refresh");
-    let mut cli = auth(&jwt(0));
-    cli["agent_identity"] = json!({"metadata":"after-staging"});
-    let merged = persist_with(
-        &path,
-        &original,
-        refreshed,
-        || {
-            std::fs::write(&path, serde_json::to_vec_pretty(&cli).unwrap())
-                .map_err(|_| invalid("fixture write"))
-        },
-        &mut CredentialIo::new(None)?,
-    )?;
-    assert_eq!(merged["tokens"]["access_token"], "rotated-access");
-    assert_eq!(merged["tokens"]["refresh_token"], "rotated-refresh");
-    assert_eq!(merged["agent_identity"], cli["agent_identity"]);
-    assert_eq!(decode_auth(&std::fs::read(path).unwrap())?, merged);
+fn publication_distinguishes_merged_metadata_from_concurrent_credentials() -> Result<()> {
+    for credentials_changed in [false, true] {
+        let (root, _, _) = fixture(&jwt(0), 200)?;
+        let path = root.path().join("auth.json");
+        let original = std::fs::read(&path).unwrap();
+        let mut refreshed = auth("rotated-access");
+        refreshed["tokens"]["refresh_token"] = json!("rotated-refresh");
+        let mut cli = auth(&jwt(0));
+        cli["agent_identity"] = json!({"metadata":"after-staging"});
+        if credentials_changed {
+            cli["tokens"]["access_token"] = json!("concurrent-access");
+        }
+        let merged = persist_with(
+            &path,
+            &original,
+            refreshed,
+            || {
+                std::fs::write(&path, serde_json::to_vec_pretty(&cli).unwrap())
+                    .map_err(|_| invalid("fixture write"))
+            },
+            &mut CredentialIo::new(None)?,
+        )?;
+        let merged = match merged {
+            RefreshPublication::Observed(document) => {
+                assert!(credentials_changed);
+                assert_eq!(document, cli);
+                assert_eq!(decode_auth(&std::fs::read(&path).unwrap())?, document);
+                continue;
+            }
+            RefreshPublication::Published { document, file } => {
+                assert!(!credentials_changed);
+                // The completion owner is the actual original file, not a path/hash.
+                assert!(acyclic_native_runtime::private_file::is_private(file.as_file()).unwrap());
+                drop(file);
+                document
+            }
+        };
+        assert_eq!(merged["tokens"]["access_token"], "rotated-access");
+        assert_eq!(merged["tokens"]["refresh_token"], "rotated-refresh");
+        assert_eq!(merged["agent_identity"], cli["agent_identity"]);
+        assert_eq!(decode_auth(&std::fs::read(path).unwrap())?, merged);
+    }
     Ok(())
 }
 

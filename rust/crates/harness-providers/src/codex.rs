@@ -303,7 +303,8 @@ impl CodexLogin {
                 .blocking(permit, move |io| {
                     persist_if_unchanged(&path, &original, auth, io)
                 })
-                .await?;
+                .await?
+                .into_document();
             self.check_account(&auth)?;
             break;
         }
@@ -488,12 +489,35 @@ fn validate_auth(auth: &Value) -> Result<()> {
     Ok(())
 }
 
+/// A concurrent document is not evidence that our refresh was published.
+/// The published branch owns only completion evidence, never a fresh source
+/// revision or immutable contents. The Auth source owner admits those separately.
+enum RefreshPublication {
+    Observed(Value),
+    Published {
+        document: Value,
+        file: acyclic_native_runtime::private_file::PublishedFile,
+    },
+}
+
+impl RefreshPublication {
+    fn into_document(self) -> Value {
+        match self {
+            Self::Observed(document) => document,
+            Self::Published { document, file } => {
+                drop(file);
+                document
+            }
+        }
+    }
+}
+
 fn persist_if_unchanged(
     path: &Path,
     original: &[u8],
     auth: Value,
     io: &mut CredentialIo,
-) -> Result<Value> {
+) -> Result<RefreshPublication> {
     persist_with(path, original, auth, || Ok(()), io)
 }
 
@@ -503,7 +527,7 @@ fn persist_with(
     auth: Value,
     before_replace: impl FnOnce() -> Result<()>,
     io: &mut CredentialIo,
-) -> Result<Value> {
+) -> Result<RefreshPublication> {
     io.charge(WorkCounters {
         backend_write_operations: 1,
         ..WorkCounters::UNCHARGED
@@ -527,7 +551,7 @@ fn persist_with(
     let baseline = document(original, io)?;
     let (mut observed, current) = load(path, io)?;
     let Some(mut auth) = merge_refresh(&baseline, &observed, &current, &auth, io)? else {
-        return Ok(current);
+        return Ok(RefreshPublication::Observed(current));
     };
     let mut file = crate::credential_file::create(parent)
         .map_err(|_| invalid("cannot create Codex credential update"))?;
@@ -537,7 +561,7 @@ fn persist_with(
     if bytes != observed {
         let current = document(&bytes, io)?;
         let Some(merged) = merge_refresh(&baseline, &bytes, &current, &auth, io)? else {
-            return Ok(current);
+            return Ok(RefreshPublication::Observed(current));
         };
         auth = merged;
         stage(&mut file, &auth, io)?;
@@ -555,9 +579,13 @@ fn persist_with(
         durability_operations: 1,
         ..WorkCounters::UNCHARGED
     })?;
-    file.publish(path, acyclic_native_runtime::RenameMode::Replace)
+    let file = file
+        .publish_retained(path, acyclic_native_runtime::RenameMode::Replace)
         .map_err(|_| invalid("cannot replace Codex auth.json"))?;
-    Ok(auth)
+    Ok(RefreshPublication::Published {
+        document: auth,
+        file,
+    })
 }
 
 fn stage(
