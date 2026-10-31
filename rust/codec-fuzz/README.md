@@ -78,6 +78,33 @@ check input consumption, typed EOF and finite producer loss; funded controls
 check refusal and allocation retirement. Private hooks use `test-support` and
 call the original parser rather than copying it into a model.
 
+The optional `object_schedule` target runs original `LocalMedium` operations
+on temporary real roots through `native_runtime::testing::Schedule`. It selects
+a physical fault site from the same operation's successful trace, injects
+before/after/partial-write/IO/disk-full faults, then checks actual visibility
+and reopen results. Mutation and flush outcomes remain separate. A failed
+mutation must have no effect; an ambiguous one may recover either whole value.
+The current small seed producers cover create, replace and conditional remove,
+both mutation and flush stages, all five fault kinds and plain/sealed complete
+generation references. Those references are opaque keys, not evidence of a
+consumer's generation authority or protection against an aliasing bug.
+
+```sh
+cargo run --features storage-schedules --example capture -- --accept-goldens
+cargo +nightly fuzz run --features storage-schedules object_schedule -- -max_total_time=30
+cargo run --features storage-schedules --example object_schedules -- corpus/object_schedule/medium-false-0-0-0
+```
+
+Capture uses the same provenance and golden mechanism as the syntax targets;
+without this feature, it preserves previous physical schedule entries. Replay
+of those entries requires the feature. The report groups reached physical
+operation/fault/stage/outcome branches and counts actual calls, owned boundaries
+and requested bytes. It establishes coverage only for the supplied inputs.
+No campaign, compaction/rename coverage, power-loss simulation or complexity
+bound follows from adding the target. Larger remove inputs can enter the
+adapter's original compaction path; its policy is never copied into the
+generator. All execution remains on demand.
+
 Existing session/follow state-machine targets remain in `../crates/stream/fuzz`,
 accounting/cancellation targets in `../crates/filesystem/fuzz`, Harness transport
 and JSON targets in `../crates/harness-fuzz`, and provider streaming/projection

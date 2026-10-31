@@ -10,6 +10,8 @@ mod harness_manifest;
 pub mod inference_http;
 pub mod log_frame;
 mod mcp;
+#[cfg(feature = "storage-schedules")]
+pub mod object_schedule;
 mod objects_json;
 mod semantic;
 
@@ -90,6 +92,12 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "session_protocol" => assert!(acyclic_stream::codec_fuzz::session(bytes)),
         "stream_persistence" => stream_persistence(bytes),
         "object_persistence" => assert!(acyclic_objects::codec_fuzz::check(bytes)),
+        #[cfg(feature = "storage-schedules")]
+        "object_schedule" => {
+            object_schedule::check(bytes).map_err(|error| error.to_string())?;
+        }
+        #[cfg(not(feature = "storage-schedules"))]
+        "object_schedule" => return Err("physical schedule replay requires storage-schedules; recovery: cargo run --features storage-schedules --example replay".into()),
         "ids" => ids(bytes),
         "auth" => auth(bytes),
         "identities" => identities(bytes),
