@@ -12,7 +12,11 @@ pin_project_lite::pin_project! {
     }
 }
 
-pub(crate) fn filter_map<S, F>(source: S, project: F) -> FilterMap<S, F> {
+pub(crate) fn filter_map<S, F, T>(source: S, project: F) -> FilterMap<S, F>
+where
+    S: futures::Stream,
+    F: FnMut(S::Item) -> Option<T>,
+{
     FilterMap { source, project }
 }
 
