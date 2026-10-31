@@ -751,14 +751,17 @@ const ANCHOR_MODE: &str = "ACYCLIC_CUSTODY_ANCHOR_MODE";
 
 /// A stand-in warden: holds a record lock until exit, forks a child, and
 /// publishes the child's PID. "anchor" forks the warden's group anchor;
-/// "paused" forks a child that keeps every inherited descriptor and only
-/// sleeps.
+/// "paused" forks a child that retains the record descriptor and waits for
+/// a signal.
 #[cfg(target_os = "linux")]
 #[test]
 fn anchor_parent_helper() {
     let Ok(mode) = std::env::var(ANCHOR_MODE) else {
         return;
     };
+    if mode == "exit-before-publish" {
+        return;
+    }
     let root = PathBuf::from(std::env::var_os(ROOT).expect("helper root"));
     let record = fs::File::create(root.join("record")).expect("record");
     crate::FileLock::try_hold_until_exit(record, crate::FileLockMode::Exclusive)
@@ -766,43 +769,55 @@ fn anchor_parent_helper() {
     let child = if mode == "anchor" {
         super::warden::spawn_anchor().expect("anchor")
     } else {
-        // SAFETY: the child only sleeps, which is async-signal-safe.
+        // SAFETY: the child only closes stdout and waits for signals;
+        // both operations are async-signal-safe.
         match unsafe { libc::fork() } {
-            0 => loop {
-                // SAFETY: sleeping until a signal.
-                unsafe { libc::pause() };
-            },
+            0 => {
+                // This negative control retains the record, but only its
+                // original parent may hold the PID-publication pipe open.
+                // SAFETY: close and _exit are async-signal-safe after fork.
+                if unsafe { libc::close(libc::STDOUT_FILENO) } != 0 {
+                    unsafe { libc::_exit(125) };
+                }
+                loop {
+                    // SAFETY: waiting until a signal is async-signal-safe.
+                    unsafe { libc::pause() };
+                }
+            }
             pid => pid,
         }
     };
     assert!(child > 0, "fork: {}", std::io::Error::last_os_error());
-    fs::write(root.join("child.tmp"), child.to_string()).expect("child pid");
-    fs::rename(root.join("child.tmp"), root.join("child")).expect("child pid");
+    println!("\nACYCLIC_CHILD_PID={child}");
     loop {
         thread::park();
     }
 }
 
-/// Kills a stand-in warden that forked a child in `mode`, then reports
-/// whether the record lock was free once the child was gone or, for a
-/// child that outlives the warden, while it still lives.
 #[cfg(target_os = "linux")]
-fn record_free_after_killed_parent(mode: &str) -> bool {
-    let root = tempfile::tempdir().expect("root");
-    let mut parent = Command::new(std::env::current_exe().expect("test executable"))
+fn anchor_parent(mode: &str, root: &Path) -> std::process::Child {
+    Command::new(std::env::current_exe().expect("test executable"))
         .args([
             "--exact",
             "process_tree::custody_tests::anchor_parent_helper",
             "--nocapture",
         ])
         .env(ANCHOR_MODE, mode)
-        .env(ROOT, root.path())
+        .env(ROOT, root)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("helper");
-    let child = published_child(root.path(), &mut parent);
+        .expect("helper")
+}
+
+/// Kills a stand-in warden after its original PID publication and checks
+/// the actual record lock once physical exit has settled.
+#[cfg(target_os = "linux")]
+fn record_free_after_killed_parent(mode: &str) -> bool {
+    let root = tempfile::tempdir().expect("root");
+    let mut parent = anchor_parent(mode, root.path());
+    let child = published_child(&mut parent).expect("original child PID publication");
     let watch = Watch::new(child).expect("running child");
     parent.kill().expect("kill helper");
     parent.wait().expect("reap helper");
@@ -826,19 +841,26 @@ fn record_free_after_killed_parent(mode: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn published_child(root: &Path, parent: &mut std::process::Child) -> u32 {
-    while !root.join("child").exists() {
-        assert!(
-            parent.try_wait().expect("helper").is_none(),
-            "helper exited early"
-        );
-        thread::sleep(Duration::from_millis(5));
+fn published_child(parent: &mut std::process::Child) -> std::io::Result<u32> {
+    use std::io::{BufRead as _, Error, ErrorKind};
+    let output = parent.stdout.take().ok_or_else(|| {
+        Error::new(
+            ErrorKind::BrokenPipe,
+            "child PID publication pipe is missing",
+        )
+    })?;
+    for line in std::io::BufReader::new(output).lines() {
+        let line = line?;
+        if let Some(pid) = line.strip_prefix("ACYCLIC_CHILD_PID=") {
+            return pid
+                .parse()
+                .map_err(|error| Error::new(ErrorKind::InvalidData, error));
+        }
     }
-    fs::read_to_string(root.join("child"))
-        .expect("child pid")
-        .trim()
-        .parse()
-        .expect("numeric pid")
+    Err(Error::new(
+        ErrorKind::UnexpectedEof,
+        "original child PID producer exited before publication",
+    ))
 }
 
 /// A warden killed while its group anchor lives leaves no holder of its
@@ -846,14 +868,19 @@ fn published_child(root: &Path, parent: &mut std::process::Child) -> u32 {
 #[cfg(target_os = "linux")]
 #[test]
 fn an_anchor_never_outlives_or_holds_for_its_killed_warden() {
+    let root = tempfile::tempdir().expect("root");
+    let mut parent = anchor_parent("exit-before-publish", root.path());
+    let error = published_child(&mut parent).expect_err("missing producer published a PID");
+    assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    assert!(parent.wait().expect("reap unpublished parent").success());
     assert!(
         record_free_after_killed_parent("anchor"),
         "a killed warden's anchor kept its record locked"
     );
 }
 
-/// Negative control: a child that keeps the inherited descriptors and only
-/// sleeps holds the record locked after its parent is killed.
+/// Negative control: a child that retains the record descriptor and waits
+/// for a signal holds the record locked after its parent is killed.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_paused_child_keeps_its_killed_parents_record_locked() {
