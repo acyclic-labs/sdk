@@ -20,7 +20,7 @@ use crate::guest::{
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt, CommitRequest,
-    IdempotencyKey, PathHead, Record, StreamError, StreamPath, StreamProvider,
+    ForkCut, IdempotencyKey, PathHead, Provenance, Record, StreamError, StreamPath, StreamProvider,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
@@ -167,6 +167,7 @@ pub struct Snapshot {
     tail: u64,
     anchor: Option<CommitId>,
     state: Option<State>,
+    provenance: Option<Provenance<StreamPath, ForkCut>>,
 }
 
 struct Publication<'a> {
@@ -185,14 +186,20 @@ impl Snapshot {
         &self.path
     }
 
+    /// Original inherited prefix from this same committed observation.
+    pub const fn provenance(&self) -> Option<&Provenance<StreamPath, ForkCut>> {
+        self.provenance.as_ref()
+    }
+
     fn from_head(path: StreamPath, head: Option<PathHead>) -> Result<Self, Error> {
-        let (tail, last) = head.map_or((0, None), |head| (head.tail, head.last));
+        let (tail, last, provenance) = head.map_or((0, None, None), |head| (head.tail, head.last, head.origin));
         if tail == 0 {
             return Ok(Self {
                 path,
                 tail,
                 anchor: None,
                 state: None,
+                provenance,
             });
         }
         let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
@@ -205,6 +212,7 @@ impl Snapshot {
             tail,
             anchor: Some(record.commit_id),
             state: Some(state),
+            provenance,
         })
     }
 }
@@ -221,6 +229,7 @@ pub struct PreparedPublish {
     composition: Option<Box<dyn Composition>>,
     sealed: bool,
     acknowledgement_unknown: bool,
+    provenance: Option<Provenance<StreamPath, ForkCut>>,
 }
 impl std::fmt::Debug for PreparedPublish {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -282,6 +291,7 @@ impl PreparedPublish {
                     .take()
                     .ok_or(Error::Invalid("publication omitted its authored state"))?,
             ),
+            provenance: self.provenance.clone(),
         }))
     }
 
@@ -296,6 +306,7 @@ impl PreparedPublish {
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,
+            provenance: None,
             request: CommitRequest {
                 deadline_unix_millis: None,
                 conditions: Vec::new(),
@@ -1008,6 +1019,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,
+            provenance: previous.provenance.clone(),
             request: CommitRequest {
                 deadline_unix_millis: None,
                 conditions: vec![own],

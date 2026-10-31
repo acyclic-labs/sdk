@@ -443,6 +443,11 @@ fn idempotency(value: &str) -> Result<IdempotencyKey, Error> {
 
 /// Run every case against the backend's fresh disposable resources.
 pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
+    fork_uniform(
+        target.store().provider().clone(),
+        StreamPath::new(format!("{}/fork-uniform", target.store().root())).map_err(Error::from)?,
+    )
+    .await?;
     let run = target.namespace();
     ordered(target, run).await?;
     applied(target, run).await?;
@@ -467,6 +472,107 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     interrupted(target, run).await?;
     bounded_case(target, "forked", BUDGET_MS, forked(target, run)).await?;
     restarted(target, run).await
+}
+
+/// Create and fork share the same unplaced state, claim and publication fences.
+/// The separate activation root lets this check drive the actual Store without
+/// racing an already-running host's placement of the new actors.
+pub async fn fork_uniform<P: StreamProvider + ?Sized>(
+    provider: std::sync::Arc<P>,
+    root: StreamPath,
+) -> Result<(), Failure> {
+    let store = Store::new(provider, root);
+    let actor = |id: &[u8]| {
+        ActorReference::new(b"conformance", b"fork-uniform", id)
+            .map_err(|_| Error::Invalid("conformance actor id"))
+    };
+    let parent = actor(b"parent")?;
+    let created = actor(b"created")?;
+    let forked = actor(b"forked")?;
+    for target in [&parent, &created] {
+        let mut publication = PreparedPublish::foreign(IdempotencyKey::unique());
+        for effect in store.create(target, BTreeMap::new(), None)? {
+            publication.join(effect)?;
+        }
+        store.submit(publication).await?;
+    }
+    let parent_initial = store.load(&parent).await?;
+    let parent_epoch = 17;
+    store
+        .claim(&parent_initial, parent_epoch, IdempotencyKey::unique())
+        .await?;
+    let parent_cut = store.load(&parent).await?;
+    let mut publication = PreparedPublish::foreign(IdempotencyKey::unique());
+    for effect in store.fork(&parent_cut, &forked, BTreeMap::new())? {
+        publication.join(effect)?;
+    }
+    store.submit(publication).await?;
+
+    let created_cut = store.load(&created).await?;
+    let forked_cut = store.load(&forked).await?;
+    let require = |valid: bool, detail: &str| {
+        if valid {
+            Ok(())
+        } else {
+            Err(Failure::Violation {
+                case: "fork-uniform",
+                detail: detail.into(),
+            })
+        }
+    };
+    require(
+        created_cut.state() == forked_cut.state()
+            && created_cut.state().is_some_and(|state| state.epoch() == 0),
+        "create and fork did not start at the same unplaced state",
+    )?;
+    require(
+        created_cut.provenance().is_none()
+            && forked_cut.provenance().is_some_and(|origin| {
+                origin.source == *parent_cut.path() && origin.inherited.forked_at == 2
+            }),
+        "fork provenance did not retain its original parent cut",
+    )?;
+    for (target, initial) in [(&created, created_cut), (&forked, forked_cut)] {
+        // Negative control: inheriting the parent's epoch would admit this
+        // exact writer, before the child has ever acquired its own placement.
+        require(
+            matches!(
+                store
+                    .set_paused(&initial, parent_epoch, true, IdempotencyKey::unique())
+                    .await,
+                Err(Error::Conflict)
+            ),
+            "a stale parent-epoch writer changed an unplaced child",
+        )?;
+        let unchanged = store.load(target).await?;
+        require(
+            unchanged.state() == initial.state(),
+            "refusal changed child state",
+        )?;
+        store.claim(&initial, 1, IdempotencyKey::unique()).await?;
+        let placed = store.load(target).await?;
+        require(
+            matches!(
+                store
+                    .set_paused(&placed, parent_epoch, true, IdempotencyKey::unique())
+                    .await,
+                Err(Error::Conflict)
+            ),
+            "a stale parent-epoch writer changed a placed child",
+        )?;
+        store
+            .set_paused(&placed, 1, true, IdempotencyKey::unique())
+            .await?;
+        let accepted = store.load(target).await?;
+        require(
+            accepted
+                .state()
+                .is_some_and(|state| state.paused() && state.epoch() == 1)
+                && accepted.provenance() == initial.provenance(),
+            "the child's original placement did not publish independently",
+        )?;
+    }
+    Ok(())
 }
 
 /// A fork starts from the parent's exact committed cut, then each actor's

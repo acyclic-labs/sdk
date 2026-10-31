@@ -124,15 +124,6 @@ pub enum ForkSource {
     Checkpoint(CheckpointId),
 }
 
-/// Where a forked machine came from. A created machine has none.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Provenance {
-    pub source: ForkSource,
-    /// What the children inherited. A checkpoint fork resumes the checkpoint's
-    /// captured memory and disk: [`ForkFidelity::MemoryAndDisk`].
-    pub fidelity: ForkFidelity,
-}
-
 /// Terminal customer mutation outcome.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MutationOutcome {
@@ -143,7 +134,7 @@ pub enum MutationOutcome {
     /// Outcome of [`MachinesProvider::fork`] and [`MachinesProvider::fork_machine`]:
     /// the children in index order, each the same resource a create yields.
     Forked {
-        provenance: Provenance,
+        provenance: Provenance<ForkSource, ForkFidelity>,
         machines: Vec<MachineObservation>,
     },
     Suspended(MachineId),

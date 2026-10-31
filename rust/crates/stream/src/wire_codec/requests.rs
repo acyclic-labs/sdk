@@ -51,12 +51,12 @@ pub(crate) fn record_len(record: &crate::Record, followed: Option<&crate::Stream
         ))
 }
 
-pub(crate) fn origin_len(origin: &crate::ForkOrigin) -> usize {
+pub(crate) fn origin_len(origin: &crate::Provenance<crate::StreamPath, crate::ForkCut>) -> usize {
     block_len(origin.source.as_str().len())
         .saturating_add(uint_len(
-            (origin.forked_at != 0).then_some(origin.forked_at),
+            (origin.inherited.forked_at != 0).then_some(origin.inherited.forked_at),
         ))
-        .saturating_add(block_len(origin.commit_id.as_bytes().len()))
+        .saturating_add(block_len(origin.inherited.commit_id.as_bytes().len()))
 }
 
 pub(crate) fn child_len(child: &crate::Child) -> usize {

@@ -255,7 +255,7 @@ fn fork_admissions_are_created_admissions_checked_against_their_provenance()
         admitted.provenance,
         Provenance {
             source: ForkSource::Machine(source),
-            fidelity: ForkFidelity::MemoryAndDisk,
+            inherited: ForkFidelity::MemoryAndDisk,
         }
     );
     assert_eq!(
@@ -269,7 +269,7 @@ fn fork_admissions_are_created_admissions_checked_against_their_provenance()
     assert_eq!(
         decode_fork_admissions(&live_fork(&disk, wire::ForkFidelity::DiskOnly, &[child]))?
             .provenance
-            .fidelity,
+            .inherited,
         ForkFidelity::DiskOnly
     );
     assert_eq!(

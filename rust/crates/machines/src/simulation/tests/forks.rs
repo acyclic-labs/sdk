@@ -38,7 +38,7 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
         provenance,
         Provenance {
             source: ForkSource::Checkpoint(checkpoint.id),
-            fidelity: ForkFidelity::MemoryAndDisk,
+            inherited: ForkFidelity::MemoryAndDisk,
         }
     );
     assert_eq!(children.len(), 2);
@@ -88,7 +88,7 @@ async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
         provenance,
         Provenance {
             source: ForkSource::Machine(parent.id),
-            fidelity: ForkFidelity::MemoryAndDisk,
+            inherited: ForkFidelity::MemoryAndDisk,
         }
     );
     assert_eq!(children.len(), 2);
@@ -131,7 +131,7 @@ async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
     else {
         unreachable!();
     };
-    assert_eq!(provenance.fidelity, ForkFidelity::MemoryAndDisk);
+    assert_eq!(provenance.inherited, ForkFidelity::MemoryAndDisk);
     assert_eq!(grandchildren.len(), 1);
 }
 
@@ -233,7 +233,7 @@ async fn live_fork_fidelity_follows_the_declared_capability() {
         disk_only.fork_machine(parent.id, two(), key(0x31)).await,
         Ok(MutationOutcome::Forked {
             provenance: Provenance {
-                fidelity: ForkFidelity::DiskOnly,
+                inherited: ForkFidelity::DiskOnly,
                 ..
             },
             ..

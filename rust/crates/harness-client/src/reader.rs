@@ -27,7 +27,7 @@ use demand::Demands;
 pub use driver::Driver;
 
 use acyclic_stream::OwnedBytes;
-use acyclic_stream::{CommitId, ForkOrigin, PathHead, StreamError, StreamPath};
+use acyclic_stream::{CommitId, ForkCut, PathHead, Provenance, StreamError, StreamPath};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Finite budgets for one client, independent of the number of streams.
@@ -240,7 +240,7 @@ pub struct ListedChild {
     /// Child path.
     pub path: StreamPath,
     /// Immediate origin of the listed path, not its projected descendant.
-    pub origin: Option<ForkOrigin>,
+    pub origin: Option<Provenance<StreamPath, ForkCut>>,
     /// The projected stream's last record.
     pub tail: Option<Fetched>,
 }
@@ -1199,7 +1199,11 @@ impl Reader {
             .insert_record(stream, record.sequence, record.value, protect);
     }
 
-    fn learn_origin(&mut self, stream: &StreamPath, origin: Option<ForkOrigin>) {
+    fn learn_origin(
+        &mut self,
+        stream: &StreamPath,
+        origin: Option<Provenance<StreamPath, ForkCut>>,
+    ) {
         if self.cache.origin_changed(stream, &origin) {
             self.replaced(stream);
         }
@@ -1218,10 +1222,9 @@ impl Reader {
                 Some(last) => last.sequence.checked_add(1) == Some(head.tail),
                 None => head.tail == 0,
             }
-            && head
-                .origin
-                .as_ref()
-                .is_none_or(|origin| origin.source != *stream && origin.forked_at <= head.tail);
+            && head.origin.as_ref().is_none_or(|origin| {
+                origin.source != *stream && origin.inherited.forked_at <= head.tail
+            });
         if valid {
             let current = self.cache.observation(stream);
             if current != observed {
@@ -1584,7 +1587,12 @@ fn projected(cache: &RecordCache, want: &Want) -> Vec<(StreamPath, u64)> {
 mod reader_tests {
     use super::*;
 
-    fn head(tail: u64, commit: CommitId, value: &[u8], origin: Option<ForkOrigin>) -> PathHead {
+    fn head(
+        tail: u64,
+        commit: CommitId,
+        value: &[u8],
+        origin: Option<Provenance<StreamPath, ForkCut>>,
+    ) -> PathHead {
         PathHead {
             retained_through: None,
             tail,
@@ -1642,10 +1650,12 @@ mod reader_tests {
     fn replacement_head_discards_inherited_source_bytes_before_relearning() {
         let source = StreamPath::new("test/source").unwrap();
         let child = StreamPath::new("test/child").unwrap();
-        let origin = ForkOrigin {
+        let origin = Provenance {
             source: source.clone(),
-            forked_at: 1,
-            commit_id: CommitId::from_bytes([9; 32]),
+            inherited: ForkCut {
+                forked_at: 1,
+                commit_id: CommitId::from_bytes([9; 32]),
+            },
         };
         let mut reader = Reader::new(ReaderPolicy {
             requests: 2,
@@ -1707,10 +1717,12 @@ mod reader_tests {
     #[test]
     fn record_completion_cannot_hide_a_changed_fork_publication() {
         let stream = StreamPath::new("test/child").unwrap();
-        let origin = ForkOrigin {
+        let origin = Provenance {
             source: StreamPath::new("test/source").unwrap(),
-            forked_at: 1,
-            commit_id: CommitId::from_bytes([9; 32]),
+            inherited: ForkCut {
+                forked_at: 1,
+                commit_id: CommitId::from_bytes([9; 32]),
+            },
         };
         let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
         reader.cache.observe_origin(&stream, Some(origin.clone()));
@@ -1720,8 +1732,11 @@ mod reader_tests {
         // Only the publication changes; a preceding record commit still
         // matches. A concurrent history read must not erase that distinction.
         reader.keep(&stream, fetched(0, 3), None);
-        let changed = ForkOrigin {
-            commit_id: CommitId::from_bytes([10; 32]),
+        let changed = Provenance {
+            inherited: ForkCut {
+                commit_id: CommitId::from_bytes([10; 32]),
+                ..origin.inherited
+            },
             ..origin
         };
         assert_eq!(
@@ -1743,8 +1758,11 @@ mod reader_tests {
         // If a later primitive origin observation already won, an older
         // conflicting Head must reobserve before its follow can be accepted.
         let observed = reader.cache.observation(&stream);
-        let newer = ForkOrigin {
-            commit_id: CommitId::from_bytes([11; 32]),
+        let newer = Provenance {
+            inherited: ForkCut {
+                commit_id: CommitId::from_bytes([11; 32]),
+                ..changed.inherited.clone()
+            },
             ..changed.clone()
         };
         reader.learn_origin(&stream, Some(newer.clone()));
@@ -1976,10 +1994,12 @@ mod reader_tests {
         reader.cache.observe_origin(&source, None);
         reader.cache.observe_origin(
             &child,
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: source.clone(),
-                forked_at: 1,
-                commit_id: CommitId::from_bytes([1; 32]),
+                inherited: ForkCut {
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([1; 32]),
+                },
             }),
         );
         reader.plan([(
@@ -1996,10 +2016,12 @@ mod reader_tests {
         };
         reader.learn_origin(
             &source,
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: StreamPath::new("test/other").unwrap(),
-                forked_at: 0,
-                commit_id: CommitId::from_bytes([2; 32]),
+                inherited: ForkCut {
+                    forked_at: 0,
+                    commit_id: CommitId::from_bytes([2; 32]),
+                },
             }),
         );
         assert_eq!(reader.take_cancelled(), vec![op.id()]);
@@ -2096,10 +2118,12 @@ mod reader_tests {
             .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None);
         reader.cache.observe_origin(
             &child,
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: stream.clone(),
-                forked_at: 1,
-                commit_id: CommitId::from_bytes([2; 32]),
+                inherited: ForkCut {
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([2; 32]),
+                },
             }),
         );
         let snapshot = reader.snapshot().unwrap();

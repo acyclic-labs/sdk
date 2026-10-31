@@ -210,7 +210,7 @@ impl MachinesHost {
                 provenance:
                     Provenance {
                         source: ForkSource::Machine(source),
-                        fidelity,
+                        inherited: fidelity,
                     },
                 machines: children,
             } if source == machine && children.len() == count.get() as usize => Ok((

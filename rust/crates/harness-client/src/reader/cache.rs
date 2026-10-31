@@ -23,7 +23,7 @@
 use super::backing::{BackingPool, RecordBytes};
 use acyclic_auth::credential::{CredentialBinding, CredentialRevision};
 use acyclic_stream::OwnedBytes;
-use acyclic_stream::{CommitId, ForkOrigin, OwnedBytesBacking, StreamPath};
+use acyclic_stream::{CommitId, ForkCut, OwnedBytesBacking, Provenance, StreamPath};
 use std::collections::{BTreeMap, BTreeSet};
 /// Fixed accounting charge per entry: map nodes, key and LRU bookkeeping.
 const ENTRY_OVERHEAD: usize = 96;
@@ -93,7 +93,7 @@ struct Meta {
     /// Highest observed exclusive tail.
     tail: Option<u64>,
     /// Exact immediate inherited cut, including its publication identity.
-    fork: Option<ForkOrigin>,
+    fork: Option<Provenance<StreamPath, ForkCut>>,
     /// A primitive Head or children page observed this path's origin.
     origin_known: bool,
     /// Commit of the highest cached record, checked when a follow resumes.
@@ -261,7 +261,11 @@ impl RecordCache {
 
     /// Learn the exact primitive origin. A changed publication invalidates
     /// records and dependent aliases, even when source and offset match.
-    pub fn observe_origin(&mut self, stream: &StreamPath, origin: Option<ForkOrigin>) {
+    pub fn observe_origin(
+        &mut self,
+        stream: &StreamPath,
+        origin: Option<Provenance<StreamPath, ForkCut>>,
+    ) {
         if self.origin_changed(stream, &origin) {
             self.remove_stream(stream, true);
         }
@@ -291,7 +295,11 @@ impl RecordCache {
         }
     }
 
-    pub(super) fn origin_changed(&self, stream: &StreamPath, origin: &Option<ForkOrigin>) -> bool {
+    pub(super) fn origin_changed(
+        &self,
+        stream: &StreamPath,
+        origin: &Option<Provenance<StreamPath, ForkCut>>,
+    ) -> bool {
         self.meta
             .get(stream)
             .is_some_and(|meta| (meta.origin_known || meta.fork.is_some()) && &meta.fork != origin)
@@ -311,7 +319,7 @@ impl RecordCache {
 
     /// The fork origin, if learned.
     #[must_use]
-    pub fn fork(&self, stream: &StreamPath) -> Option<&ForkOrigin> {
+    pub fn fork(&self, stream: &StreamPath) -> Option<&Provenance<StreamPath, ForkCut>> {
         if !self.access.allows() {
             return None;
         }
@@ -404,7 +412,7 @@ impl RecordCache {
             let mut path = stream;
             let mut seen = BTreeSet::from([stream.clone()]);
             while let Some(origin) = self.fork(path) {
-                if origin.forked_at == 0 || !seen.insert(origin.source.clone()) {
+                if origin.inherited.forked_at == 0 || !seen.insert(origin.source.clone()) {
                     break;
                 }
                 pending.push(origin.source.clone());
@@ -559,7 +567,7 @@ impl RecordCache {
         // terminates on malformed cyclic input without allocating per lookup.
         for _ in 0..self.meta.len() {
             match self.meta.get(path).and_then(|meta| meta.fork.as_ref()) {
-                Some(origin) if sequence < origin.forked_at => path = &origin.source,
+                Some(origin) if sequence < origin.inherited.forked_at => path = &origin.source,
                 _ => break,
             }
         }
@@ -738,7 +746,7 @@ impl RecordCache {
             };
             let own = fork
                 .as_ref()
-                .map_or(from, |origin| from.max(origin.forked_at));
+                .map_or(from, |origin| from.max(origin.inherited.forked_at));
             if own < end {
                 let range = Key::Record(path.clone(), own)..Key::Record(path.clone(), end);
                 if displayed {
@@ -753,8 +761,8 @@ impl RecordCache {
                 }
             }
             match fork {
-                Some(origin) if from < origin.forked_at && from < end => {
-                    end = end.min(origin.forked_at);
+                Some(origin) if from < origin.inherited.forked_at && from < end => {
+                    end = end.min(origin.inherited.forked_at);
                     path = origin.source;
                 }
                 _ => break,
@@ -1001,8 +1009,8 @@ impl RecordCache {
                 Some(origin) => {
                     out.push(1);
                     put_str(&mut out, origin.source.as_str());
-                    put_u64(&mut out, origin.forked_at);
-                    out.extend_from_slice(origin.commit_id.as_bytes());
+                    put_u64(&mut out, origin.inherited.forked_at);
+                    out.extend_from_slice(origin.inherited.commit_id.as_bytes());
                 }
                 None => out.push(0),
             }
@@ -1109,12 +1117,14 @@ impl RecordCache {
             };
             let fork = match input.u8()? {
                 0 => None,
-                1 => Some(ForkOrigin {
+                1 => Some(Provenance {
                     source: input.path()?,
-                    forked_at: input.u64()?,
-                    commit_id: CommitId::from_bytes(
-                        input.take(32)?.try_into().map_err(|_| SnapshotError)?,
-                    ),
+                    inherited: ForkCut {
+                        forked_at: input.u64()?,
+                        commit_id: CommitId::from_bytes(
+                            input.take(32)?.try_into().map_err(|_| SnapshotError)?,
+                        ),
+                    },
                 }),
                 _ => return Err(SnapshotError),
             };
@@ -1389,10 +1399,12 @@ mod tests {
         assert!(cache.insert_record(&stream, 1, root.slice(20..24), None));
         cache.observe_origin(
             &child,
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: stream.clone(),
-                forked_at: 2,
-                commit_id: CommitId::from_bytes([1; 32]),
+                inherited: ForkCut {
+                    forked_at: 2,
+                    commit_id: CommitId::from_bytes([1; 32]),
+                },
             }),
         );
         let view = cache.record(&child, 0).unwrap().clone();
@@ -1505,19 +1517,23 @@ mod tests {
         let child = StreamPath::new("child").unwrap();
         let grandchild = StreamPath::new("grandchild").unwrap();
         let mut cache = RecordCache::new(64 * 1024, 100_008);
-        let origin = ForkOrigin {
+        let origin = Provenance {
             source: source.clone(),
-            forked_at: 0,
-            commit_id: CommitId::from_bytes([1; 32]),
+            inherited: ForkCut {
+                forked_at: 0,
+                commit_id: CommitId::from_bytes([1; 32]),
+            },
         };
         cache.observe_origin(&child, Some(origin.clone()));
         cache.insert_record(&child, 0, OwnedBytes::from_static(b"private"), None);
         cache.observe_origin(
             &grandchild,
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: child.clone(),
-                forked_at: 1,
-                commit_id: CommitId::from_bytes([2; 32]),
+                inherited: ForkCut {
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([2; 32]),
+                },
             }),
         );
         assert_eq!(cache.record(&grandchild, 0).unwrap().as_ref(), b"private");
@@ -1541,18 +1557,20 @@ mod tests {
         for index in 0..100_000 {
             cache.observe_origin(
                 &StreamPath::new(format!("unrelated/{index}")).unwrap(),
-                Some(ForkOrigin {
+                Some(Provenance {
                     source: unrelated.clone(),
-                    forked_at: 1,
-                    commit_id: CommitId::from_bytes([4; 32]),
+                    inherited: ForkCut { forked_at: 1, commit_id: CommitId::from_bytes([4; 32]) },
                 }),
             );
         }
         cache.invalidation_visits = 0;
         cache.observe_origin(
             &child,
-            Some(ForkOrigin {
-                commit_id: CommitId::from_bytes([3; 32]),
+            Some(Provenance {
+                inherited: ForkCut {
+                    commit_id: CommitId::from_bytes([3; 32]),
+                    ..origin.inherited
+                },
                 ..origin
             }),
         );
@@ -1616,10 +1634,12 @@ mod tests {
             let child = StreamPath::new(format!("fork{index}")).unwrap();
             cache.observe_origin(
                 &child,
-                Some(ForkOrigin {
+                Some(Provenance {
                     source,
-                    forked_at: 1,
-                    commit_id: CommitId::from_bytes([1; 32]),
+                    inherited: ForkCut {
+                        forked_at: 1,
+                        commit_id: CommitId::from_bytes([1; 32]),
+                    },
                 }),
             );
             source = child;
@@ -1697,10 +1717,12 @@ mod tests {
         cache.observe_tail(&source, 2);
         cache.observe_origin(
             &child,
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: source.clone(),
-                forked_at: 2,
-                commit_id: CommitId::from_bytes([1; 32]),
+                inherited: ForkCut {
+                    forked_at: 2,
+                    commit_id: CommitId::from_bytes([1; 32]),
+                },
             }),
         );
         cache.insert_record(&source, 0, OwnedBytes::from_static(b"a"), None);

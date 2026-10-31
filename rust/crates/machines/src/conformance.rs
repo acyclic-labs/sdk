@@ -508,7 +508,7 @@ async fn verify_provider(
     if provenance
         != (crate::Provenance {
             source: crate::ForkSource::Checkpoint(checkpoint.id),
-            fidelity: crate::ForkFidelity::MemoryAndDisk,
+            inherited: crate::ForkFidelity::MemoryAndDisk,
         })
     {
         return Err("fork substituted its checkpoint provenance".into());
@@ -641,7 +641,7 @@ async fn live_fork(
         return Err("live fork returned the wrong outcome".into());
     };
     if provenance.source != crate::ForkSource::Machine(machine.id)
-        || provenance.fidelity != expected
+        || provenance.inherited != expected
     {
         return Err("live fork substituted its source or declared fidelity".into());
     }

@@ -1,5 +1,10 @@
 # acyclic-actors
 
+Created and forked actors both start unplaced at epoch zero. A fork inherits its
+parent's state cut, then acquires its own placement fence. `local::Snapshot::provenance`
+returns the shared Streams `Provenance<StreamPath, ForkCut>` from the same head
+observation; later placements preserve that original ancestry.
+
 Rust-owned Actors v1 public contract. An Actor has an identity separate from
 Streams, an immutable code version, explicit bindings, and independently
 recoverable subscriptions. Adding a subscription selects its start once;

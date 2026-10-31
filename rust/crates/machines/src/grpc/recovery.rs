@@ -226,7 +226,7 @@ pub(super) fn settled_checkpoint(
 /// machine admission under the shared operation and one provenance.
 pub(super) struct ForkAdmitted {
     pub(super) operation: OperationId,
-    pub(super) provenance: Provenance,
+    pub(super) provenance: Provenance<ForkSource, ForkFidelity>,
     pub(super) children: Vec<(MachineId, MachineContract)>,
 }
 
@@ -256,10 +256,10 @@ pub(super) fn decode_fork_admissions(
         let contract = decode_contract(admission.contract.as_ref())?;
         let inherited = match provenance.source {
             ForkSource::Machine(source) => {
-                child != source && contract.fork_fidelity() == Some(provenance.fidelity)
+                child != source && contract.fork_fidelity() == Some(provenance.inherited)
             }
             ForkSource::Checkpoint(checkpoint) => {
-                provenance.fidelity == ForkFidelity::MemoryAndDisk
+                provenance.inherited == ForkFidelity::MemoryAndDisk
                     && contract.image == Image::Checkpoint(checkpoint)
             }
         };
@@ -282,7 +282,9 @@ pub(super) fn decode_fork_admissions(
     })
 }
 
-fn decode_provenance(value: Option<&wire::Provenance>) -> Result<Provenance, ProviderError> {
+fn decode_provenance(
+    value: Option<&wire::Provenance>,
+) -> Result<Provenance<ForkSource, ForkFidelity>, ProviderError> {
     let value =
         value.ok_or_else(|| ProviderError::Rejected("fork provenance is missing".into()))?;
     let source = match value.source.as_ref() {
@@ -309,7 +311,10 @@ fn decode_provenance(value: Option<&wire::Provenance>) -> Result<Provenance, Pro
             ));
         }
     };
-    Ok(Provenance { source, fidelity })
+    Ok(Provenance {
+        source,
+        inherited: fidelity,
+    })
 }
 
 /// Checks a Fork or ForkMachine reply against its request, then settles it on

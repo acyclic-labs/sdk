@@ -368,7 +368,7 @@ impl MachinesProvider for SimulatedMachines {
                         Ok(MutationOutcome::Forked {
                             provenance: Provenance {
                                 source: ForkSource::Checkpoint(checkpoint),
-                                fidelity: ForkFidelity::MemoryAndDisk,
+                                inherited: ForkFidelity::MemoryAndDisk,
                             },
                             machines: children,
                         })
@@ -447,7 +447,7 @@ impl MachinesProvider for SimulatedMachines {
                         Ok(MutationOutcome::Forked {
                             provenance: Provenance {
                                 source: ForkSource::Machine(machine),
-                                fidelity,
+                                inherited: fidelity,
                             },
                             machines: children,
                         })

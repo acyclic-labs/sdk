@@ -13,7 +13,7 @@ use acyclic_harness_core::agent::{
     AGENTS, AgentId, AgentPath, AgentRecord, ForkAdopted, InboxRecord, Phase, StatusRecord,
 };
 use acyclic_stream::OwnedBytes;
-use acyclic_stream::{CommitId, ForkOrigin, PathHead, Record, StreamPath};
+use acyclic_stream::{CommitId, ForkCut, PathHead, Provenance, Record, StreamPath};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The fixture's tree never changes shape after creation.
@@ -100,20 +100,22 @@ fn kind(stream: &StreamPath) -> Option<Kind> {
 
 impl Swarm {
     /// Primitive path origin, with a distinct cut for inbox and conversation.
-    fn origin(&self, stream: &StreamPath) -> Option<ForkOrigin> {
+    fn origin(&self, stream: &StreamPath) -> Option<Provenance<StreamPath, ForkCut>> {
         let (root, child, conversation) = match kind(stream)? {
             Kind::Conversation(root, Some(child)) => (root, child, true),
             Kind::Inbox(root, Some(child)) => (root, child, false),
             _ => return None,
         };
-        Some(ForkOrigin {
+        Some(Provenance {
             source: if conversation {
                 agent(root, None).conversation().unwrap()
             } else {
                 agent(root, None).inbox().unwrap()
             },
-            forked_at: if conversation { INHERITED } else { FORKED_AT },
-            commit_id: commit(&agent(root, Some(child)).inbox().unwrap(), FORKED_AT),
+            inherited: ForkCut {
+                forked_at: if conversation { INHERITED } else { FORKED_AT },
+                commit_id: commit(&agent(root, Some(child)).inbox().unwrap(), FORKED_AT),
+            },
         })
     }
 
@@ -218,7 +220,7 @@ impl Swarm {
     fn fetch(&self, stream: &StreamPath, sequence: u64) -> Fetched {
         let inherited = self
             .origin(stream)
-            .filter(|origin| sequence < origin.forked_at);
+            .filter(|origin| sequence < origin.inherited.forked_at);
         Fetched {
             sequence,
             value: self.value(stream, sequence),

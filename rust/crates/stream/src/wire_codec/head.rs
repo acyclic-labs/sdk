@@ -184,20 +184,26 @@ pub fn head_to_wire(value: crate::PathHead) -> wire::PathHead {
 }
 
 /// Decodes the shared inherited-cut descriptor used by heads and child pages.
-pub fn fork_origin_from_wire(origin: wire::ForkOrigin) -> Result<crate::ForkOrigin, StreamError> {
-    Ok(crate::ForkOrigin {
+pub fn fork_origin_from_wire(
+    origin: wire::ForkOrigin,
+) -> Result<crate::Provenance<crate::StreamPath, crate::ForkCut>, StreamError> {
+    Ok(crate::Provenance {
         source: StreamPath::new(origin.source)?,
-        forked_at: origin.forked_at,
-        commit_id: commit_id(&origin.commit_id)?,
+        inherited: crate::ForkCut {
+            forked_at: origin.forked_at,
+            commit_id: commit_id(&origin.commit_id)?,
+        },
     })
 }
 
 /// Projects the shared inherited-cut descriptor without reconstructing history.
-pub fn fork_origin_to_wire(origin: crate::ForkOrigin) -> wire::ForkOrigin {
+pub fn fork_origin_to_wire(
+    origin: crate::Provenance<crate::StreamPath, crate::ForkCut>,
+) -> wire::ForkOrigin {
     wire::ForkOrigin {
         source: origin.source.to_string(),
-        forked_at: origin.forked_at,
-        commit_id: Bytes::copy_from_slice(origin.commit_id.as_bytes()),
+        forked_at: origin.inherited.forked_at,
+        commit_id: Bytes::copy_from_slice(origin.inherited.commit_id.as_bytes()),
     }
 }
 
