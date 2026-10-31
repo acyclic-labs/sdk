@@ -136,6 +136,8 @@ pub trait CaptureHandler: Send + 'static {
     /// Keep this callback nonblocking. The handler owns correlation and any
     /// clock or fixed scalar records; capture creates none. Output callbacks
     /// can occur more than once. No observation substitutes for `retired`.
+    /// Initial admission and stdin closure are reported on the first turn;
+    /// a callback timestamp measures observation, not earlier setup work.
     fn progress(&mut self, _progress: CaptureProgress) {}
     /// Releases live execution admission after the original physical cleanup.
     /// Observation may retain this handler longer; it cannot delay retirement.
@@ -177,6 +179,8 @@ pub(super) struct Pump<'a> {
     readers: [Option<std::sync::Arc<events::PipeOperation>>; 2],
     status: Option<ExitStatus>,
     streaming: bool,
+    observed_start: bool,
+    closed_stdin_on_start: bool,
 }
 
 /// What a turn left to do.
@@ -231,6 +235,11 @@ impl<'a> Pump<'a> {
                 "process deadline overflow",
             ))
         })?;
+        let closed_stdin_on_start = input.is_none()
+            && tree
+                .child
+                .as_ref()
+                .is_some_and(|child| child.stdin.is_some());
         if input.is_none() {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;
@@ -279,6 +288,8 @@ impl<'a> Pump<'a> {
             readers,
             status: None,
             streaming: false,
+            observed_start: false,
+            closed_stdin_on_start,
         })
     }
 
@@ -356,6 +367,18 @@ impl<'a> Pump<'a> {
         progress: &mut impl FnMut(CaptureProgress),
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
+        // Setup observations share the turn's panic boundary and physical
+        // owner, just like output observations. Never call a new observer
+        // before the tree, pipe buffers and handler have joined that owner.
+        if !self.observed_start {
+            self.observed_start = true;
+            if let Some(input) = &self.input {
+                progress(CaptureProgress::InputAccepted(input.accepted_bytes()));
+            }
+            if self.closed_stdin_on_start {
+                progress(CaptureProgress::StdinClosed);
+            }
+        }
         loop {
             if self.streaming {
                 self.check_deadline()?;

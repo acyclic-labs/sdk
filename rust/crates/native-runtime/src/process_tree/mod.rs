@@ -932,26 +932,14 @@ impl ProcessTree {
                 .map(PendingStdin::owned)
                 .transpose()
                 .map_err(ProcessCaptureFailure::before_capture)?;
-            if let Some(input) = &input {
-                handler.progress(CaptureProgress::InputAccepted(input.accepted_bytes()));
-            }
-            let closes_stdin = input.is_none()
-                && self
-                    .child
-                    .as_ref()
-                    .is_some_and(|child| child.stdin.is_some());
-            let pump = pump::Pump::new(
+            pump::Pump::new(
                 &mut self,
                 schedule,
                 max_bytes,
                 input,
                 None,
                 [Vec::new(), Vec::new()],
-            )?;
-            if closes_stdin {
-                handler.progress(CaptureProgress::StdinClosed);
-            }
-            Ok(pump)
+            )
         })();
         match start {
             Ok(pump) => match handler.take_wakes() {
