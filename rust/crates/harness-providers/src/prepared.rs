@@ -13,6 +13,7 @@ pub(crate) struct PreparedInput {
 impl PreparedInput {
     pub async fn new(provider: &ResolvedModel, request: PreparedModelRequest) -> Result<Self> {
         provider.validate(&request.request().model)?;
+        let spec = counting::specification(&provider.config, None)?;
         let names = crate::tool_names::Names::new(request.request());
         let auth = dispatch::authenticate(
             provider,
@@ -30,7 +31,7 @@ impl PreparedInput {
         let count = serde_json::to_vec(&counting::wire::body(
             &body,
             &provider.model.name,
-            provider.config.adapter,
+            spec.adapter,
         ))
         .map_err(|_| invalid("token count encoding failed"))?
         .into();
@@ -43,11 +44,7 @@ impl PreparedInput {
     }
 
     pub async fn count(&self, provider: &ResolvedModel) -> Result<ModelTokenCount> {
-        let spec = provider
-            .config
-            .token_counter
-            .as_ref()
-            .ok_or_else(|| invalid("missing token counter"))?;
+        let spec = counting::specification(&provider.config, None)?;
         let auth = dispatch::authenticate(
             provider,
             #[cfg(not(target_arch = "wasm32"))]

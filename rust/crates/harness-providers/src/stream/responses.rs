@@ -1,20 +1,46 @@
 use super::{ModelEvent, Result, State, Value, index, invalid, string, text};
 
+/// Only these output item kinds have a semantic path through this decoder.
+/// Server and custom tools require native item retention before they can run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Output {
+    Message,
+    Reasoning,
+    Function,
+}
+
+impl Output {
+    fn admit(item: &Value) -> Result<Self> {
+        match item["type"].as_str() {
+            Some("message") => Ok(Self::Message),
+            Some("reasoning") => Ok(Self::Reasoning),
+            Some("function_call") => {
+                if crate::protocol::present(item.get("namespace")).is_some() {
+                    return Err(invalid("namespaced Responses calls require native replay"));
+                }
+                Ok(Self::Function)
+            }
+            _ => Err(invalid(
+                "unsupported Responses output item requires native replay",
+            )),
+        }
+    }
+}
+
 pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<ModelEvent>> {
     let mut events = Vec::new();
     match value["type"].as_str() {
         Some("response.output_text.delta" | "response.refusal.delta") => {
             text(&mut events, &value["delta"], false)
         }
-        Some("response.reasoning_summary_text.delta" | "response.reasoning_text.delta") => {
-            text(&mut events, &value["delta"], true)
-        }
+        Some("response.reasoning_summary_text.delta") => text(&mut events, &value["delta"], true),
         Some("response.output_item.added" | "response.output_item.done") => {
             let item = &value["item"];
-            if value["type"] == "response.output_item.done" && item["type"] == "message" {
+            let kind = Output::admit(item)?;
+            if value["type"] == "response.output_item.done" && kind == Output::Message {
                 state.complete_message(index(value, "output_index")?, item)?;
             }
-            if item["type"] == "reasoning" {
+            if kind == Output::Reasoning {
                 #[derive(serde::Deserialize)]
                 struct Event<'a> {
                     #[serde(borrow)]
@@ -29,7 +55,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                     false,
                 )?;
             }
-            if item["type"] == "function_call" {
+            if kind == Output::Function {
                 let (call, budget) = state.call(index(value, "output_index")?)?;
                 budget.string(&mut call.id, string(&item["call_id"])?)?;
                 budget.string(&mut call.name, string(&item["name"])?)?;
@@ -76,7 +102,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                 }
                 state.completed_message = Some((0, String::new()));
                 for (position, item) in output.iter().enumerate() {
-                    if item["type"] == "message" {
+                    if Output::admit(item)? == Output::Message {
                         state.complete_message(
                             u64::try_from(position)
                                 .map_err(|_| invalid("response output index overflow"))?,
@@ -99,6 +125,10 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
     }
     Ok(events)
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "responses_properties.rs"]
+mod properties;
 
 impl State<'_> {
     fn complete_message(&mut self, position: u64, item: &Value) -> Result<()> {

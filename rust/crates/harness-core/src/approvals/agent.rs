@@ -162,9 +162,14 @@ impl AgentApprovals {
     /// the turn holds agent effects that have not committed, so the call
     /// reaches every child, message and archive they make; else
     /// [`Self::outcome`].
-    pub async fn dispatch(&self, id: InteractionId) -> Result<Option<InteractionOutcome>> {
+    pub async fn dispatch(
+        &self,
+        id: InteractionId,
+        journal: &dyn crate::executor::ExecutionJournal,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<InteractionOutcome>> {
         if self.effects.is_none() && self.children.is_none() {
-            return self.outcome(id).await;
+            return self.outcome(id, journal, io).await;
         }
         let bytes = self.policy.request(&*self.files, &request_id(id)).await?;
         let Ok(Interaction::Approval {
@@ -200,7 +205,7 @@ impl AgentApprovals {
                 .map_err(|_| Error::Storage("approvals lock".into()))? = Some(awaited);
             return Ok(None);
         }
-        self.outcome(id).await
+        self.outcome(id, journal, io).await
     }
 
     /// The request the turn now waits on, and whether the parent decides it.
@@ -238,7 +243,23 @@ impl AgentApprovals {
 
     /// The decided outcome of `id`, running due automatic stages; `None` while a
     /// human or parent decision is outstanding.
-    pub async fn outcome(&self, id: InteractionId) -> Result<Option<InteractionOutcome>> {
+    pub async fn outcome(
+        &self,
+        id: InteractionId,
+        journal: &dyn crate::executor::ExecutionJournal,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<InteractionOutcome>> {
+        self.resolve_outcome(id, Some((journal, io))).await
+    }
+
+    async fn resolve_outcome(
+        &self,
+        id: InteractionId,
+        execution: Option<(
+            &dyn crate::executor::ExecutionJournal,
+            Option<&crate::executor::PreparationIo>,
+        )>,
+    ) -> Result<Option<InteractionOutcome>> {
         let request = request_id(id);
         let policy = &*self.policy;
         let bytes = policy.request(&*self.files, &request).await?;
@@ -269,7 +290,11 @@ impl AgentApprovals {
                 } => (approver, expected),
             };
             if matches!(approver, Approver::Rules { .. } | Approver::Llm { .. }) {
+                let Some(execution) = execution else {
+                    return Ok(None);
+                };
                 super::automatic_agent_review(
+                    execution,
                     &policy.models,
                     &*self.files,
                     &view,
@@ -344,7 +369,8 @@ impl AgentApprovals {
                 "approval does not authorize this definition".into(),
             ));
         }
-        match self.outcome(id).await? {
+        // Authorization observes only settled evidence. It cannot start a review.
+        match self.resolve_outcome(id, None).await? {
             Some(InteractionOutcome::Approved {}) => Ok(()),
             _ => Err(Error::Unauthorized(
                 "tool installation lacks a resolved approval".into(),

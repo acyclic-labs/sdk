@@ -112,8 +112,10 @@ pub(crate) use content::verify_model_contents_scoped;
 pub use content::verify_model_contents_with_summary_authorization;
 pub(crate) use tool_settlement::tool_settlement_key;
 pub use tool_settlement::{ToolSettlement, ToolSettlementQuery, ToolTerminalOutcome};
+mod inference;
 mod retained;
 mod turn;
+pub use inference::InferenceResult;
 pub(crate) use phase::DispatchPhase;
 pub use phase::PreDispatchFailure;
 pub(crate) use retained::{completed_tool_projection, retained_model_step};
@@ -264,6 +266,16 @@ pub enum ExecutionEvent {
     Started {
         /// Digest of the input, stock executor version, model, stages, and tools.
         request_digest: [u8; 32],
+    },
+    /// Appends an immutable conversation envelope at this original journal position.
+    ConversationItem {
+        /// Executor step admitting the item; this does not close an exchange.
+        step: u32,
+        /// Original private payload, including source cursor, intent and profile.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+        envelope: FileRef,
+        /// Identity of records and original fences committed with this item.
+        publication: Option<[u8; 32]>,
     },
     /// Pins a response projection before any summary or response model admission.
     ContextPrepared {
@@ -598,7 +610,7 @@ pub struct ModelEventAdmission {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 mod validation;
 #[doc(hidden)]

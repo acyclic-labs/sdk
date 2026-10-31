@@ -46,7 +46,8 @@ impl StockExecution<'_> {
                     | ExecutionEvent::ToolFailed { step: recorded, .. }
                     | ExecutionEvent::ContextPrepared { step: recorded, .. }
                     | ExecutionEvent::ContextCompacted { step: recorded, .. } => *recorded == step,
-                    ExecutionEvent::ModelStarted { .. }
+                    ExecutionEvent::ConversationItem { .. }
+                    | ExecutionEvent::ModelStarted { .. }
                     | ExecutionEvent::Model { .. }
                     | ExecutionEvent::ModelInline { .. }
                     | ExecutionEvent::ModelStopped { .. } => false,

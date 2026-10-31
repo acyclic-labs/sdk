@@ -5,6 +5,8 @@ mod gemini_results;
 pub(crate) mod image;
 mod json_string;
 pub(crate) mod native_reasoning;
+mod profile;
+pub(crate) mod result;
 mod sequence;
 pub(crate) mod text;
 pub(crate) mod wire;
@@ -17,7 +19,10 @@ use acyclic_harness_core::{
         PreparedModelRequest, ToolResultContent,
     },
 };
-use serde_json::{Value, json};
+pub(crate) use profile::validate as validate_profile;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use serde_json::Value;
+use serde_json::json;
 use wire::{Body, Item, Message};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
@@ -139,11 +144,52 @@ pub(crate) fn body_named<'a>(
     files: &mut FileText,
 ) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
+    if provider
+        .profile
+        .as_ref()
+        .is_some_and(|profile| profile.max_output_tokens() != request.max_output_tokens)
+    {
+        return Err(invalid(
+            "request output reservation differs from its admitted profile",
+        ));
+    }
     let call_ids = crate::call_ids::CallIds::new(request, adapter);
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
     let mut gemini = gemini::Replay::default();
+    let mut effective_effort = provider
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.baseline_effort());
     for message in &request.messages {
+        if let ModelContent::Part(ModelContentPart::Configuration { prefix, effort }) =
+            &message.content
+        {
+            let profile = provider.profile.as_ref().ok_or_else(|| {
+                invalid("configuration update requires an admitted model profile")
+            })?;
+            if prefix != &profile.prefix_digest() {
+                continue;
+            }
+            if adapter != Adapter::Responses
+                || profile.reasoning() == acyclic_model_render::Reasoning::Disabled
+                || *effort == acyclic_model_render::Effort::Adaptive
+                || message.role != ModelRole::User
+            {
+                return Err(invalid(
+                    "configuration update is not admitted by this protocol and profile",
+                ));
+            }
+            sequence::push(
+                adapter,
+                &mut messages,
+                Message::Item(Item::Json(json!({
+                    "type":"configuration_update", "reasoning":{"effort":effort},
+                }))),
+            )?;
+            effective_effort = Some(*effort);
+            continue;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if provider.codex_login.is_some() && message.role == ModelRole::System {
             system.push(text_content(&message.content, files)?);
@@ -167,29 +213,29 @@ pub(crate) fn body_named<'a>(
             }
         }
     }
-    sequence::finish(adapter, &mut messages);
-    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?;
-        let schema = acyclic_harness_core::tool::schema::model_input(&tool.input_schema);
-        Ok(match adapter {
-        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":schema}),
-        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
-            "parameters":schema,"strict":false}),
-        Adapter::Chat => json!({"type":"function","function":{"name":name,
-            "description":tool.description,"parameters":schema}}),
-        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":schema}),
-    }) }).collect::<Result<_>>()?;
-    system.retain(|text| !text.trim().is_empty());
-    let max = request
-        .max_output_tokens
-        .unwrap_or(provider.default_output_budget());
-    if !provider.capacity.permits_output(max) {
-        return Err(invalid("requested output exceeds selected model capacity"));
+    if let Some(profile) = &provider.profile {
+        let desired = profile.fixed_effort().or(profile.baseline_effort());
+        if effective_effort != desired {
+            return Err(invalid(
+                "request is missing its original-position role effort update",
+            ));
+        }
     }
-    let mut body = request.model.options.clone();
-    names.controls(adapter, &mut body)?;
-    let map = body
-        .as_object_mut()
-        .ok_or_else(|| invalid("model options must be an object"))?;
+    sequence::finish(adapter, &mut messages)?;
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| Ok(tool.model_declaration(names.wire(&tool.name)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let tools = acyclic_model_render::ToolDeclarations::new(adapter, tools)
+        .map_err(|error| invalid(error.to_string()))?;
+    let tools = (!tools.is_empty() || adapter == Adapter::Responses).then_some(tools);
+    system.retain(|text| !text.trim().is_empty());
+    let max = provider
+        .admitted_capacity()
+        .output_reservation(request.max_output_tokens)?;
+    let mut fields = serde_json::Map::new();
+    let map = &mut fields;
     let model = request.model.name.as_str();
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let model =
@@ -204,37 +250,18 @@ pub(crate) fn body_named<'a>(
             map.insert("stream".into(), json!(true));
             map.insert("stream_options".into(), json!({"include_usage":true}));
             map.insert("max_completion_tokens".into(), json!(max));
-            if !tools.is_empty() {
-                map.insert("tools".into(), json!(tools));
-            }
         }
         Adapter::Responses => {
-            let include = map
-                .entry("include")
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .ok_or_else(|| invalid("Responses include must be an array"))?;
-            if !include
-                .iter()
-                .any(|item| item == "reasoning.encrypted_content")
-            {
-                include.push(json!("reasoning.encrypted_content"));
-            }
-
+            map.insert("include".into(), json!(["reasoning.encrypted_content"]));
             map.insert("stream".into(), json!(true));
             map.insert("store".into(), json!(false));
             map.insert("max_output_tokens".into(), json!(max));
-            map.insert("tools".into(), json!(tools));
             #[cfg(not(target_arch = "wasm32"))]
             if provider.codex_login.is_some() {
                 map.remove("max_output_tokens");
                 map.insert("instructions".into(), json!(system.join("\n\n")));
-                map.entry("tool_choice").or_insert_with(|| json!("auto"));
-                map.entry("parallel_tool_calls")
-                    .or_insert_with(|| json!(true));
-                if map.get("reasoning").is_some_and(Value::is_null) {
-                    map.remove("reasoning");
-                }
+                map.insert("tool_choice".into(), json!("auto"));
+                map.insert("parallel_tool_calls".into(), json!(true));
             }
         }
         Adapter::Anthropic => {
@@ -243,43 +270,30 @@ pub(crate) fn body_named<'a>(
             if !system.is_empty() {
                 map.insert("system".into(), json!(system.join("\n\n")));
             }
-            if !tools.is_empty() {
-                map.insert("tools".into(), json!(tools));
-            }
         }
         Adapter::Gemini => {
             map.remove("model");
 
-            map.entry("generationConfig")
-                .or_insert_with(|| json!({}))
-                .as_object_mut()
-                .ok_or_else(|| invalid("Gemini generationConfig must be an object"))?
-                .insert("maxOutputTokens".into(), json!(max));
+            map.insert("generationConfig".into(), json!({"maxOutputTokens":max}));
             if !system.is_empty() {
                 map.insert(
                     "systemInstruction".into(),
                     json!({"parts":[{"text":system.join("\n\n")}]}),
                 );
             }
-            if !tools.is_empty() {
-                map.insert("tools".into(), json!([{"functionDeclarations":tools}]));
-            }
         }
     }
-    let fields = body
-        .as_object_mut()
-        .ok_or_else(|| invalid("invalid request body"))?;
+    if let Some(profile) = &provider.profile {
+        profile::project(adapter, profile, &mut fields);
+    }
     let messages_field = match adapter {
         Adapter::Responses => "input",
         Adapter::Gemini => "contents",
         _ => "messages",
     };
-    // Options cannot override transcript projection or inject a second input path.
-    for name in ["messages", "input", "contents"] {
-        fields.remove(name);
-    }
     Ok(Body {
-        fields: std::mem::take(fields),
+        fields,
+        tools,
         messages_field,
         messages,
     })
@@ -305,12 +319,15 @@ fn project_message<'a>(
     let mut results = Vec::new();
     let mut ordered = Vec::new();
     gemini.begin(message.role);
-    let mut chat_reasoning = String::new();
+    let mut chat_reasoning = None;
     if let ModelContent::Text(text) = &message.content {
         project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
     }
     for part in message.content.parts() {
         match part {
+            ModelContentPart::Configuration { .. } => {
+                return Err(invalid("configuration update must occupy one message"));
+            }
             ModelContentPart::Text { text } => {
                 project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
             }
@@ -374,18 +391,9 @@ fn project_message<'a>(
                     ProjectedReasoning::Native { continuity, .. }
                         if matches!(adapter, Adapter::Responses | Adapter::Anthropic) =>
                     {
-                        // Invalid native shapes fall back to ordinary readable context.
-                        if let Some(raw) = native_reasoning::validated(adapter, continuity) {
-                            ordered.push(Item::Native(raw));
-                        } else if let Some(text) = block.text.as_deref() {
-                            project_text(
-                                adapter,
-                                role,
-                                foreign_text(&block.origin, text),
-                                &mut texts,
-                                &mut ordered,
-                            );
-                        }
+                        let raw = native_reasoning::validated(adapter, continuity)
+                            .ok_or_else(|| invalid("invalid retained native reasoning"))?;
+                        ordered.push(Item::Native(raw));
                     }
                     ProjectedReasoning::Native { continuity, .. } if adapter == Adapter::Gemini => {
                         if let Some(part) = gemini.native(
@@ -396,19 +404,12 @@ fn project_message<'a>(
                             ordered.push(part);
                         }
                     }
-                    ProjectedReasoning::Native { .. } => {
-                        if let Some(text) = &block.text {
-                            chat_reasoning.push_str(text);
+                    ProjectedReasoning::Native { continuity, .. } => {
+                        let raw = native_reasoning::chat(continuity)
+                            .ok_or_else(|| invalid("invalid retained native Chat reasoning"))?;
+                        if chat_reasoning.replace(raw).is_some() {
+                            return Err(invalid("multiple native Chat reasoning fields"));
                         }
-                    }
-                    ProjectedReasoning::Readable { text, origin, .. } => {
-                        project_text(
-                            adapter,
-                            role,
-                            foreign_text(origin, text),
-                            &mut texts,
-                            &mut ordered,
-                        );
                     }
                     ProjectedReasoning::Dropped { .. } => {}
                 }
@@ -420,30 +421,17 @@ fn project_message<'a>(
             } => {
                 let name = names.wire(name)?;
                 let call_id = call_ids.wire(call_id)?;
-                let text = result_text(content, files)?;
-                let error = matches!(content, ToolResultContent::Error { .. });
-                let result = match adapter {
-                    Adapter::Anthropic if error => json!(
-                        {"type":"tool_result","tool_use_id":call_id,"content":text,"is_error":true}
-                    ),
-                    Adapter::Gemini if error => json!(
-                        {"functionResponse":{"id":call_id,"name":name,"response":{"error":text}}}
-                    ),
-                    Adapter::Anthropic => {
-                        json!({"type":"tool_result","tool_use_id":call_id,"content":text})
-                    }
-                    Adapter::Responses => {
-                        json!({"type":"function_call_output","call_id":call_id,"output":text})
-                    }
-                    Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
-                    Adapter::Gemini => {
-                        json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}})
-                    }
-                };
+                let result = Item::Result(result::ToolResult {
+                    adapter,
+                    id: call_id.into_owned(),
+                    name,
+                    payload: result_text(content, files)?,
+                    error: matches!(content, ToolResultContent::Error { .. }),
+                });
                 if adapter == Adapter::Chat {
                     results.push(result);
                 } else {
-                    ordered.push(Item::Json(result));
+                    ordered.push(result);
                 }
             }
         }
@@ -456,7 +444,7 @@ fn project_message<'a>(
                     json!({"role":role,"content":ordered}),
                 )));
             }
-            if !texts.is_empty() || !calls.is_empty() || !chat_reasoning.is_empty() {
+            if !texts.is_empty() || !calls.is_empty() || chat_reasoning.is_some() {
                 output.push(Message::Chat(wire::Chat {
                     role,
                     content: if texts.is_empty() {
@@ -465,14 +453,10 @@ fn project_message<'a>(
                         Some(texts.concat())
                     },
                     tool_calls: calls,
-                    reasoning_content: (!chat_reasoning.is_empty()).then_some(chat_reasoning),
+                    reasoning_content: chat_reasoning,
                 }));
             }
-            output.extend(
-                results
-                    .into_iter()
-                    .map(|value| Message::Item(Item::Json(value))),
-            );
+            output.extend(results.into_iter().map(Message::Item));
             Ok(output)
         }
         Adapter::Responses => Ok(ordered.into_iter().map(Message::Item).collect()),
@@ -535,11 +519,12 @@ fn project_text(
     }
 }
 
-fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<String> {
+fn result_text<'a>(
+    content: &'a ToolResultContent,
+    files: &mut FileText,
+) -> Result<result::Payload<'a>> {
     match content {
-        ToolResultContent::Json { value } => {
-            serde_json::to_string(value).map_err(|error| invalid(error.to_string()))
-        }
+        ToolResultContent::Json { value } => Ok(result::Payload::Json(value)),
         ToolResultContent::Parts { parts } => parts
             .iter()
             .map(|part| match part {
@@ -547,8 +532,10 @@ fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<Stri
                 ModelDataPart::File { file, policy } => files.project(file, policy),
             })
             .collect::<Result<Vec<_>>>()
-            .map(|parts| parts.join("\n")),
-        ToolResultContent::Error { message, .. } => Ok(message.clone()),
+            .map(|parts| result::Payload::Text(parts.join("\n").into())),
+        ToolResultContent::Error { message, .. } => {
+            Ok(result::Payload::Text(message.as_str().into()))
+        }
     }
 }
 
@@ -566,11 +553,4 @@ fn text_content(content: &ModelContent, files: &mut FileText) -> Result<String> 
         })
         .collect::<Result<Vec<_>>>()
         .map(|parts| parts.join("\n"))
-}
-
-fn foreign_text(origin: &acyclic_harness_core::model::ReasoningOrigin, text: &str) -> String {
-    format!(
-        "<prior-reasoning provider={:?} model={:?}>\n{text}\n</prior-reasoning>",
-        origin.provider, origin.model
-    )
 }

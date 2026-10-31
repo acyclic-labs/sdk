@@ -126,7 +126,7 @@ proptest! {
         let cut = 1 + raw_cut % (source.messages.len() - 1);
         let count = ModelTokenCount::from_upper_bounds([0; 32], 0, vec![1; source.messages.len()]);
         let policy = ThresholdCompaction { recent_tokens: (source.messages.len() - cut) as u32, ..ThresholdCompaction::default() };
-        let (through, maximum) = policy.projection_budget(&source, &count, source.messages.len(), &mut None).unwrap();
+        let (through, maximum) = policy.projection_budget(&source, &count, source.messages.len(), policy.recent_tokens, &mut None).unwrap();
         prop_assert!(units.iter().all(|&(first, last)| through <= first || through > last));
         let (retained, reference) = compact(&source, maximum, through).unwrap();
         prop_assert!(whole_units(&source, &retained, &units));
@@ -136,7 +136,7 @@ proptest! {
         prop_assert!(whole_units(&source, &retained, &units));
         // A fully summarized prefix exercises refill with too few spare slots.
         let maximum = 2 + raw_maximum % (source.messages.len() - 1);
-        let (through, planned_maximum) = policy.projection_budget(&source, &count, maximum, &mut None).unwrap();
+        let (through, planned_maximum) = policy.projection_budget(&source, &count, maximum, policy.recent_tokens, &mut None).unwrap();
         prop_assert!(units.iter().all(|&(first, last)| through <= first || through > last));
         let (retained, reference) = compact(&source, planned_maximum, through).unwrap();
         prop_assert!(whole_units(&source, &retained, &units));
@@ -223,7 +223,13 @@ fn rejected_exchange_selection_releases_every_temporary_allocation() -> Result<(
         let cancel = acyclic_fs::CancellationToken::new();
         let io = crate::executor::PreparationIo::from_budget(budget, &cancel)?;
         let result = crate::executor::with_history_io(Some(&io), |work| {
-            policy.projection_budget(&source, &count, source.messages.len(), work)
+            policy.projection_budget(
+                &source,
+                &count,
+                source.messages.len(),
+                policy.recent_tokens,
+                work,
+            )
         });
         if result.is_err() {
             rejected += 1;

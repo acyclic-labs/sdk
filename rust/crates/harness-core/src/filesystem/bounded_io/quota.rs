@@ -51,6 +51,20 @@ impl<'a> DecodeReservation<'a> {
         Ok(())
     }
 
+    /// Moves this reservation to its original owned ledger without charging again.
+    /// Refusal leaves the borrowed reservation unchanged.
+    pub(crate) fn take_custody(&mut self) -> Result<PreparationCustody> {
+        self.io.check_cancellation()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(custody) = self.custody.take() {
+            self.bytes = 0;
+            return Ok(PreparationCustody::Native(custody));
+        }
+        let custody = self.io.take_owned_custody(self.bytes)?;
+        self.bytes = 0;
+        Ok(custody)
+    }
+
     pub(crate) fn into_retained(mut self) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = self.custody.take() {

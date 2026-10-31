@@ -72,7 +72,12 @@ pub trait SkillReader: DiscoverySource {
         path: &'a str,
         revision: &'a Self::Revision,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>>;
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (acyclic_stream::OwnedBytes, PinnedContextPath),
+        >,
+    >;
 }
 
 impl DiscoveryWork {
@@ -317,17 +322,43 @@ async fn read_skill_metadata<S: SkillReader>(
     revision: &S::Revision,
     limits: ContextDiscoveryLimits,
 ) -> Result<SkillMetadata> {
+    read_skill_metadata_parsed(source, path, revision, limits).await?
+}
+
+// Preserve the distinction between a failed authorized read and an invalid
+// header. Only the latter can be checkpointed as a rejected replacement.
+async fn read_skill_metadata_parsed<S: SkillReader>(
+    source: &mut S,
+    path: &str,
+    revision: &S::Revision,
+    limits: ContextDiscoveryLimits,
+) -> Result<Result<SkillMetadata>> {
     limits.validate()?;
     let (prefix, pinned) = source
-        .skill_prefix(path, revision, limits.header_bytes)
+        .skill_prefix(path, revision, limits.header_bytes)?
         .await?;
     if prefix.len() > limits.header_bytes as usize {
         return Err(Error::Storage("prefix reader exceeded bound".into()));
     }
-    parse_skill_metadata(&prefix, pinned)
+    Ok(parse_skill_metadata(&prefix, pinned))
 }
 
 impl ContextRoot {
+    pub(super) fn is_skill_path(&self, path: &str, name: &str) -> bool {
+        let relative = if self.directory.is_empty() {
+            path
+        } else if let Some(relative) = path
+            .strip_prefix(&self.directory)
+            .and_then(|tail| tail.strip_prefix('/'))
+        {
+            relative
+        } else {
+            return false;
+        };
+        relative
+            .split_once('/')
+            .is_some_and(|(directory, entry)| !directory.is_empty() && entry == name)
+    }
     /// Reads only the metadata of an immediate skill entry changed at `generation`.
     /// Unrelated paths perform no provider calls. Removal is represented by the
     /// publication's removal entry, rather than a read against a newer head.
@@ -339,29 +370,36 @@ impl ContextRoot {
         name: &str,
         limits: ContextDiscoveryLimits,
     ) -> Result<Option<SkillMetadata>> {
-        self.validate(&mut None)?;
-        validate_content_path(name, &mut None)?;
+        self.skill_metadata_parsed_at(reader, path, generation, name, limits, None)
+            .await?
+            .transpose()
+    }
+
+    pub(super) async fn skill_metadata_parsed_at(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        path: &str,
+        generation: &GenerationRef,
+        name: &str,
+        limits: ContextDiscoveryLimits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Result<SkillMetadata>>> {
+        crate::executor::with_history_io(io, |work| {
+            self.validate(work)?;
+            validate_content_path(name, work)
+        })?;
         if name.contains('/') {
             return Err(Error::Invalid("skill entry must be one filename".into()));
         }
-        let relative = if self.directory.is_empty() {
-            path
-        } else if let Some(relative) = path
-            .strip_prefix(&self.directory)
-            .and_then(|tail| tail.strip_prefix('/'))
-        {
-            relative
-        } else {
-            return Ok(None);
-        };
-        let Some((directory, entry)) = relative.split_once('/') else {
-            return Ok(None);
-        };
-        if directory.is_empty() || entry != name {
+        if !self.is_skill_path(path, name) {
             return Ok(None);
         }
-        let metadata = read_skill_metadata(
-            &mut VolumeDiscovery { reader, root: self },
+        let metadata = read_skill_metadata_parsed(
+            &mut VolumeDiscovery {
+                reader,
+                root: self,
+                io,
+            },
             path,
             generation,
             limits,
@@ -376,6 +414,8 @@ impl ContextRoot {
 pub struct VolumeDiscovery<'a> {
     pub reader: &'a dyn ContentResidencyVerifier,
     pub root: &'a ContextRoot,
+    /// Original owner of prefix reads and retained pinned identities.
+    pub io: Option<&'a crate::executor::PreparationIo>,
 }
 impl DiscoverySource for VolumeDiscovery<'_> {
     type Revision = GenerationRef;
@@ -464,14 +504,20 @@ impl SkillReader for VolumeDiscovery<'_> {
         path: &'a str,
         revision: &'a GenerationRef,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
-        Box::pin(async move {
-            let pinned = PinnedContextPath {
-                root: self.root.clone(),
-                generation: revision.clone(),
-                path: path.into(),
-            };
-            pinned.validate(&mut None)?;
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (acyclic_stream::OwnedBytes, PinnedContextPath),
+        >,
+    > {
+        #[cfg(feature = "filesystem")]
+        let content_io = self.io;
+        #[cfg(not(feature = "filesystem"))]
+        let content_io = None;
+        crate::conversation::BoundedContentFuture::new(content_io, || async move {
+            let pinned = crate::executor::with_history_io(self.io, |work| {
+                PinnedContextPath::capture(self.root, revision, path, work)
+            })?;
             let prefix = self
                 .reader
                 .read_private_prefix(
@@ -480,7 +526,10 @@ impl SkillReader for VolumeDiscovery<'_> {
                     path,
                     revision,
                     u64::from(maximum),
-                    crate::conversation::ContentAccess::default(),
+                    crate::conversation::ContentAccess {
+                        ceiling: None,
+                        io: content_io,
+                    },
                 )?
                 .await?;
             Ok((prefix, pinned))

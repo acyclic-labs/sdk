@@ -157,6 +157,10 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     ) -> Option<std::sync::Arc<dyn ModelProvider>> {
         None
     }
+    /// Sealed profile admitted with the exact immutable model selection.
+    fn model_profile(&self, _: &Model) -> Result<Option<ModelProfileBinding>> {
+        Ok(None)
+    }
     /// Capacities of the exact immutable model selection.
     fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
         Err(Error::Unsupported(

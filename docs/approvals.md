@@ -27,8 +27,7 @@ request, decision and durability path as a restrictive policy. Pass
     {
       "kind": "llm",
       "principal": "reviewer",
-      "model": "review-model",
-      "prompt": "Review the exact action. Ask a human when uncertain."
+      "model": "review-model"
     },
     {"kind": "human", "principal": "acyclic.local"}
   ]
@@ -59,8 +58,9 @@ match it, and the configured fallback still applies.
 The policy identity, including stage order, is pinned at task admission and
 inherited by children. Reopening with another policy cannot resume that task.
 
-LLM stages use a separately bound provider/model and their own prompt, with no
-tools. GraphCoder resolves the selection from its model catalog. Embedded
+LLM stages use a separately bound provider/model and one shared review
+instruction, with no tools. The instruction asks them to deny unsafe actions
+and ask a human when uncertain. GraphCoder resolves the selection from its model catalog. Embedded
 callers register it with `LocalHarnessConfig::approval_model`. The request is
 presented as untrusted action data. Dispatch identity is persisted before the
 model call; recovery reconciles it or reports an indeterminate result instead

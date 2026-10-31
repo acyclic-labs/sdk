@@ -21,7 +21,7 @@ proptest! {
             events.push(ScriptedEvent::Event(ModelEvent::Completed { metadata: Value::Null }));
             let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(events)]));
             let executor = uncompacted_executor(
-                Model::new("scripted".into(), "scenario".into(), "1".into(), Value::Null)?,
+                Model::new("scripted".into(), "scenario".into(), "1".into())?,
                 provider.clone(), ContextPipeline::default(), ToolRegistry::default(),
             ).with_limits(Limits { file_bytes: (text.len() - usize::from(!at)) as u64, ..Limits::default() });
             let journal = Journal::default();

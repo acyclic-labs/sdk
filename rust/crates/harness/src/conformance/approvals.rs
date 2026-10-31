@@ -129,12 +129,7 @@ impl TurnExecutors for Approving {
                 None,
             )?;
             let executor = StockExecutor::new(
-                Model::new(
-                    "conformance".into(),
-                    "scripted".into(),
-                    "1".into(),
-                    Value::Null,
-                )?,
+                Model::new("conformance".into(), "scripted".into(), "1".into())?,
                 Arc::new(Scripted),
                 ContextPipeline::default(),
                 tools,

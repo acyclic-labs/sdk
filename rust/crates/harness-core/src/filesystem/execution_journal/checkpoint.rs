@@ -14,6 +14,18 @@ impl std::ops::Deref for IndexPath<'_> {
     }
 }
 
+pub(super) struct OwnedIndexPath {
+    path: acyclic_stream::StreamPath,
+    _custody: Option<crate::filesystem::bounded_io::PreparationCustody>,
+}
+
+impl std::ops::Deref for OwnedIndexPath {
+    type Target = acyclic_stream::StreamPath;
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct IndexState {
     pub(super) operation: OperationId,
@@ -79,29 +91,7 @@ where
                 work,
             )
         })?;
-        let scratch_hold = io
-            .map(|io| io.guard_owned(name.capacity() as u64))
-            .transpose()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            let path = acyclic_stream::StreamPath::new_native(&name, &work.runtime_meter())
-                .map_err(|error| Error::from(work.runtime_error(error)))??;
-            return Ok(IndexPath { path, _hold: None });
-        }
-        let hold = io
-            .map(|io| io.reserve_decode(name.len() as u64))
-            .transpose()?;
-        if let Some(io) = io {
-            io.allocation_attempt(name.len() as u64)?;
-            io.charge(acyclic_fs::WorkCounters {
-                bytes_copied: name.len() as u64,
-                ..Default::default()
-            })?;
-        }
-        let path = acyclic_stream::StreamPath::new(&name)?;
-        drop(name);
-        drop(scratch_hold);
-        Ok(IndexPath { path, _hold: hold })
+        IndexPath::from_name(name, io)
     }
 
     pub(super) fn index_volume_digest(&self, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
@@ -311,3 +301,45 @@ fn missing(io: Option<&PreparationIo>) -> Error {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+
+impl<'a> IndexPath<'a> {
+    pub(super) fn into_owned(mut self) -> Result<OwnedIndexPath> {
+        // Keep the physical path before its guard on every refusal. Native paths
+        // already retain their original allocation in the path itself.
+        let custody = self
+            ._hold
+            .as_mut()
+            .map(|hold| hold.take_custody())
+            .transpose()?;
+        Ok(OwnedIndexPath {
+            path: self.path,
+            _custody: custody,
+        })
+    }
+
+    pub(super) fn from_name(name: String, io: Option<&'a PreparationIo>) -> Result<Self> {
+        let scratch_hold = io
+            .map(|io| io.guard_owned(name.capacity() as u64))
+            .transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            let path = acyclic_stream::StreamPath::new_native(&name, &work.runtime_meter())
+                .map_err(|error| Error::from(work.runtime_error(error)))??;
+            return Ok(IndexPath { path, _hold: None });
+        }
+        let hold = io
+            .map(|io| io.reserve_decode(name.len() as u64))
+            .transpose()?;
+        if let Some(io) = io {
+            io.allocation_attempt(name.len() as u64)?;
+            io.charge(acyclic_fs::WorkCounters {
+                bytes_copied: name.len() as u64,
+                ..Default::default()
+            })?;
+        }
+        let path = acyclic_stream::StreamPath::new(&name)?;
+        drop(name);
+        drop(scratch_hold);
+        Ok(IndexPath { path, _hold: hold })
+    }
+}

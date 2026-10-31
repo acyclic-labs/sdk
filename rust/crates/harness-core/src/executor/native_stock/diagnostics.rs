@@ -17,7 +17,6 @@ stock_records!(
     ModelUsageRecord,
     TurnInput,
     crate::conversation::ModelContextSelection,
-    crate::context::CompactionRetention,
     crate::context::CompactionPolicy,
     crate::context::ModelTokenCount,
     Vec<ModelEvent>,

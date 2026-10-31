@@ -478,10 +478,19 @@ impl ContextPipeline {
         revision: String,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
+        Self::from_source(source, "summary-source", revision, io)
+    }
+
+    pub(crate) fn from_source(
+        source: Context,
+        name: &str,
+        revision: String,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Self> {
         crate::executor::with_history_io(io, |work| {
             if work.is_none() {
                 return Ok(Self::new([Arc::new(SourceStage::new(
-                    "summary-source",
+                    name,
                     revision,
                     Arc::new(source),
                     ContextPlacement::Prepend,
@@ -490,14 +499,20 @@ impl ContextPipeline {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let mut stages: Vec<Arc<dyn ContextStage>> = Vec::new();
             let made = (|| {
-                let name = quota.observer()?.clone_text("summary-source")?;
+                let name = quota.observer()?.clone_text(name)?;
                 quota.adopt(name.capacity() as u64)?;
+                #[cfg(target_arch = "wasm32")]
                 let bytes = std::mem::size_of::<Context>() as u64;
+                #[cfg(not(target_arch = "wasm32"))]
+                let bytes = acyclic_native_runtime::arc_allocation_bytes::<Context>() as u64;
                 quota.observer()?.admit_allocation(bytes)?;
                 quota.observer()?.retain_owned(bytes)?;
                 quota.adopt(bytes)?;
                 let source = Arc::new(source);
+                #[cfg(target_arch = "wasm32")]
                 let bytes = std::mem::size_of::<SourceStage>() as u64;
+                #[cfg(not(target_arch = "wasm32"))]
+                let bytes = acyclic_native_runtime::arc_allocation_bytes::<SourceStage>() as u64;
                 quota.observer()?.admit_allocation(bytes)?;
                 quota.observer()?.retain_owned(bytes)?;
                 quota.adopt(bytes)?;

@@ -6,6 +6,8 @@ use acyclic_stream::{
 use checkpoint::{IndexState, Recovery};
 
 mod pages;
+pub(in crate::filesystem) use pages::Contribution;
+pub(super) use pages::contribution_identity;
 
 async fn condition<P: crate::store::JournalProvider + ?Sized>(
     provider: &Arc<P>,
@@ -53,16 +55,14 @@ fn add_records(
 
 /// The receipt assigns exactly `records` to `path`, starting at `start`.
 fn confirms(
-    receipt: &acyclic_stream::CommitReceipt,
+    append: &acyclic_stream::AppendRange,
     path: &StreamPath,
     start: u64,
     records: &[OwnedBytes],
 ) -> bool {
-    receipt.appends.iter().any(|append| {
-        append.path == *path
-            && append.start == start
-            && start.checked_add(records.len() as u64) == Some(append.tail)
-    })
+    append.path == *path
+        && append.start == start
+        && start.checked_add(records.len() as u64) == Some(append.tail)
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
@@ -71,14 +71,15 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn publish_indexed_observation(
+    pub(super) async fn publish_contributed_observation(
         &self,
         summary: &mut ExecutionSummary,
         retry: [u8; 32],
         event: &ExecutionEvent,
         bytes: &OwnedBytes,
+        contributions: &[Contribution<'_>],
         io: Option<&PreparationIo>,
-    ) -> Result<Option<Recovery>> {
+    ) -> Result<Option<(Recovery, acyclic_stream::CommitId)>> {
         let operation = summary.operation.ok_or_else(|| invalid(io))?;
         let pages = self.index_path(operation, "pages", io)?;
         let head = self.index_path(operation, "head", io)?;
@@ -140,6 +141,7 @@ where
             head_tail,
             base,
             digest,
+            contributions,
         };
         let committed = cut
             .publish(
@@ -150,13 +152,16 @@ where
                 &mut work,
             )
             .await?;
-        let result = if committed {
+        let result = if let Some(commit_id) = committed {
             summary.scratch = Some(writer.take_scratch());
-            Some(Recovery {
-                state,
-                head_tail: next_head_tail,
-                indexed: true,
-            })
+            Some((
+                Recovery {
+                    state,
+                    head_tail: next_head_tail,
+                    indexed: true,
+                },
+                commit_id,
+            ))
         } else {
             None
         };

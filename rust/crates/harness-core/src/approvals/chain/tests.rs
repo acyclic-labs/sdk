@@ -80,7 +80,6 @@ async fn agent_reviews_escalate_in_order_and_external_files_never_grant_authorit
             Approver::Llm {
                 principal: "model".into(),
                 model: "independent".into(),
-                prompt: "review".into(),
             },
             Approver::Parent,
             Approver::Human {
@@ -285,7 +284,9 @@ async fn automatic_and_parent_decisions_require_their_authenticated_role() -> Re
     else {
         panic!("rules must evaluate before deciding");
     };
+    let journal = crate::executor::tests::Journal::default();
     let review = super::super::automatic_agent_review(
+        (&journal, None),
         &BTreeMap::new(),
         &files,
         &request,

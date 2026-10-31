@@ -1,8 +1,12 @@
 //! Oversized initial snapshots stage bounded, unreachable pages before the cut.
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod retained;
 #[cfg(test)]
 mod tests;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) use retained::Publication;
 
 pub(super) struct Cut<'a> {
     pub(super) operation: OperationId,
@@ -15,10 +19,75 @@ pub(super) struct Cut<'a> {
     pub(super) head_tail: u64,
     pub(super) base: u64,
     pub(super) digest: [u8; 32],
+    pub(super) contributions: &'a [Contribution<'a>],
+}
+
+/// One already-encoded record and its original optimistic publication fence.
+/// This adds no submission, index or authority; its producer owns the payload.
+pub(in crate::filesystem) struct Contribution<'a> {
+    pub(in crate::filesystem) condition: CommitCondition,
+    pub(in crate::filesystem) record: &'a OwnedBytes,
+}
+
+pub(in crate::filesystem::execution_journal) fn contribution_identity(
+    contributions: &[Contribution<'_>],
+    io: Option<&PreparationIo>,
+) -> Result<Option<[u8; 32]>> {
+    if contributions.is_empty() {
+        return Ok(None);
+    }
+    let domain = b"harness/v1/contributed-records\0";
+    let digests = (contributions.len() as u64)
+        .checked_mul(32)
+        .ok_or_else(|| invalid(io))?;
+    let bytes = crate::core::owned_sum([domain.len() as u64, 8, digests])?;
+    if let Some(io) = io {
+        io.charge(acyclic_fs::WorkCounters {
+            bytes_hashed: bytes,
+            ..Default::default()
+        })?;
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(&(contributions.len() as u64).to_le_bytes());
+    let mut previous = None;
+    for contribution in contributions {
+        let (path, _) = contribution.target()?;
+        if previous.is_some_and(|prior| prior >= path) {
+            return Err(invalid(io));
+        }
+        previous = Some(path);
+        let digest = acyclic_stream::request::conditioned_record_digest_with(
+            &contribution.condition,
+            contribution.record,
+            |bytes_hashed| {
+                if let Some(io) = io {
+                    io.charge(acyclic_fs::WorkCounters {
+                        bytes_hashed,
+                        ..Default::default()
+                    })?;
+                }
+                Ok::<(), Error>(())
+            },
+        )?;
+        hash.update(&digest);
+    }
+    Ok(Some(*hash.finalize().as_bytes()))
+}
+
+impl Contribution<'_> {
+    fn target(&self) -> Result<(&StreamPath, u64)> {
+        match &self.condition {
+            CommitCondition::Head { path, expected, .. }
+            | CommitCondition::Tail { path, expected } => Ok((path, *expected)),
+            CommitCondition::Absent { path } => Ok((path, 0)),
+            CommitCondition::Present { .. } => Err(invalid(None)),
+        }
+    }
 }
 
 impl Cut<'_> {
-    fn request<'a, 'b>(
+    pub(super) fn request<'a, 'b>(
         &self,
         page_condition: CommitCondition,
         records: &[OwnedBytes],
@@ -59,6 +128,26 @@ impl Cut<'_> {
             add_records(&mut request, self.head, std::slice::from_ref(checkpoint))?;
         }
         add_records(&mut request, self.pages, records)?;
+        if publication.is_some() {
+            let mut previous = None;
+            for contribution in self.contributions {
+                let (path, _) = contribution.target()?;
+                if previous.is_some_and(|prior| prior >= path)
+                    || path == self.execution
+                    || path == self.head
+                    || path == self.pages
+                {
+                    return Err(invalid(None));
+                }
+                previous = Some(path);
+                crate::distributed::add_condition(&mut request, contribution.condition.clone())?;
+                add_records(
+                    &mut request,
+                    path,
+                    std::slice::from_ref(contribution.record),
+                )?;
+            }
+        }
         Ok(request)
     }
 
@@ -100,10 +189,9 @@ impl Cut<'_> {
             let committed = match &outcome {
                 CommitOutcome::Conflict(_) => Ok(false),
                 CommitOutcome::Committed(receipt) => {
-                    if receipt.appends.len() != 1
-                        || !receipt.forks.is_empty()
-                        || !confirms(receipt, self.pages, expected, batch)
-                    {
+                    let valid = matches!(receipt.appends.as_slice(), [append]
+                        if confirms(append, self.pages, expected, batch));
+                    if !valid || !receipt.forks.is_empty() {
                         Err(Error::Indeterminate(self.operation))
                     } else {
                         Ok(true)
@@ -123,7 +211,7 @@ impl Cut<'_> {
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<bool> {
+    ) -> Result<Option<acyclic_stream::CommitId>> {
         let mut offset = 0;
         loop {
             let pending = records
@@ -144,6 +232,33 @@ impl Cut<'_> {
                     })?;
                 }
                 if request.0.wire_encoded_len() <= acyclic_stream::MAX_COMMAND_BYTES {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if request
+                        .1
+                        .work()
+                        .as_deref()
+                        .and_then(|io| io.original_native_work())
+                        .is_some()
+                    {
+                        let (prepared, producer) = self.prepare_native(
+                            provider,
+                            request,
+                            Publication {
+                                pages_tail: expected,
+                                records: pending,
+                                observation,
+                                checkpoint,
+                            },
+                        )?;
+                        crate::distributed::native_call_result(
+                            prepared.original(),
+                            producer.await,
+                        )?
+                        .map_err(|error| {
+                            crate::store::operations::stream_error_with_work(error, work)
+                        })?;
+                        return prepared.finish(work).await;
+                    }
                     let (outcome, retained) = crate::distributed::commit(
                         request,
                         provider,
@@ -161,42 +276,86 @@ impl Cut<'_> {
                 drop(request);
             }
             let Some(count) = self.stage(provider, offset, pending, work).await? else {
-                return Ok(false);
+                return Ok(None);
             };
             offset += count;
         }
     }
 
-    fn confirm(
+    pub(super) fn confirm(
         &self,
         outcome: &CommitOutcome,
         pages_tail: u64,
         records: &[OwnedBytes],
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
-    ) -> Result<bool> {
+    ) -> Result<Option<acyclic_stream::CommitId>> {
         match outcome {
-            CommitOutcome::Conflict(_) => Ok(false),
+            CommitOutcome::Conflict(_) => Ok(None),
             CommitOutcome::Committed(receipt) => {
-                if receipt.appends.len() != 3
-                    || !receipt.forks.is_empty()
-                    || !confirms(
-                        receipt,
-                        self.execution,
-                        self.execution_tail,
-                        std::slice::from_ref(observation),
-                    )
-                    || !confirms(
-                        receipt,
-                        self.head,
-                        self.head_tail,
-                        std::slice::from_ref(checkpoint),
-                    )
-                    || !confirms(receipt, self.pages, pages_tail, records)
-                {
+                if receipt.appends.len() != 3 + self.contributions.len() {
                     return Err(Error::Indeterminate(self.operation));
                 }
-                Ok(true)
+                if !receipt.forks.is_empty() {
+                    return Err(Error::Indeterminate(self.operation));
+                }
+                // Stream canonicalizes mutations by path before publication.
+                // Visit every member once; contributed paths are admitted in
+                // that same order, independently of the three journal paths.
+                let mut previous = None;
+                let mut seen = 0_u8;
+                let mut contributions = self.contributions.iter();
+                for append in &receipt.appends {
+                    if previous.is_some_and(|path| path >= &append.path) {
+                        return Err(Error::Indeterminate(self.operation));
+                    }
+                    previous = Some(&append.path);
+                    let (bit, valid) = if append.path == *self.execution {
+                        (
+                            1,
+                            confirms(
+                                append,
+                                self.execution,
+                                self.execution_tail,
+                                std::slice::from_ref(observation),
+                            ),
+                        )
+                    } else if append.path == *self.head {
+                        (
+                            2,
+                            confirms(
+                                append,
+                                self.head,
+                                self.head_tail,
+                                std::slice::from_ref(checkpoint),
+                            ),
+                        )
+                    } else if append.path == *self.pages {
+                        (4, confirms(append, self.pages, pages_tail, records))
+                    } else {
+                        let Some(contribution) = contributions.next() else {
+                            return Err(Error::Indeterminate(self.operation));
+                        };
+                        let (path, start) = contribution.target()?;
+                        (
+                            0,
+                            confirms(
+                                append,
+                                path,
+                                start,
+                                std::slice::from_ref(contribution.record),
+                            ),
+                        )
+                    };
+                    if !valid || seen & bit != 0 {
+                        return Err(Error::Indeterminate(self.operation));
+                    }
+                    seen |= bit;
+                }
+                if seen != 7 || contributions.next().is_some() {
+                    return Err(Error::Indeterminate(self.operation));
+                }
+                Ok(Some(receipt.commit_id))
             }
         }
     }

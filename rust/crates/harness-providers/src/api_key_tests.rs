@@ -123,8 +123,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
         std::fs::write(file.path(), include_str!("fixtures/luna-catalog.json"))
             .map_err(|_| invalid("fixture catalog"))?;
         registry.load_catalog(file.path())?;
-        let provider = registry
-            .resolve_with_options("openai/gpt-6-luna", json!({"reasoning":{"effort":"low"}}))?;
+        let provider = registry.resolve("openai/gpt-6-luna")?;
         assert_eq!(
             provider.context_capacity(provider.model())?.context_tokens,
             8192

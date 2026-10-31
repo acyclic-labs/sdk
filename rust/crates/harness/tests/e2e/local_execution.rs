@@ -399,7 +399,7 @@ async fn open_harness(
     volume: &acyclic_harness::conversation::VolumeRef,
     provider: &Arc<ScriptedModelProvider>,
 ) -> TestResult<LocalHarness> {
-    let model = Model::new("scripted".into(), "local".into(), "1".into(), Value::Null)?;
+    let model = Model::new("scripted".into(), "local".into(), "1".into())?;
     let config = local_harness_config(directory, (model, provider.clone()))?
         .settings(SettingsConfig::new(directory, home).codex_home(home.join(".codex")))
         .state_directory(state)

@@ -1,6 +1,6 @@
 //! Primitive threshold compaction using provider-owned token accounting.
 
-use super::{CompactionRetention, Context, ContextSummary, ModelContextCapacity, ModelTokenCount};
+use super::{Context, ContextSummary, ModelContextCapacity, ModelTokenCount};
 use crate::{Error, Result, model::ModelContentPart};
 use serde::{Deserialize, Serialize};
 
@@ -13,8 +13,6 @@ pub struct ThresholdCompaction {
     pub response_reserve_tokens: u32,
     /// Minimum recent suffix token budget retained alongside mandatory content.
     pub recent_tokens: u32,
-    /// Consumer-selected roles and media that remain verbatim.
-    pub retention: CompactionRetention,
 }
 
 impl Default for ThresholdCompaction {
@@ -22,41 +20,27 @@ impl Default for ThresholdCompaction {
         Self {
             response_reserve_tokens: 16_384,
             recent_tokens: 20_000,
-            retention: CompactionRetention::default(),
         }
     }
 }
 
 impl ThresholdCompaction {
-    /// Keeps at least half the capacity after fixed overhead for input, then
-    /// splits that input between recent context and mandatory content/summary.
+    /// Reserves the selected output capacity before splitting remaining input.
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "filesystem-local")))]
     #[doc(hidden)]
     pub fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        if capacity.output_tokens.is_none()
-            && unknown_output_tests::REQUIRE_OUTPUT_BOUND.with(std::cell::Cell::get)
-        {
-            return Err(Error::Invalid("output capacity is unknown".into()));
-        }
-        let available = capacity
+        let output = capacity.output_reservation(None)?;
+        let usable = capacity
             .context_tokens
             .checked_sub(fixed_tokens)
-            .filter(|available| *available >= 3)
+            .and_then(|available| available.checked_sub(output))
+            .filter(|available| *available >= 2)
             .ok_or_else(|| {
                 Error::Invalid("compaction budgets exceed selected model capacity".into())
             })?;
         let mut policy = Self::default();
-        policy.response_reserve_tokens = policy
-            .response_reserve_tokens
-            .min(
-                capacity
-                    .output_tokens
-                    .unwrap_or(policy.response_reserve_tokens),
-            )
-            .min(available / 2);
-        let usable = available - policy.response_reserve_tokens;
+        policy.response_reserve_tokens = output;
         policy.recent_tokens = policy.recent_tokens.min(usable / 2);
         policy.validate(capacity, None)?;
         Ok(policy)
@@ -69,19 +53,12 @@ impl ThresholdCompaction {
         output_tokens: Option<u32>,
     ) -> Result<u32> {
         capacity.validate()?;
-        self.retention.validate(None)?;
-        let required = u64::from(self.response_reserve_tokens) + u64::from(self.recent_tokens);
-        let output = output_tokens.unwrap_or(
-            capacity
-                .output_tokens
-                .unwrap_or(self.response_reserve_tokens)
-                .min(self.response_reserve_tokens),
-        );
+        let output = capacity.output_reservation(output_tokens)?;
+        let required =
+            u64::from(self.response_reserve_tokens.max(output)) + u64::from(self.recent_tokens);
         if self.response_reserve_tokens == 0
             || self.recent_tokens == 0
             || required >= u64::from(capacity.context_tokens)
-            || !capacity.permits_output(output)
-            || output > self.response_reserve_tokens
         {
             return Err(Error::Invalid(
                 "compaction budgets exceed selected model capacity".into(),
@@ -95,15 +72,11 @@ impl ThresholdCompaction {
         &self,
         capacity: ModelContextCapacity,
         input_tokens: u64,
+        output_tokens: Option<u32>,
     ) -> Result<bool> {
-        self.validate(capacity, None)?;
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        if capacity.output_tokens.is_none()
-            && unknown_output_tests::IGNORE_CONTEXT_PRESSURE.with(std::cell::Cell::get)
-        {
-            return Ok(false);
-        }
-        Ok(input_tokens > u64::from(capacity.context_tokens - self.response_reserve_tokens))
+        let output = self.validate(capacity, output_tokens)?;
+        Ok(input_tokens
+            > u64::from(capacity.context_tokens - self.response_reserve_tokens.max(output)))
     }
 }
 

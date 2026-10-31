@@ -53,6 +53,7 @@ impl FileProjectionPolicy {
 impl ModelContentPart {
     fn payload_bytes(&self) -> Result<u64> {
         match self {
+            Self::Configuration { .. } => Ok(0),
             Self::Text { text } => Ok(text.capacity() as u64),
             Self::File { file, policy } => {
                 add(file.logical_owned_bytes()?, policy.payload_bytes()?)
@@ -110,7 +111,7 @@ impl ModelContent {
 #[cfg(feature = "filesystem")]
 impl ModelRequest {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
-        let mut bytes = crate::executor::json::json_value_logical_owned_bytes(&self.model.options)?;
+        let mut bytes = 0;
         for capacity in [
             self.model.provider.capacity(),
             self.model.name.capacity(),

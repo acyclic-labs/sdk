@@ -37,6 +37,8 @@ pub mod persistence;
 #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
 pub mod postgres;
 pub mod preparation;
+#[cfg(not(target_arch = "wasm32"))]
+pub use pending::NativePending;
 pub use pending::Pending;
 pub mod pull;
 pub mod request;

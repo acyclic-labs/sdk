@@ -59,20 +59,6 @@ fn calibrated_weight_negative_control_cannot_establish_admission() -> Result<()>
     Ok(())
 }
 
-#[test]
-fn a_missing_counter_never_falls_back_to_an_estimate_or_dispatch() -> Result<()> {
-    let (mut provider, script) = provider(Adapter::Chat, 200);
-    Arc::make_mut(&mut provider.config).token_counter = None;
-    let (request, _) = request(&provider)?;
-    let error = futures::executor::block_on(provider.count_tokens(&request)).unwrap_err();
-    assert_eq!(
-        error.code(),
-        acyclic_harness_core::wire::ErrorCode::Unsupported
-    );
-    assert!(script.sent.lock().unwrap().is_empty());
-    Ok(())
-}
-
 struct CountResponse {
     status: u16,
     body: &'static [u8],

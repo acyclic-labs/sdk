@@ -11,12 +11,7 @@ async fn private_cut() -> Result<CutFixture> {
     let journal = storage.journal();
     let (provider, _) = counted_model(65_536, None, [], []);
     let executor = StockExecutor::new(
-        Model::new(
-            "fixture".into(),
-            "working-cut".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("fixture".into(), "working-cut".into(), "1".into())?,
         provider,
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -69,13 +64,8 @@ async fn private_cut() -> Result<CutFixture> {
             )?
             .await?,
     };
-    let (retained, proof) = crate::context::DurableContextProvider::compact(
-        &source,
-        3,
-        Some(summary),
-        &crate::context::CompactionRetention::default(),
-        None,
-    )?;
+    let (retained, proof) =
+        crate::context::DurableContextProvider::compact(&source, 3, Some(summary), None)?;
     let proof = stage_json(
         journal.as_ref(),
         input.operation_id,

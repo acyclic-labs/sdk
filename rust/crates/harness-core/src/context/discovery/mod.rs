@@ -39,10 +39,20 @@ use skills::discovery_error;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use skills::skill_text_native;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod publication;
 mod source;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use publication::{
+    SkillPublicationChange, SkillPublicationCut, SkillPublicationMember, SkillPublicationSource,
+    SourceCursor,
+};
 #[doc(hidden)]
 pub use source::{
     DiscoveryEntry, DiscoveryKind, DiscoveryPage, DiscoverySource, InstructionReader,
     PROJECT_SKILL_ROOTS, SkillCatalog, SkillReader, VolumeDiscovery, capture_instructions,
     discover_skills_from,
 };
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use publication::SkillSourceCheckpoint;

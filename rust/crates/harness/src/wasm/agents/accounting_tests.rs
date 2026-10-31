@@ -25,12 +25,7 @@ fn provider() -> HostModel {
 fn prepared(revision: &str) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new(
-                "accounting".into(),
-                "model".into(),
-                revision.into(),
-                serde_json::json!({}),
-            )?,
+            model: Model::new("accounting".into(), "model".into(), revision.into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("canonical input".into()),

@@ -113,6 +113,13 @@ pub(super) fn stock_json_bound<T: Serialize>(
 
 impl StockExecution<'_> {
     pub(super) fn model_capacity(&self) -> Result<Option<crate::context::ModelContextCapacity>> {
+        if self.single_request {
+            let capacity =
+                stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
+            capacity.validate()?;
+            capacity.output_reservation(self.output_tokens())?;
+            return Ok(Some(capacity));
+        }
         match self.compaction_policy()? {
             crate::context::CompactionPolicy::Disabled => Ok(None),
             crate::context::CompactionPolicy::Threshold(policy) => {
@@ -128,12 +135,8 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn output_budget(&self) -> Result<Option<u32>> {
-        match (self.compaction_policy()?, self.model_capacity()?) {
-            (crate::context::CompactionPolicy::Threshold(policy), Some(capacity)) => {
-                Ok(Some(policy.validate(capacity, self.output_tokens())?))
-            }
-            _ => Ok(self.output_tokens()),
-        }
+        self.model_capacity()?;
+        Ok(self.output_tokens())
     }
 
     pub(super) async fn validate_summary_capacity(
@@ -155,20 +158,7 @@ impl StockExecution<'_> {
         let capacity =
             stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
         capacity.validate()?;
-        let output = executor.output_tokens().ok_or_else(|| {
-            stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary requires a caller-selected output token budget",
-            )
-        })?;
-        if !capacity.permits_output(output) {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary output exceeds selected model capacity",
-            ));
-        }
+        let output = capacity.output_reservation(executor.output_tokens())?;
         let mut prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &mut prepared)
             .await?;

@@ -47,7 +47,7 @@ mod moved_tests;
 
 impl ModelRequest {
     pub(super) fn retained_payload_bytes(&self) -> Result<u64> {
-        let mut bytes = add(self.payload_bytes()?, map_slack(&self.model.options)?)?;
+        let mut bytes = self.payload_bytes()?;
         for tool in &self.tools {
             for schema in [
                 &tool.input_schema,
@@ -86,12 +86,7 @@ mod tests {
     fn sparse_request() -> Result<ModelRequest> {
         let sparse = serde_json::json!({"outer": [{"inner": "value"}]});
         Ok(ModelRequest {
-            model: Model::new(
-                "test".into(),
-                "inventory".into(),
-                "1".into(),
-                sparse.clone(),
-            )?,
+            model: Model::new("test".into(), "inventory".into(), "1".into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Parts(vec![
@@ -123,12 +118,12 @@ mod tests {
     #[test]
     fn retained_request_inventory_covers_sparse_maps_in_every_json_slot() -> Result<()> {
         let request = sparse_request()?;
-        let slack = map_slack(&request.model.options)?;
+        let slack = map_slack(&request.tools[0].input_schema)?;
         assert!(slack > 0, "logical entry slots omit sparse node capacity");
-        // Seven JSON positions; the old logical inventory is the negative control.
+        // Six JSON positions; the old logical inventory is the negative control.
         assert_eq!(
             request.retained_payload_bytes()? - request.payload_bytes()?,
-            7 * slack
+            6 * slack
         );
         Ok(())
     }

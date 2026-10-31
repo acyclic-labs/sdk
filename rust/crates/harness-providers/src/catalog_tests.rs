@@ -89,9 +89,9 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
 }
 
 #[test]
-fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
+fn resolution_rejects_mutated_model_identity() -> Result<()> {
     let (_, script) = provider(Adapter::Responses, 200);
-    let registry = Registry::with_transport(
+    let mut registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([
             ("openai".into(), "fixture".into()),
             ("anthropic".into(), "fixture".into()),
@@ -99,51 +99,32 @@ fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
         ])),
         script,
     );
-    for (selection, options, field) in [
-        (
-            "openai/gpt-5",
-            json!({"reasoning":{"effort":"high"},"text":{"format":{"type":"json_object"}}}),
-            "reasoning",
-        ),
-        (
-            "anthropic/claude-sonnet-4-5",
-            json!({"thinking":{"type":"enabled","budget_tokens":2048}}),
-            "thinking",
-        ),
-        (
-            "gemini/gemini-2.5-pro",
-            json!({"generationConfig":{"thinkingConfig":{"thinkingBudget":2048},"responseMimeType":"application/json"}}),
-            "generationConfig",
-        ),
+    for selection in [
+        "openai/gpt-5",
+        "anthropic/claude-sonnet-4-5",
+        "gemini/gemini-2.5-pro",
     ] {
-        let provider = registry.resolve_with_options(selection, options.clone())?;
+        let provider = registry.resolve(selection)?;
         let (prepared, _) = request(&provider)?;
-        assert_eq!(provider.model().options, options);
-        let body = projection::body(&provider, prepared.request())?;
-        for (field, configured) in options.as_object().expect("fixture options") {
-            for (key, value) in configured.as_object().expect("fixture option controls") {
-                assert_eq!(&body[field][key], value);
-            }
-        }
-        if field == "generationConfig" {
-            assert_eq!(
-                body[field]["maxOutputTokens"],
-                prepared
-                    .request()
-                    .max_output_tokens
-                    .expect("fixture output limit")
-            );
-        }
         let mut changed = provider.model().clone();
-        changed.options = json!({});
+        changed.revision.push_str("-foreign");
         assert!(provider.context_capacity(&changed).is_err());
         assert!(futures::executor::block_on(provider.count_tokens(&prepared)).is_ok());
+        let mut old = serde_json::to_value(provider.model()).unwrap();
+        old["options"] = json!({"tools":[{"type":"forged-native-tool"}]});
+        assert!(serde_json::from_value::<Model>(old).is_err());
+        let (provider_id, name) = selection.split_once('/').unwrap();
+        let mut config = registry.catalog()[provider_id].as_ref().clone();
+        let selected = config.models[name];
+        config.models.insert("unrelated-model".into(), selected);
+        registry.register(provider_id.into(), config.clone())?;
+        assert_eq!(registry.resolve(selection)?.model(), provider.model());
+        config.base_url.push_str("/another-route");
+        registry.register(provider_id.into(), config)?;
+        let rotated = registry.resolve(selection)?;
+        assert_ne!(rotated.model(), provider.model());
+        assert!(rotated.context_capacity(provider.model()).is_err());
     }
-    assert!(
-        registry
-            .resolve_with_options("openai/gpt-5", json!([]))
-            .is_err()
-    );
     Ok(())
 }
 

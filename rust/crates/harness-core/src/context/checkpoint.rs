@@ -18,56 +18,14 @@ pub struct ContextSummary {
     pub output: FileRef,
 }
 
-/// Consumer-declared content that compaction must preserve verbatim.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct CompactionRetention {
-    /// Roles retained in full. Defaults to instructions (`System`).
-    #[cfg_attr(feature = "wasm", tsify(type = "ModelRole[]"))]
-    pub roles: Vec<ModelRole>,
-    /// Retains messages containing native media references in full.
-    pub native_media: bool,
-}
-
-impl Default for CompactionRetention {
-    fn default() -> Self {
-        Self {
-            roles: vec![ModelRole::System],
-            native_media: true,
-        }
-    }
-}
-
-impl CompactionRetention {
-    /// Rejects ambiguous repeated role declarations.
-    pub(crate) fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            io.check_cancellation()?;
-        }
-        for (position, role) in self.roles.iter().enumerate() {
-            if self.roles.iter().take(position).any(|prior| prior == role) {
-                return Err(stock_boundary(
-                    io,
-                    ErrorCode::Invalid,
-                    "compaction retention repeats a role",
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
 /// Immutable reference proving which pre-compaction context was summarized.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
 pub struct CompactionReference {
     /// BLAKE3 digest of the exact serialized source context.
     pub source_digest: [u8; 32],
     /// Caller-selected projection budget; replay reconstructs the same selection.
     pub maximum_messages: u32,
-    /// Exact consumer retention policy used by this admission.
-    pub retention: CompactionRetention,
     /// Summary operation and immutable output, when a projection was compressed.
     pub summary: Option<ContextSummary>,
 }

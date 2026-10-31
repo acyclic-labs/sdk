@@ -40,11 +40,11 @@ fn every_cut_of_the_only_protected_exchange_retains_all_input() -> Result<()> {
     let input_bytes = source.messages.iter().try_fold(100_u64, |total, message| {
         Ok::<_, crate::Error>(total + crate::contract::canonical_json_bytes(message)?.len() as u64)
     })?;
-    assert!(policy.needs_compaction(capacity, input_bytes)?);
+    assert!(policy.needs_compaction(capacity, input_bytes, None)?);
     // Exhaust all prefix cuts through the production selector: the current
     // input and latest result pin the entire connected call/result exchange.
     for covered in 0..=source.messages.len() {
-        let retained = mandatory_messages(&source, covered, &policy.retention, &mut None)?;
+        let retained = mandatory_messages(&source, covered, &mut None)?;
         assert_eq!(
             retained, source.messages,
             "cut {covered} dropped protected input"
@@ -90,6 +90,40 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
         ],
         Some(5),
     );
+    let updates = [
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Part(ModelContentPart::Configuration {
+                prefix: [7; 32],
+                effort: acyclic_model_render::Effort::High,
+            }),
+        },
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Parts(vec![ModelContentPart::Configuration {
+                prefix: [7; 32],
+                effort: acyclic_model_render::Effort::Low,
+            }]),
+        },
+    ];
+    let mut configured = source.clone();
+    configured.messages.insert(1, updates[0].clone());
+    configured.messages.insert(4, updates[1].clone());
+    configured.current_input_index = Some(7);
+    let expected = vec![
+        configured.messages[0].clone(),
+        updates[0].clone(),
+        updates[1].clone(),
+        configured.messages[7].clone(),
+    ];
+    assert_eq!(mandatory_messages(&configured, 8, &mut None)?, expected);
+    let (mut retained, proof) = compact(&configured, 5, 8)?;
+    assert_eq!(retained.messages.get(1..), Some(expected.as_slice()));
+    validate_compaction(&proof, &configured, &retained, None)?;
+    // An unchanged final effort does not justify deleting an earlier admitted
+    // transition: the original ordered context remains the replay contract.
+    retained.messages.remove(2);
+    assert!(validate_compaction(&proof, &configured, &retained, None).is_err());
     for budget in 1..=6 {
         let projection = compact(&source, budget, 6);
         if matches!(budget, 1 | 2) {
@@ -125,10 +159,7 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
     for through in [0, 2, 7] {
         assert!(compact(&source, 5, through).is_err());
     }
-    assert!(
-        DurableContextProvider::compact(&source, 3, None, &CompactionRetention::default(), None)
-            .is_err()
-    );
+    assert!(DurableContextProvider::compact(&source, 3, None, None).is_err());
     let plain = context(
         vec![
             source.messages[0].clone(),
@@ -156,7 +187,7 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
 }
 
 #[test]
-fn declared_retention_preserves_native_tool_exchanges() -> Result<()> {
+fn compaction_always_preserves_native_tool_exchanges() -> Result<()> {
     let file = message(ModelRole::System, "native")?
         .content
         .file_refs()
@@ -172,39 +203,14 @@ fn declared_retention_preserves_native_tool_exchanges() -> Result<()> {
             assert_eq!(retained.messages.get(1..), Some(expected.as_slice()));
             validate_compaction(&proof, &source, &retained, None)?;
             assert!(compact(&source, results + 2, source.messages.len()).is_err());
-            let retention = CompactionRetention {
-                roles: vec![ModelRole::User],
-                native_media: false,
-            };
-            let (retained, mut reference) = DurableContextProvider::compact(
-                &source,
-                3,
-                Some(summary(&source, source.messages.len())?),
-                &retention,
-                None,
-            )?;
-            assert_eq!(
-                retained.messages.get(1..),
-                Some(
-                    &[
-                        source.messages[0].clone(),
-                        source.messages.last().unwrap().clone()
-                    ][..]
-                )
-            );
-            validate_compaction(&reference, &source, &retained, None)?;
-            reference.retention = CompactionRetention::default();
-            assert!(validate_compaction(&reference, &source, &retained, None).is_err());
+            let mut overridden = serde_json::to_value(&proof).unwrap();
+            overridden["retention"] = serde_json::json!({"roles": [], "native_media": false});
+            assert!(serde_json::from_value::<CompactionReference>(overridden).is_err());
+            let mut corrupt = retained.clone();
+            corrupt.messages.remove(1);
+            assert!(validate_compaction(&proof, &source, &corrupt, None).is_err());
         }
     }
-    assert!(
-        CompactionRetention {
-            roles: vec![ModelRole::User, ModelRole::User],
-            native_media: true
-        }
-        .validate(None)
-        .is_err()
-    );
     Ok(())
 }
 

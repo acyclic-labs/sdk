@@ -36,13 +36,6 @@ impl StockExecution<'_> {
         stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
         stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
         let summary_output = self.output_budget()?;
-        if summary_output.is_none() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary requires a caller-selected output token budget",
-            ));
-        }
         let (source_bytes, source_digest, source_messages) =
             self.summary_source_identity(&source)?;
         let revision = with_history_io(self.io, |work| {
@@ -59,6 +52,7 @@ impl StockExecution<'_> {
                 ContextPipeline::summary_source(source, revision, self.io)?,
                 summary_output,
             )),
+            single_request: false,
             compaction: once_cell::sync::OnceCell::new(),
             records: tokio::sync::Mutex::new(Default::default()),
             working_tail: tokio::sync::Mutex::new(Default::default()),

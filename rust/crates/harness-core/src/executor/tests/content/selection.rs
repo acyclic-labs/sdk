@@ -197,7 +197,7 @@ proptest! {
     #[test]
     fn selected_input_is_verified_once(count in 1usize..9, text in "[a-z]{1,24}") {
         let executor = uncompacted_executor(
-            Model::new("test".into(), "reads".into(), "1".into(), Value::Null).unwrap(),
+            Model::new("test".into(), "reads".into(), "1".into()).unwrap(),
             Arc::new(ScriptedModelProvider::new([])),
             ContextPipeline::default(), ToolRegistry::default(),
         );
@@ -240,7 +240,7 @@ proptest! {
     fn public_summary_rejects_an_invalid_parent_before_dispatch(count in 1usize..9, text in "[a-z]{1,24}") {
         let provider = Arc::new(ScriptedModelProvider::new([]));
         let executor = uncompacted_executor(
-            Model::new("test".into(), "reads".into(), "1".into(), Value::Null).unwrap(),
+            Model::new("test".into(), "reads".into(), "1".into()).unwrap(),
             provider.clone(), ContextPipeline::default(), ToolRegistry::default(),
         ).with_max_output_tokens(64).unwrap();
         let mut parent = input(count, &text);
@@ -282,7 +282,7 @@ proptest! {
                 output,
             };
             let (retained, proof) = crate::context::DurableContextProvider::compact(
-                &source, 2, Some(summary), &Default::default(), None)?;
+                &source, 2, Some(summary), None)?;
             let source_file = stage_json(&journal, input.operation_id, "source", &source, None).await?;
             let proof_file = stage_json(&journal, input.operation_id, "proof", &proof, None).await?;
             let before = journal.4.load(Ordering::SeqCst);

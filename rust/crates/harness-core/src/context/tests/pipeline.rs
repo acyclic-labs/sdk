@@ -17,29 +17,6 @@ impl ContextSource for Probe {
     }
 }
 
-impl ContextRenderer for Probe {
-    fn contract(&self, _: Option<&crate::executor::PreparationIo>) -> Result<Value> {
-        Ok(serde_json::json!({"revision": 1}))
-    }
-    fn render<'a>(
-        &'a self,
-        selection: &'a ContextSelection,
-        _: ContextRenderMode,
-        _: &'a ContextInput,
-        limits: Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.0.lock().unwrap().push(limits);
-            let value = match &selection.source {
-                ContextSourceValue::Attribute { attribute } => attribute.value.to_string(),
-                _ => "source".into(),
-            };
-            Ok(vec![text(ModelRole::System, &value)])
-        })
-    }
-}
-
 struct Transform(u32);
 
 impl ContextStage for Transform {
@@ -72,7 +49,7 @@ impl ContextStage for Transform {
 }
 
 #[tokio::test]
-async fn sources_joins_and_selection_narrow_admitted_limits() -> Result<()> {
+async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
     let input = input();
     let limits = Limits {
         context_messages: 2,
@@ -158,46 +135,6 @@ async fn sources_joins_and_selection_narrow_admitted_limits() -> Result<()> {
             .await
             .is_err()
     );
-    let renderer = Arc::new(Probe::default());
-    let selection = ContextSelection {
-        source: ContextSourceValue::File { file },
-        extent: ContextExtent::Whole,
-        representation: ContextRepresentation::Full,
-    };
-    let stage = SelectionStage::new(
-        "selection".into(),
-        selection,
-        renderer.clone(),
-        Arc::new(RefVerifier),
-        ContextRenderMode::Prompt,
-        ContextPlacement::Prepend,
-        limits,
-    )?;
-    let admitted = Limits {
-        file_bytes: 9,
-        render_bytes: 4096,
-        ..limits
-    };
-    let base = ContextPipeline::base_context(&input, admitted, None)?;
-    assert!(
-        stage
-            .apply(&input, base.clone(), admitted, None)?
-            .await
-            .is_err()
-    );
-    assert!(renderer.0.lock().unwrap().is_empty());
-    let admitted = Limits {
-        file_bytes: 10,
-        ..admitted
-    };
-    stage.apply(&input, base, admitted, None)?.await?;
-    assert_eq!(
-        *renderer.0.lock().unwrap(),
-        vec![Limits {
-            render_bytes: limits.render_bytes,
-            ..admitted
-        }]
-    );
     Ok(())
 }
 
@@ -241,112 +178,6 @@ async fn explicit_base_transforms_reload_and_preserve_current_input() -> Result<
             .transform(&input, invalid, payload_limits(), None)
             .await
             .is_err()
-    );
-    assert!(
-        pipeline
-            .reload(ContextPipeline::new([Arc::new(CompactionStage {
-                max_messages: 0,
-                summary: None,
-                retention: CompactionRetention::default()
-            })
-                as Arc<dyn ContextStage>]))
-            .is_err()
-    );
-    Ok(())
-}
-
-fn attribute_pipeline(
-    value: &str,
-    mode: ContextRenderMode,
-    representation: ContextRepresentation,
-) -> Result<ContextPipeline> {
-    let attribute = ContextAttribute::typed(
-        "example.role".into(),
-        "1".into(),
-        serde_json::json!({"type":"string"}),
-        value.into(),
-        &value,
-    )?;
-    Ok(ContextPipeline::new([Arc::new(SelectionStage::new(
-        "role".into(),
-        ContextSelection {
-            source: ContextSourceValue::Attribute { attribute },
-            extent: ContextExtent::Whole,
-            representation,
-        },
-        Arc::new(Probe::default()),
-        Arc::new(RefVerifier),
-        mode,
-        ContextPlacement::Prepend,
-        crate::conversation::Limits::default(),
-    )?) as Arc<dyn ContextStage>]))
-}
-
-#[tokio::test]
-async fn attribute_reload_modes_and_schema_bounds() -> Result<()> {
-    let input = input();
-    let old = attribute_pipeline(
-        "old",
-        ContextRenderMode::Prompt,
-        ContextRepresentation::Full,
-    )?;
-    let snapshot = old.clone();
-    let current = old.reload(attribute_pipeline(
-        "new",
-        ContextRenderMode::Prompt,
-        ContextRepresentation::Full,
-    )?)?;
-    assert_ne!(snapshot.contracts(None)?, current.contracts(None)?);
-    let before = snapshot.run(&input, payload_limits(), None).await?;
-    let prompt = current.run(&input, payload_limits(), None).await?;
-    let update = attribute_pipeline(
-        "new",
-        ContextRenderMode::Update,
-        ContextRepresentation::Full,
-    )?
-    .run(&input, payload_limits(), None)
-    .await?;
-    assert_ne!(before.messages[0], prompt.messages[0]);
-    assert_eq!(prompt.messages.last().unwrap().content, input.input);
-    assert_eq!(update.messages.first().unwrap().content, input.input);
-    assert_eq!(snapshot.run(&input, payload_limits(), None).await?, before);
-    for representation in [
-        ContextRepresentation::Full,
-        ContextRepresentation::Summary,
-        ContextRepresentation::Reference,
-    ] {
-        let pipeline = attribute_pipeline("new", ContextRenderMode::Prompt, representation)?;
-        assert!(
-            pipeline
-                .run(
-                    &input,
-                    Limits {
-                        render_bytes: 1,
-                        ..payload_limits()
-                    },
-                    None
-                )
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            pipeline
-                .run(&input, payload_limits(), None)
-                .await?
-                .messages
-                .len(),
-            2
-        );
-    }
-    assert!(
-        ContextAttribute::typed(
-            "example.role".into(),
-            "1".into(),
-            serde_json::json!({"type":"integer"}),
-            "2".into(),
-            &"invalid"
-        )
-        .is_err()
     );
     Ok(())
 }

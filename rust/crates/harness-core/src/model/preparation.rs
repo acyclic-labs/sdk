@@ -305,6 +305,10 @@ impl ModelContentPart {
     fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
         history_step(quota.work(), 1)?;
         Ok(match self {
+            Self::Configuration { prefix, effort } => Self::Configuration {
+                prefix: *prefix,
+                effort: *effort,
+            },
             Self::Text { text } => Self::Text {
                 text: copy_text(text, quota)?,
             },
@@ -392,7 +396,6 @@ pub(crate) fn clone_model(model: &Model, io: Option<&PreparationIo>) -> Result<M
         provider: crate::executor::stock_string_copy(&model.provider, io)?,
         name: crate::executor::stock_string_copy(&model.name, io)?,
         revision: crate::executor::stock_string_copy(&model.revision, io)?,
-        options: clone_value(&model.options, io)?,
     })
 }
 pub(crate) fn clone_tool_definition(

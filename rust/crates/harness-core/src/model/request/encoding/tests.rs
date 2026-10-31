@@ -9,12 +9,7 @@ fn message(index: usize) -> ModelMessage {
 
 fn request(count: usize) -> Result<ModelRequest> {
     Ok(ModelRequest {
-        model: Model::new(
-            "scripted".into(),
-            "encoding".into(),
-            "1".into(),
-            serde_json::json!({"quoted": "\"messages\":[]", "nested": [{"z": 2, "a": 1}]}),
-        )?,
+        model: Model::new("scripted".into(), "encoding".into(), "1".into())?,
         messages: (0..count).map(message).collect(),
         tools: Vec::new(),
         max_output_tokens: Some(17),

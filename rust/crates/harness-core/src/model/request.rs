@@ -95,6 +95,7 @@ impl ModelRequest {
         for message in messages {
             charge_items(io, 1)?;
             with_history_io(io, |work| message.content.validate_limits(limits, work))?;
+            let standalone = matches!(message.content, ModelContent::Part(_));
             let empty = message.content.parts().is_empty();
             let parts = match &mut message.content {
                 ModelContent::Text(_) => &mut [][..],
@@ -103,7 +104,7 @@ impl ModelRequest {
             };
             for part in parts {
                 charge_items(io, 1)?;
-                Self::validate_part(message.role, part, &tools, &mut pending, io)?;
+                Self::validate_part(message.role, part, standalone, &tools, &mut pending, io)?;
             }
             if message.role == ModelRole::Tool && empty {
                 return Err(Error::Invalid("tool role requires a paired result".into()));
@@ -122,6 +123,42 @@ impl ModelRequest {
         content: &mut ToolResultContent,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        if let ToolResultContent::Json { value } = content {
+            #[cfg(feature = "filesystem")]
+            let _hold;
+            let mut envelope = match io {
+                #[cfg(feature = "filesystem")]
+                Some(io) => {
+                    let (envelope, hold) = io.decode(
+                        std::marker::PhantomData::<Value>,
+                        br#"{"kind":"json","value":null}"#,
+                        Storage,
+                    )?;
+                    _hold = Some(hold);
+                    envelope
+                }
+                _ => {
+                    #[cfg(feature = "filesystem")]
+                    {
+                        _hold = None;
+                    }
+                    serde_json::json!({"kind":"json", "value":null})
+                }
+            };
+            // Only the fixed envelope is new. The admitted payload moves into
+            // it for validation and returns even when its schema refuses it.
+            std::mem::swap(value, &mut envelope["value"]);
+            let result = with_history_io(io, |work| {
+                crate::executor::validate_json_schema_value(
+                    &tool.projection_schema,
+                    &envelope,
+                    "model tool result",
+                    work,
+                )
+            });
+            std::mem::swap(value, &mut envelope["value"]);
+            return result;
+        }
         match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
@@ -139,25 +176,14 @@ impl ModelRequest {
                 })?;
             }
             _ => {
-                let validate = |envelope: &Value| {
-                    crate::executor::validate_json_schema_value(
-                        &tool.projection_schema,
-                        envelope,
-                        "model tool result",
-                        &mut None,
-                    )
-                };
-                if let ToolResultContent::Json { value } = content {
-                    let mut envelope = serde_json::json!({"kind":"json", "value":null});
-                    envelope["value"] = std::mem::take(value);
-                    let result = validate(&envelope);
-                    *value = envelope["value"].take();
-                    result?;
-                } else {
-                    let envelope = serde_json::to_value(content)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                    validate(&envelope)?;
-                }
+                let envelope = serde_json::to_value(content)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                crate::executor::validate_json_schema_value(
+                    &tool.projection_schema,
+                    &envelope,
+                    "model tool result",
+                    &mut None,
+                )?;
             }
         }
         Ok(())
@@ -177,11 +203,23 @@ impl ModelRequest {
     fn validate_part<'a>(
         role: ModelRole,
         part: &'a mut ModelContentPart,
+        standalone: bool,
         tools: &BTreeMap<&str, &crate::tool::ToolDefinition>,
         pending: &mut BTreeMap<&'a String, PendingCall<'a>>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         match part {
+            ModelContentPart::Configuration { effort, .. } => {
+                if role != ModelRole::User
+                    || !standalone
+                    || !pending.is_empty()
+                    || *effort == acyclic_model_render::Effort::Adaptive
+                {
+                    return Err(Error::Invalid(
+                        "configuration update must be a concrete user-boundary item".into(),
+                    ));
+                }
+            }
             ModelContentPart::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,

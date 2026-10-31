@@ -114,14 +114,7 @@ impl Opening {
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
         let tools = installation.tools;
         let compaction = if let Some((model, provider)) = &config.model {
-            compaction::select(
-                config.compaction.take(),
-                model,
-                provider.as_ref(),
-                &tools,
-                config.limits,
-            )
-            .await?
+            compaction::select(config.compaction.take(), model, provider.as_ref())?
         } else {
             crate::context::CompactionPolicy::Disabled
         };
@@ -438,7 +431,6 @@ impl Opening {
             preset: self.preset,
             approval_models: self.config.approval_models,
             agent: self.config.model,
-            context_manifest: self.config.context_manifest,
             served: self.config.served,
             active_directory: self.config.active_directory,
             skill_cache: context::skills::cache(),

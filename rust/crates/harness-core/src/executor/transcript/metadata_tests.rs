@@ -268,7 +268,6 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
     let compaction = crate::context::CompactionReference {
         source_digest: [255; 32],
         maximum_messages: 10,
-        retention: crate::context::CompactionRetention::default(),
         summary: Some(crate::context::ContextSummary {
             operation_id: OperationId::new(),
             step: 0,

@@ -16,6 +16,8 @@ pub struct ResolvedModel {
     pub(crate) estimator: Arc<crate::accounting::TokenEstimator>,
     /// Immutable harness model identity.
     pub(crate) model: Model,
+    /// Sealed settings derived from the parsed profile, never a root option map.
+    pub(crate) profile: Option<acyclic_harness_core::model::ModelProfileBinding>,
     pub(crate) config: Arc<ProviderSpec>,
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<Arc<str>>,
@@ -29,6 +31,35 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    /// Joins the original registry selection to its admitted epoch profile.
+    /// Credentials, endpoint and token counting retain their original owners.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]
+    pub fn with_profile(
+        mut self,
+        profile: &acyclic_harness_core::profile::AgentProfile<'_>,
+    ) -> Result<Self> {
+        if self.profile.is_some() {
+            return Err(invalid(
+                "a resolved model profile is immutable; resolve the next epoch",
+            ));
+        }
+        let binding = profile.bind_model(&self.model, self.capacity)?;
+        crate::projection::validate_profile(self.config.adapter, &binding)?;
+        let mut revision = blake3::Hasher::new();
+        revision.update(b"acyclic.model-profile-binding.v1\0");
+        revision.update(&(self.model.revision.len() as u64).to_be_bytes());
+        revision.update(self.model.revision.as_bytes());
+        revision.update(&binding.digest());
+        self.model.revision = format!("profile-v1:{}", revision.finalize().to_hex());
+        self.profile = Some(binding);
+        Ok(self)
+    }
+
+    /// Pinned profile and prefix identity for the original epoch publication.
+    pub fn profile_binding(&self) -> Option<&acyclic_harness_core::model::ModelProfileBinding> {
+        self.profile.as_ref()
+    }
+
     /// Borrows the immutable identity used to bind this provider into the harness.
     pub fn model(&self) -> &Model {
         &self.model
@@ -39,27 +70,35 @@ impl ResolvedModel {
         account: Option<&str>,
     ) -> acyclic_harness_core::model::ReasoningOrigin {
         let family = crate::stream::family(self.config.adapter);
-        let mut scope = blake3::Hasher::new();
-        scope.update(b"harness-reasoning-scope-v1\0");
-        if self.credential_scope.is_some() {
-            scope.update(b"protected-account\0");
-        }
         let credential = self.credential_scope.as_ref().map_or_else(
-            || account.or(key).unwrap_or("").as_bytes(),
-            |scope| scope.as_slice(),
+            || {
+                account
+                    .or(key)
+                    .filter(|value| !value.is_empty())
+                    .map(str::as_bytes)
+            },
+            |scope| Some(scope.as_slice()),
         );
-        for value in [
-            family.as_bytes(),
-            self.config.base_url.as_bytes(),
-            credential,
-        ] {
-            scope.update(&(value.len() as u64).to_be_bytes());
-            scope.update(value);
-        }
+        let credential_scope = credential.map(|credential| {
+            let mut scope = blake3::Hasher::new();
+            scope.update(b"harness-reasoning-scope-v1\0");
+            if self.credential_scope.is_some() {
+                scope.update(b"protected-account\0");
+            }
+            for value in [
+                family.as_bytes(),
+                self.config.base_url.as_bytes(),
+                credential,
+            ] {
+                scope.update(&(value.len() as u64).to_be_bytes());
+                scope.update(value);
+            }
+            *scope.finalize().as_bytes()
+        });
         acyclic_harness_core::model::ReasoningOrigin {
             provider: family.into(),
             model: self.model.name.clone(),
-            credential_scope: Some(*scope.finalize().as_bytes()),
+            credential_scope,
         }
     }
 
@@ -79,8 +118,10 @@ impl ResolvedModel {
         Ok(())
     }
 
-    pub(crate) fn default_output_budget(&self) -> u32 {
-        self.capacity.default_output_budget()
+    pub(crate) fn admitted_capacity(&self) -> ModelContextCapacity {
+        self.profile
+            .as_ref()
+            .map_or(self.capacity, |profile| profile.capacity())
     }
     pub(crate) fn validate(&self, model: &Model) -> Result<()> {
         if model != &self.model {
@@ -103,6 +144,7 @@ impl ModelProvider for ResolvedModel {
             },
             estimator: Arc::clone(&self.estimator),
             model: self.model.clone(),
+            profile: self.profile,
             config: self.config.clone(),
             capacity: self.capacity,
             key: self.key.clone(),
@@ -133,7 +175,7 @@ impl ModelProvider for ResolvedModel {
                 reason: "request model differs from resolved selection",
             });
         }
-        Ok(self.capacity)
+        Ok(self.admitted_capacity())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -202,9 +244,17 @@ impl ModelProvider for ResolvedModel {
         })
     }
 
+    fn model_profile(
+        &self,
+        model: &Model,
+    ) -> Result<Option<acyclic_harness_core::model::ModelProfileBinding>> {
+        self.validate(model)?;
+        Ok(self.profile)
+    }
+
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.validate(model)?;
-        Ok(self.capacity)
+        Ok(self.admitted_capacity())
     }
 
     fn count_tokens<'a>(

@@ -226,7 +226,6 @@ impl StockExecution<'_> {
                 ));
             };
             if self.model_capacity()? != Some(final_accounting.capacity)
-                || proof.retention != policy.retention
                 || proof.summary.as_ref().is_none_or(|summary| {
                     summary.operation_id != input.operation_id || summary.step != step
                 })
@@ -242,6 +241,7 @@ impl StockExecution<'_> {
                 with_history_io(self.io, |work| {
                     final_accounting.count.validate(&request, work)
                 })?,
+                self.output_tokens(),
             )? {
                 return Err(stock_boundary(
                     self.io,
@@ -265,6 +265,44 @@ impl StockExecution<'_> {
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step, prior_messages) = turn;
         let (mut projection, accounting) = captured;
+        if self.single_request {
+            let accounting = accounting.ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "inference request has no verified accounting",
+                )
+            })?;
+            if self.model_capacity()? != Some(accounting.capacity) {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Conflict,
+                    "selected capacity differs from captured accounting",
+                ));
+            }
+            let input_tokens =
+                with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+            let output = accounting
+                .capacity
+                .output_reservation(self.output_tokens())?;
+            if input_tokens.saturating_add(u64::from(output))
+                > u64::from(accounting.capacity.context_tokens)
+            {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "inference request exceeds selected model capacity",
+                ));
+            }
+            if !prepared.request().tools.is_empty() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "single inference request declares invocable tools",
+                ));
+            }
+            return Ok(prepared);
+        }
         match (self.compaction_policy()?, accounting) {
             (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
             (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
@@ -291,7 +329,11 @@ impl StockExecution<'_> {
                 {
                     return Ok(retained);
                 }
-                let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
+                let token_pressure = policy.needs_compaction(
+                    accounting.capacity,
+                    input_tokens,
+                    self.output_tokens(),
+                )?;
                 let selected_base = step == 0 && input.selected_context.is_some();
                 let possible_message_pressure = selected_base
                     && prepared.request().messages.len() > self.compaction_message_limit(true, 0);

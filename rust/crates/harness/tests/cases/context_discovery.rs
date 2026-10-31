@@ -181,8 +181,9 @@ async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> 
     let (prefix, pinned) = acyclic_harness::context::VolumeDiscovery {
         reader: &reader,
         root,
+        io: None,
     }
-    .skill_prefix(path, &generation, declaration.limits.header_bytes)
+    .skill_prefix(path, &generation, declaration.limits.header_bytes)?
     .await?;
     let retained = reader.prefix.lock().unwrap();
     let retained = retained.as_ref().expect("real prefix read completed");
@@ -217,12 +218,7 @@ fn executor(
     provider: Arc<ScriptedModelProvider>,
 ) -> Result<acyclic_harness::executor::StockExecutor> {
     Ok(acyclic_harness::executor::StockExecutor::new(
-        acyclic_harness::model::Model::new(
-            "test".into(),
-            "model".into(),
-            "1".into(),
-            serde_json::Value::Null,
-        )?,
+        acyclic_harness::model::Model::new("test".into(), "model".into(), "1".into())?,
         provider,
         ContextPipeline::default().with(Arc::new(snapshot.stage(ContextPlacement::Prepend)?)),
         acyclic_harness::tool::ToolRegistry::default(),

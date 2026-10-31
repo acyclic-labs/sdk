@@ -53,7 +53,6 @@ impl StockExecution<'_> {
             &context,
             maximum,
             Some(summary),
-            &policy.retention,
             self.io,
         )?;
         let compaction_key = with_history_io(self.io, |work| {
@@ -178,15 +177,33 @@ impl StockExecution<'_> {
             count
         };
         with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
+        let available = capacity
+            .context_tokens
+            .checked_sub(
+                policy
+                    .response_reserve_tokens
+                    .max(capacity.output_reservation(self.output_tokens())?),
+            )
+            .and_then(|tokens| tokens.checked_sub(count.fixed_tokens))
+            .filter(|tokens| *tokens >= 2)
+            .ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "fixed request content leaves no summary capacity",
+                )
+            })?;
+        let recent_tokens = policy.recent_tokens.min(available / 2);
         let (through, maximum) = crate::context::plan_compaction_budget(
             policy,
             context,
             &count,
             message_limit,
+            recent_tokens,
             self.io,
         )?;
         let mandatory = with_history_io(self.io, |work| {
-            crate::context::mandatory_messages(context, through, &policy.retention, work)
+            crate::context::mandatory_messages(context, through, work)
         })?;
         let mandatory = crate::model::PreparedModelRequest::prepare(
             self.request_from_messages(mandatory)?,
@@ -197,7 +214,7 @@ impl StockExecution<'_> {
             stock_count_tokens(self.stock.provider.as_ref(), &mandatory, self.io).await?;
         let mandatory_count =
             with_history_io(self.io, |work| mandatory_count.validate(&mandatory, work))?;
-        if policy.needs_compaction(capacity, mandatory_count)? {
+        if policy.needs_compaction(capacity, mandatory_count, self.output_tokens())? {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,
@@ -271,7 +288,7 @@ impl StockExecution<'_> {
         };
         let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io).await?;
         let final_count = with_history_io(self.io, |work| count.validate(&request, work))?;
-        if policy.needs_compaction(capacity, final_count)? {
+        if policy.needs_compaction(capacity, final_count, self.output_tokens())? {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,

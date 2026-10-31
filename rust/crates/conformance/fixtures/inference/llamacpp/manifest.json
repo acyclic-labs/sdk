@@ -86,13 +86,6 @@
       }
     }
   },
-  "options": {
-    "temperature": 0,
-    "seed": 1,
-    "chat_template_kwargs": {
-      "enable_thinking": false
-    }
-  },
   "usage": {
     "input": "/usage/prompt_tokens",
     "input_tokens": 17,

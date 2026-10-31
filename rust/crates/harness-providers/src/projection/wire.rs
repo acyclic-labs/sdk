@@ -1,4 +1,5 @@
 use super::call::Call;
+use acyclic_model_render::ToolDeclarations;
 use serde::{Serialize, ser::SerializeMap};
 use serde_json::{Map, Value, value::RawValue};
 
@@ -9,6 +10,7 @@ pub(super) enum Item<'a> {
     Json(Value),
     Native(&'a RawValue),
     Call(Call<'a>),
+    Result(super::result::ToolResult<'a>),
 }
 
 #[derive(Serialize)]
@@ -33,11 +35,13 @@ pub(super) struct Chat<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<Call<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_content: Option<String>,
+    pub reasoning_content: Option<&'a RawValue>,
 }
 
 pub(crate) struct Body<'a> {
     pub(crate) fields: Map<String, Value>,
+    pub(super) tools:
+        Option<ToolDeclarations<'a, acyclic_harness_core::tool::schema::ModelInput<'a>>>,
     pub(super) messages_field: &'static str,
     pub(super) messages: Vec<Message<'a>>,
 }
@@ -65,6 +69,11 @@ impl Body<'_> {
         if let Some(model) = model {
             map.serialize_entry("model", model)?;
         }
+        if let Some(tools) = &self.tools
+            && include.is_none_or(|fields| fields.contains(&"tools"))
+        {
+            map.serialize_entry("tools", tools)?;
+        }
         map.serialize_entry(self.messages_field, &self.messages)?;
         map.end()
     }
@@ -84,6 +93,7 @@ impl<'a> Body<'a> {
             .collect();
         Self {
             fields,
+            tools: None,
             messages_field: field,
             messages,
         }
@@ -109,6 +119,23 @@ impl<'a> Body<'a> {
             }
         }
         args
+    }
+
+    pub(crate) fn results(&mut self) -> Vec<&mut super::result::ToolResult<'a>> {
+        let mut results = Vec::new();
+        for message in &mut self.messages {
+            match message {
+                Message::Item(Item::Result(result)) => results.push(result),
+                Message::Anthropic { content, .. } | Message::Gemini { parts: content, .. } => {
+                    results.extend(content.iter_mut().filter_map(|item| match item {
+                        Item::Result(result) => Some(result),
+                        _ => None,
+                    }));
+                }
+                _ => {}
+            }
+        }
+        results
     }
 }
 
@@ -149,7 +176,7 @@ pub(super) fn replay_turns_with(
         };
         super::sequence::push(adapter, &mut projected, next).unwrap();
     }
-    super::sequence::finish_with(adapter, &mut projected, rules);
+    super::sequence::finish_with(adapter, &mut projected, rules).ok()?;
     match crate::json(&serde_json::to_vec(&projected).unwrap()).unwrap() {
         Value::Array(output) => Some(output),
         _ => unreachable!("a message list encodes as an array"),

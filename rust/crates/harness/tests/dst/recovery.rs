@@ -20,12 +20,7 @@ fn local_turn<'a>(
     dispatch_write: Arc<AtomicUsize>,
 ) -> EntryFuture<'a, Result<()>> {
     entry(async move {
-        let model = Model::new(
-            "scripted".into(),
-            "dst".into(),
-            "1".into(),
-            serde_json::Value::Null,
-        )?;
+        let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
         let dispatch_schedule = schedule.clone();
         let provider = Arc::new(
             ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_dispatch_observer(

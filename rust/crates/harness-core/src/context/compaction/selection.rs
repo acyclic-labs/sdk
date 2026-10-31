@@ -9,6 +9,7 @@ impl ThresholdCompaction {
         context: &Context,
         count: &ModelTokenCount,
         maximum_messages: usize,
+        recent_tokens: u32,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(usize, usize)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
@@ -18,7 +19,7 @@ impl ThresholdCompaction {
                 "compaction requires a summary message allowance",
             )
         })?;
-        if self.recent_tokens == 0 {
+        if recent_tokens == 0 {
             return Err(compaction_error(
                 quota.work(),
                 "recent token budget must be positive",
@@ -27,7 +28,7 @@ impl ThresholdCompaction {
         let mut recent = 0_u64;
         let mut start = count.message_tokens.len();
         for tokens in count.message_tokens.iter().rev() {
-            if recent >= u64::from(self.recent_tokens) {
+            if recent >= u64::from(recent_tokens) {
                 break;
             }
             compaction_step(&mut quota)?;
@@ -82,7 +83,7 @@ impl ThresholdCompaction {
         covered: usize,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<usize> {
-        let (flags, pending, groups) = mandatory_flags(context, covered, &self.retention, quota)?;
+        let (flags, pending, groups) = mandatory_flags(context, covered, quota)?;
         let count = flags.iter().filter(|selected| **selected).count();
         retire_vector(pending, quota)?;
         retire_vector(flags, quota)?;
@@ -142,20 +143,25 @@ impl ThresholdCompaction {
 pub(in crate::context) fn mandatory_flags<'a>(
     context: &'a Context,
     covered: usize,
-    retention: &super::CompactionRetention,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<(Vec<bool>, PendingCalls<'a>, Vec<Group>)> {
     let (groups, mut pending) = exchange_groups(context, quota)?;
     let mut selected = quota_vector::<bool>(context.messages.len(), quota)?;
     for (position, message) in context.messages.iter().enumerate() {
         compaction_step(quota)?;
+        let mut configuration = false;
+        for part in message.content.parts() {
+            compaction_step(quota)?;
+            configuration |= matches!(part, ModelContentPart::Configuration { .. });
+        }
         selected.push(
             context.current_input_index.map(|index| index as usize) == Some(position)
                 || position + 1 == context.messages.len()
                 || position >= covered
                 || message.content.contains_project_instructions()
-                || retention.roles.contains(&message.role)
-                || (retention.native_media && message.content.contains_native_media()),
+                || message.role == crate::model::ModelRole::System
+                || configuration
+                || message.content.contains_native_media(),
         );
     }
     // Components are flattened. First select every selected member's root,
@@ -177,13 +183,12 @@ pub(in crate::context) fn mandatory_flags<'a>(
 pub(crate) fn mandatory_messages(
     context: &Context,
     covered: usize,
-    retention: &super::CompactionRetention,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Vec<crate::model::ModelMessage>> {
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut messages = Vec::new();
     let made = (|| {
-        let (selected, pending, groups) = mandatory_flags(context, covered, retention, &mut quota)?;
+        let (selected, pending, groups) = mandatory_flags(context, covered, &mut quota)?;
         messages = quota_vector(selected.iter().filter(|keep| **keep).count(), &mut quota)?;
         for (message, keep) in context.messages.iter().zip(&selected) {
             compaction_step(&mut quota)?;
@@ -211,7 +216,6 @@ pub(crate) fn compact_context(
     context: &Context,
     maximum: usize,
     summary: &super::ContextSummary,
-    retention: &super::CompactionRetention,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Context, u64)> {
     use crate::model::{ModelContent, ModelMessage, ModelRole};
@@ -224,12 +228,8 @@ pub(crate) fn compact_context(
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut result = Context::default();
     let made = (|| {
-        let (mut selected, mut pending, groups) = mandatory_flags(
-            context,
-            summary.source_messages as usize,
-            retention,
-            &mut quota,
-        )?;
+        let (mut selected, mut pending, groups) =
+            mandatory_flags(context, summary.source_messages as usize, &mut quota)?;
         let mut count = selected.iter().filter(|value| **value).count();
         if count >= maximum {
             return Err(compaction_error(

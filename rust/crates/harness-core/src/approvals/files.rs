@@ -74,11 +74,11 @@ impl<'a> ApprovalRequest<'a> {
     pub fn bytes(&self) -> &[u8] {
         self.bytes
     }
-    /// Finite bound used for every review and dispatch file for this request.
+    /// Finite bound used for each retained review file for this request.
     pub fn maximum_bytes(&self) -> u64 {
         self.maximum_bytes
     }
-    /// Canonical path of a principal's retained review or model dispatch.
+    /// Canonical path of a principal's retained review.
     pub fn review_path(&self, principal: &str) -> String {
         format!(
             "approvals/{}/reviews/{}.json",

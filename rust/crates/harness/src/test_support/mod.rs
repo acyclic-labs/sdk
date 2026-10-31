@@ -132,13 +132,7 @@ mod tests {
         let config = super::local_harness_config(
             workspace,
             (
-                crate::model::Model::new(
-                    "test".into(),
-                    "settings".into(),
-                    "1".into(),
-                    serde_json::Value::Null,
-                )
-                .unwrap(),
+                crate::model::Model::new("test".into(), "settings".into(), "1".into()).unwrap(),
                 std::sync::Arc::new(super::ScriptedModelProvider::new([])),
             ),
         )

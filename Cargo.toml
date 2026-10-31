@@ -52,6 +52,7 @@ members = [
   "rust/fuzz",
   "rust/proofs/model-epochs",
   "rust/crates/manifest",
+  "rust/crates/model-render",
   "plugin",
   "plugin/identity",
 ]
@@ -156,7 +157,7 @@ web-sys = { version = "0.3.94", features = [
 ] }
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(loom)", "cfg(kani)"] }
 # Native filesystem and generated FFI crates isolate reviewed platform calls
 # with narrow module-level allowances; every other crate inherits denial.
 unsafe_code = "deny"

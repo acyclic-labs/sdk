@@ -81,12 +81,7 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
         });
         let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
         let executor = uncompacted_executor(
-            Model::new(
-                "test".into(),
-                "continuation".into(),
-                "1".into(),
-                Value::Null,
-            )?,
+            Model::new("test".into(), "continuation".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             echo_tools(tool.clone(), json!(true), json!(true), json!(true))?,
@@ -139,12 +134,7 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
 async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch() -> Result<()> {
     let (provider, counts) = counted_model(65_536, None, [ScriptedTurn::Text("done".into())], []);
     let executor = StockExecutor::new(
-        Model::new(
-            "test".into(),
-            "continuation".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("test".into(), "continuation".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -234,12 +224,7 @@ async fn continued_tool_results_stop_before_aggregate_render_overflow_is_publish
         seen: AtomicUsize::new(0),
     });
     let executor = uncompacted_executor(
-        Model::new(
-            "test".into(),
-            "continuation".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("test".into(), "continuation".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         echo_tools(

@@ -78,14 +78,12 @@ pub enum Approver {
         /// Verdict when no selector matches.
         fallback: RuleVerdict,
     },
-    /// A separate model binding and its own system prompt; it has no tools.
+    /// An independent model using the shared review instruction, without tools.
     Llm {
         /// Authenticated model identity.
         principal: String,
         /// Independent model binding.
         model: String,
-        /// This approver's private instruction.
-        prompt: String,
     },
     /// A human authenticated by the client connection, never by file contents.
     Human {
@@ -150,7 +148,7 @@ impl TargetSelector {
 }
 
 /// Policy and model results use the same escalation semantics.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum RuleVerdict {
@@ -200,15 +198,9 @@ impl ApprovalPolicy {
                     }
                     principal.as_str()
                 }
-                Approver::Llm {
-                    principal,
-                    model,
-                    prompt,
-                } => {
-                    if model.is_empty() || prompt.trim().is_empty() {
-                        return Err(Error::Invalid(
-                            "approver model and prompt are required".into(),
-                        ));
+                Approver::Llm { principal, model } => {
+                    if model.trim().is_empty() {
+                        return Err(Error::Invalid("approver model is required".into()));
                     }
                     principal.as_str()
                 }

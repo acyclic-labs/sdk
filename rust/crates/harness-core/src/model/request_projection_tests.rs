@@ -244,12 +244,33 @@ proptest! {
             prop_assert_ne!(pointer, envelope["value"]["sentinel"].as_str().unwrap().as_ptr());
         }
         let expected = crate::executor::validate_json_schema_value(&schema, &envelope, "model tool result", &mut None);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let admitted = expected.is_ok();
         let actual = request.validate(Limits::default(), None);
         prop_assert_eq!(actual.map_err(|e| e.to_string()), expected.map_err(|e| e.to_string()));
         prop_assert_eq!(&request, &original);
         let ToolResultContent::Json { value } = content(&request) else { unreachable!() };
         prop_assert_eq!(value["sentinel"].as_str().filter(|s| !s.is_empty()).map(str::as_ptr), owned_pointer);
         prop_assert_eq!(crate::contract::canonical_json_bytes(&request).unwrap(), crate::contract::canonical_json_bytes(&original).unwrap());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(32 * 1024 * 1024, 32 * 1024 * 1024),
+                &cancellation,
+            ).unwrap();
+            let baseline = work.live_allocation_bytes();
+            let io = PreparationIo::from_native_work(&work).unwrap();
+            let native = request.validate(Limits::default(), Some(&io));
+            prop_assert_eq!(native.is_ok(), admitted);
+            drop(native);
+            prop_assert_eq!(&request, &original);
+            let ToolResultContent::Json { value } = content(&request) else { unreachable!() };
+            prop_assert_eq!(value["sentinel"].as_str().filter(|s| !s.is_empty()).map(str::as_ptr), owned_pointer);
+            prop_assert_eq!(io.owned_bytes().unwrap(), 0);
+            drop(io);
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        }
         request.tools[0].projection_schema = strict.clone();
         prop_assert!(request.validate(Limits::default(), None).is_ok());
         let mut wrong = envelope;
@@ -261,7 +282,7 @@ proptest! {
     // validator must allocate less than even one copy of the large string,
     // regardless of nesting; the former conversion violates this bound.
     #[test]
-    fn request_validation_does_not_copy_large_json(extra in 0usize..8192, depth in 0usize..8) {
+    fn projection_reuse_preserves_large_json_without_copying(extra in 0usize..8192, depth in 0usize..8) {
         with_result(Value::Null, json!(true)).validate(Limits::default(), None).unwrap();
         let length = 256 * 1024 + extra;
         let mut value = Value::String("x".repeat(length));
@@ -277,6 +298,23 @@ proptest! {
         let no_payload_copy = |work: acyclic_test_support::AllocationInfo| work.bytes_total < length as u64;
         prop_assert!(no_payload_copy(actual), "request copied its JSON payload: {actual:?}");
         prop_assert!(!no_payload_copy(old), "former conversion escaped detection: {old:?}");
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(32 * 1024 * 1024, 32 * 1024 * 1024),
+                &cancellation,
+            ).unwrap();
+            let baseline = work.live_allocation_bytes();
+            let io = PreparationIo::from_native_work(&work).unwrap();
+            let mut result = None;
+            let actual = acyclic_test_support::measure(|| { result = Some(request.validate(Limits::default(), Some(&io))); });
+            prop_assert!(result.unwrap().is_ok());
+            prop_assert!(no_payload_copy(actual), "native request copied its JSON payload: {actual:?}");
+            prop_assert_eq!(io.owned_bytes().unwrap(), 0);
+            drop(io);
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        }
     }
 }
 

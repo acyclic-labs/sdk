@@ -22,13 +22,14 @@ impl ContextRoot {
         if !self.directory.is_empty() {
             crate::conversation::validate_content_path(&self.directory, work)?;
         }
-        let capability = self
-            .volume
-            .directory_read_capability(&self.directory, work)?;
-        let retained = capability.capacity() as u64;
-        drop(capability);
-        if let Some(io) = work.as_deref_mut() {
-            io.release_owned(retained)?;
+        // Validation checks the declaration, not a derived authorization label.
+        // Hashing and allocating that label belongs at the grant boundary.
+        if crate::conversation::is_internal_path(&self.directory) {
+            return Err(discovery_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "internal storage paths cannot be delegated",
+            ));
         }
         Ok(())
     }
@@ -130,6 +131,7 @@ impl ContextDiscovery {
                     &mut VolumeDiscovery {
                         reader,
                         root: &scope.root,
+                        io: None,
                     },
                     &scope.root.directory,
                     &scope.active_directory,
@@ -247,6 +249,36 @@ pub struct PinnedContextPath {
 }
 
 impl PinnedContextPath {
+    /// Captures the exact lazy identity on the caller's original allocation owner.
+    /// Additions and removals use the same boundary; neither opens a body.
+    pub(crate) fn capture(
+        root: &ContextRoot,
+        generation: &GenerationRef,
+        path: &str,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            #[cfg(feature = "filesystem")]
+            let generation = GenerationRef::from_resource(
+                crate::core::copy_resource(generation.as_resource(), quota)?,
+                quota.work(),
+            )?;
+            #[cfg(not(feature = "filesystem"))]
+            let generation = generation.clone();
+            let pinned = Self {
+                root: ContextRoot {
+                    volume: root.volume.clone_in_quota(quota)?,
+                    directory: crate::core::copy_text(&root.directory, quota)?,
+                },
+                generation,
+                path: crate::core::copy_text(path, quota)?,
+            };
+            pinned.validate(quota.work())?;
+            Ok(pinned)
+        })
+        .map(|(pinned, _)| pinned)
+    }
+
     #[doc(hidden)]
     pub fn validate(
         &self,

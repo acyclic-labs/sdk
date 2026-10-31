@@ -35,12 +35,19 @@ mod checkpoint;
 mod checkpoint_maps;
 mod configuration;
 mod content;
+#[cfg(not(target_arch = "wasm32"))]
+mod context_publication;
+mod conversation;
 mod durability;
 mod indexed_publication;
 #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod inline_tests;
 mod interactions;
 mod observations;
+#[cfg(not(target_arch = "wasm32"))]
+pub use context_publication::{
+    ContextCheckpoint, ContextPublicationReceipt, ContextPublicationRequest,
+};
 mod persistent_index;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

@@ -32,7 +32,7 @@ test("Rust model registry implements the public TS provider contract", async () 
     models: { fixture: { capacity: { context_tokens: 4096, output_tokens: 512 } } },
     token_counter: { path: "count_tokens", adapter: "chat", response_field: "input_tokens", framing_tokens: 0 },
   });
-  const selected = registry.resolve("ollama/fixture", { temperature: 0.1 });
+  const selected = registry.resolve("ollama/fixture");
   const provider: ModelProvider = selected;
   const model = selected.model;
   const request = { model, messages: [{ role: "user" as const, content: "hello" }], tools: [] };
@@ -58,7 +58,7 @@ test("Rust model registry implements the public TS provider contract", async () 
   expect(call.metadata).toBeDefined();
   expect(events.at(-1)).toEqual({ kind: "completed", metadata: { finish_reason: "tool_calls", usage: { total_tokens: 3n } } });
   expect(submitted?.stream).toBe(true);
-  expect(submitted?.temperature).toBe(0.1);
+  expect(submitted?.temperature).toBeUndefined();
   expect(headers?.get("x-owner")).toBe("project");
   expect(await provider.reconcile({ ...dispatch, requestDigest: count.requestDigest, observed: [] })).toBeUndefined();
   selected.free();

@@ -41,7 +41,7 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
             ]),
         );
         let executor = uncompacted_executor(
-            Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
+            Model::new("test".into(), "summary".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -111,22 +111,17 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
                 },
                 ModelMessage {
                     role: ModelRole::User,
-                    content: ModelContent::Text("o".repeat(28_000)),
+                    content: ModelContent::Text("o".repeat(30_000)),
                 },
                 ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Text("a".repeat(28_000)),
+                    content: ModelContent::Text("a".repeat(30_000)),
                 },
             ],
             ..crate::context::Context::default()
         };
         let executor = StockExecutor::new(
-            Model::new(
-                "synthetic".into(),
-                "byte-counter".into(),
-                "1".into(),
-                json!({}),
-            )?,
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "history",
@@ -136,6 +131,11 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
             )) as Arc<dyn crate::context::ContextStage>]),
             ToolRegistry::default(),
         );
+        let requested_output = output_capacity.is_none().then_some(4096);
+        let executor = match requested_output {
+            Some(output) => executor.with_max_output_tokens(output)?,
+            None => executor,
+        };
         let input = TurnInput {
             operation_id: OperationId::new(),
             input: ModelContent::Text("c".repeat(5_000)),
@@ -147,14 +147,8 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
         assert_eq!(executor.execute(input, &journal).await?, output);
         let requests = provider.requests();
         assert_eq!(requests.len(), 2);
-        assert_eq!(
-            requests[0].max_output_tokens,
-            Some(output_capacity.unwrap_or(16_384))
-        );
-        assert_eq!(
-            requests[1].max_output_tokens,
-            Some(output_capacity.unwrap_or(16_384))
-        );
+        assert_eq!(requests[0].max_output_tokens, requested_output);
+        assert_eq!(requests[1].max_output_tokens, requested_output);
         assert_eq!(
             provider.context_capacity(&requests[0].model)?.output_tokens,
             output_capacity
@@ -195,12 +189,7 @@ async fn compacted_projection_recovers_before_response_admission() -> Result<()>
         ..crate::context::Context::default()
     };
     let executor = StockExecutor::new(
-        Model::new(
-            "synthetic".into(),
-            "byte-counter".into(),
-            "1".into(),
-            json!({}),
-        )?,
+        Model::new("synthetic".into(), "byte-counter".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
             "history",
@@ -252,7 +241,7 @@ async fn impossible_default_capacity_fails_before_turn_admission() -> Result<()>
     let journal = Journal::default();
     let (provider, _accounting_calls) = counted_model(32_768, None, [], []);
     let executor = StockExecutor::new(
-        Model::new("synthetic".into(), "small".into(), "1".into(), json!({}))?,
+        Model::new("synthetic".into(), "small".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -288,12 +277,7 @@ async fn malformed_provider_accounting_rejects_before_projection_or_model_public
         let journal = Journal::default();
         let (provider, _accounting_calls) = counted_model(65_536, Some(fault), [], []);
         let executor = StockExecutor::new(
-            Model::new(
-                "synthetic".into(),
-                "counter".into(),
-                "1".into(),
-                Value::Null,
-            )?,
+            Model::new("synthetic".into(), "counter".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -352,12 +336,7 @@ async fn actual_compacted_accounting_rejects_response_without_repeating_summary(
     );
     let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
     let executor = StockExecutor::new(
-        Model::new(
-            "synthetic".into(),
-            "counter".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("synthetic".into(), "counter".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
             "changing-history",
@@ -442,12 +421,7 @@ async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary(
         };
         let (provider, _accounting_calls) = counted_model(65_536, None, [], []);
         let executor = StockExecutor::new(
-            Model::new(
-                "synthetic".into(),
-                "counter".into(),
-                "1".into(),
-                Value::Null,
-            )?,
+            Model::new("synthetic".into(), "counter".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "history",
@@ -513,12 +487,7 @@ async fn automatic_summary_reconciles_from_captured_context_without_rereading_so
     );
     let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
     let executor = StockExecutor::new(
-        Model::new(
-            "synthetic".into(),
-            "byte-counter".into(),
-            "1".into(),
-            json!({}),
-        )?,
+        Model::new("synthetic".into(), "byte-counter".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
             "changing-history",
@@ -549,12 +518,7 @@ async fn automatic_summary_reconciles_from_captured_context_without_rereading_so
 async fn oversized_summary_input_rejects_before_accounting_or_journal_publication() -> Result<()> {
     let (provider, accounting_calls) = counted_model(131_072, None, [], []);
     let base = uncompacted_executor(
-        Model::new(
-            "test".into(),
-            "bounded-summary".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("test".into(), "bounded-summary".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -629,12 +593,7 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
     ] {
         let (provider, accounting_calls) = counted_model(capacity, fault, [], []);
         let executor = uncompacted_executor(
-            Model::new(
-                "test".into(),
-                "explicit-summary".into(),
-                "1".into(),
-                Value::Null,
-            )?,
+            Model::new("test".into(), "explicit-summary".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -667,12 +626,7 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
     let (provider, accounting_calls) =
         counted_model(131_072, None, [ScriptedTurn::Text("summary".into())], []);
     let executor = uncompacted_executor(
-        Model::new(
-            "test".into(),
-            "explicit-summary".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("test".into(), "explicit-summary".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -712,7 +666,7 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
 async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<()> {
     let provider = Arc::new(recoverable_model(1));
     let executor = uncompacted_executor(
-        Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "summary".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -770,7 +724,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
 async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<()> {
     let provider = Arc::new(recoverable_model(2));
     let executor = uncompacted_executor(
-        Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
+        Model::new("test".into(), "summary".into(), "1".into())?,
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
