@@ -135,11 +135,12 @@ impl Journal {
     ) -> Result<(), LocalStreamError> {
         let durability = self.limits.durability;
         if let Some(frame_start) = self.torn_tail {
+            let maximum_frame_bytes = maximum_frame_bytes()?;
             match lease.write(|file| {
                 acyclic_native_runtime::recover_log_tail(
                     file,
                     frame_start,
-                    maximum_frame_bytes(),
+                    maximum_frame_bytes,
                     native_durability(durability),
                     frame_is_valid,
                 )
@@ -207,7 +208,7 @@ impl Journal {
             )
             .map_err(|_| LocalStreamError::Executor)?;
             valid_length = valid_length
-                .checked_add(frame_bytes(&frame.length))
+                .checked_add(frame_bytes(&frame.length)?)
                 .ok_or(LocalStreamError::Corrupt)?;
         }
         if valid_length > limits.journal_bytes {

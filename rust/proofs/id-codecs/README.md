@@ -26,6 +26,7 @@ copy a codec into a model. The obligations are:
 | `bounded_actor_triples_round_trip_and_refuse_resource_encodings` | Admitted four-byte account, namespace and ID triples round-trip; Actor and Resource grammars are disjoint, and old/unknown Actor versions refuse before fields. |
 | `usn_checkpoint_preserves_accepted_bytes_and_refuses_other_versions` | Every admitted 40-byte checkpoint has one encoding and a representable signed USN; truncations and old/unknown versions refuse before fields. |
 | `log_prefixes_preserve_lengths_and_refuse_unrepresentable_or_outside_bounds` | Both four/eight-byte log prefixes preserve every length bit under arbitrary configured bounds, including reversed bounds. Narrow overflows, out-of-domain lengths and truncated prefixes refuse; every admitted prefix has one canonical spelling. |
+| `full_frame_extents_refuse_overflow_without_clamping` | Arbitrary body lengths and both prefix widths either retain the exact mathematical frame size or refuse integer/prefix/platform overflow. Maximum queries use the same checked operation. |
 | `bounded_resource_components_are_lossless_and_have_one_spelling` | Every opaque byte sequence through four bytes round-trips; every admitted spelling through twelve bytes re-encodes identically. An incomplete appended escape refuses. |
 
 Kani's unwinding assertions check the stated bounds; there are no waits or
@@ -38,9 +39,9 @@ The gRPC proof bounds its input to the complete five-byte transport header;
 full message bodies remain in the chunked fuzz oracle. The debit proof obtains
 its charge from the real encoder, rather than duplicating protobuf size rules.
 These added harnesses and the expanded seal negative control are unexecuted.
-The log-prefix harness covers exactly the bounded prefix codec. It does not
-prove full-frame extent arithmetic, body allocation or SHA-256; the shared
-format inventory records the separate extent-arithmetic admission work.
+The log-prefix harness covers exactly the bounded prefix codec. The separate
+extent harness covers fixed scalar arithmetic, including platform endpoint
+width; neither proves body allocation or SHA-256. Both remain unexecuted.
 The resource-component model bounds decoded bytes to four and input syntax to
 twelve bytes. The unbounded production grammar performs input-proportional
 work; arbitrary lengths remain in the Auth fuzz target.
