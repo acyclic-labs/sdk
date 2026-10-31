@@ -31,7 +31,9 @@ impl PacketSession {
             }
             Err(error) => {
                 self.reject(request, response, error.errno(), publish)?;
-                if error.is_terminal() || request.opcode == 26 {
+                let failed_view =
+                    matches!(error, PacketFailure::Source { .. }) && self.single_core().is_none();
+                if (error.is_terminal() && !failed_view) || request.opcode == 26 {
                     // Keep the original view and work through the physical
                     // negative reply before starting terminal retirement.
                     self.retire_failure(&error);

@@ -118,18 +118,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                 &mut accounting,
                 cancellation,
             )
-            .await
-            .map_err(|error| match error {
-                // Authored IDs are derived from the path. Repeating a creation
-                // in a private candidate can therefore encounter its identity
-                // before its binding; both refuse the same occupied name.
-                WorkspaceError::Filesystem(FsError::Mutation(
-                    crate::kernel::GenerationMutationError::FileIdentityAlreadyExists,
-                )) => {
-                    FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists).into()
-                }
-                other => other,
-            });
+            .await;
         work.finish(result, &accounting)
     }
 
