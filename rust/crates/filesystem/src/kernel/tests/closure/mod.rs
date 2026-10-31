@@ -115,7 +115,7 @@ async fn direct_bindings(
             Ok(crate::kernel::bindings::BindingMutation {
                 binding: crate::kernel::bindings::Binding {
                     parent,
-                    name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 255)?,
+                    name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())?,
                 },
                 present: true,
             })
@@ -127,7 +127,6 @@ async fn direct_bindings(
         store,
         None,
         &mutations,
-        u32::try_from(mutations.len())?,
         limits().decode,
         &mut accounting,
         &cancellation,

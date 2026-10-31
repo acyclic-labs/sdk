@@ -125,7 +125,6 @@ async fn stored_bindings(
         store,
         None,
         &edits,
-        u32::try_from(edits.len())?,
         DecodeLimits::for_volume(config()),
         &mut accounting,
         &cancellation,
