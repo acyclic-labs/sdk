@@ -4,5 +4,5 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
-# Prove the production kernels without translating the asynchronous runtime.
-[workspace]
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
