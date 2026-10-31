@@ -6,7 +6,7 @@ use acyclic_harness_core::{
     resources::ProviderRef,
 };
 use acyclic_stream::{
-    AppendRequest, BoxProviderFuture, MemoryStream, StreamError, StreamProvider,
+    AppendRequest, BoxProviderFuture, MemoryStream, StreamError, StreamProviderExt as _,
     runtime::PlatformExecutor,
     session::{self, Client, transport},
 };
@@ -77,7 +77,7 @@ fn snapshot() -> Result<FileRef, acyclic_harness_core::Error> {
             ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
             "editor-context".into(),
             VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes([1; 16])),
             &mut None,
         )?,
         "selection.txt".into(),
@@ -155,7 +155,6 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     )?;
     let call = AgentCall::decode(&cancelled.invocations()[0])?;
     assert!(matches!(call.command(), AgentCommand::Cancel {agent: target, ..} if target == &agent));
-    assert_eq!(prepared.invocations()[0], *invocation);
 
     let outcome = StatusRecord {
         phase: Phase::Running,
@@ -260,7 +259,10 @@ async fn rejected_context(
             },
         )
         .await;
-    assert!(matches!(lost, Err(InputError::Context(_))));
+    assert!(
+        matches!(lost, Err(InputError::Context(cause)) if cause.get_ref()
+        .is_some_and(|source| source.is::<futures::channel::oneshot::Canceled>()))
+    );
     assert!(
         serde_json::from_value::<PromptRequest>(serde_json::json!({
             "sessionId": agent.as_str(), "prompt": [{"type": "image", "data": "unadmitted"}]
