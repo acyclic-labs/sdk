@@ -1,4 +1,4 @@
-//! One native full flush attempt of a held descriptor, with no internal retry.
+//! Native full and data-only flushes of a held descriptor, each returning its first result.
 use std::io;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, BorrowedFd};
