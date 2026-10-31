@@ -33,7 +33,8 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
         goal: &goal,
         plans: &plans,
         notifications: &notices,
-        status: Line::from("Esc · model · tokens"),
+        usage: Some(Line::from("estimated token charge: ? · in ? · out ?")),
+        status: Line::from("approval requested"),
         ..Screen::default()
     };
     let input = PromptInput::new(Editor::new("draft"));
@@ -55,7 +56,8 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
         "implement layout",
         "task completed",
         "draft",
-        "Esc · model · tokens",
+        "estimated token charge: ? · in ? · out ?",
+        "approval requested",
     ] {
         assert!(text.contains(expected), "missing {expected}");
     }
@@ -148,10 +150,10 @@ proptest! {
     // Property: every visible region stays inside the supplied viewport,
     // primary regions never overlap, and prompt growth stays bounded.
     #[test]
-    fn layout_is_bounded_at_every_size(width in 0u16..160, height in 0u16..80, x in 0u16..10, y in 0u16..10, count in 0usize..100, tools in 0usize..100) {
+    fn layout_is_bounded_at_every_size(width in 0u16..160, height in 0u16..80, x in 0u16..10, y in 0u16..10, count in 0usize..100, tools in 0usize..100, usage in any::<bool>()) {
         let rows = vec![Line::from("row"); count];
         let tools = vec![Line::from("tool"); tools];
-        let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, ..Screen::default() };
+        let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, usage: usage.then(|| Line::from("committed usage")), ..Screen::default() };
         let mut input = PromptInput::new(Editor::new(&format!("{}@row", "line\n".repeat(count))));
         input.completion.set_file("workspace/row", Some(b"source")).unwrap();
         input.refresh_completions();
@@ -159,7 +161,7 @@ proptest! {
         let areas = screen.areas(outer, &input);
         let scroll = screen.tail_scroll(outer, &input);
         prop_assert_eq!(scroll, (count + tools.len()).saturating_sub(usize::from(areas.transcript.height)));
-        let primary = [areas.header, areas.transcript, areas.side, areas.terminal, areas.notifications, areas.prompt, areas.status];
+        let primary = [areas.header, areas.transcript, areas.side, areas.terminal, areas.notifications, areas.prompt, areas.status, areas.usage];
         for area in primary.into_iter().chain([areas.completions]) {
             prop_assert!(area.x >= outer.x && area.y >= outer.y);
             prop_assert!(area.right() <= outer.right() && area.bottom() <= outer.bottom());
@@ -170,6 +172,8 @@ proptest! {
             }
         }
         prop_assert!(areas.prompt.height <= height / 2);
+        prop_assert_eq!(areas.status.height, u16::from(height > 1));
+        prop_assert_eq!(areas.usage.height, u16::from(usage && height > 2));
     }
 }
 
