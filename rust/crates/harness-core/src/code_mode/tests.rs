@@ -85,8 +85,30 @@ fn echo_definition() -> ToolDefinition {
 #[tokio::test]
 async fn sandbox_uses_only_host_calls_and_replays_seeded_values_and_identity() -> Result<()> {
     let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    runtime.compiler.context.with(|ctx| {
+        let visibility = ctx.eval(c"typeof __harness_typescript")?;
+        assert_eq!(visibility.text()?.as_str()?, "undefined");
+        Ok(())
+    })?;
     let (_owner, control) = original_control();
     let host = Arc::new(Echo::default());
+    let malformed = runtime
+        .execute(
+            &outer(),
+            "const broken: = ;",
+            &[],
+            host.clone(),
+            control.clone(),
+        )
+        .await;
+    assert!(matches!(
+        malformed,
+        Err(Error::ToolRejected {
+            reason: "TypeScript source transformation failed",
+            ..
+        })
+    ));
+    assert!(lock(&host.0).is_empty());
     let source = r#"
         interface Message { value: string }
         const message: Message = {value: "admitted"};

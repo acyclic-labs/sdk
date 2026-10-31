@@ -12,6 +12,19 @@ use std::{
     ptr::{self, NonNull},
 };
 
+pub(super) fn at_stage<T>(result: Result<T>, stage: &'static str) -> Result<T> {
+    result.map_err(|error| match error {
+        Error::ToolRejected {
+            code,
+            reason: "code interpreter rejected the program",
+        } => Error::ToolRejected {
+            code,
+            reason: stage,
+        },
+        error => error,
+    })
+}
+
 #[derive(Clone)]
 pub(super) struct Runtime(Arc<RuntimeInner>);
 

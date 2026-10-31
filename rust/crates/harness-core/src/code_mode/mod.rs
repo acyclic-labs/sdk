@@ -345,17 +345,23 @@ async fn run(
                     ordinal: 0,
                 }),
             )?;
-            install(&context, outer, tools, input, &buffers)?;
+            engine::at_stage(
+                install(&context, outer, tools, input, &buffers),
+                "code sandbox initialization failed",
+            )?;
             engine
                 .compiler
                 .context
                 .with_pair(&context, |compiler, ctx| {
                     let javascript = typescript::Compiler::prepare(compiler, source)?;
                     let constructor = ctx.eval(c"(async function(){}).constructor")?;
-                    let body = constructor.call([javascript])?;
+                    let body = engine::at_stage(
+                        constructor.call([javascript]),
+                        "code program compilation failed",
+                    )?;
                     let run = ctx.global()?.get(c"__run")?;
                     let _entry = protocol.enter();
-                    run.call([body]).map(drop)
+                    engine::at_stage(run.call([body]), "code program startup failed").map(drop)
                 })?;
             Ok(context)
         })
@@ -384,7 +390,10 @@ async fn run(
         let state = engine
             .phase(&control, |_| {
                 context.with(|ctx| {
-                    let state = ctx.eval(c"__state()")?;
+                    let state = engine::at_stage(
+                        ctx.eval(c"__state()"),
+                        "code execution state projection failed",
+                    )?;
                     let text = state.text()?;
                     buffers.text(text.as_str()?)
                 })
@@ -412,9 +421,11 @@ async fn run(
                 let _entry = protocol.enter();
                 context.with(|ctx| {
                     let complete = ctx.global()?.get(c"__complete")?;
-                    complete
-                        .call([ctx.string(&ordinal.value)?, ctx.string(&json.value)?])
-                        .map(drop)
+                    engine::at_stage(
+                        complete.call([ctx.string(&ordinal.value)?, ctx.string(&json.value)?]),
+                        "code host result delivery failed",
+                    )
+                    .map(drop)
                 })
             })
             .await?;
