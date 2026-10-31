@@ -21,6 +21,7 @@ struct Options {
     samples: usize,
     source: String,
     operations: Vec<Operation>,
+    populations: Vec<u64>,
 }
 
 impl Options {
@@ -35,7 +36,7 @@ impl Options {
         let mut root = self.root.as_os_str().to_owned();
         root.push(".retry");
         format!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --operations {}",
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --operations {} --populations {}",
             quoted(&root.to_string_lossy()),
             quoted(&self.source),
             self.samples,
@@ -44,6 +45,14 @@ impl Options {
                     .operations
                     .iter()
                     .map(|operation| operation.name())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            quoted(
+                &self
+                    .populations
+                    .iter()
+                    .map(u64::to_string)
                     .collect::<Vec<_>>()
                     .join(",")
             ),
@@ -56,6 +65,7 @@ impl Options {
         let mut samples = 200;
         let mut source = None;
         let mut operations = CORE_OPERATIONS.to_vec();
+        let mut populations = POPULATIONS.to_vec();
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
                 "--root" => root = arguments.next().map(PathBuf::from),
@@ -78,6 +88,22 @@ impl Options {
                         operations.push(operation);
                     }
                 }
+                "--populations" => {
+                    let sizes = arguments
+                        .next()
+                        .ok_or("missing comma-separated populations")?;
+                    populations.clear();
+                    for size in sizes.split(',') {
+                        let agents = size.parse()?;
+                        if !POPULATIONS.contains(&agents) {
+                            return Err(format!("unknown qualification population {agents}").into());
+                        }
+                        if populations.contains(&agents) {
+                            return Err(format!("duplicate population {agents}").into());
+                        }
+                        populations.push(agents);
+                    }
+                }
                 // Cargo passes this flag to harness=false benchmarks.
                 "--bench" => {}
                 _ => return Err(format!("unknown option {argument}").into()),
@@ -91,6 +117,7 @@ impl Options {
             samples,
             source: source.ok_or("--source <source revision> is required")?,
             operations,
+            populations,
         })
     }
 }
@@ -98,7 +125,7 @@ impl Options {
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--operations comma-separated-core-operation-names]"
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations]"
         );
         return;
     }
@@ -128,7 +155,7 @@ fn run() -> Result {
         "actor_checkpoint_bytes": 128,
         "durability": "full", "batch": 1,
         "instrumentation": "original Handler entry timestamp; follow notification waker timestamp; public provider request ledger; current-thread allocator; no tracing subscriber",
-        "populations": POPULATIONS,
+        "populations": options.populations,
         "operations": options.operations.iter().map(|operation| operation.name()).collect::<Vec<_>>(),
     }))?;
     let floors = calibrate::run(&options.root, options.samples)?;
@@ -140,8 +167,8 @@ fn run() -> Result {
         measured = Some(runtime.block_on(async {
             let mut complete = true;
             let mut counts = Report::default();
-            for agents in POPULATIONS {
-                let agents = usize::try_from(agents)?;
+            for agents in &options.populations {
+                let agents = usize::try_from(*agents)?;
                 let root = options.root.join(agents.to_string());
                 std::fs::create_dir(&root)?;
                 let fixture = population::Fixture::open(&root, agents).await?;
@@ -173,6 +200,7 @@ fn run() -> Result {
         "schema": 1, "kind": "run_end", "complete": complete,
         "latency_complete": latency_complete, "counts_complete": counts_complete,
         "full_core_coverage": options.operations.len() == CORE_OPERATIONS.len(),
+        "full_population_coverage": options.populations.len() == POPULATIONS.len(),
     }))?;
     if complete {
         Ok(())
