@@ -81,7 +81,7 @@ pub(super) fn capture<'a>(
         }
         baseline |= matches!(initial, Some(WatchBatch::RescanRequired { .. }));
         if !baseline {
-            cursor.watcher.fence(WATCH_FENCE_TIMEOUT).map_err(storage)?;
+            cursor.watcher.fence().map_err(storage)?;
             #[cfg(all(test, not(loom)))]
             cursor.inject("fence")?;
         }
