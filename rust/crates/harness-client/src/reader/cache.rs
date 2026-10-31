@@ -609,12 +609,8 @@ impl RecordCache {
         from: u64,
         to: u64,
     ) -> impl Iterator<Item = (u64, Option<&'a RecordBytes>)> + use<'a> {
-        let mut next = from;
         let mut segment = None;
-        std::iter::from_fn(move || {
-            if next >= to {
-                return None;
-            }
+        (from..to).map(move |next| {
             let (key, end) = segment.get_or_insert_with(|| self.resolve_segment(stream, next));
             if let Key::Record(_, sequence) = key {
                 *sequence = next;
@@ -623,12 +619,10 @@ impl RecordCache {
                 Some(Value::Record(value)) => Some(value),
                 _ => None,
             };
-            let sequence = next;
-            next += 1;
-            if next >= *end {
+            if next + 1 >= *end {
                 segment = None;
             }
-            Some((sequence, value))
+            (next, value)
         })
     }
 
