@@ -38,7 +38,7 @@ export interface ExplorerHealth {
 }
 
 export interface ExplorerOptions {
-  /** Called once per animation frame after committed records changed. */
+  /** Coalesced on animation frames, or the drive microtask without that API. */
   render(rows: ExplorerRow[], explorer: AgentExplorer): void;
   /** IndexedDB key for the persisted cache; omit to keep it in memory only. */
   persist?: string;
@@ -73,7 +73,6 @@ export class AgentExplorer {
   readonly #options: ExplorerOptions;
   readonly #db: IDBDatabase | undefined;
   #frame: number | undefined;
-  #fallbackFrame: ReturnType<typeof setTimeout> | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #scheduled = false;
   #closed = false;
@@ -82,16 +81,15 @@ export class AgentExplorer {
     if (this.#closed) return;
     this.#core.drive();
     this.#arm();
-    if (this.#frame !== undefined || this.#fallbackFrame !== undefined) return;
+    if (this.#frame !== undefined) return;
     if (typeof globalThis.requestAnimationFrame === "function") {
       this.#frame = globalThis.requestAnimationFrame(this.#render);
     } else {
-      this.#fallbackFrame = setTimeout(this.#render, 16);
+      this.#render();
     }
   };
   readonly #render = () => {
     this.#frame = undefined;
-    this.#fallbackFrame = undefined;
     if (this.#closed) return;
     this.#options.render(this.#core.frame() as ExplorerRow[], this);
   };
@@ -182,10 +180,8 @@ export class AgentExplorer {
       globalThis.document?.removeEventListener("visibilitychange", this.#hidden);
       if (this.#timer !== undefined) clearTimeout(this.#timer);
       if (this.#frame !== undefined) globalThis.cancelAnimationFrame(this.#frame);
-      if (this.#fallbackFrame !== undefined) clearTimeout(this.#fallbackFrame);
       this.#timer = undefined;
       this.#frame = undefined;
-      this.#fallbackFrame = undefined;
       this.#db?.close();
       this.#core.free();
     }

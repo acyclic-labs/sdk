@@ -6,7 +6,7 @@ import { appendRecord, conversation, root, statusPath } from "./actor-records.fi
 
 beforeAll(ensureClientWasm);
 
-test("suppressed animation frames cannot stall reads, live history or cancellation", async () => {
+test("suppressed or unavailable animation frames cannot stall reads, live history or cancellation", async () => {
   let first!: () => void, second!: () => void;
   const initial = new Promise<void>(resolve => { first = resolve; });
   const updated = new Promise<void>(resolve => { second = resolve; });
@@ -54,6 +54,13 @@ test("suppressed animation frames cannot stall reads, live history or cancellati
     expect(drives).toHaveBeenCalledTimes(count);
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(() => explorer?.history()).toThrow();
+
+    // Without an animation API, the same drive microtask also renders.
+    // A timer fallback would leave this render pending when open returns.
+    Reflect.deleteProperty(globalThis, "requestAnimationFrame");
+    const render = mock(() => {});
+    explorer = await AgentExplorer.open(stream, { render });
+    expect(render).toHaveBeenCalled();
   } finally {
     explorer?.dispose(); stream.free(); drives.mockRestore(); health.mockRestore();
     frames.mockRestore();

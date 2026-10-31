@@ -13,6 +13,8 @@ pub(super) struct Demands {
     mark: bool,
     #[cfg(test)]
     visits: std::cell::Cell<usize>,
+    #[cfg(test)]
+    invalidation_visits: usize,
 }
 
 struct Entry {
@@ -122,15 +124,48 @@ impl Demands {
         }
     }
 
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&OpKey, &Demand) -> bool) {
-        self.entries.retain(|key, entry| {
-            let retained = keep(key, &entry.demand);
-            if !retained {
-                self.order[class(entry.demand.priority)]
-                    .remove(&(entry.demand.ticket, key.clone()));
+    /// Each operation variant already groups a path's entries in the owning
+    /// map. Invalidation visits only those ranges, preserving unrelated ages.
+    pub(super) fn remove_path(&mut self, path: &super::StreamPath) {
+        self.remove_range(OpKey::Read(path.clone(), 0)..=OpKey::Read(path.clone(), u64::MAX));
+        self.remove_range(OpKey::Head(path.clone())..=OpKey::Head(path.clone()));
+        self.remove_range(
+            OpKey::Children(path.clone(), 0)..=OpKey::Children(path.clone(), u32::MAX),
+        );
+    }
+
+    pub(super) fn remove_children_after(&mut self, path: &super::StreamPath, index: u32) {
+        if let Some(first) = index.checked_add(1) {
+            self.remove_range(
+                OpKey::Children(path.clone(), first)..=OpKey::Children(path.clone(), u32::MAX),
+            );
+        }
+    }
+
+    pub(super) fn clear_children(&mut self) {
+        // Children is the last OpKey variant: the hierarchy witness covers
+        // every listing, but no pending history read or head observation.
+        while let Some(entry) = self.entries.last_entry() {
+            if !matches!(entry.key(), OpKey::Children(..)) {
+                break;
             }
-            retained
-        });
+            let (key, entry) = entry.remove_entry();
+            #[cfg(test)]
+            {
+                self.invalidation_visits += 1;
+            }
+            self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
+        }
+    }
+
+    fn remove_range(&mut self, range: std::ops::RangeInclusive<OpKey>) {
+        for (key, entry) in self.entries.extract_if(range, |_, _| true) {
+            #[cfg(test)]
+            {
+                self.invalidation_visits += 1;
+            }
+            self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
+        }
     }
 
     pub(super) fn clear(&mut self) {
@@ -151,6 +186,11 @@ impl Demands {
     #[cfg(test)]
     pub(super) fn take_visits(&self) -> usize {
         self.visits.replace(0)
+    }
+
+    #[cfg(test)]
+    pub(super) fn take_invalidation_visits(&mut self) -> usize {
+        std::mem::take(&mut self.invalidation_visits)
     }
 
     pub(super) fn rotate(&mut self, key: &OpKey, ticket: u64) {
