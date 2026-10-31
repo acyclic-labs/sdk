@@ -92,7 +92,8 @@ test("Objects original request boundary initializes and owns bytes before a fres
 });
 
 test("Objects original request cancellation settles shared initialization before its real file completes", async () => {
-  const server = await fixture();
+  let calls = 0;
+  const server = await fixture(async () => { calls++; return true; });
   try {
     const child = spawn(process.execPath, ["--input-type=module", "-e", `
       import assert from "node:assert/strict";
@@ -124,6 +125,7 @@ test("Objects original request cancellation settles shared initialization before
         await assert.rejects(pending, error => error.code === wire.ErrorCode.UNAVAILABLE);
       } finally { release.resolve(); }
       assert.equal((await client.usage()).blobs, 0n);
+      assert.equal((await client.usage()).blobs, 0n);
       assert.equal(reads, 1);
     `, server.endpoint], { cwd: new URL("../", import.meta.url), stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
@@ -131,6 +133,7 @@ test("Objects original request cancellation settles shared initialization before
     child.stderr.on("data", chunk => { output += chunk; });
     const [code] = await once(child, "close");
     assert.equal(code, 0, output);
+    assert.equal(calls, 2);
     assert.deepEqual([...server.seen], ["blobs/usage"]);
   } finally { await server.close(); }
 });

@@ -22,7 +22,8 @@ export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
 /** The BLAKE3-256 digest naming `bytes` as a plain blob. */
 export async function blobDigest(bytes: Uint8Array): Promise<wire.Digest> {
-  await ensureObjectsWasm();
+  const ready = ensureObjectsWasm();
+  if (ready !== undefined) await ready;
   return create(wire.DigestSchema, { blake3: objects_v1_digest(bytes) });
 }
 
@@ -70,7 +71,8 @@ export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
   /** Own one lazy request through this provider's original transport. */
   abstract open(route: string, input: Uint8Array): ObjectsV1Request;
   protected async call<I extends DescMessage, O extends DescMessage>(route: string, input: I, output: O, value: MessageInitShape<I>): Promise<MessageShape<O>> {
-    await ensureObjectsWasm();
+    const ready = ensureObjectsWasm();
+    if (ready !== undefined) await ready;
     try {
       const bytes = toBinary(input, create(input, value));
       const request = this.open(route, bytes);
@@ -115,7 +117,8 @@ export function verified(put: wire.PutResponse): wire.Verified | undefined {
 export class MemoryObjectsV1 extends ObjectsV1Provider {
   private constructor(private readonly memory: ObjectsV1Memory) { super(); }
   static async create(): Promise<MemoryObjectsV1> {
-    await ensureObjectsWasm();
+    const ready = ensureObjectsWasm();
+    if (ready !== undefined) await ready;
     return new MemoryObjectsV1(new ObjectsV1Memory());
   }
   open(route: string, input: Uint8Array): ObjectsV1Request {

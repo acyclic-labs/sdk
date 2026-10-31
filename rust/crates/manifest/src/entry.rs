@@ -1,15 +1,15 @@
 //! One retained immutable entry closure for Actors and Workers.
+use crate::{EntryClosure, EntryObject, ManifestError, PreparedDeployment, PreparedEntry};
 use acyclic_actors::domain::{
     ActorObservation, CodeSha256, DeploymentObservation, DeploymentRequest, EntrySource,
 };
-use acyclic_manifest::{EntryClosure, EntryObject, ManifestError, PreparedEntry};
 use acyclic_objects::{
     Blobs, ByteRange, Digest, Kind, Object, Released, Retained, RootId, Verified,
 };
 use std::collections::HashSet;
 
 /// Original publication, admission or read failure; no retry changes its cause.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
     /// The original account-scoped Objects operation failed.
     #[error(transparent)]
@@ -89,7 +89,17 @@ impl<P: Blobs> EntryStore<P> {
         prepared: PreparedEntry,
         idempotency_key: &str,
     ) -> Result<PublishedDeployment, Error> {
-        let (request, closure, payloads) = prepared.into_deployment(idempotency_key)?.into_parts();
+        self.publish_prepared(root, prepared.into_deployment(idempotency_key)?)
+            .await
+    }
+
+    /// Publish the original lowered intent without repeating entry admission.
+    pub async fn publish_prepared(
+        &self,
+        root: &RootId,
+        prepared: PreparedDeployment,
+    ) -> Result<PublishedDeployment, Error> {
+        let (request, closure, payloads) = prepared.into_parts();
         let publication = self.publish_parts(root, closure, payloads).await?;
         Ok(PublishedDeployment {
             request,

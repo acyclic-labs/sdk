@@ -1,5 +1,7 @@
 import { isExpectedNativeAbsence } from "./generated/native-absence.js";
+import { snapshotBytes } from "@acyclic-labs/auth";
 import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
+import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
 import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "./credential.js";
 import {
@@ -89,10 +91,25 @@ export class ActorsClient {
   }
 
   async #call(method: ActorsMethod, request: unknown, options?: ActorsCallOptions): Promise<unknown> {
-    const signal = options?.signal;
-    const operation = method.localName as Operation;
     requireBigIntCodec();
     const encoded = toBinary(method.input, create(method.input, structuredClone(request) as MessageShape<typeof method.input>));
+    return this.#callEncoded(method, encoded, options);
+  }
+
+  /** Send canonical bytes through the same admitted connection and credential owner. */
+  callEncoded<K extends Operation>(operation: K, request: Uint8Array, options?: ActorsCallOptions): ReturnType<ActorsClientMethods[K]> {
+    if (!Object.hasOwn(ActorsService.method, operation)) throw new ActorsTransportError("unknown Actors operation", "invalid_argument");
+    requireBigIntCodec();
+    // Detach caller-owned bytes before the credential or connection can wait.
+    let encoded: Uint8Array;
+    try { encoded = snapshotBytes(request); }
+    catch { throw new ActorsTransportError("Actors request must own ordinary bytes", "invalid_argument"); }
+    return this.#callEncoded(ActorsService.method[operation], encoded, options) as ReturnType<ActorsClientMethods[K]>;
+  }
+
+  #callEncoded(method: ActorsMethod, encoded: Uint8Array, options?: ActorsCallOptions): Promise<unknown> {
+    const signal = options?.signal;
+    const operation = method.localName as Operation;
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
       throwIfAborted(signal);
