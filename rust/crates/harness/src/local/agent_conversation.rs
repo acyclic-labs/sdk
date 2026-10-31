@@ -369,8 +369,26 @@ impl Conversation {
     /// Exports the tree's committed model-call usage as JSONL, one original
     /// call at a time. Pages and child traversal are bounded; only the pending
     /// call and the active traversal path are retained. Call after settlement.
+    /// Version-two rows retain the original usage plus an unknown price estimate.
     pub async fn write_usage_jsonl(&self, output: &mut dyn std::io::Write) -> Result<()> {
-        usage::write_tree(&self.connection, self.agent(), output).await
+        self.write_usage_jsonl_with_prices(output, &|_| None).await
+    }
+
+    /// The same usage-file projection with explicitly selected immutable price
+    /// records. The selector runs once per emitted call, never per redraw or
+    /// token. It must retain the selected committed revision for replay; this
+    /// method does not discover prices, read accounts or infer effective dates.
+    pub async fn write_usage_jsonl_with_prices<'p>(
+        &self,
+        output: &mut dyn std::io::Write,
+        prices: &(
+             dyn Fn(
+            &crate::executor::ModelUsageRecord,
+        ) -> Option<&'p crate::executor::ModelPriceRecord>
+                 + 'p
+         ),
+    ) -> Result<()> {
+        usage::write_tree(&self.connection, self.agent(), output, prices).await
     }
 
     /// The prompt and answer text of a settled turn.

@@ -1,9 +1,16 @@
 //! A JSONL projection of authenticated, committed usage, shared by frontends.
 use super::*;
-use crate::executor::ModelUsageRecord;
+use crate::executor::{ModelPriceRecord, ModelUsageRecord};
 
-fn emit(output: &mut dyn std::io::Write, row: &ModelUsageRecord) -> Result<()> {
-    serde_json::to_writer(&mut *output, row).map_err(failed)?;
+type PriceLookup<'p> = dyn Fn(&ModelUsageRecord) -> Option<&'p ModelPriceRecord> + 'p;
+
+fn emit(
+    output: &mut dyn std::io::Write,
+    row: &ModelUsageRecord,
+    prices: &PriceLookup<'_>,
+) -> Result<()> {
+    let projection = row.estimate(prices(row)).map_err(failed)?;
+    serde_json::to_writer(&mut *output, &projection).map_err(failed)?;
     output.write_all(b"\n").map_err(failed)
 }
 
@@ -11,6 +18,7 @@ async fn write_agent(
     connection: &Connection,
     agent: &AgentPath,
     output: &mut dyn std::io::Write,
+    prices: &PriceLookup<'_>,
 ) -> Result<()> {
     let mut input = 0;
     let mut after = 0;
@@ -45,11 +53,11 @@ async fn write_agent(
                         "usage completion differs from its original admission".into(),
                     ));
                 }
-                emit(output, &row)?;
+                emit(output, &row, prices)?;
                 pending = None;
             } else {
                 if let Some(original) = pending.replace(row) {
-                    emit(output, &original)?;
+                    emit(output, &original, prices)?;
                 }
             }
         }
@@ -57,7 +65,7 @@ async fn write_agent(
             after = next;
         } else {
             if let Some(original) = pending.take() {
-                emit(output, &original)?;
+                emit(output, &original, prices)?;
             }
             input = input
                 .checked_add(1)
@@ -68,13 +76,14 @@ async fn write_agent(
     Ok(())
 }
 
-pub(super) fn write_tree<'a>(
+pub(super) fn write_tree<'a, 'p: 'a>(
     connection: &'a Connection,
     agent: &'a AgentPath,
     output: &'a mut dyn std::io::Write,
+    prices: &'a PriceLookup<'p>,
 ) -> futures::future::LocalBoxFuture<'a, Result<()>> {
     Box::pin(async move {
-        write_agent(connection, agent, output).await?;
+        write_agent(connection, agent, output, prices).await?;
         let mut cursor = None;
         loop {
             let page = AgentPageRequest::new(32, 32 * 1024, cursor).map_err(failed)?;
@@ -88,7 +97,7 @@ pub(super) fn write_tree<'a>(
                 return Err(unexpected());
             };
             for child in items {
-                write_tree(connection, &child.agent, output).await?;
+                write_tree(connection, &child.agent, output, prices).await?;
             }
             let Some(next) = next else {
                 return Ok(());
