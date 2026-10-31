@@ -350,7 +350,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             operation_id: op,
             call_id: "invalid-path".into(),
             name: write_tool.definition.name.clone(),
-            arguments: json!({"path":path,"text":"secret","media_type":"text/plain","display_name":"text"}),
+            arguments: json!({"path":path,"content":"secret"}),
         };
         assert!(matches!(
             write_tool

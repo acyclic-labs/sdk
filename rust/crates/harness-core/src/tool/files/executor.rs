@@ -64,9 +64,9 @@ impl FileTool {
                     .stage_tool_file_once(
                         invocation.operation_id,
                         &input.0.path,
-                        input.0.text.as_bytes(),
-                        &input.0.media_type,
-                        &input.0.display_name,
+                        input.0.content.as_bytes(),
+                        "text/plain",
+                        input.0.path.rsplit('/').next().unwrap_or(&input.0.path),
                         io,
                     )
                     .await?

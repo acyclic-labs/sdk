@@ -1,8 +1,8 @@
 {
   "turns":[[{"type":"event","kind":"tool_call","call_id":"missing","name":"write","arguments":{"path":"route-sentinel.txt",
-    "text":"overwritten","media_type":"text/plain","display_name":"route-sentinel.txt"}},{"type":"event","kind":"completed","metadata":null}],"done"],
+    "content":"overwritten"}},{"type":"event","kind":"completed","metadata":null}],"done"],
   "expect":{"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"missing","name":"write",
-    "arguments":{"path":"route-sentinel.txt","text":"overwritten","media_type":"text/plain","display_name":"route-sentinel.txt"}}},
+    "arguments":{"path":"route-sentinel.txt","content":"overwritten"}}},
     {"kind":"model","event":{"kind":"completed"}},
     {"kind":"tool_failed","call_id":"missing","reason":"unavailable"}]}
 }

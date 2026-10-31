@@ -13,6 +13,34 @@ pub struct GitBranch {
     pub tracked_paths: BTreeSet<String>,
 }
 
+impl GitCompatState {
+    /// Read-only status of an already observed working tree; unresolved lazy
+    /// source state stays unknown rather than forcing a filesystem scan.
+    /// Returns `None` if the recorded current branch is absent.
+    pub fn status(&self, workspace: GitTreeRef) -> Option<GitStatus> {
+        let current = self.current().ok()?;
+        let head = self
+            .bisect
+            .as_ref()
+            .and_then(|bisect| bisect.current)
+            .or(current.head);
+        let tree = head.and_then(|id| self.commits.get(&id).map(|commit| commit.workspace_tree));
+        Some(GitStatus {
+            branch: current.name.clone(),
+            head,
+            workspace,
+            dirty: match tree {
+                Some(head) if head == workspace => GitDirtyState::Clean,
+                Some(GitTreeRef::Lazy(_)) | None if matches!(workspace, GitTreeRef::Lazy(_)) => {
+                    GitDirtyState::Unknown
+                }
+                _ => GitDirtyState::Dirty,
+            },
+            all_changes_staged: true,
+        })
+    }
+}
+
 /// Versioned private compatibility state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitCompatState {

@@ -105,17 +105,17 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         )?
         .await?;
     let context = ToolContext::new(task, OperationId::new(), "select-branch")?;
-    tools
-        .execute(
-            ToolInvocation {
-                operation_id: context.operation_id(),
-                call_id: context.call_id().into(),
-                name: "fs".into(),
-                arguments: serde_json::json!({"command": "checkout -b topic"}),
-            },
-            Some(context),
-        )
-        .await?;
+    {
+        let mut state = lock_owned(StateArc::clone(&tools.state)).await;
+        tools
+            .fs(
+                crate::tools::parse_fs_command("checkout -b topic")?,
+                &context,
+                &mut state,
+                &mounted,
+            )
+            .await?;
+    }
     let selected = {
         let state = lock_owned(StateArc::clone(&tools.state)).await;
         publisher.selected_workspace(&state)?

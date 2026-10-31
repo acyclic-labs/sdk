@@ -11,6 +11,23 @@ const GIT_STATUS_BYTES: u64 = 64 * 1024;
 /// A slow `git status` only drops the summary, never delays the turn further.
 const GIT_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
+pub(super) fn sdk_status(
+    state: &acyclic_fs::GitCompatState,
+    tree: acyclic_fs::GitTreeRef,
+) -> crate::Result<String> {
+    let status = state.status(tree).ok_or_else(|| {
+        crate::Error::Invalid(
+            "Git status has no current branch; recovery: open a valid agent workspace".into(),
+        )
+    })?;
+    let dirty = match status.dirty {
+        acyclic_fs::GitDirtyState::Clean => "clean",
+        acyclic_fs::GitDirtyState::Dirty => "modified",
+        acyclic_fs::GitDirtyState::Unknown => "unresolved source state",
+    };
+    Ok(format!("branch {}; {dirty}", status.branch))
+}
+
 // Git's `rev-parse --local-env-vars`, plus repository-discovery controls.
 // A caller's repository selection must never replace the task binding.
 const REPOSITORY_ENVIRONMENT: &[&str] = &[
@@ -40,13 +57,39 @@ pub(super) async fn gather(
     model: &str,
     platform: &crate::native_environment::PlatformPolicy,
     physical_git: bool,
-) -> crate::context::EnvironmentFacts {
+) -> crate::Result<crate::context::EnvironmentFacts> {
     let git = if let Some(cwd) = cwd.filter(|_| physical_git) {
         git_status(cwd).await
     } else {
         None
     };
-    crate::native_environment::checkout(cwd, now_unix_millis, model, platform, git).into()
+    let mut facts: crate::context::EnvironmentFacts =
+        crate::native_environment::checkout(cwd, now_unix_millis, model, platform, git).into();
+    if let (Some(cwd), crate::native_environment::PlatformPolicy::Native) = (cwd, platform) {
+        let environment =
+            crate::native_environment::tool_environment().map_err(crate::Error::process_io)?;
+        let search = acyclic_native_runtime::ExecutableSearch::from_environment(cwd, |name| {
+            environment.get(name).map(std::ffi::OsString::from)
+        });
+        facts.tool_path = environment.get("PATH").cloned();
+        facts.tooling = Some(
+            ["git", "rg", "python", "python3", "node", "cargo"]
+                .into_iter()
+                .map(|name| {
+                    format!(
+                        "{name}: {}",
+                        if search.command(name).is_ok() {
+                            "available"
+                        } else {
+                            "absent"
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    Ok(facts)
 }
 
 /// One-line summary of `git status`, or `None` outside a work tree.

@@ -166,27 +166,72 @@ async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -
         let tool = tool.clone();
         async move {
             let invocation = ToolInvocation {
-                operation_id: OperationId::new(), call_id: "write-1".into(), name: "write".into(),
-                arguments: json!({"path":"notes/one.txt","text":"saved text","media_type":"text/plain","display_name":"one.txt"}),
+                operation_id: OperationId::new(),
+                call_id: "write-1".into(),
+                name: "write".into(),
+                arguments: json!({"path":"notes/one.txt","content":"saved text"}),
             };
-            let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
-            let first = tool.executor.execute(invocation.clone(), Some(context.clone())).await?;
-            let file: FileRef = serde_json::from_value(first.value["file"].clone()).map_err(|error| Error::Invalid(error.to_string()))?;
-            let user = task.stage_file(None, OperationId::new(), "notes/one.txt", b"later user edit", "text/plain", "one.txt").await?;
-            assert_eq!(tool.executor.reconcile(invocation.clone(), Some(context.clone())).await?, Some(first));
-            assert_eq!(task.read_file(&file, None).await?.as_ref(), b"saved text".as_ref());
-            assert_eq!(task.read_file(&user, None).await?.as_ref(), b"later user edit".as_ref());
-            for (field, value) in [("text", "different text"), ("path", "notes/another.txt"), ("media_type", "text/markdown"), ("display_name", "other.txt")] {
-                let mut changed = invocation.clone(); changed.arguments[field] = json!(value);
-                assert!(matches!(tool.executor.reconcile(changed, Some(context.clone())).await, Err(Error::Conflict(_))));
+            let context = crate::runtime::ToolContext::new(
+                Arc::new(task.clone()),
+                invocation.operation_id,
+                &invocation.call_id,
+            )?;
+            let first = tool
+                .executor
+                .execute(invocation.clone(), Some(context.clone()))
+                .await?;
+            let file: FileRef = serde_json::from_value(first.value["file"].clone())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let user = task
+                .stage_file(
+                    None,
+                    OperationId::new(),
+                    "notes/one.txt",
+                    b"later user edit",
+                    "text/plain",
+                    "one.txt",
+                )
+                .await?;
+            assert_eq!(
+                tool.executor
+                    .reconcile(invocation.clone(), Some(context.clone()))
+                    .await?,
+                Some(first)
+            );
+            assert_eq!(
+                task.read_file(&file, None).await?.as_ref(),
+                b"saved text".as_ref()
+            );
+            assert_eq!(
+                task.read_file(&user, None).await?.as_ref(),
+                b"later user edit".as_ref()
+            );
+            for (field, value) in [("content", "different text"), ("path", "notes/another.txt")] {
+                let mut changed = invocation.clone();
+                changed.arguments[field] = json!(value);
+                assert!(matches!(
+                    tool.executor
+                        .reconcile(changed, Some(context.clone()))
+                        .await,
+                    Err(Error::Conflict(_))
+                ));
             }
             let ordinary = OperationId::new();
             for path in ["multi/a.txt", "multi/b.txt"] {
-                task.stage_file(None, ordinary, path, b"ordinary", "text/plain", "ordinary.txt").await?;
+                task.stage_file(
+                    None,
+                    ordinary,
+                    path,
+                    b"ordinary",
+                    "text/plain",
+                    "ordinary.txt",
+                )
+                .await?;
             }
             Ok(())
         }
-    }).await
+    })
+    .await
 }
 
 #[tokio::test]
@@ -330,26 +375,63 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
         )
         .await?;
     run_admitted_file_case(&storage, limits, move |task| {
-        let tools = tools.clone(); let file = file.clone();
+        let tools = tools.clone();
+        let file = file.clone();
         async move {
-            let task = task.scoped(Capabilities::new([
-                "tool:call:read", "tool:call:write", "tool:call:edit", "tool:call:acyclic.list_files",
-            ]), limits)?;
+            let task = task.scoped(
+                Capabilities::new([
+                    "tool:call:read",
+                    "tool:call:write",
+                    "tool:call:edit",
+                    "tool:call:acyclic.list_files",
+                ]),
+                limits,
+            )?;
             for (name, arguments) in [
                 ("read", json!({"file":file})),
-                ("write", json!({"path":"notes/two.txt","text":"two","media_type":"text/plain","display_name":"two.txt"})),
-                ("edit", json!({"file":file,"old_text":"one","new_text":"two"})),
+                ("write", json!({"path":"notes/two.txt","content":"two"})),
+                (
+                    "edit",
+                    json!({"file":file,"old_text":"one","new_text":"two"}),
+                ),
             ] {
-                let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: name.into(), name: name.into(), arguments };
-                let tool = tools.get(name, None, None)?.ok_or_else(|| Error::NotFound(name.into()))?;
-                let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
-                assert!(matches!(tool.executor.execute(invocation, Some(context)).await, Err(Error::Unauthorized(_))));
+                let invocation = ToolInvocation {
+                    operation_id: OperationId::new(),
+                    call_id: name.into(),
+                    name: name.into(),
+                    arguments,
+                };
+                let tool = tools
+                    .get(name, None, None)?
+                    .ok_or_else(|| Error::NotFound(name.into()))?;
+                let context = crate::runtime::ToolContext::new(
+                    Arc::new(task.clone()),
+                    invocation.operation_id,
+                    &invocation.call_id,
+                )?;
+                assert!(matches!(
+                    tool.executor.execute(invocation, Some(context)).await,
+                    Err(Error::Unauthorized(_))
+                ));
             }
-            let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: "list".into(), name: "acyclic.list_files".into(), arguments: json!({"path":"","maximum_entries":8}) };
-            assert!(matches!(tools.get("acyclic.list_files", None, None)?.ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), None, &invocation, None), Err(Error::Unauthorized(_))));
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "list".into(),
+                name: "acyclic.list_files".into(),
+                arguments: json!({"path":"","maximum_entries":8}),
+            };
+            assert!(matches!(
+                tools
+                    .get("acyclic.list_files", None, None)?
+                    .ok_or_else(|| Error::NotFound("list tool".into()))?
+                    .executor
+                    .authorize(Some(task.scope()), None, &invocation, None),
+                Err(Error::Unauthorized(_))
+            ));
             Ok(())
         }
-    }).await
+    })
+    .await
 }
 
 #[tokio::test]

@@ -87,21 +87,21 @@ pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
 
 static SHELL: ToolSpec = ToolSpec {
     name: super::shell::PLATFORM.name,
-    revision: "1",
+    revision: "2",
     description: super::shell::PLATFORM.description,
     hook_names: &[],
     binding: ToolBinding::Workspace,
     input: schema::input::<super::ShellInput>,
     output: object,
-    projection_schema: command_projection,
+    projection_schema: |_| schema::text_projection_schema(),
     executor: super::workspace_executor::executor,
-    projection: |_| Arc::new(JsonToolProjection),
+    projection: |_| Arc::new(super::shell::ShellProjection),
 };
 
 static FS: ToolSpec = ToolSpec {
     name: "fs",
-    revision: "1",
-    description: "Run one git facade command, including diff and merge of agents/<ref>; --volume <name> selects a granted mount for diff, log, show, status or merge",
+    revision: "2",
+    description: "Inspect or merge a child's fork: diff agents/<name> or merge agents/<name>. --volume <name> selects a mounted volume. Use shell for other git commands",
     hook_names: &[],
     binding: ToolBinding::Workspace,
     input: || {
@@ -132,8 +132,8 @@ pub(crate) static READ: ToolSpec = ToolSpec {
 
 pub(crate) static WRITE: ToolSpec = ToolSpec {
     name: "write",
-    revision: "portable-5",
-    description: "Write bounded UTF-8 through the original owner-bound content publisher",
+    revision: "portable-6",
+    description: "Write UTF-8 content to a workspace path, creating or replacing the file",
     hook_names: &["Write"],
     binding: ToolBinding::Volume,
     input: schema::input::<WriteFileInput>,

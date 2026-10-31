@@ -1,11 +1,12 @@
 //! Task shell execution through the shared native process capture engine.
 use super::*;
 use crate::filesystem::native_process::{self, Invocation};
+mod tail;
 
 impl CheckoutTools {
     pub(super) async fn shell(
         &self,
-        input: crate::tools::ShellInput,
+        (input, operation): (crate::tools::ShellInput, crate::OperationId),
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
         files: output::Output,
@@ -28,7 +29,8 @@ impl CheckoutTools {
             inherit_environment: false,
             timeout_ms: 300_000,
             control_timeout_ms: output::CONTROL_TIMEOUT_MS,
-            maximum_output_bytes: maximum_output,
+            // Presentation is bounded below; streaming output is not a reason to stop a command.
+            maximum_output_bytes: usize::MAX,
             standard_input: None,
             process_custody: workspace.processes.clone(),
         };
@@ -48,38 +50,63 @@ impl CheckoutTools {
             .wake_on_failure(wake.clone())
             .map_err(storage)?;
         let output_health = files.health.clone();
-        let (output, (state, files, claims)) = native_process::capture::capture_with_custody(
-            invocation,
-            |(_, files, _): &mut (
-                OwnedMutexGuard<State>,
-                output::Output,
-                workspace::volumes::Claims,
-            ),
-             chunk| files.observe(chunk),
-            move || {
-                output_health.check()?;
-                if acyclic_fs::capture_root_identity(&workspace.path)
-                    .map_err(std::io::Error::other)?
-                    != workspace.identity
-                {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "checkout root was replaced",
-                    ));
-                }
-                control.check()
-            },
-            (state, files, claims),
-            Some(wake),
-        )
-        .await?;
+        let spill_name = format!("shell-{operation}.log");
+        let (scratch, _) = state
+            .mounts
+            .resolve(std::path::Path::new(".volumes/scratch"))?;
+        scratch.check(
+            acyclic_fs::access::Action::Write,
+            &spill_name,
+            self.clock.now_unix_millis() / 1000,
+        )?;
+        let spill_root = scratch
+            .native_root
+            .clone()
+            .unwrap_or_else(|| state.mounts.root.join(".volumes/scratch"));
+        let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output.min(30_000));
+        let (output, (state, files, claims, retained)) =
+            native_process::capture::capture_with_custody(
+                invocation,
+                |(_, files, _, retained): &mut (
+                    OwnedMutexGuard<State>,
+                    output::Output,
+                    workspace::volumes::Claims,
+                    tail::Tail,
+                ),
+                 chunk| {
+                    files.observe(chunk)?;
+                    let (acyclic_native_runtime::ProcessOutput::Stdout(bytes)
+                    | acyclic_native_runtime::ProcessOutput::Stderr(bytes)) = chunk;
+                    retained.observe(bytes)
+                },
+                move || {
+                    output_health.check()?;
+                    if acyclic_fs::capture_root_identity(&workspace.path)
+                        .map_err(std::io::Error::other)?
+                        != workspace.identity
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "checkout root was replaced",
+                        ));
+                    }
+                    control.check()
+                },
+                (state, files, claims, retained),
+                Some(wake),
+                native_process::capture::OutputRetention::Observe,
+            )
+            .await?;
+        let (text, omitted, spilled) = retained.finish();
         let result = output
             .ok_or_else(|| Error::Conflict("process capture was interrupted".into()))
             .map(|output| ToolResult {
                 value: serde_json::json!({
                     "success": output.success, "exit_code": output.exit_code,
-                    "stdout": String::from_utf8_lossy(&output.stdout),
-                    "stderr": String::from_utf8_lossy(&output.stderr),
+                    "stdout": text,
+                    "stderr": "",
+                    "omitted_bytes": omitted,
+                    "spill": spilled.then(|| format!(".volumes/scratch/{spill_name}")),
                     "stop": output.stop,
                 }),
             });

@@ -81,6 +81,7 @@ impl LocalHarness {
         operation: OperationId,
         prompt: Option<&'a str>,
         publisher: &'a dyn ContentPublisher,
+        #[cfg(any(test, feature = "native-execution"))] workspace: Option<&'a LocalWorkspace>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
@@ -112,12 +113,32 @@ impl LocalHarness {
                 },
                 ..Default::default()
             };
-            let discovery = self
-                .instructions(&policy.instruction_names, publisher, &mut work)
-                .await?;
-            let (goal, plans) = self.file_guidance(prompt.unwrap_or_default())?.await?;
-            let mut manifest =
-                ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
+            let mut manifest = if let Some(source) = &self.context_manifest {
+                let reader = self.context_reader()?;
+                let bytes = reader
+                    .read(source, self.limits.render_bytes, None, None)?
+                    .await?;
+                ContextManifest::decode(&bytes, self.limits)?
+            } else {
+                let discovery = self
+                    .instructions(&policy.instruction_names, publisher, &mut work)
+                    .await?;
+                let (goal, plans) = self.file_guidance(prompt.unwrap_or_default())?.await?;
+                ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?
+            };
+            let mode = match self.preset.approval_policy.approvers.as_slice() {
+                [
+                    crate::approvals::Approver::Rules {
+                        rules,
+                        fallback: crate::approvals::RuleVerdict::Allow,
+                        ..
+                    },
+                ] if rules.is_empty() => "all admitted actions allowed",
+                _ => "policy-controlled approvals",
+            };
+            manifest.conventions.push(format!(
+                "Approval mode: {mode}. Shell commands have no OS sandbox. A refusal returns a tool failure; adapt or report the block, never assume the action ran. .volumes/scratch is your private retained scratch volume and is never merged into the project."
+            ));
             // The agent tools bind per turn, outside the registry; the model
             // sees them through the manifest like every other tool. A turn
             // binds each over any registered tool of its name, so the manifest
@@ -128,7 +149,7 @@ impl LocalHarness {
                 .retain(|tool| agent_tools.iter().all(|agent| agent.name != tool.name));
             manifest.tools.extend(agent_tools);
             #[cfg(any(test, feature = "native-execution"))]
-            if let Some(workspace) = &self.workspace {
+            if let Some(workspace) = workspace {
                 manifest
                     .conventions
                     .push(workspace.context_line().to_owned());
@@ -136,35 +157,37 @@ impl LocalHarness {
                     #[cfg(test)]
                     self.environment_reads
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    // A switched native mount is selected during tool
-                    // execution, so it cannot truthfully advertise this path.
-                    let cwd = if !(workspace.mounted.is_some()
-                        && workspace.selected_view().await?.0.is_some())
-                    {
-                        Some(workspace.path.as_path())
-                    } else {
-                        None
-                    };
-                    let physical_git = cwd.is_some()
-                        && matches!(
-                            acyclic_fs::GitCompatStore::load(
-                                &workspace.store,
-                                workspace.view().workspace().id(),
-                            )
-                            .await,
-                            Ok(None)
-                        );
+                    let (selected, _) = workspace.selected_view().await?;
+                    let view = selected.as_ref().unwrap_or_else(|| workspace.view());
+                    let cwd = Some(workspace.path.as_path());
+                    let compatibility = acyclic_fs::GitCompatStore::load(
+                        &workspace.store,
+                        workspace.view().workspace().id(),
+                    )
+                    .await
+                    .map_err(storage)?;
                     let (model, _) = self.agent()?;
-                    manifest.environment = Some(
-                        environment::gather(
-                            cwd,
-                            self.clock.now_unix_millis(),
-                            &model.name,
-                            &self.environment_platform,
-                            physical_git,
-                        )
-                        .await,
-                    );
+                    let mut facts = environment::gather(
+                        cwd,
+                        self.clock.now_unix_millis(),
+                        &model.name,
+                        &self.environment_platform,
+                        compatibility.is_none(),
+                    )
+                    .await?;
+                    if let Some(compatibility) = compatibility {
+                        let cancellation = acyclic_fs::CancellationToken::new();
+                        let snapshot = view
+                            .snapshot(
+                                &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+                            )
+                            .await?;
+                        facts.git_status = Some(environment::sdk_status(
+                            &compatibility,
+                            acyclic_fs::GitTreeRef::Lazy(snapshot),
+                        )?);
+                    }
+                    manifest.environment = Some(facts);
                 }
             }
             #[cfg(any(test, feature = "hooks"))]
@@ -570,7 +593,12 @@ mod tests {
     fn context_boundaries_retain_only_owned_polling_handles() {
         let manifest = retained_operation_bytes(
             |(local, publisher): (&'static LocalHarness, &'static dyn ContentPublisher)| {
-                local.stage_context_manifest_with(OperationId::from_bytes([1; 16]), None, publisher)
+                local.stage_context_manifest_with(
+                    OperationId::from_bytes([1; 16]),
+                    None,
+                    publisher,
+                    local.workspace.as_deref(),
+                )
             },
         );
         #[cfg(feature = "native-execution")]

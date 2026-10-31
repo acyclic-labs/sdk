@@ -25,9 +25,7 @@ record!(
     WriteFileInput,
     self,
     self.path.capacity(),
-    self.text.capacity(),
-    self.media_type.capacity(),
-    self.display_name.capacity()
+    self.content.capacity()
 );
 record!(
     EditFileInput,

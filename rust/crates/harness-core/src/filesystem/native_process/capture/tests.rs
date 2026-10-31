@@ -68,10 +68,11 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         || Ok(()),
         (),
         None,
+        OutputRetention::Observe,
     ))?;
     let output = output.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
     assert!(output.success, "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("captured"));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
     assert!(observed.load(Ordering::SeqCst) > 0);
     Ok(())
 }
@@ -187,6 +188,7 @@ mod simulation {
                 },
                 Vec::new(),
                 None,
+                OutputRetention::Collect,
             );
             type Capture<'a> =
                 Pin<Box<dyn Future<Output = Result<(Option<NativeProcessResult>, Vec<u8>)>> + 'a>>;

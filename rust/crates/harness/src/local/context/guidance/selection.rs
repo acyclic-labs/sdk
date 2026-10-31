@@ -7,7 +7,7 @@ fn names(prompt: &str, name: &[u8]) -> bool {
 
 pub(super) fn selection(prompt: &str, goal: bool, plans: bool) -> (bool, bool) {
     (
-        goal || names(prompt, b"goal.md") || names(prompt, b"goal mode"),
-        plans || names(prompt, b"plans/") || names(prompt, b"plan mode"),
+        goal || names(prompt, b"goal.md"),
+        plans || names(prompt, b"plans/"),
     )
 }

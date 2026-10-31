@@ -6,6 +6,89 @@ use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Borrowed model schema: omit draft/title metadata without cloning the tree.
+/// Property names and literal enum/const values are never treated as metadata.
+pub fn model_input(value: &Value) -> impl Serialize + '_ {
+    ModelSchema {
+        value,
+        position: Position::Root,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Position {
+    Root,
+    Schema,
+    Map,
+    List,
+    Literal,
+}
+
+struct ModelSchema<'a> {
+    value: &'a Value,
+    position: Position,
+}
+
+impl Serialize for ModelSchema<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        match (self.position, self.value) {
+            (Position::Literal, value) => value.serialize(serializer),
+            (Position::List, Value::Array(values)) => {
+                let mut list = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    list.serialize_element(&ModelSchema {
+                        value,
+                        position: Position::Schema,
+                    })?;
+                }
+                list.end()
+            }
+            (_, Value::Object(values)) => {
+                let mut map = serializer.serialize_map(None)?;
+                for (key, value) in values {
+                    let schema = matches!(self.position, Position::Root | Position::Schema);
+                    if schema
+                        && (matches!(key.as_str(), "$schema" | "title")
+                            || (matches!(self.position, Position::Root) && key == "description"))
+                    {
+                        continue;
+                    }
+                    let position = if matches!(self.position, Position::Map) {
+                        Position::Schema
+                    } else {
+                        match key.as_str() {
+                            "$defs" | "definitions" | "properties" | "patternProperties"
+                            | "dependentSchemas" | "dependencies" => Position::Map,
+                            "allOf" | "anyOf" | "oneOf" | "prefixItems" => Position::List,
+                            "items" if value.is_array() => Position::List,
+                            "items"
+                            | "additionalProperties"
+                            | "additionalItems"
+                            | "contains"
+                            | "not"
+                            | "if"
+                            | "then"
+                            | "else"
+                            | "propertyNames"
+                            | "unevaluatedItems"
+                            | "unevaluatedProperties"
+                            | "contentSchema" => Position::Schema,
+                            _ => Position::Literal,
+                        }
+                    };
+                    map.serialize_entry(key, &ModelSchema { value, position })?;
+                }
+                map.end()
+            }
+            (_, value) => value.serialize(serializer),
+        }
+    }
+}
+
 /// Generates a complete draft-2020-12 input contract, including root definitions.
 pub fn input<T: JsonSchema>() -> Result<Value> {
     serde_json::to_value(
@@ -47,6 +130,35 @@ pub(crate) fn project_json<T: Serialize>(
     work: crate::NativeWork<'_>,
 ) -> Result<(Value, crate::NativeCustody)> {
     super::value(&JsonProjection::Json { value }, u64::MAX, work)
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum TextProjection<'a> {
+    Parts { parts: [TextPart<'a>; 1] },
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum TextPart<'a> {
+    Text { text: &'a str },
+}
+
+pub(crate) fn text_projection_schema() -> Result<Value> {
+    output::<TextProjection<'_>>()
+}
+
+pub(crate) fn project_text(
+    text: &str,
+    work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
+    super::value(
+        &TextProjection::Parts {
+            parts: [TextPart::Text { text }],
+        },
+        u64::MAX,
+        work,
+    )
 }
 
 /// Explicit model representation, independent of the retained canonical result.
@@ -169,6 +281,27 @@ mod tests {
         files::{self, FileProjection, FileResult, ReadFileInput},
     };
     use serde_json::json;
+
+    proptest::proptest! {
+        #[test]
+        fn model_schema_preserves_validation_and_literal_metadata(text in ".{0,64}") {
+            let literal = json!({"title":text,"$schema":"literal"});
+            let source = json!({"$schema":"https://json-schema.org/draft/2020-12/schema",
+                "title":"root metadata", "type":"object", "required":["title","payload"],
+                "properties":{"title":{"title":"field metadata","type":"string"},
+                    "payload":{"const":literal}}, "additionalProperties":false});
+            let projected = serde_json::to_value(model_input(&source)).unwrap();
+            let original = compile_json_schema(&source, "source", &mut None).unwrap();
+            let model = compile_json_schema(&projected, "model", &mut None).unwrap();
+            for candidate in [json!({"title":text,"payload":literal}), json!({"payload":literal}), json!({"title":3,"payload":literal})] {
+                proptest::prop_assert_eq!(original.is_valid(&candidate), model.is_valid(&candidate));
+            }
+            proptest::prop_assert!(projected.get("title").is_none());
+            proptest::prop_assert!(projected.get("$schema").is_none());
+            proptest::prop_assert!(projected["properties"]["title"].is_object());
+            proptest::prop_assert_eq!(&projected["properties"]["payload"]["const"], &literal);
+        }
+    }
 
     #[test]
     fn existing_file_results_support_reference_projection_without_changing_canonical_values()

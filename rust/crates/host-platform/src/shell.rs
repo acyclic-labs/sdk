@@ -39,7 +39,7 @@ pub const PLATFORM: ShellSpec = POWERSHELL;
 /// PowerShell contract, including when a different client OS selects a Machine.
 pub const POWERSHELL: ShellSpec = ShellSpec {
     name: "shell",
-    description: "Run a command in the platform shell (bash on Linux/macOS; PowerShell 7, or Windows PowerShell 5.1, on Windows) in the calling task's composed workspace view, using PowerShell 7 (pwsh) when available, otherwise Windows PowerShell 5.1. Use PowerShell syntax and Windows paths. Runs with -NoProfile -NonInteractive; writes outside the task view are not captured. No OS sandbox in release 1",
+    description: "Run PowerShell in your workspace, using PowerShell 7 when available, otherwise Windows PowerShell 5.1. Use PowerShell syntax and Windows paths; profiles are disabled. timeout_ms defaults to 300000 and cannot exceed it. Returns the exit code and output tail, about 30000 characters; overflow is saved in .volumes/scratch. Writes outside the workspace are not captured",
     executables: &["pwsh.exe", "powershell.exe"],
     arguments: POWERSHELL_ARGUMENTS,
     stdin_bootstrap: Some(
@@ -54,7 +54,7 @@ pub const PLATFORM: ShellSpec = BASH;
 /// Bash contract for a Linux or macOS Machine, regardless of the client OS.
 pub const BASH: ShellSpec = ShellSpec {
     name: "shell",
-    description: "Run a command in the platform shell (bash on Linux/macOS; PowerShell 7, or Windows PowerShell 5.1, on Windows) in the calling task's composed workspace view. Use bash syntax and Unix paths. No OS sandbox in release 1; writes outside the task view are not captured",
+    description: "Run bash in your workspace, without profile or rc files. Use bash syntax and Unix paths. timeout_ms defaults to 300000 and cannot exceed it. Returns the exit code and output tail, about 30000 characters; overflow is saved in .volumes/scratch. Writes outside the workspace are not captured",
     executables: &["bash"],
     arguments: BASH_ARGUMENTS,
     stdin_bootstrap: None,

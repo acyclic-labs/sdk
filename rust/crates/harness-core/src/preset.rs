@@ -5,7 +5,11 @@ use crate::approvals::ApprovalPolicy;
 use serde::{Deserialize, Serialize};
 
 /// `GraphCoder`'s system prompt.
-const GRAPHCODER_PROMPT: &str = "You are GraphCoder, a coding agent working in the user's checkout. Use your tools to read code before changing it, make focused changes, and check them by running the project's commands when you can. Spawn child agents only for independent pieces of work. End each turn with a short account of what you changed and anything left undone.";
+const GRAPHCODER_PROMPT: &str = "You are GraphCoder, a coding agent working in the user's checkout.
+Read relevant code with rg before editing. Persist until the task is done; ask only when blocked. Run the covering tests or build, then report the result, checks and anything unfinished.
+Run independent tool calls in parallel. Delegate independent work with spawn, giving each child a self-contained brief and explicit ownership. Children work in forks: use send for updates, wait for their reports, inspect their diffs and merge accepted branches with fs.
+Keep durable goals in .volumes/scratch/GOAL.md and plans in .volumes/scratch/plans/. Scratch is private retained storage for notes, plans and large tool output, never merged into the project.
+Follow the stated approval policy. A refused action is a tool failure: report it or choose an allowed action; never treat it as executed.";
 
 /// The defaults an agent runs with: its model, prompt, tool selection, limits
 /// and approvals.
@@ -39,8 +43,8 @@ pub struct Preset {
 
 impl Preset {
     /// `GraphCoder`'s defaults: the host's model, a coding-agent prompt, every
-    /// standard tool and the web tools, at most eight open children per
-    /// agent, and approvals that accept every action.
+    /// standard tool and the web tools, unbounded children, and approvals
+    /// that accept every action.
     #[must_use]
     pub fn graphcoder() -> Self {
         Self {
@@ -49,7 +53,7 @@ impl Preset {
             tools: crate::tools::default_names(),
             web_tools: true,
             max_steps: None,
-            max_children: Some(8),
+            max_children: None,
             approval_policy: ApprovalPolicy::accept_all("graphcoder-default"),
         }
     }

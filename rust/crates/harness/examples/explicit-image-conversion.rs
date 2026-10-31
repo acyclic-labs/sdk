@@ -151,7 +151,7 @@ impl ToolExecutor for ImageConversion {
                     ..invocation.clone()
                 };
                 let write = ToolInvocation {
-                    arguments: json!({"path":input.destination,"text":"","media_type":MIME,"display_name":"converted.img1"}),
+                    arguments: json!({"path":input.destination,"content":""}),
                     ..invocation.clone()
                 };
                 self.read.authorize(None, Some(context), &read, None)?;

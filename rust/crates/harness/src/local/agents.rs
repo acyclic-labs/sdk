@@ -110,6 +110,12 @@ impl crate::hosting::Platform for LocalUser {
 /// the turn's task context and tool authority, and its hooks.
 struct LocalContext(Weak<LocalHarness>);
 
+struct TurnBindings {
+    harness: Arc<crate::runtime::AgentHarness>,
+    #[cfg(any(test, feature = "native-execution"))]
+    workspace: Option<Arc<super::LocalWorkspace>>,
+}
+
 impl TurnContext for LocalContext {
     fn prepare<'a>(
         &'a self,
@@ -133,19 +139,21 @@ impl TurnContext for LocalContext {
                 ModelContent::Text(text) => Some(text.as_str()),
                 ModelContent::Part(_) | ModelContent::Parts(_) => None,
             };
-            let manifest = match &local.context_manifest {
-                Some(manifest) => manifest.clone(),
-                None => {
-                    local
-                        .stage_context_manifest_with(turn, prompt, &**writer)?
-                        .await?
-                }
-            };
+            let bindings = local.turn_bindings(agent, authority).await?;
+            let manifest = local
+                .stage_context_manifest_with(
+                    turn,
+                    prompt,
+                    &**writer,
+                    #[cfg(any(test, feature = "native-execution"))]
+                    bindings.workspace.as_deref(),
+                )?
+                .await?;
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
                 .await?;
-            let bindings = local.turn_bindings(agent, authority).await?;
-            let (executor, context) = Tasks::bind(&bindings, executor, agent, turn, authority)?;
+            let (executor, context) =
+                Tasks::bind(&bindings.harness, executor, agent, turn, authority)?;
             let executor = executor.with_live_reply(crate::executor::LiveReply::new(
                 Arc::clone(writer),
                 format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
@@ -170,7 +178,7 @@ impl LocalHarness {
         &self,
         agent: &AgentState,
         authority: &TurnAuthority,
-    ) -> Result<Arc<crate::runtime::AgentHarness>> {
+    ) -> Result<TurnBindings> {
         let project = agent
             .volumes
             .iter()
@@ -178,7 +186,11 @@ impl LocalHarness {
             .map(|binding| &binding.volume)
             .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
         if project == &self.project {
-            return Ok(Arc::clone(&self.harness));
+            return Ok(TurnBindings {
+                harness: Arc::clone(&self.harness),
+                #[cfg(any(test, feature = "native-execution"))]
+                workspace: self.workspace.clone(),
+            });
         }
         let verifier = authority.issuer.verifier(&mut None)?;
         #[cfg(any(test, feature = "native-execution"))]
@@ -206,13 +218,17 @@ impl LocalHarness {
                     &verifier,
                 )
                 .await?;
-            return Ok(self.harness.with_workspace(
+            let harness = self.harness.with_workspace(
                 Some(tools),
                 crate::runtime::ContentBindings {
                     reader: Arc::clone(&authority.content.reader),
                     writer: Some(writer),
                 },
-            ));
+            );
+            return Ok(TurnBindings {
+                harness,
+                workspace: Some(workspace),
+            });
         }
         let writer = crate::filesystem::FilesystemContentPublisher::new(
             Arc::clone(&self.files),
@@ -222,13 +238,18 @@ impl LocalHarness {
             self.limits.file_bytes,
             None,
         )?;
-        Ok(self.harness.with_workspace(
+        let harness = self.harness.with_workspace(
             None,
             crate::runtime::ContentBindings {
                 reader: Arc::clone(&authority.content.reader),
                 writer: Some(writer),
             },
-        ))
+        );
+        Ok(TurnBindings {
+            harness,
+            #[cfg(any(test, feature = "native-execution"))]
+            workspace: None,
+        })
     }
 }
 

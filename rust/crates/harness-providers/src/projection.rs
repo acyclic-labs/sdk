@@ -168,13 +168,15 @@ pub(crate) fn body_named<'a>(
         }
     }
     sequence::finish(adapter, &mut messages);
-    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
-        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
+    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?;
+        let schema = acyclic_harness_core::tool::schema::model_input(&tool.input_schema);
+        Ok(match adapter {
+        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":schema}),
         Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
-            "parameters":tool.input_schema,"strict":false}),
+            "parameters":schema,"strict":false}),
         Adapter::Chat => json!({"type":"function","function":{"name":name,
-            "description":tool.description,"parameters":tool.input_schema}}),
-        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
+            "description":tool.description,"parameters":schema}}),
+        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":schema}),
     }) }).collect::<Result<_>>()?;
     system.retain(|text| !text.trim().is_empty());
     let max = request

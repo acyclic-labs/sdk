@@ -14,8 +14,8 @@ pub fn check(input: &[u8]) {
                 assert_eq!(
                     selection::selection(prompt, goal, plans),
                     (
-                        goal || lower.contains("goal.md") || lower.contains("goal mode"),
-                        plans || lower.contains("plans/") || lower.contains("plan mode")
+                        goal || lower.contains("goal.md"),
+                        plans || lower.contains("plans/")
                     )
                 );
             }

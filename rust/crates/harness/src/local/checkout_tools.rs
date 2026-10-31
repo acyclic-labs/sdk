@@ -241,8 +241,15 @@ impl CheckoutTools {
             let mounts = Arc::clone(&state.mounts);
             let (result, mut state, mut files) =
                 workspace::volumes::native_scope(&mounts, async |claims| {
-                    let (result, state, files, claims) =
-                        self.shell(input, maximum, state, files, claims).await?;
+                    let (result, state, files, claims) = self
+                        .shell(
+                            (input, invocation.operation_id),
+                            maximum,
+                            state,
+                            files,
+                            claims,
+                        )
+                        .await?;
                     if !result.as_ref().is_ok_and(|result| {
                         result
                             .value

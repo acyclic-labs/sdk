@@ -63,10 +63,10 @@ mod tests {
         #[test]
         fn file_guidance_selection(prompt in ".{0,128}", goal in any::<bool>(), plans in any::<bool>()) {
             let lower = prompt.to_ascii_lowercase();
-            let expected = (goal || lower.contains("goal.md") || lower.contains("goal mode"),
-                plans || lower.contains("plans/") || lower.contains("plan mode"));
+            let expected = (goal || lower.contains("goal.md"),
+                plans || lower.contains("plans/"));
             prop_assert_eq!(selection(&prompt, goal, plans), expected);
-            let goal_prompt = format!("{prompt} GOAL MODE");
+            let goal_prompt = format!("{prompt} GOAL.md");
             let plan_prompt = format!("{prompt} pLaNs/a.md");
             prop_assert!(selection(&goal_prompt, false, plans).0);
             prop_assert!(selection(&plan_prompt, goal, false).1);
@@ -78,9 +78,9 @@ mod tests {
         for (prompt, requested) in [
             ("hello", (false, false)),
             ("my goal is speed", (false, false)),
-            ("GOAL MODE", (true, false)),
+            ("GOAL MODE", (false, false)),
             ("Goal.md", (true, false)),
-            ("PLAN MODE", (false, true)),
+            ("PLAN MODE", (false, false)),
             ("PLANS/a.md", (false, true)),
             ("goal.md plans/a.md", (true, true)),
         ] {

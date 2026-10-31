@@ -33,6 +33,15 @@ pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usiz
 /// `stderr`; any other result becomes the leading text of its own encoding.
 /// Either way it is marked `truncated`.
 pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<ToolResult> {
+    if name == super::shell::PLATFORM.name {
+        if let Value::Object(fields) = result.value {
+            return shell(fields, usize::try_from(maximum).unwrap_or(usize::MAX))
+                .map(|value| ToolResult { value });
+        }
+        return Err(Error::Invalid(
+            "shell result is not an object; recovery: bind the shared shell executor".into(),
+        ));
+    }
     let maximum = maximum
         .checked_sub(crate::tool::schema::json_envelope_bytes()? as u64)
         .ok_or_else(|| bound_too_small(name))?;
@@ -41,21 +50,18 @@ pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<Too
         return Ok(result);
     }
     let maximum = usize::try_from(maximum).unwrap_or(usize::MAX);
-    let value = match result.value {
-        Value::Object(fields) if name == super::shell::PLATFORM.name => shell(fields, maximum)?,
-        _ => {
-            let mut fields = Map::new();
-            fields.insert("truncated".into(), Value::Bool(true));
-            fields.insert("text".into(), Value::String(String::new()));
-            let budget = maximum
-                .checked_sub(encoded_len(&Value::Object(fields.clone()))?)
-                .ok_or_else(|| bound_too_small(name))?;
-            fields.insert(
-                "text".into(),
-                Value::String(prefix(&encoded, budget).to_owned()),
-            );
-            Value::Object(fields)
-        }
+    let value = {
+        let mut fields = Map::new();
+        fields.insert("truncated".into(), Value::Bool(true));
+        fields.insert("text".into(), Value::String(String::new()));
+        let budget = maximum
+            .checked_sub(encoded_len(&Value::Object(fields.clone()))?)
+            .ok_or_else(|| bound_too_small(name))?;
+        fields.insert(
+            "text".into(),
+            Value::String(prefix(&encoded, budget).to_owned()),
+        );
+        Value::Object(fields)
     };
     Ok(ToolResult { value })
 }
@@ -66,18 +72,46 @@ fn shell(mut fields: Map<String, Value>, maximum: usize) -> Result<Value> {
         _ => String::new(),
     };
     let (stdout, stderr) = (take("stdout"), take("stderr"));
-    fields.insert("truncated".into(), Value::Bool(true));
+    let omitted = fields
+        .get("omitted_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    // Reserve the largest omission counter up front; shortening output cannot
+    // grow its footer past this allowance. The result is bounded by its actual
+    // text projection rather than a second JSON rendering of canonical fields.
+    fields.insert("omitted_bytes".into(), Value::from(u64::MAX));
+    let base = super::shell::presentation(&fields);
+    let overhead =
+        encoded_len(&serde_json::json!({"kind":"parts", "parts":[{"kind":"text", "text":base}]}))?;
     let budget = maximum
-        .checked_sub(encoded_len(&Value::Object(fields.clone()))?)
+        .checked_sub(overhead)
         .ok_or_else(|| bound_too_small(super::shell::PLATFORM.name))?;
     let error = escaped_len(&stderr);
     // Output keeps what stderr leaves, and at least half the budget.
-    let output = prefix(&stdout, budget.saturating_sub(error).max(budget / 2));
-    let error = prefix(&stderr, budget - escaped_len(output));
+    let budget = budget.min(30_000);
+    let output = suffix(&stdout, budget.saturating_sub(error).max(budget / 2));
+    let error = suffix(&stderr, budget - escaped_len(output));
+    let omitted =
+        omitted.saturating_add((stdout.len() - output.len() + stderr.len() - error.len()) as u64);
     let (output, error) = (output.to_owned(), error.to_owned());
     fields.insert("stdout".into(), Value::String(output));
     fields.insert("stderr".into(), Value::String(error));
+    fields.insert("omitted_bytes".into(), Value::from(omitted));
+    fields.insert("truncated".into(), Value::Bool(omitted > 0));
+    let text = super::shell::presentation(&fields);
+    fields.insert("text".into(), Value::String(text));
     Ok(Value::Object(fields))
+}
+
+fn suffix(text: &str, budget: usize) -> &str {
+    let mut used = 0;
+    for (index, character) in text.char_indices().rev() {
+        used += escaped(character);
+        if used > budget {
+            return &text[index + character.len_utf8()..];
+        }
+    }
+    text
 }
 
 fn bound_too_small(name: &str) -> Error {
@@ -128,7 +162,16 @@ mod tests {
 
     /// Bytes the model sees: the result inside its full JSON projection.
     fn projected_len(result: &ToolResult) -> u64 {
-        encoded_len(&json!({"kind": "json", "value": result.value})).unwrap() as u64
+        if let Some(text) = result
+            .value
+            .get("text")
+            .filter(|_| result.value.get("exit_code").is_some())
+        {
+            encoded_len(&json!({"kind":"parts", "parts":[{"kind":"text", "text":text}]})).unwrap()
+                as u64
+        } else {
+            encoded_len(&json!({"kind": "json", "value": result.value})).unwrap() as u64
+        }
     }
 
     // ASCII output that would exactly fill the bound on its own still fits
@@ -145,7 +188,7 @@ mod tests {
             "{}",
             projected_len(&bounded)
         );
-        assert!(projected_len(&bounded) > BOUND - 8);
+        assert!(projected_len(&bounded) > BOUND - 24);
     }
 
     // A shell that floods both streams still returns its exit status, within

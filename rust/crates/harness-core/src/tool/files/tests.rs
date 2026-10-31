@@ -59,7 +59,7 @@ fn publication_template_rejects_missing_scope_and_invalid_path_before_dispatch()
         operation_id: OperationId::new(),
         call_id: "write".into(),
         name: tool.definition.name.clone(),
-        arguments: json!({"path":"../escape.txt","text":"body","media_type":"text/plain","display_name":"body"}),
+        arguments: json!({"path":"../escape.txt","content":"body"}),
     };
     assert!(matches!(
         tool.executor.authorize(None, None, &invocation, None),

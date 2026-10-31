@@ -39,7 +39,7 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
-    /// The child's task, staged as a file the child's adoption names.
+    /// Self-contained task brief. The child sees this, not your conversation.
     pub task: String,
     /// Optional child name, unique under this agent; it names the child's path.
     pub name: Option<String>,
@@ -498,7 +498,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a named child agent on a fork of your volumes and conversation; returns its name and agent path. It starts before your next tool call runs and stays open to your messages until you archive it",
+                "Spawn a named child in a fork of your volumes. It sees only the brief you provide. Give it a self-contained task and file ownership. Returns its name and path; use send for messages, wait for its report, and fs to inspect and merge its branch",
             )?,
         ),
         (
@@ -519,7 +519,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait until the named children settle: each has handled everything sent to it and is idle or done. Your turn pauses without running until they do. Returns each settled child's phase and last answer; mode all (default) waits for every child, any for the first",
+                "Wait for named children to finish their current work and messages. Returns each child's state, report, branch, diff stat and merge state. mode all (default) waits for every child; any waits for the first. Inspect and merge accepted work with fs",
             )?,
         ),
     ] {

@@ -758,10 +758,10 @@ fn message_id(turn: OperationId, role: ModelRole) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
-/// Stable message identity of the system `prompt`.
-fn prompt_id(prompt: &str) -> uuid::Uuid {
-    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.prompt.v1");
-    hasher.update(prompt.as_bytes());
+/// Stable, domain-separated identity of a directive.
+fn directive_id(domain: &str, text: &str) -> uuid::Uuid {
+    let mut hasher = blake3::Hasher::new_derive_key(domain);
+    hasher.update(text.as_bytes());
     let mut bytes = [0; 16];
     hasher.finalize_xof().fill(&mut bytes);
     uuid::Uuid::from_bytes(bytes)
@@ -873,17 +873,36 @@ impl<'a> TurnContext<'a> {
                 .filter(|(_, summary)| !summary.is_empty()),
             None => None,
         };
-        if settled.is_empty() && summary.is_none() && prompt.is_none() {
+        if settled.is_empty() && summary.is_none() && prompt.is_none() && agent.parent.is_none() {
             return Ok(None);
         }
-        let mut messages = Vec::with_capacity(2 * settled.len() + 2);
+        let capacity = 2 * settled.len()
+            + 1
+            + usize::from(prompt.is_some())
+            + usize::from(summary.is_some())
+            + usize::from(agent.parent.is_some());
+        let mut messages = Vec::with_capacity(capacity);
         let mut message_ids = Vec::with_capacity(messages.capacity());
         if let Some(prompt) = prompt {
             messages.push(ModelMessage {
                 role: ModelRole::System,
                 content: ModelContent::Text(prompt.to_owned()),
             });
-            message_ids.push(prompt_id(prompt));
+            message_ids.push(directive_id("acyclic.harness.agent.prompt.v1", prompt));
+        }
+        if let Some(parent) = &agent.parent {
+            let directive = format!(
+                "You are child agent {}, working for parent {parent} in your own fork. You see only your brief. Your edits stay in this fork until your parent merges your branch. Your final message is your report to your parent. Use send with agent {parent} to send updates or questions.",
+                agent.path
+            );
+            message_ids.push(directive_id(
+                "acyclic.harness.agent.child-role.v1",
+                &directive,
+            ));
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(directive),
+            });
         }
         if let Some((checkpoint, summary)) = summary {
             messages.push(ModelMessage {

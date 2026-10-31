@@ -9,6 +9,12 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
     command: GitCommand,
     workspace: GitTreeRef,
 ) -> Result<GitCommandOutput, GitCompatError<E>> {
+    if matches!(command, GitCommand::Status) {
+        return state
+            .status(workspace)
+            .map(GitCommandOutput::Status)
+            .ok_or(GitCompatError::InvalidState);
+    }
     let current = state
         .current()
         .map_err(|()| GitCompatError::InvalidState)?
@@ -44,19 +50,11 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
         GitCommand::MergeContinue | GitCommand::MergeAbort => {
             return Err(GitCompatError::InvalidState);
         }
-        GitCommand::Status => GitCommandOutput::Status(GitStatus {
-            branch: current.name,
-            head: visible_head,
-            workspace,
-            dirty: match head_workspace_tree {
-                Some(head) if head == workspace => GitDirtyState::Clean,
-                Some(GitTreeRef::Lazy(_)) | None if matches!(workspace, GitTreeRef::Lazy(_)) => {
-                    GitDirtyState::Unknown
-                }
-                _ => GitDirtyState::Dirty,
-            },
-            all_changes_staged: true,
-        }),
+        GitCommand::Status => GitCommandOutput::Status(
+            state
+                .status(workspace)
+                .ok_or(GitCompatError::InvalidState)?,
+        ),
         GitCommand::Diff { .. } => GitCommandOutput::Action(GitFilesystemAction::Diff {
             from: head_tree,
             to: workspace,

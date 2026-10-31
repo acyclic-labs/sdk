@@ -7,9 +7,9 @@ proptest! {
     #[test]
     fn command_round_trip_preserves_the_selected_directory(
         command in ".{0,200}", cwd in proptest::option::of(".{0,100}"),
-        timeout in proptest::option::of(any::<u32>()),
+        timeout_ms in proptest::option::of(any::<u32>()),
     ) {
-        let input = ShellInput { command, cwd, timeout };
+        let input = ShellInput { command, cwd, timeout_ms };
         let encoded = serde_json::to_vec(&input).map_err(|error| TestCaseError::fail(error.to_string()))?;
         let restored: ShellInput = serde_json::from_slice(&encoded).map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert_eq!(&restored, &input);
@@ -20,8 +20,8 @@ proptest! {
             prop_assert!(!input.command.is_empty());
             prop_assert!(!input.command.contains('\0'));
             let timeout = input.timeout_ms().map_err(|error| TestCaseError::fail(error.to_string()))?;
-            prop_assert!(timeout > 0);
-            prop_assert_eq!(u64::from(timeout), u64::from(input.timeout.unwrap_or(300)) * 1000);
+            prop_assert!((1..=300_000).contains(&timeout));
+            prop_assert_eq!(u64::from(timeout), u64::from(input.timeout_ms.unwrap_or(300_000)));
         }
     }
 }
@@ -34,18 +34,18 @@ fn model_cannot_select_a_workspace_or_escape_through_cwd() {
             ShellInput {
                 command: "pwd".into(),
                 cwd: Some(cwd.into()),
-                timeout: None
+                timeout_ms: None
             }
             .validate()
             .is_err()
         );
     }
-    for timeout in [0, 4_294_968, u32::MAX] {
+    for timeout in [0, 300_001, u32::MAX] {
         assert!(
             ShellInput {
                 command: "pwd".into(),
                 cwd: None,
-                timeout: Some(timeout)
+                timeout_ms: Some(timeout)
             }
             .validate()
             .is_err()

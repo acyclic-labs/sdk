@@ -25,11 +25,7 @@ pub struct WriteFileInput {
     /// Valid public destination path.
     pub path: String,
     /// Exact content bytes encoded as UTF-8.
-    pub text: String,
-    /// Stored MIME type.
-    pub media_type: String,
-    /// Human-readable file name.
-    pub display_name: String,
+    pub content: String,
 }
 
 /// Exact replacement against one pinned file generation.
@@ -110,7 +106,7 @@ mod codec_tests {
                 FileDescriptor::new([1; 32], 128, "text/plain".into()).unwrap(), "file".into(), &mut None).unwrap();
             round_trip(ReadFileInput { file: file.clone(), range: endpoints.map(|(start, end)| text::TextRange { start, end }) });
             round_trip(EditFileInput { file, old_text: text.clone(), new_text: replacement });
-            round_trip(WriteFileInput { path, text, media_type: "text/plain".into(), display_name: "file".into() });
+            round_trip(WriteFileInput { path, content: text });
         }
     }
 }

@@ -298,7 +298,7 @@ fn approval_subject_names_the_exact_tool_call() -> Result<()> {
         route: crate::interaction::ApprovalRoute::Policy,
         tool: tool.into(),
         call_id: call_id.into(),
-        arguments: json!({"command": "rm -rf build", "timeout": 30}),
+        arguments: json!({"command": "rm -rf build", "timeout_ms": 30_000}),
     };
     let approval = |subject| {
         Interaction::approval(
@@ -308,7 +308,7 @@ fn approval_subject_names_the_exact_tool_call() -> Result<()> {
             subject,
         )
     };
-    let request = approval(tool("bash", "call-1"))?;
+    let request = approval(tool("shell", "call-1"))?;
     let value =
         serde_json::to_value(&request).map_err(|error| Error::Storage(error.to_string()))?;
     assert_eq!(value["subject"]["arguments"]["command"], "rm -rf build");

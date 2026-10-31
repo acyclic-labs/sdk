@@ -119,7 +119,7 @@ proptest::proptest! {
         }
         let suffix = if escape { ".escape" } else { &component };
         let result = prepare(ShellInput {
-            command: "pwd".into(), cwd: Some(format!(".volumes/data/{suffix}")), timeout: None,
+            command: "pwd".into(), cwd: Some(format!(".volumes/data/{suffix}")), timeout_ms: None,
         }, &mounts, invocation(&mounts.root), 1);
         if escape {
             prop_assert!(matches!(result, Err(Error::Invalid(_))));
@@ -212,7 +212,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     let input = ShellInput {
         command: r#"test -z "${ANTHROPIC_API_KEY+x}" && test -z "${ACYCLIC_TEST_RENAMED_SECRET+x}" && test -z "${ACYCLIC_TEST_NATIVE_BYTES+x}" && test -z "${ACYCLIC_TEST_BASH_HOST_ENVIRONMENT+x}" && test -z "${BASH_ENV+x}" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-explicit-path-only"#.into(),
         cwd: None,
-        timeout: Some(5),
+        timeout_ms: Some(5000),
     };
     let configured = |inherit_environment| {
         let mut invocation = invocation(&mounts.root);
@@ -231,10 +231,17 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
             prepared.environment.get("ACYCLIC_VOLUME_DATA"),
             mounts.environment()?.get("ACYCLIC_VOLUME_DATA")
         );
-        let output = capture::capture_with_custody(prepared, |(), _| Ok(()), || Ok(()), (), None)
-            .await?
-            .0
-            .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
+        let output = capture::capture_with_custody(
+            prepared,
+            |(), _| Ok(()),
+            || Ok(()),
+            (),
+            None,
+            capture::OutputRetention::Collect,
+        )
+        .await?
+        .0
+        .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
         assert!(output.success);
         assert_eq!(
             output.stdout,
@@ -254,10 +261,17 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     // An empty production map loses a tool outside the shell's default path.
     let mut missing_path = prepare(input.clone(), &mounts, configured(false), 1)?;
     missing_path.environment.remove("PATH");
-    let output = capture::capture_with_custody(missing_path, |(), _| Ok(()), || Ok(()), (), None)
-        .await?
-        .0
-        .ok_or_else(|| Error::Storage("tool search capture was indeterminate".into()))?;
+    let output = capture::capture_with_custody(
+        missing_path,
+        |(), _| Ok(()),
+        || Ok(()),
+        (),
+        None,
+        capture::OutputRetention::Collect,
+    )
+    .await?
+    .0
+    .ok_or_else(|| Error::Storage("tool search capture was indeterminate".into()))?;
     assert!(!output.success);
     assert!(output.stdout.is_empty());
     let mut invalid = configured(false);
@@ -273,10 +287,17 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     // the ambient shell startup hook to exactly the same command.
     let mut broken = prepare(input, &mounts, configured(false), 1)?;
     broken.inherit_environment = true;
-    let output = capture::capture_with_custody(broken, |(), _| Ok(()), || Ok(()), (), None)
-        .await?
-        .0
-        .ok_or_else(|| Error::Storage("negative control was indeterminate".into()))?;
+    let output = capture::capture_with_custody(
+        broken,
+        |(), _| Ok(()),
+        || Ok(()),
+        (),
+        None,
+        capture::OutputRetention::Collect,
+    )
+    .await?
+    .0
+    .ok_or_else(|| Error::Storage("negative control was indeterminate".into()))?;
     assert!(!output.success);
     assert_eq!(output.stderr, b"ambient-startup");
     Ok(())
@@ -310,7 +331,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
             .open(path)?
             .write_all(bytes)
     });
-    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout: Some(5) },
+    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout_ms: Some(5000) },
         &mounts, invocation(&mounts.root), 1, Some(observer), || Ok(())).await?
         .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
     assert_eq!(output.exit_code, Some(7));
@@ -350,7 +371,7 @@ async fn symlink_cwd_cannot_escape_the_task_view() -> Result<()> {
         ShellInput {
             command: "printf escaped > should-not-exist".into(),
             cwd: Some("escape".into()),
-            timeout: None,
+            timeout_ms: None,
         },
         &mounts,
         invocation(&mounts.root),
