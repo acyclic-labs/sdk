@@ -2,7 +2,7 @@
 //! authority over the agent's private volume; its executor comes from the host's
 //! [`TurnExecutors`] for that agent and authority, per turn.
 //!
-//! The model context of a turn is the host's system prompt, then the agent's
+//! The model context of a turn is the shared instruction, then the agent's
 //! own conversation stream from its latest checkpoint: that checkpoint's
 //! summary, the turns settled after it as user/assistant messages, then the
 //! turn's input. The host binds exactly that selection into the turn's journal,
@@ -401,7 +401,6 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     limits: TurnLimits,
     approvers: crate::approvals::ApproverModels,
     goals: Option<crate::goal::GoalContinuationPolicy>,
-    prompt: Option<Arc<str>>,
     policy: crate::approvals::ApprovalPolicy,
 }
 
@@ -443,17 +442,8 @@ where
             limits,
             approvers: Default::default(),
             goals: Some(Default::default()),
-            prompt: None,
             policy,
         }
-    }
-
-    /// Opens every turn's model context with `prompt` as its system message;
-    /// `None` sends none.
-    #[must_use]
-    pub fn with_prompt(mut self, prompt: Option<&str>) -> Self {
-        self.prompt = prompt.map(Arc::from);
-        self
     }
 
     /// Continues each agent's active goal within `goals`; `None` runs no goals.
@@ -774,7 +764,6 @@ fn directive_id(domain: &str, text: &str) -> uuid::Uuid {
 /// messages ([`Self::select`]) cannot disagree: a source added here is granted
 /// before either a child's result or a follow-up can be observed.
 struct TurnContext<'a> {
-    prompt: Option<&'a str>,
     /// The latest checkpoint: its turn and its staged summary.
     checkpoint: Option<(OperationId, FileRef)>,
     settled: Vec<(OperationId, ModelContent, FileRef)>,
@@ -788,7 +777,6 @@ impl<'a> TurnContext<'a> {
     /// latest checkpoint on, which replaces every entry before it.
     fn new(
         agent: &'a AgentState,
-        prompt: Option<&'a str>,
         mut history: Vec<ConversationEntry>,
         turn: OperationId,
         input: &'a ModelContent,
@@ -822,7 +810,6 @@ impl<'a> TurnContext<'a> {
             })
             .collect::<Result<_>>()?;
         Ok(Self {
-            prompt,
             checkpoint,
             settled,
             turn,
@@ -853,16 +840,15 @@ impl<'a> TurnContext<'a> {
     /// The selection: the checkpoint's summary as one assistant message
     /// (none when it is empty), then one user and one assistant message per
     /// settled turn, assistant text read from its staged output through
-    /// `reader`, which holds [`Self::files`]. Without a prompt or history
-    /// there is none.
+    /// `reader`, which holds [`Self::files`]. Shared instructions open every
+    /// selection, including the first turn.
     async fn select(
         self,
         agent: &AgentState,
         reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
-    ) -> Result<Option<SelectedModelContext>> {
+    ) -> Result<SelectedModelContext> {
         let Self {
-            prompt,
             checkpoint,
             settled,
             turn,
@@ -873,26 +859,23 @@ impl<'a> TurnContext<'a> {
                 .filter(|(_, summary)| !summary.is_empty()),
             None => None,
         };
-        if settled.is_empty() && summary.is_none() && prompt.is_none() && agent.parent.is_none() {
-            return Ok(None);
-        }
         let capacity = 2 * settled.len()
-            + 1
-            + usize::from(prompt.is_some())
+            + 2
             + usize::from(summary.is_some())
             + usize::from(agent.parent.is_some());
         let mut messages = Vec::with_capacity(capacity);
         let mut message_ids = Vec::with_capacity(messages.capacity());
-        if let Some(prompt) = prompt {
-            messages.push(ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(prompt.to_owned()),
-            });
-            message_ids.push(directive_id("acyclic.harness.agent.prompt.v1", prompt));
-        }
+        messages.push(ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text(crate::preset::AGENT_PROMPT.to_owned()),
+        });
+        message_ids.push(directive_id(
+            "acyclic.harness.agent.prompt.v1",
+            crate::preset::AGENT_PROMPT,
+        ));
         if let Some(parent) = &agent.parent {
             let directive = format!(
-                "You are child agent {}, working for parent {parent} in your own fork. You see only your brief. Your edits stay in this fork until your parent merges your branch. Your final message is your report to your parent. Use send with agent {parent} to send updates or questions.",
+                "You are child agent {}, working for parent {parent} in your own fork. Your task is the brief appended to this fork. Your edits stay in this fork until your parent merges your branch. Your final message is your report to your parent. Use send with agent {parent} to send updates or questions.",
                 agent.path
             );
             message_ids.push(directive_id(
@@ -929,14 +912,14 @@ impl<'a> TurnContext<'a> {
             content: input.clone(),
         });
         message_ids.push(message_id(turn, ModelRole::User));
-        Ok(Some(SelectedModelContext {
+        Ok(SelectedModelContext {
             selection: ModelContextSelection {
                 conversation_revision: agent.conversation_tail + 1,
                 message_ids,
                 checkpoint: None,
             },
             messages,
-        }))
+        })
     }
 }
 
@@ -973,7 +956,7 @@ where
             let history = self.history(&admitted, agent).await?;
             // The turn's grant is derived from its context, before the turn
             // can observe anything: every file the context can reach.
-            let context = TurnContext::new(agent, self.prompt.as_deref(), history, turn, input)?;
+            let context = TurnContext::new(agent, history, turn, input)?;
             let checkpoint = context
                 .checkpoint
                 .as_ref()
@@ -1041,10 +1024,7 @@ where
             let selected = context
                 .select(agent, &*bindings.content.reader, input)
                 .await?;
-            let journal = match &selected {
-                Some(selected) => journal.with_bound_selection(selected.clone()),
-                None => journal,
-            };
+            let journal = journal.with_bound_selection(selected.clone());
             let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
             let authority = TurnAuthority {
                 issuer: bindings.issuer,
@@ -1064,7 +1044,7 @@ where
                 journal,
                 max_steps: self.limits.max_steps,
                 custody: Some(authority.issuer),
-                selected,
+                selected: Some(selected),
                 checkpoint,
                 approvals: Some(approvals),
                 effects: Some(effects),

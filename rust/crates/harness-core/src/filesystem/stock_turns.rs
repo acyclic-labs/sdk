@@ -119,21 +119,11 @@ pub struct StockExecutors {
 }
 
 impl Preset {
-    /// The limits shared by this preset's executor, task scope and turn host.
-    #[must_use]
-    pub fn execution_limits(&self, mut limits: Limits) -> Limits {
-        if let Some(steps) = self.max_steps {
-            limits.model_steps = steps;
-        }
-        limits
-    }
-
     /// This preset's stock turns over `model` served by `provider`, with
     /// `tools` (the host's registry of this preset's tools) under `limits`,
-    /// `compaction` and `context`. The preset's step limit, open-children
-    /// bound and agent tools apply; `limits` bounds everything else. The turn
-    /// admission is the host's: pass the result to the turn host that
-    /// carries it.
+    /// `compaction` and `context`. The preset's agent tools apply; `limits`
+    /// bounds execution capacity. The turn admission is the host's: pass the
+    /// result to the turn host that carries it.
     #[must_use]
     pub fn executors(
         &self,
@@ -142,13 +132,8 @@ impl Preset {
         (limits, compaction): (Limits, CompactionPolicy),
         context: Arc<dyn TurnContext>,
     ) -> StockExecutors {
-        StockExecutors::new(
-            model,
-            tools,
-            (self.execution_limits(limits), compaction),
-            context,
-        )
-        .with_agent_tools(&self.tools, self.max_children)
+        StockExecutors::new(model, tools, (limits, compaction), context)
+            .with_agent_tools(&self.tools, self.max_children)
     }
 
     /// This preset's tools, the one construction every host takes them from:

@@ -76,7 +76,6 @@ fn executors_with_scope(
     )?;
     let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
     preset.tools.clear();
-    preset.max_steps = Some(usize::try_from(LIMITS.max_steps)?);
     let base = acyclic_harness_core::conversation::Limits {
         model_steps: 1,
         ..Default::default()
@@ -85,7 +84,10 @@ fn executors_with_scope(
         scope: acyclic_harness_core::runtime::RuntimeScope::new(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
             if matching_limits {
-                preset.execution_limits(base)
+                acyclic_harness_core::conversation::Limits {
+                    model_steps: usize::try_from(LIMITS.max_steps)?,
+                    ..base
+                }
             } else {
                 base
             },
@@ -96,7 +98,13 @@ fn executors_with_scope(
     Ok(Arc::new(preset.executors(
         (selection, model),
         ToolRegistry::default(),
-        (base, CompactionPolicy::Disabled),
+        (
+            acyclic_harness_core::conversation::Limits {
+                model_steps: usize::try_from(LIMITS.max_steps)?,
+                ..base
+            },
+            CompactionPolicy::Disabled,
+        ),
         Arc::new(Tasks(bindings)),
     )))
 }
@@ -245,25 +253,22 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         ScriptedTurn::Text("two".into()),
     ]));
     let (host, binding) = private(&path).await?;
-    let driver = ExecutorDriver::new(
-        FilesystemTurnHost::new(
-            stream.clone(),
-            host,
-            AuthorityRoot::new(
-                "agents",
-                [7; 32],
-                Authority {
-                    kind: AggregateKind::Conversation,
-                    id: "agents".into(),
-                },
-            ),
-            TurnAdmission::LocalRoot,
-            executors(model.clone())?,
-            LIMITS,
-            Default::default(),
-        )
-        .with_prompt(Some("You write code.")),
-    );
+    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+        stream.clone(),
+        host,
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    ));
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
     let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
@@ -332,11 +337,11 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         .find(|message| message.role == ModelRole::Assistant)
         .ok_or("no assistant history")?;
     assert_eq!(assistant.content, ModelContent::Text("one".into()));
-    // The host's prompt opens every turn's context, with or without history.
+    // Shared instructions remain the same prefix after a turn settles.
     for request in &requests {
         let first = request.messages.first().ok_or("empty request")?;
         assert_eq!(first.role, ModelRole::System);
-        assert_eq!(first.content, ModelContent::Text("You write code.".into()));
+        assert_eq!(first.content, requests[0].messages[0].content);
     }
     Ok(())
 }

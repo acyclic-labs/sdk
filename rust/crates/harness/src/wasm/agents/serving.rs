@@ -96,9 +96,8 @@ impl WasmAgentServer {
         #[wasm_bindgen(unchecked_param_type = "WasmHostingPlatform")] platform: JsValue,
     ) -> std::result::Result<WasmAgentServer, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
-        let limits = options.preset.execution_limits(options.limits);
-        // A preset admitting no open children binds a host that runs none:
-        // spawn commands are refused like the preset's spawn tool refuses.
+        let limits = options.limits;
+        // A host without a child execution producer refuses both spawn entrances.
         let children = options.preset.max_children != Some(0);
         let field = |name: &str| js_sys::Reflect::get(&platform, &JsValue::from_str(name));
         let manifest = field("manifest")?.dyn_into::<js_sys::Uint8Array>()?;

@@ -14,7 +14,7 @@
     },
     "principal": "owner",
     "preset": {
-      "model": null, "prompt": null, "tools": [], "web_tools": false, "max_steps": null, "max_children": 8,
+      "tools": [], "web_tools": false, "max_children": null,
       "approval_policy": { "approvers": [{ "kind": "rules", "principal": "owner", "rules": [], "fallback": "allow" }] }
     }
   },

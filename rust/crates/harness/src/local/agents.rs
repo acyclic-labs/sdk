@@ -400,7 +400,6 @@ impl LocalHarness {
             turns
                 .with_approvers(self.approval_models.clone())
                 .with_goals(self.goal_continuations)
-                .with_prompt(self.preset.prompt.as_deref())
         };
         // A checkout's spawned children fork its retained lazy cut, so each
         // child's project is a related fork the parent can diff and merge.

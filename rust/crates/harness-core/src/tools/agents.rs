@@ -39,7 +39,7 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
-    /// Self-contained task brief. The child sees this, not your conversation.
+    /// Self-contained task brief, including the child's file ownership.
     pub task: String,
     /// Optional child name, unique under this agent; it names the child's path.
     pub name: Option<String>,
@@ -498,7 +498,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a named child in a fork of your volumes. It sees only the brief you provide. Give it a self-contained task and file ownership. Returns its name and path; use send for messages, wait for its report, and fs to inspect and merge its branch",
+                "Spawn a named child in a fork of your volumes. Give it a self-contained task and file ownership. Returns its name and path; use send for messages, wait for its report, and fs to inspect and merge its branch",
             )?,
         ),
         (

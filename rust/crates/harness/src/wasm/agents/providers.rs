@@ -285,7 +285,7 @@ impl Providers {
         admission: &TurnAdmission,
     ) -> Result<BrowserHandler, JsValue> {
         // The options a handler runs under are its own, not its providers'.
-        let limits = options.preset.execution_limits(options.limits);
+        let limits = options.limits;
         limits.validate(&mut None).map_err(js_error)?;
         let turn_limits = TurnLimits {
             maximum_bytes: limits.file_bytes,
@@ -293,18 +293,15 @@ impl Providers {
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
             history_turns: HISTORY_TURNS,
         };
-        let turns = Arc::new(
-            FilesystemTurnHost::new(
-                Arc::clone(&self.stream),
-                Arc::clone(&self.filesystem),
-                owner.issuer.clone(),
-                admission.clone(),
-                Arc::new(Self::executors(options, registry)?),
-                turn_limits,
-                options.preset.approval_policy.clone(),
-            )
-            .with_prompt(options.preset.prompt.as_deref()),
-        );
+        let turns = Arc::new(FilesystemTurnHost::new(
+            Arc::clone(&self.stream),
+            Arc::clone(&self.filesystem),
+            owner.issuer.clone(),
+            admission.clone(),
+            Arc::new(Self::executors(options, registry)?),
+            turn_limits,
+            options.preset.approval_policy.clone(),
+        ));
         AgentHandler::new(
             actor_store(&self.stream).map_err(agent_error)?,
             ExecutorDriver::new(turns),
@@ -323,7 +320,7 @@ impl Providers {
         options: &WasmBrowserAgentOptions,
         registry: &WasmAgentRegistry,
     ) -> Result<StockExecutors, JsValue> {
-        let limits = options.preset.execution_limits(options.limits);
+        let limits = options.limits;
         limits.validate(&mut None).map_err(js_error)?;
         let (model, provider, compaction) = registry
             .model
