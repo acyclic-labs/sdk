@@ -11,6 +11,9 @@ autotests = false
 [lib]
 path = "lib.rs"
 
+[features]
+code-mode = ["acyclic-harness/code-mode"]
+
 [[bin]]
 name = "graphcoder"
 path = "../graphcoder.rs"

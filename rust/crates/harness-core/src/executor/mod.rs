@@ -49,6 +49,8 @@ mod compaction;
 mod composition;
 #[cfg(feature = "filesystem")]
 mod code_mode;
+#[cfg(feature = "filesystem")]
+pub use code_mode::{CODE_REVISION, call_tool, code_tool};
 mod content;
 mod dispatch;
 mod live_reply;
