@@ -267,6 +267,11 @@ proptest! {
     fn mock_wire_preserves_signed_parallel_calls_usage_and_prompt_prefix(
         signature in "[a-zA-Z0-9+/]{1,48}={0,2}", width in 1usize..48,
         cached in 0u64..=4096, thoughts in 0u64..4096,
+        native_id in prop::option::of(prop_oneof![
+            Just("harness_call_0".to_owned()),
+            Just("harness_call_2".to_owned()),
+            Just("opaque:/=界".repeat(8)),
+        ]),
     ) {
         use harness_mock_model::{Gemini, Step, events_with_usage};
         // Generated protocol data, not a captured provider fixture. The shared
@@ -288,8 +293,10 @@ proptest! {
             ).unwrap()).unwrap()
         };
         let prefix = encode(&request);
+        let mut first = json!({"thoughtSignature":signature,"functionCall":{"name":"read_file","args":{"file_path":"a"}}});
+        if let Some(id) = &native_id { first["functionCall"]["id"] = json!(id); }
         let parts = vec![
-            json!({"thoughtSignature":signature,"functionCall":{"name":"read_file","args":{"file_path":"a"}}}),
+            first,
             json!({"functionCall":{"id":"second","name":"read_file","args":{"file_path":"b"}}}),
         ];
         let signed = vec![parts[0].to_string()];
@@ -320,8 +327,32 @@ proptest! {
         }));
         let mut answer = String::new();
         append(parsed, &mut request, &mut answer);
+        // A foreign exchange needs a restricted alias. It must not claim an
+        // opaque native ID in the generated-alias namespace.
+        request.messages.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(ModelContentPart::ToolCall(
+                acyclic_harness_core::model::ToolCall::new(
+                    "foreign/call".into(), "read_file".into(), json!({"file_path":"c"}),
+                ),
+            )),
+        });
+        request.messages.push(ModelMessage {
+            role: ModelRole::Tool,
+            content: ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: "foreign/call".into(), name: "read_file".into(),
+                content: ToolResultContent::Json {value:json!({"ok":true})},
+            }),
+        });
         finish(&mut request, &answer);
         let continued = encode(&request);
+        let body: Value = serde_json::from_slice(&continued).unwrap();
+        let returned_id = &body["contents"][1]["parts"][0]["functionCall"]["id"];
+        let response_id = &body["contents"][2]["parts"][0]["functionResponse"]["id"];
+        prop_assert_eq!(returned_id.as_str(), native_id.as_deref());
+        prop_assert_eq!(response_id.as_str(), native_id.as_deref());
+        let foreign_id = body["contents"][3]["parts"][0]["functionCall"]["id"].as_str().unwrap();
+        prop_assert_ne!(Some(foreign_id), native_id.as_deref());
         // The closing contents array and object are the only bytes replaced by
         // an append. Static tools, system instruction and prior contents retain
         // their positions and bytes, so implicit caching sees the same prefix.

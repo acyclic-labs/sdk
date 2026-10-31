@@ -3,20 +3,23 @@ use acyclic_harness_core::{
     Result,
     model::{ModelContentPart, ModelRequest},
 };
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
-// ANT-TOOL-02, OAR-TOOL-03, OAC-TOOL-04, N-05. The alias namespace
-// cannot appear in a borrowed ID, so generated and original IDs cannot collide.
+// ANT-TOOL-02, OAR-TOOL-03, OAC-TOOL-04, N-05. Restricted API IDs reserve
+// this namespace. Opaque native Gemini IDs are retained and excluded below.
 const PREFIX: &str = "harness_call_";
 
 struct Binding<'a> {
-    canonical: &'a str,
     wire: Cow<'a, str>,
     freeform: bool,
     omit_gemini_id: bool,
+    native_gemini: Option<&'a str>,
 }
 
-pub(crate) struct CallIds<'a>(Vec<Binding<'a>>);
+pub(crate) struct CallIds<'a>(HashMap<&'a str, Binding<'a>>);
 
 fn ids(
     request: &ModelRequest,
@@ -60,43 +63,76 @@ impl<'a> CallIds<'a> {
         bindings.extend(ids(request, adapter).map(
             |(canonical, native, freeform, omit_gemini_id)| {
                 let candidate = native.filter(|id| unchanged(id)).unwrap_or(canonical);
-                Binding {
+                (
                     canonical,
-                    freeform,
-                    omit_gemini_id,
-                    wire: Cow::Borrowed(if unchanged(candidate) { candidate } else { "" }),
-                }
+                    Binding {
+                        freeform,
+                        omit_gemini_id,
+                        native_gemini: (adapter == Adapter::Gemini).then_some(native).flatten(),
+                        wire: Cow::Borrowed(if unchanged(candidate) { candidate } else { "" }),
+                    },
+                )
             },
         ));
         // Calls carry the original binding; results only carry the canonical ID.
         // Prefer a valid original binding, independent of traversal order.
-        bindings.sort_unstable_by(|a, b| {
-            let a_native = !a.wire.is_empty() && a.wire != a.canonical;
-            let b_native = !b.wire.is_empty() && b.wire != b.canonical;
-            a.canonical
-                .cmp(b.canonical)
+        bindings.sort_unstable_by(|(a_key, a), (b_key, b)| {
+            let a_native = !a.wire.is_empty() && a.wire != *a_key;
+            let b_native = !b.wire.is_empty() && b.wire != *b_key;
+            a_key
+                .cmp(b_key)
+                .then_with(|| b.native_gemini.is_some().cmp(&a.native_gemini.is_some()))
                 .then_with(|| b_native.cmp(&a_native))
                 .then_with(|| b.freeform.cmp(&a.freeform))
                 .then_with(|| b.omit_gemini_id.cmp(&a.omit_gemini_id))
                 .then(a.wire.cmp(&b.wire))
         });
-        bindings.dedup_by_key(|binding| binding.canonical);
-        bindings.sort_unstable_by(|a, b| a.wire.cmp(&b.wire).then(a.canonical.cmp(b.canonical)));
+        bindings.dedup_by_key(|(canonical, _)| *canonical);
+        bindings
+            .sort_unstable_by(|(a_key, a), (b_key, b)| a.wire.cmp(&b.wire).then(a_key.cmp(b_key)));
         let mut start = 0;
         while start < bindings.len() {
             let mut end = start + 1;
-            while end < bindings.len() && bindings[start].wire == bindings[end].wire {
+            while end < bindings.len() && bindings[start].1.wire == bindings[end].1.wire {
                 end += 1;
             }
-            if bindings[start].wire.is_empty() || end - start > 1 {
-                for (offset, binding) in bindings[start..end].iter_mut().enumerate() {
-                    binding.wire = Cow::Owned(format!("{PREFIX}{}", start + offset));
+            if bindings[start].1.wire.is_empty() || end - start > 1 {
+                for (offset, (_, binding)) in bindings[start..end].iter_mut().enumerate() {
+                    if binding.native_gemini.is_none() {
+                        binding.wire = Cow::Owned(format!("{PREFIX}{}", start + offset));
+                    }
                 }
             }
             start = end;
         }
-        bindings.sort_unstable_by(|a, b| a.canonical.cmp(b.canonical));
-        Self(bindings)
+        // Gemini's returned ID is opaque. In particular, its native signed part
+        // must not be rewritten to another API's alphabet/length restrictions.
+        // Reuse in separate exchanges is valid: dispatch IDs remain distinct.
+        if adapter == Adapter::Gemini {
+            let native: HashSet<_> = bindings
+                .iter()
+                .filter_map(|(_, binding)| binding.native_gemini)
+                .collect();
+            let mut next = bindings.len() as u128;
+            for (_, binding) in &mut bindings {
+                if let Some(id) = binding.native_gemini {
+                    binding.wire = Cow::Borrowed(id);
+                } else if native.contains(binding.wire.as_ref()) {
+                    // Existing generated ordinals are below len. Each rejection
+                    // consumes one distinct native ordinal; total work is linear
+                    // in this request, with no retry or history-dependent lookup.
+                    loop {
+                        let alias = format!("{PREFIX}{next}");
+                        next += 1;
+                        if !native.contains(alias.as_str()) {
+                            binding.wire = Cow::Owned(alias);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Self(bindings.into_iter().collect())
     }
 
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
@@ -105,14 +141,14 @@ impl<'a> CallIds<'a> {
     }
 
     pub(crate) fn binding<'b>(&'b self, id: &str) -> Result<(Cow<'b, str>, bool, bool)> {
-        let index = self
+        let binding = self
             .0
-            .binary_search_by(|binding| binding.canonical.cmp(id))
-            .map_err(|_| invalid("missing tool call ID binding"))?;
+            .get(id)
+            .ok_or_else(|| invalid("missing tool call ID binding"))?;
         Ok((
-            Cow::Borrowed(self.0[index].wire.as_ref()),
-            self.0[index].freeform,
-            self.0[index].omit_gemini_id,
+            Cow::Borrowed(binding.wire.as_ref()),
+            binding.freeform,
+            binding.omit_gemini_id,
         ))
     }
 
@@ -131,23 +167,27 @@ impl<'a> CallIds<'a> {
         ] {
             let table = Self::new(request, adapter);
             let mut reverse = std::collections::BTreeMap::new();
-            for binding in &table.0 {
-                let wire = table.wire(binding.canonical).unwrap();
+            for (&canonical, binding) in &table.0 {
+                let wire = table.wire(canonical).unwrap();
+                if let Some(native) = binding.native_gemini {
+                    assert_eq!(wire, native);
+                    continue;
+                }
                 assert!(!wire.is_empty() && wire.len() <= 40);
                 assert!(
                     wire.bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
                 );
                 assert!(
-                    reverse
-                        .insert(wire.into_owned(), binding.canonical)
-                        .is_none(),
+                    reverse.insert(wire.into_owned(), canonical).is_none(),
                     "distinct canonical exchanges collided"
                 );
             }
             for (id, _, _, _) in ids(request, adapter) {
                 let wire = table.wire(id).unwrap();
-                assert_eq!(reverse[wire.as_ref()], id);
+                if table.0[id].native_gemini.is_none() {
+                    assert_eq!(reverse[wire.as_ref()], id);
+                }
             }
         }
     }

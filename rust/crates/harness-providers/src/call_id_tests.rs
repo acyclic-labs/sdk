@@ -275,7 +275,13 @@ proptest! {
             let body=projection::body(&provider,restored.request()).unwrap();
             let (projected_calls,results)=projected_ids(&body,target);
             prop_assert_eq!(projected_calls.len(),2);
-            prop_assert_ne!(&projected_calls[0],&projected_calls[1]);
+            if target == Adapter::Gemini && first_adapter == Adapter::Gemini && next_adapter == Adapter::Gemini {
+                // The wire ID is scoped to each answered native exchange;
+                // canonical dispatch IDs above still distinguish both calls.
+                prop_assert_eq!(&projected_calls[0],&projected_calls[1]);
+            } else {
+                prop_assert_ne!(&projected_calls[0],&projected_calls[1]);
+            }
             prop_assert_eq!(&projected_calls,&results);
             let table=CallIds::new(restored.request(),target);
             for (call,wire) in calls.iter().zip(&projected_calls) {
