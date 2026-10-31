@@ -366,16 +366,30 @@ fn capture() -> Result<(), Box<dyn Error>> {
             kind: acyclic_auth::contract::CaveatKind::ExpiresAtUnixSeconds(500),
         });
     });
+    // Preserve the actual former writer capture as a refusal seed, at its
+    // original path. Successor producers receive distinct corpus names.
+    let previous = include_bytes!("../corpus/auth/signed-capability");
+    assert!(matches!(
+        acyclic_auth::authority::decode_capability(previous),
+        Err(acyclic_auth::Error::UnsupportedVersion(0))
+    ));
     save(
         "auth",
-        "opaque-bearer",
+        "signed-capability",
+        previous,
+        "captured v1 acyclic_auth::testing::root (test-only deterministic signing keys)",
+        &mut manifest,
+    )?;
+    save(
+        "auth",
+        "v2-opaque-bearer",
         &acyclic_codec_fuzz::auth_credential::seed(&token),
         "credential::bearer_bytes from hex-encoded testing::root output using deterministic SDK test keys; opaque transport admission only",
         &mut manifest,
     )?;
     save(
         "auth",
-        "signed-capability",
+        "v2-signed-capability",
         &token,
         "acyclic_auth::testing::root (test-only deterministic signing keys)",
         &mut manifest,

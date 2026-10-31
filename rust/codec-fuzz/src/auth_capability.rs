@@ -110,10 +110,10 @@ pub fn seeds(root: &[u8]) -> Result<Vec<(&'static str, Vec<u8>)>, VerifyError> {
         &[7; 32],
     )?;
     let seeds = vec![
-        ("sealed-capability", root.encode_sealed()?.to_vec()),
-        ("attenuated-capability", child.encode().to_vec()),
+        ("v2-sealed-capability", root.encode_sealed()?.to_vec()),
+        ("v2-attenuated-capability", child.encode().to_vec()),
         (
-            "sealed-attenuated-capability",
+            "v2-sealed-attenuated-capability",
             child.encode_sealed()?.to_vec(),
         ),
     ];

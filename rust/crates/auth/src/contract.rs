@@ -355,6 +355,29 @@ impl CapabilityProto {
     }
 }
 
+/// Borrowed proof bytes for a canonical envelope writer. This grants no
+/// authentication or signing authority and retains no secret storage.
+pub enum TipProofRef<'a> {
+    /// Append secret, borrowed from its custodian.
+    Secret(&'a [u8; 32]),
+    /// Public final sealing signature.
+    Sealed(&'a [u8; 64]),
+}
+
+/// Encode the current opaque format through the owning canonical writer.
+/// Blocks must still pass structural admission and authentication at ingress.
+/// Returned append-secret bytes are zeroized on drop.
+pub fn encode_capability(
+    blocks: &[SignedBlockProto],
+    proof: TipProofRef<'_>,
+) -> zeroize::Zeroizing<Vec<u8>> {
+    let (tag, bytes): (_, &[u8]) = match proof {
+        TipProofRef::Secret(bytes) => (18, bytes),
+        TipProofRef::Sealed(bytes) => (26, bytes),
+    };
+    crate::verify::wire::encode(blocks, Some((tag, bytes)), crate::VERSION)
+}
+
 /// Sealed workload proof and runtime-authenticated admission time. This is
 /// historical evidence for one payload, never reusable append authority.
 #[acyclic_contract_derive::message(error = Error, file = AuthFile)]
