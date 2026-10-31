@@ -3,7 +3,7 @@ use bytes::Bytes;
 use std::{
     future::{Future as _, poll_fn},
     io::Read as _,
-    os::fd::{AsFd as _, AsRawFd as _},
+    os::fd::{AsFd as _, AsRawFd},
     sync::Arc,
 };
 use tokio::{io::AsyncWriteExt as _, sync::Semaphore};
