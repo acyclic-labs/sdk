@@ -5,7 +5,7 @@ proptest! {
     #[test]
     fn automatic_budgets_preserve_the_selected_output_reservation(
         context in 3u32..=u32::MAX, output in 1u32..=u32::MAX,
-        fixed in any::<u32>(),
+        fixed in any::<u32>(), selected_watermark in any::<u32>(),
     ) {
         let output = output.min(context);
         let capacity = ModelContextCapacity { context_tokens: context, output_tokens: Some(output) };
@@ -20,6 +20,16 @@ proptest! {
             let boundary = u64::from(context - output);
             prop_assert!(!policy.needs_compaction(capacity, boundary, None).unwrap());
             prop_assert!(policy.needs_compaction(capacity, boundary + 1, None).unwrap());
+
+            let selected = selected_watermark.max(2);
+            let watermark = selected.min(context - output);
+            let policy = ThresholdCompaction::for_watermark(capacity, selected, output).unwrap();
+            prop_assert_eq!(policy.validate(capacity, None).unwrap(), output);
+            prop_assert!(!policy.needs_compaction(capacity, u64::from(watermark), None).unwrap());
+            prop_assert!(policy.needs_compaction(capacity, u64::from(watermark) + 1, None).unwrap());
+            prop_assert!(policy.recent_tokens <= watermark / 2);
+            prop_assert!(ThresholdCompaction::for_watermark(capacity, 0, output).is_err());
+            prop_assert!(ThresholdCompaction::for_watermark(capacity, 1, output).is_err());
         }
         // The former clamp admits an input even when the selected output
         // occupies the whole context. The actual reservation refuses that cut.

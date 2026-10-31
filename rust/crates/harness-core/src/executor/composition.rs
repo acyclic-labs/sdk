@@ -56,12 +56,24 @@ impl StockExecutor {
             self.compaction,
             Some(crate::context::CompactionPolicy::Disabled)
         ) {
-            let capacity = resolved
+            let mut capacity = resolved
                 .bind_model(&self.model, resolved.prefix().capacity.model)?
                 .capacity();
+            let provider = self.provider.context_capacity(&self.model)?;
+            provider.validate()?;
+            capacity.context_tokens = capacity.context_tokens.min(provider.context_tokens);
+            capacity.output_tokens = capacity
+                .output_tokens
+                .into_iter()
+                .chain(provider.output_tokens)
+                .min()
+                .map(|output| output.min(capacity.context_tokens));
             let output = capacity.output_reservation(self.max_output_tokens)?;
-            let mut policy =
-                crate::context::ThresholdCompaction::for_reservation(capacity, 0, output)?;
+            let mut policy = crate::context::ThresholdCompaction::for_watermark(
+                capacity,
+                resolved.prefix().capacity.watermark_tokens,
+                output,
+            )?;
             if let Some(crate::context::CompactionPolicy::Threshold(selected)) = &self.compaction {
                 policy.recent_tokens = policy.recent_tokens.min(selected.recent_tokens);
             }
