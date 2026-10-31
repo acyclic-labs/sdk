@@ -16,7 +16,7 @@ mod spawn;
 pub use spawn::{AgentProfilePin, SpawnContext, SpawnProfiles};
 
 mod binding;
-pub use binding::{BoundTools, ToolBinding};
+pub use binding::ToolBinding;
 
 #[cfg(test)]
 mod tests;

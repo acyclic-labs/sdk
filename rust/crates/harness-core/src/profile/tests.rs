@@ -20,11 +20,8 @@ const REVIEWER: &str = include_str!("roles/reviewer.md");
 const ADVISOR: &str = include_str!("roles/advisor.md");
 
 #[test]
-fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Result<()> {
-    use crate::{
-        model::{Model, ModelRequest},
-        tool::ToolRegistry,
-    };
+fn executable_bindings_borrow_original_revisions_without_allocation() -> Result<()> {
+    use crate::tool::ToolRegistry;
     let mut registry = ToolRegistry::default();
     for name in ["first", "second"] {
         let mut tool = crate::tool::files::read()?;
@@ -41,8 +38,9 @@ fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Resu
         "---\nversion: 1\nname: worker\nmodel: test/model\ncontext: fork\nmay_spawn: []\nallowed_tools: [read]\n---\n",
     )?;
     let resolved = resolve(&model, &role, &project, &agent)?;
-    let bound = resolved.bind_tools(&registry, None)?;
-    let declarations = bound.declarations();
+    let declarations = resolved
+        .bind_tools(&registry, None)
+        .collect::<Result<Vec<_>>>()?;
     assert!(std::ptr::eq(
         declarations[0].tool(),
         registry.get("second", Some("v1"), None)?.unwrap()
@@ -50,34 +48,51 @@ fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Resu
     assert_eq!(declarations[1].tool().definition.name, "first");
     assert!(declarations[0].available());
     assert!(!declarations[1].available());
-    let mut request = ModelRequest {
-        model: Model {
-            provider: "test".into(),
-            name: "model".into(),
-            revision: "v1".into(),
-        },
-        messages: Vec::new(),
-        tools: declarations
-            .iter()
-            .map(|binding| binding.tool().definition.clone())
-            .collect(),
-        max_output_tokens: None,
-    };
-    bound.validate_request(&request)?;
-    request.tools.swap(0, 1);
-    assert!(bound.validate_request(&request).is_err());
-    request.tools.swap(0, 1);
-    request.tools[0].revision = "stale".into();
-    assert!(bound.validate_request(&request).is_err());
-    request.tools[0].revision = "v1".into();
-    request.model.name = "another-model".into();
-    assert!(bound.validate_request(&request).is_err());
     let missing = profile(
         &family.replace("revision: v1", "revision: missing"),
         Some(200),
     )?;
     let missing = resolve(&missing, &role, &project, &agent)?;
-    assert!(missing.bind_tools(&registry, None).is_err());
+    assert!(missing.bind_tools(&registry, None).next().unwrap().is_err());
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let budget = WorkBudget {
+            allocation_operations: 1,
+            ..acyclic_fs::performance::work_budget(1_000, 65_536)
+        };
+        let work = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("finite binding work without allocation credit");
+        let io = crate::executor::PreparationIo::from_native_work(&work)?;
+        let before = io.remaining()?;
+        assert_eq!(
+            before.allocation_operations, 0,
+            "original ledger owns the only allocation"
+        );
+        for binding in resolved.bind_tools(&registry, Some(&io)) {
+            binding?;
+        }
+        let after = io.remaining()?;
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(after.items_examined + 2, before.items_examined);
+        assert!(matches!(
+            missing.bind_tools(&registry, Some(&io)).next().unwrap(),
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::NotFound,
+                ..
+            })
+        ));
+        cancellation.cancel();
+        assert!(
+            resolved
+                .bind_tools(&registry, Some(&io))
+                .next()
+                .unwrap()
+                .is_err()
+        );
+    }
     Ok(())
 }
 

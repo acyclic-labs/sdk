@@ -16,11 +16,11 @@ impl StockExecution<'_> {
         #[cfg(feature = "filesystem")]
         if let Some((profiles, pin, key)) = &self.stock.profile {
             let profile = profiles.for_model(pin, key)?;
-            let bound = profile.bind_tools(&self.stock.tools, io)?;
-            let mut definitions = crate::model::vec_with_capacity(bound.declarations().len(), io)?;
-            for binding in bound.declarations() {
+            let bound = profile.bind_tools(&self.stock.tools, io);
+            let mut definitions = crate::model::vec_with_capacity(bound.len(), io)?;
+            for binding in bound {
                 definitions.push(crate::model::clone_tool_definition(
-                    &binding.tool().definition,
+                    &binding?.tool().definition,
                     io,
                 )?);
             }
