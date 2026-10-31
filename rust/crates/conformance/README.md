@@ -101,6 +101,16 @@ exclude native workers and therefore do not qualify allocation coverage.
 Concurrent append/follow work remains unobserved until it can be attributed to
 its original operation. Unobserved physical syscalls, durability calls, locks, I/O, allocations,
 visits and idle resources stay missing, and make counting qualification fail.
+Use `--observe-durability` to attach the existing shared operation collector to
+the same drivers. Calibration runs before attaching it; operation latency
+retains observer overhead. Each row reports diagnostic completed native attempt
+deltas in `[ok, err, incomplete]` order. The final bounded projection includes
+setup and selected operation families, with base-two syscall latency buckets;
+these are not per-operation latency quantiles. Counter snapshots occur outside
+the timestamp pair and their cloning is excluded from allocation diagnostics.
+Native worker context is retained by the original persistence job. Unobserved
+leaves, concurrent work and original provider/group attribution remain unknown,
+so these diagnostics do not qualify `durability_calls` or count device drains.
 Run the deterministic observer controls with
 `cargo test --locked -p acyclic-test-support scale::tests`. They execute an
 injected scan, real per-agent threads, virtual timer registrations and a lost

@@ -1,6 +1,6 @@
 use super::{
     actor_delivery::{Entries, Observed},
-    report::{Result, emit},
+    report::{DurabilityQuery, Result, emit},
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
@@ -60,6 +60,7 @@ impl TurnExecutors for CreationOnly {
 pub(super) struct Fixture {
     pub(super) stream: Arc<Streams>,
     pub(super) requests: RequestLedger,
+    pub(super) durability: DurabilityQuery,
     pub(super) objects: Arc<Counted<LocalObjects>>,
     pub(super) fs: Filesystem,
     pub(super) bound: Binding,
@@ -100,14 +101,19 @@ impl Fixture {
         })
     }
 
-    pub(super) async fn open(root: &Path, agents: usize, setup_credit: usize) -> Result<Self> {
+    pub(super) async fn open(
+        root: &Path,
+        agents: usize,
+        setup_credit: usize,
+        durability: DurabilityQuery,
+    ) -> Result<Self> {
         let start = Instant::now();
-        let fixture = Self::providers(root).await?;
+        let fixture = Self::providers(root, durability).await?;
         fixture.populate(agents, setup_credit, start).await?;
         Ok(fixture)
     }
 
-    pub(super) async fn providers(root: &Path) -> Result<Self> {
+    pub(super) async fn providers(root: &Path, durability: DurabilityQuery) -> Result<Self> {
         let limits = LocalStreamLimits {
             memory: MemoryLimits {
                 paths: usize::MAX,
@@ -170,7 +176,7 @@ impl Fixture {
                 approval_policy: Default::default(),
             },
         )?;
-        let entries = Arc::new(Entries::new(requests.clone()));
+        let entries = Arc::new(Entries::new(requests.clone(), durability.clone()));
         let handler = Arc::new(Observed {
             handler: bound.handler(),
             entries: entries.clone(),
@@ -179,6 +185,7 @@ impl Fixture {
         Ok(Self {
             stream,
             requests,
+            durability,
             objects,
             fs,
             bound,

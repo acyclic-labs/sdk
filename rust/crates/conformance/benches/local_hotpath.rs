@@ -30,6 +30,7 @@ struct Options {
     populations: Vec<u64>,
     setup_credit: usize,
     proofs: bool,
+    observe_durability: bool,
 }
 
 impl Options {
@@ -51,7 +52,7 @@ impl Options {
             );
         }
         format!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --setup-credit {} --operations {} --populations {}",
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --setup-credit {} --operations {} --populations {}{}",
             quoted(&root.to_string_lossy()),
             quoted(&self.source),
             self.samples,
@@ -72,6 +73,11 @@ impl Options {
                     .collect::<Vec<_>>()
                     .join(",")
             ),
+            if self.observe_durability {
+                " --observe-durability"
+            } else {
+                ""
+            },
         )
     }
 
@@ -84,9 +90,11 @@ impl Options {
         let mut populations = POPULATIONS.to_vec();
         let mut setup_credit = 1;
         let mut proofs = false;
+        let mut observe_durability = false;
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
                 "--proofs" => proofs = true,
+                "--observe-durability" => observe_durability = true,
                 "--root" => root = arguments.next().map(PathBuf::from),
                 "--samples" => samples = arguments.next().ok_or("missing sample count")?.parse()?,
                 "--source" => source = arguments.next(),
@@ -145,6 +153,7 @@ impl Options {
             populations,
             setup_credit,
             proofs,
+            observe_durability,
         })
     }
 }
@@ -152,7 +161,7 @@ impl Options {
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations]\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
         );
         return;
     }
@@ -188,12 +197,27 @@ fn run() -> Result {
         "setup_credit": options.setup_credit,
         "actor_checkpoint_bytes": 128,
         "durability": "full", "batch": 1,
-        "instrumentation": "original Handler entry timestamp; follow notification waker timestamp; public provider request ledger; current-thread allocator; no tracing subscriber",
+        "instrumentation": "original Handler entry timestamp; follow notification waker timestamp; public provider request ledger; current-thread allocator",
+        "durability_observer": options.observe_durability,
+        "durability_observer_scope": "optional shared operation collector; completed native attempts only; incomplete leaf and group coverage; observer overhead retained in operation latency; calibration excludes observer",
         "populations": options.populations,
         "population_scope": "initial settled dormant roots; creation samples retain new durable identities; session samples add resident roots",
         "operations": options.operations.iter().map(|operation| operation.name()).collect::<Vec<_>>(),
     }))?;
     let floors = calibrate::run(&options.root, options.samples)?;
+    use acyclic_native_runtime::obs::{Metrics, Operations};
+    use std::sync::Arc;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    // Calibrate without the observer: instrumentation is implementation cost,
+    // not a reason to raise the semantic floor.
+    let metrics = Metrics::default();
+    let durability = options
+        .observe_durability
+        .then(|| Arc::new(metrics.query("acyclic.runtime.durability")));
+    let dispatch = options
+        .observe_durability
+        .then(|| tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(metrics))));
+    let _subscriber = dispatch.as_ref().map(tracing::dispatcher::set_default);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -206,8 +230,13 @@ fn run() -> Result {
                 let agents = usize::try_from(*agents)?;
                 let root = options.root.join(agents.to_string());
                 std::fs::create_dir(&root)?;
-                let fixture =
-                    population::Fixture::open(&root, agents, options.setup_credit).await?;
+                let fixture = population::Fixture::open(
+                    &root,
+                    agents,
+                    options.setup_credit,
+                    durability.clone(),
+                )
+                .await?;
                 let (observed, point) = storage::run(
                     &fixture,
                     agents,
@@ -224,6 +253,13 @@ fn run() -> Result {
         }));
     });
     let (latency_complete, counts) = measured.ok_or("measurement scope did not execute")??;
+    if let Some(query) = durability {
+        emit(serde_json::json!({
+            "schema": 1, "kind": "native_durability_projection", "snapshot": query.snapshot(),
+            "scope": "completed observed native attempts during setup and selected operation families; base-two latency buckets are not operation quantiles; unobserved leaves and original provider/group coverage remain unknown",
+            "complete_coverage": false,
+        }))?;
+    }
     for finding in counts.findings(&options.operations, &recovery) {
         emit(serde_json::json!({
             "schema": 1, "kind": "counting_refused", "step": finding.step,

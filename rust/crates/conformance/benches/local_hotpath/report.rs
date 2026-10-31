@@ -4,7 +4,9 @@ use acyclic_test_support::{
     scale::{Idle, Operation, Point, Sample, Work},
 };
 use serde::Serialize;
-use std::{collections::BTreeMap, io::Write, time::Duration};
+use std::{collections::BTreeMap, io::Write, sync::Arc, time::Duration};
+
+pub(super) type DurabilityQuery = Option<Arc<acyclic_native_runtime::obs::Query>>;
 
 pub(super) type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -94,6 +96,7 @@ pub(super) struct Terms {
 pub(super) struct Measurements {
     agents: usize,
     requests: RequestLedger,
+    durability: DurabilityQuery,
     recovery: String,
     rows: BTreeMap<Operation, Row>,
     operations: Vec<Operation>,
@@ -105,19 +108,31 @@ struct Row {
     work: Sample,
     coordinator_allocations: Vec<Option<[u64; 2]>>,
     provider_requests: Vec<Option<[u64; 7]>>,
+    native_attempts: Vec<Option<[u64; 3]>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Counters {
     requests: Requests,
-    allocations: Option<AllocationInfo>,
+    allocations: Option<[AllocationInfo; 2]>,
+    native_attempts: Option<[u64; 3]>,
 }
 
 impl Counters {
-    pub(super) fn capture(requests: &RequestLedger) -> Self {
+    pub(super) fn capture(requests: &RequestLedger, durability: &DurabilityQuery) -> Self {
+        // Both allocation cuts keep this snapshot's own cloning outside the
+        // diagnostic interval, including the handler-entry prefix.
+        let allocations_before = acyclic_test_support::current_allocations();
+        let native_attempts = durability.as_ref().and_then(|query| {
+            let snapshot = query.snapshot();
+            (!snapshot.overflowed).then_some([snapshot.ok, snapshot.err, snapshot.incomplete])
+        });
         Self {
             requests: requests.requests(),
-            allocations: acyclic_test_support::current_allocations(),
+            allocations: allocations_before
+                .zip(acyclic_test_support::current_allocations())
+                .map(|(before, after)| [before, after]),
+            native_attempts,
         }
     }
 }
@@ -133,18 +148,21 @@ pub(super) struct Observation {
     work: Work,
     coordinator_allocations: Option<[u64; 2]>,
     provider_requests: Option<[u64; 7]>,
+    native_attempts: Option<[u64; 3]>,
 }
 
 impl Measurements {
     pub(super) fn new(
         agents: usize,
         requests: RequestLedger,
+        durability: DurabilityQuery,
         recovery: &str,
         operations: &[Operation],
     ) -> Self {
         Self {
             agents,
             requests,
+            durability,
             recovery: recovery.into(),
             rows: BTreeMap::new(),
             operations: operations.to_vec(),
@@ -157,13 +175,13 @@ impl Measurements {
 
     pub(super) fn start(&self, requested_query: Option<RequestClass>) -> Before {
         Before {
-            counters: Counters::capture(&self.requests),
+            counters: Counters::capture(&self.requests, &self.durability),
             requested_query,
         }
     }
 
     pub(super) fn stop(&self, before: Before) -> Result<Observation> {
-        Self::stop_at(before, Counters::capture(&self.requests))
+        Self::stop_at(before, Counters::capture(&self.requests, &self.durability))
     }
 
     pub(super) fn stop_at(before: Before, after: Counters) -> Result<Observation> {
@@ -186,6 +204,20 @@ impl Measurements {
             .checked_sub(direct)
             .ok_or("requested query exceeds observed provider calls")?;
         let allocations = before.counters.allocations.zip(after.allocations);
+        let native_attempts = before
+            .counters
+            .native_attempts
+            .zip(after.native_attempts)
+            .map(|(before, after)| -> Result<[u64; 3]> {
+                let mut counts = [0; 3];
+                for index in 0..counts.len() {
+                    counts[index] = after[index]
+                        .checked_sub(before[index])
+                        .ok_or("native durability observer changed cohorts within an interval")?;
+                }
+                Ok(counts)
+            })
+            .transpose()?;
         Ok(Observation {
             // Request accounting observes the public provider boundary. It
             // does not infer physical syscalls, locks or transport traffic.
@@ -193,6 +225,7 @@ impl Measurements {
             // This allocator scope cannot observe native worker threads; keep
             // it diagnostic instead of qualifying the allocation dimension.
             coordinator_allocations: allocations.map(|(before, after)| {
+                let (before, after) = (before[1], after[0]);
                 [
                     after.count_total - before.count_total,
                     after.bytes_total - before.bytes_total,
@@ -207,6 +240,7 @@ impl Measurements {
                 requests.class(RequestClass::Token),
                 direct,
             ]),
+            native_attempts,
         })
     }
 
@@ -244,12 +278,14 @@ impl Measurements {
             work: Sample::new(operation),
             coordinator_allocations: Vec::new(),
             provider_requests: Vec::new(),
+            native_attempts: Vec::new(),
         });
         row.raw_ns.push(ns(elapsed));
         row.work.record(observation.work, &self.recovery)?;
         row.coordinator_allocations
             .push(observation.coordinator_allocations);
         row.provider_requests.push(observation.provider_requests);
+        row.native_attempts.push(observation.native_attempts);
         Ok(())
     }
 
@@ -283,6 +319,7 @@ impl Measurements {
                 work,
                 coordinator_allocations,
                 provider_requests,
+                native_attempts,
             } = row;
             let quantiles = Quantiles::new(&mut raw_ns.clone())?;
             let floor_ns = floors.compose(terms);
@@ -315,6 +352,9 @@ impl Measurements {
                 "provider_request_columns": ["data", "metadata", "list", "head", "lease", "token", "requested_query_dispatches"],
                 "provider_request_counts": provider_requests,
                 "control_request_scope": "public metadata/list/head/lease/token calls excluding exactly the original requested query; additional probes remain controls",
+                "native_attempt_columns": ["ok", "err", "incomplete"],
+                "native_attempt_counts": native_attempts,
+                "native_attempt_scope": "diagnostic completed observed native calls between the original counter boundaries; includes concurrent work; unobserved leaves and provider/group attribution remain unknown; excluded from durability_calls qualification",
             }))?;
             point.samples.push(work);
         }

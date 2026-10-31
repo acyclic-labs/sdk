@@ -142,7 +142,7 @@ pub(super) fn run(options: &Options) -> Result {
 
 async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) -> Result {
     std::fs::create_dir(root)?;
-    let fixture = Fixture::providers(root).await?;
+    let fixture = Fixture::providers(root, None).await?;
     let prepared = Box::pin(fixture.bound.prepare_root(
         &IntentId::try_from("root-crash-proof")?,
         fixture.root_request(id(0)?)?,
@@ -192,7 +192,7 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
     cut.require_faithful()?;
     drop(held);
     drop(fixture);
-    let reopened = Fixture::providers(root).await?;
+    let reopened = Fixture::providers(root, None).await?;
     let observation = reopened
         .stream
         .inspect_idempotency(original.idempotency_key.clone())
