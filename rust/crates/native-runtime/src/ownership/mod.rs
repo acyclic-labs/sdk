@@ -1,3 +1,7 @@
+use crate::sync::{
+    Condvar, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use crate::*;
 
 /// Shared lifetime token for native resources that must not outlive an external owner.

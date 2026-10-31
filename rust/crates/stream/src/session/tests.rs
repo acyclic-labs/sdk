@@ -84,8 +84,7 @@ async fn append(
 async fn next(
     output: &mut BoxStream<'static, Result<Frame, StreamError>>,
 ) -> Result<wire::SessionFrame, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(output.next().await
-        .ok_or("session ended")??.into_wire())
+    Ok(output.next().await.ok_or("session ended")??.into_wire())
 }
 
 #[tokio::test]
