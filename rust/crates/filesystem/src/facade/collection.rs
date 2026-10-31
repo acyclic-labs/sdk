@@ -158,6 +158,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         const BATCH: usize = 256;
         let provider = self.inner.objects.inner().inner().provider();
         let examined = u64::try_from(unmarked.len()).unwrap_or(u64::MAX);
+        let unmarked = referrers_first(provider.as_ref(), unmarked, cancellation).await?;
         let mut removed = 0_u64;
         for batch in unmarked.chunks(BATCH) {
             cancellation.check()?;
@@ -436,4 +437,73 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             .map_err(FsError::from)?;
         Ok(())
     }
+}
+
+/// Orders `unmarked` so every blob precedes the blobs it references.
+///
+/// A provider refuses to delete a blob another blob still references, so
+/// deleting in any other order leaves an unreachable chain for a later
+/// collection, one level per pass. In this order a single pass reclaims every
+/// unreachable blob, each deleted once: one head read per blob, and O(n + e)
+/// work over the references inside the set.
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+async fn referrers_first<P: acyclic_objects::Blobs + ?Sized>(
+    provider: &P,
+    unmarked: Vec<crate::Digest>,
+    cancellation: &CancellationToken,
+) -> Result<Vec<crate::Digest>, FsError> {
+    use std::collections::{HashMap, VecDeque};
+    let position = unmarked
+        .iter()
+        .enumerate()
+        .map(|(index, digest)| (*digest, index))
+        .collect::<HashMap<_, _>>();
+    let mut children = Vec::with_capacity(unmarked.len());
+    let mut referrers = vec![0_usize; unmarked.len()];
+    for digest in &unmarked {
+        cancellation.check()?;
+        let references = match provider
+            .head(acyclic_objects::Digest::from_bytes(digest.into_bytes()))
+            .await
+        {
+            Ok(head) => head.references,
+            // Already gone: it references nothing that is still stored.
+            Err(error) if error.code == acyclic_objects::wire::ErrorCode::NotFound => Vec::new(),
+            Err(error) => return Err(FsError::Object(ObjectStoreError::LogicalObjects(error))),
+        };
+        let inside = references
+            .iter()
+            .filter_map(|child| position.get(&crate::Digest::from_bytes(*child.as_bytes())))
+            .copied()
+            .collect::<Vec<_>>();
+        for child in &inside {
+            referrers[*child] += 1;
+        }
+        children.push(inside);
+    }
+    let mut ready = (0..unmarked.len())
+        .filter(|index| referrers[*index] == 0)
+        .collect::<VecDeque<_>>();
+    let mut order = Vec::with_capacity(unmarked.len());
+    let mut placed = vec![false; unmarked.len()];
+    while let Some(index) = ready.pop_front() {
+        placed[index] = true;
+        order.push(unmarked[index]);
+        for child in &children[index] {
+            referrers[*child] -= 1;
+            if referrers[*child] == 0 {
+                ready.push_back(*child);
+            }
+        }
+    }
+    // Content addressing admits no reference cycle; anything left is still
+    // offered, and the provider refuses it if it is referenced.
+    order.extend(
+        unmarked
+            .iter()
+            .zip(&placed)
+            .filter(|(_, placed)| !**placed)
+            .map(|(digest, _)| *digest),
+    );
+    Ok(order)
 }

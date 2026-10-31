@@ -127,6 +127,29 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         cache: Option<&Mutex<CachedProofs>>,
         authority_root: Option<ObjectId>,
     ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
+        self.prove_reusing(generation_root, cache, None, authority_root)
+            .await
+    }
+
+    /// A fork extends its source generation's published proof, kept in the
+    /// source volume's slot; the fork's own proof goes to its own volume.
+    pub(crate) async fn prove_fork(
+        &mut self,
+        generation_root: ObjectId,
+        cache: Option<&Mutex<CachedProofs>>,
+        source: crate::VolumeId,
+    ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
+        self.prove_reusing(generation_root, cache, Some(source), None)
+            .await
+    }
+
+    async fn prove_reusing(
+        &mut self,
+        generation_root: ObjectId,
+        cache: Option<&Mutex<CachedProofs>>,
+        source: Option<crate::VolumeId>,
+        authority_root: Option<ObjectId>,
+    ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
         let store = self.store;
         let epochs = store.collection().map(|collection| collection.epochs());
         // Before the first object read: a collection begun later makes this proof stale.
@@ -144,9 +167,13 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         let generation_id = GenerationId::from_root(generation_root);
         let root_object_bytes = self.object_bytes;
         let slot = self.proof_slot(cache, root.0.volume_id)?;
-        let previous = slot
+        let base = match source {
+            Some(source) => self.proof_slot(cache, source)?,
+            None => slot.clone(),
+        };
+        let previous = base
             .as_ref()
-            .and_then(|slot| slot.current(epochs))
+            .and_then(|base| base.current(epochs))
             .filter(|cached| reusable(&root.0, cached, self.limits, authority_root));
         if let Some(previous) = previous {
             let increment = match self.prove_increment(&root.0, &previous).await {
@@ -899,10 +926,12 @@ fn reusable(
     limits: ClosureLimits,
     authority_root: Option<ObjectId>,
 ) -> bool {
+    // A named parent is content-addressed, so it may be another volume's: a
+    // fork's source. FILTERED_FORK constrains the root's parents, not its closure.
     cached.limits == limits
-        && root.volume_id == cached.root.volume_id
         && root.root_file_id == cached.root.root_file_id
-        && root.required_features == cached.root.required_features
+        && root.continuation_features() == cached.root.continuation_features()
         && (root.parents.as_slice() == [cached.generation_id]
-            || authority_root.is_some_and(|root| root == cached.generation_id.object_id()))
+            || (root.volume_id == cached.root.volume_id
+                && authority_root.is_some_and(|root| root == cached.generation_id.object_id())))
 }

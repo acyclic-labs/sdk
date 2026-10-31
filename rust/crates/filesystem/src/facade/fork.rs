@@ -24,7 +24,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         mut paths: Owned<Option<Vec<String>>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(Owned<VerifiedPublication<A, O>>, ObjectId), WorkspaceError> {
+    ) -> Result<
+        (
+            Owned<VerifiedPublication<A, O>>,
+            ObjectId,
+            Option<crate::kernel::closure::PendingProof>,
+        ),
+        WorkspaceError,
+    > {
         let config = source.workspace.volume.config;
         accounting.check()?;
         let proven_at = self.inner.objects.collection_sweeps();
@@ -86,17 +93,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await?;
         fork_root.retire(accounting)?;
-        let proof = self
-            .publication_proof(
+        let (proof, pending) = self
+            .proof_reusing(
                 generation_root,
                 proven_at,
                 destination_id.volume_id(),
+                Some(source.workspace.volume.id),
                 config,
                 accounting,
                 cancellation,
             )
             .await?;
-        Ok((proof, source_object))
+        Ok((proof, source_object, pending))
     }
     pub(super) async fn publication_proof(
         &self,
@@ -107,26 +115,79 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Owned<VerifiedPublication<A, O>>, FsError> {
+        self.proof_reusing(
+            generation_root,
+            proven_at,
+            volume_id,
+            None,
+            config,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map(|(proof, _)| proof)
+    }
+
+    /// A fork's proof extends `fork_of`'s published proof of its source; the
+    /// returned proof becomes reusable once the fork's volume is created.
+    async fn proof_reusing(
+        &self,
+        generation_root: ObjectId,
+        proven_at: u64,
+        volume_id: VolumeId,
+        fork_of: Option<VolumeId>,
+        config: VolumeConfig,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        (
+            Owned<VerifiedPublication<A, O>>,
+            Option<crate::kernel::closure::PendingProof>,
+        ),
+        FsError,
+    > {
+        use crate::kernel::closure::{ProofContext, ProofMeter, closure_error};
         let limits = closure_limits(config);
-        let (proof, allocation) = match accounting {
+        let cache = Some(&self.inner.publication_proof.inner);
+        let (proof, allocation, pending) = match (accounting, fork_of) {
             #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => {
-                let (proof, mut allocation) = crate::kernel::closure::ProofContext::new(
+            (KernelAccounting::NativeOriginal { work: original, .. }, fork_of) => {
+                let mut context = ProofContext::new(
                     &self.inner.objects,
                     limits,
-                    crate::kernel::closure::ProofMeter::Native {
+                    ProofMeter::Native {
                         original,
                         cancellation,
                     },
-                )
-                .prove(generation_root)
-                .await?;
+                );
+                let (proof, mut allocation, pending) = match fork_of {
+                    Some(source) => context.prove_fork(generation_root, cache, source).await?,
+                    None => {
+                        let (proof, allocation) = context.prove(generation_root).await?;
+                        (proof, allocation, None)
+                    }
+                };
                 (
                     proof,
                     KernelOwnedAllocation::NativeOriginal(allocation.take_native()?),
+                    pending,
                 )
             }
-            _ => {
+            (accounting, Some(source)) => {
+                let closure = |error| FsError::Closure(closure_error(error));
+                let meter = ProofMeter::standalone(accounting.remaining()?, cancellation)
+                    .map_err(closure)?;
+                let result = ProofContext::new(&self.inner.objects, limits, meter.clone())
+                    .prove_fork(generation_root, cache, source)
+                    .await;
+                merge_creation_backend_work(accounting, meter.work())?;
+                let (proof, guard, pending) = result.map_err(closure)?;
+                drop(guard);
+                let bytes = usize_to_u64(proof.objects.capacity() * size_of::<ObjectId>());
+                let allocation = accounting.claim_owned(bytes, 0)?;
+                (proof, allocation, pending)
+            }
+            (accounting, None) => {
                 let result = prove_generation_closure(
                     &self.inner.objects,
                     generation_root,
@@ -143,7 +204,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 let proof = result.map_err(|failure| FsError::from(failure.error))?;
                 let bytes = usize_to_u64(proof.objects.capacity() * size_of::<ObjectId>());
                 let allocation = accounting.claim_owned(bytes, 0)?;
-                (proof, allocation)
+                (proof, allocation, None)
             }
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -159,18 +220,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if let KernelOwnedAllocation::NativeOriginal(guard) = &mut allocation {
             guard.release(root_bytes)?;
         }
-        Ok(Owned::new(
-            VerifiedPublication {
-                filesystem: self.clone(),
-                generation_root,
-                volume_id,
-                limits,
-                objects: proof.objects,
-                proven_at,
-                _allocation: KernelOwnedAllocation::Standalone,
-            },
-            allocation,
-            bytes,
+        Ok((
+            Owned::new(
+                VerifiedPublication {
+                    filesystem: self.clone(),
+                    generation_root,
+                    volume_id,
+                    limits,
+                    objects: proof.objects,
+                    proven_at,
+                    _allocation: KernelOwnedAllocation::Standalone,
+                },
+                allocation,
+                bytes,
+            ),
+            pending,
         ))
     }
     /// Forks one immutable generation under its publication guard and work context.
@@ -214,7 +278,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 self.workspace_id_for_name(&destination, accounting, cancellation)?;
             let volume_id = destination_id.volume_id();
             let config = source.workspace.volume.config;
-            let (fork_root, source_root) = self
+            let (fork_root, source_root, pending) = self
                 .materialize_forked_generation_root(
                     source,
                     destination_id,
@@ -260,6 +324,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 || created.initial_generation_root != original_root
             {
                 return Err(WorkspaceError::from(FsError::CreationRejected).into());
+            }
+            if let Some(pending) = pending {
+                pending.created();
             }
             Ok(crate::Workspace {
                 name: destination,

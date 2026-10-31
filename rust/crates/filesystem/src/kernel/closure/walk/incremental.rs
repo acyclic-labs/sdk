@@ -275,6 +275,10 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
     ) -> Result<(), crate::FsError> {
         use crate::kernel::persistent_btree::Page;
         Self::require_kind(root, F::kind())?;
+        // An unbounded root equal to the proven one has no boundary to recheck.
+        if before == Some(root) {
+            return Ok(());
+        }
         let mut pending: ProofVec<'_, (PendingPage<F::Key>, Option<ObjectId>)> =
             ProofVec::new(&self.meter);
         pending.push(((root, None, None, false), before))?;

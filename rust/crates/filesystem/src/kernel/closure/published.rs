@@ -76,6 +76,11 @@ impl<T> Unpublished<T> {
         }
     }
 
+    /// Makes a new volume's proof of its creating generation reusable.
+    pub(crate) fn created(self) {
+        self.install::<true, true>(Sequence::new(1));
+    }
+
     fn install<const ORDERED: bool, const REFRESH: bool>(self, sequence: Sequence) {
         let mut published = self
             .slot

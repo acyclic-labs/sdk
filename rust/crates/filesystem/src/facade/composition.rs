@@ -90,7 +90,7 @@ where
         admitted?;
         let destination_id =
             self.workspace_id_for_name(&fork.destination, accounting, cancellation)?;
-        let (fork_root, source_root) = self
+        let (fork_root, source_root, _) = self
             .materialize_forked_generation_root(
                 source,
                 destination_id,
