@@ -86,6 +86,21 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
             2,
             "retrying wrapper hid attempts"
         );
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            let before = query.snapshot();
+            crate::flush_file_data(&file)?;
+            crate::flush_file_all(&file)?;
+            assert_eq!(query.snapshot().ok - before.ok, 2);
+            #[cfg(unix)]
+            let invalid = std::fs::File::open("/dev/null")?;
+            #[cfg(windows)]
+            let invalid = std::fs::File::open(&path)?;
+            let original = invalid.sync_all().expect_err("descriptor cannot flush");
+            let observed = crate::flush_file_all(&invalid).expect_err("descriptor cannot flush");
+            assert_eq!(observed.raw_os_error(), original.raw_os_error());
+            assert_eq!(query.snapshot().err - before.err, 1);
+        }
         Ok(())
     })?;
     let runtime = crate::coordination_runtime()?;
@@ -107,6 +122,9 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
         });
         job.await?
     })?;
+    #[cfg(any(windows, target_os = "linux"))]
+    assert_eq!(query.snapshot().ok, 5);
+    #[cfg(not(any(windows, target_os = "linux")))]
     assert_eq!(query.snapshot().ok, 3);
     let evidence = capture
         .0
