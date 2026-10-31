@@ -77,8 +77,6 @@ mod pipeline;
 pub use pipeline::*;
 mod source;
 pub use source::*;
-mod compaction_stage;
-pub use compaction_stage::*;
 mod allocations;
 use allocations::append_context_messages;
 use allocations::context_contract;

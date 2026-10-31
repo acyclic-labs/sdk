@@ -179,16 +179,6 @@ async fn explicit_base_transforms_reload_and_preserve_current_input() -> Result<
             .await
             .is_err()
     );
-    assert!(
-        pipeline
-            .reload(ContextPipeline::new([Arc::new(CompactionStage {
-                max_messages: 0,
-                summary: None,
-                retention: CompactionRetention::default()
-            })
-                as Arc<dyn ContextStage>]))
-            .is_err()
-    );
     Ok(())
 }
 
