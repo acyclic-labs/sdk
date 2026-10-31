@@ -187,17 +187,20 @@ impl TurnExecutors for NativeTurns {
 #[tokio::test]
 async fn parent_and_fork_expose_original_machine_results_through_session_files() -> Result {
     use acyclic_harness_client::ReadTarget;
-    let bound = binding_with(Arc::new(NativeTurns {
-        issuer: AuthorityRoot::new(
-            "machine-results",
-            [47; 32],
-            Authority {
-                kind: AggregateKind::Task,
-                id: "machine-results".into(),
-            },
-        ),
-        directories: Mutex::new(Vec::new()),
-    }))?;
+    let bound = binding_with(
+        Arc::new(NativeTurns {
+            issuer: AuthorityRoot::new(
+                "machine-results",
+                [47; 32],
+                Authority {
+                    kind: AggregateKind::Task,
+                    id: "machine-results".into(),
+                },
+            ),
+            directories: Mutex::new(Vec::new()),
+        }),
+        crate::approvals::ApprovalPolicy::accept_all("machine-results"),
+    )?;
     let id = AgentId::from_bytes([31; 16]);
     let fresh = [
         (PRIVATE_VOLUME, VolumeClass::AgentPrivate),

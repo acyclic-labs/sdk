@@ -158,11 +158,12 @@ async fn call(
 
 fn binding()
 -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
-    binding_with(Arc::new(Never))
+    binding_with(Arc::new(Never), Default::default())
 }
 
 fn binding_with(
     executors: Arc<dyn TurnExecutors>,
+    approval_policy: crate::approvals::ApprovalPolicy,
 ) -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     let stream = Arc::new(Counted::new(MemoryStream::default()));
     let objects = acyclic_objects::MemoryObjects::memory();
@@ -193,7 +194,7 @@ fn binding_with(
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
-            approval_policy: Default::default(),
+            approval_policy,
         },
     )?)
 }
