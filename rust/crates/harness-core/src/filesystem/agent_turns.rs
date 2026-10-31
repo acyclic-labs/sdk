@@ -794,32 +794,37 @@ where
     async fn entries(
         &self,
         agent: &AgentState,
-        from: u64,
+        mut from: u64,
         count: u64,
     ) -> Result<Vec<ConversationEntry>> {
         if count == 0 {
             return Ok(Vec::new());
         }
+        let end = from
+            .checked_add(count)
+            .ok_or_else(|| Error::Invalid("conversation range overflows".into()))?;
         let path = agent.path.conversation().map_err(agent_error)?;
-        let records = match self
-            .stream
-            .read(ReadRequest {
-                key: None,
-                path,
-                from,
-                limit: u32::try_from(count).unwrap_or(u32::MAX),
-                at_least: Default::default(),
-            })
-            .await
-        {
-            Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
-        records
-            .iter()
-            .map(|record| ConversationEntry::decode(&record.value).map_err(agent_error))
-            .collect()
+        let mut entries = Vec::new();
+        while from < end {
+            let limit = u32::try_from(end - from).unwrap_or(u32::MAX);
+            let through = from + u64::from(limit);
+            let records = self
+                .stream
+                .read(ReadRequest {
+                    key: None,
+                    path: path.clone(),
+                    from,
+                    limit,
+                    at_least: Default::default(),
+                })
+                .await?;
+            let mut records = acyclic_stream::pages::ExactRange::new(records, from..through)?;
+            while let Some(record) = records.try_next().await? {
+                entries.push(ConversationEntry::decode(&record.value).map_err(agent_error)?);
+            }
+            from = through;
+        }
+        Ok(entries)
     }
 }
 
@@ -870,7 +875,7 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
         let mut from = selected.range.start;
         while from < selected.range.end {
             let limit = u32::try_from(selected.range.end - from).unwrap_or(u32::MAX);
-            let mut records = stream
+            let records = stream
                 .read(ReadRequest {
                     key: None,
                     path: selected.source.inbox().map_err(agent_error)?,
@@ -880,12 +885,8 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
                 })
                 .await?;
             let end = from + u64::from(limit);
+            let mut records = acyclic_stream::pages::ExactRange::new(records, from..end)?;
             while let Some(record) = records.try_next().await? {
-                if record.sequence != from || from >= end {
-                    return Err(Error::Invalid(
-                        "notice source range is not contiguous".into(),
-                    ));
-                }
                 if let crate::agent::InboxRecord::Notice { notice, .. } =
                     crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?
                     && !notice.wake
@@ -894,13 +895,8 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
                         .push(notice)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
                 }
-                from += 1;
             }
-            if from != end {
-                return Err(Error::Invalid(
-                    "notice source ended before its frozen frontier".into(),
-                ));
-            }
+            from = end;
         }
     }
     let input = match input {

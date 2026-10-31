@@ -2,7 +2,67 @@
 //! the cursor retains at most one caller-budgeted page.
 
 use crate::{ProviderPlatform, ProviderTask, Record, StreamError};
-use std::future::Future;
+use std::{
+    future::Future,
+    ops::Range,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+pin_project_lite::pin_project! {
+    /// A required exclusive range over an original record source. Unlike an
+    /// at-most read, early EOF is a typed failure, never a shorter history.
+    /// The caller supplies the original authorized source and pinned range;
+    /// this adapter creates neither a source, a revision nor a read.
+    /// Each poll delegates at most once and keeps only two cursors and one
+    /// terminal bit beside the source. It allocates and copies no records.
+    pub struct ExactRange<S> {
+        #[pin]
+        source: S,
+        next: u64,
+        end: u64,
+        done: bool,
+    }
+}
+
+impl<S> ExactRange<S> {
+    /// Retains the source without polling it. Empty ranges require no source
+    /// event. Reversed ranges refuse before any source work.
+    pub fn new(source: S, range: Range<u64>) -> Result<Self, StreamError> {
+        if range.start > range.end {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(Self {
+            source,
+            next: range.start,
+            end: range.end,
+            done: false,
+        })
+    }
+}
+
+impl<S: futures::Stream<Item = Result<Record, StreamError>>> futures::Stream for ExactRange<S> {
+    type Item = Result<Record, StreamError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        if *this.done || *this.next == *this.end {
+            return Poll::Ready(None);
+        }
+        let result = match this.source.poll_next(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Some(Ok(record))) if record.sequence == *this.next => {
+                // next < end, so increment cannot overflow even at u64::MAX.
+                *this.next += 1;
+                return Poll::Ready(Some(Ok(record)));
+            }
+            Poll::Ready(Some(Err(error))) => Err(error),
+            Poll::Ready(_) => Err(StreamError::Unavailable),
+        };
+        *this.done = true;
+        Poll::Ready(Some(result))
+    }
+}
 
 /// A pinned history cut, including the inherited cuts of every ancestor.
 /// Pages are nonempty and contiguous, begin at `after` (the next unread sequence), and
@@ -110,3 +170,7 @@ impl<S: PageSource> PinnedCursor<S> {
         Ok(Some(record))
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "pages_tests.rs"]
+mod tests;
