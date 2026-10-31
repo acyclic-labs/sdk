@@ -886,6 +886,7 @@ version = "0.2.0"
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections",
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-test-support",

@@ -26,6 +26,7 @@ mod tests {
             .operation_claims()
             .claim([3; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
             .unwrap()
+            .into_owner()
             .unwrap();
         assert!(
             second
@@ -36,7 +37,8 @@ mod tests {
                     |_, _| -> Result<(), ()> { panic!("duplicate allocated storage") }
                 )
                 .unwrap()
-                .is_none()
+                .into_owner()
+                .is_err()
         );
         drop(owned);
         assert!(
@@ -44,7 +46,8 @@ mod tests {
                 .operation_claims()
                 .claim([3; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
 
         let authority = std::sync::Arc::new(crate::MemoryAuthorityStore::default());
@@ -54,6 +57,7 @@ mod tests {
             .operation_claims()
             .claim([4; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
             .unwrap()
+            .into_owner()
             .unwrap();
         assert!(
             second
@@ -64,7 +68,8 @@ mod tests {
                     |_, _| -> Result<(), ()> { panic!("duplicate allocated storage") }
                 )
                 .unwrap()
-                .is_none()
+                .into_owner()
+                .is_err()
         );
         drop(owned);
     }
@@ -78,6 +83,7 @@ mod tests {
             .operation_claims()
             .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
             .unwrap()
+            .into_owner()
             .unwrap();
         let allocations = Cell::new(0);
         assert!(
@@ -92,7 +98,8 @@ mod tests {
                     }
                 )
                 .unwrap()
-                .is_none()
+                .into_owner()
+                .is_err()
         );
         assert_eq!(allocations.get(), 0);
         assert!(
@@ -100,14 +107,16 @@ mod tests {
                 .operation_claims()
                 .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
         assert!(
             alias
                 .operation_claims()
                 .claim([2; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
         drop(claim);
         assert!(
@@ -115,7 +124,8 @@ mod tests {
                 .operation_claims()
                 .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
     }
 
@@ -131,7 +141,8 @@ mod tests {
             claims
                 .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
-                .is_some()
+                .into_owner()
+                .is_ok()
         );
     }
 }
@@ -151,13 +162,14 @@ mod models {
             let claims = Arc::new(OperationClaims::default());
             let active = Arc::new(AtomicUsize::new(0));
             let threads: Vec<_> = (0..2)
-                .map(|_, _| {
+                .map(|_| {
                     let claims = claims.clone();
                     let active = active.clone();
                     loom::thread::spawn(move || {
-                        if let Some(claim) = claims
+                        if let Ok(claim) = claims
                             .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                             .unwrap()
+                            .into_owner()
                         {
                             assert_eq!(active.fetch_add(1, Ordering::SeqCst), 0);
                             loom::thread::yield_now();
@@ -175,7 +187,8 @@ mod models {
                 claims
                     .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                     .unwrap()
-                    .is_some()
+                    .into_owner()
+                    .is_ok()
             );
         });
     }
