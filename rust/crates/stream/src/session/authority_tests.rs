@@ -497,7 +497,14 @@ fn live_session(
             destination_node: "node".into(),
             receive_bytes: 1_000_000,
             receive_frames: 100,
-            credentials: vec![bytes.into()],
+        }),
+    )))?;
+    sender.unbounded_send(Ok(frame(
+        0,
+        0,
+        Body::Credential(wire::SessionCredential {
+            slot: 0,
+            credential: bytes.into(),
         }),
     )))?;
     sender.unbounded_send(Ok(frame(
