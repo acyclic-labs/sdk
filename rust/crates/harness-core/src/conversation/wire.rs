@@ -3,7 +3,7 @@
 //! Wire bodies persist as exact UTF-8 strings. Their nested JSON never becomes
 //! a second decoded tree, and unknown provider fields remain opaque bytes.
 use crate::heap_layout::{Alloc, HeapLayout, JsonLayout};
-pub use acyclic_model_render::{Family, ItemKind, Provenance, WireItem};
+pub use acyclic_model_render::{Family, ItemKind, Notice, Provenance, WireItem};
 use serde_json::value::RawValue;
 
 impl HeapLayout for Family {
@@ -11,6 +11,15 @@ impl HeapLayout for Family {
 }
 impl HeapLayout for ItemKind {
     const LAYOUT: &'static JsonLayout = &JsonLayout::Scalar;
+}
+impl HeapLayout for Notice {
+    const LAYOUT: &'static JsonLayout = &JsonLayout::record(&[
+        ("source", String::LAYOUT),
+        ("kind", String::LAYOUT),
+        ("body", serde_json::Value::LAYOUT),
+        ("wake", bool::LAYOUT),
+        ("coalesce_key", <Option<String>>::LAYOUT),
+    ]);
 }
 impl HeapLayout for Provenance {
     const LAYOUT: &'static JsonLayout = &JsonLayout::record(&[
