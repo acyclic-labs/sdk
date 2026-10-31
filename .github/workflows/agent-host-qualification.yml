@@ -163,7 +163,20 @@ jobs:
 
       - name: Run host manifest and shim contracts
         shell: bash
-        run: bun run --cwd plugin/tests/hosts test:shim
+        run: |
+          mkdir -p "$ACYCLIC_E2E_RECEIPT_DIR"
+          cargo build --locked -p acyclic-plugin --bin acyclic --message-format=json > "$ACYCLIC_E2E_RECEIPT_DIR/shim-cargo.jsonl"
+          shimBinary="$(node --input-type=module - "$ACYCLIC_E2E_RECEIPT_DIR/shim-cargo.jsonl" <<'JS'
+          import {readFileSync} from 'node:fs';
+          import assert from 'node:assert/strict';
+          const records=readFileSync(process.argv[2],'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line));
+          const matches=records.filter(row=>row.reason==='compiler-artifact'&&row.target?.name==='acyclic'&&row.target.kind.includes('bin')&&!row.profile?.test&&row.executable);
+          assert.equal(matches.length,1,'step=admit shim executable; recovery=cargo build --locked -p acyclic-plugin --bin acyclic --message-format=json');
+          console.log(matches[0].executable);
+          JS
+          )"
+          export ACYCLIC_TEST_BINARY="$shimBinary"
+          bun run --cwd plugin/tests/hosts test:shim
 
       - name: Build normal host executables
         if: runner.os == 'Linux'

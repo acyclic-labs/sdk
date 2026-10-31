@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import * as childProcess from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { mock, test } from "bun:test";
+import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
 
 // Run this file in its own Bun process: only the harness request boundary is
 // stubbed. The child and its failed-spawn/pipe event ordering are native Node APIs.
@@ -19,7 +20,7 @@ function extension(directory: string): string {
 }
 
 test("installed Pi failed spawn closes custody and shutdown without adjacent assets or an exit event", async () => {
-  const directory = mkdtempSync(join(import.meta.dir, ".pi-bridge-"));
+  const directory = hostFixtureDirectory('pi-bridge-');
   const missing = join(directory, "absent-native-bridge");
   let closed: Promise<void> | undefined;
   let child: childProcess.ChildProcess | undefined;
@@ -32,9 +33,14 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
     const binary = process.env.ACYCLIC_TEST_BINARY;
     assert(binary && isAbsolute(binary), `step=admit Pi installer executable; recovery=${recovery}`);
     const path = join(directory, "acyclic.ts");
-    const packageRoot = join(directory, "package");
-    mkdirSync(join(packageRoot, "pi"), {recursive: true});
-    writeFileSync(join(packageRoot, "pi/index.ts"), readFileSync(new URL("../../pi/index.ts", import.meta.url)));
+    const assembled = join(directory, "package");
+    const packageRoot = join(assembled, "plugin");
+    const packaged = native.spawnSync(process.execPath, [fileURLToPath(new URL("../../scripts/package.mjs", import.meta.url)),
+      "--binary", binary, "--out", assembled], {encoding: "utf8", windowsHide: true});
+    assert.equal(packaged.status, 0, `step=assemble installed Pi package: ${packaged.stderr}; recovery=${recovery}`);
+    const client = join(packageRoot, "shared/mcp-client.mjs");
+    const clientBytes = readFileSync(client);
+    rmSync(client);
     const install = () => native.spawnSync(binary, ["install", "pi", "--plugin-root", packageRoot, "--settings", path],
       {encoding: "utf8", windowsHide: true});
     // A missing closure member must refuse before replacing the owned file.
@@ -45,13 +51,12 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
     assert.notEqual(refusedInstall.status, 0);
     assert.match(refusedInstall.stderr, /step=admit Pi coordination asset/);
     assert.equal(readFileSync(path, "utf8"), previous);
-    mkdirSync(join(packageRoot, "shared"));
-    writeFileSync(join(packageRoot, "shared/mcp-client.mjs"), readFileSync(new URL("../../shared/mcp-client.mjs", import.meta.url)));
+    writeFileSync(client, clientBytes);
     const installed = install();
     assert.equal(installed.status, 0, `step=install complete Pi extension: ${installed.stderr}; recovery=${recovery}`);
     // Only the single published extension survives. Its import and real native
     // failed-spawn lifecycle below must work without the source package.
-    rmSync(packageRoot, {recursive: true});
+    rmSync(assembled, {recursive: true});
     mock.module("node:child_process", () => ({ ...native,
       execFile: (_program: string, _args: string[], _options: unknown, callback: Function) => {
         queueMicrotask(() => callback(null, JSON.stringify({ task: "fixture-task", cwd: directory })));
