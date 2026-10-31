@@ -63,13 +63,16 @@ fn persistent_histories_preserve_prefixes_bounded_paths_and_original_custody()
                 Ok(())
             },
         )
-        .map_err(|_| "immutable prefix histories differ from original ordered facts")?;
+        .map_err(|error| {
+            eprintln!("{error}");
+            "immutable prefix histories differ from original ordered facts"
+        })?;
 
     let mut work = Work {
         observe_retirement: true,
         ..Work::default()
     };
-    let mut result = Ok(());
+    let mut result: Result<(), &'static str> = Ok(());
     let measured = acyclic_test_support::measure(|| {
         result = (|| {
             let mut history = PersistentIndex::default();
