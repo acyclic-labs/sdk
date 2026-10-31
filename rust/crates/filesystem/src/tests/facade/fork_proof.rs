@@ -167,6 +167,8 @@ async fn fork_proof_work(
     drop(fs);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = &original {
+        // The final receipt retires the ledger's sole remaining proof counter.
+        original.receipt().verify(B)?;
         assert_eq!(Some(original.live_allocation_bytes()), baseline);
     }
     Ok(WorkCounters {
