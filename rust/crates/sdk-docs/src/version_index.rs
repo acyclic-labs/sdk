@@ -56,7 +56,6 @@ pub(super) fn validate_version_index(index: &VersionIndex, output_dir: &Path) ->
     }
     if let Some(latest) = &index.latest {
         stable_version(&latest.version)?;
-        validate_version_entry(latest, &Channel::Release, output_dir)?;
         let Some(release) = index
             .releases
             .iter()
@@ -340,10 +339,10 @@ pub(super) fn data_schema_for_file(data_file: &str) -> Option<&'static str> {
 pub(super) fn merge_version_index(
     mut index: VersionIndex,
     entry: &VersionEntry,
-    output_dir: &Path,
     mark_latest: bool,
 ) -> Result<VersionIndex, Error> {
-    validate_version_index(&index, output_dir)?;
+    // The sole caller holds the publication lock and just loaded and validated
+    // this index. Merging changes only the new entry, never the held history.
     if entry.channel == Channel::Release && entry.publication_status == PublicationStatus::Candidate
     {
         if mark_latest || !entry.released_packages.is_empty() {

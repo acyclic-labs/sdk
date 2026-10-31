@@ -133,7 +133,7 @@ with verify, Streams, A5 and A6 before implementing adapters.
 3. PageWindow proptest/DST uses an independent ordered exclusive-cursor sequence,
    forward/reverse eviction, overlaps, duplicate keys, epoch/reset and concurrent
    requests. Actual old production loses b in [b,c] -> [c,d] -> [a,c], and allocates
-   100 arrays per 100 unchanged reads. Before receipts already admitted on bb2.
+   100 arrays per 100 unchanged reads. Before receipts already admitted on Linux.
 4. Real generated WASM in Node and Bun asserts the same transitions, typed errors,
    BigInt widths and callback failures. CLI/library adapters exercise the Rust API.
    Builder tests cover every preset and rejected incomplete/unauthorized setup.

@@ -1,6 +1,6 @@
 # A4 Actors: rb-actors contract sketch and hosted join
 
-2026-10-26. Single Actors owner across Cloud and SDK; supersedes the retired b-runtime owner mapping, not its adopted contract. Source review: Q:/lanes/cloud/rb-actors/hostability-response.md and package-execution-seam.md. Cloud work starts on rb/actors-a4-20261026 from origin/main 01317365260add52cb8c76885ae9c5b1b10f1777; #6635 head remains unchanged. The api/b-runtime.md Handler/Transition sketch is now adopted; the SDK implementation handover is adopted at signed 4056b65d72 in Q:/wt/rb-actors-sdk (branch codex/rb-actors-a4). This is a provisional logical contract, not a compiled SDK signature or a hosted success receipt.
+2026-10-26. Single Actors owner across Cloud and SDK; supersedes the retired b-runtime owner mapping, not its adopted contract. Source review:  and package-execution-seam.md. Cloud work starts on rb/actors-a4-20261026 from origin/main 01317365260add52cb8c76885ae9c5b1b10f1777; #6635 head remains unchanged. The api/b-runtime.md Handler/Transition sketch is now adopted; the SDK implementation handover is adopted at signed 4056b65d72 in  (branch codex/rb-actors-a4). This is a provisional logical contract, not a compiled SDK signature or a hosted success receipt.
 
 ## Public shape
 
@@ -21,7 +21,7 @@ The current installed require_operation checks account and operation family; sig
 2. Version the actual positional Raft/storage encoding. Reuse all-voter rolling format gate (lib/authority/src/rolling.rs:63); retain preceding-release decoder/fixture and keep writes readable until all voters support the new shape. No unconditional extra positional fields or new command variant sent to old voters. Do not claim no customer data permits quorum-breaking rollout.
 3. Integrate SDK package engine with existing admitted executor/session path and remove the fixture authority from production consumption. Keep request/heap admission and retained restore negative controls; add direct missing-grant, missing-custody, stale heap/config/term and late-output checks for the new join.
 4. Route append wakes through current node-wide session, durable cursor replay and subscribe/read/recheck at park/hibernate/reconnect. Missing paths return NotFound. Root-aware inherited notifications come from rx-hostability, not another Actors follow implementation.
-5. Atomic alarm generation and checkpoint recovery cuts, takeover, set/fire/replace/clear, pause/resume/update/hibernate, lost ack and retained restart run through one shared suite. Production registration concurrency primitive gets a concurrency check and omitted-recheck negative control. Scope new builds to changed crates on bb2 with admission and <10 min jobs.
+5. Atomic alarm generation and checkpoint recovery cuts, takeover, set/fire/replace/clear, pause/resume/update/hibernate, lost ack and retained restart run through one shared suite. Production registration concurrency primitive gets a concurrency check and omitted-recheck negative control. Scope new builds to changed crates on Linux with admission and <10 min jobs.
 
 ## Costs and deletions
 

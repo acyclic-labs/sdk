@@ -10,10 +10,10 @@ refusals and deterministic replay. The assertions accept any `ModelProvider` and
 contain no provider-specific branches. Each complete fixture family has all eight
 cases; missing real captures fail qualification.
 
-Run on bb2 from the lane worktree:
+Run on Linux from the checkout:
 
 ```powershell
-pwsh -NoProfile -File Q:/lanes/bs.ps1 cargo test -p acyclic-conformance --features inference
+cargo test -p acyclic-conformance --features inference
 ```
 
 `inference-qualify PATH/manifest.json [...]` checks unmodified captured HTTP bodies,

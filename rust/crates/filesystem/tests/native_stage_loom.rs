@@ -1,4 +1,4 @@
-//! Dedicated command: cargo rustc --test native_stage_loom ... --features model-checking -- --cfg loom.
+//! Build the unified `main` test with cfg(loom), then select `native_stage_loom::`.
 #![cfg(loom)]
 
 mod stage_state {
@@ -13,8 +13,7 @@ mod stage_state {
         }
     }
 }
-#[path = "../src/sync.rs"]
-mod sync;
+use crate::sync;
 
 use loom::sync::{Arc, Mutex};
 use stage_state::StageState;

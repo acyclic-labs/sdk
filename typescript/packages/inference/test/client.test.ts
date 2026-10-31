@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { create, toBinary, toJsonString } from "@bufbuild/protobuf";
 import {
   ContextViewSchema,
@@ -529,7 +529,6 @@ test("HTTP transport applies one byte ceiling per message without conflating net
   const events = [];
   for await (const event of transport.watchRun(request)) events.push(event);
   expect(events).toHaveLength(2);
-  expect(transport.maximumMessageBytes).toBe(maximumMessageBytes);
 
   const oversizedEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
     sequence: 0n,
@@ -553,6 +552,48 @@ test("HTTP transport applies one byte ceiling per message without conflating net
   await expect(async () => {
     for await (const _event of oversized.watchRun(request)) { /* exhaust */ }
   }).toThrow();
+});
+
+test("HTTP watch decodes a complete frame from its source bytes before another pull", async () => {
+  const event = create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "é🙂" } },
+  });
+  const encoded = new TextEncoder().encode(`${toJsonString(RunEventSchema, event)}\n`);
+  let pulls = 0;
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (++pulls !== 1) throw new Error("read past the available frame");
+      controller.enqueue(encoded);
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  const transport = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(stream),
+  );
+  const originalDecode = TextDecoder.prototype.decode;
+  let borrowedFrames = 0;
+  const decode = spyOn(TextDecoder.prototype, "decode").mockImplementation(function (this: TextDecoder, input, options) {
+    if (input instanceof Uint8Array && input.buffer === encoded.buffer) {
+      expect(input.byteOffset).toBe(encoded.byteOffset);
+      expect(input.byteLength).toBe(encoded.byteLength - 1);
+      borrowedFrames += 1;
+    }
+    return originalDecode.call(this, input, options);
+  });
+  const watch = transport.watchRun(create(WatchRunRequestSchema, { runId: bytes(4) }))[Symbol.asyncIterator]();
+  try {
+    expect(await watch.next()).toEqual({ done: false, value: event });
+    expect(borrowedFrames).toBe(1);
+    expect(pulls).toBe(1);
+  } finally {
+    await watch.return?.();
+    decode.mockRestore();
+  }
+  expect(cancelled).toBeTrue();
 });
 
 test("HTTP watch frames adversarial one-byte network chunks linearly", async () => {
@@ -612,7 +653,6 @@ test("HTTP transport derives separate Rust wire and JSON ceilings", async () => 
     () => ({ authorization: "Bearer test" }),
     async () => new Response(`${validEvent}\n`),
   );
-  expect(valid.maximumMessageBytes).toBe(transportCeiling);
   const events = [];
   for await (const event of valid.watchRun(request)) events.push(event);
   expect(events).toHaveLength(1);

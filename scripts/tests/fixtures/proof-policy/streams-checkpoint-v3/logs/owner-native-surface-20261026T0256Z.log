@@ -1,4 +1,4 @@
-bb2run: streams at f9deb6b725 (snapshot of 2446d21206 + worktree)
+[private-metadata-removed]: streams at f9deb6b725 (snapshot of 2446d21206 + worktree)
 CARGO_TARGET_PRUNE {"beforeAllocatedBytes":9917943808,"afterAllocatedBytes":9917943808,"beforeApparentBytes":9857943288,"afterApparentBytes":9857943282,"incrementalUnits":1,"ageUnits":0,"capUnits":0,"elapsedSeconds":0.34565112600000003}
    Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
     Checking acyclic-stream-napi v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream-napi)
@@ -6,7 +6,7 @@ CARGO_TARGET_PRUNE {"beforeAllocatedBytes":9917943808,"afterAllocatedBytes":9917
    Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
    Compiling acyclic-stream-napi v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream-napi)
     Finished `test` profile [optimized + debuginfo] target(s) in 12.02s
-     Running unittests src/lib.rs (/home/var/targets/cx-streams/debug/deps/acyclic_stream_napi-18e4e532131b460a)
+     Running unittests src/lib.rs ([private-path-removed])
 
 running 14 tests
 test tests::platform_verifier_failure_is_transport_and_retains_its_cause ... ok

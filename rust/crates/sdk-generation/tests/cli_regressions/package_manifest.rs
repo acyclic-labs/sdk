@@ -32,7 +32,7 @@ proptest::proptest! {
     fn shared_package_scaffold_preserves_source_manifest_values(
         name in "[a-z]{1,10}(-[a-z]{1,10})?", build in proptest::bool::ANY, no_defaults in proptest::bool::ANY,
     ) {
-        crate::runtime::time_control();
+        super::runtime::time_control();
         let template = b"[package]\nname='demo'\nversion='1.0.0'\nbuild=false\n[lib]\nname='demo'\npath='src/lib.rs'\n";
         let original = format!("[package]\nname='{name}'\nversion='1.0.0'\n{}\n[features]\ndefault=['base']\nbase=[]\nextra=[]\n[package.metadata.docs.rs]\nno-default-features={no_defaults}\nfeatures=['extra']\n", if build { "build='build.rs'" } else { "" });
         let bytes = normalize(template, original.as_bytes()).unwrap();

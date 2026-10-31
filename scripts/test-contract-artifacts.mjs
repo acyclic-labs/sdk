@@ -173,6 +173,28 @@ test("the generator compares executed bytes and records failure without changing
     put("metadata", metadata);
     assert.equal(run().status, 0, "retry after cancellation must complete");
     assert.equal(receipt().status, "success");
+    // Two renderers share the exact Cargo artifact and execute it once. Both
+    // independent file comparisons still run; an absent payload is refusal.
+    put("scripts/generate-actors-routes.mjs", 'export const rust = [["fixture", "bin", "contract"]]; export const rustPayload = "first"; export const render = ([stdout]) => ({"contract.txt": stdout});');
+    put("scripts/generate-inference-defaults.mjs", 'export const rust = [["fixture", "bin", "contract"]]; export const rustPayload = "second"; export const render = ([stdout]) => ({"second.txt": stdout});');
+    put("second.txt", "second\n");
+    put("candidate.txt", JSON.stringify({ first: "current\n", second: "second\n" }));
+    put("bootstrap.cjs", 'if (process.argv.length === 1) { const fs = require("node:fs"); fs.appendFileSync("executions.txt", "execute\\n"); process.stdout.write(fs.readFileSync("candidate.txt")); process.exit(0); }');
+    const shared = run();
+    assert.equal(shared.status, 0, shared.stderr);
+    assert.equal(readFileSync(join(root, "executions.txt"), "utf8"), "execute\n");
+    assert.equal(receipt().artifacts.filter(item => item.requested).length, 1);
+    put("candidate.txt", JSON.stringify({ first: "current\n" }));
+    const missing = run();
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /STEP_FAILED contract-payload: missing second/);
+    assert.equal(receipt().status, "failed");
+    assert.equal(readFileSync(join(root, "second.txt"), "utf8"), "second\n");
+    put("candidate.txt", "{not a contract bundle");
+    const malformed = run();
+    assert.notEqual(malformed.status, 0);
+    assert.match(malformed.stderr, /STEP_FAILED contract-payload: malformed bundle/);
+    assert.equal(receipt().status, "failed");
   } finally {
     if (cancelled?.exitCode === null && cancelled.signalCode === null) cancelled.kill("SIGKILL");
     stopCompiler();

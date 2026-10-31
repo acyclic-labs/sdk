@@ -3,7 +3,6 @@
 use acyclic_harness::{
     context::{Context, ContextDiscoveryLimits, ContextManifest},
     conversation::Limits,
-    filesystem::ModelTaskCommand,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -35,15 +34,6 @@ fuzz_target!(|input: &[u8]| {
         assert_eq!(decoded.encode(limits.file_bytes).unwrap(), encoded);
         assert_eq!(hooks.is_empty(), decoded.is_empty());
     }
-    if let Ok(command) = serde_json::from_slice::<ModelTaskCommand>(input)
-        && command.context_manifest.validate(&mut None).is_ok()
-    {
-        let encoded = serde_json::to_vec(&command).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<ModelTaskCommand>(&encoded).unwrap(),
-            command
-        );
-    }
     if let Ok(source) = serde_json::from_slice::<Context>(input) {
         let encoded = serde_json::to_vec(&source).unwrap();
         assert_eq!(serde_json::from_slice::<Context>(&encoded).unwrap(), source);
@@ -56,9 +46,6 @@ fuzz_target!(|input: &[u8]| {
             }
         };
     }
-    round_trip!(acyclic_harness::context::SummarySource);
-    round_trip!(acyclic_harness::context::SummaryCheckpoint);
-    round_trip!(acyclic_harness::context::SummarySelection);
     round_trip!(acyclic_harness::context::ContextSummary);
     for path_bytes in [1, 16, 64, 4096] {
         let limits = Limits {

@@ -28,5 +28,5 @@ cargo test -p acyclic-fs --test cloud_contract --locked
 node --test typescript/packages/filesystem/test/cloud-contract.test.mjs
 ```
 
-Build TypeScript before its Node test. On shared lane machines, run each cargo
-command through build-slot in a Linux source checkout; run formatting directly.
+Build TypeScript before its Node test. On Linux systems, run each cargo
+command through the shell in a Linux source checkout; run formatting directly.

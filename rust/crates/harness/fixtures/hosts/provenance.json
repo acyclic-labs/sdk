@@ -2,7 +2,7 @@
   {
     "fixture": "codex-0.146.0.stdout",
     "captured_at": "2026-10-25T11:33:26.350075+00:00",
-    "platform": "bb2 linux-x64",
+    "platform": "Linux linux-x64",
     "metadata_url": "https://registry.npmjs.org/@openai%2Fcodex/0.146.0-linux-x64",
     "package": "@openai/codex",
     "package_version": "0.146.0-linux-x64",
@@ -23,7 +23,7 @@
   {
     "fixture": "codex-0.164.0.stdout",
     "captured_at": "2026-10-25T11:33:30.165376+00:00",
-    "platform": "bb2 linux-x64",
+    "platform": "Linux linux-x64",
     "metadata_url": "https://registry.npmjs.org/@openai%2Fcodex/0.164.0-linux-x64",
     "package": "@openai/codex",
     "package_version": "0.164.0-linux-x64",

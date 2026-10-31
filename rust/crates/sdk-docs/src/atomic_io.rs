@@ -9,7 +9,7 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8], immutable: bool) -> Result
                 path.display()
             )));
         }
-        if immutable {
+        if existing == bytes {
             return Ok(());
         }
     }

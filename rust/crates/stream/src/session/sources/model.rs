@@ -1,6 +1,8 @@
 //! Provider publication racing the real runnable-source scheduler parking.
 use super::*;
+mod admission;
 mod visibility;
+pub use admission::{verify_reserved_capacity, verify_source_disabled, verify_source_saturation};
 struct Root(AtomicU64);
 impl ArcWake for Root {
     fn wake_by_ref(root: &Arc<Self>) {

@@ -5,11 +5,11 @@ from pathlib import Path
 import subprocess
 import sys
 
-ROOT = Path('Q:/worktrees/redesign-verify')
-OWNER = Path('Q:/wt/rx-hostability-sdk')
-ORIGIN = Path('Q:/lanes/redesign/streams')
+ROOT = Path('[private-metadata-removed]')
+OWNER = Path('[checkout-path-removed]')
+ORIGIN = Path('[private-path-removed]')
 DEST = ROOT / 'docs/proofs/evidence/streams-checkpoint-v3'
-RECOVERY = 'python Q:/lanes/verify/capture_stream_checkpoint.py'
+RECOVERY = 'python [private-path-removed]'
 step = 'resolve_real_git_identities'
 
 def git(*args):

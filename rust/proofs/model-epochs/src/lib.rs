@@ -1,3 +1,5 @@
+#![cfg(kani)]
+
 //! Verify the production epoch kernels without translating the async runtime.
 
 #[path = "../../../crates/harness-core/src/conversation/epochs/kernel.rs"]

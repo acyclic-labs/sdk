@@ -15,7 +15,7 @@ use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, CommitCondition, CommitMutation, IdempotencyKey,
-    ProviderPlatform, StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
+    ProviderPlatform, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryFutureExt as _;
@@ -1408,8 +1408,7 @@ async fn restarted<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Fai
 pub struct Measurement {
     /// Committed inbox deliveries and corresponding outbox publications.
     pub deliveries: usize,
-    /// Wall-clock time from the first measured send to the final observed
-    /// publication, at millisecond resolution on native and Wasm hosts.
+    /// Monotonic time from the first measured send to the final observed publication.
     pub elapsed: std::time::Duration,
     /// Provider calls during the measured steady-state workload.
     pub requests: Requests,
@@ -1426,14 +1425,13 @@ pub async fn bench<T: Backend + ?Sized>(target: &T) -> Result<Measurement, Failu
         return fixture.violation("benchmark warmup did not publish r0".into());
     }
     let ledger = target.requests();
-    let before = ledger.requests();
-    let clock = acyclic_stream::SystemUnixMillisClock;
-    let started = clock.now_unix_millis();
+    let sample = ledger.start_sample();
     for _ in 0..DELIVERIES {
         fixture.send("emit").await?;
     }
     let observed = fixture.observe(DELIVERIES + 1, BUDGET_MS).await?;
-    let elapsed = std::time::Duration::from_millis(clock.now_unix_millis().saturating_sub(started));
+    let sample = sample.finish();
+    let elapsed = sample.elapsed;
     let expected = (0..=DELIVERIES)
         .map(|i| format!("r{i}"))
         .collect::<Vec<_>>();
@@ -1443,6 +1441,6 @@ pub async fn bench<T: Backend + ?Sized>(target: &T) -> Result<Measurement, Failu
     Ok(Measurement {
         deliveries: DELIVERIES,
         elapsed,
-        requests: ledger.requests().since(before),
+        requests: sample.requests,
     })
 }

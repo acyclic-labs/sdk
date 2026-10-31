@@ -1,0 +1,34 @@
+{
+  "kind": "historical_logical_dispatch_sample",
+  "source": "8e14986497251ab532527cc5de53455870d9f2d1",
+  "source_tree": "ec04ac8dfb71e5cf58f47141bc6549f4dbcc98cc",
+  "platform": "x86_64-unknown-linux-gnu",
+  "original_stdout_sha256": "590177ca4bf209579ecf383a746f33eab6ae1014a5debde6da4215b2aba27917",
+  "original_stdout_line": 11,
+  "captured_line": "AGENT_BENCH Measurement { idle_agents: 0, deliveries: 64, registered_agents: 1, ready_agents: 0, elapsed: 249ms, requests: Requests([448, 0, 0, 64, 0, 0]) }",
+  "request_classes": {
+    "data": 448,
+    "metadata": 0,
+    "list": 0,
+    "head": 64,
+    "lease": 0,
+    "token": 0
+  },
+  "control_requests": 64,
+  "scope": "One original AgentHost benchmark sample. Provisioning/warmup excluded. This excerpt does not qualify a later source. The selected line alone does not identify which native/guest loop iteration produced it.",
+  "physical_observations": {
+    "transport_mode": null,
+    "causal_ids": null,
+    "leader_hops": null,
+    "read_index": null,
+    "quorum_rounds": null,
+    "fsyncs": null,
+    "locks": null,
+    "auth_checks": null,
+    "lookups": null,
+    "copied_bytes": null,
+    "trace_loss": null,
+    "failed_samples": null
+  },
+  "unknown_policy": "Null means not observed, never zero. The nonzero Head/control count remains part of the result."
+}

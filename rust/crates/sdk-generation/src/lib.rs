@@ -28,10 +28,9 @@ use profiles::*;
 mod toolchains;
 use toolchains::*;
 mod artifacts;
-#[path = "../../sdk-docs/src/cargo_targets.rs"]
-mod cargo_targets;
-use cargo_targets::is_library_target;
-mod cache_record;
+use sdk_docs::is_library_target;
+#[doc(hidden)]
+pub mod cache_record;
 #[path = "../../sdk-docs/src/concrete_versions.rs"]
 mod concrete_versions;
 mod file_cache;

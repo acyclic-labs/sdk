@@ -21,7 +21,7 @@ proptest::proptest! {
         directory in "[a-z]{1,12}", leaf in "[a-z]{1,12}", drive in b'A'..=b'Z',
         revision in "[a-f0-9]{40}", other_head in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64),
     ) {
-        crate::runtime::time_control();
+        super::runtime::time_control();
         let head = b"ref: refs/heads/sdk-fixture\n";
         let encoded_revision = format!("{revision}\n");
         proptest::prop_assert_eq!(fixed_revision(head, encoded_revision.as_bytes()), Some(revision.as_str()));

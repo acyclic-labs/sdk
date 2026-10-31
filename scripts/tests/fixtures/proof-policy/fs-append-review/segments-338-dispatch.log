@@ -1,12 +1,12 @@
-[build-slot buildbox] 01:12:47 BUILD_SLOT_TREE=390e8f927252f432c0047d4f5b27cb8619e2e087 0ed4266f08c758dc898df6c8753d793104a076c2 2782e83b706937b2db46c93db641bffd7421263d54e34baac7d36d00422ca084 (client /mnt/q/wt/fs-concurrency)
-[build-slot buildbox] 01:13:10 bb2: git 390e8f927252 + bundle 16966 B, diff 2176593 B (248 new files), 422393 B sent, 13.5s; src wt-sdk/fs-concurrency-3ed9a8c2.0-1792977167761-4614-2e8266f2 target sdk/fs-concurrency-3ed9a8c2; job 1792977167761-4614-2e8266f2; bash .bb-fs-segments.sh
+[local command Linux] 01:12:47 BUILD_SLOT_TREE=390e8f927252f432c0047d4f5b27cb8619e2e087 0ed4266f08c758dc898df6c8753d793104a076c2 2782e83b706937b2db46c93db641bffd7421263d54e34baac7d36d00422ca084 (client /mnt/q/wt/fs-concurrency)
+[local command Linux] 01:13:10 Linux: git 390e8f927252 + bundle 16966 B, diff 2176593 B (248 new files), 422393 B sent, 13.5s; src wt-sdk/fs-concurrency-3ed9a8c2.0-[execution-id-removed] target sdk/fs-concurrency-3ed9a8c2; job [execution-id-removed]; bash .bb-fs-segments.sh
 BB_DISK_FREE [{"path": "/", "free_percent": 19.938756719769813, "free_bytes": 20514607104}, {"path": "/mnt/bb", "free_percent": 22.40454185049768, "free_bytes": 369330388992}]
 GATE_HOME_GUARD {"mechanism": "private-read-only-mount", "real_home": "/home/var", "writable": false, "recursive": true, "private_proc": true}
-[buildbox] sccache startup: sccache: Starting the server...
+[Linux] sccache startup: sccache: Starting the server...
 sccache: Listening on address /mnt/bb/jobs/job-p6k9_2q5/sccache.sock
-[buildbox] node_modules ensured for tracked lockfiles in 0.0s
+[Linux] node_modules ensured for tracked lockfiles in 0.0s
 BUILD_SLOT_TREE=390e8f927252f432c0047d4f5b27cb8619e2e087 0ed4266f08c758dc898df6c8753d793104a076c2 2782e83b706937b2db46c93db641bffd7421263d54e34baac7d36d00422ca084
-[buildbox] source clock: exact-content private targets
+[Linux] source clock: exact-content private targets
 BUILD_SLOT_EXEC={"exec_start":"2026-10-26T01:13:12.784Z","toolchain":{"rustc_vv_sha256":"778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37","rustc_vv":"rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n","target":["x86_64-unknown-linux-gnu"],"probe_error":null}}
 {"stage": "positive", "exit": 0, "seconds": 326.88583168698824}
 {"label": "append-segments", "filter": "workspace::tests::append_segments::", "exit": 101, "seconds": 0.034884774999227375, "executable_sha256": "aea2da595afb011679116c4c107210c49e787a780df682200bac9d82a725ab77", "compiled_source_manifest_sha256": "8cda803636cf9d6162d5c1939fed39da575a33d41dda73f1949f02c74b267129"}
@@ -62,4 +62,4 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1507 filtered out; f
 REFUSED step=segments: positive runtime checks failed; inspect named suite output; recovery: pwsh -NoProfile -File .bb-fs-segments-dispatch.ps1 -RunId 1792977520710334359
 8538d365974f3db6f5686e2c6fd7e1810043eb1f0b3e2bc2a695192fc34a9836  .bb-fs-segments.tar
 REFUSED step=segments; recovery: pwsh -NoProfile -File .bb-fs-segments-dispatch.ps1 -RunId 1792977520754494632
-[build-slot buildbox] 01:18:46 rc=1 in 398.0s; log /home/var/log/buildbox/1792977128289-4614-62e7d670.log
+[local command Linux] 01:18:46 rc=1 in 398.0s; log [private-path-removed]

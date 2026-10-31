@@ -5,7 +5,7 @@ step() {
   shift
   if "$@"; then return 0; else
     local status=$?
-    printf 'STEP %s failed (exit %s); recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash -c "bash scripts/check-actor-delivery.sh"\n' "$name" "$status" >&2
+    printf 'STEP %s failed (exit %s); recovery: bash -c "bash scripts/check-actor-delivery.sh"\n' "$name" "$status" >&2
     exit "$status"
   fi
 }

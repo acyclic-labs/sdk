@@ -1,11 +1,11 @@
-bb2run: streams at 3c6e213240 (snapshot of 4686ca56fb + worktree)
+[private-metadata-removed]: streams at 3c6e213240 (snapshot of 4686ca56fb + worktree)
 CARGO_TARGET_PRUNE {"beforeAllocatedBytes":9616568320,"afterAllocatedBytes":9616568320,"beforeApparentBytes":9558769646,"afterApparentBytes":9558769640,"incrementalUnits":1,"ageUnits":0,"capUnits":0,"elapsedSeconds":0.331837234}
     Checking acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
     Finished `dev` profile [optimized + debuginfo] target(s) in 11.82s
    Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
     Finished `test` profile [optimized + debuginfo] target(s) in 40.66s
 
-     Running unittests src/lib.rs (/home/var/targets/cx-streams/debug/deps/acyclic_stream-288fcc65addba3c5)
+     Running unittests src/lib.rs ([private-path-removed])
 running 381 tests
 test changes::native::tests::invalid_native_changes_are_rejected_before_allocating ... ok
 test changes::native::tests::every_native_allocation_denial_retires_completed_storage ... ok
@@ -391,11 +391,11 @@ test session::tests::queue_scaling::credited_tail_selection_visits_one_head_inde
 
 test result: ok. 381 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.98s
 
-     Running unittests src/bin/stream-http-contract.rs (/home/var/targets/cx-streams/debug/deps/stream_http_contract-1440ae8487e16677)
-     Running tests/browser_follow_model.rs (/home/var/targets/cx-streams/debug/deps/browser_follow_model-b3b651d95d544490)
+     Running unittests src/bin/stream-http-contract.rs ([private-path-removed])
+     Running tests/browser_follow_model.rs ([private-path-removed])
 
 running 0 tests
-     Running tests/checked_session_contract.rs (/home/var/targets/cx-streams/debug/deps/checked_session_contract-f186311b534c48fd)
+     Running tests/checked_session_contract.rs ([private-path-removed])
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
@@ -404,9 +404,9 @@ running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/client_pool_loom.rs (/home/var/targets/cx-streams/debug/deps/client_pool_loom-07a0b0dd1da68dbb)
-     Running tests/client_session_loom.rs (/home/var/targets/cx-streams/debug/deps/client_session_loom-2080b5764b5c8e18)
-     Running tests/follow_data_contract.rs (/home/var/targets/cx-streams/debug/deps/follow_data_contract-f9fbf9f7c0e69821)
+     Running tests/client_pool_loom.rs ([private-path-removed])
+     Running tests/client_session_loom.rs ([private-path-removed])
+     Running tests/follow_data_contract.rs ([private-path-removed])
 
 running 15 tests
 test an_older_peer_cannot_confirm_a_checked_follow ... ok
@@ -457,13 +457,13 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 0 tests
 
-     Running tests/http_response_core.rs (/home/var/targets/cx-streams/debug/deps/http_response_core-1daf227783dcbad3)
-     Running tests/local_follow_loom.rs (/home/var/targets/cx-streams/debug/deps/local_follow_loom-1aa3eb91082b826b)
-     Running tests/local_replay_model.rs (/home/var/targets/cx-streams/debug/deps/local_replay_model-442313ac80200277)
-     Running tests/session_properties.rs (/home/var/targets/cx-streams/debug/deps/session_properties-4ecd38ef6e92dc3c)
-     Running tests/wave1_keys.rs (/home/var/targets/cx-streams/debug/deps/wave1_keys-2809cce65adcc60e)
-     Running tests/wave1_loom.rs (/home/var/targets/cx-streams/debug/deps/wave1_loom-7831e3713e37a1f3)
-     Running tests/wave1_recovery.rs (/home/var/targets/cx-streams/debug/deps/wave1_recovery-2bf7dda2f1bb19f7)
+     Running tests/http_response_core.rs ([private-path-removed])
+     Running tests/local_follow_loom.rs ([private-path-removed])
+     Running tests/local_replay_model.rs ([private-path-removed])
+     Running tests/session_properties.rs ([private-path-removed])
+     Running tests/wave1_keys.rs ([private-path-removed])
+     Running tests/wave1_loom.rs ([private-path-removed])
+     Running tests/wave1_recovery.rs ([private-path-removed])
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
@@ -506,9 +506,9 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 1 test
 test subtree_and_success_keys_survive_journal_and_snapshot_recovery ... ok
-     Running unittests examples/browser-test-host.rs (/home/var/targets/cx-streams/debug/examples/browser_test_host-1ec66e995170dfe5)
-     Running unittests examples/http-conformance.rs (/home/var/targets/cx-streams/debug/examples/http_conformance-5c78018a82f394a1)
-     Running unittests examples/local-storage-cost.rs (/home/var/targets/cx-streams/debug/examples/local_storage_cost-8c866c61c1d16ee2)
+     Running unittests examples/browser-test-host.rs ([private-path-removed])
+     Running unittests examples/http-conformance.rs ([private-path-removed])
+     Running unittests examples/local-storage-cost.rs ([private-path-removed])
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
 
@@ -535,7 +535,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 0 tests
 
-     Running unittests examples/provider-conformance.rs (/home/var/targets/cx-streams/debug/examples/provider_conformance-47222cc46e23ab72)
+     Running unittests examples/provider-conformance.rs ([private-path-removed])
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
@@ -543,17 +543,17 @@ running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests examples/stream-typescript-consumer.rs (/home/var/targets/cx-streams/debug/examples/stream_typescript_consumer-5feacb856dd8ab10)
-     Running unittests examples/token-operations.rs (/home/var/targets/cx-streams/debug/examples/token_operations-a4b5144b189d9240)
+     Running unittests examples/stream-typescript-consumer.rs ([private-path-removed])
+     Running unittests examples/token-operations.rs ([private-path-removed])
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests examples/wave1-conformance.rs (/home/var/targets/cx-streams/debug/examples/wave1_conformance-4ee42789bc9a4f5c)
+     Running unittests examples/wave1-conformance.rs ([private-path-removed])
    Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
     Finished `test` profile [optimized + debuginfo] target(s) in 11.13s
-     Running tests/wave1_loom.rs (/home/var/targets/cx-streams/debug/deps/wave1_loom-d47ba9246edaac38)
+     Running tests/wave1_loom.rs ([private-path-removed])
 
 running 8 tests
 test negative_control_independent_status_reads - should panic ... ok

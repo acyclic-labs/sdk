@@ -185,7 +185,7 @@ def check_hst_reporting(reference):
         require(run["exit"] == 1 and 0 < run["seconds"] < 10 and run["argv"][0] == load("runner-compile-executable.json")["path"], "HST endpoint refusal executable/runtime differs")
     require("step=require_hst_qualification" in (base / "endpoint-unqualified.err").read_text() and "step=read_environment" not in (base / "endpoint-unqualified.err").read_text(), "HST endpoint must refuse before provider setup")
     require(not (base / "endpoint-invalid-option.out").read_bytes() and "step=parse_hst_requirement" in (base / "endpoint-invalid-option.err").read_text(), "HST invalid option must fail typed before work")
-    require(admission["build_slot_tree"] == load("job.json")["build_slot_tree"] and admission["build_slot_tree"] in (base / "build-slot.log").read_text(), "HST reporting exact job identity differs")
+    require(admission["build_slot_tree"] == load("job.json")["build_slot_tree"] and admission["build_slot_tree"] in (base / "compiler-capture.log").read_text(), "HST reporting exact job identity differs")
     require(producer["positive_proofs"] == producer["complete_hst_exports"] == 0 and producer["selected"] == admission["selected_rust_tests"] == 3 and admission["endpoint_unqualified_rows"] == 12 and 0 < producer["seconds"] < 570, "HST reporting scope/selection/job budget differs")
 
 
@@ -234,14 +234,14 @@ def check_stream_checkpoint(reference):
     for name in ('native_signed', 'current_signed'):
         require((base / (name + '-signature.txt')).read_text().startswith(ids[name]['commit'] + ' G '), 'Streams signed-source identity differs')
     native = (base / 'logs/owner-qualified-20261026T0245Z.log').read_text()
-    require(native.startswith('bb2run: streams at ' + ids['native_snapshot']['commit'][:10]), 'Streams native snapshot output differs')
+    require(native.startswith('[private-metadata-removed]: streams at ' + ids['native_snapshot']['commit'][:10]), 'Streams native snapshot output differs')
     require(receipt['native'] == dict(library_tests=381, library_seconds=8.98, wave1_tests=10, wave1_seconds=0.04, recovery_tests=1, recovery_seconds=0.65, loom_tests=8, loom_seconds=0.01), 'Streams native selection/runtime differs')
     for count, seconds in ((381, 8.98), (10, 0.04), (1, 0.65), (8, 0.01)):
         require(f'{count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in {seconds:.2f}s' in native, 'Streams native result is not in captured output')
     for name in ('old_root_only_fork', 'old_fork_without_exclusions', 'independent_status_reads', 'uncharged_status_records'):
         require('test negative_control_' + name + ' - should panic ... ok' in native, 'Streams Loom control selection differs')
     ts = (base / 'logs/owner-typescript-20261026T0258Z.log').read_text()
-    require(ts.startswith('bb2run: streams at ' + ids['typescript_snapshot']['commit'][:10]) and '105 pass\n 0 fail' in ts and 'Ran 105 tests across 14 files. [6.37s]' in ts, 'Streams TypeScript actual selection differs')
+    require(ts.startswith('[private-metadata-removed]: streams at ' + ids['typescript_snapshot']['commit'][:10]) and '105 pass\n 0 fail' in ts and 'Ran 105 tests across 14 files. [6.37s]' in ts, 'Streams TypeScript actual selection differs')
     require(receipt['typescript'] == dict(tests=105, files=14, seconds=6.37, runtime='Bun; not Node', generated_wasm_hash=None), 'Streams Bun result cannot qualify Node or an unidentified generated artifact')
     source = base / 'source/rust/crates/stream'
     model = (source / 'src/memory/recovery_model.rs').read_text()

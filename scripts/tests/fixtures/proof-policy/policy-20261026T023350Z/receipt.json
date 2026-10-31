@@ -12,7 +12,7 @@
       "exit": 0,
       "seconds": 2.1570000000065193,
       "selected": 15,
-      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T023350Z\\positive.log",
+      "log": "[private-metadata-removed]",
       "log_sha256": "a13acc084fb36cc0c6951609cddbdd955e349ffc6ae83142893014b3bd5f826e",
       "checker_sha256": "37794de0fcac004728e4c5a27d816022d1ad2808edc5b3944849c1aff01157a4"
     },
@@ -25,7 +25,7 @@
       "exit": 1,
       "seconds": 1.5309999999590218,
       "selected": 15,
-      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T023350Z\\omit-exact-witness-check.log",
+      "log": "[private-metadata-removed]",
       "log_sha256": "566d119e205a4a2a87abd09a495d500c77e71fb8c9562c5a1908db319925d3c5",
       "checker_sha256": "779c69166b8d8192a6dd2999a37fff193c615b8ee81592835ff571005d9be422"
     },
@@ -38,7 +38,7 @@
       "exit": 1,
       "seconds": 1.8589999999967404,
       "selected": 15,
-      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T023350Z\\omit-node-artifact-check.log",
+      "log": "[private-metadata-removed]",
       "log_sha256": "0c792f26dc7420cbacfd9f1bf48a05a608dea67a8d2c6f93fcee9e004c642439",
       "checker_sha256": "611f9871c2c97aa4eb43209ad84415f41a18838ae62018030bdfc16604327ee8"
     },
@@ -51,7 +51,7 @@
       "exit": 1,
       "seconds": 1.5630000000237487,
       "selected": 15,
-      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T023350Z\\omit-latest-rejection-check.log",
+      "log": "[private-metadata-removed]",
       "log_sha256": "5bd023c274b0b7d39b210e84375a77d7c9183f22119d5351ca87f8a1a790adf0",
       "checker_sha256": "8e260e3c1cc993f5d5278706655f955547137d4abbb490524356225476d5e9c5"
     },
@@ -64,7 +64,7 @@
       "exit": 1,
       "seconds": 1.452999999979511,
       "selected": 15,
-      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T023350Z\\omit-hst-row-check.log",
+      "log": "[private-metadata-removed]",
       "log_sha256": "43748f4dab5867ddb43f69edd9f44554fe745c37880e420261f2ff134133215e",
       "checker_sha256": "667afb243e0c60e1adf7af7f4f9514144ce2bb5bb3a4f30970d516a7756d788f"
     }

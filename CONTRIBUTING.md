@@ -38,8 +38,18 @@ the protocol descriptor and message tests. Qualification also covers consumers.
 bun install --frozen-lockfile
 bun run check   # tsc -b --force, project-wide type-check (also emits build output)
 bun run test    # type-check, then TypeScript and filesystem package tests
-cargo test --workspace --all-features --locked
+cargo test --all-features --locked
 ```
+
+The product workspace shares its root `Cargo.lock` with compatible fuzzers,
+proofs and tools. Root commands select the SDK's original default members;
+explicitly select additional packages with `-p PACKAGE`. `--workspace` also
+includes compiler-negative fixtures, so use it only for that intended scope.
+Documentation and generation packages, their file-identity helper and both fuzz
+packages are workspace members using the root lock. They stay outside
+`default-members`; select them with `cargo test --locked -p sdk-docs` or
+`cargo test --locked -p sdk-generation`. Historical captured source and
+vendored upstream packages retain their original dependency inputs.
 
 Rust-only workspace tests also need the ignored Actors authoring contracts.
 Generate them with the existing locked Rust producer before running Cargo tests;
@@ -47,13 +57,13 @@ no Bun installation is needed for this prerequisite:
 
 ```sh
 cargo run --locked -p acyclic-actors --example actors-http-routes -- typescript/packages/actors/src/generated/actors-service.ts
-cargo test --locked -p acyclic-actors --test guest_contract generated_authoring_contract_has_no_drift -- --exact
-cargo test --locked -p acyclic-actors --test timer_contract generated_timer_authoring_has_no_drift -- --exact
+cargo test --locked -p acyclic-actors --test main guest_contract::generated_authoring_contract_has_no_drift -- --exact
+cargo test --locked -p acyclic-actors --test main timer_contract::generated_timer_authoring_has_no_drift -- --exact
 ```
 
-The producer uses the output path's parent for `guest.ts`, `timers.ts` and
-service metadata. Full TypeScript generation subsequently projects the metadata
-into `actors-service.ts`. Rust qualification generates these files before its
+The producer uses the output path's parent for `guest.ts` and service metadata.
+The timer drift check retains its original test-only authoring fixture. Full
+TypeScript generation subsequently projects the metadata into `actors-service.ts`. Rust qualification generates these files before its
 workspace tests; drift checks only compare and never rewrite their inputs.
 
 The `dev` and `test` profiles use LLVM, panic unwinding and line tables for

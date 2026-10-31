@@ -1,0 +1,347 @@
+{
+  "schema_version": 1,
+  "product_retirement": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+  "original_revision": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+  "original_tree": "5b782a3b534c0c10f909fbec29bd53e6fe2b344f",
+  "decision": "Retain complete original fuzz targets and corpus bytes for retired task-volume/JSONL/summary command APIs. Current targets retain only their original live API checks; no replacement or proof deletion credit.",
+  "targets": [
+    {
+      "path": "rust/crates/harness/fuzz-context/fuzz_targets/context_manifest.rs",
+      "blob": "c8c06815429f24f13fb7024a6f4b8bc14e7b802a",
+      "bytes": 2961,
+      "sha256": "f8b403f8a8e0e64cefb3ae1224ea6cf958ad8550399042ae5976b53d75740d0c",
+      "capture": "context_manifest.rs.fixture"
+    },
+    {
+      "path": "rust/fuzz/task-volume/fuzz_targets/task_volume.rs",
+      "blob": "f87236b4c115a376abe779d1bd823afe0f40d9a6",
+      "bytes": 2112,
+      "sha256": "afbd2afb389d7ddd9ee812ed9a4652146b44dc168c1d863d90a34e28846ffae6",
+      "capture": "task_volume.rs.fixture"
+    },
+    {
+      "path": "rust/fuzz/task-volume/fuzz_targets/jsonl_wire.rs",
+      "blob": "ca140755659e2e4f0198b94bb6c2d91c9110a059",
+      "bytes": 6610,
+      "sha256": "cdacd5e8e8901510daedadb818601796306b841d16436641868892b6963112c4",
+      "capture": "jsonl_wire.rs.fixture"
+    }
+  ],
+  "original_resolution": [
+    {
+      "path": "Cargo.toml",
+      "blob": "e9e66aae9e0d5ce44ded8c638519e93d9d281110",
+      "bytes": 7798,
+      "sha256": "e8455bc8ec75fdf91c1bf513d4572fdaf9af0caf06a60159d7a713d450aeb6cc"
+    },
+    {
+      "path": "Cargo.lock",
+      "blob": "8136ffd8592335e13ed6988ecc1213df5bb16fd7",
+      "bytes": 192146,
+      "sha256": "e7c7cc7b7c8d8cc2413169150ce3e56516da9539e2c5f5ac6f87f59441b4c4bd"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "blob": "b0cd3b63c5c41dbed490b0977af0232a2564efae",
+      "bytes": 86,
+      "sha256": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/Cargo.toml",
+      "blob": "234238c7dd89d0e7c1582bd1a552eee915f126bd",
+      "bytes": 849,
+      "sha256": "2a7206a758125496a1de1b435a6d42ac362bc1518678dde3a818d2bd640ccb04"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/Cargo.lock",
+      "blob": "e031beca9078ef003b3973ec684a15ede8264acb",
+      "bytes": 137618,
+      "sha256": "4ffc9d097756e05bebefe9ff6ae4a542f3f1780854842bd9cc650dec786b7d46"
+    },
+    {
+      "path": "rust/fuzz/task-volume/Cargo.toml",
+      "blob": "dac01cb9f5fb5acc49f34ddc21e0035a62da5bf1",
+      "bytes": 821,
+      "sha256": "5ee3ff98e403bf89e9274d0e77f1ff7964a0d057d39e1027ccf14a61a6e0335a"
+    },
+    {
+      "path": "rust/fuzz/task-volume/Cargo.lock",
+      "blob": "25ef2b1be458ec8451b1a9f552767edb2d3cec4a",
+      "bytes": 123444,
+      "sha256": "1a1fb6a0717cafd564dd848acbd32a771b295ceb84a40f05f2f99c5d153ea0c6"
+    }
+  ],
+  "corpus": [
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/command-invalid-summary-source",
+      "blob": "6aa736e01e176a8866ce4630b24161b4ad4a0417",
+      "bytes": 839,
+      "sha256": "d26ef46fb7fb4cc6c1ffe8c8b957b7eab11ebf92ce3bdf0f31f0de88d17bc9d6"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/command-missing-manifest",
+      "blob": "53994f07c6283cf7646c07991dc2e86a62d59f97",
+      "bytes": 33,
+      "sha256": "0e4664aa045e55234c976e2dea6076c071e777b34f6fcd86ac3808f6e02e730b"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/command-null-manifest",
+      "blob": "8646634a68b70825aa78c6517f4050112b0d4a54",
+      "bytes": 59,
+      "sha256": "f3ffdbc327741ad23b9e77d683a63a540cf35d2435672b15c1cb5dc036810112"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/command-pinned-manifest",
+      "blob": "187471c97f88385ac691f3108e5f8e4a3a6b6049",
+      "bytes": 489,
+      "sha256": "53744b73da8da0bf650da194f8640ed9f0cb71c667bf0e9c55fce67dc1a37ed4"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/command-summary-source",
+      "blob": "a738785794fd4e6f33df208f77f0337b54192934",
+      "bytes": 823,
+      "sha256": "0d6cb3758333b1999085275b0c312290b7ca134d9c23030482a4842944be9dac"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/configuration-source",
+      "blob": "5912f17b38eb3bd640eaa2fca65e7a0f7daa3a1e",
+      "bytes": 535,
+      "sha256": "3400fc1efe046537ffa7f857b9e597e6088f66f816630c138db3c0d337d3202b"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/empty",
+      "blob": "b26796afbae0800e02844d336a4716d45a6c72fb",
+      "bytes": 78,
+      "sha256": "f4ecc0ec54104a815fa271207cf24cb13248631309c5f62a7903ea31afa8519c"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/hooks-empty",
+      "blob": "0637a088a01e8ddab3bf3fa98dbe804cbde1a0dc",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/hooks-invalid-command",
+      "blob": "e71dd7541d4fdcd3c121fbe78415adea4bffb84c",
+      "bytes": 135,
+      "sha256": "1e80106966ad85e53d3ec6e5ac9fe1dec925dce34f758e2c79605c60e4af0185"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/hooks-invalid-matcher",
+      "blob": "fb79c51d0cacf24bf22a379fdbc90de5bad591c8",
+      "bytes": 46,
+      "sha256": "1ae1ff374665661d0e8ad7d456502724b9d0efb5316fb6753bd8288dc8858737"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/hooks-normalized",
+      "blob": "0ff1fabcd20ccb6befe9dd1d0318d2f6fa18e6f7",
+      "bytes": 166,
+      "sha256": "24a1ddc99082740efebec959b00fa0bc9bc0ad9da574d0bda0dda80073cfb6ac"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/instruction-invalid-utf8",
+      "blob": "cfd2c91aeedecab9dfe6d369b4aa75403069ea67",
+      "bytes": 3,
+      "sha256": "56a76079cb2125558276885a4f299bfa10187c9c6e99c75fcce558df32c94523"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/instruction-nul",
+      "blob": "05413af5915fedede09964fcdd750f1e5c1da19d",
+      "bytes": 12,
+      "sha256": "4164cbec5a5fc8ef4d087d998afe1c7cb5d4b0f9233c63a6763d7978e456aa2d"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/instruction-valid",
+      "blob": "1c7b0368de69bb920e09213f1aa1e5dd18834c8e",
+      "bytes": 31,
+      "sha256": "ffb40904fce61f4d71800693542a140e04173e046998dfd9b0d6cb8d20006ea5"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/missing-skill",
+      "blob": "842d72d104cf6bf5f188d623fa3bda5ace2f97be",
+      "bytes": 86,
+      "sha256": "e521256fff5bb9f148e254cdfaf0b6c99b4489c2409b8f448e4095feda809a74"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/oversized-skill-path",
+      "blob": "6c15caa0b67b4c0c7d264d431ea6c11ca4bc18df",
+      "bytes": 496,
+      "sha256": "abd89daa68427bed539cb745c1dda253815ea98646c91b968dbfac10841144dc"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/summary-checkpoint.json",
+      "blob": "85cc43e83ee7b4ab3ad7cca39601ed0788a6a485",
+      "bytes": 1848,
+      "sha256": "8c37139d8c07e7c5dd68c98fa3fb87deaceac1ae3fee9c7f745ce781810a0d66"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/summary-context",
+      "blob": "f47c006f38df9cdac9bbbcfc24903c0195dd403e",
+      "bytes": 103,
+      "sha256": "6eb68337869178bd2401fc0d862a2fc3f95921d1a5002879b200a035a50061a5"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/summary-selection-live.json",
+      "blob": "816df21a2d58248f01381e94fdcf109f6de26afa",
+      "bytes": 860,
+      "sha256": "40540a3b662db290a99101c8360d4055c6791c5306c648a41a9ffd55b541a4b9"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/summary-selection.json",
+      "blob": "92b1cc1e7e28f519cee9e2de4ddeb0a8039c84fb",
+      "bytes": 859,
+      "sha256": "63fdabf4764dfca91bb059df57f2d78d97d5468350551c04a5697f3b5908e124"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/summary-source-previous.json",
+      "blob": "887250957fae047dbad5ac6e729f750a9a29b9ba",
+      "bytes": 1043,
+      "sha256": "1ad9e6dd22b84e8cd04117e96122f55fe7af7e257ad75dc3fe18b0b180454ae6"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/summary-source.json",
+      "blob": "bee302fd3766bf327ace7cfd822ba2fbd3a772d8",
+      "bytes": 960,
+      "sha256": "d14d033871e58b4bed8560bd51629c65d417fee1082fc1fb7846b524caf1c7fd"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/tool",
+      "blob": "a0bf65dc5b3263b95adbafa833d031e8ea000fa5",
+      "bytes": 240,
+      "sha256": "a89c111830c9d33cd957fe6ef2ef1a1994d8f3244de6266438d5aacf7215c74e"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/corpus/context_manifest/truncated",
+      "blob": "5820ccca7cd0fb2f99ad1b6d047bdccc59d9d865",
+      "bytes": 76,
+      "sha256": "8b7ea1b993b32fd874978c0b9ef50e655c44d7087ebca2e1991a61f7d89c0c62"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/approval-open-selection",
+      "blob": "7f0cce63c36c6bb31d1684ea7b3309d111f7331b",
+      "bytes": 58,
+      "sha256": "1587df035a2d15cb8e9a63c4d1e67b6a2b4d8d717a644faeeae5bf79923a3d4c"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/approval-selection",
+      "blob": "5908ea9eaa90497a36b9e0b078460f0f9f493f84",
+      "bytes": 90,
+      "sha256": "ffce9ab6407bbce706c3c5bdbeed0a5556af00394b4e254c879a5d6e9069b1a8"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/approval_decision",
+      "blob": "baa66babad2f65161d49dfc26be8414a8306d5c6",
+      "bytes": 167,
+      "sha256": "71063d6302f82d1c6f3804991f23495e3ecc93f1e28f756f2f544fc24ae9b908"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/approval_decision_truncated",
+      "blob": "dbaba9248bd1b3eceed0b78ad808689d44c81ee5",
+      "bytes": 12,
+      "sha256": "354d48ed2d72beaf29814be65454c9122ab10fc3c3bb81f7905772d97ba25f65"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/approval_request",
+      "blob": "7596802e7428fd70eafe99e41af46639b60b2ca4",
+      "bytes": 277,
+      "sha256": "c2049087fe401097003dab766aacd70b7f4544dfea1bdb3615f2da486d602369"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/bad_path",
+      "blob": "32fcae765e197e5fa525c612134e700fc38f7058",
+      "bytes": 26,
+      "sha256": "34c6b775f6a163d248f15252a9856df9bb435815e1d3bd90565b297d1ea7be7e"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/component",
+      "blob": "2a4e39c73bc2d22b744005f203e0275e4570035e",
+      "bytes": 39,
+      "sha256": "64451df84d449e9bfbb4e9a696bcf00412b470bc8b9a4d934b6031edd72c6cf0"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/cursor",
+      "blob": "0b01a9712171504f4234066e3459fdf8dddb0ac3",
+      "bytes": 321,
+      "sha256": "5cb1d3dda26f6c42112ba586217b897587021965075d8f5a5515242e80b2ff2a"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/head_31",
+      "blob": "ebe8cfc6fa74fbaba074e8e5d3ce426a99d23c25",
+      "bytes": 67,
+      "sha256": "adf7981b873d81df111fd386675157c771be080c1886f66d084e5e87945a1204"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/head_32",
+      "blob": "d6f1bcae251f18af94f3948e0bf752d075590528",
+      "bytes": 68,
+      "sha256": "8822950e8bfd5cf1c513c3d572e36921915cbae7ff838643d642766347a98b91"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/head_conflict",
+      "blob": "ed94707b326b614d54f1bd77467b1ee6e098503a",
+      "bytes": 121,
+      "sha256": "0c7d94de883ad257a8da96413dedd6793686785b87ef1076a1e01af74daa0b9e"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/header",
+      "blob": "69c9ba4afbe1b1853efdb5d4108aa3aa5e821185",
+      "bytes": 108,
+      "sha256": "1d0bc8969184e0edfe777c260699b7860db21b7b3cce2009544bd45a0d35c84e"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/legacy_header",
+      "blob": "d78b22b94172b17c7747750959b22e8519879dfa",
+      "bytes": 108,
+      "sha256": "da26b8a55e642acb5c6870c5f8a84445aee88cb154f7c94788be8a6aa7c4e3c1"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/legacy_plan",
+      "blob": "b3f293abaebe9d4901d4a3847071bdc94ca84906",
+      "bytes": 16,
+      "sha256": "be3a2e495f996489d00212e38746c58c68b4d2c1a847f315da006e3b80013f16"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/path",
+      "blob": "9c6bee8ad2118afaace2f28ef47e964e10b8c853",
+      "bytes": 44,
+      "sha256": "b3d3968c9fe8d994f94d4d83d86ce10e2d3df9cadbc493c0d2ed0133d76ef996"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/plan_empty",
+      "blob": "2f815a5d227ef31c3be096d8fcd912837422c82a",
+      "bytes": 9,
+      "sha256": "8933cb1d95a489be080ccbb6673ce7cec78653f432c691eb36d9aba5631b5acc"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/plan_folder",
+      "blob": "4a7d2570ef2a43b6d4bbc3f97bd539ef1c37bfa4",
+      "bytes": 5,
+      "sha256": "c404dc69b55c0692366e3f28e6d8bc2e506bedbd4f519644adb5802500d83331"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/plan_path",
+      "blob": "fb9010b23861ed4335e245d303576c8174262653",
+      "bytes": 13,
+      "sha256": "3b9fbe091763ec3795d56a840317f98093db5e7a31658f256b259029d69d9ec4"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/plan_segment",
+      "blob": "a6316aee47cc9afbfea9a464156ac3691aba9959",
+      "bytes": 57,
+      "sha256": "28dc40e7f0157cf6dfe74112203fc1541ba3d232696af7299eb5d44b3bd774c9"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/segment",
+      "blob": "f5193f451e5db52b25757dc69d7c9f075e7ea62f",
+      "bytes": 45,
+      "sha256": "cb4cdda206d065f5f5b8d010f9621d032dc13db2a0dc30b95507f223c1415609"
+    },
+    {
+      "path": "rust/fuzz/task-volume/corpus/task_volume/truncated_segment",
+      "blob": "0845e7c2866057e82459d9f992283f23ed8b2cf0",
+      "bytes": 11,
+      "sha256": "3ad3452498695645b7ea952ada0cf1fd859276b7fbc36a50d4d7a4c5c2094d01"
+    }
+  ],
+  "qualification": "Source preservation only; historical and current fuzz execution are not claimed."
+}

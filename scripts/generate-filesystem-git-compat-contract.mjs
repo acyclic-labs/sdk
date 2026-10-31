@@ -1,4 +1,6 @@
-export const rust = [["acyclic-fs", "example", "filesystem-git-compat-contract"]];
+export const rust = [["acyclic-fs", "example", "filesystem-contracts"]];
+export const rustFeatures = ["acyclic-fs/tooling"];
+export const rustPayload = "filesystem-git-compat-contract";
 
 function readRustContract(stdout) {
   const contract = JSON.parse(stdout);

@@ -13,6 +13,8 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 mod cargo_targets;
+#[doc(hidden)]
+pub use cargo_targets::is_library_target;
 mod child;
 mod concrete_versions;
 /// Native projections and immutable identities for historical releases.

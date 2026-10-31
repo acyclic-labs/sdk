@@ -1,4 +1,5 @@
 //! Appended blocks only narrow: typed grant values and allowance products.
+#[path = "common/mod.rs"]
 mod common;
 use acyclic_auth::{authority::*, contract::*};
 use common::*;

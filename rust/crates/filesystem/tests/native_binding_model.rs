@@ -3,8 +3,7 @@
 
 #[path = "../src/native_mount/cached_binding.rs"]
 mod cached_binding;
-#[path = "../src/sync.rs"]
-mod sync;
+use crate::sync;
 
 #[cfg(loom)]
 #[path = "../src/native_mount/projfs/probe_guard.rs"]

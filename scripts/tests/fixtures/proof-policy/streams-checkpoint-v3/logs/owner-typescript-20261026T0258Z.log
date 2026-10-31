@@ -1,4 +1,4 @@
-bb2run: streams at e8b7315427 (snapshot of 3a348ebf16 + worktree)
+[private-metadata-removed]: streams at e8b7315427 (snapshot of 3a348ebf16 + worktree)
 CARGO_TARGET_PRUNE {"beforeAllocatedBytes":9918578688,"afterAllocatedBytes":9339207680,"beforeApparentBytes":9858553009,"afterApparentBytes":9285109696,"incrementalUnits":1,"ageUnits":284,"capUnits":0,"elapsedSeconds":0.37483767800000006}
 bun test v1.4.2 (744846f84)
 

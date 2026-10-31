@@ -1,6 +1,6 @@
 {
   "kind": "hst_reporting_policy_admission_not_complete_history_proof",
-  "archive": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar",
+  "archive": "[private-metadata-removed]",
   "archive_sha256": "4b27a47238d1188c7a9888de614fb2178627e2a773b239856f89bc3dcce49fcf",
   "source_manifest_sha256": "f5eaf8231da5e4b2be9dcabfec56db157ef5ed4df5105fa62d4b8919951b7b9e",
   "build_slot_tree": "919e4dd4e5888c806a8c8f9b6643438a95a7583c 058ec24753d7bf9db66487e068e5ddcd36193ca4 3ac2f09fa75e0ef929c25dc93eebd0e61e99610b37c859db17df04b20fed9aeb",
@@ -14,199 +14,199 @@
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/endpoint-invalid-option.err",
       "sha256": "55a3ce7929d3516fd850a764e48256d23f72ca54864b2b7dcc41701988cb1f75",
       "bytes": 209,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/endpoint-invalid-option.err"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/endpoint-invalid-option.json",
       "sha256": "63df46ee1f5e5111aba93904e3b18d3194366001964e32b6cd60807f8cadcad5",
       "bytes": 121,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/endpoint-invalid-option.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/endpoint-invalid-option.out",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "bytes": 0,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/endpoint-invalid-option.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/endpoint-unqualified.err",
       "sha256": "877479e63d094f5af58ba840d2abcd6db9319333a08def8ab28ee5e0d2296d27",
       "bytes": 1315,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/endpoint-unqualified.err"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/endpoint-unqualified.json",
       "sha256": "2059450c8b749c0224236f6826273b34213370d3d8a2cc434be30532576d5b1a",
       "bytes": 121,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/endpoint-unqualified.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/endpoint-unqualified.out",
       "sha256": "ab38fab3074fdf48950472b54a6902195d8d9d52b9ff3796352ca8125aa28188",
       "bytes": 1800,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/endpoint-unqualified.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/job.json",
       "sha256": "5e0164ea4fb656f897d288c392914da03dee4c9c0e7b0156311bb99eee536ec6",
       "bytes": 241,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/job.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/mutant-compile-executable.json",
       "sha256": "e8c7c51268423941ca5a04f5e80577d80f0fe6d8ad3f94e53ada9566cd11ce61",
       "bytes": 330,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/mutant-compile-executable.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/mutant-compile.err",
       "sha256": "e52f52c794090e35fcd34fb4ce932cce983f023c7bf6c9ca09a6c343aae9a420",
       "bytes": 125,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/mutant-compile.err"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/mutant-compile.json",
       "sha256": "8d1bb9122799f749145f002e85b1ef3517e16c323161ba9ebd7a72c96009b1b9",
       "bytes": 254,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/mutant-compile.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/mutant-compile.out",
       "sha256": "bfb09c442de396a1c9550c01e323f1e13ad476ef2ccb8bac265d494e666caf8a",
       "bytes": 234764,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/mutant-compile.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/mutant-compiled-source.json",
       "sha256": "91d79034141bd12816d7ea0876715d0d9062adb8aece75b19cd540ba6853b998",
       "bytes": 583066,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/mutant-compiled-source.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/mutant.err",
       "sha256": "f7593c5b6bf78e7210d0d83d703f459f89c6fda80c152c79aed2cdd73bba4d9c",
       "bytes": 271,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/mutant.err"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/mutant.json",
       "sha256": "8b11b2c553385934da822f32e567c43d9308be58e58d80333a88fa9485560d81",
       "bytes": 175,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/mutant.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/mutant.out",
       "sha256": "ea3cb64aacb9b039bbc600ad35c59ed314dc9a0a071e497818637411aad6983b",
       "bytes": 418,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/mutant.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/mutant.rs",
       "sha256": "774013a77635b57c6b841339e9fa78231ecaec32dcb2eda0d5d6cefe714c9e3a",
       "bytes": 5958,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/mutant.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/oracle.rs",
       "sha256": "c2f35978526297efd6999ae0f39e2d1a71215ed8c1f1374064afa205ba3f1dfc",
       "bytes": 2010,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/oracle.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/positive-compile-executable.json",
       "sha256": "e2294a18f78f90ae82824c00fbed0c84b30cdf82f2a03e7d51359292b23a1ae4",
       "bytes": 330,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/positive-compile-executable.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/positive-compile.err",
       "sha256": "b51db70f2610623ede09977a4b26c23631ba26b6bd968b827da88c32553b9356",
       "bytes": 8209,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/positive-compile.err"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/positive-compile.json",
       "sha256": "b6527b833c706caaa637740340b9aece9aa268bbe3c06c6e32821388f3fbc4f7",
       "bytes": 255,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/positive-compile.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/positive-compile.out",
       "sha256": "afba48c79c91a5c40a71361e6adaea92d15f9718d8cdecfdb8eb4aa0ed7cd550",
       "bytes": 235056,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/positive-compile.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/positive-compiled-source.json",
       "sha256": "f5eaf8231da5e4b2be9dcabfec56db157ef5ed4df5105fa62d4b8919951b7b9e",
       "bytes": 583066,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/positive-compiled-source.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/positive.err",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "bytes": 0,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/positive.err"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/positive.json",
       "sha256": "8375e9424f610f0fc6dde1b055b2dc12e92a009bae166c88c4564f0dba900e6e",
       "bytes": 174,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/positive.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/positive.out",
       "sha256": "1fdbb50b8cd44d91192a9aa65fc7cbdd9c1c5c247bef14fe582aaa81ec3f91e9",
       "bytes": 329,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/positive.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/production.rs",
       "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385",
       "bytes": 6009,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/production.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/receipt.json",
       "sha256": "de85edb3bc1523dd8054b1e0f3b4067256108436028cb2b51df074419b2baa80",
       "bytes": 528,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/receipt.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/runner-compile-executable.json",
       "sha256": "9fcbfc5ea3451a2630edf30abb7e13187f480c6e6f9c8f76a8df71b44b4a1a0c",
       "bytes": 320,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/runner-compile-executable.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/runner-compile.err",
       "sha256": "b45a9e0a244af9dfbc50d19d62b92ab3474adba89f7e595b0d47acdde9f12614",
       "bytes": 124,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/runner-compile.err"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/runner-compile.json",
       "sha256": "89d6de38a7551567cf17db42b0df7c67895fda443abcd2867b2a179fbd92c05d",
       "bytes": 246,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/runner-compile.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/runner-compile.out",
       "sha256": "4d6e567a56044902f1f8f2545eddfdc7b925d803653163be312c227f506524fc",
       "bytes": 234140,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/runner-compile.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/hst-reporting-v1/source.json",
       "sha256": "f5eaf8231da5e4b2be9dcabfec56db157ef5ed4df5105fa62d4b8919951b7b9e",
       "bytes": 583066,
-      "origin": "Q:\\worktrees\\redesign-verify\\.bb-wave1-coverage.tar::.bb-wave1-coverage-records/source.json"
+      "origin": "[private-metadata-removed]"
     },
     {
-      "repo_path": "docs/proofs/evidence/hst-reporting-v1/build-slot.log",
+      "repo_path": "docs/proofs/evidence/hst-reporting-v1/compiler-capture.log",
       "sha256": "0e25dc6b0bd13e8acd499460962000698feec47d713afb50c3d0aab8781038ee",
       "bytes": 2159,
-      "origin": "Q:\\lanes\\verify\\evidence\\wave1\\coverage-20261026T022428Z.log"
+      "origin": "[private-metadata-removed]"
     }
   ],
   "scope": "actual Linux Rust tests and endpoint refusal before provider setup; no provider, hosted, browser or complete HST runtime qualification"

@@ -2,13 +2,13 @@
 from pathlib import Path
 from datetime import datetime,timezone
 import hashlib,json,shutil,subprocess,sys,tempfile,time
-ROOT=Path('Q:/worktrees/redesign-verify');RECOVERY='python Q:/lanes/verify/qualify_export_join.py';step='preflight_exact_inputs'
+ROOT=Path('[private-metadata-removed]');RECOVERY='python [private-path-removed]';step='preflight_exact_inputs'
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 try:
  names=['scripts/proof_export_join.py','scripts/test-proof-exports.py']+[p.relative_to(ROOT).as_posix() for p in (ROOT/'docs/proofs/evidence/canonical-exports-v1').rglob('*') if p.is_file()]
  for name in names:
   if subprocess.check_output(['git','show',':'+name],cwd=ROOT)!=(ROOT/name).read_bytes():raise ValueError('working/index byte mismatch: '+name)
- out=Path('Q:/lanes/verify/evidence/wave1')/('export-join-policy-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'));out.mkdir();shutil.copyfile(__file__,out/'producer.py')
+ out=Path('[private-path-removed]')/('export-join-policy-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'));out.mkdir();shutil.copyfile(__file__,out/'producer.py')
  inputs={n:sha(ROOT/n) for n in names};(out/'source.json').write_bytes((json.dumps(inputs,indent=2)+'\n').encode())
  mutations={
  'omit-revision':("require(manifest['revision'] == revision, 'checked revision differs from generated exports')","require(True, 'revision check omitted')",'test_historical_bundle_cannot_qualify_current_revision_or_source'),

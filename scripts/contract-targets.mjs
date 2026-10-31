@@ -6,7 +6,7 @@ const identity = target => JSON.stringify(target);
 // Cargo remains the authority for source, toolchain, lockfile and feature
 // freshness. Never discover or execute a binary by guessing its target path.
 /** @param {{ phase?: string, toolchain_ms?: number, rustc_ms?: number, cargo_version?: string, rustc_version?: string, rustc_error?: string, target_directory?: string, metadata_ms?: number, build_ms?: number, artifacts?: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[] }} report */
-export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_CARGO_BIN || "cargo", report = {}, saveProgress = () => {}) {
+export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_CARGO_BIN || "cargo", report = {}, saveProgress = () => {}, requestedFeatures = []) {
   if (targets.length === 0) throw new Error("Rust contract target set is empty");
   const capture = (phase, args, executable = cargo) => {
     report.phase = phase;
@@ -39,7 +39,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
   const packages = new Map(metadata.packages.map(pkg => [pkg.name, pkg]));
   /** @type {Map<string, string | undefined>} */
   const requested = new Map();
-  const features = new Set();
+  const features = new Set(requestedFeatures);
   for (const [packageName, kind, name] of targets) {
     const pkg = packages.get(packageName);
     if (!["bin", "example"].includes(kind) || !pkg?.targets.some(target => target.name === name && target.kind.includes(kind))) {

@@ -1,6 +1,5 @@
 #![no_main]
-#[path = "../../src/cache_record.rs"]
-mod cache_record;
+use sdk_generation::cache_record;
 use sha2::{Digest, Sha256};
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {

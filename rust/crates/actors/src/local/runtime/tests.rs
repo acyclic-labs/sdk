@@ -568,16 +568,34 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
         first.state().and_then(|state| state.cursor("inbox")),
         Some(2)
     );
+    assert_eq!(host.wake().await?, Some(101));
+    let idle = store.load(&address).await?;
+    assert_eq!(idle.tail, first.tail, "a future alarm is not a delivery");
+    assert_eq!(
+        idle.state().map(State::epoch),
+        first.state().map(State::epoch)
+    );
     drop(host);
     clock.0.store(101, Ordering::SeqCst);
     let reopened = open()?;
     assert_eq!(reopened.wake().await?, None);
+    let settled = store.load(&address).await?;
     assert_eq!(
         reopened.wake().await?,
         None,
         "repeated wake must not repeat the alarm"
     );
+    drop(reopened);
+    assert_eq!(open()?.wake().await?, None);
     let second = store.load(&address).await?;
+    assert_eq!(
+        second.tail, settled.tail,
+        "idle wakes must not publish claims"
+    );
+    assert_eq!(
+        second.state().map(State::epoch),
+        settled.state().map(State::epoch)
+    );
     assert!(second.state().map(State::epoch) > first.state().map(State::epoch));
     assert_eq!(
         records(&*provider, "out/generic-event").await?,
