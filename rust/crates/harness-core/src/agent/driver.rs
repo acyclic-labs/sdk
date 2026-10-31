@@ -148,7 +148,7 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
 pub const COMPACT_INSTRUCTION: &str = "Summarize this conversation for continued work. Preserve facts, decisions, constraints, unresolved work and references; the summary replaces the conversation in later context. Answer with the summary alone.";
 
 /// How a turn settled.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum TurnOutcome {
@@ -171,7 +171,7 @@ impl TurnOutcome {
 /// One conversation record: a settled turn, or a checkpoint (its input is
 /// [`TurnInput::Context`] and its output holds the summary later turns start
 /// from).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]

@@ -7,14 +7,14 @@
 //! the turn when it settles and lowers them into the step's one commit. Nothing
 //! reaches another agent before that commit.
 
-use super::{AgentId, AgentPath, AgentState, InboxRecord, IntentId, Message, Out, Sender};
+use super::{AgentPath, AgentState, InboxRecord, IntentId, Message, Out, Sender};
 use crate::{OperationId, conversation::FileRef};
 use acyclic_stream::BoxProviderFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// One recorded effect of an agent tool call.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TurnEffect {
     /// Spawn the child named by `intent`, adopted with `brief`.
@@ -47,12 +47,59 @@ pub enum TurnEffect {
 impl TurnEffect {
     /// The child a spawn effect of `parent` names.
     pub fn child(parent: &AgentPath, intent: &IntentId) -> Result<AgentPath, super::Error> {
-        parent.child(&AgentId::derive(&parent.id(), intent.as_str()))
+        parent
+            .child_for_intent(intent.as_str(), &mut None)
+            .map_err(|_| super::Error::Path("agent nesting exceeds MAX_DEPTH"))
     }
 }
 
 /// The effects recorded by one turn's agent tools.
 pub trait TurnEffects: acyclic_stream::ProviderPlatform {
+    /// Original-work projection of an exact call lookup.
+    fn recorded_call_with_io<'a>(
+        &'a self,
+        call: &'a str,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> crate::Result<crate::conversation::BoundedContentFuture<'a, Option<TurnEffect>>> {
+        if io.is_some() {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "original-work agent effect lookup is unavailable",
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || self.recorded_call(call))
+    }
+    /// Original-work projection of the same create-once effect publication.
+    fn record_with_io<'a>(
+        &'a self,
+        call: &'a str,
+        effect: &'a TurnEffect,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> crate::Result<crate::conversation::BoundedContentFuture<'a, TurnEffect>> {
+        if io.is_some() {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "original-work agent effect publication is unavailable",
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || self.record(call, effect))
+    }
+    /// Original-work projection of this turn's recorded effects.
+    fn recorded_with_io<'a>(
+        &'a self,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> crate::Result<crate::conversation::BoundedContentFuture<'a, Vec<TurnEffect>>> {
+        if io.is_some() {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "original-work agent effects are unavailable",
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || self.recorded())
+    }
     /// The original effect of this exact call, without scanning the turn.
     fn recorded_call<'a>(
         &'a self,

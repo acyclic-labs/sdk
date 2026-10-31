@@ -45,6 +45,10 @@ macro_rules! records {
     ($($record:ty => $schema:ident),* $(,)?) => {$(impl PreparationRecord for $record { fn json_value_schema() -> &'static Schema { Schema::$schema } })*};
 }
 records!(
+    crate::executor::TurnOutput => TurnOutput,
+    crate::agent::TurnEffect => None,
+    crate::agent::StatusRecord => None,
+    crate::agent::ConversationEntry => None,
     crate::Capabilities => None,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
     crate::core::ExtensionConfiguration => None,

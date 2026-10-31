@@ -59,6 +59,116 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn recorded_call_with_io<'a>(
+        &'a self,
+        call: &'a str,
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<TurnEffect>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let Some(io) = io else {
+                return self.recorded_call(call).await;
+            };
+            valid_call(call, io)?;
+            let (path, _path) =
+                super::agent_internal::original_text(&[&self.directory, "/", call, ".json"], io)?;
+            self.files
+                .read_with_io(&path, self.maximum_bytes, io)
+                .await?
+                .as_deref()
+                .map(|bytes| crate::agent::records::open_with_io(bytes, io))
+                .transpose()
+        })
+    }
+
+    fn record_with_io<'a>(
+        &'a self,
+        call: &'a str,
+        effect: &'a TurnEffect,
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, TurnEffect>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let Some(io) = io else {
+                return self.record(call, effect).await;
+            };
+            valid_call(call, io)?;
+            let (path, _path) =
+                super::agent_internal::original_text(&[&self.directory, "/", call, ".json"], io)?;
+            if let Some(bytes) = self
+                .files
+                .read_with_io(&path, self.maximum_bytes, io)
+                .await?
+            {
+                return crate::agent::records::open_with_io(&bytes, io);
+            }
+            if let TurnEffect::Spawn { intent, .. } = effect {
+                let child = self
+                    .agent
+                    .child_for_intent(intent.as_str(), &mut Some(&mut io.history_io()))?;
+                let tail = crate::store::operations::tail_optional_with_work(
+                    &self.stream,
+                    &crate::agent::stream_parts_with_io(&[child.as_str()], io)?,
+                    &mut Some(&mut io.history_io()),
+                )
+                .await?;
+                if tail.is_some() {
+                    return Err(io.invalid("an agent with this name exists").tool_input());
+                }
+            }
+            #[derive(serde::Serialize)]
+            struct Sealed<'a> {
+                record: &'a TurnEffect,
+                version: u32,
+            }
+            let bytes = io.encode(
+                &Sealed {
+                    record: effect,
+                    version: crate::agent::RECORD_VERSION,
+                },
+                self.maximum_bytes
+                    .min(crate::agent::MAX_RECORD_BYTES as u64),
+                true,
+            )?;
+            match self
+                .files
+                .create_with_io(&path, &bytes, self.maximum_bytes, io)
+                .await?
+            {
+                Some(existing) => crate::agent::records::open_with_io(&existing, io),
+                None => crate::agent::records::open_with_io(&bytes, io),
+            }
+        })
+    }
+
+    fn recorded_with_io<'a>(
+        &'a self,
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<TurnEffect>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let Some(io) = io else {
+                return self.recorded().await;
+            };
+            let names = self.files.list_with_io(&self.directory, io).await?;
+            let capacity = crate::core::owned_buffer::<TurnEffect>(names.len())?;
+            io.retain_owned(capacity)?;
+            io.allocation_attempt(capacity)?;
+            let mut effects = Vec::new();
+            effects
+                .try_reserve_exact(names.len())
+                .map_err(Error::Allocation)?;
+            for name in names {
+                let (path, _path) =
+                    super::agent_internal::original_text(&[&self.directory, "/", &name], io)?;
+                let bytes = self
+                    .files
+                    .read_with_io(&path, self.maximum_bytes, io)
+                    .await?
+                    .ok_or_else(|| io.invalid("listed agent effect is missing"))?;
+                effects.push(crate::agent::records::open_with_io(&bytes, io)?);
+            }
+            Ok(effects)
+        })
+    }
+
     fn recorded_call<'a>(
         &'a self,
         call: &'a str,
@@ -149,6 +259,17 @@ where
             }))
         })
     }
+}
+
+fn valid_call(call: &str, io: &super::PreparationIo) -> Result<()> {
+    if call.is_empty()
+        || !call
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(io.invalid("agent effect call key is not a file name"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -304,6 +425,63 @@ mod tests {
             Err(Error::UnsupportedRecordVersion(version)) if version == refusal
         ));
         assert_eq!(effects.record("0000000001-a", &later).await?, first);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let original = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(65_536, 32 * 1024 * 1024),
+                &cancellation,
+            )
+            .map_err(|(cause, _)| Error::from(cause))?;
+            let io = super::super::PreparationIo::from_native_work(&original)?;
+            assert_eq!(
+                effects
+                    .recorded_call_with_io("0000000001-a", Some(&io))?
+                    .await?,
+                Some(first.clone())
+            );
+            let native = TurnEffect::Archive {
+                target: effects.agent.clone(),
+                id: IntentId::try_from("native-original")
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            };
+            assert_eq!(
+                effects
+                    .record_with_io("0000000004-d", &native, Some(&io))?
+                    .await?,
+                native
+            );
+            assert_eq!(
+                effects
+                    .record_with_io("0000000004-d", &later, Some(&io))?
+                    .await?,
+                native
+            );
+            assert_eq!(
+                effects
+                    .recorded_call_with_io("0000000004-d", Some(&io))?
+                    .await?,
+                Some(native.clone())
+            );
+            let receipt = original.receipt();
+            assert!(receipt.backend_read_operations > 0);
+            assert!(receipt.backend_write_operations > 0);
+            assert!(receipt.bytes_encoded > 0);
+            assert!(
+                matches!(old.recorded_call_with_io("0000000001-a", Some(&io))?.await,
+                Err(Error::UnsupportedRecordVersion(version)) if version == refusal)
+            );
+            // Cancelling the original operation ends this invocation at its
+            // cancellation event; no receipt or replacement is made.
+            cancellation.cancel();
+            let cancelled = match effects.record_with_io("0000000005-e", &native, Some(&io)) {
+                Ok(operation) => operation.await,
+                Err(error) => Err(error),
+            };
+            assert!(cancelled.is_err());
+            assert_eq!(effects.recorded_call("0000000005-e").await?, None);
+            assert_eq!(effects.recorded_call("0000000004-d").await?, Some(native));
+        }
         Ok(())
     }
 }

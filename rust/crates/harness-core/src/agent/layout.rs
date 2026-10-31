@@ -135,14 +135,69 @@ impl fmt::Display for AgentId {
 }
 
 /// The canonical path of an agent's root (inbox) stream; the agent's address.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(try_from = "String", into = "String")]
+#[heap_layout(as = String)]
 pub struct AgentPath {
     text: String,
     depth: usize,
 }
 
 impl AgentPath {
+    /// Derives a child directly from this path's last identity, without
+    /// allocating temporary parent and child identities.
+    pub(crate) fn child_for_intent(
+        &self,
+        intent: &str,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> crate::Result<Self> {
+        if self.depth + 1 > MAX_DEPTH {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "agent nesting exceeds MAX_DEPTH",
+            ));
+        }
+        let parent = self.text.rsplit('/').next().unwrap_or(&self.text);
+        if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes((parent.len() + 1 + intent.len()) as u64)?;
+        }
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.agent.child-id.v1");
+        hash.update(parent.as_bytes());
+        hash.update(&[0]);
+        hash.update(intent.as_bytes());
+        let mut id = [0u8; 16];
+        hash.finalize_xof().fill(&mut id);
+        const MAX_PATH: usize =
+            AGENTS.len() + 1 + ID_HEX + MAX_DEPTH * (1 + CHILDREN.len() + 1 + ID_HEX);
+        let length = self.text.len() + b"/children/".len() + ID_HEX;
+        if let Some(work) = work.as_deref_mut() {
+            work.copy_bytes(length as u64)?;
+        }
+        let mut path = [0u8; MAX_PATH];
+        let prefix = self.text.len();
+        path[..prefix].copy_from_slice(self.text.as_bytes());
+        let middle = b"/children/";
+        path[prefix..prefix + middle.len()].copy_from_slice(middle);
+        let start = prefix + middle.len();
+        let hex = b"0123456789abcdef";
+        for (index, byte) in id.iter().enumerate() {
+            path[start + index * 2] = hex[(byte >> 4) as usize];
+            path[start + index * 2 + 1] = hex[(byte & 15) as usize];
+        }
+        let text = std::str::from_utf8(&path[..start + ID_HEX])
+            .map_err(|_| crate::Error::Invalid("derived agent path is not ASCII".into()))?;
+        let text = match work.as_deref_mut() {
+            Some(work) => work.clone_text(text)?,
+            None => text.to_owned(),
+        };
+        Ok(Self {
+            text,
+            depth: self.depth + 1,
+        })
+    }
     /// A top-level agent.
     #[must_use]
     pub fn root(id: &AgentId) -> Self {
@@ -197,6 +252,31 @@ impl AgentPath {
                 .map_or(self.text.as_str(), |(_, id)| id)
                 .to_owned(),
         )
+    }
+
+    /// Borrows the canonical identity without constructing another string.
+    pub(crate) fn id_text(&self) -> &str {
+        self.text
+            .rsplit_once('/')
+            .map_or(self.text.as_str(), |(_, id)| id)
+    }
+
+    pub(crate) fn identity_bytes(&self) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        for (byte, pair) in bytes
+            .iter_mut()
+            .zip(self.id_text().as_bytes().chunks_exact(2))
+        {
+            let digit = |c: u8| {
+                if c.is_ascii_digit() {
+                    c - b'0'
+                } else {
+                    c - b'a' + 10
+                }
+            };
+            *byte = (digit(pair[0]) << 4) | digit(pair[1]);
+        }
+        bytes
     }
 
     /// Nesting depth; zero for a root.
@@ -281,6 +361,41 @@ pub fn not_inherited() -> Result<Vec<StreamPath>, Error> {
 
 fn stream(text: &str) -> Result<StreamPath, Error> {
     StreamPath::new(text).map_err(Error::Stream)
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) fn stream_parts_with_io(
+    parts: &[&str],
+    io: &crate::filesystem::PreparationIo,
+) -> crate::Result<StreamPath> {
+    const MAX_PATH: usize =
+        AGENTS.len() + 1 + ID_HEX + MAX_DEPTH * (1 + CHILDREN.len() + 1 + ID_HEX) + 16;
+    let length = parts
+        .iter()
+        .try_fold(0usize, |length, part| length.checked_add(part.len()))
+        .filter(|length| *length <= MAX_PATH)
+        .ok_or_else(|| io.invalid("agent stream path exceeds its structural depth"))?;
+    io.charge(acyclic_fs::WorkCounters {
+        bytes_copied: length as u64,
+        ..Default::default()
+    })?;
+    let mut path = [0u8; MAX_PATH];
+    let mut offset = 0;
+    for part in parts {
+        path[offset..offset + part.len()].copy_from_slice(part.as_bytes());
+        offset += part.len();
+    }
+    let path = std::str::from_utf8(&path[..length])
+        .map_err(|_| io.invalid("agent stream path is not UTF-8"))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = io.original_native_work() {
+        return StreamPath::new_native(path, &work.runtime_meter())
+            .map_err(|error| crate::Error::from(work.runtime_error(error)))?
+            .map_err(|_| io.invalid("agent stream path is invalid"));
+    }
+    io.retain_owned((length + 2 * std::mem::size_of::<usize>()) as u64)?;
+    io.allocation_attempt(length as u64)?;
+    StreamPath::new(path).map_err(|_| io.invalid("agent stream path is invalid"))
 }
 
 #[cfg(test)]
