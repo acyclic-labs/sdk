@@ -41,6 +41,12 @@ fn derived_options_preserve_repeated_resources_and_streaming()
         .arg(format!("--proto_path={}", root.path().display()))
         .arg(format!(
             "--proto_path={}",
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../compatibility/proto")
+                .display()
+        ))
+        .arg(format!(
+            "--proto_path={}",
             protoc_bin_vendored::include_path()?.display()
         ))
         .arg(format!(
@@ -95,7 +101,6 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
         "inference",
         "stream",
         "harness",
-        "contract-derive",
     ] {
         command.arg(format!(
             "--proto_path={}",
@@ -106,6 +111,10 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
         ));
     }
     let status = command
+        .arg(format!(
+            "--proto_path={}",
+            root.join("compatibility/proto").display()
+        ))
         .arg(format!(
             "--proto_path={}",
             protoc_bin_vendored::include_path()?.display()

@@ -232,6 +232,32 @@ pub fn validate_add_subscription(
     Ok(())
 }
 
+/// Validates a fork: both Actors share one account and namespace, the child
+/// differs from the parent, and each child subscription id occurs once.
+pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractError> {
+    let namespace = request.namespace.as_deref();
+    if !valid_actor_scope(&request.account_id, namespace, &request.actor_id)
+        || !valid_actor_scope(&request.account_id, namespace, &request.child_actor_id)
+        || request.actor_id == request.child_actor_id
+        || !valid_idempotency_key(&request.idempotency_key)
+        || !request.subscriptions.iter().all(subscription)
+    {
+        return Err(ContractError::InvalidArgument);
+    }
+    if request.subscriptions.len() > MAX_SUBSCRIPTIONS {
+        return Err(ContractError::LimitExceeded);
+    }
+    let mut seen = HashSet::new();
+    if !request
+        .subscriptions
+        .iter()
+        .all(|value| seen.insert(value.subscription_id.as_str()))
+    {
+        return Err(ContractError::DuplicateName);
+    }
+    Ok(())
+}
+
 mod generated {
     #![allow(
         missing_docs,
@@ -288,9 +314,10 @@ pub use generated::{
     CheckpointActorResponseProto, DeleteAllRequestProto, DeleteAllResponseProto,
     DeleteWorkerRequestProto, DeleteWorkerResponseProto, DeploymentObservationProto,
     DeploymentRequestProto, DeploymentResponseProto, EgressRuleProto, EntrySourceProto, ErrorCode,
-    FetchBindingProto, HeaderProto, InspectActorRequestProto, InspectActorResponseProto,
-    InvocationOrderProto, InvokeActorRequestProto, InvokeActorResponseProto,
-    InvokeWorkerRequestProto, RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
+    FetchBindingProto, ForkActorRequestProto, ForkActorResponseProto, HeaderProto,
+    InspectActorRequestProto, InspectActorResponseProto, InvocationOrderProto,
+    InvokeActorRequestProto, InvokeActorResponseProto, InvokeWorkerRequestProto,
+    RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
     ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, SecretSelectionProto,
     ServiceErrorProto, SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto,
     SubscriptionState, UpdateNamespaceRequestProto, UpdateNamespaceResponseProto,

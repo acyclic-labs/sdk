@@ -71,6 +71,7 @@ function actorResponse(method, input) {
   }
   if (["DeployNamespace", "DeployWorker", "UpdateNamespace"].includes(method.name)) return { deployment: {name: "example", codeSha256: new Uint8Array(32).fill(1), revision: 1n} };
   if (method.name === "CheckpointActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "checkpoint-browser"); return { actor: { actorId: input.actorId, codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } }; }
+  if (method.name === "ForkActor") { assert.equal(input.childActorId, "browser-actor-child"); assert.equal(input.idempotencyKey, "fork-browser"); return { actor: { actorId: input.childActorId, codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 0n, configurationRevision: 1n } }; }
   if (method.name === "DeleteAll") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "delete-browser"); return {}; }
   if (["InvokeActor", "InvokeWorker"].includes(method.name)) return { status: 201, body: new Uint8Array([5]) };
 

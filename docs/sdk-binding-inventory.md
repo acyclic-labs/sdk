@@ -14,7 +14,7 @@ The Actors service declaration in [`contract_definitions.rs`](../rust/crates/act
 
 The Stream and Machines HTTP formats require an explicit protocol composition before substituting the Protobuf JSON helper. Sharing a JSON implementation cannot change their accepted shapes, enum handling, integer precision, error classification or size checks.
 
-All twelve Actors operations retain their original Rust, HTTP, NAPI and WASM entries: DeployNamespace, DeployWorker, InvokeWorker, DeleteWorker, UpdateNamespace, InspectActor, AddSubscription, RemoveSubscription, ResumeSubscription, CheckpointActor, InvokeActor and DeleteAll. The NAPI and WASM templates share wrapper behavior within each bridge. Their method/type tables match the canonical service declaration; they are still explicit ABI projections rather than a second service definition. Native producer output and WASM declarations preserve all twelve exported names. These source and producer checks establish neither RPC runtime parity nor performance equivalence.
+All thirteen Actors operations retain their original Rust, HTTP, NAPI and WASM entries: DeployNamespace, DeployWorker, InvokeWorker, DeleteWorker, UpdateNamespace, InspectActor, AddSubscription, RemoveSubscription, ResumeSubscription, CheckpointActor, ForkActor, InvokeActor and DeleteAll. The NAPI and WASM templates share wrapper behavior within each bridge. Their method/type tables match the canonical service declaration; they are still explicit ABI projections rather than a second service definition. Native producer output and WASM declarations preserve all thirteen exported names. These source and producer checks establish neither RPC runtime parity nor performance equivalence.
 
 Existing controls retain the behavioral boundaries:
 

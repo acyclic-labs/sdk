@@ -523,6 +523,7 @@ operation_wrappers! {
     (remove_subscription_result, "removeSubscriptionResult", remove_subscription, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
     (resume_subscription_result, "resumeSubscriptionResult", resume_subscription, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
     (checkpoint_actor_result, "checkpointActorResult", checkpoint_actor, CheckpointActorRequest, CheckpointActorResponse),
+    (fork_actor_result, "forkActorResult", fork_actor, ForkActorRequest, ForkActorResponse),
     (delete_all_result, "deleteAllResult", delete_all, DeleteAllRequest, DeleteAllResponse),
     (invoke_actor_result, "invokeActorResult", invoke_actor, InvokeActorRequest, InvokeActorResponse),
 }
