@@ -26,8 +26,9 @@ pub struct PublicationContext {
 impl PublicationContext {
     /// Decodes the sole versioned filesystem publication context.
     ///
-    /// The caller must separately authorize the followed record and check its
-    /// expected volume. No storage lookup or mutable head observation occurs.
+    /// The caller must separately authorize the followed record and authenticate
+    /// its original appending stream against this volume. Inherited records can
+    /// name an ancestor volume. No storage lookup or mutable head observation occurs.
     ///
     /// # Errors
     /// Returns `InvalidArgument` for an unknown version, a noncanonical or
