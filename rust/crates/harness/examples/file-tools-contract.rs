@@ -111,6 +111,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             text: read.into(),
             page: None,
             media: None,
+            outputs: Vec::new(),
         })?,
     };
     let authored_input = ReadFileInput {
@@ -135,6 +136,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             text: read.into(),
             page: None,
             media: None,
+            outputs: Vec::new(),
         })?,
     };
     let search_input = SearchInput {
@@ -168,6 +170,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             text: source.into(),
             page: None,
             media: None,
+            outputs: Vec::new(),
         })?,
     };
     let file_result = ToolResult {

@@ -437,8 +437,8 @@ fn decode_payload(source: &[u8], work: crate::NativeWork<'_>) -> Result<Decoded>
         }
     };
     let parts: &[BorrowedText<'_>] = match &value {
-        Text::One(value) => std::slice::from_ref(value),
-        Text::Many(value) => value,
+        Text::One(value) => std::slice::from_ref(&**value),
+        Text::Many(value) => value.as_slice(),
     };
     let mut normalized_hold = edit::allocation(work, 0)?;
     let input_length = parts
