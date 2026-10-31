@@ -3,26 +3,12 @@
 // deadline and request oracle; this module only drives one installed host.
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {existsSync} from 'node:fs';
-import {readFile,writeFile} from 'node:fs/promises';
-import {dirname,delimiter,isAbsolute,join} from 'node:path';
+import {readFile,realpath,writeFile} from 'node:fs/promises';
+import {dirname,delimiter,isAbsolute,join,toNamespacedPath} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
-
-const programs=Object.freeze({codex:'codex','claude-code':'claude',pi:'pi'});
-
-// The pinned host closure in this directory's package-lock.json, unless the
-// caller names E2E_CODEX, E2E_CLAUDE or E2E_PI.
-export function nativeExecutable(host,env) {
- const program=programs[host];
- assert.ok(program,'step=admit native host; recovery=select '+Object.keys(programs).join('|'));
- const name='E2E_'+program.toUpperCase();
- const path=env[name]??fileURLToPath(new URL('./node_modules/.bin/'+program,import.meta.url));
- assert.ok(isAbsolute(path)&&existsSync(path),
-  `step=admit ${name}; recovery=npm ci --prefix plugin/tests/hosts, or set ${name} to the absolute pinned ${program} executable`);
- return path;
-}
+import {nativeHost} from './native-host.mjs';
 
 // Native policy arguments the root runs under and every managed child inherits
 // (ACYCLIC_HOST_ARGS), plus each host's own keyless provider selection. Only
@@ -58,12 +44,12 @@ async function launch(host,{url,root,packageRoot,workspace,env,tools,prompt}) {
 // plugin directory, open the root through the workspace API, then run the
 // actual host once against the caller's mock endpoint.
 export async function installedHost({host,processes,fixture,capture,tools,prompt,answer}) {
- const native=nativeExecutable(host,fixture.env);
+ const native=await nativeHost(host,fixture.env);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
  assert.ok(fixture.env.E2E_MOCK_URL,'step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs');
  const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
- env.PATH=dirname(native)+delimiter+env.PATH;
+ env.PATH=[dirname(native.entry),native.path,env.PATH].join(delimiter);
  let step='stage native package';
  const run=async(program,args,input)=>{
   // The long-lived workspace owner holds the one mount lease. Commands retain
@@ -81,13 +67,13 @@ export async function installedHost({host,processes,fixture,capture,tools,prompt
   if(host==='codex') {
    const installation=await run(executable,['install',host,'--plugin-root',packageRoot]);
    assert.equal(installation.code,0,installation.stderr);
-   const listed=await run(native,['plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
+    const listed=await run(native.program,[...native.args,'plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
    assert.ok(JSON.parse(listed.stdout).installed.some(row=>row.pluginId==='acyclic@acyclic'&&row.enabled),'native plugin manager lacks acyclic@acyclic');
   } else if(host==='pi') {
    const extension=join(env.PI_CODING_AGENT_DIR,'extensions/acyclic.ts');
    const installation=await run(executable,['install',host,'--plugin-root',packageRoot,'--settings',extension]);
    assert.equal(installation.code,0,installation.stderr);
-   assert.ok((await readFile(extension,'utf8')).includes(JSON.stringify(executable)),'native extension does not bind admitted shipping binary');
+   assert.ok((await readFile(extension,'utf8')).includes(JSON.stringify(toNamespacedPath(await realpath(executable)))),'native extension does not bind admitted shipping binary');
   }
   step='start shipping workspace owner';
   await startWorkspaceOwner({scope:processes,binary:fixture.binary,workspace,state:join(root,'state'),env,root,
@@ -101,7 +87,7 @@ export async function installedHost({host,processes,fixture,capture,tools,prompt
   const {policy,args}=await launch(host,{url:fixture.env.E2E_MOCK_URL,root,packageRoot,workspace,env,tools,prompt});
   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
-  const completed=await run(native,args);
+  const completed=await run(native.program,[...native.args,...args]);
   assert.equal(completed.code,0,completed.stderr);
   assert.ok(completed.stdout.includes(answer),'native answer missing');
  } catch(error) {
