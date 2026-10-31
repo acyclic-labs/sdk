@@ -616,7 +616,7 @@ impl WireSession {
                 .revision
                 .checked_add(1)
                 .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
-            let retained = match interest {
+            let mut retained = match interest {
                 Interest::Stream(path) => self.views.get_mut(path),
                 Interest::Resource(resource) => self.resource_views.get_mut(resource.as_ref()),
             }
