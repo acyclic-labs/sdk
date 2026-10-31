@@ -37,42 +37,66 @@ where
         io: &'a PreparationIo,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            if matches!(envelope.payload(), Payload::ContextBatch { .. }) {
+                return Err(canonical_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "context changes require their original source and epoch cut",
+                ));
+            }
             self.authorize_envelope(envelope, Some(io))?;
             // Canonicalize the envelope only. Its native body remains an exact
             // string, so this never parses or rewrites provider wire bytes.
             let bytes = envelope.encode(io, super::MAXIMUM_PAYLOAD_BYTES)?;
             let bytes_hold = io.guard_bytes(&bytes)?;
-            let reference = <Self as ExecutionJournal>::stage(
-                self,
-                envelope.intent(),
-                key,
-                &bytes,
-                MEDIA,
-                Some(io),
-            )?
-            .await?;
-            let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
-            let event = ExecutionEvent::ConversationItem {
-                step,
-                envelope: reference,
-                publication: indexed_publication::contribution_identity(contributions, Some(io))?,
-            };
             let result = self
-                .append_contributed_if_tail(
+                .append_conversation_bytes(
                     envelope.intent(),
                     expected_tail,
                     key,
-                    &event,
+                    step,
+                    &bytes,
                     contributions,
-                    Some(io),
-                )?
+                    io,
+                )
                 .await;
-            drop(event);
-            drop(reference_hold);
             drop(bytes);
             drop(bytes_hold);
             result
         })
+    }
+
+    pub(super) async fn append_conversation_bytes(
+        &self,
+        intent: OperationId,
+        expected_tail: u64,
+        key: &str,
+        step: u32,
+        bytes: &acyclic_stream::OwnedBytes,
+        contributions: &[indexed_publication::Contribution<'_>],
+        io: &PreparationIo,
+    ) -> Result<bool> {
+        let reference =
+            <Self as ExecutionJournal>::stage(self, intent, key, bytes, MEDIA, Some(io))?.await?;
+        let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
+        let event = ExecutionEvent::ConversationItem {
+            step,
+            envelope: reference,
+            publication: indexed_publication::contribution_identity(contributions, Some(io))?,
+        };
+        let result = self
+            .append_contributed_if_tail(
+                intent,
+                expected_tail,
+                key,
+                &event,
+                contributions,
+                Some(io),
+            )?
+            .await;
+        drop(event);
+        drop(reference_hold);
+        result
     }
 
     fn authorize_envelope(&self, envelope: &Envelope, io: Option<&PreparationIo>) -> Result<()> {
@@ -84,17 +108,28 @@ where
                 "conversation admission requires its original bound execution",
             ));
         }
-        let source = match envelope.payload() {
-            Payload::Wire { .. } => return Ok(()),
-            Payload::Context {
-                change: ContextChange::Skill { metadata },
-                ..
-            } => &metadata.source,
-            Payload::Context {
-                change: ContextChange::Removed { source },
-                ..
-            } => source,
-        };
+        match envelope.payload() {
+            Payload::Wire { .. } => Ok(()),
+            Payload::ContextBatch { changes, .. } => {
+                for change in changes {
+                    self.authorize_context_source(
+                        match change {
+                            ContextChange::Skill { metadata } => &metadata.source,
+                            ContextChange::Removed { source } => source,
+                        },
+                        io,
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn authorize_context_source(
+        &self,
+        source: &crate::context::PinnedContextPath,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         let admitted = crate::executor::with_history_io(io, |work| {
             source.validate(work)?;
             crate::core::directory_read_granted_with_work(
@@ -118,6 +153,7 @@ where
         &self,
         bytes: &[u8],
         reference: &FileRef,
+        publication: Option<[u8; 32]>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         if reference.descriptor().media_type() != MEDIA {
@@ -128,6 +164,13 @@ where
             ));
         }
         let (envelope, hold) = crate::executor::decode_json::<Envelope>(bytes, io)?;
+        if matches!(envelope.payload(), Payload::ContextBatch { .. }) && publication.is_none() {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "context observation lacks its original contributed cut",
+            ));
+        }
         self.authorize_envelope(&envelope, io)?;
         drop(envelope);
         drop(hold);

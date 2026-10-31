@@ -20,6 +20,51 @@ pub struct SourceCursor {
     pub preceding: Option<[u8; 32]>,
 }
 
+// The original tuple wire has one paid decoder beside its producer. The
+// generation bytes retain the complete storage association, never just a digest.
+#[derive(Deserialize, crate::HeapLayout)]
+pub(crate) struct SkillSourceCheckpoint(
+    u32,
+    SourceCursor,
+    SourceCursor,
+    [u8; 16],
+    Option<(String, [u8; 32], u64, [u8; 16], Vec<u8>, u64)>,
+);
+
+impl crate::filesystem::PreparationRecord for SkillSourceCheckpoint {}
+
+impl SkillSourceCheckpoint {
+    pub(crate) fn decode<'io>(
+        bytes: &[u8],
+        io: &'io PreparationIo,
+    ) -> Result<(Self, crate::conversation::ContentHold<'io>)> {
+        let (value, hold) = io.decode(
+            std::marker::PhantomData::<Self>,
+            bytes,
+            crate::wire::ErrorCode::Storage,
+        )?;
+        if value.0 != 1 || value.1.next >= value.2.next {
+            return Err(StreamError::InvalidArgument.into());
+        }
+        if let Some((origin, _, end, _, generation, _)) = &value.4 {
+            StreamPath::validate(origin)?;
+            if *end > value.2.next
+                || *end <= value.1.next
+                || acyclic_fs::GenerationId::from_bytes(generation).is_none()
+            {
+                return Err(StreamError::InvalidArgument.into());
+            }
+        }
+        Ok((value, hold))
+    }
+    pub(crate) fn cursor(&self) -> SourceCursor {
+        self.2
+    }
+    pub(crate) fn volume(&self) -> [u8; 16] {
+        self.3
+    }
+}
+
 /// One metadata change, still invisible until the owning atomic admission.
 pub enum SkillPublicationChange {
     /// Validated header with its original pinned lazy body authority.
@@ -87,6 +132,10 @@ impl Drop for Preparing<'_> {
 }
 
 impl SkillPublicationCut {
+    pub(crate) fn executing_volume(&self) -> [u8; 16] {
+        self.executing_volume.into_bytes()
+    }
+
     /// Cursor against which this source checkpoint must be conditionally admitted.
     pub fn from(&self) -> SourceCursor {
         self.from
@@ -201,6 +250,10 @@ impl SkillPublicationSource {
             pending: None,
             failed: false,
         })
+    }
+
+    pub(crate) fn executing_volume(&self) -> [u8; 16] {
+        self.volume.into_bytes()
     }
 
     /// Read authority retained by this executing binding, never inferred from a

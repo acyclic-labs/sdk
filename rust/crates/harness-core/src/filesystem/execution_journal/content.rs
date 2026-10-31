@@ -318,8 +318,8 @@ where
                     .transpose()?
                     .flatten();
                 let bytes = owned_bytes.as_ref();
-                if matches!(event, ExecutionEvent::ConversationItem { .. }) {
-                    self.verify_conversation_envelope(bytes, reference, io)?;
+                if let ExecutionEvent::ConversationItem { publication, .. } = event {
+                    self.verify_conversation_envelope(bytes, reference, *publication, io)?;
                 }
                 if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
                     let limits = Limits::default();
