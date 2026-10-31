@@ -33,6 +33,7 @@
     "rust/crates/host-platform",
     "rust/crates/native-runtime",
     "rust/crates/objects",
+    "rust/crates/observability",
     "rust/crates/proto-codegen",
     "rust/crates/protobuf-json",
     "rust/crates/stream",
