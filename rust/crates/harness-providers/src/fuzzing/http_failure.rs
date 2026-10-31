@@ -106,3 +106,15 @@ fn escaped_strings(bytes: &[u8]) -> Vec<u8> {
     }
     output
 }
+
+#[cfg(test)]
+#[test]
+fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking() {
+    for input in [
+        include_bytes!("../../fuzz/corpus/http_failure/llamacpp-context").as_slice(),
+        include_bytes!("../../fuzz/corpus/http_failure/llamacpp-auth").as_slice(),
+        include_bytes!("../../fuzz/corpus/http_failure/proxy-rate").as_slice(),
+    ] {
+        assert_http_failure_invariants(input);
+    }
+}
