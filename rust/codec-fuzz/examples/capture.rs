@@ -348,6 +348,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
                 "ObjectId::to_bytes",
                 &mut manifest,
             )?;
+            if value.kind == ObjectKind::GenerationRoot {
+                save(
+                    "ids",
+                    &format!("generation-json-sealed-{sealed}"),
+                    &serde_json::to_vec(&acyclic_fs::GenerationId::from_root(value))?,
+                    "GenerationId::Serialize delegates to the complete canonical to_bytes output",
+                    &mut manifest,
+                )?;
+            }
         }
     }
     use acyclic_stream::{wire, wire_codec::session::encode_grpc_frame};

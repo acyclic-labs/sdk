@@ -286,6 +286,25 @@ pub fn ids(bytes: &[u8]) {
             Some(id)
         );
     }
+    if let Ok(id) = serde_json::from_slice::<acyclic_fs::GenerationId>(bytes) {
+        let canonical = id.to_bytes();
+        let encoded = serde_json::to_vec(&id).unwrap();
+        assert_eq!(encoded, serde_json::to_vec(canonical.as_slice()).unwrap());
+        assert_eq!(
+            serde_json::from_slice::<acyclic_fs::GenerationId>(&encoded).unwrap(),
+            id
+        );
+        let digest_only = serde_json::to_vec(id.digest().as_bytes()).unwrap();
+        assert!(serde_json::from_slice::<acyclic_fs::GenerationId>(&digest_only).is_err());
+        let mut trailing = canonical.as_slice().to_vec();
+        trailing.push(0);
+        assert!(
+            serde_json::from_slice::<acyclic_fs::GenerationId>(
+                &serde_json::to_vec(&trailing).unwrap()
+            )
+            .is_err()
+        );
+    }
 }
 
 pub fn auth(bytes: &[u8]) {
