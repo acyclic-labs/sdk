@@ -15,7 +15,6 @@ impl crate::runtime::Executor for Executor {
     }
 }
 
-#[tokio::test]
 async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), StreamError> {
     let provider = Arc::new(MemoryStream::default());
     let stream = Stream::new(Arc::clone(&provider), "pending")?;
@@ -77,7 +76,7 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
 }
 
 #[tokio::test]
-async fn native_custody_keeps_exact_results_and_terminates_on_producer_loss()
+async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::{NativePending, StreamPath, test_meter::Meter};
     use std::{future::Future, sync::atomic::Ordering, task::Context};
@@ -99,9 +98,11 @@ async fn native_custody_keeps_exact_results_and_terminates_on_producer_loss()
     let allocations = meter.allocations.load(Ordering::SeqCst);
     let mut prepared = None;
     let physical = acyclic_test_support::measure(|| {
+        let (request, storage) = funded.into_parts();
         prepared = Some(NativePending::prepare_native(
             Arc::clone(&provider),
-            funded,
+            request,
+            storage,
             meter.original(),
         ));
     });
@@ -139,9 +140,11 @@ async fn native_custody_keeps_exact_results_and_terminates_on_producer_loss()
     // Producer loss before first poll must terminate both registered waiters.
     // Cancelling the selected waiter must pass its event to the next waiter.
     let meter = Arc::new(Meter::default());
+    let (retained, storage) = request.try_clone_native(&meter.original())?.into_parts();
     let (pending, producer) = NativePending::prepare_native(
         Arc::new(MemoryStream::default()),
-        request.try_clone_native(&meter.original())?,
+        retained,
+        storage,
         meter.original(),
     )?;
     let mut first = Box::pin(pending.result());
@@ -181,6 +184,7 @@ async fn native_custody_keeps_exact_results_and_terminates_on_producer_loss()
     for allowed in 0..physical.count_current as u64 {
         let meter = Arc::new(Meter::default());
         let funded = request.try_clone_native(&meter.original())?;
+        let (retained, storage) = funded.into_parts();
         meter.limit.store(
             meter.allocations.load(Ordering::SeqCst) + allowed,
             Ordering::SeqCst,
@@ -188,7 +192,8 @@ async fn native_custody_keeps_exact_results_and_terminates_on_producer_loss()
         assert!(
             NativePending::prepare_native(
                 Arc::new(MemoryStream::default()),
-                funded,
+                retained,
+                storage,
                 meter.original(),
             )
             .is_err()
@@ -196,5 +201,33 @@ async fn native_custody_keeps_exact_results_and_terminates_on_producer_loss()
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);
         meter.assert_refunded();
     }
+
+    // Original native failure is retained, not normalized to a portable error
+    // or reconstructed by each observer. Admission succeeds before cancellation.
+    let meter = Arc::new(Meter::default());
+    let (retained, storage) = request.try_clone_native(&meter.original())?.into_parts();
+    let (pending, producer) = NativePending::prepare_native(
+        Arc::new(MemoryStream::default()),
+        retained,
+        storage,
+        meter.original(),
+    )?;
+    meter.cancelled.store(true, Ordering::SeqCst);
+    producer.await??;
+    let result = pending.result().await?;
+    let error = result.as_ref().err().expect("native cancellation lost");
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    assert!(error.get_ref().is_some_and(|cause| {
+        cause
+            .downcast_ref::<crate::test_meter::NativeDenial>()
+            .is_some_and(|cause| cause.0 == "cancelled")
+    }));
+    let observer = pending.clone();
+    assert!(std::ptr::eq(result, observer.result().await?));
+    drop(observer);
+    drop(pending);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    cancellation_keeps_exact_submission_and_shared_outcome().await?;
     Ok(())
 }
