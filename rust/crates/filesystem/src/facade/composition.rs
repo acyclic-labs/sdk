@@ -404,13 +404,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Fs<A, O> {
     /// Fences the active policy cut and freezes a caller-submitted commit.
     /// Call this before sending its request through an external provider.
     /// Repeated sealing preserves the exact request and key.
-    pub fn seal_commit(
+    pub fn seal_commit<W: FsWork>(
         &self,
         commit: &mut FilesystemCommit,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<(), FsError> {
+        let mut accounting = work.accounting(cancellation);
         let result = (|| {
             let mut authority = authority_work(&accounting, cancellation)?;
             use crate::async_storage::AuthorityComposition as _;
@@ -423,18 +423,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Fs<A, O> {
             record_authority_work(&mut accounting, &authority)?;
             result.map_err(FsError::from)
         })();
-        measured(result, &accounting)
+        work.finish(result, &accounting)
     }
 
     /// Submits a composed commit once. On `Unknown`, resubmit the returned
     /// commit unchanged; its key replays the original receipt.
-    pub async fn submit_commit(
+    pub async fn submit_commit<W: FsWork>(
         &self,
         commit: FilesystemCommit,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<FilesystemCommitOutcome> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<FilesystemCommitOutcome, FsError> {
+        let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut authority = match authority_work(&accounting, cancellation) {
                 Ok(authority) => authority,
@@ -461,23 +461,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Fs<A, O> {
             result.map_err(FsError::from)
         }
         .await;
-        measured(result, &accounting)
+        work.finish(result, &accounting)
     }
 
     /// Settles a composed commit the caller submitted through its own
     /// provider, from the exact outcome of [`FilesystemCommit::request`].
-    pub async fn settle_commit(
+    pub async fn settle_commit<W: FsWork>(
         &self,
         commit: FilesystemCommit,
         outcome: acyclic_stream::CommitOutcome,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<FilesystemCommitOutcome> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<FilesystemCommitOutcome, FsError> {
+        let mut accounting = work.accounting(cancellation);
         use crate::async_storage::AuthorityComposition as _;
         let Some(composition) = self.inner.authority.composition() else {
-            return measured(
-                Ok(FilesystemCommitOutcome::Unknown {
+            return work.finish(
+                Ok::<_, FsError>(FilesystemCommitOutcome::Unknown {
                     commit,
                     error: crate::AuthorityStoreError::RejectedStatic(
                         "authority backend does not support atomic composition",
@@ -493,6 +493,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Fs<A, O> {
         if let Some(authority) = authority {
             drop(record_authority_work(&mut accounting, &authority));
         }
-        measured(result.map_err(FsError::from), &accounting)
+        work.finish(result.map_err(FsError::from), &accounting)
     }
 }

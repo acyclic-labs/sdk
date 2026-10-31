@@ -15,6 +15,11 @@ fn caller_construction_stays_funded_through_composition_and_foreign_refusal() ->
     let baseline = original.live_allocation_bytes();
     let other_baseline = other.live_allocation_bytes();
     let store = StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default()));
+    let fs = crate::Fs::new(
+        store,
+        crate::MemoryObjectStore::default(),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
     let path = StreamPath::new("caller/conditional-state")?;
     let request = CommitRequest {
         conditions: vec![CommitCondition::Absent { path: path.clone() }],
@@ -40,11 +45,12 @@ fn caller_construction_stays_funded_through_composition_and_foreign_refusal() ->
         "ownership transfer adds no allocation or copy"
     );
     let original_request = commit.request().clone();
-    let mut foreign = AuthorityWork::native(&other, &cancellation);
     assert!(matches!(
-        store.seal(&mut commit, &mut foreign),
-        Err(AuthorityStoreError::NativeOriginal(
-            crate::NativeTreeMaterializationError::InvalidLayout
+        fs.seal_commit(&mut commit, &other, &cancellation),
+        Err(crate::FsError::Authority(
+            AuthorityStoreError::NativeOriginal(
+                crate::NativeTreeMaterializationError::InvalidLayout
+            )
         ))
     ));
     assert_eq!(commit.request(), &original_request);
@@ -52,9 +58,8 @@ fn caller_construction_stays_funded_through_composition_and_foreign_refusal() ->
         commit.request_mut().is_some(),
         "foreign refusal must not seal the caller's request"
     );
-    drop(foreign);
     assert_eq!(other.live_allocation_bytes(), other_baseline);
-    store.seal(&mut commit, &mut work)?;
+    fs.seal_commit(&mut commit, &original, &cancellation)?;
     assert!(commit.request_mut().is_none());
     drop(original_request);
     drop(work);
