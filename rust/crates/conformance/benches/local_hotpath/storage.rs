@@ -509,15 +509,30 @@ async fn actor_delivery(
     let host = fixture.bound.agents();
     let actor = host.actor(&path)?;
     let runtime = host.runtime();
+    let admitted = runtime.store().load(&actor).await?;
+    let epoch = admitted
+        .state()
+        .ok_or("resident Actor state absent")?
+        .epoch();
     fixture
         .entries
-        .check_dropped_producer(actor.clone())
+        .check_dropped_producer(
+            actor.clone(),
+            epoch,
+            Trigger::Record {
+                subscription: INBOX.into(),
+                sequence: 0,
+            },
+        )
         .await?;
     if runtime.counts() != (agents, 0) {
         return Err("handler-entry population is not resident and idle".into());
     }
     let mut completed = Vec::with_capacity(samples);
-    for index in 0..=samples {
+    for index in 0..samples
+        .checked_add(4)
+        .ok_or("delivery sample count overflow")?
+    {
         let by = Sender::Host {
             host: "benchmark".into(),
         };
@@ -530,12 +545,32 @@ async fn actor_delivery(
         let Delivered::Committed { inbox } = host.send(&path, &by, &record).await? else {
             return Err("delivery input was not committed".into());
         };
-        let expected = if index == 0 {
-            inbox.checked_add(1).ok_or("delivery cursor overflow")?
-        } else {
-            inbox
+        let expected = Trigger::Record {
+            subscription: if index == 1 {
+                "another-inbox".into()
+            } else {
+                INBOX.into()
+            },
+            sequence: if index == 0 {
+                inbox.checked_add(1).ok_or("delivery cursor overflow")?
+            } else {
+                inbox
+            },
         };
-        let (scope, receiver) = fixture.entries.arm(actor.clone(), expected)?;
+        let expected_epoch = if index == 2 {
+            epoch.checked_add(1).ok_or("delivery epoch overflow")?
+        } else {
+            epoch
+        };
+        let expected_actor = if index == 3 {
+            host.actor(&AgentPath::root(&id(agents)?))?
+        } else {
+            actor.clone()
+        };
+        let (scope, receiver) =
+            fixture
+                .entries
+                .arm(expected_actor, expected_epoch, expected.clone())?;
         let entries_before = fixture.entries.calls();
         let started = Instant::now();
         let drained = {
@@ -543,7 +578,9 @@ async fn actor_delivery(
             let _scope = scope;
             let result = Box::pin(runtime.drain_actor(&actor)).await;
             if index == 0 {
-                fixture.entries.check_owned_scope(actor.clone(), expected)?;
+                fixture
+                    .entries
+                    .check_owned_scope(actor.clone(), expected_epoch, expected)?;
             }
             result
         };
@@ -555,13 +592,20 @@ async fn actor_delivery(
         // The only producer was on the completed drain path. This receive
         // must now contain its entry or return typed producer loss.
         let entered = Entries::receive(receiver).await;
-        if index == 0 {
+        if index < 4 {
             if entered != Err(EntryError::UnexpectedDelivery) {
                 return Err("handler-entry oracle accepted another input identity".into());
             }
-            emit(
-                serde_json::json!({"schema": 1, "kind": "negative_control", "control": "real handler entry against another input cursor", "result": "rejected"}),
-            )?;
+            emit(serde_json::json!({
+                "schema": 1, "kind": "negative_control",
+                "control": match index {
+                    0 => "real handler entry against another input cursor",
+                    1 => "real handler entry against another subscription",
+                    2 => "real handler entry against another admitted epoch",
+                    _ => "real handler entry against another actor",
+                },
+                "result": "rejected",
+            }))?;
         } else {
             rows.record(
                 Operation::ActorWake,
