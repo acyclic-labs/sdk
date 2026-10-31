@@ -10,7 +10,8 @@ enum ToolCallRejection {
     Unavailable,
     /// The arguments violate the tool's pinned input schema.
     InvalidInput(Error),
-    /// The bound policy denied the call; the model can adapt.
+    /// The bound policy denied the call, or the tool refused it definitively (authorization,
+    /// validation, a missing resource); the model can adapt.
     Failed(Error),
 }
 
@@ -338,6 +339,9 @@ impl StockExecution<'_> {
         .await
     }
 
+    /// Admits a call before dispatch. Every refusal a tool reports settles as the call's result;
+    /// harness infrastructure failures end the turn. Native and portable tools use the
+    /// same classification, including authorization before an effect starts.
     fn authorize_tool_invocation(
         &self,
         tool: &crate::tool::Tool,
@@ -349,6 +353,25 @@ impl StockExecution<'_> {
             tool.executor.supports_native_execution(work)?;
             tool.projection.supports_native_projection(Some(work))?;
         }
+        match self.admit_tool_invocation(tool, invocation) {
+            Ok(admitted) => Ok(admitted),
+            Err(error) if !error.is_tool_failure() => Err(error),
+            Err(
+                violation @ Error::ToolRejected {
+                    code: crate::wire::ErrorCode::Invalid,
+                    ..
+                },
+            ) => Ok(Err(ToolCallRejection::InvalidInput(violation))),
+            Err(error) => Ok(Err(ToolCallRejection::Failed(error))),
+        }
+    }
+
+    fn admit_tool_invocation(
+        &self,
+        tool: &crate::tool::Tool,
+        invocation: &ToolInvocation,
+    ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
+    {
         let capability = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:call:{}", tool.definition.name), work)
         })?;
@@ -367,19 +390,14 @@ impl StockExecution<'_> {
             return Ok(Err(ToolCallRejection::InvalidInput(violation)));
         }
         let context = self.invocation_context(invocation)?;
-        match stock_authorize_tool(
+        stock_authorize_tool(
             tool,
             context.as_ref(),
             &self.stock.tool_scope,
             invocation,
             self.io,
-        ) {
-            Ok(()) => Ok(Ok((context, capability))),
-            Err(violation @ Error::ToolRejected { .. }) => {
-                Ok(Err(ToolCallRejection::InvalidInput(violation)))
-            }
-            Err(error) => Err(error),
-        }
+        )?;
+        Ok(Ok((context, capability)))
     }
 
     pub(super) async fn require_tool_policy(

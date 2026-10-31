@@ -1,4 +1,5 @@
 use super::{Adapter, Result, State, Value, budget, invalid};
+use crate::protocol::present;
 use acyclic_harness_core::model::{
     ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome,
 };
@@ -110,7 +111,7 @@ impl<'work> State<'work> {
             Some("redacted_thinking") => ReasoningKind::Redacted,
             Some("reasoning") if value["encrypted_content"].is_string() => ReasoningKind::Encrypted,
             Some("reasoning") => ReasoningKind::Summary,
-            _ if value.get("thoughtSignature").is_some() => ReasoningKind::Signature,
+            _ if present(value.get("thoughtSignature")).is_some() => ReasoningKind::Signature,
             _ => ReasoningKind::Readable,
         };
         target.visible = visible;
@@ -129,9 +130,8 @@ impl<'work> State<'work> {
             .into_iter()
             .flatten()
             .filter_map(|part| part["text"].as_str());
-        let direct = value
-            .get("thinking")
-            .or_else(|| value.get("text"))
+        let direct = present(value.get("thinking"))
+            .or_else(|| present(value.get("text")))
             .and_then(Value::as_str);
         for text in direct.into_iter().chain(summaries) {
             if first {
@@ -148,6 +148,9 @@ impl<'work> State<'work> {
         Ok(())
     }
     pub(super) fn thinking_delta(&mut self, index: u64, key: &str, value: &Value) -> Result<()> {
+        let Some(value) = present(Some(value)) else {
+            return Ok(());
+        };
         let (target, budget) = self.thinking(index)?;
         budget.string(&mut target.native, "")?;
         let field = match key {

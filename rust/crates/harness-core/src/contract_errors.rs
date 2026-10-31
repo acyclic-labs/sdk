@@ -603,6 +603,48 @@ impl Error {
             )
     }
 
+    /// A tool's definitive refusal is model feedback. Native accounting and
+    /// producer faults remain harness failures even when their wire code is Invalid.
+    pub(crate) fn is_tool_failure(&self) -> bool {
+        if self.uncertain() {
+            return false;
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if matches!(
+            self,
+            Self::NativeJson {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            } | Self::NativeJsonAdmission {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            } | Self::NativeSchema {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            } | Self::NativeWorkspace { .. }
+                | Self::NativeFilesystem { .. }
+        ) {
+            return true;
+        }
+        !self.is_native_failure() || matches!(self, Self::Process(_))
+    }
+
+    /// Mark a fixed rejection at a checked model-input boundary. Allocation,
+    /// cancellation and original IO failures retain their existing ownership.
+    pub(crate) fn tool_input(self) -> Self {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Self::NativeBoundary { code, reason } = self {
+            return match code {
+                crate::wire::ErrorCode::Invalid
+                | crate::wire::ErrorCode::Unauthorized
+                | crate::wire::ErrorCode::NotFound
+                | crate::wire::ErrorCode::Conflict => Self::ToolRejected { code, reason },
+                _ => Self::NativeBoundary { code, reason },
+            };
+        }
+        self
+    }
+
     /// A definitive malformed tool request, distinct from native accounting failures.
     pub(crate) fn tool_rejected(reason: &'static str) -> Self {
         Self::ToolRejected {

@@ -184,7 +184,7 @@ fn seed_references(
             ScriptedEvent::Event(ModelEvent::ToolCall(call))
                 if matches!(call.name.split('@').next(), Some("read" | "edit")) =>
             {
-                call.arguments.get("file").and_then(Value::as_str)
+                call.arguments.get("version").and_then(Value::as_str)
             }
             _ => None,
         });

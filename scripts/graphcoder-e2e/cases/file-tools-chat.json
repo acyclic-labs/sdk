@@ -21,33 +21,35 @@
       },
       {
         "when": {
-          "tool_result": "file"
+          "tool_result": "version"
         },
         "tools": [
           {
             "id": "edit",
             "name": "edit",
             "arguments": {
-              "file": {
-                "$tool_result": "/file"
-              },
               "old_text": "before",
-              "new_text": "after"
+              "new_text": "after",
+              "path": "result.txt",
+              "version": {
+                "$tool_result": "/version"
+              }
             }
           }
         ]
       },
       {
         "when": {
-          "tool_result": "file"
+          "tool_result": "version"
         },
         "tools": [
           {
             "id": "read",
             "name": "read",
             "arguments": {
-              "file": {
-                "$tool_result": "/file"
+              "path": "result.txt",
+              "version": {
+                "$tool_result": "/version"
               }
             }
           }
@@ -77,26 +79,29 @@
     },
     "tool_results": [
       {
-        "file": {
-          "descriptor": {
-            "byte_length": 12
-          },
-          "volume": {
-            "class": "project"
-          }
-        }
+        "path": "result.txt",
+        "text": "after edit\n"
+      }
+    ],
+    "file_versions": [
+      {
+        "descriptor": {
+          "byte_length": 12
+        },
+        "volume": {
+          "class": "project"
+        },
+        "path": "result.txt"
       },
       {
-        "file": {
-          "descriptor": {
-            "byte_length": 11
-          },
-          "volume": {
-            "class": "project"
-          }
-        }
-      },
-      "after edit\n"
+        "descriptor": {
+          "byte_length": 11
+        },
+        "volume": {
+          "class": "project"
+        },
+        "path": "result.txt"
+      }
     ]
   },
   "adapter": "chat"

@@ -40,13 +40,17 @@ impl FileTool {
         };
         self.public_path(file.path(), io)?;
         crate::executor::with_history_io(io, |history| {
-            scope.limits().validate_file(&file, history)?;
+            scope
+                .limits()
+                .validate_file(&file, history)
+                .map_err(Error::tool_input)?;
             if !crate::runtime::read_granted_with_work(scope.grants(), &file, history)? {
                 return Err(crate::store::guarded_boundary(
                     history,
                     crate::wire::ErrorCode::Unauthorized,
                     "file tool requires original source read grant",
-                ));
+                )
+                .tool_input());
             }
             Ok(())
         })?;
@@ -55,13 +59,14 @@ impl FileTool {
 
     fn public_path(&self, path: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history)?;
+            crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
             if crate::conversation::is_internal_path(path) {
                 return Err(crate::store::guarded_boundary(
                     history,
                     crate::wire::ErrorCode::Unauthorized,
                     "file tools cannot access internal storage",
-                ));
+                )
+                .tool_input());
             }
             Ok(())
         })
@@ -86,24 +91,41 @@ impl FileTool {
         let (file, custody) = match *self {
             Self::Read => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                let source =
+                    self.path_source(scope, &input.0.path, input.0.version.as_deref(), work, io)?;
                 let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
                 let length = match input.0.range {
-                    Some(range) if range.end <= input.0.file.descriptor().byte_length() => {
+                    Some(range)
+                        if source
+                            .0
+                            .as_ref()
+                            .is_none_or(|file| range.end <= file.descriptor().byte_length()) =>
+                    {
                         range.end.checked_sub(range.start)
                     }
                     Some(_) => None,
-                    None => Some(input.0.file.descriptor().byte_length()),
+                    None => source
+                        .0
+                        .as_ref()
+                        .map_or(Some(0), |file| Some(file.descriptor().byte_length())),
                 };
-                if maximum == 0
-                    || maximum == u64::MAX
-                    || length.is_none_or(|length| length > maximum)
-                {
+                if length.is_none_or(|length| length > maximum) {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file selection exceeds text rendering bound",
                     ));
                 }
-                (input.0.file, input.1)
+                return Ok(source);
+            }
+            Self::Edit => {
+                let input = decode::<EditFileInput>(&invocation.arguments, work)?;
+                return self.path_source(
+                    scope,
+                    &input.0.path,
+                    input.0.version.as_deref(),
+                    work,
+                    io,
+                );
             }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
@@ -148,5 +170,26 @@ impl FileTool {
             )?,
         };
         Ok((Some(file), custody))
+    }
+
+    fn path_source(
+        &self,
+        scope: &RuntimeScope,
+        path: &str,
+        version: Option<&str>,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
+        self.public_path(path, io)?;
+        if path.len() > scope.limits().path_bytes {
+            return Err(super::executor::rejection(
+                work,
+                "file path exceeds original task bound",
+            ));
+        }
+        version.map_or(Ok((None, None)), |version| {
+            let (file, custody) = super::version::decode_version(path, version, work)?;
+            Ok((Some(file), custody))
+        })
     }
 }

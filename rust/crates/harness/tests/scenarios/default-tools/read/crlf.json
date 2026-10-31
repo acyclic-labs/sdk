@@ -1,4 +1,1 @@
-{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"file":"plans/a.md",
-  "range":{"start":7,"end":13}}},{"type":"event","kind":"completed","metadata":null}],"done"],
-  "expect":{"results":{"call":{"name":"read","content":{"kind":"json","value":"second"}}},"files":{"plans/a.md":"first\r\nsecond\r\n"}},
-  "seed":{"plans/a.md":"first\r\nsecond\r\n"}}
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"range":{"start":7,"end":13},"path":"plans/a.md","version":"plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"results":{"call":{"name":"read","content":{"kind":"json","value":{"text":"second"}}}},"files":{"plans/a.md":"first\r\nsecond\r\n"}},"seed":{"plans/a.md":"first\r\nsecond\r\n"}}

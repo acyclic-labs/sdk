@@ -169,9 +169,32 @@ impl FileTool {
         let invalid = |reason| rejection(work, reason);
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        let length = input.0.file.descriptor().byte_length();
+        let (file, resolved, _source_custody) = self
+            .source(context, &input.0.path, input.0.version.as_deref(), work, io)
+            .await?;
+        let length = file.descriptor().byte_length();
+        if input.0.range.is_some_and(|range| range.end > length) {
+            return Err(invalid("read range exceeds the file"));
+        }
         let empty = input.0.range.is_some_and(|range| range.start == range.end);
-        let bytes = if let Some(range) = input.0.range {
+        let selected_length = input
+            .0
+            .range
+            .map_or(Some(length), |range| range.end.checked_sub(range.start));
+        if selected_length.is_none_or(|length| {
+            length
+                > context
+                    .effective_scope()
+                    .limits()
+                    .render_bytes
+                    .min(context.effective_scope().limits().file_bytes)
+        }) {
+            return Err(invalid("file selection exceeds text rendering bound"));
+        }
+        let was_resolved = resolved.is_some();
+        let bytes = if let Some(bytes) = resolved {
+            bytes
+        } else if let Some(range) = input.0.range {
             let count = range
                 .end
                 .checked_sub(range.start)
@@ -181,7 +204,7 @@ impl FileTool {
             }
             context
                 .read_file_range(
-                    &input.0.file,
+                    &file,
                     acyclic_fs::ByteRange {
                         offset: range.start,
                         // An empty interval still has to lie on a UTF-8 boundary.
@@ -195,28 +218,65 @@ impl FileTool {
                 )
                 .await?
         } else {
-            context.read_file(&input.0.file, io).await?
+            context.read_file(&file, io).await?
         };
-        let source = read_text(bytes.as_ref(), empty, work)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            let (text, mut custody) = work.display(source)?;
-            custody
-                .resize(custody.bytes() + std::mem::size_of::<ToolResult>() as u64)
-                .map_err(Error::from)?;
-            return Ok((
-                ToolResult {
-                    value: Value::String(text),
-                },
-                Some(custody),
-            ));
+        let selected = if let Some(range) = input.0.range.filter(|_| was_resolved) {
+            let end = if empty && range.start < length {
+                range.start.checked_add(1)
+            } else {
+                Some(range.end)
+            };
+            let start = usize::try_from(range.start).ok();
+            let end = end.and_then(|end| usize::try_from(end).ok());
+            start
+                .zip(end)
+                .and_then(|(start, end)| bytes.get(start..end))
+                .ok_or_else(|| invalid("read range exceeds the file"))?
+        } else {
+            bytes.as_ref()
+        };
+        let source = read_text(selected, empty, work)?;
+        #[derive(Serialize)]
+        struct Read<'a> {
+            file: &'a FileRef,
+            text: &'a str,
         }
-        Ok((
-            ToolResult {
-                value: Value::String(source.to_owned()),
+        let encoded = super::value(
+            &Read {
+                file: &file,
+                text: source,
             },
-            None,
-        ))
+            u64::MAX,
+            work,
+        )?;
+        Ok((ToolResult { value: encoded.0 }, encoded.1))
+    }
+
+    async fn source(
+        &self,
+        context: &ToolContext,
+        path: &str,
+        version: Option<&str>,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(
+        FileRef,
+        Option<acyclic_stream::OwnedBytes>,
+        crate::NativeCustody,
+    )> {
+        if let Some(version) = version {
+            let (file, custody) = super::version::decode_version(path, version, work)?;
+            return Ok((file, None, custody));
+        }
+        let (file, bytes, retained) = context.read_tool_path(path, io).await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = {
+            let _ = retained;
+            None
+        };
+        Ok((file, Some(bytes), custody))
     }
     async fn edit(
         &self,
@@ -232,7 +292,13 @@ impl FileTool {
         if work.is_none() {
             super::edit::validate_edit_bound(maximum)?;
         }
-        let bytes = context.read_file(&input.0.file, io).await?;
+        let (file, resolved, _source_custody) = self
+            .source(context, &input.0.path, input.0.version.as_deref(), work, io)
+            .await?;
+        let bytes = match resolved {
+            Some(bytes) => bytes,
+            None => context.read_file(&file, io).await?,
+        };
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
@@ -244,12 +310,7 @@ impl FileTool {
             &mut allocation,
         )?;
         context
-            .stage_file_at(
-                invocation.operation_id,
-                &input.0.file,
-                edited.as_bytes(),
-                io,
-            )
+            .stage_file_at(invocation.operation_id, &file, edited.as_bytes(), io)
             .await
     }
 }
@@ -289,6 +350,20 @@ impl ToolExecutor for FileTool {
             .or_else(|| invocation.arguments.get("path").and_then(Value::as_str))
             .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
+        if file.is_none() && matches!(self, Self::Read | Self::Edit) {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let owned_io = work
+                .map(crate::executor::PreparationIo::from_native_work)
+                .transpose()?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let io = owned_io.as_ref();
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            let io = None;
+            context.authorize_tool_path_read(path, io)?;
+            if self.is_read() {
+                return Ok(());
+            }
+        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             return if self.is_read() {
@@ -368,8 +443,17 @@ impl ToolExecutor for FileTool {
             }
             // Observe uncertain publications without redispatch.
             let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let source = if matches!(self, Self::Write) {
+                (None, None)
+            } else {
+                self.preflight(context.effective_scope(), invocation, Some(work))?
+            };
             let receipt = context
-                .observe_tool_file_once(invocation.operation_id, Some(&io))
+                .observe_tool_source_file_once(
+                    invocation.operation_id,
+                    source.0.as_ref(),
+                    Some(&io),
+                )
                 .await?;
             match receipt.0 {
                 Some(file) => {
@@ -420,6 +504,32 @@ impl ToolExecutor for FileTool {
         };
 
         Box::pin(async move {
+            // The stock journal has authenticated the full original invocation.
+            // Resolving an unversioned path again could select a later source.
+            if matches!(self, Self::Edit)
+                && invocation
+                    .arguments
+                    .get("version")
+                    .is_none_or(Value::is_null)
+            {
+                self.authorize(
+                    Some(context.effective_scope()),
+                    Some(&context),
+                    &invocation,
+                    None,
+                )?;
+                let source = self.preflight(context.effective_scope(), &invocation, None)?;
+                let receipt = context
+                    .observe_tool_source_file_once(invocation.operation_id, source.0.as_ref(), None)
+                    .await?;
+                return receipt
+                    .0
+                    .map(|file| {
+                        let encoded = super::value(&FileResult { file }, u64::MAX, None)?;
+                        Ok(ToolResult { value: encoded.0 })
+                    })
+                    .transpose();
+            }
             self.run(&context, &invocation, None)
                 .await
                 .map(|result| Some(result.0))
@@ -428,7 +538,7 @@ impl ToolExecutor for FileTool {
 }
 
 /// Only content/selection rejections use this path. Accounting and provider errors propagate.
-fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
+pub(super) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
     if work.is_some() {
         Error::tool_rejected(reason)
     } else {

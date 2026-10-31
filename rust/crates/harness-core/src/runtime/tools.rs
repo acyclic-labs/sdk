@@ -408,6 +408,20 @@ impl ToolContext {
             .await
     }
 
+    pub(crate) async fn observe_tool_source_file_once(
+        &self,
+        operation_id: OperationId,
+        source: Option<&FileRef>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        self.observe_once(
+            self.task().tool_content(source.map(FileRef::volume)),
+            operation_id,
+            io,
+        )
+        .await
+    }
+
     async fn observe_once(
         &self,
         binding: Option<&ContentBindings>,
@@ -517,6 +531,60 @@ impl ToolContext {
             io,
         )
         .await
+    }
+
+    /// Checks directory authority for discovery of one public project path.
+    pub(crate) fn authorize_tool_path_read(
+        &self,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<&VolumeRef> {
+        let volume = &self.task().tool_read_content().volume;
+        crate::executor::with_history_io(io, |history| {
+            crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
+            if path.len() > self.effective_scope().limits().path_bytes
+                || crate::conversation::is_internal_path(path)
+                || !crate::core::directory_read_granted_with_work(
+                    self.effective_scope().grants(),
+                    volume,
+                    path.rsplit_once('/').map_or("", |(parent, _)| parent),
+                    history,
+                )?
+            {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "path read requires the original directory read grant",
+                )
+                .tool_input());
+            }
+            Ok(())
+        })?;
+        Ok(volume)
+    }
+
+    /// Resolves and reads one current project path through its original bound
+    /// reader, without broadening this invocation's effective grants.
+    pub(crate) async fn read_tool_path(
+        &self,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
+        let volume = self.authorize_tool_path_read(path, io)?;
+        let content = self.task().tool_read_content();
+        self.task()
+            .read_bound_path(
+                content,
+                (
+                    volume,
+                    path.rsplit_once('/').map_or("", |(parent, _)| parent),
+                    path,
+                    None,
+                ),
+                self.effective_scope(),
+                io,
+            )
+            .await
     }
 
     /// Reads immutable content under the effective tool scope and caller IO limits.

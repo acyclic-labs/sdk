@@ -37,6 +37,7 @@ pub async fn content_context(
         )?)),
     };
     let content = ContentBindings {
+        volume: writer.volume().clone(),
         reader,
         writer: Some(writer),
     };

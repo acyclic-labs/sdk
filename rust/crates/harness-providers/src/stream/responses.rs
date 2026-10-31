@@ -67,7 +67,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             {
                 return Err(invalid("Responses generation did not complete"));
             }
-            if let Some(output) = response.get("output") {
+            if let Some(output) = crate::protocol::present(response.get("output")) {
                 let output = output
                     .as_array()
                     .ok_or_else(|| invalid("response output must be an array"))?;

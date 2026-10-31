@@ -161,6 +161,157 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
     Ok(())
 }
 
+// A tool's own refusal (authorization, a missing file, invalid input) and its execution failure
+// are the model's to act on: each settles as `tool execution failed: <reason>` and the run
+// continues. Only a harness fault, here a storage failure, ends the turn.
+#[tokio::test]
+async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn() -> Result<()> {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Stage {
+        Authorize,
+        Execute,
+    }
+    struct Failing(Stage, fn() -> Error, AtomicUsize);
+    impl crate::tool::ToolExecutor for Failing {
+        fn authorize(
+            &self,
+            _: Option<&RuntimeScope>,
+            _: Option<&crate::runtime::ToolContext>,
+            _: &ToolInvocation,
+            _: crate::NativeWork<'_>,
+        ) -> Result<()> {
+            if self.0 == Stage::Authorize {
+                return Err((self.1)());
+            }
+            Ok(())
+        }
+        fn execute<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            self.2.fetch_add(1, Ordering::SeqCst);
+            let error = (self.1)();
+            Box::pin(async move { Err(error) })
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+    let unauthorized: fn() -> Error =
+        || Error::Unauthorized("file tool requires original source read grant".into());
+    let missing: fn() -> Error = || Error::NotFound("src/lib.rs".into());
+    let invalid: fn() -> Error = || Error::Invalid("tool arguments are malformed".into());
+    let unavailable: fn() -> Error = || Error::ModelDiagnostic {
+        code: crate::wire::ErrorCode::Unavailable,
+        message: "tool reply producer was lost".into(),
+        custody: None,
+    };
+    let storage: fn() -> Error = || Error::Storage("journal unavailable".into());
+    let refused: fn() -> Error = || Error::ToolRejected {
+        code: crate::wire::ErrorCode::Unauthorized,
+        reason: "original read grant is absent",
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let native_boundary: fn() -> Error = || Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid,
+        reason: "native producer invariant failed",
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let native_accounting: fn() -> Error = || {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap();
+        work.claim(u64::MAX, 0, acyclic_fs::WorkCounters::UNCHARGED)
+            .unwrap_err()
+            .into()
+    };
+    for stage in [Stage::Authorize, Stage::Execute] {
+        for (error, expected) in [
+            (
+                unauthorized,
+                Some(
+                    "tool execution failed: unauthorized: file tool requires original source read grant",
+                ),
+            ),
+            (
+                missing,
+                Some("tool execution failed: resource not found: src/lib.rs"),
+            ),
+            (
+                invalid,
+                Some("tool execution failed: invalid request: tool arguments are malformed"),
+            ),
+            (
+                refused,
+                Some("tool execution failed: tool rejected: original read grant is absent"),
+            ),
+            // Negative control: a harness fault never settles as a model-visible result.
+            (storage, None),
+            (unavailable, None),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            (native_boundary, None),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            (native_accounting, None),
+        ] {
+            let model = Arc::new(scripted_model());
+            let tool = Arc::new(Failing(stage, error, AtomicUsize::new(0)));
+            let tools = echo_tools(
+                tool.clone(),
+                json!({"type": "object"}),
+                json!({"type": "object"}),
+                crate::tool::json_projection_schema(json!({"type": "object"})),
+            )?;
+            let executor = super::uncompacted_executor(
+                Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+                model.clone(),
+                ContextPipeline::default(),
+                tools,
+            )
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["tool:call:example.echo"]),
+                    Limits::default(),
+                )?,
+                super::allowed()?,
+            )?;
+            let journal = Journal::default();
+            let input = TurnInput {
+                operation_id: OperationId::from_bytes([41; 16]),
+                input: ModelContent::Text("hello".into()),
+                selected_context: None,
+                max_steps: 4,
+            };
+            let output = executor.execute(input, &journal).await;
+            let dispatched = usize::from(stage == Stage::Execute);
+            match expected {
+                Some(expected) => {
+                    assert_eq!(output?.text, "done", "{stage:?}");
+                    assert_eq!(model.requests().len(), 2);
+                    assert_eq!(
+                        super::tools_1::tool_error_text(&model.requests()[1].messages, "call-1")
+                            .as_deref(),
+                        Some(expected),
+                        "{stage:?}"
+                    );
+                }
+                None => {
+                    assert!(output.is_err(), "{stage:?}");
+                    assert_eq!(model.requests().len(), 1, "{stage:?}");
+                }
+            }
+            assert_eq!(tool.2.load(Ordering::SeqCst), dispatched, "{stage:?}");
+        }
+    }
+    Ok(())
+}
+
 // Review P1: an interruption after the next step's `ContextPrepared` left a projection whose
 // refusal lost its in-memory provenance on reload, so resume rejected its own history. The
 // refusal is now a recorded settlement and its result is admitted by shape on every load.

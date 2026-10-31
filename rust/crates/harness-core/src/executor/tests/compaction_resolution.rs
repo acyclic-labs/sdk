@@ -11,6 +11,7 @@ async fn admitted(writer: bool) -> Result<(crate::runtime::TaskContext, RuntimeS
         Limits::default(),
     )?;
     let artifacts = writer.then(|| crate::runtime::ContentBindings {
+        volume: volume.clone(),
         reader: Arc::new(NoReads),
         writer: Some(Arc::new(PrivateVolume(volume))),
     });

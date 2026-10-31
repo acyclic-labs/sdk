@@ -395,7 +395,11 @@ impl Opening {
             };
         let harness = crate::runtime::Bindings {
             scope,
-            content: Some(crate::runtime::ContentBindings { reader, writer }),
+            content: Some(crate::runtime::ContentBindings {
+                volume: owner.project.clone(),
+                reader,
+                writer,
+            }),
             workspace_tools,
             ..crate::runtime::Bindings::local()
         }

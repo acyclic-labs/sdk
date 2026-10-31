@@ -40,7 +40,6 @@ impl StockExecution<'_> {
         );
         let result = match execution {
             Ok(Some(result)) => result,
-            Err(error) if error.is_native_failure() => return Err(error),
             // A resumed driver settles an unreconcilable effect as a typed
             // failure instead of running it again; reconciliation records nothing.
             Ok(None) | Err(Error::Indeterminate(_))
@@ -62,10 +61,9 @@ impl StockExecution<'_> {
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }
-            Err(error) if error.leaves_effect_uncertain() => {
-                tracing::error!(%operation_id, call_id = %invocation.call_id, ?error, "tool outcome is uncertain");
-                return Err(Error::Indeterminate(operation_id));
-            }
+            // Keep the original cause and started record for reconciliation. Every
+            // definitive refusal settles below, regardless of the tool's adapter.
+            Err(error) if !error.is_tool_failure() => return Err(error),
             Err(error) => {
                 return self
                     .reject_tool_call(

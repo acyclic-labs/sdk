@@ -221,10 +221,11 @@ impl LocalHarness {
             let harness = self.harness.with_workspace(
                 Some(tools),
                 crate::runtime::ContentBindings {
+                    volume: project.clone(),
                     reader: Arc::clone(&authority.content.reader),
                     writer: Some(writer),
                 },
-            );
+            )?;
             return Ok(TurnBindings {
                 harness,
                 workspace: Some(workspace),
@@ -241,10 +242,11 @@ impl LocalHarness {
         let harness = self.harness.with_workspace(
             None,
             crate::runtime::ContentBindings {
+                volume: project.clone(),
                 reader: Arc::clone(&authority.content.reader),
                 writer: Some(writer),
             },
-        );
+        )?;
         Ok(TurnBindings {
             harness,
             #[cfg(any(test, feature = "native-execution"))]
