@@ -486,11 +486,18 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
         ActorReference::new(b"conformance", b"fork-uniform", id)
             .map_err(|_| Error::Invalid("conformance actor id"))
     };
+    let key = |label: &str| {
+        use sha2::Digest as _;
+        IdempotencyKey::new(
+            sha2::Sha256::digest(format!("{}/{label}", store.root()).as_bytes()).to_vec(),
+        )
+        .map_err(Error::from)
+    };
     let parent = actor(b"parent")?;
     let created = actor(b"created")?;
     let forked = actor(b"forked")?;
     for target in [&parent, &created] {
-        let mut publication = PreparedPublish::foreign(IdempotencyKey::unique());
+        let mut publication = PreparedPublish::foreign(key(target.id())?);
         for effect in store.create(target, BTreeMap::new(), None)? {
             publication.join(effect)?;
         }
@@ -499,10 +506,10 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
     let parent_initial = store.load(&parent).await?;
     let parent_epoch = 17;
     store
-        .claim(&parent_initial, parent_epoch, IdempotencyKey::unique())
+        .claim(&parent_initial, parent_epoch, key("parent-claim")?)
         .await?;
     let parent_cut = store.load(&parent).await?;
-    let mut publication = PreparedPublish::foreign(IdempotencyKey::unique());
+    let mut publication = PreparedPublish::foreign(key("fork")?);
     for effect in store.fork(&parent_cut, &forked, BTreeMap::new())? {
         publication.join(effect)?;
     }
@@ -538,7 +545,12 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
         require(
             matches!(
                 store
-                    .set_paused(&initial, parent_epoch, true, IdempotencyKey::unique())
+                    .set_paused(
+                        &initial,
+                        parent_epoch,
+                        true,
+                        key(&format!("{}/stale-unplaced", target.id()))?
+                    )
                     .await,
                 Err(Error::Conflict)
             ),
@@ -549,19 +561,26 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
             unchanged.state() == initial.state(),
             "refusal changed child state",
         )?;
-        store.claim(&initial, 1, IdempotencyKey::unique()).await?;
+        store
+            .claim(&initial, 1, key(&format!("{}/claim", target.id()))?)
+            .await?;
         let placed = store.load(target).await?;
         require(
             matches!(
                 store
-                    .set_paused(&placed, parent_epoch, true, IdempotencyKey::unique())
+                    .set_paused(
+                        &placed,
+                        parent_epoch,
+                        true,
+                        key(&format!("{}/stale-placed", target.id()))?
+                    )
                     .await,
                 Err(Error::Conflict)
             ),
             "a stale parent-epoch writer changed a placed child",
         )?;
         store
-            .set_paused(&placed, 1, true, IdempotencyKey::unique())
+            .set_paused(&placed, 1, true, key(&format!("{}/publish", target.id()))?)
             .await?;
         let accepted = store.load(target).await?;
         require(

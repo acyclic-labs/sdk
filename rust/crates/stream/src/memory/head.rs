@@ -39,11 +39,11 @@ impl Namespace {
             },
             inherited: crate::ForkCut {
                 forked_at: if relative.is_empty() {
-                    origin.inherited.forked_at
+                    origin.forked_at
                 } else {
                     source.data.tail
                 },
-                commit_id: origin.inherited.commit_id,
+                commit_id: origin.commit_id,
             },
         }))
     }
