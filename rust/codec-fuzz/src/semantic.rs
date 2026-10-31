@@ -3,6 +3,7 @@ use prost::Message;
 use std::fmt::Debug;
 mod actors;
 mod auth_admission;
+mod auth_revocation;
 mod context;
 mod evaluation;
 mod filesystem;
@@ -201,6 +202,7 @@ fn pending_run() -> acyclic_inference::wire::RunView {
 
 pub(super) fn check(name: &str, bytes: &[u8]) {
     auth_admission::check(name, bytes);
+    auth_revocation::check(name, bytes);
     filesystem::check(name, bytes);
     objects::check(name, bytes);
     harness::check(name, bytes);
@@ -425,6 +427,7 @@ pub(super) fn seeds(
     }
     seeds.extend(actors::seeds()?);
     seeds.extend(auth_admission::seeds()?);
+    seeds.extend(auth_revocation::seeds());
     seeds.extend(filesystem::seeds());
     seeds.extend(objects::seeds()?);
     seeds.extend(warm::seeds()?);
