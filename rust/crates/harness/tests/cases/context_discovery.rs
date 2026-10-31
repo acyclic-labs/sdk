@@ -30,6 +30,27 @@ struct CountingReader<'a> {
 }
 
 impl ContentResidencyVerifier for CountingReader<'_> {
+    fn read_private_prefix<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        generation: &'a acyclic_harness::resources::GenerationRef,
+        maximum_bytes: u64,
+        access: acyclic_harness::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+    {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.read_private_prefix(
+            volume,
+            granted_prefix,
+            path,
+            generation,
+            maximum_bytes,
+            access,
+        )
+    }
+
     fn read<'a>(
         &'a self,
         reference: &'a acyclic_harness::conversation::FileRef,
@@ -74,6 +95,76 @@ impl ContentResidencyVerifier for CountingReader<'_> {
             acyclic_harness::conversation::ContentAccess { ceiling, io },
         )
     }
+}
+
+#[tokio::test]
+async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let path = "skills/inspect/SKILL.md";
+    let original = b"---\nname: inspect\ndescription: Original description\n---\noriginal body";
+    fixture.put(path, original, "initial-skill").await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let original_skill = first_skill(&captured)?;
+    let root = &original_skill.source.root;
+    let reader = CountingReader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+    };
+    for unrelated in [
+        "plans/current.md",
+        "skills/inspect/notes.md",
+        "skills/inspect/nested/SKILL.md",
+        "skills-extra/inspect/SKILL.md",
+        "skills/SKILL.md",
+    ] {
+        assert!(
+            root.skill_metadata_at(
+                &reader,
+                unrelated,
+                &original_skill.source.generation,
+                "SKILL.md",
+                declaration.limits,
+            )
+            .await?
+            .is_none()
+        );
+    }
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 0);
+    let workspace = acyclic_harness::filesystem::workspace_ref(
+        fixture.volume.provider().clone(),
+        &fixture.volume.storage_name(&mut None)?,
+    )?;
+    let mut replacement = b"---\nname: inspect\ndescription: Revised description\n---\n".to_vec();
+    replacement.resize(100_000, b'x');
+    fixture.put(path, &replacement, "revised-skill").await?;
+    let generation = fixture.host.resolve(&workspace, None).await?.generation;
+    // This reader deliberately has no directory-list implementation. A rescan
+    // or complete body read cannot satisfy the changed-path operation.
+    let revised = root
+        .skill_metadata_at(&reader, path, &generation, "SKILL.md", declaration.limits)
+        .await?
+        .ok_or_else(|| Error::NotFound("changed skill metadata".into()))?;
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(revised.description, "Revised description");
+    assert_eq!(revised.source.generation, generation);
+    assert_eq!(original_skill.description, "Original description");
+    let (_, body) = original_skill.source.read(&reader, 256).await?;
+    assert_eq!(body.as_ref(), original);
+
+    fixture
+        .put(path, b"malformed replacement", "malformed-skill")
+        .await?;
+    let malformed = fixture.host.resolve(&workspace, None).await?.generation;
+    assert!(
+        root.skill_metadata_at(&reader, path, &malformed, "SKILL.md", declaration.limits)
+            .await
+            .is_err()
+    );
+    assert_eq!(revised.description, "Revised description");
+    assert_eq!(revised.source.generation, generation);
+    Ok(())
 }
 
 #[path = "../context_discovery_cases/manifest.rs"]

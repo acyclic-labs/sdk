@@ -907,7 +907,7 @@ async fn a_ten_mebibyte_prompt_is_accepted_and_reads_back_exactly() -> Result<()
 }
 
 #[tokio::test]
-async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()> {
+async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Result<()> {
     use crate::model::{ModelContent, ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
@@ -962,6 +962,24 @@ async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()>
                 .file,
         )
     };
+    let catalog = |index| -> Result<Vec<crate::context::SkillMetadata>> {
+        let request = provider
+            .request(index)
+            .ok_or_else(|| Error::NotFound("context request".into()))?;
+        request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::Text { text } => {
+                    serde_json::from_str::<Vec<crate::context::SkillMetadata>>(&text)
+                        .ok()
+                        .filter(|skills| !skills.is_empty())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound("model-visible skill catalog".into()))
+    };
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(
@@ -971,6 +989,29 @@ async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()>
         )
         .await?,
     );
+    let project_workspace = crate::filesystem::workspace_ref(
+        project.provider().clone(),
+        &project.storage_name(&mut None)?,
+    )?;
+    harness
+        .files
+        .apply(
+            &project_workspace,
+            None,
+            &[
+                crate::filesystem::WorkspaceMutation::CreateDirectory {
+                    path: "/.agents/skills/project-context".into(),
+                },
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/.agents/skills/project-context/SKILL.md".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(
+                        b"---\nname: project-context\ndescription: Project-specific context\n---\nproject procedure",
+                    ),
+                },
+            ],
+            &crate::IdempotencyKey::new("project-skill")?,
+        )
+        .await?;
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
@@ -1007,6 +1048,30 @@ async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()>
         .volume;
     assert_ne!(child_project, &project);
     assert_eq!(child_file.volume(), child_project);
+    let child_scratch = &child_state
+        .volumes
+        .iter()
+        .find(|binding| binding.name == "scratch")
+        .ok_or_else(|| Error::NotFound("child scratch volume".into()))?
+        .volume;
+    assert_ne!(child_scratch, &harness.scratch);
+    let child_skills = catalog(0)?;
+    let project_skill = child_skills
+        .iter()
+        .find(|skill| skill.name == "project-context")
+        .ok_or_else(|| Error::NotFound("child project skill".into()))?;
+    assert_eq!(&project_skill.source.root.volume, child_project);
+    assert!(
+        child_skills
+            .iter()
+            .filter(|skill| skill.name != "project-context")
+            .all(|skill| &skill.source.root.volume == child_scratch)
+    );
+    assert!(
+        child_skills
+            .iter()
+            .any(|skill| &skill.source.root.volume == child_scratch)
+    );
 
     conversation(&harness)
         .await?
@@ -1019,6 +1084,20 @@ async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()>
     assert_eq!(provider.request_count(), 4);
     let parent_file = publication(3)?;
     assert_eq!(parent_file.volume(), &project);
+    // The second agent must not reuse the first agent's cached private pins.
+    let parent_skills = catalog(2)?;
+    let project_skill = parent_skills
+        .iter()
+        .find(|skill| skill.name == "project-context")
+        .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
+    assert_eq!(&project_skill.source.root.volume, &project);
+    assert!(
+        parent_skills
+            .iter()
+            .filter(|skill| skill.name != "project-context")
+            .all(|skill| skill.source.root.volume == harness.scratch)
+    );
+    assert_ne!(child_skills, parent_skills);
     for (owner, file, expected) in [
         (&child, &child_file, b"child".as_slice()),
         (&root, &parent_file, b"parent".as_slice()),
