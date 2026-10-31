@@ -79,7 +79,9 @@ pub fn rename_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<(
 /// Truncates the original held file without changing synchronization policy.
 pub fn truncate_file(file: &File, length: u64) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:truncate", || file.set_len(length));
+    return testing::durable_operation("file:truncate", || {
+        super::operations::resize_file(file, length, None)
+    });
     #[cfg(not(feature = "test-support"))]
-    file.set_len(length)
+    super::operations::resize_file(file, length, None)
 }

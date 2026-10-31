@@ -239,7 +239,9 @@ pub(crate) fn truncate_file<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(), W::Error> {
     i64::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
-    work.attempt_io(WRITE, || file.set_len(length))
+    work.attempt_io(WRITE, || {
+        acyclic_native_runtime::truncate_file(file, length)
+    })
 }
 
 #[cfg(windows)]

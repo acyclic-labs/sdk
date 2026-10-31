@@ -3,10 +3,10 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 
-// The held-descriptor API and the retrying file API share this physical
+// The held-descriptor and file APIs share this physical
 // attempt: stage the descriptor with `fsync`, then share one `F_FULLFSYNC`
 // of its device with every concurrent request (see `device_flush`). The
-// caller alone owns admission, cancellation and EINTR retry.
+// original caller owns admission and observes its first result.
 pub(crate) fn sync_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
     #[cfg(not(loom))]
     return crate::device_flush::full(
@@ -37,13 +37,8 @@ pub(crate) fn sync_once(
 }
 
 fn full(file: &File, admit: &mut impl FnMut() -> io::Result<()>) -> io::Result<()> {
-    loop {
-        admit()?;
-        match sync_descriptor_once(file.as_fd()) {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => return result,
-        }
-    }
+    admit()?;
+    sync_descriptor_once(file.as_fd())
 }
 
 fn syscall(
@@ -51,13 +46,8 @@ fn syscall(
     command: i32,
     admit: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
-    loop {
-        admit()?;
-        match syscall_once(file.as_fd(), command) {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => return result,
-        }
-    }
+    admit()?;
+    syscall_once(file.as_fd(), command)
 }
 
 fn syscall_once(descriptor: BorrowedFd<'_>, command: i32) -> io::Result<()> {
