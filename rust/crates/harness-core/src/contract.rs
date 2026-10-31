@@ -44,13 +44,6 @@ pub mod capability {
     }
 }
 
-/// Successor of a durable revision or sequence, failing instead of wrapping.
-pub(crate) fn next_revision(revision: u64) -> Result<u64> {
-    revision
-        .checked_add(1)
-        .ok_or_else(|| Error::Invalid("revision exhausted".into()))
-}
-
 /// Sorted-key JSON for durable identities and Rust/WASM output.
 #[doc(hidden)]
 pub fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
