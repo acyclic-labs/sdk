@@ -2,6 +2,7 @@ use super::*;
 
 mod output;
 mod prepared;
+mod request;
 mod work;
 pub use output::NativeStreamOutput;
 pub use output::{NativeProviderFuture, NativeRecordStream, NativeStreamResult};
