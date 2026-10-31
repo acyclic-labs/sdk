@@ -59,7 +59,26 @@ pub(crate) async fn spill(
             serde_json::to_vec(projection).map_err(|error| Error::Invalid(error.to_string()))?;
         bytes.as_slice()
     };
-    let (file, path) = context.spill_tool_output(operation, encoded, io).await?;
+    #[cfg(feature = "filesystem")]
+    let _path_hold;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let _file_hold;
+    let (file, path, retained) = context.spill_tool_output(operation, encoded, io).await?;
+    #[cfg(feature = "filesystem")]
+    {
+        _path_hold = io
+            .map(|io| io.guard_owned(path.capacity() as u64))
+            .transpose()?;
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        _file_hold = io
+            .filter(|io| io.original_native_work().is_some())
+            .map(|io| io.take_native_custody(retained))
+            .transpose()?;
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let _ = retained;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let work = io.and_then(crate::executor::PreparationIo::original_native_work);
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]

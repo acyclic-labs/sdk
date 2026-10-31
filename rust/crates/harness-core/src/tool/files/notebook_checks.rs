@@ -26,7 +26,7 @@ proptest! {
         expected["cells"][index]["outputs"] = json!([]);
         expected["cells"][index]["execution_count"] = Value::Null;
         prop_assert_eq!(actual, expected);
-        prop_assert!(edit(&source, &NotebookEdit::Delete {index:index as u64,id:Some("stale".into())}, None).is_err());
+        prop_assert!(edit(&source, &NotebookEdit::Delete {index:index as u64,id:Some("stale".into())}, None).is_err(), "stale cell id accepted");
 
         // Inserting and deleting at every boundary exercises both comma
         // directions, including the formerly empty notebook.
@@ -35,7 +35,7 @@ proptest! {
         let (inserted, _insert_hold) = edit(&source, &insert, None).unwrap();
         let (removed, _remove_hold) = edit(&inserted, &NotebookEdit::Delete {index:insert_at as u64,id:Some("inserted".into())}, None).unwrap();
         prop_assert_eq!(serde_json::from_str::<Value>(&removed).unwrap(), original);
-        prop_assert!(edit(&source, &NotebookEdit::Insert {index:0,id,cell_type:"raw".into(),source:String::new()}, None).is_err());
+        prop_assert!(edit(&source, &NotebookEdit::Insert {index:0,id,cell_type:"raw".into(),source:String::new()}, None).is_err(), "duplicate cell id accepted");
         for (index, expected) in cells.iter().enumerate() {
             let (text, page, _hold) = read(&source, index as u64, Some(1), u64::MAX, None).unwrap();
             prop_assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), expected.clone());

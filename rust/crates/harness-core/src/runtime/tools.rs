@@ -7,7 +7,7 @@ impl TaskContext {
         operation: OperationId,
         bytes: &[u8],
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(FileRef, String)> {
+    ) -> Result<(FileRef, String, u64)> {
         let operation =
             crate::conversation::derived_operation_id(operation, b"tool-output-spill-v1");
         let path = crate::executor::with_history_io(io, |history| {
@@ -29,7 +29,7 @@ impl TaskContext {
                 io,
             )
             .await?;
-        Ok((file.0, path))
+        Ok((file.0, path, file.1))
     }
 }
 
