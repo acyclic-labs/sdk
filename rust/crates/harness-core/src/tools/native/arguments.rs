@@ -265,11 +265,10 @@ impl adapter::Adapter {
         {
             return Err(Error::Unsupported("grep_search: total/exclusion selection is unavailable before original output truncation; recovery: invoke grep_search without exclude_pattern or total_max_matches".into()));
         }
-        let mut custody = crate::tool::edit::allocation(work, 0)?;
         use QueryArgument::{Number, Text};
-        let mut argv = Vec::new();
-        // Fixed schema: at most 27 flags/operands, irrespective of input size.
-        crate::tool::edit::reserve_vec(&mut custody, &mut argv, 27)?;
+        // The complete fixed schema has at most 23 flags/operands. Keep its
+        // borrowed tokens inline; only the canonical argument value owns argv.
+        let mut argv = arrayvec::ArrayVec::<_, 23>::new();
         argv.push(Text("rg"));
         let pattern = text(fields, "pattern")?;
         if glob {
@@ -386,7 +385,7 @@ impl adapter::Adapter {
         self.canonical(
             invocation,
             &Query {
-                command: &argv,
+                command: argv.as_slice(),
                 output_lines,
             },
             work,
