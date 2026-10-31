@@ -23,8 +23,6 @@ pub struct SubscriptionObservation {
     recoverable_cursor: u64,
     #[wire(tag = 7)]
     placement_anchor: bool,
-    #[wire(tag = 8)]
-    retry_count: u32,
     #[wire(tag = 9)]
     failure_code: String,
     #[ts(optional)]
@@ -60,10 +58,6 @@ impl SubscriptionObservation {
     /// Returns whether this subscription is the placement anchor.
     pub fn placement_anchor(&self) -> bool {
         self.placement_anchor
-    }
-    /// Returns the number of recorded retries.
-    pub fn retry_count(&self) -> u32 {
-        self.retry_count
     }
     /// Returns the lossless failure code spelling.
     pub fn failure_code(&self) -> &str {

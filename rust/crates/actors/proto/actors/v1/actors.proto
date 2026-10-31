@@ -246,7 +246,6 @@ message SubscriptionObservation {
   uint64 completed_cursor = 5;
   uint64 recoverable_cursor = 6;
   bool placement_anchor = 7;
-  uint32 retry_count = 8;
   string failure_code = 9;
   optional uint64 failed_cursor = 10;
 }
