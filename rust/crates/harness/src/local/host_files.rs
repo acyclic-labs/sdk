@@ -5,17 +5,17 @@
 //! one request file under `requests/`: that file is the record, keyed by its
 //! operation, and every effect it causes is an agent commit keyed by the same
 //! operation. The owner publishes each immutable reply under
-//! `status/<agent>/<operation>.json` while its request is still present.
+//! `status/<operation>.json` while its request is still present.
 //! A client awaits its reply as one keyed waiter on its
 //! process's watcher and withdraws its request once read; the owner then drops
 //! the reply. There is no per-request watcher or deadline: a
-//! request waits until it is answered, its notification source fails or its owner exits.
+//! request waits until it is answered, withdrawn, its notification source fails or its owner exits.
 //!
 //! Both endpoints follow notifications, never scans. The owner indexes the
 //! request names each notification carries and dispatches every request
 //! independently, publishing each reply as soon as it is ready; only a
 //! notification overflow rescans the request directory. A client reads only
-//! the exact reply some waiter awaits, watches its agent only while one does,
+//! the exact reply or request some waiter awaits, watches only while one does,
 //! and holds no lock while it publishes or waits.
 use super::host_owner::{HostAction, HostWorkspaceOwner};
 use super::*;
@@ -34,8 +34,6 @@ mod tests;
 /// Reserved inside the host's existing writable workspace; never a state path.
 pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
 const MAXIMUM_BYTES: u64 = 65_536;
-/// Status key of requests that name no agent yet.
-const WORKSPACE: &str = "workspace";
 
 // Both endpoints observe their own reads. Admit only events that can change
 // the projection, so opening a file cannot schedule another read of itself.
@@ -108,22 +106,6 @@ pub fn workspace_root(cwd: &Path) -> Result<PathBuf> {
     discover(&cwd).map(|(_, endpoint)| endpoint.workspace)
 }
 
-/// The status file `action`'s reply appears in: its agent's, else the
-/// workspace's.
-fn status_key(action: &HostAction) -> String {
-    let agent = match action {
-        #[cfg(feature = "test-support")]
-        HostAction::ResourceProbe { task, .. } => Some(task),
-        HostAction::Sessions { parent } | HostAction::Session { parent, .. } => Some(parent),
-        HostAction::Reopen { task }
-        | HostAction::Capture { task }
-        | HostAction::Fs { task, .. }
-        | HostAction::Agents { task } => Some(task),
-        HostAction::Hook { .. } | HostAction::Locate { .. } | HostAction::Open { .. } => None,
-    };
-    agent.map_or_else(|| WORKSPACE.into(), |agent| agent.id().to_string())
-}
-
 const NO_OWNER: &str = "no running GraphCoder workspace owner; start graphcoder --host-workspace outside the host sandbox";
 
 /// What a waiter receives: its reply, observation failure or its owner's exit.
@@ -132,26 +114,25 @@ enum Delivery {
     Gone,
 }
 
-/// One status key some request of this process awaits.
-#[derive(Default)]
-struct Key {
-    /// Requests registered on it, delivered or not; it is watched while any.
-    registered: usize,
-    /// Each undelivered request's waiter.
-    waiting: HashMap<OperationId, mpsc::SyncSender<Delivery>>,
+struct ReplyWaiter {
+    /// Withdrawal is meaningful only after the original publication completed.
+    published: bool,
+    delivery: mpsc::SyncSender<Delivery>,
 }
 
 #[derive(Default)]
 struct Waiters {
     gone: bool,
     failure: Option<String>,
-    keys: HashMap<String, Key>,
+    registered: usize,
+    waiting: HashMap<OperationId, ReplyWaiter>,
 }
 
 /// The waiters of one running owner, shared by its watcher callback and its
 /// liveness thread. Each lock is held only to change or read the index.
 struct Shared {
     status: PathBuf,
+    requests: PathBuf,
     waiters: Mutex<Waiters>,
 }
 
@@ -164,56 +145,57 @@ impl Shared {
         if !projection_changed(&event) {
             return;
         }
-        let replies = match notified_replies(&event, &self.status) {
+        let replies = match notified_operations(&event, &self.status, &self.requests) {
             Some(replies) => replies,
             // Overflow: revisit only active replies, never a directory listing.
-            None => lock(&self.waiters)
-                .keys
-                .iter()
-                .flat_map(|(key, waiting)| {
-                    waiting
-                        .waiting
-                        .keys()
-                        .map(move |operation| (key.clone(), *operation))
-                })
-                .collect(),
+            None => lock(&self.waiters).waiting.keys().copied().collect(),
         };
-        for (key, operation) in replies {
-            self.deliver(&key, operation);
+        for operation in replies {
+            self.deliver(operation);
         }
     }
 
-    /// Reads only the immutable leaf named by this operation's notification.
-    fn deliver(&self, key: &str, operation: OperationId) {
+    fn published(&self, operation: OperationId) {
+        if let Some(waiter) = lock(&self.waiters).waiting.get_mut(&operation) {
+            waiter.published = true;
+        }
+        self.deliver(operation);
+    }
+
+    /// A committed reply wins over withdrawal. Missing input cannot establish
+    /// whether an accepted dispatch committed, so it settles as indeterminate.
+    fn deliver(&self, operation: OperationId) {
         if lock(&self.waiters)
-            .keys
-            .get(key)
-            .is_none_or(|key| !key.waiting.contains_key(&operation))
+            .waiting
+            .get(&operation)
+            .is_none_or(|waiter| !waiter.published)
         {
             return;
         }
-        let reply = match regular_bytes(&reply_path(&self.status, key, operation)) {
+        let reply = match regular_bytes(&reply_path(&self.status, operation)) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(storage),
-            Err(Error::NotFound(_)) => return,
+            Err(Error::NotFound(_)) => {
+                match std::fs::symlink_metadata(self.requests.join(format!("{operation}.json"))) {
+                    Ok(_) => return,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        Err(Error::Indeterminate(operation))
+                    }
+                    Err(error) => Err(storage(error)),
+                }
+            }
             Err(error) => Err(error),
         };
         let mut waiters = lock(&self.waiters);
-        if let Some(waiter) = waiters
-            .keys
-            .get_mut(key)
-            .and_then(|key| key.waiting.remove(&operation))
-        {
-            let _ = waiter.try_send(Delivery::Reply(reply));
+        if let Some(waiter) = waiters.waiting.remove(&operation) {
+            let _ = waiter.delivery.try_send(Delivery::Reply(reply));
         }
     }
 
     fn gone(&self) {
         let mut waiters = lock(&self.waiters);
         waiters.gone = true;
-        for key in waiters.keys.values_mut() {
-            for (_, waiter) in std::mem::take(&mut key.waiting) {
-                let _ = waiter.try_send(Delivery::Gone);
-            }
+        for (_, waiter) in std::mem::take(&mut waiters.waiting) {
+            let _ = waiter.delivery.try_send(Delivery::Gone);
         }
     }
 
@@ -224,16 +206,16 @@ impl Shared {
         }
         let Waiters {
             failure: retained,
-            keys,
+            waiting,
             ..
         } = &mut *waiters;
         let failure = retained.insert(failure());
-        for key in keys.values_mut() {
-            for (operation, waiter) in std::mem::take(&mut key.waiting) {
-                let _ = waiter.try_send(Delivery::Reply(Err(Error::Storage(format!(
+        for (operation, waiter) in std::mem::take(waiting) {
+            let _ = waiter
+                .delivery
+                .try_send(Delivery::Reply(Err(Error::Storage(format!(
                     "operation={operation}; {failure}"
                 )))));
-            }
         }
     }
 
@@ -251,8 +233,7 @@ impl Shared {
 }
 
 /// This process's one connection to one running owner: a watcher over only
-/// the status directories some request awaits, each watched once however many
-/// wait and retired when none does, and one thread that observes the owner's
+/// the request and reply directories, retired when none waits, and one thread that observes the owner's
 /// lock release. Requests wait concurrently; none waits behind another.
 struct Bridge {
     directory: PathBuf,
@@ -264,7 +245,7 @@ struct Bridge {
 
 struct Watching {
     watcher: notify::RecommendedWatcher,
-    watched: BTreeSet<String>,
+    watched: bool,
 }
 
 impl Bridge {
@@ -291,6 +272,7 @@ impl Bridge {
         }
         let shared = Arc::new(Shared {
             status: directory.join("status"),
+            requests: directory.join("requests"),
             waiters: Mutex::default(),
         });
         let notified = Arc::clone(&shared);
@@ -316,7 +298,7 @@ impl Bridge {
             shared,
             watching: Mutex::new(Watching {
                 watcher,
-                watched: BTreeSet::new(),
+                watched: false,
             }),
         })
     }
@@ -325,11 +307,10 @@ impl Bridge {
         !lock(&self.shared.waiters).gone
     }
 
-    /// Registers `operation`'s waiter on `key` and watches `key` before its
-    /// request is published, so its reply cannot land unobserved.
+    /// Watches the original request and reply before publication. The waiter
+    /// is armed only after publication so an old removal cannot reject it.
     fn wait(
         self: &Arc<Self>,
-        key: &str,
         operation: OperationId,
         waiter: mpsc::SyncSender<Delivery>,
     ) -> Result<Waiting> {
@@ -341,44 +322,60 @@ impl Bridge {
             if waiters.gone {
                 return Err(Error::NotFound(NO_OWNER.into()));
             }
-            let entry = waiters.keys.entry(key.to_owned()).or_default();
-            entry.registered += 1;
-            entry.waiting.insert(operation, waiter);
+            if waiters.waiting.contains_key(&operation) {
+                return Err(Error::Conflict(format!(
+                    "step=register native operation {operation}: already waiting; recovery=acyclic agents"
+                )));
+            }
+            waiters.registered += 1;
+            waiters.waiting.insert(
+                operation,
+                ReplyWaiter {
+                    published: false,
+                    delivery: waiter,
+                },
+            );
         }
         let waiting = Waiting {
             bridge: Arc::clone(self),
-            key: key.to_owned(),
             operation,
         };
-        self.watch(key)?;
+        self.watch()?;
         Ok(waiting)
     }
 
-    /// Brings `key`'s watch in line with its registrations. The index lock is
+    /// Brings the two directory watches in line with registrations. The index lock is
     /// never held while the watcher, whose callback takes it, changes.
-    fn watch(&self, key: &str) -> Result<()> {
+    fn watch(&self) -> Result<()> {
         let mut watching = lock(&self.watching);
-        let wanted = lock(&self.shared.waiters).keys.contains_key(key);
-        let path = self.shared.status.join(key);
-        if wanted && !watching.watched.contains(key) {
+        let wanted = lock(&self.shared.waiters).registered != 0;
+        if wanted && !watching.watched {
             watching
                 .watcher
-                .watch(&path, RecursiveMode::NonRecursive)
+                .watch(&self.shared.status, RecursiveMode::NonRecursive)
                 .map_err(storage)?;
-            watching.watched.insert(key.to_owned());
-        } else if !wanted && watching.watched.remove(key) {
+            if let Err(error) = watching
+                .watcher
+                .watch(&self.shared.requests, RecursiveMode::NonRecursive)
+            {
+                let _ = watching.watcher.unwatch(&self.shared.status);
+                return Err(storage(error));
+            }
+            watching.watched = true;
+        } else if !wanted && watching.watched {
             // A directory the watcher already lost needs no unwatch.
-            let _ = watching.watcher.unwatch(&path);
+            let _ = watching.watcher.unwatch(&self.shared.status);
+            let _ = watching.watcher.unwatch(&self.shared.requests);
+            watching.watched = false;
         }
         Ok(())
     }
 }
 
 /// One registered request; dropping it retires its registration, and the
-/// key's watch with the last one.
+/// directory watches with the last one.
 struct Waiting {
     bridge: Arc<Bridge>,
-    key: String,
     operation: OperationId,
 }
 
@@ -386,15 +383,10 @@ impl Drop for Waiting {
     fn drop(&mut self) {
         {
             let mut waiters = lock(&self.bridge.shared.waiters);
-            if let Some(key) = waiters.keys.get_mut(&self.key) {
-                key.waiting.remove(&self.operation);
-                key.registered = key.registered.saturating_sub(1);
-                if key.registered == 0 {
-                    waiters.keys.remove(&self.key);
-                }
-            }
+            waiters.waiting.remove(&self.operation);
+            waiters.registered -= 1;
         }
-        let _ = self.bridge.watch(&self.key);
+        let _ = self.bridge.watch();
     }
 }
 
@@ -463,7 +455,6 @@ fn request_operation(
 ) -> Result<Value> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
     let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
-    let key = status_key(&action);
     let request = Request {
         session: bridge.session,
         operation,
@@ -475,12 +466,8 @@ fn request_operation(
             "native host request exceeds file bound".into(),
         ));
     }
-    acyclic_fs::hold_root(&bridge.directory)
-        .map_err(native_file_error)?
-        .create_directories(&Path::new("status").join(&key))
-        .map_err(native_file_error)?;
     let (waiter, delivery) = mpsc::sync_channel(1);
-    let waiting = bridge.wait(&key, operation, waiter)?;
+    let waiting = bridge.wait(operation, waiter)?;
     let request_path = bridge
         .directory
         .join("requests")
@@ -488,7 +475,7 @@ fn request_operation(
     immutable(&request_path, &bytes)?;
     // A writable reply may predate registration. Watching before this read
     // covers both that case and publication concurrent with the read.
-    bridge.shared.deliver(&key, operation);
+    bridge.shared.published(operation);
     let result =
         match acyclic_native_runtime::obs::waiting_sync("native-workspace-reply", operation, || {
             delivery.recv()
@@ -521,8 +508,8 @@ fn request_operation(
     })
 }
 
-fn reply_path(status: &Path, key: &str, operation: OperationId) -> PathBuf {
-    status.join(key).join(format!("{operation}.json"))
+fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
+    status.join(format!("{operation}.json"))
 }
 
 fn operation_leaf(name: &std::ffi::OsStr) -> Option<OperationId> {
@@ -538,10 +525,11 @@ fn operation_leaf(name: &std::ffi::OsStr) -> Option<OperationId> {
 
 /// Named reply leaves, or an overflow/directory notification requiring active
 /// waiter checks. Unrelated files never participate in reply selection.
-fn notified_replies(
+fn notified_operations(
     event: &notify::Result<notify::Event>,
     status: &Path,
-) -> Option<BTreeSet<(String, OperationId)>> {
+    requests: &Path,
+) -> Option<BTreeSet<OperationId>> {
     use std::path::Component::Normal;
     let event = event.as_ref().ok()?;
     if event.need_rescan() || event.paths.is_empty() {
@@ -549,18 +537,19 @@ fn notified_replies(
     }
     let mut replies = BTreeSet::new();
     for path in &event.paths {
-        let mut parts = path.strip_prefix(status).ok()?.components();
-        let Normal(key) = parts.next()? else {
-            return None;
-        };
+        let mut parts = path
+            .strip_prefix(status)
+            .or_else(|_| path.strip_prefix(requests))
+            .ok()?
+            .components();
         let Normal(leaf) = parts.next()? else {
             return None;
         };
         if parts.next().is_some() {
             return None;
         }
-        if let (Some(key), Some(operation)) = (key.to_str(), operation_leaf(leaf)) {
-            replies.insert((key.to_owned(), operation));
+        if let Some(operation) = operation_leaf(leaf) {
+            replies.insert(operation);
         }
     }
     Some(replies)
@@ -741,7 +730,7 @@ enum Tracked {
 /// original operation, without reading or rewriting another operation.
 #[derive(Default)]
 struct Served {
-    known: HashMap<OperationId, (String, Tracked)>,
+    known: HashMap<OperationId, Tracked>,
     ready: Vec<Request>,
     /// Request-directory scans, all of them overflow or startup rescans.
     #[cfg(test)]
@@ -815,8 +804,7 @@ impl Served {
         });
         match request {
             Ok(request) => {
-                let key = status_key(&request.action);
-                self.known.insert(operation, (key, Tracked::Queued));
+                self.known.insert(operation, Tracked::Queued);
                 self.ready.push(request);
             }
             // Withdrawn before this owner read it.
@@ -832,7 +820,7 @@ impl Served {
 
     /// Withdrawal retires only this request's reply, if already published.
     fn withdraw(&mut self, requests: &Path, operation: OperationId) -> Result<()> {
-        let Some((key, tracked)) = self.known.remove(&operation) else {
+        let Some(tracked) = self.known.remove(&operation) else {
             return Ok(());
         };
         match tracked {
@@ -840,13 +828,13 @@ impl Served {
             Tracked::Running { .. } => {
                 // Its dispatch still runs; its reply will not be published.
                 self.known
-                    .insert(operation, (key, Tracked::Running { withdrawn: true }));
+                    .insert(operation, Tracked::Running { withdrawn: true });
             }
             Tracked::Answered => {
                 let directory = requests.parent().ok_or_else(|| {
                     Error::Invalid("native request directory has no parent".into())
                 })?;
-                match remove_projection(&reply_path(&directory.join("status"), &key, operation)) {
+                match remove_projection(&reply_path(&directory.join("status"), operation)) {
                     Ok(()) | Err(Error::NotFound(_)) => {}
                     Err(error) => return Err(error),
                 }
@@ -859,7 +847,7 @@ impl Served {
     fn start(&mut self) -> Vec<Request> {
         let mut ready = std::mem::take(&mut self.ready);
         ready.retain(|request| {
-            if let Some((_, tracked)) = self.known.get_mut(&request.operation) {
+            if let Some(tracked) = self.known.get_mut(&request.operation) {
                 *tracked = Tracked::Running { withdrawn: false };
                 true
             } else {
@@ -876,7 +864,7 @@ impl Served {
         operation: OperationId,
         outcome: Result<Value>,
     ) -> Result<()> {
-        let Some((key, Tracked::Running { withdrawn })) = self.known.remove(&operation) else {
+        let Some(Tracked::Running { withdrawn }) = self.known.remove(&operation) else {
             return Ok(());
         };
         if withdrawn {
@@ -884,7 +872,7 @@ impl Served {
         }
         let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
         let root = directory
-            .create_directories(&Path::new("status").join(&key))
+            .open_directory(Path::new("status"))
             .map_err(native_file_error)?;
         match root.publish_immutable(Path::new(&format!("{operation}.json")), &bytes) {
             Ok(()) => {}
@@ -895,7 +883,7 @@ impl Served {
                 if error.kind() == std::io::ErrorKind::InvalidData => {}
             Err(error) => return Err(native_file_error(error)),
         }
-        self.known.insert(operation, (key, Tracked::Answered));
+        self.known.insert(operation, Tracked::Answered);
         Ok(())
     }
 }
