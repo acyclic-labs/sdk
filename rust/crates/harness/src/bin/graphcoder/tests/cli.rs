@@ -3,7 +3,6 @@
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
-    io::Write as _,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::{Arc, Mutex},
@@ -111,7 +110,8 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Runs the binary to its exit, or kills it after a minute.
+/// Runs the binary through the shared native capture, exit and physical-close
+/// owner, retaining the original outer deadline without readiness polling.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
     let mut command = Command::new(build_metadata::EXECUTABLE);
     fixture.custody.configure(&mut command);
@@ -139,19 +139,28 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .stderr(Stdio::piped());
     let stdin = stdin.to_owned();
     tokio::task::spawn_blocking(move || {
-        let mut child = command.spawn().unwrap();
+        use acyclic_native_runtime::{CaptureInput, ProcessInput, ProcessTree};
+        let mut child = ProcessTree::spawn(&mut command).expect("spawn GraphCoder process tree");
         child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(stdin.as_bytes())
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while child.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let _ = child.kill();
-        child.wait_with_output().unwrap()
+            .wait_with_output(
+                std::time::Duration::from_secs(60),
+                usize::MAX,
+                Some(CaptureInput::Literal(stdin.as_bytes())),
+                || Ok(()),
+                |_| Ok(ProcessInput::default()),
+                None,
+                None,
+                None,
+            )
+            .unwrap_or_else(|failure| {
+                panic!(
+                    "GraphCoder capture failed: {}; physical_tree_retired={}; stdout={}; stderr={}",
+                    failure.error,
+                    failure.cleanup_completed,
+                    String::from_utf8_lossy(&failure.stdout),
+                    String::from_utf8_lossy(&failure.stderr)
+                )
+            })
     })
     .await
     .unwrap()
@@ -193,6 +202,38 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     // Another operation is a new message to the same root agent.
     assert_eq!(succeeded(&run("second").await), "fixture answer\n");
     assert_eq!(model.generated(), 2);
+    // Invalid user settings cannot become an implicit model or tool source in
+    // default-config mode. Ordinary MCP loading still rejects these same bytes.
+    std::fs::write(fixture.settings.join(".codex/config.toml"), "[invalid\n").unwrap();
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    {
+        let refused = run("invalid-settings").await;
+        assert!(!refused.status.success());
+        assert_eq!(
+            model.generated(),
+            2,
+            "invalid settings must refuse before generation"
+        );
+    }
+    assert_eq!(
+        succeeded(
+            &graphcoder(
+                &fixture,
+                &model.catalog,
+                vec![
+                    "--default-config",
+                    "--operation",
+                    "explicit-defaults",
+                    "-p",
+                    "hello"
+                ],
+                "",
+            )
+            .await
+        ),
+        "fixture answer\n"
+    );
+    assert_eq!(model.generated(), 3);
     model.close().await;
 }
 
