@@ -10,12 +10,67 @@ use std::ffi::OsString;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 struct State {
     tree: ProcessTree,
     cancelled: bool,
     failure: Option<io::Error>,
+}
+
+// The ordinary entry point has zero observation slots, preserving its original
+// shared allocation size. The observed entry point funds one inline slot.
+struct Shared<const OBSERVATIONS: usize> {
+    state: Mutex<State>,
+    control: [OnceLock<ProcessHostControlObservation>; OBSERVATIONS],
+}
+
+/// The original host control read, before acquiring the process-state lock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessHostControl {
+    /// At least one control byte was read. The byte itself is not retained.
+    Input,
+    /// The original control handle reached EOF.
+    Eof,
+    /// The original read failed; this is not evidence of EOF or cancellation.
+    Failed {
+        kind: io::ErrorKind,
+        raw_os_error: Option<i32>,
+    },
+}
+
+/// One completed original control read, on the host's monotonic clock.
+#[derive(Clone, Copy, Debug)]
+pub struct ProcessHostControlObservation {
+    pub elapsed: Duration,
+    pub outcome: ProcessHostControl,
+}
+
+/// Fixed first observations from the original host's physical operations.
+///
+/// Durations share only this invocation's clock. Admission is the return from
+/// the original custody-bound spawn; it is not a child-consumption event.
+/// Control observes the host's cancellation input, not the selected root's
+/// stdin. A missing control observation means none was published at the
+/// terminal snapshot, not that a control producer completed or failed.
+#[derive(Clone, Copy, Debug)]
+pub struct ProcessHostProgress {
+    pub root_admitted: Duration,
+    pub root_exit_observed: Duration,
+    pub retired: Duration,
+    pub control: Option<ProcessHostControlObservation>,
+}
+
+/// A terminal returned only after the original physical retirement succeeds.
+#[derive(Debug)]
+pub struct ProcessHostCompletion {
+    /// The enclosing host result, including its cancellation result 124.
+    pub exit_code: i32,
+    /// The actual selected root status, before cancellation-result mapping.
+    pub root_status: ExitStatus,
+    pub cancelled: bool,
+    pub progress: ProcessHostProgress,
 }
 
 struct Directory(PathBuf);
@@ -169,6 +224,33 @@ impl Drop for Directory {
 /// The control reader can still be blocked on stdin after a normal command
 /// exit, and belongs to that process rather than a reusable runtime service.
 pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) -> io::Result<i32> {
+    run_host(arguments, []).map(|(code, _, _, _)| code)
+}
+
+/// Runs the same host owner and returns its original physical observations.
+///
+/// This has the same executable-only lifetime contract as
+/// [`run_external_process_host`]. It adds no reader, callback, timer or sink to
+/// the physical path. The existing v2 receipt is unchanged. On failure the
+/// original IO error is returned; no completed progress result is invented.
+/// Output remains inherited and has no arrival/EOF observations here.
+pub fn run_external_process_host_with_progress(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> io::Result<ProcessHostCompletion> {
+    let (exit_code, root_status, cancelled, progress) = run_host(arguments, [Instant::now()])?;
+    Ok(ProcessHostCompletion {
+        exit_code,
+        root_status,
+        cancelled,
+        progress: progress.expect("observed host retains its original clock"),
+    })
+}
+
+fn run_host<const OBSERVATIONS: usize>(
+    arguments: impl IntoIterator<Item = OsString>,
+    origins: [Instant; OBSERVATIONS],
+) -> io::Result<(i32, ExitStatus, bool, Option<ProcessHostProgress>)> {
+    let origin = origins.first().copied();
     let invocation = Invocation::parse(arguments)?;
     let mut completion = Completion::open(invocation.completion.as_deref())?;
     let lease = invocation
@@ -201,22 +283,43 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
         .stdout(ProcessStdio::inherit())
         .stderr(ProcessStdio::inherit());
     let mut tree = ProcessTree::spawn_in_custody(&mut command, custody)?;
+    let root_admitted = origin.map(|origin| origin.elapsed());
     // The sole waiter owns the actual Child. Cancellation only asks the same
     // tree's containment owner to terminate; it never substitutes PID polling.
     let child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
     tree.cleanup_on_drop = false;
-    let state = Arc::new(Mutex::new(State {
-        tree,
-        cancelled: false,
-        failure: None,
-    }));
+    let shared = Arc::new(Shared::<OBSERVATIONS> {
+        state: Mutex::new(State {
+            tree,
+            cancelled: false,
+            failure: None,
+        }),
+        control: std::array::from_fn(|_| OnceLock::new()),
+    });
     if !invocation.inherit_input {
-        let control = Arc::clone(&state);
+        let control = Arc::clone(&shared);
         let started = std::thread::Builder::new()
             .name("process-host-control".into())
             .spawn(move || {
                 let input = io::stdin().read(&mut [0]);
+                if let Some(origin) = origin {
+                    let outcome = match &input {
+                        Ok(0) => ProcessHostControl::Eof,
+                        Ok(_) => ProcessHostControl::Input,
+                        Err(error) => ProcessHostControl::Failed {
+                            kind: error.kind(),
+                            raw_os_error: error.raw_os_error(),
+                        },
+                    };
+                    if let Some(slot) = control.control.first() {
+                        let _ = slot.set(ProcessHostControlObservation {
+                            elapsed: origin.elapsed(),
+                            outcome,
+                        });
+                    }
+                }
                 let mut state = control
+                    .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.cancelled = true;
@@ -227,17 +330,21 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
                     .or_else(|| input.err());
             });
         if let Err(admission) = started {
-            let mut state = state
+            let mut state = shared
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             return Err(reject_control_admission(&mut state.tree, child, admission));
         }
     }
     let waited = super::platform::wait_without_reaping(&child);
-    let mut state = state
+    let root_exit_observed = origin.map(|origin| origin.elapsed());
+    let mut state = shared
+        .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let status = retire_after_observation(&mut state.tree, child, waited)?;
+    let retired = origin.map(|origin| origin.elapsed());
     if let Some(failure) = state.failure.take() {
         return Err(failure);
     }
@@ -253,7 +360,13 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
             .as_ref()
             .map_or(std::time::Duration::ZERO, ProcessCustodyLease::waited),
     )?;
-    Ok(code)
+    let progress = origin.map(|_| ProcessHostProgress {
+        root_admitted: root_admitted.expect("admitted on the original clock"),
+        root_exit_observed: root_exit_observed.expect("observed on the original clock"),
+        retired: retired.expect("retired on the original clock"),
+        control: shared.control.first().and_then(OnceLock::get).copied(),
+    });
+    Ok((code, status, state.cancelled, progress))
 }
 
 fn reject_control_admission(
@@ -305,6 +418,152 @@ fn exit_code(status: ExitStatus) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const HOST_TEST: &str = "process_tree::external_host::tests::original_host_phases_preserve_root_status_and_control_custody";
+    const ROOT_TEST: &str = "process_tree::external_host::tests::host_phase_root_fixture";
+    const PHASE_ROOT: &str = "ACYCLIC_HOST_PHASE_ROOT";
+    const PHASE_MODE: &str = "ACYCLIC_HOST_PHASE_MODE";
+
+    #[test]
+    fn host_phase_root_fixture() {
+        let Some(root) = std::env::var_os(PHASE_ROOT) else {
+            return;
+        };
+        println!("phase-root-ready");
+        io::stdout().flush().unwrap();
+        if std::env::var(PHASE_MODE).unwrap() == "exit" {
+            std::process::exit(124);
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(Path::new(&root).join("blocked.lock"))
+            .unwrap();
+        let _held = crate::FileLock::acquire(file, crate::FileLockMode::Exclusive).unwrap();
+        panic!("the original control must retire the root before its blocker releases");
+    }
+
+    #[test]
+    fn original_host_phases_preserve_root_status_and_control_custody() {
+        use std::io::BufRead as _;
+        if let Some(root) = std::env::var_os(PHASE_ROOT) {
+            let root = Path::new(&root);
+            let result = run_external_process_host_with_progress([
+                "--custody".into(),
+                root.join("custody").into_os_string(),
+                "--completion".into(),
+                root.join("completion.json").into_os_string(),
+                std::env::current_exe().unwrap().into_os_string(),
+                "--exact".into(),
+                ROOT_TEST.into(),
+                "--nocapture".into(),
+            ])
+            .unwrap();
+            let progress = result.progress;
+            let control = progress.control.map(|control| {
+                serde_json::json!({
+                    "elapsed": control.elapsed.as_secs_f64(),
+                    "outcome": match control.outcome {
+                        ProcessHostControl::Input => "input",
+                        ProcessHostControl::Eof => "eof",
+                        ProcessHostControl::Failed { .. } => "failed",
+                    },
+                })
+            });
+            std::fs::write(
+                root.join("observations.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "exit_code": result.exit_code,
+                    "root_code": result.root_status.code(),
+                    "cancelled": result.cancelled,
+                    "admitted": progress.root_admitted.as_secs_f64(),
+                    "exit_observed": progress.root_exit_observed.as_secs_f64(),
+                    "retired": progress.retired.as_secs_f64(),
+                    "control": control,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::process::exit(result.exit_code);
+        }
+        for mode in ["exit", "input", "eof"] {
+            let root = tempfile::tempdir().unwrap();
+            let file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(root.path().join("blocked.lock"))
+                .unwrap();
+            let _held = crate::FileLock::acquire(file, crate::FileLockMode::Exclusive).unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", HOST_TEST, "--nocapture"])
+                .env(PHASE_ROOT, root.path())
+                .env(PHASE_MODE, mode)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit());
+            let mut owner = ProcessTree::spawn(&mut command).unwrap();
+            let child = owner.child.as_mut().unwrap();
+            let mut control = child.stdin.take();
+            let output = child.stdout.take().unwrap();
+            let ready = io::BufReader::new(output).lines().any(|line| {
+                line.expect("read original root readiness")
+                    .ends_with("phase-root-ready")
+            });
+            assert!(ready, "original root exited before signalling readiness");
+            match mode {
+                "input" => control.as_mut().unwrap().write_all(b"x").unwrap(),
+                "eof" => drop(control.take()),
+                _ => {}
+            }
+            let status = owner.child.as_mut().unwrap().wait().unwrap();
+            owner.terminate(None).unwrap();
+            drop(control);
+            assert_eq!(status.code(), Some(124));
+            assert!(owner.is_reaped());
+            let observation: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.path().join("observations.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(observation["exit_code"], 124);
+            assert_eq!(observation["cancelled"], mode != "exit");
+            let admitted = observation["admitted"].as_f64().unwrap();
+            let exited = observation["exit_observed"].as_f64().unwrap();
+            let retired = observation["retired"].as_f64().unwrap();
+            assert!(admitted <= exited && exited <= retired);
+            if mode == "exit" {
+                assert_eq!(observation["root_code"], 124);
+                assert!(observation["control"].is_null());
+            } else {
+                assert_ne!(
+                    observation["root_code"], 124,
+                    "host cancellation must not invent the root status"
+                );
+                assert_eq!(observation["control"]["outcome"], mode);
+                let control = observation["control"]["elapsed"].as_f64().unwrap();
+                assert!(admitted <= control && control <= retired);
+            }
+            assert_eq!(
+                std::fs::read_dir(root.path().join("custody"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            let receipt: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.path().join("completion.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(receipt["schema"], "acyclic.process-custody-completion.v2");
+            assert_eq!(
+                receipt.as_object().unwrap().len(),
+                5,
+                "the original receipt field set stays exact"
+            );
+            assert_eq!(receipt["cancelled"], mode != "exit");
+            assert_eq!(receipt["process_tree_retired"], true);
+        }
+    }
 
     #[test]
     fn native_lease_excludes_successors_until_the_custody_owner_releases_it() {
