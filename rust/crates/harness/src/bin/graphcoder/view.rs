@@ -3,7 +3,7 @@
 //! editor and screen widgets.
 use acyclic_harness::local::{
     Event,
-    agent_conversation::{Conversation, PreparedHistoryAction},
+    agent_conversation::{Conversation, PreparedHistoryAction, UsageQuery},
 };
 use acyclic_harness::{
     agent::{AgentOutcome, ContextAction, Delivered, IntentId, Phase, RestoreMode, TurnOutcome},
@@ -19,6 +19,7 @@ use acyclic_harness::{
             text::{Line, Span},
         },
         term::{Environment, FrameTerminal, ScreenMode, Tty},
+        usage_summary,
     },
 };
 use acyclic_harness_client::{AgentControlFailure, AgentExchangeError, AgentReply};
@@ -516,6 +517,12 @@ pub async fn run(
     let mut query_future = std::pin::pin!(None);
     let mut query_refresh = false;
     let mut query_credit = 0;
+    let mut usage_future = std::pin::pin!(Some(query::usage(conversation.usage_query())));
+    let mut usage_line = Line::raw("Loading usage…");
+    let usage_unavailable = Line::raw("Usage unavailable");
+    // Source failure ends this query. Retain its exact frontier and typed cause;
+    // a redraw must neither restart history nor discard a pending contribution.
+    let mut usage_stopped: Option<(UsageQuery, acyclic_harness::Error)> = None;
     // The message id and text of the prompt the host last refused.
     let mut unsent: Option<(String, String)> = None;
     input
@@ -557,6 +564,11 @@ pub async fn run(
                 transcript: view.rows(size.width.saturating_sub(1)),
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
+                usage: Some(if usage_stopped.is_some() {
+                    &usage_unavailable
+                } else {
+                    &usage_line
+                }),
                 overlay: overlay.as_ref().map_or_else(
                     || {
                         query_panel.as_ref().map_or_else(
@@ -612,6 +624,26 @@ pub async fn run(
             );
         }
         tokio::select! {
+            (query, result) = async {
+                match usage_future.as_mut().as_pin_mut() {
+                    Some(query) => query.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                usage_future.set(None);
+                match result {
+                    Ok(changed) => {
+                        if changed && query.synchronized() {
+                            usage_line = usage_summary(query.totals());
+                        }
+                        usage_future.set(Some(query::usage(query)));
+                    }
+                    Err(error) => {
+                        view.notice = Some(format!("Usage query ended: {error}"));
+                        usage_stopped = Some((query, error));
+                    }
+                }
+            }
             result = async {
                 match query_future.as_mut().as_pin_mut() {
                     Some(query) => query.await,

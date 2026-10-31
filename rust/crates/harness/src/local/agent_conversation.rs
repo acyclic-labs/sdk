@@ -14,6 +14,7 @@ use super::Connection;
 mod history;
 pub use history::{HistoryPage, PreparedHistoryAction};
 mod usage;
+mod usage_query;
 use crate::{
     Error, Result,
     agent::{
@@ -32,6 +33,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+pub use usage_query::UsageQuery;
 
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())

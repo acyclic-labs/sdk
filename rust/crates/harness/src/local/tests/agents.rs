@@ -98,6 +98,11 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let client = conversation(&harness).await?;
+    let mut usage = client.usage_query();
+    while !usage.synchronized() {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().calls, 0);
     let inbox = client.send("hello", "hello").await?;
     let conversation = root.conversation().map_err(agent)?;
     let entries = settled(&agents, &root).await?;
@@ -106,6 +111,15 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert_eq!(entry.inbox, inbox);
     assert!(matches!(entry.input, TurnInput::Message { .. }));
     assert_eq!(provider.request_count(), 1);
+    // The same live query started before this input. Its exact completion
+    // replaces the original admission, rather than counting another call.
+    while usage.totals().completed == 0 {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().calls, 1);
+    assert_eq!(usage.totals().completed, 1);
+    assert!(usage.totals().currency.is_none());
+    assert_eq!(usage.totals().token_nano_units.value(), None);
     // A client reads the settled output from the root's private volume.
     let output = harness
         .client_reader()?
@@ -177,6 +191,13 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let mut events = client.observe(0).await?;
         let inbox = client.send("lost-producer", "hello").await?;
         entering.await.map_err(agent)?;
+        let mut usage = client.usage_query();
+        while !usage.synchronized() {
+            usage.advance().await?;
+        }
+        assert_eq!(usage.totals().calls, 1);
+        assert_eq!(usage.totals().completed, 0);
+        let before = usage.totals().clone();
         let waiting = async {
             loop {
                 match events.next().await? {
@@ -187,7 +208,15 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         };
         tokio::pin!(waiting);
         assert!(futures::poll!(&mut waiting).is_pending(), "live producer must retain the wait");
-        drop(producer);
+        let usage_result = {
+            let advancing = usage.advance();
+            tokio::pin!(advancing);
+            assert!(futures::poll!(&mut advancing).is_pending(), "quiet live usage must wait at its retained frontier");
+            drop(producer);
+            advancing.await
+        };
+        assert!(matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "usage lost the runtime cause: {usage_result:?}");
+        assert_eq!(usage.totals(), &before, "source loss changed the admitted projection");
         // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
         let observed = waiting.await;
         assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");

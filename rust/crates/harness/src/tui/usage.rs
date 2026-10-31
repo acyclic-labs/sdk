@@ -13,17 +13,17 @@ pub fn usage_summary(totals: &ModelUsageTotals) -> Line<'static> {
     // Six fixed-width u64 counters and their labels fit without reallocating.
     let mut text = String::with_capacity(256);
     text.push_str("estimated token charge: ");
-    match totals.token_nano_units.value() {
-        Some(nanos) => {
+    match (totals.currency.as_deref(), totals.token_nano_units.value()) {
+        (Some(currency), Some(nanos)) => {
             let _ = write!(
                 text,
                 "{} {}.{:09}",
-                totals.currency,
+                currency,
                 nanos / 1_000_000_000,
                 nanos % 1_000_000_000
             );
         }
-        None => text.push('?'),
+        _ => text.push('?'),
     }
     for (label, count) in [
         ("in", totals.input),
@@ -57,8 +57,12 @@ mod tests {
         ratatui::{Terminal, backend::TestBackend},
     };
 
-    fn projected_footer<const PARTIAL: bool>() {
-        let mut totals = ModelUsageTotals::new("USD".into()).unwrap();
+    fn projected_footer<const PARTIAL: bool>(priced: bool) {
+        let mut totals = if priced {
+            ModelUsageTotals::new("USD".into()).unwrap()
+        } else {
+            ModelUsageTotals::unpriced()
+        };
         totals.token_nano_units = UsageTotal {
             known: 98_765_432_101,
             unknown: u64::from(!PARTIAL),
@@ -96,27 +100,29 @@ mod tests {
             visible.contains("estimated token charge: ? · in ?"),
             "a partial subtotal must remain unknown on the screen"
         );
-        // Replacing with a complete total uses integer nanounits, including a
-        // fraction too small for a rounded whole-currency presentation.
+        // Complete arithmetic alone cannot name a monetary value without a
+        // selected currency. A selected currency retains exact nanounits.
         totals.token_nano_units = UsageTotal {
             known: 1,
             unknown: 0,
         };
-        assert!(
-            usage_summary(&totals)
-                .to_string()
-                .starts_with("estimated token charge: USD 0.000000001")
-        );
+        let line = usage_summary(&totals).to_string();
+        assert!(line.starts_with(if priced {
+            "estimated token charge: USD 0.000000001"
+        } else {
+            "estimated token charge: ?"
+        }));
     }
 
     #[test]
     fn projected_usage_keeps_partial_cost_unknown_and_attention_visible() {
-        projected_footer::<false>();
+        projected_footer::<false>(true);
+        projected_footer::<false>(false);
     }
 
     #[test]
     #[should_panic(expected = "a partial subtotal must remain unknown on the screen")]
     fn partial_subtotal_negative_control() {
-        projected_footer::<true>();
+        projected_footer::<true>(true);
     }
 }

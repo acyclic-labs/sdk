@@ -3,6 +3,17 @@ use super::{Conversation, Failure, Line, diff};
 use acyclic_harness::{client::AgentPageRequest, tui::QueryPage};
 use std::{ops::RangeInclusive, sync::Arc};
 
+/// Keep the original query owned by its pending future across input and draws.
+pub(super) async fn usage(
+    mut query: acyclic_harness::local::agent_conversation::UsageQuery,
+) -> (
+    acyclic_harness::local::agent_conversation::UsageQuery,
+    acyclic_harness::Result<bool>,
+) {
+    let result = query.advance().await;
+    (query, result)
+}
+
 #[derive(Clone)]
 pub(super) enum Source {
     Diff(Option<String>),
@@ -66,9 +77,7 @@ pub(super) async fn load(
             for item in &history.items {
                 lines.push(Line::raw(format!(
                     "{} · {} project volumes · context through {}",
-                    item.conversation,
-                    item.volumes.len(),
-                    item.context.tail,
+                    item.conversation, item.volume_count, item.context_tail,
                 )));
             }
             let selected = history

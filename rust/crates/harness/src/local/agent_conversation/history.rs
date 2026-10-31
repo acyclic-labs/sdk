@@ -2,7 +2,7 @@
 use super::{Conversation, failed, intent, unexpected};
 use crate::{
     Result,
-    agent::{HistoryCheckpoint, HistoryVolume, RestoreMode},
+    agent::{HistorySummary, HistoryVolume, RestoreMode},
     model::ModelContent,
 };
 use acyclic_harness_client::{
@@ -47,8 +47,8 @@ impl PreparedHistoryAction {
 
 /// One immutable interval of settled history, newest conversation cut first.
 pub struct HistoryPage {
-    /// Original descriptors validated by the shared client reply boundary.
-    pub items: Vec<HistoryCheckpoint>,
+    /// Bounded source summaries validated by the shared client reply boundary.
+    pub items: Vec<HistorySummary>,
     /// Opaque continuation returned unchanged to the original query.
     pub next: Option<String>,
 }
