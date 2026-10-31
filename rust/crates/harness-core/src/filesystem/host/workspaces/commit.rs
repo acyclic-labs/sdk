@@ -95,7 +95,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Self::commit_publication(transaction, io, publication).await
         })
     }
-    async fn publish_mutations(
+    pub(in crate::filesystem) async fn publish_mutations(
         transaction: &mut acyclic_fs::Transaction<A, O>,
         mutations: &[WorkspaceMutation],
         io: &PreparationIo,

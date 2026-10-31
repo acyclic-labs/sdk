@@ -452,6 +452,26 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             "operation-bound file publication is unavailable",
         ))
     }
+    /// Streams one complete file contract on the original operation. The source
+    /// must reach its successful terminal event before metadata is published.
+    /// Replay is authenticated by the same once-publication receipt as bytes.
+    #[cfg(feature = "filesystem")]
+    fn stage_source_once<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _path: &'a str,
+        _source: std::pin::Pin<&'a mut dyn ContentSource>,
+        _media_type: &'a str,
+        _display_name: &'a str,
+        access: ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "streamed operation-bound file publication is unavailable",
+        ))
+    }
+
     /// Observes the original once-publication without substituting a mutable head.
     fn observe_staged_once<'a>(
         &'a self,

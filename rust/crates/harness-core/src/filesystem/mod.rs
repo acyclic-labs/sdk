@@ -27,7 +27,7 @@ use acyclic_fs::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 mod content_input;
-use content_input::ContentInput;
+use content_input::{ContentInput, DescribedSource, PublicationInput};
 mod content_publisher;
 mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
@@ -167,8 +167,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
+        self.put_content_input(
+            volume,
+            grant,
+            path,
+            PublicationInput::Bytes(input),
+            media_type,
+            display_name,
+            maximum_bytes,
+            idempotency_key,
+            internal_class,
+            expected_generation,
+            ceiling,
+            io,
+        )
+    }
+
+    fn put_content_input<'a, B: ContentInput + ?Sized>(
+        &'a self,
+        volume: &'a VolumeRef,
+        grant: &'a ContentGrant,
+        path: &'a str,
+        mut input: PublicationInput<'a, B>,
+        media_type: &'a str,
+        display_name: &'a str,
+        maximum_bytes: u64,
+        idempotency_key: &'a IdempotencyKey,
+        internal_class: Option<InternalContentClass>,
+        expected_generation: Option<&'a GenerationRef>,
+        ceiling: Option<&'a crate::Capabilities>,
+        io: Option<&'a bounded_io::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>
+    where
+        A: 'static,
+        O: 'static,
+    {
         // Refuse invalid or unauthorized input before admitting an allocated future.
-        let bytes = input.as_ref();
         grant.require(volume, VolumeOperation::Write, io)?;
         if let Some(grants) = ceiling
             && !crate::executor::with_history_io(io, |work| {
@@ -181,7 +215,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "content caller lacks a filesystem write grant",
             ));
         }
-        if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
+        if volume.provider() != &self.provider
+            || input
+                .bytes()
+                .is_some_and(|bytes| bytes.len() as u64 > maximum_bytes)
+        {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -222,43 +260,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         // Construction returns before polling this concrete publication graph.
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            let descriptor = crate::executor::with_history_io(io, |work| {
-                FileDescriptor::from_bytes(bytes, media_type, work)
-            })?;
-            let operation = bounded_io::operation_key(idempotency_key, io)?;
-            let provisional = crate::executor::with_history_io(io, |work| {
-                FileRef::new(
-                    volume.copy(work)?,
-                    stock_string_copy(path, io)?,
-                    bounded_io::hex_key(&operation.into_bytes(), io)?,
-                    FileDescriptor::new(
-                        *descriptor.sha256(),
-                        descriptor.byte_length(),
-                        stock_string_copy(descriptor.media_type(), io)?,
-                    )?,
-                    stock_string_copy(display_name, io)?,
-                    work,
-                )
-            })?;
-            let workspace = bounded_io::content_workspace(&self.provider, volume, io)?;
-            let receipt_identity = if internal_class.is_some() {
-                provisional.path()
+            // A stream uses the same original transaction ledger throughout
+            // staging and publication, including an unmeasured caller.
+            let unmeasured;
+            let io = if io.is_none() && matches!(&input, PublicationInput::Source(_)) {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                Some(&unmeasured)
             } else {
-                idempotency_key.as_str()
+                io
             };
-            let receipt_path =
-                content_receipt_path_io(receipt_identity, internal_class.is_some(), false, io)?;
-            let metadata_path = content_metadata_path_io(provisional.path(), true, io)?;
-            let receipt_bytes = match io {
-                Some(io) => io.encode(
-                    &(&provisional, expected_generation),
-                    io.remaining()?.bytes_encoded,
-                    true,
-                )?,
-                None => acyclic_stream::OwnedBytes::from(crate::contract::canonical_json_bytes(
-                    &(&provisional, expected_generation),
-                )?),
-            };
+            let operation = bounded_io::operation_key(idempotency_key, io)?;
+            let workspace = bounded_io::content_workspace(&self.provider, volume, io)?;
             let (opened, prior) = crate::conversation::BoundedContentFuture::new(io, || async {
                 let owned;
                 let io = if let Some(io) = io {
@@ -277,19 +289,90 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             })?
             .await?;
             let (authorized_generation, policy_fence) = self
-                .authorize_content_write(
-                    &opened,
-                    grant,
-                    provisional.path(),
-                    prior.is_some(),
-                    ceiling,
-                    io,
-                )?
+                .authorize_content_write(&opened, grant, path, prior.is_some(), ceiling, io)?
                 .await?;
             let generation_hold = io
                 .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
                 .transpose()?;
             let authorized_generation = (authorized_generation, generation_hold);
+            let mut staged = None;
+            let descriptor = match &mut input {
+                PublicationInput::Bytes(input) => crate::executor::with_history_io(io, |work| {
+                    FileDescriptor::from_bytes(input.as_ref(), media_type, work)
+                })?,
+                PublicationInput::Source(source) => {
+                    let stream_io = io.ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "stream publication lost its original ledger",
+                        )
+                    })?;
+                    let mut transaction = stream_io.sdk(
+                        opened
+                            .begin_transaction(operation, stream_io, stream_io.cancellation())
+                            .await,
+                    )?;
+                    stream_io.sdk(
+                        transaction
+                            .observe_policy_fence(policy_fence, stream_io, stream_io.cancellation())
+                            .await,
+                    )?;
+                    let mut described = DescribedSource::new(source.as_mut(), stream_io);
+                    let content = stream_io.sdk(
+                        transaction
+                            .stage_content(
+                                &mut described,
+                                maximum_bytes,
+                                stream_io,
+                                stream_io.cancellation(),
+                            )
+                            .await,
+                    )?;
+                    let descriptor = described.descriptor(media_type)?;
+                    if descriptor.byte_length() != content.logical_bytes() {
+                        return Err(stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "staged content differs from its streamed descriptor",
+                        ));
+                    }
+                    staged = Some((transaction, content));
+                    descriptor
+                }
+            };
+            let provisional = crate::executor::with_history_io(io, |work| {
+                FileRef::new(
+                    volume.copy(work)?,
+                    stock_string_copy(path, io)?,
+                    bounded_io::hex_key(&operation.into_bytes(), io)?,
+                    FileDescriptor::new(
+                        *descriptor.sha256(),
+                        descriptor.byte_length(),
+                        stock_string_copy(descriptor.media_type(), io)?,
+                    )?,
+                    stock_string_copy(display_name, io)?,
+                    work,
+                )
+            })?;
+            let receipt_identity = if internal_class.is_some() {
+                provisional.path()
+            } else {
+                idempotency_key.as_str()
+            };
+            let receipt_path =
+                content_receipt_path_io(receipt_identity, internal_class.is_some(), false, io)?;
+            let metadata_path = content_metadata_path_io(provisional.path(), true, io)?;
+            let receipt_bytes = match io {
+                Some(io) => io.encode(
+                    &(&provisional, expected_generation),
+                    io.remaining()?.bytes_encoded,
+                    true,
+                )?,
+                None => acyclic_stream::OwnedBytes::from(crate::contract::canonical_json_bytes(
+                    &(&provisional, expected_generation),
+                )?),
+            };
             if let Some(prior) = prior {
                 let generation = (self).generation_ref_id(prior.id(), io)?;
                 bounded_io::retain(&prior, io).await?;
@@ -343,20 +426,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         )
                     })
                 }?;
-                let committed = self
-                    .read_retained_file(&prior, &reference, maximum_bytes, io)?
-                    .await?;
-                if committed.as_ref() != bytes {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Conflict,
-                        "upload identity belongs to different content",
-                    ));
+                if let Some(bytes) = input.bytes() {
+                    let committed = self
+                        .read_retained_file(&prior, &reference, maximum_bytes, io)?
+                        .await?;
+                    if committed.as_ref() != bytes {
+                        return Err(stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Conflict,
+                            "upload identity belongs to different content",
+                        ));
+                    }
                 }
                 grant.recheck(io)?;
                 return self.seal_publication(reference, io);
             }
-            let absolute = crate::executor::with_history_io(io, |work| {
+            let mut absolute = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
             })?;
             if let Some(expected) = expected_generation
@@ -384,11 +469,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     path: stock_string_copy(parent, io)?,
                 });
             }
-            let owned_bytes = input.mutation_bytes(io)?;
-            mutations.push(WorkspaceMutation::PutFile {
-                path: absolute,
-                bytes: owned_bytes,
-            });
+            if let PublicationInput::Bytes(input) = &input {
+                mutations.push(WorkspaceMutation::PutFile {
+                    path: std::mem::take(&mut absolute),
+                    bytes: input.mutation_bytes(io)?,
+                });
+            }
             mutations.push(WorkspaceMutation::CreateDirectory {
                 path: stock_string_copy("/.system/harness-file-metadata", io)?,
             });
@@ -407,15 +493,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 })?,
                 bytes: receipt_bytes,
             });
-            let generation = self
-                .apply_authorized_generation(
+            let generation = if let Some((mut transaction, content)) = staged {
+                let stream_io = io.ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "stream publication lost its original ledger",
+                    )
+                })?;
+                Self::publish_mutations(&mut transaction, &mutations, stream_io).await?;
+                stream_io.sdk(
+                    transaction
+                        .write_staged(&absolute, &[content], stream_io, stream_io.cancellation())
+                        .await,
+                )?;
+                Self::commit_publication(
+                    transaction,
+                    stream_io,
+                    FilePublication::Authorized(policy_fence, grant),
+                )
+                .await?
+            } else {
+                self.apply_authorized_generation(
                     &workspace,
                     (policy_fence, grant),
                     &mutations,
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                     io,
                 )?
-                .await?;
+                .await?
+            };
             let generation_reference = (self).generation_ref_id(generation.id(), io)?;
             let version = bounded_io::hex_key(generation_reference.as_resource().key(), io)?;
             {
@@ -441,8 +548,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )
                 })
             }?;
-            self.read_retained_file(&generation, &reference, maximum_bytes, io)?
-                .await?;
+            if input.bytes().is_some() {
+                self.read_retained_file(&generation, &reference, maximum_bytes, io)?
+                    .await?;
+            }
             // Carry the verified immutable publication through runtime admission.
             grant.recheck(io)?;
             self.seal_publication(reference, io)
