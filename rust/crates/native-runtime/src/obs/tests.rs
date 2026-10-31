@@ -224,8 +224,8 @@ fn start_after_admission(
     }
 }
 
-#[test]
-fn admitted_work_keeps_observation_after_observer_drop() {
+#[tokio::test]
+async fn admitted_work_keeps_observation_after_observer_drop() {
     // The test fills a process-global pool, so it must not share one.
     if crate::tests::passed_in_exclusive_process(
         "obs::tests::admitted_work_keeps_observation_after_observer_drop",
@@ -300,13 +300,30 @@ fn admitted_work_keeps_observation_after_observer_drop() {
             &progress_rx,
         );
         drop(observer);
+        let retired = async {
+            loop {
+                let changed = seen.1.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if seen.closed("test.caller") != 0 {
+                    break;
+                }
+                changed.await;
+            }
+        };
+        tokio::pin!(retired);
+        assert!(
+            retired
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending(),
+            "held work retired its original caller span"
+        );
         tracing::dispatcher::with_default(&foreign, || release_tx.send(()).unwrap());
         done_rx.recv().unwrap();
         // The worker closes the caller span after reporting done; no wall
         // clock bounds that, so wait for the close itself.
-        while seen.closed("test.caller") == 0 {
-            std::thread::yield_now();
-        }
+        retired.await;
         assert!(seen.has_ancestor("test.worker_nested", "test.caller"));
         assert!(
             !seen
