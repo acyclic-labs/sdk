@@ -10,6 +10,10 @@ pub struct TokenCounterSpec {
     /// Relative path; {model} expands to the selected model name.
     pub path: String,
     /// Input dialect understood by the count endpoint.
+    #[cfg_attr(
+        all(target_arch = "wasm32", feature = "browser"),
+        tsify(type = "Family")
+    )]
     pub adapter: Adapter,
     /// Typed response field containing the nonnegative integral count.
     pub response_field: TokenCountField,

@@ -22,13 +22,14 @@ impl ContextRoot {
         if !self.directory.is_empty() {
             crate::conversation::validate_content_path(&self.directory, work)?;
         }
-        let capability = self
-            .volume
-            .directory_read_capability(&self.directory, work)?;
-        let retained = capability.capacity() as u64;
-        drop(capability);
-        if let Some(io) = work.as_deref_mut() {
-            io.release_owned(retained)?;
+        // Validation checks the declaration, not a derived authorization label.
+        // Hashing and allocating that label belongs at the grant boundary.
+        if crate::conversation::is_internal_path(&self.directory) {
+            return Err(discovery_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "internal storage paths cannot be delegated",
+            ));
         }
         Ok(())
     }

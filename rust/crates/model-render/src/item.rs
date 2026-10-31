@@ -39,6 +39,8 @@ pub struct Provenance {
     pub model: String,
     /// Nonsecret endpoint identity, supplied by the admitted transport.
     pub endpoint: String,
+    /// Admitted nonsecret credential ownership scope; unknown scope forbids replay.
+    pub credential_scope: Option<[u8; 32]>,
 }
 
 /// Semantic class fixed by the ingress parser, never inferred during rendering.
@@ -59,7 +61,7 @@ pub enum ItemKind {
 /// conversation, agent count or number of models in an alloy.
 #[derive(Clone, Debug, Serialize)]
 #[serde(transparent)]
-pub struct WireItem(Record);
+pub struct WireItem(Record, #[serde(skip)] Option<bool>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -124,7 +126,26 @@ impl WireItem {
                 "wire item must be a strict JSON object",
             ));
         }
-        Ok(Self(record))
+        // Derive this fixed semantic fact once at ingress, never by decoding
+        // the selected history during rendering.
+        let gemini = if record.provenance.family == Family::Gemini {
+            Some(record.wire.as_ref())
+        } else {
+            record.projections.get(&Family::Gemini).map(AsRef::as_ref)
+        };
+        #[derive(Deserialize)]
+        struct Role<'a> {
+            #[serde(borrow)]
+            role: Option<&'a str>,
+        }
+        let role = gemini
+            .and_then(|wire| serde_json::from_str::<Role<'_>>(wire.get()).ok())
+            .and_then(|role| match role.role {
+                Some("model") => Some(true),
+                Some("user") => Some(false),
+                _ => None,
+            });
+        Ok(Self(record, role))
     }
 
     /// Original nonsecret wire origin.
@@ -147,6 +168,10 @@ impl WireItem {
             .projections
             .iter()
             .map(|(family, wire)| (*family, wire.as_ref()))
+    }
+
+    pub(crate) fn gemini_model_turn(&self) -> Option<bool> {
+        self.1
     }
 
     pub(crate) fn projection(&self, family: Family) -> Option<&RawValue> {

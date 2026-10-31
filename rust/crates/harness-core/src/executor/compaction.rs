@@ -178,11 +178,29 @@ impl StockExecution<'_> {
             count
         };
         with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
+        let available = capacity
+            .context_tokens
+            .checked_sub(
+                policy
+                    .response_reserve_tokens
+                    .max(capacity.output_reservation(self.output_tokens())?),
+            )
+            .and_then(|tokens| tokens.checked_sub(count.fixed_tokens))
+            .filter(|tokens| *tokens >= 2)
+            .ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "fixed request content leaves no summary capacity",
+                )
+            })?;
+        let recent_tokens = policy.recent_tokens.min(available / 2);
         let (through, maximum) = crate::context::plan_compaction_budget(
             policy,
             context,
             &count,
             message_limit,
+            recent_tokens,
             self.io,
         )?;
         let mandatory = with_history_io(self.io, |work| {

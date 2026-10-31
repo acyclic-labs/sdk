@@ -27,7 +27,10 @@ pub(super) async fn review_model(
     let (model, provider) = binding;
     let capacity = provider.context_capacity(model)?;
     capacity.validate()?;
-    let output = capacity.output_reservation(None)?;
+    let max_output_tokens = provider
+        .model_profile(model)?
+        .and_then(|profile| profile.max_output_tokens());
+    let output = capacity.output_reservation(max_output_tokens)?;
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
             model: model.clone(),
@@ -49,7 +52,7 @@ pub(super) async fn review_model(
                 },
             ],
             tools: Vec::new(),
-            max_output_tokens: Some(output),
+            max_output_tokens,
         },
         limits,
         None,

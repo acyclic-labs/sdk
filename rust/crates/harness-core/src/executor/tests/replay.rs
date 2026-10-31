@@ -657,7 +657,7 @@ mod prepared_request_reuse_properties {
 #[tokio::test]
 async fn inherited_environment_respects_final_message_and_byte_limits() -> Result<()> {
     use crate::context::{ContextManifest, EnvironmentFacts};
-    for (message_limit, render_bytes, parent_bytes, model_bytes, expect_environment) in [
+    for (message_limit, render_bytes, parent_bytes, convention_bytes, expect_environment) in [
         (3, 32_768, 10, 0, false),
         (4, 32_768, 10, 0, true),
         (10, 8_000, 6_000, 0, false),
@@ -687,7 +687,10 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
             )
             .await?;
         let manifest = ContextManifest {
-            conventions: vec!["required convention".into()],
+            conventions: vec![format!(
+                "required convention{}",
+                "c".repeat(convention_bytes)
+            )],
             environment: Some(EnvironmentFacts {
                 cwd: Some("d".repeat(4_000)),
                 os: "fixture".into(),

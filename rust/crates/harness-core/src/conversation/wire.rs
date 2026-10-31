@@ -18,6 +18,7 @@ impl HeapLayout for Provenance {
         ("provider", String::LAYOUT),
         ("model", String::LAYOUT),
         ("endpoint", String::LAYOUT),
+        ("credential_scope", <Option<[u8; 32]>>::LAYOUT),
     ]);
 }
 impl HeapLayout for WireItem {

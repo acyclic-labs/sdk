@@ -26,6 +26,7 @@ proptest! {
                 provider: "original-service".into(),
                 model: "original-model".into(),
                 endpoint: "https://example.invalid/v1".into(),
+            credential_scope: Some([9; 32]),
             },
             ItemKind::Message,
             RawValue::from_string(wire.clone()).unwrap(),
@@ -52,7 +53,7 @@ proptest! {
         ).unwrap();
         prop_assert_eq!(admissions, 1);
         for family in [Family::Responses, Family::Anthropic, Family::Chat, Family::Gemini] {
-            let selected = acyclic_model_render::seg(family, "original-service", &reopened).unwrap().unwrap();
+            let selected = acyclic_model_render::seg(&Provenance { family, ..reopened.provenance().clone() }, &reopened).unwrap().unwrap();
             prop_assert_eq!(selected.get(), wire.as_str());
         }
         // The original admission refusal stops before construction; it cannot
@@ -88,6 +89,7 @@ async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -
             provider: "original-service".into(),
             model: "original-model".into(),
             endpoint: "https://example.invalid/v1".into(),
+            credential_scope: Some([9; 32]),
         },
         ItemKind::Reasoning,
         RawValue::from_string(raw.into()).unwrap(),
@@ -215,9 +217,15 @@ async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -
         assert_eq!(item.wire().get(), raw);
         assert_eq!(item.provenance(), &provenance);
         assert!(
-            acyclic_model_render::seg(Family::Chat, "original-service", item)
-                .unwrap()
-                .is_none()
+            acyclic_model_render::seg(
+                &Provenance {
+                    family: Family::Chat,
+                    ..item.provenance().clone()
+                },
+                item
+            )
+            .unwrap()
+            .is_none()
         );
         drop(loaded);
         drop(hold);
