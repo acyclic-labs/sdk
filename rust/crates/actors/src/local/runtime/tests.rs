@@ -13,6 +13,7 @@ use futures::future::BoxFuture;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+mod clock;
 mod drain;
 mod invocation_failure;
 mod pause;
@@ -330,7 +331,7 @@ impl Clock for Manual {
     fn now_unix_ms(&self) -> u64 {
         self.0.load(Ordering::SeqCst)
     }
-    fn sleep_until(&self, _deadline_unix_ms: u64) -> BoxFuture<'static, ()> {
+    fn sleep_until(&self, _deadline_unix_ms: u64) -> BoxFuture<'static, Result<(), ClockError>> {
         futures::future::pending().boxed()
     }
 }

@@ -408,7 +408,10 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                     Some(Err(error)) => return Err(Error::from(error).into()),
                     None => return Err(Error::from(StreamError::Unavailable).into()),
                 },
-                () = (&mut deadline).fuse() => return Ok(records),
+                result = (&mut deadline).fuse() => {
+                    result.map_err(Error::from)?;
+                    return Ok(records);
+                },
             }
         };
         while records.len() < count {
@@ -418,7 +421,10 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                     Some(Err(error)) => return Err(Error::from(error).into()),
                     None => break,
                 },
-                () = (&mut deadline).fuse() => break,
+                result = (&mut deadline).fuse() => {
+                    result.map_err(Error::from)?;
+                    break;
+                },
             }
         }
         Ok(records)
@@ -617,10 +623,14 @@ async fn bounded_case<T: Target + ?Sized>(
         .sleep_until(target.clock().now_unix_ms().saturating_add(budget_ms));
     match futures::future::select(Box::pin(future), deadline).await {
         futures::future::Either::Left((result, _)) => result,
-        futures::future::Either::Right(_) => Err(Failure::Violation {
-            case,
-            detail: "backend did not complete committed operations within the case budget".into(),
-        }),
+        futures::future::Either::Right((result, _)) => {
+            result.map_err(Error::from)?;
+            Err(Failure::Violation {
+                case,
+                detail: "backend did not complete committed operations within the case budget"
+                    .into(),
+            })
+        }
     }
 }
 
@@ -660,7 +670,8 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         futures::future::Either::Left((result, _)) => {
             result?;
         }
-        futures::future::Either::Right(_) => {
+        futures::future::Either::Right((result, _)) => {
+            result.map_err(Error::from)?;
             return fixture.violation("initial input was not applied".into());
         }
     }
@@ -705,7 +716,8 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         .sleep_until(target.clock().now_unix_ms().saturating_add(BUDGET_MS));
     let committed = match futures::future::select(waiting, deadline).await {
         futures::future::Either::Left((result, _)) => result?,
-        futures::future::Either::Right(_) => {
+        futures::future::Either::Right((result, _)) => {
+            result.map_err(Error::from)?;
             return fixture.violation("committed invocation missed its reply".into());
         }
     };
@@ -1018,7 +1030,11 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     target.pause(&fixture.actor, true).await?;
     target.restart().await?;
     // A paused owner retains its due cleanup, including across physical reopen.
-    target.clock().sleep_until(deadline).await;
+    target
+        .clock()
+        .sleep_until(deadline)
+        .await
+        .map_err(Error::from)?;
     wait_pool_used(&fixture, 2).await?;
     target.pause(&fixture.actor, false).await?;
     wait_pool_used(&fixture, 0).await?;
@@ -1105,7 +1121,8 @@ async fn wait_pool_used<T: Target + ?Sized>(
     );
     match futures::future::select(Box::pin(wait), deadline).await {
         futures::future::Either::Left((result, _)) => result,
-        futures::future::Either::Right(_) => {
+        futures::future::Either::Right((result, _)) => {
+            result.map_err(Error::from)?;
             fixture.violation(format!("reservation units did not reach {expected}"))
         }
     }
@@ -1149,7 +1166,8 @@ async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         .sleep_until(target.clock().now_unix_ms().saturating_add(BUDGET_MS));
     let observed = match futures::future::select(wait, deadline).await {
         futures::future::Either::Left((observed, _)) => observed?,
-        futures::future::Either::Right(_) => {
+        futures::future::Either::Right((result, _)) => {
+            result.map_err(Error::from)?;
             return fixture.violation("wait applied missed the committed wake".into());
         }
     };

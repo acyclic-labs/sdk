@@ -121,6 +121,16 @@ retains at most `RuntimeLimits::active` executions; dormant actors own no task.
 Dropping the drain cancels its owned executions and releases their admission.
 Unconsumed inputs remain durable for the caller's next explicit wake.
 
+`local::Clock::sleep_until` returns a deadline result. The runtime propagates a
+clock failure through its original `run` result. `ControlledClock::new` supplies
+one host clock and its sole `ClockControl`; inject that same clock into the
+runtime and advance it with `advance_to` for deterministic alarm delivery.
+Advancement is monotonic, equal time does not notify, and dropping the controller
+terminates pending and late future deadlines with `ClockError::ProducerDropped`.
+Already reached deadlines succeed. Advancing time announces a clock event;
+delivery completion remains the runtime's original completion or applied cut.
+The clock owns one shared event and no background task or OS timer.
+
 `Runtime::pause_with` owns its admitted placement, cancellation, delivery cleanup,
 conditional pause decision and resource transition independently of its waiter.
 Queued controls use the same fence, so resume cannot overtake pending resource
