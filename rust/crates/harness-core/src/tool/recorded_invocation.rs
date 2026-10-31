@@ -7,6 +7,7 @@ pub(crate) struct RecordedInvocation<I = ToolInvocation, M = Value> {
     pub invocation: I,
     pub metadata: M,
     pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filesystem: Option<[u8; 32]>,
 }
 
