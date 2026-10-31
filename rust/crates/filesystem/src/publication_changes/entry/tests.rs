@@ -138,7 +138,12 @@ fn every_entry_decodes_to_its_exact_path_and_only_untruncated_unicode_keys_carry
                     "the names are stored once, in the key"
                 );
             }
-            let decoded = super::path(key.slice(), operation(&change), &metadata, config).unwrap();
+            let facts =
+                PublicationEntry::from_parts(key.slice(), operation(&change), &metadata, config)
+                    .unwrap();
+            assert_eq!(facts.before_present, change.before.is_some());
+            assert_eq!(facts.after_present, change.after.is_some());
+            let decoded = facts.path;
             assert_eq!(decoded, path);
             // The names the key carries are the key's exact text.
             if carries {
