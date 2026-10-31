@@ -248,6 +248,17 @@ where
         })
     }
 
+    fn append_envelope_if_tail<'a>(
+        &'a self,
+        expected_tail: u64,
+        key: &'a str,
+        step: u32,
+        envelope: &'a crate::conversation::envelope::Envelope,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        self.append_conversation(expected_tail, key, step, envelope, io)
+    }
+
     fn stage_prepared_model_request<'a>(
         &'a self,
         operation: OperationId,

@@ -14,7 +14,7 @@ where
     /// The exclusive journal cursor and retry association are the existing ones.
     /// Staging alone never makes the item visible. This establishes neither a
     /// filesystem publication end nor a closed model/tool exchange.
-    pub fn append_envelope_if_tail<'a>(
+    pub(super) fn append_conversation<'a>(
         &'a self,
         expected_tail: u64,
         key: &'a str,
@@ -24,7 +24,9 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             self.authorize_envelope(envelope, Some(io))?;
-            let bytes = envelope.encode(io, super::MAXIMUM_PAYLOAD_BYTES)?;
+            // Canonicalize the envelope only. Its native body remains an exact
+            // string, so this never parses or rewrites provider wire bytes.
+            let bytes = io.encode(envelope, super::MAXIMUM_PAYLOAD_BYTES, true)?;
             let bytes_hold = io.guard_bytes(&bytes)?;
             let reference = <Self as ExecutionJournal>::stage(
                 self,

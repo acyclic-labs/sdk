@@ -180,6 +180,25 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Admits an immutable conversation item at its original journal cursor.
+    /// The reference and retry association publish through the ordinary journal
+    /// cut. This does not assert source-publication or model-exchange closure.
+    #[cfg(feature = "filesystem")]
+    fn append_envelope_if_tail<'a>(
+        &'a self,
+        _expected_tail: u64,
+        _key: &'a str,
+        _step: u32,
+        _envelope: &'a crate::conversation::envelope::Envelope,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        Err(stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal has no immutable conversation admission",
+        ))
+    }
+
     /// Stages immutable private bytes before any referring observation is appended.
     fn stage<'a>(
         &'a self,
