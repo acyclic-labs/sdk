@@ -567,7 +567,7 @@ fn filtered_owners() {
             release.recv().expect("second policy inspected");
         });
         let original_summary = observed.recv().expect("first runner exists");
-        let second = scope.spawn(|| {
+        let second = scope.spawn(move || {
             deny_syscall(libc::SYS_getsid);
             let status =
                 fs::read_to_string("/proc/thread-self/status").expect("second thread policy");
