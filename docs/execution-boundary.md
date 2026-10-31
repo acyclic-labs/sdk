@@ -63,6 +63,15 @@ TCP bind/connect restrictions, and signal/abstract-UNIX scoping. Seccomp
 requires the native x86_64 or aarch64 syscall ABI and seals namespace,
 process-group, cross-process, device, kernel and filesystem-metadata escape
 mechanisms. `clone3` returns `ENOSYS` to permit libc's checked `clone` path.
+Unclassified syscalls are denied by default, including System V shared memory,
+message queues and semaphores, POSIX message queues and other externally named
+process-control operations. Descriptor control admits only descriptor-local
+state and file locking, and resource-limit changes name only the current
+process. Common reads and writes return before the control checks. Port grants
+reject `MSG_FASTOPEN` in each send API, including on kernels whose Landlock
+implementation does not check that implicit connection path.
+The [kernel's Fast Open fix](https://kernel.googlesource.com/pub/scm/linux/kernel/git/david/linux/+/33cb713db0161b54f04fe830e062c9e102c29a04)
+documents why a reported Landlock ABI alone does not establish that check.
 Metadata changes are conservatively denied even in writable workspaces.
 Read roots are explicit; host home, procfs, temporary directories and the
 filesystem root are never implicitly added. `/dev/null` and `/dev/urandom`

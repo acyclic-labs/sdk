@@ -1,5 +1,17 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+mod ipc;
+
+#[cfg(target_os = "linux")]
+fn system_read_roots() -> Vec<PathBuf> {
+    ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect()
+}
+
 #[test]
 fn child_grants_cannot_reacquire_revoked_capabilities() {
     let root = tempfile::tempdir().unwrap();
@@ -89,11 +101,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     let sentinel = external.join("sentinel");
     std::fs::write(&sentinel, "original").unwrap();
     std::os::unix::fs::symlink(&sentinel, workspace.join("escape")).unwrap();
-    let read = ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
-        .into_iter()
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .collect::<Vec<_>>();
+    let read = system_read_roots();
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
     for (access, custody) in [ExecutionAccess::WorkspaceWrite, ExecutionAccess::ReadOnly]
         .into_iter()
@@ -284,11 +292,7 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
     let other = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let other_port = other.local_addr().unwrap().port();
     let executable = std::env::current_exe().unwrap();
-    let mut read = ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
-        .into_iter()
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .collect::<Vec<_>>();
+    let mut read = system_read_roots();
     read.push(executable.clone());
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
     for (network, allowed, custody) in [
@@ -379,11 +383,7 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
     std::fs::create_dir(&workspace).unwrap();
     let sentinel = root.path().join("outside");
     std::fs::write(&sentinel, "original").unwrap();
-    let read = ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
-        .into_iter()
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .collect::<Vec<_>>();
+    let read = system_read_roots();
     let grant = ExecutionGrant::new(
         &workspace,
         ExecutionAccess::WorkspaceWrite,

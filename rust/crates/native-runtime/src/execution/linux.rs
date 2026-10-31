@@ -292,12 +292,15 @@ pub(super) fn filter(network: &ExecutionNetwork) -> io::Result<Vec<Instruction>>
             instruction(0x35, 0, 1, 0x4000_0000),
             instruction(RETURN, 0, 0, DENY),
         ]);
-        for number in denied_syscalls() {
-            deny(&mut code, number, DENY)?;
+        // The common data path returns before the less frequent control
+        // checks. Every other admitted operation is classified below; a new
+        // kernel syscall never acquires authority by being absent from a list.
+        for call in [libc::SYS_read, libc::SYS_write] {
+            verdict(&mut code, call, ALLOW)?;
         }
         // clone3 has an indirect flag pointer, so force libc's ordinary clone
         // fallback. It is never continued after a racy userspace inspection.
-        deny(
+        verdict(
             &mut code,
             libc::SYS_clone3,
             0x0005_0000 | libc::ENOSYS as u32,
@@ -310,10 +313,48 @@ pub(super) fn filter(network: &ExecutionNetwork) -> io::Result<Vec<Instruction>>
             instruction(RETURN, 0, 0, DENY),
             instruction(LOAD, 0, 0, 0),
         ]);
+        control_filter(&mut code)?;
         socket_filter(&mut code, network)?;
-        code.push(instruction(RETURN, 0, 0, ALLOW));
+        for call in allowed_syscalls() {
+            verdict(&mut code, *call, ALLOW)?;
+        }
+        code.push(instruction(RETURN, 0, 0, DENY));
         Ok(code)
     }
+}
+
+fn control_filter(code: &mut Vec<Instruction>) -> io::Result<()> {
+    // No file-owner signal routing, leases or new fcntl commands. Only
+    // descriptor-local state and locks on already granted files are admitted.
+    const COMMANDS: &[u32] = &[
+        0, 1, 2, 3, 4, 5, 6, 7, // DUPFD, descriptor/status flags, POSIX locks
+        36, 37, 38, // open-file-description locks
+        1030, 1031, 1032, 1033, 1034, // DUPFD_CLOEXEC, pipe size, file seals
+    ];
+    code.push(instruction(
+        EQUAL,
+        0,
+        u8::try_from(2 * COMMANDS.len() + 2)
+            .map_err(|_| refused("invalid descriptor-control filter"))?,
+        number(libc::SYS_fcntl)?,
+    ));
+    code.push(instruction(LOAD, 0, 0, 24));
+    for command in COMMANDS {
+        code.extend([
+            instruction(EQUAL, 0, 1, *command),
+            instruction(RETURN, 0, 0, ALLOW),
+        ]);
+    }
+    code.push(instruction(RETURN, 0, 0, DENY));
+    // prlimit64 can otherwise change another host process's resource limits.
+    code.extend([
+        instruction(EQUAL, 0, 4, number(libc::SYS_prlimit64)?),
+        instruction(LOAD, 0, 0, 16),
+        instruction(EQUAL, 0, 1, 0),
+        instruction(RETURN, 0, 0, ALLOW),
+        instruction(RETURN, 0, 0, DENY),
+    ]);
+    Ok(())
 }
 
 fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io::Result<()> {
@@ -321,7 +362,7 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
         || matches!(network, ExecutionNetwork::TcpPorts(ports) if ports.is_empty())
     {
         for call in [libc::SYS_socket, libc::SYS_socketpair, libc::SYS_connect] {
-            deny(code, call, DENY)?;
+            verdict(code, call, DENY)?;
         }
         return Ok(());
     }
@@ -337,6 +378,22 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
     ];
     match network {
         ExecutionNetwork::TcpPorts(_) => {
+            // Older Landlock implementations do not mediate Fast Open's
+            // implicit connect. Read only by-value flags, never a guest pointer.
+            for (call, flags) in [
+                (libc::SYS_sendto, 40),
+                (libc::SYS_sendmsg, 32),
+                (libc::SYS_sendmmsg, 40),
+            ] {
+                code.extend([
+                    instruction(EQUAL, 0, 5, number(call)?),
+                    instruction(LOAD, 0, 0, flags),
+                    instruction(AND, 0, 0, libc::MSG_FASTOPEN as u32),
+                    instruction(EQUAL, 1, 0, 0),
+                    instruction(RETURN, 0, 0, DENY),
+                    instruction(LOAD, 0, 0, 0),
+                ]);
+            }
             socket.extend([
                 instruction(EQUAL, 1, 0, libc::SOCK_STREAM as u32),
                 instruction(RETURN, 0, 0, DENY),
@@ -351,7 +408,7 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
                 libc::SYS_accept,
                 libc::SYS_accept4,
             ] {
-                deny(code, call, DENY)?;
+                verdict(code, call, DENY)?;
             }
         }
         ExecutionNetwork::On => socket.extend([
@@ -369,7 +426,7 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
     ));
     code.extend(socket);
     code.push(instruction(LOAD, 0, 0, 0));
-    deny(code, libc::SYS_socketpair, DENY)?;
+    verdict(code, libc::SYS_socketpair, DENY)?;
     Ok(())
 }
 
@@ -377,7 +434,7 @@ fn number(value: libc::c_long) -> io::Result<u32> {
     u32::try_from(value).map_err(|_| refused("invalid syscall number"))
 }
 
-fn deny(code: &mut Vec<Instruction>, call: libc::c_long, result: u32) -> io::Result<()> {
+fn verdict(code: &mut Vec<Instruction>, call: libc::c_long, result: u32) -> io::Result<()> {
     code.extend([
         instruction(EQUAL, 0, 1, number(call)?),
         instruction(RETURN, 0, 0, result),
@@ -385,72 +442,211 @@ fn deny(code: &mut Vec<Instruction>, call: libc::c_long, result: u32) -> io::Res
     Ok(())
 }
 
-fn denied_syscalls() -> Vec<libc::c_long> {
-    let mut calls = vec![
-        libc::SYS_ptrace,
-        libc::SYS_process_vm_readv,
-        libc::SYS_process_vm_writev,
-        libc::SYS_pidfd_getfd,
-        libc::SYS_kcmp,
-        libc::SYS_mount,
-        libc::SYS_umount2,
-        libc::SYS_pivot_root,
-        libc::SYS_chroot,
-        libc::SYS_unshare,
-        libc::SYS_setns,
-        libc::SYS_open_by_handle_at,
-        libc::SYS_name_to_handle_at,
-        libc::SYS_bpf,
-        libc::SYS_perf_event_open,
-        libc::SYS_userfaultfd,
-        libc::SYS_keyctl,
-        libc::SYS_add_key,
-        libc::SYS_request_key,
-        libc::SYS_io_uring_setup,
-        libc::SYS_setsid,
-        libc::SYS_setpgid,
-        libc::SYS_fchmod,
-        libc::SYS_fchmodat,
-        libc::SYS_fchown,
-        libc::SYS_fchownat,
-        libc::SYS_utimensat,
-        libc::SYS_setxattr,
-        libc::SYS_lsetxattr,
-        libc::SYS_fsetxattr,
-        libc::SYS_removexattr,
-        libc::SYS_lremovexattr,
-        libc::SYS_fremovexattr,
-        libc::SYS_reboot,
-        libc::SYS_kexec_load,
-        libc::SYS_init_module,
-        libc::SYS_finit_module,
-        libc::SYS_delete_module,
-        libc::SYS_swapon,
-        libc::SYS_swapoff,
-        libc::SYS_acct,
-        libc::SYS_quotactl,
-        libc::SYS_open_tree,
-        libc::SYS_move_mount,
-        libc::SYS_fsopen,
-        libc::SYS_fsconfig,
-        libc::SYS_fsmount,
-        libc::SYS_fspick,
-        libc::SYS_mount_setattr,
-        libc::SYS_ioctl,
-        // fchmodat2 is not exposed by every libc release; its number is shared
-        // by both supported native ABIs. It must not bypass metadata denial.
-        452,
-    ];
-    #[cfg(target_arch = "x86_64")]
-    calls.extend([
-        libc::SYS_chmod,
-        libc::SYS_chown,
-        libc::SYS_lchown,
-        libc::SYS_utime,
-        libc::SYS_utimes,
-        libc::SYS_futimesat,
-    ]);
-    calls
+fn allowed_syscalls() -> &'static [libc::c_long] {
+    &[
+        // Data and memory operate only on this address space or descriptors
+        // acquired under Landlock. No external IPC object identifiers enter.
+        libc::SYS_close,
+        libc::SYS_mmap,
+        libc::SYS_mprotect,
+        libc::SYS_munmap,
+        libc::SYS_brk,
+        libc::SYS_mremap,
+        libc::SYS_madvise,
+        libc::SYS_msync,
+        libc::SYS_mincore,
+        libc::SYS_mlock,
+        libc::SYS_munlock,
+        libc::SYS_mlockall,
+        libc::SYS_munlockall,
+        libc::SYS_pread64,
+        libc::SYS_pwrite64,
+        libc::SYS_readv,
+        libc::SYS_writev,
+        libc::SYS_preadv,
+        libc::SYS_pwritev,
+        libc::SYS_preadv2,
+        libc::SYS_pwritev2,
+        libc::SYS_lseek,
+        libc::SYS_fadvise64,
+        libc::SYS_sendfile,
+        libc::SYS_copy_file_range,
+        libc::SYS_splice,
+        libc::SYS_tee,
+        libc::SYS_vmsplice,
+        libc::SYS_dup,
+        libc::SYS_dup3,
+        libc::SYS_pipe2,
+        libc::SYS_close_range,
+        libc::SYS_memfd_create,
+        // Paths and writable file handles are checked by Landlock. Metadata
+        // mutation has no admitted syscall, even inside the workspace.
+        libc::SYS_openat,
+        libc::SYS_openat2,
+        libc::SYS_fstat,
+        libc::SYS_newfstatat,
+        libc::SYS_statx,
+        libc::SYS_faccessat,
+        libc::SYS_faccessat2,
+        libc::SYS_getdents64,
+        libc::SYS_readlinkat,
+        libc::SYS_getcwd,
+        libc::SYS_chdir,
+        libc::SYS_fchdir,
+        libc::SYS_mkdirat,
+        libc::SYS_mknodat,
+        libc::SYS_unlinkat,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_renameat,
+        libc::SYS_renameat2,
+        libc::SYS_linkat,
+        libc::SYS_symlinkat,
+        libc::SYS_truncate,
+        libc::SYS_ftruncate,
+        libc::SYS_fallocate,
+        libc::SYS_flock,
+        libc::SYS_fsync,
+        libc::SYS_fdatasync,
+        libc::SYS_statfs,
+        libc::SYS_fstatfs,
+        libc::SYS_umask,
+        // Threads, children and signals remain in the inherited domain.
+        // clone flags and cross-domain signals have separate enforcement.
+        libc::SYS_clone,
+        libc::SYS_execve,
+        libc::SYS_execveat,
+        libc::SYS_exit,
+        libc::SYS_exit_group,
+        libc::SYS_wait4,
+        libc::SYS_waitid,
+        libc::SYS_kill,
+        libc::SYS_tkill,
+        libc::SYS_tgkill,
+        libc::SYS_pidfd_open,
+        libc::SYS_pidfd_send_signal,
+        libc::SYS_rt_sigaction,
+        libc::SYS_rt_sigprocmask,
+        libc::SYS_rt_sigreturn,
+        libc::SYS_rt_sigpending,
+        libc::SYS_rt_sigtimedwait,
+        libc::SYS_rt_sigqueueinfo,
+        libc::SYS_rt_tgsigqueueinfo,
+        libc::SYS_rt_sigsuspend,
+        libc::SYS_sigaltstack,
+        libc::SYS_set_tid_address,
+        libc::SYS_set_robust_list,
+        libc::SYS_futex,
+        libc::SYS_rseq,
+        libc::SYS_membarrier,
+        libc::SYS_sched_yield,
+        libc::SYS_sched_getaffinity,
+        libc::SYS_restart_syscall,
+        // Descriptor events and this process's clocks/identity expose no
+        // independently named host mutation or external message channel.
+        libc::SYS_eventfd2,
+        libc::SYS_epoll_create1,
+        libc::SYS_epoll_ctl,
+        libc::SYS_epoll_pwait,
+        libc::SYS_epoll_pwait2,
+        libc::SYS_ppoll,
+        libc::SYS_pselect6,
+        libc::SYS_timerfd_create,
+        libc::SYS_timerfd_settime,
+        libc::SYS_timerfd_gettime,
+        libc::SYS_nanosleep,
+        libc::SYS_clock_nanosleep,
+        libc::SYS_clock_gettime,
+        libc::SYS_clock_getres,
+        libc::SYS_gettimeofday,
+        libc::SYS_getitimer,
+        libc::SYS_setitimer,
+        libc::SYS_getpid,
+        libc::SYS_getppid,
+        libc::SYS_gettid,
+        libc::SYS_getuid,
+        libc::SYS_geteuid,
+        libc::SYS_getgid,
+        libc::SYS_getegid,
+        libc::SYS_getgroups,
+        libc::SYS_getrusage,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_getrlimit,
+        libc::SYS_getrandom,
+        libc::SYS_getcpu,
+        libc::SYS_uname,
+        libc::SYS_prctl,
+        // Socket creation is separately restricted to Internet families;
+        // Landlock checks TCP connections and the port-only mode's listeners.
+        libc::SYS_socket,
+        libc::SYS_connect,
+        libc::SYS_bind,
+        libc::SYS_listen,
+        libc::SYS_accept,
+        libc::SYS_accept4,
+        libc::SYS_shutdown,
+        libc::SYS_sendto,
+        libc::SYS_recvfrom,
+        libc::SYS_sendmsg,
+        libc::SYS_recvmsg,
+        libc::SYS_sendmmsg,
+        libc::SYS_recvmmsg,
+        libc::SYS_getsockname,
+        libc::SYS_getpeername,
+        libc::SYS_setsockopt,
+        libc::SYS_getsockopt,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_open,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_creat,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_stat,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_lstat,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_access,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_readlink,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_getdents,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_mkdir,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_mknod,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_rmdir,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_rename,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_link,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_unlink,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_symlink,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_fork,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_vfork,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_dup2,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_pipe,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_poll,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_select,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_epoll_create,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_epoll_wait,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_eventfd,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_alarm,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_time,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_arch_prctl,
+    ]
 }
 
 #[cfg(all(test, any(target_arch = "x86_64", target_arch = "aarch64")))]

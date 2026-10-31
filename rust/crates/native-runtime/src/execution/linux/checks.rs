@@ -42,6 +42,57 @@ fn evaluate(code: &[Instruction], arch: u32, syscall: u32, arguments: [u64; 6]) 
 }
 
 proptest! {
+    #[test]
+    fn unclassified_syscalls_and_external_process_controls_are_closed(
+        syscall in any::<u32>(),
+        arguments in any::<[u64; 6]>(),
+    ) {
+        let code = filter(&ExecutionNetwork::On).unwrap();
+        if !allowed_syscalls().iter().any(|call| *call as u32 == syscall)
+            && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl,
+                libc::SYS_prlimit64, libc::SYS_clone3].contains(&(i64::from(syscall))) {
+            prop_assert_eq!(evaluate(&code, ARCH, syscall, arguments), DENY);
+        }
+        for call in [libc::SYS_shmget, libc::SYS_shmat, libc::SYS_shmctl,
+            libc::SYS_msgget, libc::SYS_msgsnd, libc::SYS_msgrcv, libc::SYS_msgctl,
+            libc::SYS_semget, libc::SYS_semop, libc::SYS_semctl,
+            libc::SYS_mq_open, libc::SYS_mq_unlink, libc::SYS_process_vm_writev,
+            libc::SYS_process_madvise, libc::SYS_process_mrelease] {
+            prop_assert_eq!(evaluate(&code, ARCH, call as u32, arguments), DENY);
+        }
+        prop_assert_eq!(evaluate(&code, ARCH, libc::SYS_prlimit64 as u32, arguments),
+            if arguments[0] as u32 == 0 { ALLOW } else { DENY });
+        for command in [libc::F_SETOWN, libc::F_GETOWN, libc::F_SETLEASE] {
+            let mut control = arguments;
+            control[1] = command as u64;
+            prop_assert_eq!(evaluate(&code, ARCH, libc::SYS_fcntl as u32, control), DENY);
+        }
+        for command in [libc::F_GETFD, libc::F_SETFD, libc::F_GETFL, libc::F_SETFL,
+            libc::F_DUPFD_CLOEXEC] {
+            let mut control = arguments;
+            control[1] = command as u64;
+            prop_assert_eq!(evaluate(&code, ARCH, libc::SYS_fcntl as u32, control), ALLOW);
+        }
+        // Restore the old permissive default in the actual generated program.
+        // The same host IPC operation is then admitted without any path or FD.
+        let mut permissive = code;
+        permissive.last_mut().unwrap().k = ALLOW;
+        prop_assert_eq!(evaluate(&permissive, ARCH, libc::SYS_shmat as u32, arguments), ALLOW);
+    }
+
+    #[test]
+    fn port_grants_refuse_implicit_fast_open_connections(flags in any::<u32>()) {
+        let code = filter(&ExecutionNetwork::TcpPorts(
+            std::collections::BTreeSet::from([443]))).unwrap();
+        for (call, argument) in [(libc::SYS_sendto, 3), (libc::SYS_sendmsg, 2),
+            (libc::SYS_sendmmsg, 3)] {
+            let mut arguments = [0; 6];
+            arguments[argument] = u64::from(flags);
+            prop_assert_eq!(evaluate(&code, ARCH, call as u32, arguments),
+                if flags & libc::MSG_FASTOPEN as u32 == 0 { ALLOW } else { DENY });
+        }
+    }
+
     // Generated programs must not admit a second syscall ABI, x32 numbers,
     // namespace-bearing clone or an IPC socket through an incorrect jump.
     #[test]
