@@ -1,6 +1,6 @@
 //! The trained V4A operation uses the original tool journal and one conditional
 //! filesystem publication, including multi-file changes and moves.
-use crate::conversation::{ContentChange, FileRef};
+use crate::conversation::{ContentChange, FileRef, VolumeRef};
 use crate::tool::edit::{allocation, charge, reserve_string, reserve_vec};
 use crate::{
     Error, NativeCustody, NativeWork, Result,
@@ -89,12 +89,7 @@ impl ApplyPatch {
         work: NativeWork<'_>,
         recovering: bool,
     ) -> Result<(Option<ToolResult>, NativeCustody)> {
-        self.authorize(
-            Some(context.effective_scope()),
-            Some(context),
-            invocation,
-            work,
-        )?;
+        let context = admitted_context(Some(context), invocation)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
@@ -105,7 +100,7 @@ impl ApplyPatch {
         let io = None;
         let mut meter = allocation(work, 0)?;
         let actions = parse_document(input(&invocation.arguments)?, &mut meter)?;
-        let (volume, _) = context.tool_path_selection(actions[0].path(), io)?;
+        let volume = authorize_actions(context, &actions, io)?;
         if recovering {
             let observed = context
                 .observe_tool_changes(invocation.operation_id, volume, io)
@@ -203,6 +198,57 @@ impl ApplyPatch {
     }
 }
 
+fn admitted_context<'a>(
+    context: Option<&'a ToolContext>,
+    invocation: &ToolInvocation,
+) -> Result<&'a ToolContext> {
+    context
+        .filter(|context| {
+            context.operation_id() == invocation.operation_id
+                && context.call_id() == invocation.call_id
+                && invocation.name == "apply_patch"
+        })
+        .ok_or_else(|| {
+            Error::tool_rejected("apply_patch requires its original admitted call context")
+        })
+}
+
+fn authorize_actions<'a>(
+    context: &'a ToolContext,
+    actions: &[FileChange<'a>],
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<&'a VolumeRef> {
+    let first = actions
+        .first()
+        .ok_or_else(|| Error::tool_rejected("patch requires changes"))?;
+    let (selected, _) = context.tool_path_selection(first.path(), io)?;
+    for action in actions {
+        for path in std::iter::once(action.path()).chain(action.move_to()) {
+            let (volume, relative) = context.tool_path_selection(path, io)?;
+            if volume != selected {
+                return Err(Error::tool_rejected(
+                    "one atomic patch must select one volume",
+                ));
+            }
+            crate::executor::with_history_io(io, |history| {
+                crate::conversation::validate_content_path(&relative, history)
+            })?;
+            if relative.len() > context.effective_scope().limits().path_bytes
+                || crate::conversation::is_internal_path(&relative)
+            {
+                return Err(Error::tool_rejected(
+                    "patch path exceeds its original public admission",
+                ));
+            }
+            context.authorize_tool_path_publication(path, None, io)?;
+        }
+        if !matches!(action, FileChange::Add { .. }) {
+            context.authorize_tool_path_read(action.path(), io)?;
+        }
+    }
+    Ok(selected)
+}
+
 impl ToolExecutor for ApplyPatch {
     fn authorize(
         &self,
@@ -211,15 +257,7 @@ impl ToolExecutor for ApplyPatch {
         invocation: &ToolInvocation,
         work: NativeWork<'_>,
     ) -> Result<()> {
-        let context = context
-            .filter(|context| {
-                context.operation_id() == invocation.operation_id
-                    && context.call_id() == invocation.call_id
-                    && invocation.name == "apply_patch"
-            })
-            .ok_or_else(|| {
-                Error::tool_rejected("apply_patch requires its original admitted call context")
-            })?;
+        let context = admitted_context(context, invocation)?;
         let mut meter = allocation(work, 0)?;
         let actions = parse_document(input(&invocation.arguments)?, &mut meter)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -230,32 +268,7 @@ impl ToolExecutor for ApplyPatch {
         let io = owned_io.as_ref();
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let io = None;
-        let (selected, _) = context.tool_path_selection(actions[0].path(), io)?;
-        for action in actions {
-            for path in std::iter::once(action.path()).chain(action.move_to()) {
-                let (volume, relative) = context.tool_path_selection(path, io)?;
-                if volume != selected {
-                    return Err(Error::tool_rejected(
-                        "one atomic patch must select one volume",
-                    ));
-                }
-                crate::executor::with_history_io(io, |history| {
-                    crate::conversation::validate_content_path(&relative, history)
-                })?;
-                if relative.len() > context.effective_scope().limits().path_bytes
-                    || crate::conversation::is_internal_path(&relative)
-                {
-                    return Err(Error::tool_rejected(
-                        "patch path exceeds its original public admission",
-                    ));
-                }
-                context.authorize_tool_path_publication(path, None, io)?;
-            }
-            if !matches!(action, FileChange::Add { .. }) {
-                context.authorize_tool_path_read(action.path(), io)?;
-            }
-        }
-        Ok(())
+        authorize_actions(context, &actions, io).map(|_| ())
     }
     fn execute<'a>(
         &'a self,
