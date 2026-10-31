@@ -29,7 +29,6 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-mod cancellation;
 mod canonical;
 mod checkpoint;
 mod checkpoint_maps;

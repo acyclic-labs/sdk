@@ -302,6 +302,7 @@ impl StockExecution<'_> {
                     Arc::new(NativeCodeControl {
                         work: work.clone(),
                         cancelled: Mutex::new(cancelled),
+                        stop: journal.model_stop().cloned(),
                     }),
                 )
                 .await;
@@ -596,16 +597,25 @@ impl StockExecution<'_> {
 struct NativeCodeControl {
     work: acyclic_fs::NativeMaterializationWork,
     cancelled: Mutex<acyclic_fs::Cancelled<'static>>,
+    stop: Option<acyclic_actors::guest::CancellationToken>,
 }
 
 #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
 impl crate::code_mode::CodeControl for NativeCodeControl {
     fn check(&self) -> Result<()> {
+        if self.stop.as_ref().is_some_and(|stop| stop.is_cancelled()) {
+            return Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            ));
+        }
         self.work.charge(acyclic_fs::WorkCounters {
             items_examined: 1,
             ..Default::default()
         })?;
         Ok(())
+    }
+    fn cancellation_token(&self) -> Option<&tokio_util::sync::CancellationToken> {
+        self.stop.as_ref()
     }
     fn poll_interrupted(&self, context: &mut std::task::Context<'_>) -> std::task::Poll<Error> {
         use std::{future::Future, pin::Pin, task::Poll};

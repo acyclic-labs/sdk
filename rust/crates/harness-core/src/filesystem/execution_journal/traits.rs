@@ -70,8 +70,8 @@ where
         )
     }
 
-    fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
-        Box::pin(self.follow_cancellation())
+    fn model_stop(&self) -> Option<&acyclic_actors::guest::CancellationToken> {
+        self.stop.as_ref()
     }
 
     fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {

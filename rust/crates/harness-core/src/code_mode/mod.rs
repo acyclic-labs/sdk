@@ -37,6 +37,11 @@ pub trait CodeControl: Send + Sync {
     fn check(&self) -> Result<()>;
     /// Waits on the original cancellation/owner-loss event, never a probe.
     fn poll_interrupted(&self, context: &mut std::task::Context<'_>) -> std::task::Poll<Error>;
+    /// Original actor delivery cancellation, when execution belongs to a turn.
+    /// Its producer is independent of the interpreter's retained memory owner.
+    fn cancellation_token(&self) -> Option<&tokio_util::sync::CancellationToken> {
+        None
+    }
 }
 
 /// Canonical host result and the original reservation funding its live bytes.
@@ -273,15 +278,27 @@ impl CodeRuntime {
     ) -> Result<CodeOutput> {
         control.check()?;
         self.check_session()?;
-        #[cfg(feature = "filesystem")]
-        if let Some(allocator) = &self.native_allocator {
-            let cancelled = allocator.work().cancellation_wait()?;
-            return tokio::select! {
-                _ = cancelled => Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled)),
-                result = run(self, outer, source, input, tools, host, control) => result,
-            };
+        let stopped = async {
+            match control.cancellation_token() {
+                Some(stop) => stop.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
+        let execution = async {
+            #[cfg(feature = "filesystem")]
+            if let Some(allocator) = &self.native_allocator {
+                let cancelled = allocator.work().cancellation_wait()?;
+                return tokio::select! {
+                    _ = cancelled => Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled)),
+                    result = run(self, outer, source, input, tools, host, &control) => result,
+                };
+            }
+            run(self, outer, source, input, tools, host, &control).await
+        };
+        tokio::select! {
+            _ = stopped => Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled)),
+            result = execution => result,
         }
-        run(self, outer, source, input, tools, host, control).await
     }
 
     async fn phase<T>(
@@ -334,13 +351,13 @@ async fn run(
     input: &Value,
     tools: &[ToolDefinition],
     host: Arc<dyn CodeHost + '_>,
-    control: Arc<dyn CodeControl>,
+    control: &Arc<dyn CodeControl>,
 ) -> Result<CodeOutput> {
     let buffers = Buffers::new(engine);
     let queue = engine.retained_arc(Mutex::new(PendingQueue::new(&buffers)?))?;
     let protocol = engine.retained_arc(Protocol::default())?;
     let context = engine
-        .phase(&control, |runtime| {
+        .phase(control, |runtime| {
             let context = Context::new(
                 runtime,
                 Some(engine::Callbacks {
@@ -394,7 +411,7 @@ async fn run(
         }
         drop(_queue_credit);
         let state = engine
-            .phase(&control, |_| {
+            .phase(control, |_| {
                 context.with(|ctx| {
                     let state = engine::at_stage(
                         ctx.eval(c"__state()"),
@@ -423,7 +440,7 @@ async fn run(
         let json = buffers.json(&result.result.value)?;
         let ordinal = buffers.format(format_args!("{ordinal}"))?;
         engine
-            .phase(&control, |_| {
+            .phase(control, |_| {
                 let _entry = protocol.enter();
                 context.with(|ctx| {
                     let complete = ctx.global()?.get(c"__complete")?;
