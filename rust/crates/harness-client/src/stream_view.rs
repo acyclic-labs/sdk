@@ -293,6 +293,7 @@ fn record_charge(record: &wire::Record) -> Result<usize, StreamError> {
     let mut charge = size_of::<(wire::Record, usize)>();
     for bytes in std::iter::once(record.value.len())
         .chain(std::iter::once(record.commit_id.len()))
+        .chain(std::iter::once(record.origin.len()))
         .chain(record.keys.iter().map(|key| size_of::<Bytes>() + key.len()))
         .chain(record.attributes.iter().map(|attribute| {
             size_of::<wire::Attribute>() + attribute.name.len() + attribute.value.len()

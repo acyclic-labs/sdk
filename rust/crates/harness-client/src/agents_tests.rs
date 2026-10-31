@@ -65,25 +65,76 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
     pool.register_credential(0, session::testing::credential())?;
     // Admission completes while the stream is absent. Creation must wake the
     // same subscription; no viewport replacement or second open is involved.
-    let mut follow = pool.subscribe(subscription(&path, 0, 0, false)).await?;
-    append(&memory, path, vec!["created".into()]).await?;
-    while let Some(frame) = follow.next().await {
-        match frame?.body {
-            Some(wire::session_frame::Body::Data(wire::SessionData {
-                item: Some(wire::session_data::Item::Record(record)),
-                ..
-            })) => {
-                assert_eq!(record.sequence, 0);
-                assert_eq!(record.value.as_ref(), b"created");
-                return Ok(());
+    let follow = pool.subscribe(subscription(&path, 0, 0, false)).await?;
+    append(&memory, path.clone(), vec!["created".into()]).await?;
+    let forked = StreamPath::new("reader/inherited-conversation")?;
+    memory
+        .fork(acyclic_stream::ForkRequest {
+            source: path.clone(),
+            destination: forked.clone(),
+            at_tail: Some(1),
+            exclude: Vec::new(),
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+        })
+        .await?;
+    let inherited = pool.subscribe(subscription(&forked, 0, 0, false)).await?;
+    let mut own_charge = 0;
+    for (followed, mut source) in [(path.clone(), follow), (forked, inherited)] {
+        let frame = loop {
+            let frame = source.next().await.ok_or("creation interest ended")??;
+            match frame.body.as_ref() {
+                Some(wire::session_frame::Body::Data(wire::SessionData {
+                    item: Some(wire::session_data::Item::Record(record)),
+                    ..
+                })) => {
+                    assert_eq!(record.sequence, 0);
+                    assert_eq!(record.value.as_ref(), b"created");
+                    assert_eq!(
+                        record.origin,
+                        if followed == path { "" } else { path.as_str() }
+                    );
+                    break frame;
+                }
+                Some(wire::session_frame::Body::Closed(_)) => {
+                    return Err("creation interest closed before its record".into());
+                }
+                _ => {}
             }
-            Some(wire::session_frame::Body::Closed(_)) => {
-                return Err("creation interest closed before its record".into());
-            }
-            _ => {}
+        };
+        let mut view = StreamView::new(
+            crate::StreamViewPolicy::default(),
+            0,
+            0,
+            false,
+            Some(followed.clone()),
+        );
+        view.apply(&frame, 1)?;
+        if followed == path {
+            own_charge = view.retained_bytes();
+        } else {
+            assert_eq!(
+                view.retained_bytes(),
+                own_charge + path.as_str().len(),
+                "inherited origin was not charged"
+            );
+            let mut bounded = StreamView::new(
+                crate::StreamViewPolicy::new(1, own_charge)?,
+                0,
+                0,
+                false,
+                Some(followed),
+            );
+            assert!(matches!(
+                bounded.apply(&frame, 1),
+                Err(StreamError::LimitExceeded)
+            ));
+            assert_eq!(bounded.next_sequence(), 0);
+            assert_eq!(bounded.revision(), 0);
+            assert_eq!(bounded.retained_bytes(), 0);
+            assert_eq!(bounded.records().len(), 0);
         }
     }
-    Err("creation interest ended before its record".into())
+    Ok(())
 }
 
 #[tokio::test]
