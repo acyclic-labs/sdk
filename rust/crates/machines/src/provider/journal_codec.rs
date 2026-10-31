@@ -105,6 +105,10 @@ pub mod codec_fuzz {
         Ok(vec![
             ("machine", encode(&machine)?),
             (
+                "result-observation",
+                crate::results::record(&machine)?.value.to_vec(),
+            ),
+            (
                 "pending",
                 encode(&Operation {
                     digest: [5; 32],

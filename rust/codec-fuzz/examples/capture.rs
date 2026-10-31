@@ -272,7 +272,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "machine_journal",
             name,
             &bytes,
-            "machines::provider::journal production envelope encoder",
+            "machines::provider::journal or results::record production envelope encoder",
             &mut manifest,
         )?;
     }

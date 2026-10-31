@@ -1,4 +1,4 @@
 #![no_main]
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    assert!(acyclic_machines::codec_fuzz::check(bytes));
+    acyclic_codec_fuzz::exercise("machine_journal", bytes).unwrap();
 });

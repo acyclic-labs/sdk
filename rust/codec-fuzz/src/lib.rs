@@ -96,7 +96,10 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "actor_codecs" => actor_codecs(bytes),
         "filesystem_codecs" => filesystem_codecs(bytes),
         "filesystem_pages" => filesystem_pages::check(bytes),
-        "machine_journal" => assert!(acyclic_machines::codec_fuzz::check(bytes)),
+        "machine_journal" => {
+            assert!(acyclic_machines::codec_fuzz::check(bytes));
+            assert!(acyclic_machines::results::codec_fuzz::check(bytes));
+        }
         "harness_codecs" => harness_codecs(bytes),
         "inference_http" => inference_http::check(bytes),
         _ => return Err(format!("unknown corpus target {target}")),
