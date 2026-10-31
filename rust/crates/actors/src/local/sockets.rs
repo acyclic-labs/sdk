@@ -1444,7 +1444,8 @@ impl<P: StreamProvider + ?Sized + 'static> SocketProvider for Sockets<P> {
         let open = SocketOpen::decode(&open).map_err(|_| StreamError::InvalidArgument)?;
         let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
             .map_err(|_| StreamError::InvalidArgument)?;
-        authorization.authorize(
+        authorization.authorize_in_account(
+            open.actor.account().as_bytes(),
             &open.resource(),
             &[],
             &attributes,

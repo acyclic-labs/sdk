@@ -151,6 +151,82 @@ async fn local_backend() -> Result<LocalSockets, Error> {
 
 conformance::suite!(socket_conformance_passes_on_local_runtime, local_backend);
 
+#[tokio::test]
+async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let sockets = Sockets::open(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(PlatformExecutor),
+        Arc::new(SystemClock),
+    )
+    .await?;
+    let client = Client::in_process_with_sockets(
+        provider,
+        testing::authority(),
+        None,
+        Arc::new(sockets.clone()),
+        Arc::new(PlatformExecutor),
+        None,
+    );
+    client.register_credential(
+        0,
+        testing::credential_with_grants(vec![ResourceGrant {
+            resource: ResourcePattern {
+                name: "actors:/sockets".into(),
+                prefix: false,
+            },
+            actions: vec!["actors/invoke".into()],
+        }]),
+    )?;
+    let mut open = SocketOpen {
+        actor: ActorReference::new(b"foreign", b"sockets", b"target")?,
+        subscription: "inbox".into(),
+        app_channel: None,
+        subprotocols: Vec::new(),
+        headers: Vec::new(),
+        resume_after: 0,
+        reconnected: false,
+    };
+    let next = sockets.shared.next.load(Ordering::Relaxed);
+    let ledger = sockets.shared.layout.segment(1)?;
+    assert!(matches!(
+        records(&sockets.shared.store, &ledger).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
+    assert!(matches!(
+        client.actor_socket(open.encode(), 0).await,
+        Err(StreamError::AccessDenied)
+    ));
+    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next);
+    assert!(sockets.shared.lock().sockets.is_empty());
+    assert!(sockets.shared.lock().actors.is_empty());
+    assert!(matches!(
+        records(&sockets.shared.store, &ledger).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
+
+    // The same signed credential admits its own account's namespace. Actor
+    // existence is subsequently decided by the original Open publication.
+    open.actor = ActorReference::new(b"account", b"sockets", b"target")?;
+    let mut admitted = client.actor_socket(open.encode(), 0).await?;
+    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next + 1);
+    assert!(matches!(
+        admitted
+            .next()
+            .await?
+            .map(|frame| SocketFrame::decode(&frame)),
+        Some(Ok(SocketFrame::Rejected { .. }))
+    ));
+
+    open.actor = ActorReference::new(b"account", b"ungranted", b"target")?;
+    assert!(matches!(
+        client.actor_socket(open.encode(), 0).await,
+        Err(StreamError::AccessDenied)
+    ));
+    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next + 1);
+    Ok(())
+}
+
 /// A host that forgets the auto-response pair wakes the actor for every
 /// keepalive: the broken behaviour the suite must reject.
 struct ForgetsAutoResponse(Sockets<MemoryStream>);
