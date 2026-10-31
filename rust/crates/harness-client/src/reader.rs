@@ -1034,14 +1034,15 @@ impl Reader {
                 self.cache.clear_listings();
                 self.anchors.clear();
                 self.demand.clear_children();
-                let cancelled: Vec<_> = self
-                    .inflight
-                    .iter()
-                    .filter(|(_, flight)| matches!(flight.key, OpKey::Children(..)))
-                    .map(|(id, _)| *id)
-                    .collect();
-                for id in cancelled {
-                    self.cancel(id);
+                // Children is the final operation variant in the same key
+                // index used at admission. Earlier history work is untouched.
+                while let Some(entry) = self.keys.last_entry() {
+                    if !matches!(entry.key(), OpKey::Children(..)) {
+                        break;
+                    }
+                    let (_, id) = entry.remove_entry();
+                    self.inflight.remove(&id);
+                    self.cancelled.push(id);
                 }
                 self.report_issue(flight.key.path(), ReadIssue::HierarchyChanged);
                 return;
@@ -1153,15 +1154,11 @@ impl Reader {
             .is_some_and(|old| old.next != next);
         if moved {
             self.cache.drop_listings_after(parent, index);
-            let later = |key: &OpKey| matches!(key, OpKey::Children(path, at) if path == parent && *at > index);
-            let cancelled: Vec<_> = self
-                .inflight
-                .iter()
-                .filter(|(_, flight)| later(&flight.key))
-                .map(|(id, _)| *id)
-                .collect();
-            for id in cancelled {
-                self.cancel(id);
+            if let Some(first) = index.checked_add(1) {
+                self.cancel_range(
+                    OpKey::Children(parent.clone(), first)
+                        ..=OpKey::Children(parent.clone(), u32::MAX),
+                );
             }
             // The asynchronous driver can poll again before the next UI frame
             // replans demand. Do not reissue those same obsolete boundaries.
@@ -1480,15 +1477,19 @@ impl Reader {
             if self.follows.remove(path).is_some() {
                 self.follow_changes.insert(path.clone());
             }
+            for range in OpKey::path_ranges(path) {
+                self.cancel_range(range);
+            }
         }
-        let cancelled: Vec<_> = self
-            .inflight
-            .iter()
-            .filter(|(_, flight)| affected.contains(flight.key.path()))
-            .map(|(id, _)| *id)
-            .collect();
-        for id in cancelled {
-            self.cancel(id);
+    }
+
+    /// Retire only requests in the original operation-key range. Removing
+    /// both indexes together makes late completions inert before cancellation
+    /// reaches the driver, without allocating an intermediate identity list.
+    fn cancel_range(&mut self, range: std::ops::RangeInclusive<OpKey>) {
+        for (_, id) in self.keys.extract_if(range, |_, _| true) {
+            self.inflight.remove(&id);
+            self.cancelled.push(id);
         }
     }
 
@@ -2287,6 +2288,84 @@ mod reader_tests {
             value: OwnedBytes::from(vec![7; len]),
             commit: CommitId::from_bytes([1; 32]),
         }
+    }
+
+    #[test]
+    fn denial_retires_only_indexed_requests_and_refuses_original_late_bytes() {
+        use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _};
+
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let denied = StreamPath::new("requests/denied").unwrap();
+            let mut heads = BTreeMap::new();
+            for path in std::iter::once(denied.clone()).chain((0..32).map(|index| {
+                StreamPath::new(format!("requests/denied/independent-{index}")).unwrap()
+            })) {
+                provider
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec![b"original committed body".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::new(path.as_str().as_bytes().to_vec())
+                            .unwrap(),
+                    })
+                    .await
+                    .unwrap();
+                heads.insert(path.clone(), provider.head(path).await.unwrap());
+            }
+            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            reader.begin_frame(0);
+            reader.plan(heads.iter().map(|(stream, _)| {
+                (
+                    Want::Last {
+                        stream: stream.clone(),
+                        count: 1,
+                    },
+                    Priority::Visible,
+                )
+            }));
+            let ops = reader.poll(0);
+            assert_eq!(ops.len(), heads.len());
+            let denied_id = ops
+                .iter()
+                .find_map(|op| match op {
+                    Op::Head { id, stream } if stream == &denied => Some(*id),
+                    _ => None,
+                })
+                .unwrap();
+            OP_PATH_PROJECTIONS.with(|visits| visits.set(0));
+            reader.denied(&denied);
+            assert_eq!(
+                OP_PATH_PROJECTIONS.with(std::cell::Cell::get),
+                0,
+                "denial enumerated unrelated live request paths"
+            );
+            assert_eq!(reader.take_cancelled(), vec![denied_id]);
+            assert_eq!(reader.inflight.len(), heads.len() - 1);
+            assert_eq!(reader.keys.len(), reader.inflight.len());
+            // The reply is from the original provider, already captured
+            // before revocation. Its valid bytes cannot revive the old grant.
+            for op in ops {
+                let Op::Head { id, stream } = op else {
+                    panic!("original head request");
+                };
+                let head = heads.remove(&stream).unwrap();
+                reader.complete(id, Outcome::Head(head), 1);
+                if stream == denied {
+                    assert!(reader.cache.record(&stream, 0).is_none());
+                } else {
+                    assert_eq!(
+                        reader.cache.record(&stream, 0).unwrap().as_ref(),
+                        b"original committed body"
+                    );
+                }
+            }
+            assert!(reader.inflight.is_empty());
+            assert!(reader.keys.is_empty());
+            assert!(reader.take_cancelled().is_empty());
+            reader.begin_frame(2);
+            assert!(reader.poll(2).is_empty());
+        });
     }
 
     /// Plans `wants` for one frame and returns the reads it issues.
