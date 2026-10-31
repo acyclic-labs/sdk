@@ -11,7 +11,8 @@ campaign or proof. Captured corpus provenance is `rust/codec-fuzz/corpus/SOURCES
 descriptor baselines live in `compatibility/descriptors/`. Golden payloads belong
 in `compatibility/frames/`, alongside their producing encoder and refusal cases.
 
-The current SDK corpus contains 1,594 registered writer outputs. Each was
+The current SDK corpus contains 1,674 registered writer outputs and original
+physical schedule configurations. The initial 1,594 writer outputs were
 captured and readmitted through its owning decoder oracle, including the
 ordinary/funded and typed reader-loss controls. This completes the SDK seed
 capture work noted below for registered producers; it does not qualify the
@@ -22,6 +23,8 @@ Fresh production writers also passed comparison without baseline acceptance at
 their recorded revision. The merged state-record writer subsequently added its
 original publication path; its v2 successor passed a fresh capture/readmission run.
 All six original v1 state captures remain byte-identical typed refusal inputs.
+The eighty physical configurations were subsequently captured and readmitted
+without rerunning or changing unrelated producers.
 Protobuf and its JSON projection compare descriptor-decoded values, retaining the
 original packet when map order changes; all other formats compare exact bytes.
 Changed-value and selector controls refuse rather than replace a baseline.
@@ -59,8 +62,8 @@ coverage or a bounded proof result.
 | Local snapshot container | `stream::local::snapshot` | `ACYCLIC-STREAM-SNAP-V02` | `stream_persistence` | Current seed captured/readmitted; owning refusal controls remain |
 | Local incarnation | `stream::local::snapshot` | `ACYCLIC-STREAM-INCARNATION-V1` | `stream_persistence` | Current seed captured/readmitted; owning refusal controls remain |
 | Objects manifest | `objects::blob::Manifest` | `acyclic-manifest-v1` | `object_persistence` | Current writer captured/readmitted through the shared golden mechanism |
-| Objects HEAD metadata | `objects::blob::Envelope` | `acyclic-blob-v1`; obsolete layouts refused | `object_persistence` | Live/dying writer seeds captured/readmitted through the shared golden mechanism |
-| Objects retained-reference batch | `objects::blob::decode_batch` | `acyclic-retained-v1` | `object_persistence` | Current writer captured/readmitted through the shared golden mechanism |
+| Objects HEAD metadata | `objects::blob::Envelope` | `acyclic-blob-v1`; obsolete layouts refused | `object_persistence` | Live/dying writer seeds captured/readmitted. Actual local recovery preserves missing/old/unknown metadata byte-exact and propagates `Unsupported`; damaged current payloads retain `Corrupt` recovery |
+| Objects retained-reference batch | `objects::blob::decode_batch` | `acyclic-retained-v1` | `object_persistence` | Current writer captured/readmitted. Both batch access and survival checks propagate refused formats before removal; actual local negative controls retain current-payload recovery |
 | Objects incarnation/epoch | `objects::blob` | `acyclic-incarnation-v1`, `acyclic-epoch-v1` | `object_persistence` | Current writers captured/readmitted; owning golden/refusal controls remain |
 | Local Objects root and append log | `objects::local::{open_root,decode}`, shared `native-runtime::LogFrame` | Root marker `acyclic-objects-log-v1`; checksum domain `acyclic-objects-log-frame-v1`; root version refusal still uses generic corruption for unknown versions | New local-log hook pending ownership handoff; Stream target reaches the same frame primitive with its narrow layout | Wide frame, PUT/REMOVE body, root admission, real encoder seeds and shared goldens remain. Preserve one shared frame parser and refuse versions before recovery or tail truncation |
 | ObjectId, all eight kinds | `filesystem::storage::ObjectId`, including the canonical prefix parser | Typed tag and exact 33/113-byte width; strict whole-input decoding refuses a suffix | `ids` checks canonical identity, untouched borrowed tail, every truncation and concatenated actual writer outputs | The ID ASan campaign including prefix controls completed 10,000 runs without a crash (coverage 850, features 1,527). Eight bounded ID harnesses, including two prefix models, remain unexecuted. Structural consumer enforcement remains open (G96) |

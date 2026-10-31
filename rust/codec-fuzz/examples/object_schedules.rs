@@ -94,7 +94,7 @@ fn replay_inputs(
             check_selected_site(&bytes, &mut observe)?
         };
         if !admitted {
-            return Err("input has no admitted full generation identity".into());
+            return Err("admit replay input failed: no admitted full generation identity; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
         }
         if !reported {
             no_fault_inputs += 1;
