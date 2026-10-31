@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { setImmediate as nextTurn } from "node:timers/promises";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { MemoryObjectsV1, blobDigest, ErrorCode } from "@acyclic-labs/objects";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
@@ -29,7 +28,7 @@ function endpoint(memory, hooks = {}, credentials = { token: "fixture" }) {
           const body = hooks.frame?.(reply.body) ?? reply.body;
           if (hooks.holdInitial) {
             controller.enqueue(body.slice(0, 1));
-            hooks.stalled.resolve();
+            hooks.stalled.resolve(init.signal);
             await hooks.holdInitial;
             if (closed) return;
             controller.enqueue(body.slice(1));
@@ -129,11 +128,19 @@ test("Objects availability owns opening, catch-up, cursor validation and cancell
       .availability(digest, stop.signal)
       .then(value => { outcome = { value }; }, error => { outcome = { error }; });
     try {
-      await stalled.promise;
+      const signal = await Promise.race([
+        stalled.promise,
+        opening.then(() => {
+          if (outcome?.error) throw outcome.error;
+          assert.fail("step=availability-cursor original source ended before its held cursor; recovery command: node --test typescript/packages/objects/test/v1-availability.mjs");
+        }),
+      ]);
       t.mock.timers.tick(50);
-      // One event-loop handoff drains the deadline and canonical cursor wakes.
-      // The old header-only completion is observed as unsettled, never awaited.
-      await nextTurn();
+      // The injected deadline synchronously aborts this original request.
+      // Header-only completion fails here before awaiting an absent expiry.
+      assert.equal(signal.aborted, true, "original opening deadline was retired before its cursor");
+      assert.equal(signal.reason?.code, ErrorCode.DEADLINE_ELAPSED);
+      await opening;
       assert.equal(outcome?.error?.code, ErrorCode.DEADLINE_ELAPSED);
     } finally {
       stop.abort();
