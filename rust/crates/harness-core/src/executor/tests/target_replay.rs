@@ -184,8 +184,21 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         let changed = base
             .clone()
             .with_task_context(&bind(filesystem)?, operation)?;
+        let error = StockExecution::ordinary(&changed)
+            .settle_tool_call(
+                &*journal,
+                operation,
+                0,
+                invocation.clone(),
+                0,
+                &mut vec![call_message(&invocation)],
+                &mut Vec::new(),
+            )
+            .await
+            .err();
         assert!(
-            matches!(StockExecution::ordinary(&changed).settle_tool_call(&*journal, operation, 0, invocation.clone(), 0, &mut Vec::new(), &mut Vec::new()).await, Err(Error::Indeterminate(id)) if id == operation)
+            matches!(&error, Some(Error::Indeterminate(id)) if *id == operation),
+            "changed binding returned {error:?}"
         );
     }
     assert!(matches!(
@@ -196,7 +209,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 0,
                 invocation.clone(),
                 0,
-                &mut Vec::new(),
+                &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
             )
             .await?,
@@ -246,8 +259,21 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         let bound = base
             .clone()
             .with_task_context(&bind(filesystem)?, operation)?;
+        let error = StockExecution::ordinary(&bound)
+            .settle_tool_call(
+                &*journal,
+                operation,
+                0,
+                invocation.clone(),
+                0,
+                &mut vec![call_message(&invocation)],
+                &mut Vec::new(),
+            )
+            .await
+            .err();
         assert!(
-            matches!(StockExecution::ordinary(&bound).settle_tool_call(&*journal, operation, 0, invocation.clone(), 0, &mut Vec::new(), &mut Vec::new()).await, Err(Error::Indeterminate(id)) if id == operation)
+            matches!(&error, Some(Error::Indeterminate(id)) if *id == operation),
+            "changed binding returned {error:?}"
         );
         let (_, records) = StockExecution::ordinary(&bound)
             .tool_records(&*journal, operation, 0, "status")
@@ -259,8 +285,21 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     }
     let bound = base.with_task_context(&bind(Some(original))?, operation)?;
     let recovery = bound.clone().into_reconciliation();
+    let error = StockExecution::ordinary(&recovery)
+        .settle_tool_call(
+            &*journal,
+            operation,
+            0,
+            invocation.clone(),
+            0,
+            &mut vec![call_message(&invocation)],
+            &mut Vec::new(),
+        )
+        .await
+        .err();
     assert!(
-        matches!(StockExecution::ordinary(&recovery).settle_tool_call(&*journal, operation, 0, invocation.clone(), 0, &mut Vec::new(), &mut Vec::new()).await, Err(Error::Indeterminate(id)) if id == operation)
+        matches!(&error, Some(Error::Indeterminate(id)) if *id == operation),
+        "original reconciliation returned {error:?}"
     );
     let (_, records) = StockExecution::ordinary(&bound)
         .tool_records(&*journal, operation, 0, "status")
@@ -277,9 +316,9 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &*journal,
                 operation,
                 0,
-                invocation,
+                invocation.clone(),
                 0,
-                &mut Vec::new(),
+                &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
             )
             .await?,
