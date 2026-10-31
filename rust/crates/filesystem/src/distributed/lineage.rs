@@ -7,11 +7,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         authority: AuthorityId,
         epoch: Epoch,
         proposed: Option<&ProposedCommit>,
-        source: Option<(StreamPath, u64, GenerationId)>,
+        source: Option<(StreamPath, GenerationLocator, GenerationId)>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<super::actor::PreparedProjection, AuthorityStoreError> {
         let mut head = Head::genesis(epoch);
-        let lineage_tail = source.as_ref().map_or(0, |(_, tail, _)| *tail);
+        let lineage_tail = source.as_ref().map_or(0, |(_, at, _)| at.lineage);
         let root = work.path(&self.placement, authority, "", None)?;
         let records = work.path(&self.placement, authority, "/records", None)?;
         let epochs = work.path(&self.placement, authority, "/epochs", None)?;
@@ -57,7 +57,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             work.append_record(&mut request.mutations, records, [genesis])?;
             None
         };
-        let changes = self.creation_changes(request, authority, proposed, generation, work)?;
+        let changes = self.creation_changes(
+            request,
+            authority,
+            proposed,
+            generation,
+            source.as_ref(),
+            work,
+        )?;
         let lineage_tail = lineage_tail
             .checked_add(u64::from(generation.is_some()))
             .ok_or(crate::WorkError::Overflow)?;
@@ -70,7 +77,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             super::actor::GenerationSeeds {
                 inherited: source
                     .as_ref()
-                    .map(|(_, tail, generation)| (*generation, *tail)),
+                    .map(|(_, at, generation)| (*generation, at.lineage)),
                 published: generation,
             },
             work,
@@ -87,7 +94,16 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         if source.is_none() && generation.is_none() {
             return Ok(projection);
         }
-        self.creation_lineage(request, authority, source, generation, lineage_tail, work)?;
+        let inherited = proposed
+            .and_then(|commit| commit.publication.as_ref())
+            .is_some_and(|seal| seal.inherited().is_some());
+        let located = GenerationLocator {
+            lineage: lineage_tail,
+            changes: changes.map_or(0, |(_, tail)| tail),
+        };
+        self.creation_lineage(
+            request, authority, source, generation, located, inherited, work,
+        )?;
         Ok(projection)
     }
 
@@ -95,9 +111,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         &self,
         request: &mut CommitRequest,
         authority: AuthorityId,
-        source: Option<(StreamPath, u64, GenerationId)>,
+        source: Option<(StreamPath, GenerationLocator, GenerationId)>,
         generation: Option<GenerationId>,
-        lineage_tail: u64,
+        located: GenerationLocator,
+        inherited: bool,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
         let lineage = work.path(&self.placement, authority, "/lineage", None)?;
@@ -114,11 +131,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 .into(),
             );
         }
-        let inherited = source
-            .as_ref()
-            .map(|(_, tail, generation)| (*tail, *generation));
+        let prior = source.as_ref().map(|(_, _, generation)| *generation);
         match source {
-            Some((source, at_tail, generation)) => {
+            Some((source, at, generation)) => {
                 let locator = work.path(
                     &self.placement,
                     authority,
@@ -132,10 +147,16 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     exclude: Vec::new(),
                     source,
                     destination: lineage,
-                    at_tail,
+                    at_tail: at.lineage,
                     records,
                 });
-                let value = work.stream_bytes(LINEAGE_TAIL_DOMAIN, &[&at_tail.to_le_bytes()])?;
+                // The source generation's changes are this volume's only when
+                // its changes stream was forked from the source's.
+                let value = GenerationLocator {
+                    lineage: at.lineage,
+                    changes: if inherited { at.changes } else { 0 },
+                }
+                .encode(work)?;
                 work.append_record(&mut request.mutations, locator, [value])?;
             }
             None => request.mutations.push(CommitMutation::Append {
@@ -144,7 +165,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             }),
         }
         if let Some(generation) = generation {
-            if inherited.is_some_and(|(_, prior)| prior == generation) {
+            if prior == Some(generation) {
                 return Err(AuthorityStoreError::RejectedStatic(
                     "a fork cannot publish its source generation again",
                 ));
@@ -158,7 +179,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             request.conditions.push(CommitCondition::Absent {
                 path: locator.clone(),
             });
-            let value = work.stream_bytes(LINEAGE_TAIL_DOMAIN, &[&lineage_tail.to_le_bytes()])?;
+            let value = located.encode(work)?;
             work.append_record(&mut request.mutations, locator, [value])?;
         }
         Ok(())
@@ -170,6 +191,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         authority: AuthorityId,
         proposed: Option<&ProposedCommit>,
         generation: Option<GenerationId>,
+        source: Option<&(StreamPath, GenerationLocator, GenerationId)>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<(crate::VolumeId, u64)>, AuthorityStoreError> {
         if let (Some(proposed), Some(generation)) = (proposed, generation) {
@@ -188,13 +210,50 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     "creation has no namespace seal",
                 ))?
                 .volume();
-            let tail = crate::foundation::usize_to_u64(records.len());
+            let mut tail = crate::foundation::usize_to_u64(records.len());
             request
                 .conditions
                 .push(CommitCondition::Absent { path: path.clone() });
-            request
-                .mutations
-                .push(CommitMutation::Append { path, records });
+            let inherited = proposed
+                .publication
+                .as_ref()
+                .and_then(crate::PublicationChanges::inherited);
+            match (inherited, source) {
+                (None, _) => request
+                    .mutations
+                    .push(CommitMutation::Append { path, records }),
+                // An unfiltered fork shares its source's changes up to the
+                // source generation, then records its own root: O(1) in the
+                // namespace size instead of listing every path.
+                // The seal's source must be the volume whose lineage forks.
+                (Some(origin), Some((lineage, at, _)))
+                    if at.changes != 0
+                        && volume_authority_id(origin) != authority
+                        && work.path(
+                            &self.placement,
+                            volume_authority_id(origin),
+                            "/lineage",
+                            None,
+                        )? == *lineage =>
+                {
+                    tail = at
+                        .changes
+                        .checked_add(tail)
+                        .ok_or(crate::WorkError::Overflow)?;
+                    request.mutations.push(CommitMutation::Fork {
+                        exclude: Vec::new(),
+                        source: super::changes::changes_path(&self.placement, origin, work)?,
+                        destination: path,
+                        at_tail: at.changes,
+                        records,
+                    });
+                }
+                (Some(_), _) => {
+                    return Err(AuthorityStoreError::RejectedStatic(
+                        "an inherited namespace needs its source's published changes",
+                    ));
+                }
+            }
             return Ok(Some((volume, tail)));
         }
         Ok(None)
@@ -335,9 +394,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let journal = actor.lease(work).await?;
         let revision = actor.begin(journal)?;
         work.check()?;
-        let (lineage, tail) = self
+        let (lineage, at) = self
             .resolve_source_fork_point(source.authority, source.generation, work)
             .await?;
+        // A generation fork has no changes stream of its own to inherit into.
+        let tail = GenerationLocator {
+            lineage: at.lineage,
+            changes: 0,
+        };
         if let Some(snapshot) = self
             .existing_fork_destination(destination, source.generation, tail, work)
             .await?
@@ -497,7 +561,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     fn prepare_fork_records(
         &self,
         fork: &WorkspaceForkCommit,
-        lineage: Option<(StreamPath, u64, GenerationId)>,
+        lineage: Option<(StreamPath, GenerationLocator, GenerationId)>,
         lease_path: Option<&StreamPath>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<

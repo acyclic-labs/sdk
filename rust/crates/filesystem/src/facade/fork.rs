@@ -12,6 +12,8 @@ pub(super) struct ForkPublication<'a, A: 'static, O: 'static> {
     pub(super) destination_id: crate::WorkspaceId,
     pub(super) fork_root: &'a VerifiedPublication<A, O>,
     pub(super) source_root: ObjectId,
+    /// Whether the fork keeps only selected paths of its source.
+    pub(super) filtered: bool,
     pub(super) idempotency_key: crate::IdempotencyKey,
     pub(super) permit: PublicationPermit,
 }
@@ -29,6 +31,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Owned<VerifiedPublication<A, O>>,
             ObjectId,
             Option<crate::kernel::closure::PendingProof>,
+            bool,
         ),
         WorkspaceError,
     > {
@@ -65,11 +68,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         let mut parents = Owned::<Vec<GenerationId>>::allocate(1, accounting)?;
         fork_selection::selection_push(&mut parents, source.id, 1, accounting)?;
+        let filtered = file_table != source_root.value.file_table;
         let required_features = source_root.value.continuation_features()
-            | if file_table == source_root.value.file_table {
-                0
-            } else {
+            | if filtered {
                 GenerationRoot::FILTERED_FORK
+            } else {
+                0
             };
         let fork_root = GenerationRoot {
             volume_id: destination_id.volume_id(),
@@ -104,7 +108,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )
             .await?;
-        Ok((proof, source_object, pending))
+        Ok((proof, source_object, pending, filtered))
     }
     pub(super) async fn publication_proof(
         &self,
@@ -278,7 +282,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 self.workspace_id_for_name(&destination, accounting, cancellation)?;
             let volume_id = destination_id.volume_id();
             let config = source.workspace.volume.config;
-            let (fork_root, source_root, pending) = self
+            let (fork_root, source_root, pending, filtered) = self
                 .materialize_forked_generation_root(
                     source,
                     destination_id,
@@ -303,6 +307,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             destination_id,
                             fork_root: &fork_root.value,
                             source_root,
+                            filtered,
                             idempotency_key,
                             permit,
                         },
@@ -414,19 +419,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             operation_id,
             accounting,
         )?;
-        creation.publication = Some(
+        let created = VolumeCreated {
+            volume_id,
+            config: source_volume.config,
+            initial_generation_root: fork_root.generation_root,
+        };
+        // An unfiltered fork of a published head has its source's namespace,
+        // so its changes stream forks the source's at that generation, in the
+        // same commit, instead of listing every path.
+        let inherits = !publication.filtered
+            && lineage
+                .as_ref()
+                .is_some_and(|source| source.lineage == crate::GenerationFork::PublishedPrefix);
+        creation.publication = Some(if inherits {
+            crate::PublicationChanges::inherited_from(source_volume.id, created, accounting)?
+        } else {
             crate::PublicationChanges::initial(
                 &self.inner.objects,
-                VolumeCreated {
-                    volume_id,
-                    config: source_volume.config,
-                    initial_generation_root: fork_root.generation_root,
-                },
+                created,
                 accounting,
                 cancellation,
             )
-            .await?,
-        );
+            .await?
+        });
         let changes = creation.publication.clone();
         let fork = crate::WorkspaceForkCommit {
             lineage,

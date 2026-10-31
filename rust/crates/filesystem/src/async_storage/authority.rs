@@ -75,7 +75,9 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     ) -> Result<impl Future<Output = Result<(), crate::AuthorityStoreError>> + ProviderTask + use<'a, Self>, crate::AuthorityStoreError> {
         Err::<std::future::Ready<Result<(), crate::AuthorityStoreError>>, _>(crate::AuthorityStoreError::Retired)
     }
-    /// Whether creation can retain a published-generation prefix.
+    /// Whether creation can retain a published-generation prefix. Such a
+    /// store's `fork_workspace` also forks the source's changes stream in the
+    /// same commit when the creation seal inherits them.
     fn supports_generation_lineage_prefix(&self) -> bool {
         false
     }

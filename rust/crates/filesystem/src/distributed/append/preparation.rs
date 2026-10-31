@@ -20,6 +20,8 @@ struct GenerationAppend<'a> {
     conditions: &'a mut Vec<CommitCondition>,
     mutations: &'a mut Vec<CommitMutation>,
     fresh_lineage: bool,
+    /// This volume's changes tail just after the generation's change records.
+    changes: u64,
 }
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
@@ -302,6 +304,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 expected: tail,
             }
         });
+        let changes = tail
+            .checked_add(crate::foundation::usize_to_u64(records.len()))
+            .ok_or(crate::WorkError::Overflow)?;
         mutations.push(CommitMutation::Append { path, records });
         self.prepare_generation_lineage(
             GenerationAppend {
@@ -310,6 +315,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 conditions,
                 mutations,
                 fresh_lineage,
+                changes,
             },
             view,
             work,
@@ -348,6 +354,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             conditions,
             mutations,
             fresh_lineage,
+            changes,
         } = publication;
         let lineage = work.path(&self.placement, authority_id, "/lineage", None)?;
         let locator = work.path(
@@ -384,12 +391,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             Some(1) => {
                 let location = view.value(self, locator, 0, work).await?;
                 let tail = work
-                    .decode_fixed::<8>(
+                    .decode_fixed::<{ GenerationLocator::LEN }>(
                         &location.0,
-                        LINEAGE_TAIL_DOMAIN,
+                        GENERATION_LOCATOR_DOMAIN,
                         "invalid Stream generation locator",
                     )
-                    .map(u64::from_le_bytes)?;
+                    .map(|bytes| GenerationLocator::from_bytes(&bytes).lineage)?;
                 let from = tail.checked_sub(1).ok_or_else(|| {
                     authority_corrupt("generation locator selects an empty lineage", work)
                 })?;
@@ -421,10 +428,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     &[generation.object_id().to_bytes().as_slice()],
                 )?;
                 work.append_record(mutations, lineage, [entry])?;
-                let location = work.stream_bytes(
-                    LINEAGE_TAIL_DOMAIN,
-                    &[&tail.saturating_add(1).to_le_bytes()],
-                )?;
+                let location = GenerationLocator {
+                    lineage: tail.saturating_add(1),
+                    changes,
+                }
+                .encode(work)?;
                 work.append_record(mutations, locator, [location])?;
             }
             Some(_) => {

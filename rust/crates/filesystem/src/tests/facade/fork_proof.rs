@@ -32,7 +32,7 @@ async fn fork_proof_work(
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
     admitted?;
     let start = accounting.spent();
-    let (proof, _, pending) = fs
+    let (proof, _, pending, _) = fs
         .materialize_forked_generation_root(
             &source,
             destination,

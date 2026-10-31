@@ -16,6 +16,9 @@ struct ChangeData {
     volume: VolumeId,
     config: VolumeConfig,
     paths: Retained<Vec<ChangedPath>>,
+    /// The volume whose changes this creation shares instead of listing its
+    /// namespace: an unfiltered fork inherits its source's changes stream.
+    inherited: Option<VolumeId>,
     _allocation: RetainedAllocation,
 }
 
@@ -38,6 +41,7 @@ impl std::fmt::Debug for PublicationChanges {
             .field("base", &self.1)
             .field("root", &self.2)
             .field("paths", &self.0.paths.value.len())
+            .field("inherited", &self.0.inherited)
             .finish()
     }
 }
@@ -47,6 +51,7 @@ impl PartialEq for PublicationChanges {
             && self.1 == other.1
             && self.2 == other.2
             && self.0.config == other.0.config
+            && self.0.inherited == other.0.inherited
             && self.0.paths.value == other.0.paths.value
     }
 }
@@ -152,6 +157,64 @@ impl PublicationChanges {
     pub(crate) fn paths(&self) -> &[ChangedPath] {
         &self.0.paths.value
     }
+    /// The source volume whose changes stream this creation forks, if any.
+    pub(crate) fn inherited(&self) -> Option<VolumeId> {
+        self.0.inherited
+    }
+
+    /// The seal of an unfiltered fork's creation. Its namespace is its
+    /// source generation's, so the fork shares the source's changes up to
+    /// that generation instead of listing every path: O(1) in volume size.
+    pub(crate) fn inherited_from(
+        source: VolumeId,
+        creation: VolumeCreated,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, FsError> {
+        if creation.initial_generation_root.kind != crate::ObjectKind::GenerationRoot
+            || source == creation.volume_id
+        {
+            return Err(FsError::InvalidDiff);
+        }
+        let paths = Retained::from_owned(
+            Owned::<Vec<ChangedPath>>::allocate(0, accounting)?,
+            accounting,
+        )?;
+        Self::sealed(
+            creation.volume_id,
+            creation.config,
+            paths,
+            Some(source),
+            None,
+            creation.initial_generation_root,
+            accounting,
+        )
+    }
+
+    fn sealed(
+        volume: VolumeId,
+        config: VolumeConfig,
+        paths: Retained<Vec<ChangedPath>>,
+        inherited: Option<VolumeId>,
+        base: Option<Head>,
+        root: ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, FsError> {
+        let control_bytes =
+            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<ChangeData>())
+                .map_err(|_| WorkError::Overflow)? as u64;
+        let allocation = RetainedAllocation::claim(control_bytes, 1, accounting)?;
+        Ok(Self(
+            Arc::new(ChangeData {
+                volume,
+                config,
+                paths,
+                inherited,
+                _allocation: allocation,
+            }),
+            base,
+            root,
+        ))
+    }
 
     pub(crate) fn retire(self, _accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
         drop(self);
@@ -192,20 +255,7 @@ impl PublicationChanges {
         };
         let paths =
             Retained::from_owned(Owned::new(paths, allocation, standalone_bytes), accounting)?;
-        let control_bytes =
-            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<ChangeData>())
-                .map_err(|_| WorkError::Overflow)? as u64;
-        let allocation = RetainedAllocation::claim(control_bytes, 1, accounting)?;
-        Ok(Self(
-            Arc::new(ChangeData {
-                volume,
-                config,
-                paths,
-                _allocation: allocation,
-            }),
-            base,
-            root,
-        ))
+        Self::sealed(volume, config, paths, None, base, root, accounting)
     }
 
     pub(crate) async fn initial<O: AsyncObjectStore>(

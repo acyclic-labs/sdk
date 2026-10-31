@@ -82,9 +82,47 @@ pub(super) fn decode_lineage_generation(bytes: &[u8]) -> Result<GenerationId, Au
             "invalid Stream generation-lineage record",
         ))
 }
-pub(super) fn decode_lineage_tail(bytes: &[u8]) -> Result<u64, AuthorityStoreError> {
-    record_bytes::<8>(bytes, LINEAGE_TAIL_DOMAIN)
-        .map(|bytes| u64::from_le_bytes(*bytes))
+/// Where one generation sits in its volume's streams. It is written once with
+/// the generation and read on the same path, so a fork needs no key lookup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct GenerationLocator {
+    /// Lineage tail just after the generation's lineage record.
+    pub(super) lineage: u64,
+    /// Changes tail just after the generation's change records, or zero when
+    /// this volume's changes stream does not hold them.
+    pub(super) changes: u64,
+}
+impl GenerationLocator {
+    pub(super) const LEN: usize = 16;
+
+    pub(super) fn from_bytes(bytes: &[u8; Self::LEN]) -> Self {
+        let (lineage, changes) = bytes.split_at(8);
+        let word = |half: &[u8]| {
+            let mut word = [0; 8];
+            word.copy_from_slice(half);
+            u64::from_le_bytes(word)
+        };
+        Self {
+            lineage: word(lineage),
+            changes: word(changes),
+        }
+    }
+
+    pub(super) fn encode(
+        self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
+        work.stream_bytes(
+            GENERATION_LOCATOR_DOMAIN,
+            &[&self.lineage.to_le_bytes(), &self.changes.to_le_bytes()],
+        )
+    }
+}
+pub(super) fn decode_generation_locator(
+    bytes: &[u8],
+) -> Result<GenerationLocator, AuthorityStoreError> {
+    record_bytes::<{ GenerationLocator::LEN }>(bytes, GENERATION_LOCATOR_DOMAIN)
+        .map(GenerationLocator::from_bytes)
         .ok_or(AuthorityStoreError::CorruptStatic(
             "invalid Stream generation locator",
         ))

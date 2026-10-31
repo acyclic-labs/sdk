@@ -77,7 +77,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             {
                 return Err(WorkspaceError::ForeignGeneration);
             }
-            let (expected, _, _) = self
+            let (expected, _, _, _) = self
                 .materialize_forked_generation_root(
                     source,
                     initial.workspace.id(),

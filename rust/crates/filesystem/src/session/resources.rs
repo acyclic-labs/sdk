@@ -126,15 +126,12 @@ where
                 let _ = deadline_tx.send(trie.valid_until());
                 *opened.trie.lock().map_err(|_| StreamError::AccessDenied)? = Some(trie.clone());
                 opened.validate()?;
+                let scope = fs.authority_actor_scope();
                 let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
                 let path = StreamPath::new(
-                    crate::publication_changes::changes_path_text(
-                        fs.authority_actor_scope(),
-                        volume_id,
-                        &mut text,
-                    )
-                    .ok_or(StreamError::AccessDenied)?
-                    .to_owned(),
+                    crate::publication_changes::changes_path_text(scope, volume_id, &mut text)
+                        .ok_or(StreamError::AccessDenied)?
+                        .to_owned(),
                 )?;
                 let filter = request
                     .authorization
@@ -157,6 +154,7 @@ where
                         FollowUpdate::Record(record) => metadata::project(
                             record,
                             volume_id,
+                            scope,
                             volume.config,
                             &trie,
                             &request.authorization,
