@@ -2,15 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Spool, Processes } from "./process.mjs";
 import { alive, fenced } from "./orphan-check.mjs";
-import { expand } from "./fixtures.mjs";
 
 test("orphan fixture requires its admitted endpoint and carries it through the real tree", async () => {
   const fixture = fileURLToPath(new URL("./orphan.mjs", import.meta.url));
-  const spec = JSON.parse(readFileSync(new URL("./cases/orphan-fencing.json", import.meta.url)));
   for (const mode of ["missing endpoint", "absent environment", "different environment"]) {
     const processes = new Processes();
     let receive;
@@ -45,8 +42,6 @@ test("orphan fixture requires its admitted endpoint and carries it through the r
         const { pid, parent_pid } = first.probe.body;
         assert.notEqual(pid, parent_pid);
         assert.ok(alive(pid) && alive(parent_pid), "both generations must remain held at the request");
-        const model = expand(spec.model, { support: fileURLToPath(new URL(".", import.meta.url)).replaceAll("\\", "/").replace(/\/$/, ""), url: endpoint });
-        assert.ok(model.steps[0].tools[0].arguments.command.endsWith(`tree "${endpoint}"`));
         await processes.close();
         fenced([{ path: "probe", body: first.probe.body }], "probe");
       }

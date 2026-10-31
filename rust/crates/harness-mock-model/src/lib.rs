@@ -65,7 +65,7 @@
 //! fail with HTTP 500; copied data is never evaluated as another template.
 mod bindings;
 mod wire;
-pub use bindings::bind_result;
+pub use bindings::{bind_result, load_script};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

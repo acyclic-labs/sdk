@@ -1,7 +1,7 @@
 //! Real loopback HTTP server. Stdout is a flushed, line-oriented event stream.
 use axum::body::{Body, Bytes};
 use futures::{StreamExt as _, stream};
-use harness_mock_model::{Engine, Script, bind_result, events_with_usage};
+use harness_mock_model::{Engine, bind_result, events_with_usage, load_script};
 use http_body_util::BodyExt as _;
 use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
@@ -219,17 +219,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if flag != "--script" || record_flag != "--record" {
         return Err("expected --script and --record".into());
     }
-    let script: Script = serde_json::from_slice(&std::fs::read(script)?)?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let script = load_script(&std::fs::read(script)?, &format!("http://{address}"))?;
     let host = Rc::new(RefCell::new(Host {
         engine: Engine::new(script),
         record: recorder::Recorder::open(File::create(record)?)?,
         sequence: 0,
     }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    println!(
-        "{}",
-        json!({"event":"ready","port":listener.local_addr()?.port()})
-    );
+    println!("{}", json!({"event":"ready","port":address.port()}));
     std::io::stdout().flush()?;
     tokio::task::LocalSet::new()
         .run_until(async move {

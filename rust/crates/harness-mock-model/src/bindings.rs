@@ -1,5 +1,26 @@
-use crate::{Step, last_content};
+use crate::{Script, Step, last_content};
 use serde_json::Value;
+
+/// Loads the initial script with case URLs from the admitted listener.
+/// Request/tool-result templates remain untouched until their original request.
+pub fn load_script(bytes: &[u8], origin: &str) -> serde_json::Result<Script> {
+    let mut value: Value = serde_json::from_slice(bytes)?;
+    if let Some(cases) = value.get_mut("cases").and_then(Value::as_object_mut) {
+        for (namespace, case) in cases {
+            bind_url(case, &format!("{origin}/{namespace}/v1"));
+        }
+    }
+    serde_json::from_value(value)
+}
+
+fn bind_url(value: &mut Value, url: &str) {
+    match value {
+        Value::Object(fields) => fields.values_mut().for_each(|value| bind_url(value, url)),
+        Value::Array(items) => items.iter_mut().for_each(|value| bind_url(value, url)),
+        Value::String(text) if text.contains("{{url}}") => *text = text.replace("{{url}}", url),
+        _ => {}
+    }
+}
 
 /// Resolve exact JSON leaves `{"$request":"/pointer"}` or
 /// `{"$tool_result":"/pointer"}`, and string insertions `{{request:/pointer}}`

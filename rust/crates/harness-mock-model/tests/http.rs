@@ -14,6 +14,78 @@ impl Drop for Server {
 }
 
 #[tokio::test]
+async fn original_orphan_script_receives_its_admitted_listener_endpoint() {
+    let directory = tempfile::tempdir().unwrap();
+    let script = directory.path().join("script.json");
+    let record = directory.path().join("requests.jsonl");
+    // The runner writes this model before it can receive the server's ready
+    // event. Keep its unresolved endpoint; only the real listener can bind it.
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../scripts/graphcoder-e2e/cases/orphan-fencing.json"
+    ))
+    .unwrap();
+    std::fs::write(
+        &script,
+        json!({"cases": {"orphan-fencing": fixture["model"]}}).to_string(),
+    )
+    .unwrap();
+    let mut server = Server(
+        Command::new(env!("CARGO_BIN_EXE_harness-mock-model"))
+            .args([
+                "--script",
+                script.to_str().unwrap(),
+                "--record",
+                record.to_str().unwrap(),
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut lines = BufReader::new(server.0.stdout.take().unwrap()).lines();
+    let ready: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(ready["event"], "ready");
+    let endpoint = format!("http://127.0.0.1:{}/orphan-fencing/v1", ready["port"]);
+    let reply = reqwest::Client::new()
+        .post(format!("{endpoint}/responses"))
+        .json(&json!({"input":[{"role":"user","content":"ORPHAN_START"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert!(reply.status().is_success());
+    let body = reply.text().await.unwrap();
+    let command = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|event| {
+            event["type"] == "response.output_item.done"
+                && event["item"]["call_id"] == "native-tree"
+        })
+        .unwrap();
+    let arguments: Value =
+        serde_json::from_str(command["item"]["arguments"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        arguments["command"],
+        format!("node \"{{{{support}}}}/orphan.mjs\" tree \"{endpoint}\"")
+    );
+    assert!(
+        lines
+            .next()
+            .unwrap()
+            .unwrap()
+            .contains("\"event\":\"request\"")
+    );
+    let records: Vec<Value> = std::fs::read_to_string(record)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["step"], 0);
+    assert_eq!(records[0]["status"], 200);
+}
+
+#[tokio::test]
 async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
     let directory = tempfile::tempdir().unwrap();
     let script = directory.path().join("script.json");
