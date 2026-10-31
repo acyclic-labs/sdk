@@ -1,5 +1,5 @@
 //! Exact V4A transformations under the original file and work admission.
-use super::edit::{charge, conflict, invalid, reserve_string, reserve_vec, retain};
+use super::edit::{charge, conflict, invalid, plan_output, reserve_string, reserve_vec, retain};
 use crate::NativeCustody;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -270,71 +270,73 @@ fn apply_update_core(
     maximum_hunks: Option<u32>,
     meter: &mut NativeCustody,
 ) -> Result<String> {
-    if source.len() as u64 > maximum_bytes || diff.len() as u64 > maximum_bytes {
-        return Err(invalid(meter, "patch input exceeds byte bound"));
-    }
-    retain(
-        meter,
-        std::mem::size_of::<Vec<Hunk<'_>>>() + std::mem::size_of::<Vec<&str>>(),
-    )?;
-    let hunks = parse(diff, maximum_hunks, meter)?;
-    let mut source_lines = Vec::new();
-    reserve_vec(
-        meter,
-        &mut source_lines,
-        source.split_inclusive('\n').count(),
-    )?;
-    source_lines.extend(source.split_inclusive('\n'));
-    let ending = source_lines
-        .iter()
-        .find(|line| line.ends_with('\n'))
-        .map_or(
-            "\n",
-            |line| if line.ends_with("\r\n") { "\r\n" } else { "\n" },
-        );
-    let mut output = String::new();
-    let mut cursor = 0;
-    let mut work = maximum_work;
-    for hunk in &hunks {
-        let start = locate(&source_lines, cursor, hunk, &mut work, meter)?;
+    plan_output(meter, |meter| {
+        if source.len() as u64 > maximum_bytes || diff.len() as u64 > maximum_bytes {
+            return Err(invalid(meter, "patch input exceeds byte bound"));
+        }
+        retain(
+            meter,
+            std::mem::size_of::<Vec<Hunk<'_>>>() + std::mem::size_of::<Vec<&str>>(),
+        )?;
+        let hunks = parse(diff, maximum_hunks, meter)?;
+        let mut source_lines = Vec::new();
+        reserve_vec(
+            meter,
+            &mut source_lines,
+            source.split_inclusive('\n').count(),
+        )?;
+        source_lines.extend(source.split_inclusive('\n'));
+        let ending = source_lines
+            .iter()
+            .find(|line| line.ends_with('\n'))
+            .map_or(
+                "\n",
+                |line| if line.ends_with("\r\n") { "\r\n" } else { "\n" },
+            );
+        let mut output = String::new();
+        let mut cursor = 0;
+        let mut work = maximum_work;
+        for hunk in &hunks {
+            let start = locate(&source_lines, cursor, hunk, &mut work, meter)?;
+            for line in source_lines
+                .get(cursor..start)
+                .ok_or_else(|| invalid(meter, "patch hunks overlap"))?
+            {
+                append(&mut output, line, maximum_bytes, meter)?;
+            }
+            cursor = start;
+            for &(kind, text) in &hunk.lines {
+                match kind {
+                    b' ' => {
+                        let original = source_lines.get(cursor).ok_or_else(|| {
+                            conflict(meter, "patch context extends beyond source")
+                        })?;
+                        append(&mut output, original, maximum_bytes, meter)?;
+                        cursor += 1;
+                    }
+                    b'-' => {
+                        cursor += 1;
+                    }
+                    b'+' => {
+                        // Inserting after an unterminated context/anchor line creates a line boundary, never concatenates two lines.
+                        if !output.is_empty() && !output.ends_with('\n') {
+                            append(&mut output, ending, maximum_bytes, meter)?;
+                        }
+                        append(&mut output, text, maximum_bytes, meter)?;
+                        append(&mut output, ending, maximum_bytes, meter)?;
+                    }
+                    _ => return Err(invalid(meter, "invalid parsed patch prefix")),
+                }
+            }
+        }
         for line in source_lines
-            .get(cursor..start)
-            .ok_or_else(|| invalid(meter, "patch hunks overlap"))?
+            .get(cursor..)
+            .ok_or_else(|| conflict(meter, "patch extends beyond source"))?
         {
             append(&mut output, line, maximum_bytes, meter)?;
         }
-        cursor = start;
-        for &(kind, text) in &hunk.lines {
-            match kind {
-                b' ' => {
-                    let original = source_lines
-                        .get(cursor)
-                        .ok_or_else(|| conflict(meter, "patch context extends beyond source"))?;
-                    append(&mut output, original, maximum_bytes, meter)?;
-                    cursor += 1;
-                }
-                b'-' => {
-                    cursor += 1;
-                }
-                b'+' => {
-                    // Inserting after an unterminated context/anchor line creates a line boundary, never concatenates two lines.
-                    if !output.is_empty() && !output.ends_with('\n') {
-                        append(&mut output, ending, maximum_bytes, meter)?;
-                    }
-                    append(&mut output, text, maximum_bytes, meter)?;
-                    append(&mut output, ending, maximum_bytes, meter)?;
-                }
-                _ => return Err(invalid(meter, "invalid parsed patch prefix")),
-            }
-        }
-    }
-    for line in source_lines
-        .get(cursor..)
-        .ok_or_else(|| conflict(meter, "patch extends beyond source"))?
-    {
-        append(&mut output, line, maximum_bytes, meter)?;
-    }
-    Ok(output)
+        Ok(output)
+    })
 }
 
 #[cfg(test)]
@@ -346,6 +348,58 @@ mod tests {
         maximum_work: 8192,
         maximum_hunks: 8,
     };
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn repeated_file_planning_retains_only_live_outputs_on_the_original_ledger() -> Result<()> {
+        for count in [1, 2, 33] {
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(64 * 1024, 64 * 1024),
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = work.live_allocation_bytes();
+            let mut custody = super::super::edit::allocation(Some(&work), 0)?;
+            // An earlier caller allocation must survive every planner return.
+            let mut earlier = String::new();
+            reserve_string(&mut custody, &mut earlier, 7)?;
+            earlier.push_str("earlier");
+            let mut retained = earlier.capacity() as u64;
+            let mut outputs = Vec::new();
+            for _ in 0..count {
+                let output = apply_update_admitted(
+                    "one\nthree\n",
+                    "@@\n-one\n+two\n three\n",
+                    4096,
+                    &mut custody,
+                )?;
+                assert_eq!(output, "two\nthree\n");
+                retained += output.capacity() as u64;
+                outputs.push(output);
+                // Restoring the former retained hunk/line claims fails this
+                // exact equality on the first file, before any growth limit.
+                assert_eq!(custody.as_ref().unwrap().bytes(), retained);
+                assert_eq!(work.live_allocation_bytes(), baseline + retained);
+                for invalid in [
+                    "@@\n-one\n+two\n@@\n-missing\n+four\n",
+                    "@@\n-one\n+two\n*** End of File\n+later\n",
+                ] {
+                    assert!(
+                        apply_update_admitted("one\nthree\n", invalid, 4096, &mut custody).is_err()
+                    );
+                    // Both a later matching failure and a grammar failure
+                    // release scratch without erasing earlier live outputs.
+                    assert_eq!(custody.as_ref().unwrap().bytes(), retained);
+                    assert_eq!(work.live_allocation_bytes(), baseline + retained);
+                }
+            }
+            drop(outputs);
+            drop(earlier);
+            drop(custody);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+        Ok(())
+    }
 
     #[test]
     fn ordered_hunks_preserve_exact_context_utf8_and_line_endings() -> Result<()> {

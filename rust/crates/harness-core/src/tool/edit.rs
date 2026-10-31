@@ -246,6 +246,29 @@ pub(crate) struct Replacement<'a> {
     pub replace_all: bool,
 }
 
+/// Retires a synchronous planner's temporary buffers after they are destroyed.
+/// Earlier caller-owned claims and the one returned String remain untouched.
+pub(super) fn plan_output(
+    work: &mut NativeCustody,
+    plan: impl FnOnce(&mut NativeCustody) -> Result<String>,
+) -> Result<String> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let before = work.as_ref().map(|custody| custody.bytes());
+    let result = plan(work);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let (Some(custody), Some(before)) = (work, before) {
+        let retired = before
+            .checked_add(result.as_ref().map_or(0, |output| output.capacity() as u64))
+            .and_then(|retained| custody.bytes().checked_sub(retained))
+            .ok_or(Error::NativeBoundary {
+                code: Invalid,
+                reason: "text planner custody retirement failed; recovery: reconcile the original tool operation",
+            })?;
+        custody.release(retired)?;
+    }
+    result
+}
+
 /// Plans the complete sequence without I/O. A failed later transformation
 /// cannot expose an intermediate result. Single edits allocate one output;
 /// longer sequences alternate two buffers, independent of edit count.
@@ -255,32 +278,20 @@ pub(crate) fn replace_sequence<'a>(
     maximum_bytes: u64,
     work: &mut NativeCustody,
 ) -> Result<String> {
-    let mut replacements = replacements.into_iter();
-    let first = replacements
-        .next()
-        .ok_or_else(|| invalid(work, "exact edit sequence is empty"))?;
-    let mut output = String::new();
-    let mut scratch = String::new();
-    replace_into(source, first, maximum_bytes, work, &mut output)?;
-    for replacement in replacements {
-        replace_into(&output, replacement, maximum_bytes, work, &mut scratch)?;
-        std::mem::swap(&mut output, &mut scratch);
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let retired = scratch.capacity() as u64;
-    drop(scratch);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(custody) = work {
-        let retained = custody
-            .bytes()
-            .checked_sub(retired)
-            .ok_or(Error::NativeBoundary {
-                code: Invalid,
-                reason: "exact edit scratch ownership underflow",
-            })?;
-        custody.resize(retained)?;
-    }
-    Ok(output)
+    plan_output(work, |work| {
+        let mut replacements = replacements.into_iter();
+        let first = replacements
+            .next()
+            .ok_or_else(|| invalid(work, "exact edit sequence is empty"))?;
+        let mut output = String::new();
+        let mut scratch = String::new();
+        replace_into(source, first, maximum_bytes, work, &mut output)?;
+        for replacement in replacements {
+            replace_into(&output, replacement, maximum_bytes, work, &mut scratch)?;
+            std::mem::swap(&mut output, &mut scratch);
+        }
+        Ok(output)
+    })
 }
 
 fn replace_into(
@@ -417,11 +428,12 @@ mod tests {
                     replace_all: false,
                 },
             ];
-            let result = {
-                let mut custody = allocation(Some(&work), 0)?;
-                replace_sequence("one", invalid, 64, &mut custody)
-            };
+            let mut custody = allocation(Some(&work), 0)?;
+            let result = replace_sequence("one", invalid, 64, &mut custody);
             assert!(result.is_err());
+            // Failure retires its buffers while the original caller keeps
+            // the same custody alive for later planning.
+            assert_eq!(custody.as_ref().unwrap().bytes(), 0);
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
         Ok(())
