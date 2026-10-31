@@ -1087,14 +1087,12 @@ impl Explorer {
             Some(tail) => tail.min(start + history.rows as u64),
             None => start + history.rows as u64,
         };
-        (start..end)
-            .map(|sequence| HistoryRow {
+        self.reader
+            .cache()
+            .records(&history.stream, start, end)
+            .map(|(sequence, value)| HistoryRow {
                 sequence,
-                value: self
-                    .reader
-                    .cache()
-                    .record(&history.stream, sequence)
-                    .cloned(),
+                value: value.cloned(),
             })
             .collect()
     }

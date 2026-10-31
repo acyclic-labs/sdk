@@ -140,6 +140,8 @@ pub struct RecordCache {
     retention_visits: std::cell::Cell<usize>,
     #[cfg(test)]
     invalidation_visits: usize,
+    #[cfg(test)]
+    origin_visits: std::cell::Cell<usize>,
 }
 
 impl RecordCache {
@@ -171,6 +173,8 @@ impl RecordCache {
             retention_visits: std::cell::Cell::new(0),
             #[cfg(test)]
             invalidation_visits: 0,
+            #[cfg(test)]
+            origin_visits: std::cell::Cell::new(0),
         }
     }
 
@@ -562,16 +566,28 @@ impl RecordCache {
 
     /// Resolve a record through fork aliases to the key that would hold it.
     pub(super) fn resolve(&self, stream: &StreamPath, sequence: u64) -> Key {
+        self.resolve_segment(stream, sequence).0
+    }
+
+    /// The same owner applies until the first inherited cut crossed on this
+    /// lookup. An immutable cache borrow keeps those exact publications fixed.
+    fn resolve_segment(&self, stream: &StreamPath, sequence: u64) -> (Key, u64) {
         let mut path = stream;
+        let mut end = u64::MAX;
         // An acyclic chain has at most one edge per retained fact. This also
         // terminates on malformed cyclic input without allocating per lookup.
         for _ in 0..self.meta.len() {
+            #[cfg(test)]
+            self.origin_visits.set(self.origin_visits.get() + 1);
             match self.meta.get(path).and_then(|meta| meta.fork.as_ref()) {
-                Some(origin) if sequence < origin.inherited.forked_at => path = &origin.source,
+                Some(origin) if sequence < origin.inherited.forked_at => {
+                    end = end.min(origin.inherited.forked_at);
+                    path = &origin.source;
+                }
                 _ => break,
             }
         }
-        Key::Record(path.clone(), sequence)
+        (Key::Record(path.clone(), sequence), end)
     }
 
     /// Borrow a committed record without touching recency.
@@ -581,6 +597,39 @@ impl RecordCache {
             Some(Value::Record(value)) => Some(value),
             _ => None,
         }
+    }
+
+    /// Borrow `[from, to)` in sequence order, including `None` for cache gaps.
+    /// Each inherited segment resolves once, rather than once per record. The
+    /// borrow prevents replacement or eviction of its publication facts; source
+    /// access is still checked on every record. No payload or window is copied.
+    pub fn records<'a>(
+        &'a self,
+        stream: &'a StreamPath,
+        from: u64,
+        to: u64,
+    ) -> impl Iterator<Item = (u64, Option<&'a RecordBytes>)> + use<'a> {
+        let mut next = from;
+        let mut segment = None;
+        std::iter::from_fn(move || {
+            if next >= to {
+                return None;
+            }
+            let (key, end) = segment.get_or_insert_with(|| self.resolve_segment(stream, next));
+            if let Key::Record(_, sequence) = key {
+                *sequence = next;
+            }
+            let value = match self.value(key) {
+                Some(Value::Record(value)) => Some(value),
+                _ => None,
+            };
+            let sequence = next;
+            next += 1;
+            if next >= *end {
+                segment = None;
+            }
+            Some((sequence, value))
+        })
     }
 
     /// A cached or passed-through value.
@@ -597,13 +646,14 @@ impl RecordCache {
     /// Whether `[from, to)` of `stream` is entirely cached.
     #[must_use]
     pub fn has_range(&self, stream: &StreamPath, from: u64, to: u64) -> bool {
-        (from..to).all(|sequence| self.record(stream, sequence).is_some())
+        self.first_missing(stream, from, to).is_none()
     }
 
     /// First uncached position in `[from, to)`.
     #[must_use]
     pub fn first_missing(&self, stream: &StreamPath, from: u64, to: u64) -> Option<u64> {
-        (from..to).find(|sequence| self.record(stream, *sequence).is_none())
+        self.records(stream, from, to)
+            .find_map(|(sequence, value)| value.is_none().then_some(sequence))
     }
 
     /// Borrow a listing page without touching recency.
@@ -1632,26 +1682,188 @@ mod tests {
         assert!(cyclic.record(&source, 0).is_none());
     }
 
-    #[test]
-    fn inherited_cache_resolution_has_no_depth_cutoff() {
+    #[tokio::test]
+    async fn inherited_cache_resolution_has_no_depth_cutoff()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_stream::{
+            AppendRequest, ForkRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamProvider,
+            StreamProviderExt as _,
+        };
+        use futures::TryStreamExt as _;
+
+        let memory = MemoryStream::default();
         let mut cache = RecordCache::new(64 * 1024, 256);
-        let mut source = StreamPath::new("root").unwrap();
-        cache.insert_record(&source, 0, OwnedBytes::from_static(b"retained"), None);
-        for index in 0..100 {
-            let child = StreamPath::new(format!("fork{index}")).unwrap();
+        let root = StreamPath::new("root")?;
+        let mut source = root.clone();
+        cache.observe_origin(&root, None);
+        // Three actual record owners, with the middle prefix cut short by its
+        // child. Later forks add depth without adding visible output.
+        for (index, at) in [0, 64, 96].into_iter().enumerate() {
+            if index != 0 {
+                let child = StreamPath::new(format!("owner{index}"))?;
+                let receipt = memory
+                    .fork(ForkRequest {
+                        source,
+                        destination: child.clone(),
+                        at_tail: Some(at),
+                        exclude: Vec::new(),
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await?;
+                cache.observe_origin(
+                    &child,
+                    Some(Provenance {
+                        source: receipt.source,
+                        inherited: ForkCut {
+                            forked_at: receipt.forked_at,
+                            commit_id: receipt.commit_id,
+                        },
+                    }),
+                );
+                source = child;
+            }
+            memory
+                .append(AppendRequest {
+                    path: source.clone(),
+                    records: (at..at + 64)
+                        .map(|sequence| sequence.to_le_bytes().to_vec().into())
+                        .collect(),
+                    if_tail: Some(at),
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await?;
+        }
+        let leaf = source.clone();
+        let depth = 100;
+        for index in 0..depth {
+            let child = StreamPath::new(format!("fork{index}"))?;
+            let receipt = memory
+                .fork(ForkRequest {
+                    source,
+                    destination: child.clone(),
+                    at_tail: Some(160),
+                    exclude: Vec::new(),
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await?;
             cache.observe_origin(
                 &child,
                 Some(Provenance {
-                    source,
+                    source: receipt.source,
                     inherited: ForkCut {
-                        forked_at: 1,
-                        commit_id: CommitId::from_bytes([1; 32]),
+                        forked_at: receipt.forked_at,
+                        commit_id: receipt.commit_id,
                     },
                 }),
             );
             source = child;
         }
-        assert_eq!(cache.record(&source, 0).unwrap().as_ref(), b"retained");
+        let records = memory
+            .read(ReadRequest {
+                path: source.clone(),
+                from: 0,
+                limit: 160,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(records.len(), 160);
+        for record in &records {
+            assert!(cache.insert_record(
+                &record.origin,
+                record.sequence,
+                record.value.clone(),
+                None
+            ));
+        }
+        cache.origin_visits.set(0);
+        for original in &records {
+            assert_eq!(
+                cache
+                    .record(&source, original.sequence)
+                    .ok_or("missing point record")?
+                    .as_ref(),
+                original.value.as_slice()
+            );
+        }
+        let point_visits = cache.origin_visits.replace(0);
+        for ((sequence, value), original) in cache.records(&source, 0, 160).zip(&records) {
+            let value = value.ok_or("missing inherited row")?;
+            assert_eq!(sequence, original.sequence);
+            assert_eq!(value.as_ref(), original.value.as_slice());
+            assert_eq!(value.as_ptr(), original.value.as_slice().as_ptr());
+        }
+        let window_visits = cache.origin_visits.get();
+        println!(
+            "ORIGIN_VISITS point={point_visits} window={window_visits} rows={} depth={depth}",
+            records.len()
+        );
+        assert!(
+            window_visits <= 3 * (depth + 3),
+            "window repeated the origin walk for each record"
+        );
+        cache.origin_visits.set(0);
+        assert!(cache.has_range(&source, 0, 160));
+        assert!(cache.origin_visits.get() <= 3 * (depth + 3));
+        cache.origin_visits.set(0);
+        assert_eq!(cache.first_missing(&source, 0, 161), Some(160));
+        assert!(cache.origin_visits.get() <= 4 * (depth + 3));
+        let middle = StreamPath::new("owner1")?;
+        cache.remove(&Key::Record(middle, 67));
+        assert_eq!(cache.first_missing(&source, 0, 160), Some(67));
+        assert_eq!(
+            cache
+                .records(&source, 63, 68)
+                .map(|(_, value)| value.is_some())
+                .collect::<Vec<_>>(),
+            [true, true, true, true, false]
+        );
+        assert_eq!(cache.records(&source, u64::MAX - 1, u64::MAX).count(), 1);
+        assert_eq!(cache.records(&source, u64::MAX, u64::MAX).count(), 0);
+        assert!(cache.has_range(&source, 5, 4));
+        cache.access = super::super::Access::Closed;
+        assert!(
+            cache
+                .records(&root, 0, 64)
+                .all(|(_, value)| value.is_none())
+        );
+        cache.access = super::super::Access::Local;
+        assert!(cache.has_range(&root, 0, 64));
+
+        // A new borrow must resolve the current publication, even if the
+        // path and fork offset are unchanged. No window survives replacement.
+        let mut origin = cache.fork(&leaf).cloned().ok_or("missing leaf origin")?;
+        let mut changed = *origin.inherited.commit_id.as_bytes();
+        changed[0] ^= 1;
+        origin.inherited.commit_id = CommitId::from_bytes(changed);
+        cache.observe_origin(&leaf, Some(origin));
+        assert!(
+            cache
+                .records(&source, 0, 160)
+                .all(|(_, value)| value.is_none())
+        );
+        let mut cyclic = RecordCache::new(0, 2);
+        for (path, source) in [(&root, &leaf), (&leaf, &root)] {
+            cyclic.observe_origin(
+                path,
+                Some(Provenance {
+                    source: source.clone(),
+                    inherited: ForkCut {
+                        forked_at: 2,
+                        commit_id: CommitId::from_bytes(changed),
+                    },
+                }),
+            );
+        }
+        cyclic.insert_record(&root, 0, records[0].value.clone(), None);
+        for path in [&root, &leaf] {
+            for (sequence, value) in cyclic.records(path, 0, 3) {
+                assert_eq!(value, cyclic.record(path, sequence));
+            }
+        }
+        Ok(())
     }
 
     #[test]
