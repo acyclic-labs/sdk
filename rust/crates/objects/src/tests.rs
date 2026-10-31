@@ -249,6 +249,28 @@ async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// A root is free the moment its store drops, even while another copy of
+/// its lock's open file description lives on, as one does in any child
+/// forked by a concurrent spawn until that child execs. The control: the
+/// reopened root still excludes a second owner, so the lock was released and
+/// retaken, not lost.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn a_dropped_root_reopens_while_a_forked_copy_of_its_lock_lives()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let medium = crate::LocalMedium::open(root.path(), Default::default(), None).await?;
+    let forked = medium.lock_description()?;
+    drop(medium);
+    let reopened = crate::LocalMedium::open(root.path(), Default::default(), None).await?;
+    assert!(matches!(
+        crate::LocalMedium::open(root.path(), Default::default(), None).await,
+        Err(crate::local::LocalOpenError::AlreadyOwned)
+    ));
+    drop((reopened, forked));
+    Ok(())
+}
+
 /// Fails selected operations: bit 0 makes creates ambiguous, bit 1 fails reads of root batches.
 #[derive(Default)]
 struct Faulty {
