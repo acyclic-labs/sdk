@@ -50,6 +50,8 @@ mod spawner;
 pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, CaptureWakes, OwnedCaptureInput};
 #[cfg(windows)]
 mod custodian_admission;
+#[cfg(any(windows, test))]
+mod custodian_admission_transport;
 mod custody;
 pub use custody::{ProcessCustody, ProcessCustodyLease};
 mod storage;

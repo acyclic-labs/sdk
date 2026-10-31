@@ -324,16 +324,22 @@ pub fn try_lock(file: Fd) -> Result<(), Errno> {
 
 /// Sets `signal`'s action to ignore it, or to its default.
 pub fn set_signal(signal: i32, ignore: bool) {
+    let _ = set_signal_checked(signal, ignore);
+}
+
+/// Sets a disposition before exec, retaining an OS refusal for the caller.
+pub fn set_signal_checked(signal: i32, ignore: bool) -> Result<(), Errno> {
     // The kernel's action: handler, flags, restorer and mask; at most four
     // words, and all-zero but the handler for these two actions.
     let action = [usize::from(ignore), 0, 0, 0];
     // SAFETY: a kernel-sized action and an eight-byte signal set size.
-    let _ = unsafe {
+    unsafe {
         call(
             number::RT_SIGACTION,
             [arg(signal), action.as_ptr().addr(), 0, 8, 0, 0],
         )
-    };
+    }
+    .map(drop)
 }
 
 pub fn unblock(signal: i32) {

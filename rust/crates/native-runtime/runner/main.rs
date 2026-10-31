@@ -46,7 +46,7 @@ const LIMITS: usize = 16;
 /// The fixed fields before a request's strings: slots, flags, user, group,
 /// owner, file-creation mask, limits, and the argument and environment
 /// counts.
-const FIXED: usize = 3 + 1 + 4 + 4 + 4 + 4 + 8 + LIMITS * 16 + 8 + 8;
+const FIXED: usize = 3 + 1 + 4 + 4 + 4 + 4 + 8 + 8 + LIMITS * 16 + 8 + 8;
 /// The control socket, above the standard streams.
 const CONTROL: Fd = 3;
 
@@ -404,6 +404,7 @@ struct Spec {
     /// The owner's file-creation mask and resource limits at the request.
     mask: u32,
     signals: u64,
+    ignored: u64,
     limits: [[u64; 2]; LIMITS],
     program: *const c_char,
     /// The program has no slash, so the child's `PATH` finds it.
@@ -441,7 +442,7 @@ fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
             .ok_or(invalid)
     };
     let length = received.length;
-    let (slots, flags, uid, gid, owner, mask, signals, limits, argc, envc) = {
+    let (slots, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc) = {
         let mut reader = Reader(body.bytes().get(..length).ok_or(invalid)?);
         let slots = reader.take(3)?;
         let flags = *reader.take(1)?.first().ok_or(invalid)?;
@@ -450,6 +451,7 @@ fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
         let owner = Pid::try_from(reader.word()?).map_err(|_| invalid)?;
         let mask = reader.word()?;
         let signals = reader.wide()?;
+        let ignored = reader.wide()?;
         let mut limits = [[0; 2]; LIMITS];
         for limit in &mut limits {
             *limit = [reader.wide()?, reader.wide()?];
@@ -459,7 +461,7 @@ fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
         let mut kinds = [0; 3];
         kinds.copy_from_slice(slots);
         (
-            kinds, flags, uid, gid, owner, mask, signals, limits, argc, envc,
+            kinds, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc,
         )
     };
     let mut next = 3;
@@ -541,6 +543,7 @@ fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
         gid: (flags & HAS_GID != 0).then_some(gid),
         mask,
         signals,
+        ignored,
         limits,
         program,
         search,
@@ -604,8 +607,13 @@ fn prepare_program(spec: &Spec) -> Result<(), Errno> {
         }
         sys::setuid(uid)?;
     }
-    // As a standard spawn does.
-    sys::set_signal(sys::SIGPIPE, false);
+    // Other ignored dispositions came from the current owner when this
+    // runner was exec'd. Undo only the runner/warden's own changes: std
+    // spawn defaults SIGPIPE; the warden needed SIGCHLD to reap its children.
+    sys::set_signal_checked(sys::SIGPIPE, false)?;
+    if spec.ignored & (1 << (sys::SIGCHLD - 1)) != 0 {
+        sys::set_signal_checked(sys::SIGCHLD, true)?;
+    }
     sys::set_signal_mask(spec.signals)?;
     Ok(())
 }

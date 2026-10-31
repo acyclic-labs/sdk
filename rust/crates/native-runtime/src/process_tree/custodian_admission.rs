@@ -14,7 +14,8 @@
 //! without it is refused, and even an admitted request only makes the
 //! custodian watch a process that is already a member of the tree's Job.
 
-use std::io::{self, Read as _, Write as _};
+use super::custodian_admission_transport::{self as transport, Request};
+use std::io;
 use std::net::{Ipv4Addr, TcpListener};
 use std::sync::mpsc::{self, Receiver};
 use windows_sys::Win32::Foundation::HANDLE;
@@ -57,13 +58,6 @@ pub(super) fn matches(expected: &Secret, presented: &Secret) -> bool {
         == 0
 }
 
-pub(super) struct Request {
-    pub pid: u32,
-    pub tree: usize,
-    pub secret: Secret,
-    pub reply: mpsc::SyncSender<bool>,
-}
-
 pub(super) struct Server {
     listener: TcpListener,
     pub endpoint: String,
@@ -79,38 +73,14 @@ impl Server {
     pub fn start(self, port: HANDLE) -> io::Result<Receiver<Request>> {
         let (send, receive) = mpsc::channel();
         let port = port.expose_provenance();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()?;
         std::thread::Builder::new()
             .name("custodian-admission".into())
             .spawn(move || {
-                for stream in self.listener.incoming() {
-                    let Ok(mut stream) = stream else { break };
-                    let mut request = [0; 28];
-                    if stream.read_exact(&mut request).is_err() {
-                        continue;
-                    }
-                    let (pid, rest) = request.split_at(4);
-                    let (tree, secret) = rest.split_at(8);
-                    let (Ok(pid), Some(tree), Ok(secret)) = (
-                        <[u8; 4]>::try_from(pid),
-                        <[u8; 8]>::try_from(tree)
-                            .ok()
-                            .and_then(|tree| usize::try_from(u64::from_le_bytes(tree)).ok()),
-                        Secret::try_from(secret),
-                    ) else {
-                        continue;
-                    };
-                    let (reply, result) = mpsc::sync_channel(0);
-                    if send
-                        .send(Request {
-                            pid: u32::from_le_bytes(pid),
-                            tree,
-                            secret,
-                            reply,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
+                let _ = runtime.block_on(transport::serve(self.listener, move |request| {
+                    send.send(request).map_err(|_| io::ErrorKind::BrokenPipe)?;
                     // SAFETY: the custodian owns this completion port until exit.
                     if unsafe {
                         PostQueuedCompletionStatus(
@@ -121,11 +91,10 @@ impl Server {
                         )
                     } == 0
                     {
-                        break;
+                        return Err(io::Error::last_os_error());
                     }
-                    let admitted = result.recv().unwrap_or(false);
-                    let _ = stream.write_all(&[u8::from(admitted)]);
-                }
+                    Ok(())
+                }));
             })?;
         Ok(receive)
     }
