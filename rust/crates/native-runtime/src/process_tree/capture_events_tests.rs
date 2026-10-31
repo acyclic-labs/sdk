@@ -102,7 +102,7 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     );
     // The child's full stderr is an actual ready output source and keeps it
     // from reading stdin. That output must not settle an input-only wait.
-    process.readiness()?.0.block();
+    process.readiness()?.0.block()?;
     let input_ready = process.stdin_readiness()?;
     assert!(
         !input_ready.0.fired(),
@@ -128,7 +128,7 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
         .as_mut()
         .unwrap()
         .read_exact(&mut output)?;
-    input_ready.0.block();
+    input_ready.0.block()?;
     let result = completion.recv().map_err(io::Error::other);
     process.terminate(None)?;
     assert_eq!(result?, (bytes.len() as u64, bytes.len() as u64));
