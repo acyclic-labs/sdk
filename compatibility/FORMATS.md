@@ -11,6 +11,13 @@ campaign or proof. Captured corpus provenance is `rust/codec-fuzz/corpus/SOURCES
 descriptor baselines live in `compatibility/descriptors/`. Golden payloads belong
 in `compatibility/frames/`, alongside their producing encoder and refusal cases.
 
+The current SDK corpus contains 1,588 registered writer outputs. Each was
+captured and readmitted through its owning decoder oracle, including the
+ordinary/funded and typed reader-loss controls. This completes the SDK seed
+capture work noted below for registered producers; it does not qualify the
+remaining private hooks, physical fault schedules, Kani runs or external-server
+positive replay. The twenty external MCP captures retain separate provenance.
+
 | Boundary | Canonical implementation | Version admission | Fuzz entry | Golden / proof work remaining |
 | --- | --- | --- | --- | --- |
 | Auth RPC messages | `auth::contract` | `acyclic.auth.v1` route | `protobuf`, including semantic conversion for every Auth message | Compile generated semantic table; capture and compare payload goldens |
@@ -97,15 +104,13 @@ version never triggers migration, repair, truncation or rewrite. Tests mutate a
 captured version and truncate its body to establish this ordering. Invalid input,
 trailing input, EOF and owner loss are distinct negative controls where applicable.
 
-The corpus currently contains 882 real encoder outputs, including all 403
-generated message types and their JSON projections. All 882 passed decoder
-replay with recorded lengths and SHA-256 values. Their exact bytes also appear
-under `corpus/` names in the one shared golden lookup. Encoder comparison
-against that newly installed baseline and format-specific refusal execution
-remain separate obligations; replay alone does not establish either. These
-captures and the successful replay predate the addition of Stream record
-origins. Current encoder capture and replay must be repeated after integrating
-that schema change; historical results do not qualify the current source.
+The current capture includes Stream record origins and the added Harness
+descriptor family. Every SDK output records its actual writer, length and
+SHA-256 in `SOURCES.tsv`, with the same bytes under `corpus/` names in the
+shared golden lookup. Ordinary capture compares fresh writer bytes with that
+baseline; replay checks saved bytes against both provenance and goldens.
+Accepting a reviewed baseline does not itself establish a subsequent golden
+comparison or a fuzz campaign.
 
 The Harness descriptor baseline was captured with Buf 1.75.0 from the actual
 schemas using `buf build --path rust/crates/harness-core/proto/harness/v2/harness.proto
