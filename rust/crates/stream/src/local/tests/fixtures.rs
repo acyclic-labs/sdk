@@ -3,6 +3,24 @@ use crate::{
     test_meter::{Meter, NativeDenial},
 };
 use acyclic_native_runtime::ReadAllocation;
+
+/// The actual worker start or its caller's terminal, without a receiver task.
+async fn journal_started<T>(
+    started: tokio::sync::oneshot::Receiver<()>,
+    producer: &mut tokio::task::JoinHandle<T>,
+) -> std::io::Result<()> {
+    tokio::select! {
+        result = started => result.map_err(|error| std::io::Error::new(std::io::ErrorKind::BrokenPipe, error)),
+        result = producer => {
+            result.map_err(std::io::Error::other)?;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "journal operation ended before its held worker cut",
+            ))
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum NativeGuardFailure {
     Provider(StreamError),

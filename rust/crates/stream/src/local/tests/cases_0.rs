@@ -122,7 +122,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
         .await?;
 
         let journal_identity = Arc::as_ptr(&provider.inner.journal) as usize;
-        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         {
             let mut hook = JOURNAL_PERSIST_BLOCKER
@@ -130,7 +130,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
                 .map_err(|_| "journal-persist test hook was poisoned")?;
             *hook = Some((journal_identity, started_tx, release_rx));
         }
-        let appending = tokio::spawn(
+        let mut appending = tokio::spawn(
             {
                 let provider = provider.clone();
                 async move {
@@ -147,7 +147,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
             .with_subscriber(dispatch),
         );
 
-        started_rx.recv()?;
+        journal_started(started_rx, &mut appending).await?;
         appending.abort();
         assert!(appending.await.is_err_and(|error| error.is_cancelled()));
         drop(provider);
@@ -191,7 +191,7 @@ fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let journal_identity = Arc::as_ptr(&provider.inner.journal) as usize;
-        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         *JOURNAL_PERSIST_BLOCKER
             .lock()
@@ -199,7 +199,7 @@ fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
             Some((journal_identity, started_tx, release_rx));
         let path = StreamPath::new("cancelled-visibility")?;
         let key = crate::IdempotencyKey::unique();
-        let appending = tokio::spawn({
+        let mut appending = tokio::spawn({
             let (provider, path, key) = (provider.clone(), path.clone(), key.clone());
             async move {
                 provider
@@ -212,7 +212,7 @@ fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
                     .await
             }
         });
-        tokio::task::spawn_blocking(move || started_rx.recv()).await??;
+        journal_started(started_rx, &mut appending).await?;
         appending.abort();
         assert!(appending.await.is_err_and(|error| error.is_cancelled()));
 
@@ -317,7 +317,7 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let journal_identity = Arc::as_ptr(&provider.inner.journal) as usize;
-        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         *JOURNAL_PERSIST_BLOCKER
             .lock()
@@ -327,8 +327,8 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
             let provider = provider.clone();
             tokio::spawn(async move { provider.commit(keyed_commit(path, 0)?).await })
         };
-        let first = commit("first");
-        tokio::task::spawn_blocking(move || started_rx.recv()).await??;
+        let mut first = commit("first");
+        journal_started(started_rx, &mut first).await?;
         let mut request = crate::FollowRequest::new(StreamPath::new("second")?, 0);
         request.when_absent = crate::WhenAbsent::Wait;
         let mut follow = crate::records_only(provider.follow(request).await?);
@@ -351,6 +351,22 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
             assert!(matches!(outcome, CommitOutcome::Committed(_)), "{path}");
             assert_eq!(provider.tail(StreamPath::new(path)?).await?, 1, "{path}");
         }
+        // A real refused proposal never reaches the held worker. Its terminal
+        // must end the same start wait even while the hook retains its sender.
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (_release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        *JOURNAL_PERSIST_BLOCKER.lock().unwrap() = Some((journal_identity, started_tx, release_rx));
+        let mut refused = {
+            let provider = provider.clone();
+            tokio::spawn(async move { provider.commit(keyed_commit("second", 9)?).await })
+        };
+        let terminal = journal_started(started_rx, &mut refused).await;
+        JOURNAL_PERSIST_BLOCKER.lock().unwrap().take();
+        assert_eq!(
+            terminal.unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(provider.tail(StreamPath::new("second")?).await?, 1);
         Ok::<_, Box<dyn std::error::Error>>(())
     })
 }

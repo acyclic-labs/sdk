@@ -20,23 +20,20 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
         let original = meter.original();
         let caller_controls = ReadAllocation::adopt(&original, input_bytes)?;
         let inner_identity = Arc::as_ptr(&provider.inner.journal) as usize;
-        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         *JOURNAL_PERSIST_BLOCKER
             .lock()
             .map_err(|_| "journal-persist hook was poisoned")? =
             Some((inner_identity, started_tx, release_rx));
-        let caller = tokio::spawn({
+        let mut caller = tokio::spawn({
             let provider = provider.clone();
             async move {
                 let _caller_controls = caller_controls;
                 provider.native_commit(request, None, original).await
             }
         });
-        tokio::task::spawn_blocking(move || {
-            started_rx.recv_timeout(std::time::Duration::from_secs(5))
-        })
-        .await??;
+        journal_started(started_rx, &mut caller).await?;
         caller.abort();
         let cancelled = caller.await.is_err_and(|error| error.is_cancelled());
         let owned_during_drain = meter.held.load(Ordering::SeqCst);
@@ -139,7 +136,7 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
         let released = Arc::new(AtomicU64::new(0));
         let lease = Arc::new(GuardLeaseWitness(Arc::clone(&released)));
         let weak = Arc::downgrade(&lease);
-        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         *JOURNAL_PERSIST_BLOCKER
             .lock()
@@ -148,7 +145,7 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
             started_tx,
             release_rx,
         ));
-        let caller = tokio::spawn({
+        let mut caller = tokio::spawn({
             let provider = provider.clone();
             let meter = Arc::clone(&meter);
             async move {
@@ -163,10 +160,7 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
                     .await
             }
         });
-        tokio::task::spawn_blocking(move || {
-            started_rx.recv_timeout(std::time::Duration::from_secs(5))
-        })
-        .await??;
+        journal_started(started_rx, &mut caller).await?;
         caller.abort();
         let cancelled = caller.await.is_err_and(|error| error.is_cancelled());
         let retained = weak.upgrade().is_some();
