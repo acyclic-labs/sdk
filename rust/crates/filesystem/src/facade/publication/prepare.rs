@@ -26,7 +26,7 @@ impl<A, O> VerifiedPublication<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    pub(super) fn publication_dependencies(
+    pub(in crate::facade) fn publication_dependencies(
         &self,
     ) -> Result<
         (
@@ -47,7 +47,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         )
     }
 
-    pub(super) fn publication_request(
+    pub(in crate::facade) fn publication_request(
         &self,
         operation_id: OperationId,
         expected: Head,

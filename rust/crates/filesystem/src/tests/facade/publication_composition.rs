@@ -134,7 +134,7 @@ async fn unresolved_authored_publication_keeps_the_exact_commit_for_resubmission
             .value,
         crate::PublicationContribution::Prepared(_)
     ));
-    fs.seal_commit(&mut transaction, B, &cancel).await?;
+    fs.seal_commit(&mut transaction, B, &cancel)?;
     let request = transaction.request().clone();
     let stopped = CancellationToken::new();
     stopped.cancel();
