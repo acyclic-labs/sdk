@@ -140,6 +140,12 @@ The test-support feature is separate from ordinary latency instrumentation.
 Proof rows explicitly leave same-owner resubmission, physical retirement of
 publication holds and population-independent work open. A fresh filesystem
 owner cannot resubmit a commit bound to the original owner.
+The proof mode also injects per-owner registrations through the public native
+`WallAlarm`, at small control populations. Its original callback owns a channel
+producer; cancellation must close that channel and retire the retained callback.
+Those actual registrations must fail the same idle checker used by counting
+reports. This control observes its own injected registrations; it does not
+supply the missing whole-process timer, memory or thread counters.
 `--setup-credit` bounds concurrent original root preparation and submission
 during population setup (default1). Each root retains its own intent, sealed
 request and publication holds; independent lifecycles can share the provider's

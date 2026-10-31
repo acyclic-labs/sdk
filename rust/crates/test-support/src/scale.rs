@@ -381,25 +381,7 @@ impl Report {
                     }
                 }
             }
-            for (name, value) in [
-                ("idle bytes", point.idle.bytes),
-                ("idle threads", point.idle.threads),
-                ("idle timers", point.idle.timers),
-            ] {
-                match value {
-                    None => failures.push(failure(
-                        "idle coverage",
-                        format!("N={} {name}: unobserved", point.agents),
-                        recovery,
-                    )),
-                    Some(value) if name != "idle bytes" && value != 0 => failures.push(failure(
-                        "idle resources",
-                        format!("N={} {name}={value}; required=0", point.agents),
-                        recovery,
-                    )),
-                    Some(_) => {}
-                }
-            }
+            failures.extend(point.idle.findings(point.agents, recovery));
         }
         for pair in self.points.windows(2) {
             compare(&pair[0], &pair[1], recovery, &mut failures);
@@ -421,6 +403,35 @@ impl Report {
             return Err(failure);
         }
         Ok(())
+    }
+}
+
+impl Idle {
+    /// Check original idle observations independently of operation samples.
+    /// Missing fields remain refusals; any additional per-agent thread or
+    /// armed timer fails, including at a single-owner control population.
+    pub fn findings(&self, agents: u64, recovery: &str) -> Vec<Failure> {
+        let mut failures = Vec::new();
+        for (name, value) in [
+            ("idle bytes", self.bytes),
+            ("idle threads", self.threads),
+            ("idle timers", self.timers),
+        ] {
+            match value {
+                None => failures.push(failure(
+                    "idle coverage",
+                    format!("N={agents} {name}: unobserved"),
+                    recovery,
+                )),
+                Some(value) if name != "idle bytes" && value != 0 => failures.push(failure(
+                    "idle resources",
+                    format!("N={agents} {name}={value}; required=0"),
+                    recovery,
+                )),
+                Some(_) => {}
+            }
+        }
+        failures
     }
 }
 
