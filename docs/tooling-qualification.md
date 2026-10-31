@@ -195,7 +195,7 @@ File-backed event keys now retain only byte offsets, lengths and the original tr
 
 Linux x86_64: three focused collector controls passed. Sixteen existing controls passed after restoring their isolated pinned dependency. Actual full-payload retention and omitted wait removal each failed the unchanged oracle. The first aggregate remains a missing-dependency refusal for the original runner; only its unreached checks were resumed. The collector implementation in this composition is byte-identical to that qualified source. No combined-head test, RSS measurement or speedup is inferred.
 
-Current scoped test-source accounting against `b486e2a4aaf1cfb9884f1578e521203ee5946b67`: 2,066 added / 2,135 removed; **69 net lines removed**. Dedicated test-code paths and explicit inline/model regressions are counted once; unchanged main observer controls, non-code fixtures/provenance, upstream imports, Cargo metadata and preserved proof moves earn no deletion credit. Historical baseline tables above retain their original source and conventions.
+Current scoped test-source accounting against `27d95bba0de3f8bed7917df838635f58562de5fb`: 1,959 added / 2,133 removed; **174 net lines removed**. Dedicated test-code paths and explicit inline/model regressions are counted once; unchanged main observer controls, non-code fixtures/provenance, upstream imports, Cargo metadata and preserved proof moves earn no deletion credit. Historical baseline tables above retain their original source and conventions.
 
 ## Preparation and executable custody
 
@@ -216,4 +216,15 @@ Successful admission removes three temporary parsing buffers and two path copies
 
 The existing integration executable registers one real-binary regression under `local-runner`. It creates and commits an actual durable generation, releases the original root through its existing ownership event, restores the sealed reference through the shipping command and compares exact file bytes. The same oracle requires raw digests, a different object kind and malformed Unicode to fail without opening a store or creating a destination. Its only additional wait joins that original root-release producer; the shipping process uses the existing native process owner and exit/output completion. Removing the storage association or moving admission after destination creation is the selective negative control. The regression and these mutations remain unrun. Rust formatting, whitespace and locked offline resolution pass; neither compilation nor runtime qualification is inferred from those source checks.
 
-The current composition preserves all 50 packages selected by ordinary root commands in main, in the same order. The 72 explicit members include opt-in fuzz/proof and qualification roots; their separate invocation boundaries remain.
+The current composition preserves all 51 packages selected by ordinary root commands in main, in the same order. The 72 explicit members include opt-in fuzz/proof and qualification roots; their separate invocation boundaries remain.
+
+
+## Idle event delivery
+
+The shared actor runtime selects an immutable input record or due alarm before claiming an epoch. An idle or paused event performs zero claim commits, instead of one; an actual delivery retains one claim and the original pre-handler authority observation. The claim changes only the epoch, so its accepted receipt can retain the selected input without another read. Record reads remain one bounded read per examined subscription; no extra scan, timer, request, copy or codec pass is introduced. Per-event cost still depends on the admitted subscription set; no constant-time arbitrary-subscription claim is made.
+
+This prevents a completed idle wake from generating another state-path wake. External writes still advance the original durable routing generation, and acknowledgement still compares the original captured generation. A productive wake can leave one redundant pending wake; the following idle wake performs no write and permits acknowledgement. No external generation is discarded to suppress self-notification. Recovery still uses the original durable alarm, and publication failures retain their original custody and typed error.
+
+The existing strict-wire event-host regression now checks unchanged state tails and epochs both with a future alarm and across idle reopen. Its original pause, record delivery, alarm generation and subscription-cut assertions remain. Restoring the former unconditional claim violates the unchanged-tail control. These source checks are distinct from hosted execution and physical request or allocation measurements.
+
+Linux x86_64: `cargo test --locked -p acyclic-actors --lib local::runtime::tests::generic_event_host_runs_the_original_package_over_strict_wire -- --exact --nocapture` passed one test with zero failed or ignored, in 0.00 s execution and 33.10 s compilation at source `ae3a9752e0`. This composition retains the original delivery-cancellation fence and current shared test selection. Hosted execution and physical request or allocation accounting remain unqualified.
