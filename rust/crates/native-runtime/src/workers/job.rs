@@ -190,19 +190,15 @@ impl NativeJob {
                 admission,
                 health,
                 completion,
-            } => {
-                let charges = (_allocation, admission, meter, health);
-                let _turn = crate::task::PersistenceTurn::enter(progress.clone());
-                if let Some(progress) = &progress {
-                    progress.record("stage", 2_u64);
-                }
+            } => run_task(
+                operation,
+                terminal,
+                completion,
+                (_allocation, admission, meter, health),
+                progress,
                 #[cfg(feature = "test-support")]
-                if let Some(scope) = scope {
-                    return scope
-                        .run(|| run_task(operation, terminal, completion, charges, progress));
-                }
-                run_task(operation, terminal, completion, charges, progress)
-            }
+                scope,
+            ),
         }
     }
 }
@@ -214,21 +210,34 @@ fn run_task(
     completion: Option<Arc<OperationFence>>,
     charges: impl Sized,
     progress: Option<obs::OperationSpan>,
+    #[cfg(feature = "test-support")] scope: Option<testing::host::Work>,
 ) -> Option<Waker> {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
-    drop(charges);
-    if let Err(panic) = result {
-        terminal.stage_panic(panic);
-    }
-    if let Some(completion) = completion {
-        completion.complete();
-    }
-    let waker = terminal.publish();
+    let _turn = crate::task::PersistenceTurn::enter(progress.clone());
     if let Some(progress) = &progress {
-        progress.record("stage", 4_u64);
+        progress.record("stage", 2_u64);
     }
-    // This shared owner retains the state's charge until it is released,
-    // including when the observer has already taken the result.
-    crate::sync::release(terminal);
-    waker
+    let run = || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
+        drop(charges);
+        if let Err(panic) = result {
+            terminal.stage_panic(panic);
+        }
+        if let Some(completion) = completion {
+            completion.complete();
+        }
+        let waker = terminal.publish();
+        if let Some(progress) = &progress {
+            progress.record("stage", 4_u64);
+        }
+        // This shared owner retains the state's charge until it is released,
+        // including when the observer has already taken the result.
+        crate::sync::release(terminal);
+        drop(progress);
+        waker
+    };
+    #[cfg(feature = "test-support")]
+    if let Some(scope) = scope {
+        return scope.run(run);
+    }
+    run()
 }

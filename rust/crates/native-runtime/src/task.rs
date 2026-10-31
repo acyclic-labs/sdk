@@ -21,6 +21,26 @@ pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
+/// An owned, opaque persistence identity with a fixed formatting cost.
+///
+/// The owner is an in-process identity, never a path or content digest. The
+/// position distinguishes work within that owner; the job has its own unique
+/// identity even if an address is reused. No pointer or borrowed formatter is
+/// retained by submission.
+#[derive(Clone, Copy)]
+pub struct PersistenceKey {
+    owner: usize,
+    position: u64,
+}
+
+impl PersistenceKey {
+    /// Identifies one owner's position without allocating or reading its bytes.
+    #[must_use]
+    pub const fn new(owner: usize, position: u64) -> Self {
+        Self { owner, position }
+    }
+}
+
 /// Submits durable storage work to the shared, bounded persistence service.
 ///
 /// Submission is eager: a replay reader may await records produced by the
@@ -32,10 +52,20 @@ pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 /// its observer; the original job retains physical completion custody.
 /// `medium`, `operation` and the opaque `key` identify the original producer in
 /// wait reports. Never include credentials, user content or paths in the key.
+/// Borrowed formatting arguments cannot enter the asynchronous submission:
+///
+/// ```compile_fail
+/// async fn read() {
+///     let owner = 7;
+///     acyclic_native_runtime::spawn_persistence(
+///         "streams", "read", &format_args!("{owner}"), || (),
+///     ).await.unwrap();
+/// }
+/// ```
 pub fn spawn_persistence<F, T>(
     medium: &'static str,
     operation: &'static str,
-    key: &dyn std::fmt::Display,
+    key: PersistenceKey,
     work: F,
 ) -> impl std::future::Future<Output = std::io::Result<T>> + Send + use<F, T>
 where
@@ -47,7 +77,7 @@ where
     } else {
         let waiting = crate::obs::waiting(
             "persistence-completion",
-            format_args!("{medium}/{operation}/{key}"),
+            format_args!("{medium}/{operation}/{:x}/{:x}", key.owner, key.position),
             std::future::pending::<()>(),
         );
         let progress = waiting.context().clone();
@@ -383,15 +413,12 @@ mod tests {
         }
         use tracing_subscriber::layer::SubscriberExt as _;
         fn refuses_reentry() {
-            struct RejectedKey;
-            impl std::fmt::Display for RejectedKey {
-                fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    panic!("rejected persistence key was formatted")
-                }
-            }
-            let nested = super::spawn_persistence("local", "nested", &RejectedKey, || {
-                panic!("reentrant persistence body ran")
-            });
+            let nested = super::spawn_persistence(
+                "local",
+                "nested",
+                super::PersistenceKey::new(0, 0),
+                || panic!("reentrant persistence body ran"),
+            );
             let mut nested = std::pin::pin!(nested);
             let mut context = std::task::Context::from_waker(std::task::Waker::noop());
             assert!(
@@ -412,7 +439,7 @@ mod tests {
             let mut accepted = Box::pin(super::spawn_persistence(
                 "local",
                 "retained",
-                &16,
+                super::PersistenceKey::new(16, 0),
                 move || {
                     let guard = retained.lock().unwrap();
                     accepted_started.send(()).unwrap();
@@ -424,43 +451,48 @@ mod tests {
             accepted_starting.await.unwrap();
             let (started, starting) = tokio::sync::oneshot::channel();
             let (release, held) = std::sync::mpsc::channel();
-            let job = super::spawn_persistence("local", "write", &17, move || {
-                super::persistence_syscall(|| {
-                    started.send(()).unwrap();
-                    held.recv().unwrap();
-                });
-                // The negative control attempts to wait on its own service.
-                // Its body must never enter that service, even with free workers.
-                refuses_reentry();
-                // An inline native adapter retains the same physical owner.
-                let _inline = crate::InlineBlocking::enter();
-                let mut adapter = crate::run_blocking_io(refuses_reentry, None).unwrap();
-                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-                assert!(matches!(
-                    std::future::Future::poll(std::pin::Pin::new(&mut adapter), &mut context),
-                    std::task::Poll::Ready(Ok(()))
-                ));
-                // An observer accepted earlier cannot wait on this service
-                // from one of its own workers, even without new submission.
-                assert!(matches!(
-                    std::future::Future::poll(accepted.as_mut(), &mut context),
-                    std::task::Poll::Ready(Err(error))
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                ));
-            });
+            let job = super::spawn_persistence(
+                "local",
+                "write",
+                super::PersistenceKey::new(17, 0),
+                move || {
+                    super::persistence_syscall(|| {
+                        started.send(()).unwrap();
+                        held.recv().unwrap();
+                    });
+                    // The negative control attempts to wait on its own service.
+                    // Its body must never enter that service, even with free workers.
+                    refuses_reentry();
+                    // An inline native adapter retains the same physical owner.
+                    let _inline = crate::InlineBlocking::enter();
+                    let mut adapter = crate::run_blocking_io(refuses_reentry, None).unwrap();
+                    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                    assert!(matches!(
+                        std::future::Future::poll(std::pin::Pin::new(&mut adapter), &mut context),
+                        std::task::Poll::Ready(Ok(()))
+                    ));
+                    // An observer accepted earlier cannot wait on this service
+                    // from one of its own workers, even without new submission.
+                    assert!(matches!(
+                        std::future::Future::poll(accepted.as_mut(), &mut context),
+                        std::task::Poll::Ready(Err(error))
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                    ));
+                },
+            );
             starting.await.unwrap();
             let mut bytes = Vec::new();
             report.report(&mut bytes).unwrap();
             let observed = String::from_utf8(bytes).unwrap();
-            assert!(observed.contains("local/write/17"), "{observed}");
+            assert!(observed.contains("local/write/11/0"), "{observed}");
             assert!(observed.contains("stage=syscall"), "{observed}");
             release.send(()).unwrap();
             job.await.unwrap();
             let mut bytes = Vec::new();
             report.report(&mut bytes).unwrap();
             let observed = String::from_utf8(bytes).unwrap();
-            assert!(!observed.contains("local/write/17"), "{observed}");
-            assert!(observed.contains("local/retained/16"), "{observed}");
+            assert!(!observed.contains("local/write/11/0"), "{observed}");
+            assert!(observed.contains("local/retained/10/0"), "{observed}");
             assert!(custody.try_lock().is_err());
             // Loss of the original release producer terminates the job. A
             // refused observer has no authority to release its held storage.
@@ -479,9 +511,12 @@ mod tests {
         let _dispatch = tracing::dispatcher::set_default(&dispatch);
         let runtime = super::coordination_runtime().unwrap();
         let error = runtime
-            .block_on(super::spawn_persistence("local", "panic", &19, || {
-                panic!("original persistence failure")
-            }))
+            .block_on(super::spawn_persistence(
+                "local",
+                "panic",
+                super::PersistenceKey::new(19, 0),
+                || panic!("original persistence failure"),
+            ))
             .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Other);
         let mut bytes = Vec::new();
@@ -496,12 +531,17 @@ mod tests {
             let (started, starting) = tokio::sync::oneshot::channel();
             let (release, held) = std::sync::mpsc::channel::<()>();
             let (finished, mut finishing) = tokio::sync::oneshot::channel();
-            let submitted = super::spawn_persistence("test", "retained", &"held", move || {
-                let _ = started.send(());
-                let error = held.recv().unwrap_err();
-                let result = std::io::Error::new(std::io::ErrorKind::Interrupted, error);
-                let _ = finished.send(result.kind());
-            });
+            let submitted = super::spawn_persistence(
+                "test",
+                "retained",
+                super::PersistenceKey::new(0, 0),
+                move || {
+                    let _ = started.send(());
+                    let error = held.recv().unwrap_err();
+                    let result = std::io::Error::new(std::io::ErrorKind::Interrupted, error);
+                    let _ = finished.send(result.kind());
+                },
+            );
             // Submission is driven by its owner, even without polling this
             // result; caller cancellation cannot abandon accepted work.
             drop(submitted);

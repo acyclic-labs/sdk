@@ -6,6 +6,18 @@ pub type BoxProviderFuture<'a, T> = futures::future::BoxFuture<'a, T>;
 pub type BoxProviderFuture<'a, T> = futures::future::LocalBoxFuture<'a, T>;
 
 /// Bound for provider futures submitted to the platform executor.
+/// A formatter retained over a suspension cannot satisfy the native contract:
+///
+/// ```compile_fail
+/// fn read() -> impl std::future::Future<Output = ()> + acyclic_stream::ProviderTask {
+///     async {
+///         let owner = 7;
+///         let label = format_args!("{owner}");
+///         std::future::pending::<()>().await;
+///         std::hint::black_box(label);
+///     }
+/// }
+/// ```
 #[cfg(not(target_arch = "wasm32"))]
 pub trait ProviderTask: Send {}
 #[cfg(not(target_arch = "wasm32"))]

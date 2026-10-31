@@ -193,6 +193,8 @@ fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
         if account.pw_dir.is_null() {
             return Err(io::ErrorKind::InvalidData.into());
         }
+        // SAFETY: successful getpwuid_r placed this nonnull, NUL-terminated
+        // string in buffer, which remains live and unchanged through this use.
         let home = unsafe { CStr::from_ptr(account.pw_dir) };
         let directory = fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(home.to_bytes())))?;
         let home = persistent_user_directory(&directory)?;

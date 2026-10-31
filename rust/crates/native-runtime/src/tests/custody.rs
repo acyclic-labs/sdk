@@ -15,7 +15,7 @@ fn capture_refuses_pending_input_storage_before_accepting_input() -> io::Result<
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
-    let meter = ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    let meter = ReadBudgetMeter::shared(u64::MAX, u64::MAX);
     meter.deny_allocations.store(true, Ordering::Release);
     let maximum = 16 * 1024;
     let failure = tree
@@ -25,7 +25,7 @@ fn capture_refuses_pending_input_storage_before_accepting_input() -> io::Result<
             Some(CaptureInput::Literal(b"refused input")),
             || Ok(()),
             |_| Ok(ProcessInput::default()),
-            Some(&meter),
+            Some(meter.as_ref()),
             Some([
                 Vec::with_capacity(maximum),
                 Vec::with_capacity(maximum),
@@ -34,6 +34,7 @@ fn capture_refuses_pending_input_storage_before_accepting_input() -> io::Result<
             None,
         )
         .expect_err("unadmitted pending input must not be submitted");
+    assert_eq!(failure.error.kind(), io::ErrorKind::Other);
     assert!(failure.cleanup_completed);
     assert_eq!(
         meter.read.load(Ordering::Acquire),

@@ -15,7 +15,7 @@
             "id": "native-tree",
             "name": "shell",
             "arguments": {
-              "command": "node \"{{support}}/orphan.mjs\" tree"
+              "command": "node \"{{support}}/orphan.mjs\" tree \"{{url}}\""
             }
           }
         ]

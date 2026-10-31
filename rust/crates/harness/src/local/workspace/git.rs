@@ -3,6 +3,9 @@ use super::super::checkout_tools::{State, capture, reconciliation};
 use super::owner::ViewOwner;
 use super::*;
 
+#[cfg(all(test, not(loom)))]
+mod tests;
+
 pub(in crate::local) struct CommandContext<'a> {
     pub(in crate::local) owner: &'a dyn ViewOwner,
     pub(in crate::local) operation: OperationId,
@@ -443,11 +446,11 @@ fn reconciliation_operation(
     from: acyclic_fs::GenerationId,
     to: acyclic_fs::GenerationId,
 ) -> acyclic_fs::OperationId {
-    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.git-reconciliation/v1");
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.git-reconciliation/v2");
     hash.update(&operation.into_bytes());
     hash.update(phase);
-    hash.update(from.digest().as_bytes());
-    hash.update(to.digest().as_bytes());
+    hash.update(from.to_bytes().as_slice());
+    hash.update(to.to_bytes().as_slice());
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     acyclic_fs::OperationId::from_bytes(bytes)

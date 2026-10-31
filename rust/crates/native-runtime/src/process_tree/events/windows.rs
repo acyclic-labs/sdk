@@ -87,7 +87,8 @@ pub(in crate::process_tree) struct PipeOperation {
     kind: Kind,
     pending: AtomicBool,
     token: AtomicU64,
-    buffer: UnsafeCell<Vec<u8>>,
+    // Tuple fields retire in order: storage, then its original allocation credit.
+    buffer: UnsafeCell<(Vec<u8>, Option<crate::ReadAllocation>)>,
     result: Mutex<Option<io::Result<usize>>>,
     write_reservation: Mutex<Option<crate::NativeByteReservation<Arc<dyn crate::NativeReadMeter>>>>,
 }
@@ -122,7 +123,7 @@ impl PipeOperation {
             kind,
             pending: AtomicBool::new(false),
             token: AtomicU64::new(0),
-            buffer: UnsafeCell::new(Vec::new()),
+            buffer: UnsafeCell::new((Vec::new(), None)),
             result: Mutex::new(None),
             write_reservation: Mutex::new(None),
         }))
@@ -191,9 +192,31 @@ impl PipeOperation {
         }
         let length = Self::write_length(bytes.len());
         // SAFETY: no operation is pending, so this process owns the buffer.
-        let buffer = unsafe { &mut *self.buffer.get() };
+        let (buffer, allocation) = unsafe { &mut *self.buffer.get() };
         buffer.clear();
+        if let Some(credit) = &reservation {
+            if allocation.is_none() {
+                *allocation = Some(crate::ReadAllocation::adopt(
+                    &credit.meter,
+                    buffer.capacity(),
+                )?);
+            }
+            credit.meter.admit_examination(0, length as u64)?;
+        }
+        if let Some(allocation) = allocation
+            && length > buffer.capacity()
+        {
+            allocation.grow(length - buffer.capacity())?;
+            if let Err(error) = buffer.try_reserve_exact(length) {
+                allocation.reconcile_capacity(buffer.capacity())?;
+                return Err(allocation.meter().allocation_failed(error));
+            }
+            allocation.reconcile_capacity(buffer.capacity())?;
+        }
         buffer.extend_from_slice(bytes.get(..length).unwrap_or(bytes));
+        if let Some(credit) = &reservation {
+            credit.meter.record_examination(0, length as u64)?;
+        }
         let pointer = buffer.as_ptr();
         let length = u32::try_from(buffer.len()).map_err(io::Error::other)?;
         *self
@@ -263,7 +286,7 @@ impl PipeOperation {
             return Ok(None);
         }
         // SAFETY: no operation is pending, so this process owns the buffer.
-        let empty = unsafe { (*self.buffer.get()).as_mut_ptr() };
+        let empty = unsafe { (*self.buffer.get()).0.as_mut_ptr() };
         match self.start(|overlapped| {
             // SAFETY: a zero-byte read never touches its buffer, which this
             // operation owns until the read completes; so does the OVERLAPPED.

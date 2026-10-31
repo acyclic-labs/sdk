@@ -56,9 +56,12 @@ fn waits_for_predecessor(
     let worker = std::thread::spawn(move || {
         tracing::subscriber::with_default(subscriber, || {
             crate::coordination_runtime()?.block_on(async {
-                crate::spawn_persistence("native-file", "borrowed", &1, move || {
-                    run(file, previous, entered)
-                })
+                crate::spawn_persistence(
+                    "native-file",
+                    "borrowed",
+                    crate::PersistenceKey::new(1, 0),
+                    move || run(file, previous, entered),
+                )
                 .await?
             })
         })

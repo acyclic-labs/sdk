@@ -22,7 +22,7 @@ where
 pub(super) fn spawn_blocking<T, F: FnOnce() -> T>(
     _medium: &'static str,
     _operation: &'static str,
-    _key: &dyn std::fmt::Display,
+    _key: PersistenceKey,
     work: F,
 ) -> impl Future<Output = std::result::Result<T, tokio::task::JoinError>> + use<T, F> {
     async move { Ok(work()) }
@@ -32,7 +32,7 @@ pub(super) fn spawn_blocking<T, F: FnOnce() -> T>(
 pub(super) fn submit_file<C, T, E, A, F>(
     medium: &'static str,
     kind: &'static str,
-    key: &dyn std::fmt::Display,
+    key: PersistenceKey,
     acquire: A,
     operation: F,
 ) -> impl Future<Output = std::result::Result<std::result::Result<T, E>, tokio::task::JoinError>>

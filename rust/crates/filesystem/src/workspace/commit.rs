@@ -2,6 +2,7 @@ use super::*;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
     /// Publishes this private candidate under the supplied limits and seal.
+    /// An unchanged candidate still seals this transaction's idempotency key.
     pub async fn commit<E, F, Fut>(
         &mut self,
         context: Option<(
@@ -44,7 +45,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                 } else {
                     let receipt = self
                         .checkout
-                        .commit(
+                        .commit_even_if_clean(
                             self.idempotency_key.operation_id(),
                             context,
                             evidence,
@@ -53,6 +54,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                             budget,
                             cancellation,
                             &mut before_publication,
+                            None,
                         )
                         .await?;
                     (Some(receipt.value), receipt.work)
@@ -155,24 +157,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                 .await?
         } else {
             let mut before_publication = (*before_publication).clone();
-            let mode = self.checkout.mode();
-            if mode.access != crate::model::AccessMode::ReadWrite
-                || mode.mutations != crate::model::MutationMode::PrivateOverlay
-            {
-                return Err(FsError::MutationNotAllowed.into());
-            }
             Some(
                 self.checkout
-                    .publish_pending_with_native_work(
+                    .commit_even_if_clean_with_native_work(
                         self.idempotency_key.operation_id(),
-                        context,
-                        evidence,
-                        fingerprint_permit,
                         permit,
                         original,
                         cancellation,
                         &mut before_publication,
                         None,
+                        context,
+                        evidence,
+                        fingerprint_permit,
                     )
                     .await?,
             )

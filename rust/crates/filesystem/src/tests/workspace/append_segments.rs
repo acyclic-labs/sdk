@@ -284,6 +284,34 @@ fn append_segments_equal_serial_concatenation() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test]
+async fn one_empty_append_seals_its_transaction_without_changing_file_bytes()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("append-one-empty"))?;
+    workspace.write_text("/log", "prefix").await?;
+    let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    let empty = stage(&transaction, b"").await?;
+    assert_eq!(
+        unbounded!(transaction, append_staged("/log", &[empty]))?,
+        crate::ByteRange {
+            offset: 6,
+            length: 0
+        }
+    );
+    assert!(!transaction.checkout.has_pending_mutations());
+    assert!(matches!(
+        commit(&mut transaction).await?,
+        TransactionCommit::Committed(_)
+    ));
+    assert!(matches!(
+        commit(&mut transaction).await?,
+        TransactionCommit::AlreadyCommitted(_)
+    ));
+    assert_eq!(unbounded!(workspace, read("/log", 16))?.as_ref(), b"prefix");
+    Ok(())
+}
+
+#[tokio::test]
 async fn append_segments_empty_parts_and_repeated_appends_have_explicit_ranges()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -298,7 +326,7 @@ async fn append_segments_empty_parts_and_repeated_appends_have_explicit_ranges()
             length: 0
         }
     );
-    // An existing file with only empty segments has no publication to acknowledge.
+    // Empty segments leave the authored tree unchanged.
     assert!(!transaction.checkout.has_pending_mutations());
     assert_eq!(
         unbounded!(transaction, append_staged("/new", &[empty]))?,
