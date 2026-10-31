@@ -55,7 +55,7 @@ impl StockExecution<'_> {
             .transpose()
     }
 
-    pub(super) fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
+    pub(super) fn request_digest<T: Serialize + ?Sized>(&self, input: &T) -> Result<[u8; 32]> {
         #[derive(Serialize)]
         struct IssuedContext<'a> {
             admission_operation: OperationId,
@@ -66,9 +66,9 @@ impl StockExecution<'_> {
             extensions: Option<&'a crate::core::ExtensionAdmission>,
         }
         #[derive(Serialize)]
-        struct Request<'a> {
+        struct Request<'a, T: ?Sized> {
             executor: &'static str,
-            input: &'a TurnInput,
+            input: &'a T,
             model: &'a Model,
             #[cfg(feature = "filesystem")]
             profile: Option<&'a crate::agent::AgentProfilePin>,
@@ -154,7 +154,18 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
     ) -> Result<()> {
-        self.verify_task_context_binding(input.operation_id)?;
+        self.ensure_request_started(journal, input.operation_id, input)
+            .await
+    }
+
+    /// Binds an execution namespace to its original request and stock configuration.
+    pub(super) async fn ensure_request_started<T: Serialize + Sync + ?Sized>(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        input: &T,
+    ) -> Result<()> {
+        self.verify_task_context_binding(operation)?;
 
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _records_hold;
@@ -165,7 +176,7 @@ impl StockExecution<'_> {
             .transpose()?
             .unwrap_or(0);
         let (tail, records) = self
-            .step_records(journal, input.operation_id, 0, true, 1, |event| {
+            .step_records(journal, operation, 0, true, 1, |event| {
                 matches!(event, ExecutionEvent::Started { .. })
             })
             .await?;
@@ -208,11 +219,11 @@ impl StockExecution<'_> {
             }
             None => {
                 if self.stock.reconciliation_only {
-                    return Err(Error::Indeterminate(input.operation_id));
+                    return Err(Error::Indeterminate(operation));
                 }
                 journal
                     .append(
-                        input.operation_id,
+                        operation,
                         "execution:started",
                         &ExecutionEvent::Started { request_digest },
                         self.io,

@@ -329,6 +329,15 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             .execute(invocation.clone(), Some(context))
             .await?;
         let projected = tool.projection.project(&invocation, &result, None)?.0;
+        assert!(
+            crate::executor::compile_json_schema(
+                &tool.definition.projection_schema,
+                "mounted tool projection",
+                &mut None,
+            )?
+            .is_valid(&projected),
+            "successful mounted tool result must satisfy its declared projection"
+        );
         Ok::<_, Error>((result, projected))
     };
     let path = ".volumes/scratch/note";

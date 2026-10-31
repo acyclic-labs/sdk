@@ -27,7 +27,10 @@ pub(crate) async fn settled_with_io<P: crate::store::JournalProvider + ?Sized>(
         &mut Some(&mut io.history_io()),
     )
     .await?
-    .ok_or_else(|| io.invalid("child agent does not exist").tool_input())?;
+    .ok_or(crate::Error::ToolRejected {
+        code: crate::wire::ErrorCode::NotFound,
+        reason: "child agent does not exist",
+    })?;
     let id = agent
         .as_str()
         .rsplit('/')
@@ -41,7 +44,10 @@ pub(crate) async fn settled_with_io<P: crate::store::JournalProvider + ?Sized>(
     )
     .await?
     .filter(|tail| *tail != 0)
-    .ok_or_else(|| io.invalid("child agent status does not exist").tool_input())?;
+    .ok_or(crate::Error::ToolRejected {
+        code: crate::wire::ErrorCode::NotFound,
+        reason: "child agent status does not exist",
+    })?;
     let last: StatusRecord = record_with_io(provider, &status, tail - 1, io).await?;
     Ok(match last.phase {
         Phase::Done { .. } => Some(last.phase),

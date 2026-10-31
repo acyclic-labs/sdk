@@ -4,6 +4,8 @@ use super::*;
 use crate::tool::{
     JsonToolProjection, SkillRuntime, SkillSource, Tool, ToolDefinition, ToolExecutor,
 };
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
 #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
 use std::sync::Mutex;
 
@@ -473,6 +475,21 @@ impl StockExecution<'_> {
         let mut nested = StockExecution::ordinary(self.stock);
         nested.context = self.context.map(|(context, _)| (context, parent));
         nested.io = self.io;
+        #[derive(Serialize)]
+        struct NestedRequest<'a> {
+            invocation: &'a ToolInvocation,
+            metadata: &'a Value,
+        }
+        nested
+            .ensure_request_started(
+                journal,
+                parent,
+                &NestedRequest {
+                    invocation: &invocation,
+                    metadata,
+                },
+            )
+            .await?;
         let call_id = stock_string_copy(&invocation.call_id, self.io)?;
         let mut hooks = Vec::new();
         let settled = Box::pin(nested.settle_tool_invocation(

@@ -1,6 +1,63 @@
 use super::*;
 use crate::{conversation::VolumeRef, core::AuthorityRoot, resources::ProviderRef};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn missing_child_wait_keeps_native_refusal_out_of_the_wait_set() -> Result<()> {
+    let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([194; 16]));
+    let provider = ProviderRef::new(
+        "missing-child".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let children = FilesystemTurnChildren {
+        stream: Arc::new(acyclic_stream::MemoryStream::default()),
+        host: FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?,
+        issuer: RuntimeAuthority::from(AuthorityRoot::new(
+            "missing-child",
+            [195; 32],
+            Authority {
+                kind: AggregateKind::Task,
+                id: "missing-child".into(),
+            },
+        )),
+        admission: TurnAdmission::LocalRoot,
+        agent,
+        volumes: Vec::new(),
+        maximum_bytes: 4096,
+    };
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(65_536, 32 * 1024 * 1024),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = super::super::PreparationIo::from_native_work(&work)?;
+    let arguments = serde_json::json!({"agents":["missing"]});
+    assert!(
+        crate::tools::awaited_with_io(&children, "wait", &arguments, None)
+            .await?
+            .is_none()
+    );
+    assert!(
+        crate::tools::awaited_with_io(&children, "wait", &arguments, Some(&io))
+            .await?
+            .is_none()
+    );
+    // A missing name dispatches to the ordinary tool refusal; cancellation
+    // cannot be misclassified as a missing child or a successful observation.
+    cancellation.cancel();
+    assert!(matches!(
+        crate::tools::awaited_with_io(&children, "wait", &arguments, Some(&io)).await,
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    Ok(())
+}
+
 #[test]
 fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() -> Result<()> {
     let path = AgentPath::root(&crate::agent::AgentId::from_bytes([191; 16]));

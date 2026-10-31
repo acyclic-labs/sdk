@@ -177,7 +177,7 @@ pub fn apply_patch() -> Result<Tool> {
         description: "Apply exact V4A add, update, delete and move operations in one atomic publication. Start with *** Begin Patch and finish with *** End Patch; update hunks use @@ and exact context".into(),
         input_schema: schema::input::<PatchInput>()?,
         output_schema: schema::output::<PatchResult>()?,
-        projection_schema: schema::output::<Vec<String>>()?,
+        projection_schema: crate::tool::json_projection_schema(schema::output::<Vec<String>>()?),
     };
     definition.validate(&mut None)?;
     Ok(Tool {
