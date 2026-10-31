@@ -59,7 +59,25 @@ fn flush_file_policy(file: &File, _data_only: bool) -> io::Result<()> {
     crate::sync_descriptor_once(file.as_handle())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
+    use std::os::fd::AsFd as _;
+    // Preserve std's policy and Interrupted retry, exposing each actual attempt
+    // to the same observer used by the metered file operations.
+    loop {
+        let result = if data_only {
+            crate::held_sync::sync_data_descriptor_once(file.as_fd(), Durability::Full)
+        } else {
+            crate::sync_descriptor_once(file.as_fd())
+        };
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
     if data_only {
         file.sync_data()

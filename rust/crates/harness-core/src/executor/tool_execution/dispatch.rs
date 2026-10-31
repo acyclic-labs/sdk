@@ -14,13 +14,18 @@ impl StockExecution<'_> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
         let completion = crate::executor::phase::PreparedPhase::new(journal, self.io)?;
-        let claimed = crate::executor::phase::claim(self.claim_tool_invocation(
-            journal,
-            (operation_id, step),
-            &record,
-            started,
-        ))
-        .await?;
+        let claim = self.claim_tool_invocation(journal, (operation_id, step), &record, started);
+        let claimed = if started {
+            // Reconciliation consumes the original intent; it publishes none.
+            crate::executor::phase::claim(claim).await?
+        } else {
+            crate::executor::phase::claim(crate::executor::phase::Publication::ToolIntent.observe(
+                operation_id,
+                step,
+                claim,
+            ))
+            .await?
+        };
         let execution = self
             .observe_tool_cancellation(
                 journal,
@@ -382,8 +387,16 @@ impl StockExecution<'_> {
         projection: &Value,
         completion: crate::executor::phase::PreparedPhase<'_>,
     ) -> Result<ToolSettlement<()>> {
-        completion
-            .run(self.publish_tool_completion_inner(journal, identity, call_id, result, projection))
+        crate::executor::phase::Publication::ToolSettlement
+            .observe(
+                identity.0,
+                identity.1,
+                completion.run(
+                    self.publish_tool_completion_inner(
+                        journal, identity, call_id, result, projection,
+                    ),
+                ),
+            )
             .await
     }
 

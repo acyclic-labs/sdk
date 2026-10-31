@@ -8,6 +8,9 @@
 //! through its own provider and [`StreamAuthorityStore::settle`].
 use super::*;
 
+mod append;
+pub use append::{FilesystemAppendPreparation, PreparedFilesystemAppend};
+
 /// One prepared actor transition, sealed only by the composed commit receipt.
 struct Contribution {
     actor: crate::kernel::allocation::retained::RetainedArc<crate::kernel::AuthorityActor>,
@@ -509,6 +512,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         Ok(match outcome {
             CommitOutcome::Committed(envelope) => {
+                if let Err(error) = envelope.validate_request(commit.request()) {
+                    return Ok(FilesystemCommitOutcome::Unknown {
+                        commit,
+                        error: map_stream_error(error),
+                    });
+                }
                 refresh(commit.recorded(), envelope.commit_id).await;
                 FilesystemCommitOutcome::Committed(envelope)
             }

@@ -150,7 +150,10 @@ mod operations;
 mod replay;
 use append::seal;
 mod composition;
-pub use composition::{FilesystemCommit, FilesystemCommitOutcome};
+pub use composition::{
+    FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
+    PreparedFilesystemAppend,
+};
 mod state;
 pub use state::{AuthorizedObservation, ObservedRecord, RecordAllocation, RecordReceipt};
 mod state_publication;

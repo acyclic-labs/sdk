@@ -19,3 +19,175 @@ The first [cross-host baseline comparison](benchmarks/2026-09-18-local-fs.json) 
 The Objects benchmark measures logical current-key publication and ordered, bounded pagination: `cargo run --locked -p acyclic-objects --example bench-objects -- 2000 100`. It verifies every returned key and exact metadata. Public version-listing and snapshot benchmark modes are retired.
 
 The historical filesystem workload corpus remains available to proof producers. The public `acyclic_fs::conformance` suite executes portable workspace semantics and request budgets against memory and durable local provider compositions. Mounted interfaces require their own actual mount qualification. Harness retains report-to-receipt validation; the Objects walkthrough does not produce per-case acceptance receipts. See the [source](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/conformance) and the [protocol directory](https://github.com/acyclic-labs/sdk/tree/main/proto) for the underlying contracts.
+
+The shared native hot-path benchmark runs on demand:
+
+```sh
+cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root /path/to/fresh-directory --source "$(git rev-parse HEAD)"
+```
+
+Select a fresh directory on the device being measured. The benchmark uses full
+durability and one active operation on one executor thread. It calibrates a
+dirty in-place flush, cross-thread rendezvous delivery, an uncontended call,
+1 KiB copy and BLAKE3 throughput, and a warm 1 KiB read. A separate new-file,
+write, flush and directory measurement distinguishes publication from an
+in-place barrier. Setup composes actual agent actors, inbox subtrees and volumes
+through the shared root publisher at populations of 1, 1,000 and 100,000;
+it is excluded from timing.
+The workload explicitly admits this population rather than using the provider's
+default capacity ceilings. The shared runtime settles each root's initial
+replay before sampling, and setup checks the exact registration count and an
+empty ready queue. The idle oracle must first reject the actual queued
+population. Population roots execute no model turns; setup refuses any request
+for model execution.
+
+JSON lines retain executable identity, raw observations in acquisition order,
+nearest-rank p50/p99, floor coefficients, and ratios to the sum of calibrated
+component medians. Encoding contributes its minimum payload transfer; this is
+an optimistic semantic floor, not a measurement of a particular serializer.
+The p50 and p99 thresholds are respectively 1.5 and 3 times that same floor.
+These are single-operation latency measurements, not throughput or concurrency
+claims. Payloads and exact reads are checked outside the measured intervals.
+Root setup and session samples share the same exact requested-agent receipt
+oracle; a real receipt checked against another requested agent must fail.
+Filesystem reads select an immutable generation; staged writes and dirty
+transaction publication are timed separately. Objects PUT ends at stored-byte
+admission; the explicit crash-survival flush occurs outside its interval, as
+required by the distinct `Blobs::put` and `Blobs::flush` contracts.
+Actor entry uses the population's original Handler, wrapped through the public
+host composition seam. Each sample commits a fresh cancellation input and its
+activation together, then measures `event-drain-to-handler-entry` from explicit
+resident delivery admission to `Handler::on_record`. Input publication is
+outside that interval. `event-drain-completion` separately includes checkpoint
+durability and finite-input exhaustion; neither interval claims to measure a
+continuous activation-follow notification. Entry identity and exactly one
+invocation are checked, along with the consumed cursor and idle checkpoint.
+The delivery scope closes the observing channel on completion, error or
+cancellation. A dropped scope must return typed producer loss, and a real
+entry checked against another actor, input cursor, subscription or admitted epoch
+must be rejected. The observer snapshots the original public provider ledger
+and current-thread allocation diagnostics at handler entry. These prefix counts
+exclude later handler and checkpoint work; a real completed drain must contain
+additional data publication, and substituting its ledger for the entry prefix
+must fail. Physical and cross-thread counts remain missing.
+Warm Actor reads borrow the admitted value through `ActorStateBinding::get`,
+without a transaction or handle clone, and charge no payload-copy floor.
+Their `borrowed-resident-read` label distinguishes them from transaction reads.
+The durable Actor row publishes a 128-byte metadata mutation, a 128-byte
+checkpoint and the original committed input cursor together, with preparation
+and encoding inside its interval. Input publication is excluded. Its floor
+charges 256 payload bytes and one barrier. The returned confirmed snapshot
+feeds warm reads and the next sample without a post-claim reload. Outside
+timing, exact tuple readback and one-commit/zero-control accounting are checked;
+controls reject the unconsumed cut and a mismatched original input.
+Follow parks at the tail before
+its append producer starts and measures notification-waker entry through record
+delivery; append durability completes concurrently in its own interval.
+Missing original execution or completion producers emit explicit
+refusal rows instead of fabricated quantiles; a report with refusals is
+incomplete.
+
+The same operation intervals supply the shared `acyclic_test_support::scale`
+work report. Each metric retains its exact sum, maximum and missing-observation
+count. Comparisons use completed observations rather than resident population
+as the denominator, so fixed sample counts cannot hide a population scan.
+Qualification requires every requested operation at all three populations,
+complete original-work coverage, flat mean and maximum cost, flat retained
+bytes per idle agent, and no additional per-agent threads or timers.
+
+The public provider ledger counts control calls at that boundary; it does not
+infer syscalls or transport requests. Current-thread allocation diagnostics
+exclude native workers and therefore do not qualify allocation coverage.
+Concurrent append/follow work remains unobserved until it can be attributed to
+its original operation. Unobserved physical syscalls, durability calls, locks, I/O, allocations,
+visits and idle resources stay missing, and make counting qualification fail.
+Use `--observe-durability` to attach the existing shared operation collector to
+the same drivers. Calibration runs before attaching it; operation latency
+retains observer overhead. Each row reports diagnostic completed native attempt
+deltas in `[ok, err, incomplete]` order. The final bounded projection includes
+setup and selected operation families, with base-two syscall latency buckets;
+these are not per-operation latency quantiles. Counter snapshots occur outside
+the timestamp pair and their cloning is excluded from allocation diagnostics.
+The same collector projects typed syscall/outcome totals and missing-field
+counts into fixed-size arrays. Unknown APIs retain their own row; missing
+descriptor, parent or native error evidence is reported explicitly. Saturated
+counters become `null`. Individual atomic totals do not establish a concurrent
+transactional cut or publication/group coverage. Descriptor and parent IDs
+never become metric labels.
+Native worker context is retained by the original persistence job. Unobserved
+leaves, concurrent work and original provider/group attribution remain unknown,
+so these diagnostics do not qualify `durability_calls` or count device drains.
+Run the deterministic observer controls with
+`cargo test --locked -p acyclic-test-support scale::tests`. They execute an
+injected scan, real per-agent threads, virtual timer registrations and a lost
+event producer; these controls validate the observer, not production liveness.
+
+Select core operation names with `--operations`, for example
+`--operations 'actors.create,actors.durable_write,actors.warm_read,actors.wake'`.
+The default selects all 17 rows. Selection uses the same drivers, floor
+calibration and population setup; unrelated operation families are skipped.
+Dependent fixture operations remain outside the selected intervals. Reports
+name the requested operation set, and a subset never claims full core coverage.
+`--populations '1,1000'` selects a subset of the qualification populations through
+the same setup and drivers. The default is `1,1000,100000`. Reports retain the
+selected population set; incomplete sets cannot qualify the three-population
+counting obligation.
+N names the initially settled dormant root population. Creation samples retain
+new durable identities; session samples also add resident roots. The cohort's
+namespace therefore grows across its fixed acquisition-order samples. Population
+labels do not assert constant cardinality throughout creation measurements.
+
+The same fixture and root publisher also drive native crash controls without a
+latency campaign:
+
+```sh
+cargo bench --locked -p acyclic-conformance --features local-hotpath-proofs --bench local_hotpath -- --proofs --operations 'swarm.session_start' --root /path/to/fresh-directory --source "$(git rev-parse HEAD)"
+```
+
+These controls cut the original joined journal frame before append, before
+flush and after flush before acknowledgement. Each original submission must
+return typed `Unknown` retaining its exact child and sealed request; the failed
+provider must terminate a later submission as `Unavailable`. Reopening must
+recover either no participants and no idempotency result, or the complete
+original immutable envelope with its request digest, record bytes, headers,
+origins, sequences and durable participant heads. Controls reject `Unknown` as
+`Created`, an omitted recovered participant and a failed physical truncation.
+The test-support feature is separate from ordinary latency instrumentation.
+Proof rows explicitly leave same-owner resubmission, physical retirement of
+publication holds and population-independent work open. A fresh filesystem
+owner cannot resubmit a commit bound to the original owner.
+The proof mode also injects per-owner registrations through the public native
+`WallAlarm`, at small control populations. Its original callback owns a channel
+producer; cancellation must close that channel and retire the retained callback.
+Those actual registrations must fail the same idle checker used by counting
+reports. This control observes its own injected registrations; it does not
+supply the missing whole-process timer, memory or thread counters.
+`--setup-credit` bounds concurrent original root preparation and submission
+during population setup (default1). Each root retains its own intent, sealed
+request and publication holds; independent lifecycles can share the provider's
+existing group sync. Root-publication completion is reported before replay.
+All submissions and initial replay settle before serial operation samples begin.
+
+The native floor report also retains a timer-only observation control. Ratios
+include sampler cost; rows flag targets below the measured timestamp resolution.
+The control never inflates the semantic floor or subtracts quantiles, and its
+timestamp pair excludes the additional cost of async polling and observers.
+Call and copy calibration use4096-operation batches; hashing uses64-operation
+batches. Their observations and quantiles are normalized batch averages, so
+their calibration p99 does not describe an individual call's tail. Operation
+rows retain individually timed samples without batch averaging.
+Zero-duration samples are retained when both timestamps occupy the same clock
+tick. Resolution flags also use the smallest positive timer-only observation;
+an entirely unresolved timer or a zero-median semantic floor refuses calibration.
+Requested HEAD and LIST results are data. The shared observer excludes exactly
+the original query dispatch from control overhead, retains every provider class,
+and checks that an additional real HEAD remains one control request.
+Lost request-counter precision remains unknown through this partition.
+Each raw sample has an `original_work_receipts` entry with its original API
+key, resource or cursor, and the same interval's work dimensions. These diagnostic
+identities do not supply an authenticated admission token or physical group
+coverage. Missing dimensions remain null. Each operation reports its public
+guarantee and the modeled work units used to compose its floor; these coefficients
+are separate from observed counts. Raw ratios remain unqualified while physical
+coverage or the matching durability guarantee is missing. File creation plus
+directory durability is calibrated separately from an in-place flush.

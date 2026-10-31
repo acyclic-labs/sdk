@@ -173,7 +173,19 @@ impl Drop for PersistenceTurn {
     }
 }
 
-/// Marks a physical call in the original persistence job, without submitting work.
+/// Project the original worker's dispatcher and causal span without changing
+/// submission, predecessor ordering or completion custody.
+pub(crate) fn with_persistence_context<T>(call: impl FnOnce() -> T) -> T {
+    let progress =
+        PERSISTENCE_JOB.with(|job| job.borrow().as_ref().map(|job| job.progress.clone()));
+    match progress {
+        Some(progress) => progress.in_scope(call),
+        None => call(),
+    }
+}
+
+/// Marks a syscall stage in the original persistence job, without submitting
+/// work. Nested stage markers are not physical syscall counts.
 pub fn persistence_syscall<T>(call: impl FnOnce() -> T) -> T {
     persistence_stage(3, 0, call)
 }

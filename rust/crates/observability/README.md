@@ -162,3 +162,13 @@ interval. The same binary's real file open/close is the negative control:
 ```sh
 cargo test --locked -p acyclic-observability --test operations disabled_operation_has_zero_syscalls_with_real_io_negative_control -- --ignored --exact
 ```
+
+`Sink::publication_details` opts into the fixed `Publication` projection from
+`acyclic.harness.executor.publication`. Its independent purpose, data and
+control fields retain only recognized producer values, including deferred
+records before the first terminal. Missing values remain unknown. Export's
+existing detail flag controls retention, including when another tuple sink
+requests detail. Metrics alone parse none of these fields. These semantic
+journal declarations do not count native calls, certify group membership or
+prove a device drain; use the original publication and native receipts for
+those guarantees.

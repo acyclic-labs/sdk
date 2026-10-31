@@ -196,7 +196,8 @@ pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(any(test, feature = "distributed"))]
 pub use distributed::{
-    AuthorityPlacement, FilesystemCommit, FilesystemCommitOutcome, StreamAuthorityStore,
+    AuthorityPlacement, FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
+    PreparedFilesystemAppend, StreamAuthorityStore,
 };
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,

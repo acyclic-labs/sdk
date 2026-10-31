@@ -138,6 +138,44 @@ pub(crate) async fn claim<T>(future: impl std::future::Future<Output = Result<T>
     future.await
 }
 
+/// Semantic publication scopes, not a count of commits or physical flushes.
+/// Failure records may be nested in a settlement whose payload was rejected.
+#[derive(Clone, Copy)]
+pub(super) enum Publication {
+    ModelDispatch,
+    ToolIntent,
+    ToolSettlement,
+    ToolFailureRecord,
+}
+
+impl Publication {
+    pub(super) fn observe<'a, T: 'a>(
+        self,
+        operation: OperationId,
+        step: u32,
+        future: impl std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
+    ) -> impl std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a {
+        let (rpc, data) = match self {
+            Self::ModelDispatch => ("model-dispatch", "prepared-request"),
+            Self::ToolIntent => ("tool-intent", "recorded-invocation"),
+            Self::ToolSettlement => ("tool-settlement", "result-and-projection"),
+            Self::ToolFailureRecord => ("tool-failure-record", "inline-failure"),
+        };
+        let span = crate::obs::obs_span!(
+            INFO,
+            "acyclic.harness.executor.publication",
+            rpc = rpc,
+            operation = tracing::field::display(operation),
+            step = step,
+            data = data,
+            control = "conditional-journal-append",
+        );
+        #[cfg(target_arch = "wasm32")]
+        let _ = (rpc, data, operation, step);
+        crate::obs::traced_future(span, future)
+    }
+}
+
 pub(crate) async fn run<T>(
     journal: &dyn ExecutionJournal,
     io: Option<&PreparationIo>,
