@@ -146,8 +146,8 @@ impl StockExecution<'_> {
             .await
         {
             Ok(true) => Ok(content),
-            Err(error) if !error.leaves_effect_uncertain() => Err(error),
-            Ok(false) | Err(_) => Err(Error::Indeterminate(operation_id)),
+            Err(error) => Err(error),
+            Ok(false) => Err(Error::Indeterminate(operation_id)),
         }
     }
 
@@ -166,7 +166,7 @@ impl StockExecution<'_> {
         match stage_json(journal, operation, &key, value, self.io).await {
             Ok(reference) => Ok(Ok(reference)),
             Err(error) if error.is_native_failure() => Err(error),
-            Err(error) if error.leaves_effect_uncertain() => Err(Error::Indeterminate(operation)),
+            Err(error) if error.leaves_effect_uncertain() => Err(error),
             Err(error) => self
                 .reject_tool_call(
                     journal,
