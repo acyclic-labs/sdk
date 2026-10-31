@@ -433,6 +433,10 @@ mod tests {
                 outcome: crate::agent::TurnOutcome::Cancelled,
                 goal: Some(crate::OperationId::from_bytes([255; 16])),
                 targets: Some(file()),
+                tool_results: Some(format!(
+                    "tools/.results/{}",
+                    crate::OperationId::from_bytes([255; 16])
+                )),
             }
             .encode()
             .expect("a conversation entry fits");
@@ -595,7 +599,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()) };
+                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);

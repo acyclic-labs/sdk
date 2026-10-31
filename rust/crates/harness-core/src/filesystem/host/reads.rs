@@ -201,9 +201,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     /// Reads at most `maximum` bytes from `offset` of the private file at
-    /// `path` in the volume's head, and the file's length, loading only those
+    /// `path` at the selected generation (or head), and the file's length, loading only those
     /// bytes. The grant, the compiled view and its currency are checked as for
-    /// [`Self::read_private_path_indexed`]; the head generation authenticates
+    /// [`Self::read_private_path_indexed`]; the selected generation authenticates
     /// the file's bytes, so no descriptor is resolved from them.
     ///
     /// # Errors
@@ -214,8 +214,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         volume: &VolumeRef,
         grant: &ContentGrant,
         path: &str,
-        offset: u64,
-        maximum: u64,
+        expected_generation: Option<&GenerationRef>,
+        range: acyclic_fs::ByteRange,
         io: Option<&PreparationIo>,
     ) -> Result<(acyclic_stream::OwnedBytes, u64)> {
         self.require_private_directory(volume, grant, path, io)?;
@@ -229,7 +229,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
         let workspace = self.open(&workspace_ref, Some(io)).await?;
-        let generation = io.sdk(workspace.head(io, io.cancellation()).await)?;
+        let generation = match expected_generation {
+            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
+            None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+        };
         let view = private_read_view(&workspace, grant, generation.id(), None, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
@@ -246,7 +249,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ));
             }
         };
-        let remaining = length.checked_sub(offset).ok_or_else(|| {
+        let remaining = length.checked_sub(range.offset).ok_or_else(|| {
             stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Invalid,
@@ -257,8 +260,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             generation
                 .read_range(
                     &requested,
-                    offset,
-                    remaining.min(maximum),
+                    range.offset,
+                    remaining.min(range.length),
                     io,
                     io.cancellation(),
                 )

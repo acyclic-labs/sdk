@@ -795,6 +795,7 @@ mod tests {
             outcome: Default::default(),
             goal: Some(run),
             targets: None,
+            tool_results: None,
         };
         let terminal = ConversationEntry {
             inbox: 3,

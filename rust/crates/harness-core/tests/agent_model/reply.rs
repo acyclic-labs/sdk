@@ -25,6 +25,7 @@ fn entry(inbox: u64, input: TurnInput) -> Result<Vec<u8>> {
         outcome: Default::default(),
         goal: None,
         targets: None,
+        tool_results: None,
     }
     .encode()?)
 }

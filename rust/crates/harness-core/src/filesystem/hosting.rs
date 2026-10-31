@@ -561,6 +561,7 @@ where
         &self,
         agent: &AgentPath,
         path: &str,
+        at: Option<&FileRef>,
         offset: u64,
         maximum: u64,
     ) -> Result<(Vec<u8>, u64), Error> {
@@ -575,6 +576,17 @@ where
         )
         .await
         .map_err(turn)?;
+        if at.is_some_and(|file| file.volume() != &authority.private.volume)
+            || (path.starts_with(super::InternalContentClass::ToolResult.prefix()) && at.is_none())
+        {
+            return Err(Error::Record(
+                "tool result requires its original private generation",
+            ));
+        }
+        let generation = at
+            .map(|file| self.volumes.file_generation(file, None))
+            .transpose()
+            .map_err(turn)?;
         let grant = super::ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
@@ -589,8 +601,11 @@ where
                 &authority.private.volume,
                 &grant,
                 path,
-                offset,
-                maximum,
+                generation.as_ref(),
+                acyclic_fs::ByteRange {
+                    offset,
+                    length: maximum,
+                },
                 None,
             )
             .await

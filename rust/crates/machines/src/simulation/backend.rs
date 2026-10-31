@@ -401,9 +401,14 @@ impl MachinesProvider for SimulatedMachines {
                                 "machine contract does not declare live fork".into(),
                             )
                         })?;
-                        if source.state != MachineState::Running {
+                        // A suspended Machine is a checkpoint: its forks start
+                        // from it while the original stays suspended.
+                        if !matches!(
+                            source.state,
+                            MachineState::Running | MachineState::Suspended
+                        ) {
                             return Err(ProviderError::Conflict(
-                                "only a running machine can be forked".into(),
+                                "only a running or suspended machine can be forked".into(),
                             ));
                         }
                         let add = usize::try_from(count_value)

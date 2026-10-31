@@ -261,7 +261,17 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
     let io = PreparationIo::from_native_work(&work)?;
     let offset = body.len() - 10;
     let (bytes, length) = host
-        .read_private_range(volume, &read, "ordinary", offset as u64, 64, Some(&io))
+        .read_private_range(
+            volume,
+            &read,
+            "ordinary",
+            None,
+            acyclic_fs::ByteRange {
+                offset: offset as u64,
+                length: 64,
+            },
+            Some(&io),
+        )
         .await?;
     assert_eq!(
         (bytes.as_ref(), length),
@@ -289,13 +299,33 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         .is_err()
     );
     let (bytes, _) = host
-        .read_private_range(volume, &read, "ordinary", body.len() as u64, 64, None)
+        .read_private_range(
+            volume,
+            &read,
+            "ordinary",
+            None,
+            acyclic_fs::ByteRange {
+                offset: body.len() as u64,
+                length: 64,
+            },
+            None,
+        )
         .await?;
     assert!(bytes.is_empty());
     assert!(
-        host.read_private_range(volume, &read, "ordinary", body.len() as u64 + 1, 64, None)
-            .await
-            .is_err()
+        host.read_private_range(
+            volume,
+            &read,
+            "ordinary",
+            None,
+            acyclic_fs::ByteRange {
+                offset: body.len() as u64 + 1,
+                length: 64
+            },
+            None
+        )
+        .await
+        .is_err()
     );
     Ok(())
 }

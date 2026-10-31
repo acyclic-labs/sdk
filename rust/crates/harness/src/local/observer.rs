@@ -221,7 +221,12 @@ impl Observer {
         // the announced files are.
         let (connection, agent) = (&self.connection, &self.agent);
         let (bytes, cut) = read_newest(&plan.reads, |path, offset| {
-            Conversation::read_at(connection, agent, ReadTarget::ToolOutput { path }, offset)
+            Conversation::read_at(
+                connection,
+                agent,
+                ReadTarget::ToolOutput { path, at: None },
+                offset,
+            )
         })
         .await?;
         self.tail.apply(plan, bytes, cut);

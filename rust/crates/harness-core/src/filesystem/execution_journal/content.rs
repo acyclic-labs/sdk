@@ -59,7 +59,7 @@ where
                     key: &key,
                     expected_path: Some(&path),
                     maximum_bytes: super::MAXIMUM_PAYLOAD_BYTES,
-                    internal_class: Some(InternalContentClass::Execution),
+                    internal_class: Some(payload_class(&path)),
                     purpose: super::super::PublicationPurpose::Content,
                     scope: &self.scope,
                     ceiling: None,
@@ -93,6 +93,25 @@ where
             crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
         })?)?;
         let path = crate::executor::with_history_io(io, |work| {
+            // Stock publication binds JSON bytes to the original operation key
+            // with one BLAKE3 suffix. The result kind precedes that suffix.
+            let kind_key = idempotency_key
+                .rsplit_once(':')
+                .filter(|(_, suffix)| {
+                    suffix.len() == 64 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                .map_or(idempotency_key, |(key, _)| key);
+            if kind_key.starts_with("tool:") && kind_key.ends_with(":result") {
+                return crate::executor::preparation_format(
+                    format_args!(
+                        "{}{}/{}.json",
+                        InternalContentClass::ToolResult.prefix(),
+                        self.turn_operation(operation_id),
+                        digest.to_hex()
+                    ),
+                    work,
+                );
+            }
             crate::executor::preparation_format(
                 format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()),
                 work,
@@ -153,7 +172,7 @@ where
                 "execution.json",
                 super::MAXIMUM_PAYLOAD_BYTES,
                 &key,
-                InternalContentClass::Execution,
+                payload_class(&path),
                 io,
             )
             .await;
@@ -570,6 +589,14 @@ where
     ) -> Result<()> {
         self.require_operation(operation, io)?;
         self.approvals(io)?.verify(id, operation, digest).await
+    }
+}
+
+pub(super) fn payload_class(path: &str) -> InternalContentClass {
+    if path.starts_with(InternalContentClass::ToolResult.prefix()) {
+        InternalContentClass::ToolResult
+    } else {
+        InternalContentClass::Execution
     }
 }
 

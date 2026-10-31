@@ -23,6 +23,10 @@ use std::{num::NonZeroU32, sync::Arc};
 mod host;
 mod identity;
 pub use host::MachinesHost;
+mod lifecycle;
+pub use lifecycle::{
+    AgentMachines, MACHINE_BINDING_VERSION, MachineBinding, MachineExecutors, ProvisionedTarget,
+};
 mod workspace;
 use identity::{machines_key, map_error, parse_uuid};
 pub use workspace::MachinesWorkspace;

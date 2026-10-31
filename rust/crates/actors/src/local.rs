@@ -731,6 +731,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             async {
                 if !prepared.sealed {
                     if let Some(composition) = &mut prepared.composition {
+                        // Compare canonical requests: a participant's own
+                        // validation may reorder equivalent fork exclusions.
+                        acyclic_stream::request::validate_commit(&mut prepared.request)?;
                         let original = &prepared.request;
                         let request = composition.seal(original.clone()).await?;
                         if !original

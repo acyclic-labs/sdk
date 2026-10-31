@@ -38,6 +38,7 @@ pub struct AgentHandler<P: crate::store::JournalProvider + ?Sized, D> {
     driver: D,
     manifest: Manifest,
     volumes: Option<std::sync::Arc<dyn super::SpawnVolumes>>,
+    closes: bool,
 }
 
 /// The agents' actor state under one store root: creation and observation,
@@ -71,7 +72,16 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 limits,
             },
             volumes: None,
+            closes: false,
         })
+    }
+
+    /// Asks the host, in each agent's closing step, to release what the agent
+    /// holds ([`super::lifecycle::CLOSE`]) before that step commits.
+    #[must_use]
+    pub fn with_close(mut self) -> Self {
+        self.closes = true;
+        self
     }
 
     /// Creates spawned children's volumes through `volumes`, in each spawn's
@@ -316,6 +326,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         if cut.path != path.inbox()? {
             return Err(Error::Record("agent inbox subscription differs"));
         }
+        let was_open = saved.as_ref().is_none_or(|state| !state.closed);
         let mut state = saved;
         if let Some(state) = state.as_mut() {
             // Overflowed input precedes this delivery; read it back first.
@@ -337,6 +348,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 volumes.bind(state, outs)?
             }
             None => None,
+        };
+        let participant = match participant {
+            _ if !self.closes || !was_open || !prepared.state_and_outs().0.closed => participant,
+            None => Some(super::lifecycle::close_participant(&path)),
+            Some(_) => return Err(Error::Record("a closing step spawns")),
         };
         let step = prepared.step();
         let request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;

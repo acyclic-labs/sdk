@@ -158,6 +158,13 @@ async fn call(
 
 fn binding()
 -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
+    binding_with(Arc::new(Never), Default::default())
+}
+
+fn binding_with(
+    executors: Arc<dyn TurnExecutors>,
+    approval_policy: crate::approvals::ApprovalPolicy,
+) -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     let stream = Arc::new(Counted::new(MemoryStream::default()));
     let objects = acyclic_objects::MemoryObjects::memory();
     Ok(Bound::local_root(
@@ -179,7 +186,7 @@ fn binding()
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
         Turns {
-            executors: Arc::new(Never),
+            executors,
             limits: TurnLimits {
                 maximum_bytes: 64 * 1024,
                 max_steps: 4,
@@ -187,10 +194,18 @@ fn binding()
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
-            approval_policy: Default::default(),
+            approval_policy,
         },
     )?)
 }
+
+#[cfg(all(
+    feature = "machines",
+    feature = "native-execution",
+    feature = "test-support"
+))]
+#[path = "hosting_tests/machine_results.rs"]
+mod machine_results;
 
 #[tokio::test]
 async fn session_reads_committed_tool_output_without_local_storage_features() -> Result {
@@ -336,7 +351,10 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         // this same admitted reader, with no local filesystem provider.
         let client = connect(Some(Arc::new(bound.changes()?)))?;
         for target in [
-            ReadTarget::ToolOutput { path: path.into() },
+            ReadTarget::ToolOutput {
+                path: path.into(),
+                at: None,
+            },
             ReadTarget::File { file: file.clone() },
         ] {
             let reply = call(
@@ -384,7 +402,10 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
                 "agents",
                 &AgentCommand::Read {
                     agent,
-                    target: ReadTarget::ToolOutput { path: path.into() },
+                    target: ReadTarget::ToolOutput {
+                        path: path.into(),
+                        at: None
+                    },
                     offset: 0,
                 }
             )
@@ -428,7 +449,10 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             "agents",
             &AgentCommand::Read {
                 agent: root.clone(),
-                target: ReadTarget::ToolOutput { path: path.into() },
+                target: ReadTarget::ToolOutput {
+                    path: path.into(),
+                    at: None
+                },
                 offset: 0,
             }
         )

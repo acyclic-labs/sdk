@@ -209,6 +209,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             None if path == ".system"
                 || path.starts_with(".system/")
+                || path == "tools/.results"
+                || path.starts_with(InternalContentClass::ToolResult.prefix())
                 || path == "turns/.canonical"
                 || path.starts_with("turns/.canonical/") =>
             {
