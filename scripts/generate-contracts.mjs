@@ -19,6 +19,7 @@ const modules = [
   "filesystem-descriptor-digest.mjs",
   "generate-filesystem-defaults.mjs",
   "generate-filesystem-hosted-contract.mjs",
+  "generate-filesystem-object-references.mjs",
   "generate-filesystem-git-compat-contract.mjs",
   "generate-inference-defaults.mjs",
   "generate-inference-terminal-metadata.mjs",

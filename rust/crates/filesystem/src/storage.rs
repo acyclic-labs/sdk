@@ -833,6 +833,7 @@ mod object_id_codec_tests {
             (ObjectKind::GenerationRoot, 6),
             (ObjectKind::Metadata, 7),
             (ObjectKind::AttributePage, 8),
+            (ObjectKind::BindingPage, 9),
         ] {
             for storage in [
                 None,

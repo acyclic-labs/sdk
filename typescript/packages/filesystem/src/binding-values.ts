@@ -1,4 +1,6 @@
 import type { WorkspaceName } from "./contracts.js";
+import { isObjectReference } from "../generated/object-references.js";
+export { isObjectReference } from "../generated/object-references.js";
 
 /** Owns a fresh binding buffer, copying partial or shared views. */
 export function ownBytes(value: Uint8Array): Uint8Array {
@@ -31,16 +33,6 @@ export function requireIdentity(value: Uint8Array, length: number, label: string
   if (value.byteLength !== length) {
     throw new RangeError(`${label} must be exactly ${length} bytes`);
   }
-}
-
-/** Validates the canonical opaque ObjectId envelope without losing sealed storage. */
-export function isObjectReference(value: unknown, kind?: number): value is Uint8Array {
-  if (!(value instanceof Uint8Array)) return false;
-  const tag = value[0];
-  if (tag === undefined) return false;
-  const objectKind = tag & 0x7f;
-  return objectKind >= 1 && objectKind <= 8 && (kind === undefined || objectKind === kind) &&
-    value.byteLength === ((tag & 0x80) === 0 ? 33 : 113);
 }
 
 export function requireObjectReference(value: unknown, label: string, kind?: number): asserts value is Uint8Array {
