@@ -123,6 +123,10 @@ The native floor report also retains a timer-only observation control. Ratios
 include sampler cost; rows flag targets below the measured timestamp resolution.
 The control never inflates the semantic floor or subtracts quantiles, and its
 timestamp pair excludes the additional cost of async polling and observers.
+Call and copy calibration use4096-operation batches; hashing uses64-operation
+batches. Their observations and quantiles are normalized batch averages, so
+their calibration p99 does not describe an individual call's tail. Operation
+rows retain individually timed samples without batch averaging.
 Zero-duration samples are retained when both timestamps occupy the same clock
 tick. Resolution flags also use the smallest positive timer-only observation;
 an entirely unresolved timer or a zero-median semantic floor refuses calibration.
