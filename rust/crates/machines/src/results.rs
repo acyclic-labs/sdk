@@ -163,6 +163,24 @@ pub fn record(machine: &MachineObservation) -> Result<AppendRecord, ProviderErro
     .map_err(encoding)
 }
 
+fn decode(bytes: &[u8]) -> Result<MachineObservation, ProviderError> {
+    acyclic_auth::format::header(
+        bytes,
+        b"{\"version\":",
+        b"\"1\",\"machine\":",
+        unsupported,
+        unsupported,
+    )?;
+    let value: Observation<MachineObservation> = serde_json::from_slice(bytes).map_err(encoding)?;
+    Ok(value.machine)
+}
+
+fn unsupported() -> ProviderError {
+    ProviderError::Unsupported(
+        "unsupported settled observation version; recovery: restore the original version-one observation".into(),
+    )
+}
+
 fn path(root: &StreamPath, operation: OperationId) -> Result<StreamPath, ProviderError> {
     StreamPath::new(format!("{root}/operations/{operation}/results")).map_err(storage)
 }
@@ -312,9 +330,7 @@ async fn observations(
         if record.sequence != from + u64::from(index) {
             return Err(invalid("original result sequence was substituted"));
         }
-        let value: Observation<MachineObservation> =
-            serde_json::from_slice(record.value.as_ref()).map_err(encoding)?;
-        machines.push(value.machine);
+        machines.push(decode(record.value.as_ref())?);
     }
     Ok(machines)
 }
@@ -335,6 +351,45 @@ fn encoding(error: serde_json::Error) -> ProviderError {
     ProviderError::Rejected(format!(
         "original result encoding failed: {error}; recovery: restore the original version-one observation"
     ))
+}
+
+#[cfg(feature = "test-support")]
+/// On-demand checks of the retained observation's original writer and decoder.
+pub mod codec_fuzz {
+    use super::*;
+
+    /// Current payloads round-trip; unsupported headers never visit the payload.
+    pub fn check(bytes: &[u8]) -> bool {
+        let Ok(value) = decode(bytes) else {
+            return true;
+        };
+        let Ok(encoded) = record(&value) else {
+            return false;
+        };
+        let Ok(repeated) = decode(encoded.value.as_ref()).and_then(|value| record(&value)) else {
+            return false;
+        };
+        if encoded.value != repeated.value {
+            return false;
+        }
+        let offset = b"{\"version\":\"".len();
+        for version in [b'0', b'2', u8::MAX] {
+            let mut header = encoded.value[..offset + 2].to_vec();
+            header[offset] = version;
+            if !matches!(decode(&header), Err(ProviderError::Unsupported(_))) {
+                return false;
+            }
+        }
+        for bytes in [b"".as_slice(), b"{\"machine\":null}"] {
+            if !matches!(decode(bytes), Err(ProviderError::Unsupported(_))) {
+                return false;
+            }
+        }
+        matches!(
+            decode(b"{\"version\":\"1\",\"machine\":"),
+            Err(ProviderError::Rejected(_))
+        )
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
