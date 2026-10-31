@@ -6,6 +6,7 @@ import {mkdtemp,mkdir,readFile,writeFile,rename,rm} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
+import {installedHost} from '../../plugin/tests/hosts/native-model.mjs';
 import {Processes} from './process.mjs';
 import {tmpdir} from 'node:os';
 import { schedule } from "./process.mjs";
@@ -13,7 +14,7 @@ import { schedule } from "./process.mjs";
 test('installed host admission launches package entries and binds their actual closure',async()=>{
  const directory=dirname(fileURLToPath(import.meta.url)),scope=new Processes();
  const cases=['codex','claude-code','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));
- let entry,original;
+ let entry,dependency,original;
  try {
   for(const {inputs:[{host}]} of cases) {
    const native=await nativeHost(host,{});
@@ -21,17 +22,31 @@ test('installed host admission launches package entries and binds their actual c
    assert.equal(result.code,0,result.stderr);
    assert.ok(result.stdout.trim(),'actual host version must be nonempty');
   }
-  const before=await acceptanceBinding(directory,process.execPath,process.execPath,cases,{});
-  ({entry}=await nativeHost('pi',{}));original=await readFile(entry);
-  await writeFile(entry,Buffer.concat([original,Buffer.from('\n')]));
-  const changed=await acceptanceBinding(directory,process.execPath,process.execPath,cases,{});
-  assert.notDeepEqual(changed,before,'changed default host bytes must fence partition composition');
+  ({entry}=await nativeHost('pi',{}));
+  const env={E2E_PI:entry,E2E_CODEX:(await nativeHost('codex',{})).entry};
+  const before=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
+  assert.ok(Object.values(before.hosts).every(host=>host.closure),'every override must bind its dependency tree');
+  // This is Pi's real imported module, not an invented external transcript.
+  const imported=(await readFile(entry,'utf8')).match(/from ["'](\.[^"']+\.js)["']/);
+  assert.ok(imported,'actual Pi entry must retain its relative module import');
+  dependency=join(dirname(entry),imported[1]);original=await readFile(dependency);
+  await writeFile(dependency,Buffer.concat([original,Buffer.from('\n')]));
+  const changed=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
+  assert.deepEqual(changed.hosts,before.hosts,'the executable entries did not change');
+  assert.notDeepEqual(changed,before,'changed imported bytes must fence partition composition');
   await rename(entry,entry+'.withdrawn');
   try {await assert.rejects(nativeHost('pi',{}),/step=admit E2E_PI/);}
   finally {await rename(entry+'.withdrawn',entry);}
-  assert.equal((await nativeHost('pi',{E2E_PI:process.execPath})).program,process.execPath);
+  await assert.rejects(nativeHost('pi',{E2E_PI:process.execPath}),/step=admit E2E_PI/);
+  await assert.rejects(nativeHost('pi',{E2E_PI:dependency}),/declared package bin/);
+  // Pinned Pi's actual unsupported provider must refuse before staging any
+  // package, creating workspace files or starting the original process scope.
+  await assert.rejects(installedHost({host:'pi',fixture:{env},
+   processes:{runOwned(){assert.fail('unsupported Pi started a process');}},
+   capture(){assert.fail('unsupported Pi produced a process result');}}),
+   error=>error.code==='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER');
  } finally {
-  if(original)await writeFile(entry,original);
+  if(original)await writeFile(dependency,original);
   await scope.close();
  }
 });
