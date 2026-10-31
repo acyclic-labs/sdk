@@ -43,6 +43,46 @@ fn definition(name: String, description: String) -> ToolDefinition {
 // Property: canonical encoding is idempotent, preserves array order and round-trips
 // arbitrary descriptions; byte admission rejects before accepting an oversized manifest.
 proptest! {
+    // Both catalog discovery and restored manifests reject partial callables.
+    // Opaque runtime data and the original pinned source survive publication;
+    // executable/schema admission remains the registry's responsibility.
+    #[test]
+    fn callable_metadata_preserves_source_and_refuses_partial_declarations(
+        text in ".{0,80}", boolean_schema in any::<bool>(),
+    ) {
+        let original = skill("skills/inspect/SKILL.md".into())?;
+        let schema = if boolean_schema { json!(false) } else { json!({"description": text}) };
+        let runtime = json!({"opaque": text});
+        let header = json!({
+            "name": original.name, "description": original.description,
+            "input_schema": schema, "runtime": runtime,
+        });
+        let prefix = format!("---\n{}\n---\nBODY", serde_json::to_string(&header)?);
+        let declared = parse_skill_metadata(prefix.as_bytes(), original.source.clone())?;
+        let fields = declared.call_fields(&mut None)?.ok_or_else(|| TestCaseError::fail("missing callable fields"))?;
+        prop_assert_eq!(fields.input_schema, &schema);
+        prop_assert_eq!(fields.runtime, &runtime);
+        let manifest = ContextManifest {
+            discovery: DiscoveredContext { instructions: Vec::new(), skills: vec![declared] },
+            ..Default::default()
+        };
+        let limits = Limits { render_bytes: 32_768, ..Default::default() };
+        let encoded = manifest.encode(limits)?;
+        let restored = ContextManifest::decode(&encoded, limits)?;
+        prop_assert_eq!(&restored, &manifest);
+        prop_assert_eq!(&restored.discovery.skills[0].source, &original.source);
+        for missing in ["input_schema", "runtime"] {
+            let mut incomplete = header.clone();
+            incomplete.as_object_mut().ok_or_else(|| TestCaseError::fail("header is not an object"))?.remove(missing);
+            let prefix = format!("---\n{}\n---\nBODY", serde_json::to_string(&incomplete)?);
+            prop_assert!(parse_skill_metadata(prefix.as_bytes(), original.source.clone()).is_err());
+            let mut restored = serde_json::to_value(&manifest)?;
+            restored["discovery"]["skills"][0]["fields"].as_object_mut()
+                .ok_or_else(|| TestCaseError::fail("fields are not an object"))?.remove(missing);
+            prop_assert!(ContextManifest::decode(&serde_json::to_vec(&restored)?, limits).is_err());
+        }
+    }
+
     // Property: display names do not identify sources; explicit name-only
     // invocations must be unambiguous, and tool names remain unique.
     #[test]
