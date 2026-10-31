@@ -174,6 +174,26 @@ impl ToolRegistry {
         self.definitions_for_names(|| self.data.selected.keys().map(String::as_str), io)
     }
 
+    /// Returns only the selected definitions in one qualified namespace.
+    /// Unrelated catalogs are neither traversed nor copied.
+    pub(crate) fn definitions_in_namespace(
+        &self,
+        prefix: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ToolDefinition>> {
+        use std::ops::Bound::{Included, Unbounded};
+        self.definitions_for_names(
+            || {
+                self.data
+                    .selected
+                    .range::<str, _>((Included(prefix), Unbounded))
+                    .take_while(|(name, _)| name.starts_with(prefix))
+                    .map(|(name, _)| name.as_str())
+            },
+            io,
+        )
+    }
+
     pub(crate) fn definitions_for_grants(
         &self,
         grants: &crate::Capabilities,
