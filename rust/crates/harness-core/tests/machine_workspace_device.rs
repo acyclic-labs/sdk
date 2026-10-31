@@ -173,7 +173,7 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             .await;
         let _sent = runtime_failures.send(format!("original Actor runtime ended: {outcome:?}"));
     }));
-    let directory = acyclic_harness_core::devices::TargetDirectory::new(
+    let directory = Arc::new(acyclic_harness_core::devices::TargetDirectory::new(
         Store::new(provider.clone(), StreamPath::new("harness/actors")?),
         paths.clone(),
         Target {
@@ -185,7 +185,7 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             issuer: owner.issuer(&mut None)?,
             verifier: owner.verifier(&mut None)?,
         },
-    )?;
+    )?);
     let lifecycle = directory.lifecycle(owner.clone(), None)?;
     let (_invocation, invocation_lost) = tokio::sync::oneshot::channel::<()>();
     let clock = InvocationClock {
@@ -245,6 +245,67 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             .session
             .ok_or("online device has no original session")?;
         let agent = AgentPath::root(&AgentId::from_bytes([41; 16]));
+        // Advance the original in-memory follow once through its published
+        // prefix. No readiness loop or second presence producer is involved.
+        let mut following = Box::pin(directory.follow());
+        assert!(futures::poll!(following.as_mut()).is_pending());
+        use acyclic_harness_core::runtime::TargetResolver as _;
+        let remote = directory.resolve(Some("desktop"))?;
+        let storage =
+            acyclic_harness_core::filesystem::MemoryHarnessStorage::new(agent.id(), 4096).await?;
+        let mut bindings = acyclic_harness_core::runtime::Bindings::local();
+        bindings.targets = Some(directory.clone());
+        bindings.scope = acyclic_harness_core::runtime::RuntimeScope::new(
+            scope.capabilities().clone(),
+            acyclic_harness_core::conversation::Limits {
+                render_bytes: 4,
+                ..Default::default()
+            },
+        )?;
+        let task = Arc::new(
+            bindings
+                .build()?
+                .agent_context(&Capabilities::default(), storage.content_bindings())?
+                .for_agent(
+                    agent.clone(),
+                    vec![acyclic_harness_core::agent::VolumeBinding {
+                        name: "project".into(),
+                        volume: workspace.selected_volume().clone(),
+                    }],
+                ),
+        );
+        let oversized = acyclic_harness_core::tool::ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "rejected-before-dispatch".into(),
+            name: "shell".into(),
+            arguments: serde_json::json!({"command": "exit 0", "target": "desktop"}),
+        };
+        let context = acyclic_harness_core::runtime::ToolContext::new(
+            task,
+            oversized.operation_id,
+            &oversized.call_id,
+        )?;
+        // The live remote producer accepts this call absent shared operand
+        // admission. Its dispatch is only a plan; it is never published here.
+        assert!(
+            remote
+                .executor
+                .dispatch(&oversized, Some(&context))?
+                .is_some()
+        );
+        let registry = acyclic_harness_core::tools::defaults()?;
+        let shell = &registry
+            .get("shell", None, None)?
+            .ok_or("shell is missing")?
+            .executor;
+        assert!(shell.dispatch(&oversized, Some(&context))?.is_none());
+        let refusal = shell.execute(oversized, Some(context)).await?;
+        assert!(
+            refusal.value["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("command exceeds"))
+        );
+        assert_eq!(provider.tail(paths.queue("desktop")?).await?, 0);
         let marker = tempfile::tempdir()?;
         let marker_path = marker.path().join("executions");
         let path = marker_path
