@@ -66,11 +66,11 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             if let Some(function) = present(part.get("functionCall")) {
                 let index = (state.calls.len() + state.thinking.len()) as u64;
                 let (call, budget) = state.call(index)?;
-                if let Some(id) = function["id"].as_str() {
-                    budget.string(&mut call.id, id)?;
+                if let Some(id) = function.get("id") {
+                    budget.string(&mut call.id, string(id)?)?;
                 }
                 budget.string(&mut call.name, string(&function["name"])?)?;
-                match present(function.get("args")) {
+                match function.get("args") {
                     None => budget.string(&mut call.arguments, "{}")?,
                     Some(args) if args.is_object() => budget.encoded(&mut call.arguments, args)?,
                     Some(_) => return Err(invalid("tool arguments must be a JSON object")),
@@ -81,6 +81,11 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
     if let Some(reason) = candidate["finishReason"].as_str() {
         if !matches!(reason, "STOP" | "MAX_TOKENS") {
             return Err(invalid("Gemini generation was blocked"));
+        }
+        if reason == "MAX_TOKENS" && !state.calls.is_empty() {
+            return Err(invalid(
+                "Gemini generation ended before completing its tool batch",
+            ));
         }
         state.finish_reason(if reason == "MAX_TOKENS" {
             "length"

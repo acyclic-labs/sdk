@@ -4,6 +4,9 @@ use crate::NativeCustody;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+mod document;
+pub use document::{FileChange, parse_document};
+
 /// Consumer-selected finite ceilings, pinned with the editing tool definition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -72,6 +75,16 @@ fn parse<'a>(
                 at_end: false,
             });
         } else {
+            // Codex's first change can omit @@. It is the same exact hunk,
+            // with no anchor; subsequent context headers retain their order.
+            if hunks.is_empty() && matches!(line.as_bytes().first(), Some(b' ' | b'+' | b'-')) {
+                reserve_vec(meter, &mut hunks, 1)?;
+                hunks.push(Hunk {
+                    anchor: None,
+                    lines: Vec::new(),
+                    at_end: false,
+                });
+            }
             let hunk = hunks
                 .last_mut()
                 .ok_or_else(|| invalid(meter, "patch requires a hunk header"))?;

@@ -1,7 +1,7 @@
 use super::wire::Item;
 use acyclic_harness_core::model::ModelRole;
 use serde::Deserialize;
-use serde_json::value::RawValue;
+use serde_json::{Value, value::RawValue};
 use std::{borrow::Cow, collections::VecDeque};
 
 #[derive(Deserialize)]
@@ -10,7 +10,27 @@ struct Part<'a> {
     #[serde(default, borrow)]
     text: Cow<'a, str>,
     thought: Option<bool>,
+    #[serde(rename = "thoughtSignature", borrow)]
+    _signature: Option<Cow<'a, str>>,
     function_call: Option<serde::de::IgnoredAny>,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        #[test]
+        fn ignored_nested_values_still_require_valid_native_strings(surrogate in 0xd800u16..=0xdfff) {
+            let raw = format!(r#"{{"functionCall":{{"name":"read","args":{{"nested":["\u{surrogate:04x}"]}}}},"thoughtSignature":"original=="}}"#);
+            // Negative control: skipping functionCall alone accepts malformed
+            // nested string tokens. Native replay must validate the whole part.
+            prop_assert!(serde_json::from_str::<Part<'_>>(&raw).is_ok());
+            prop_assert!(Replay::default().native(raw.as_bytes(), false).is_err());
+        }
+    }
 }
 
 // GEM-THK-01/04: native visible parts own their original signature boundaries.
@@ -18,7 +38,7 @@ struct Part<'a> {
 // duplicate prefix across text chunks and tool steps, without merging parts.
 #[derive(Default)]
 pub(super) struct Replay<'a> {
-    pub call: Option<&'a RawValue>,
+    call: Option<&'a RawValue>,
     visible: VecDeque<Cow<'a, str>>,
     offset: usize,
 }
@@ -52,6 +72,9 @@ impl<'a> Replay<'a> {
         self.finish()?;
         let raw: &RawValue = serde_json::from_slice(bytes)
             .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
+        if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
+            return Err(crate::invalid("invalid retained Gemini part"));
+        }
         let part: Part<'_> = serde_json::from_str(raw.get())
             .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
         if part.function_call.is_some() {
@@ -65,6 +88,50 @@ impl<'a> Replay<'a> {
             self.visible.push_back(part.text);
         }
         Ok(Some(Item::Native(raw)))
+    }
+
+    /// Binds the executable call to its exact original signed part. Validation
+    /// never changes the bytes used for native replay.
+    pub fn take_call(
+        &mut self,
+        id: Option<&str>,
+        name: &str,
+        arguments: &Value,
+    ) -> acyclic_harness_core::Result<Option<&'a RawValue>> {
+        let Some(raw) = self.call else {
+            return Ok(None);
+        };
+        #[derive(Deserialize)]
+        struct Envelope<'a> {
+            #[serde(rename = "functionCall", borrow)]
+            call: Function<'a>,
+        }
+        #[derive(Deserialize)]
+        struct Function<'a> {
+            #[serde(borrow)]
+            id: Option<Cow<'a, str>>,
+            #[serde(borrow)]
+            name: Cow<'a, str>,
+            #[serde(borrow)]
+            args: Option<&'a RawValue>,
+        }
+        let original: Envelope<'_> = serde_json::from_str(raw.get())
+            .map_err(|_| crate::invalid("invalid retained Gemini call"))?;
+        if original.call.id.as_deref() != id || original.call.name != name {
+            return Err(crate::invalid(
+                "retained Gemini call differs from its canonical call",
+            ));
+        }
+        let same_arguments = match original.call.args {
+            Some(raw) => crate::json(raw.get().as_bytes())? == *arguments,
+            None => arguments.as_object().is_some_and(|args| args.is_empty()),
+        };
+        if !same_arguments {
+            return Err(crate::invalid(
+                "retained Gemini call differs from its canonical call",
+            ));
+        }
+        Ok(self.call.take())
     }
 
     pub fn remaining<'text>(&mut self, mut text: &'text str) -> &'text str {

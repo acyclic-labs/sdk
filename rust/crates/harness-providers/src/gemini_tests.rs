@@ -42,6 +42,39 @@ async fn absent_arguments_are_empty_but_invalid_supplied_arguments_are_rejected(
     Ok(())
 }
 
+#[tokio::test]
+async fn truncated_tool_batches_and_invalid_native_ids_never_execute() -> Result<()> {
+    for (reason, id) in [
+        ("MAX_TOKENS", Some(json!("call"))),
+        ("STOP", Some(json!(null))),
+        ("STOP", Some(json!(42))),
+        ("STOP", Some(json!(""))),
+    ] {
+        let mut function = json!({"name":"echo","args":{}});
+        if let Some(id) = id {
+            function["id"] = id;
+        }
+        // Generated adversarial protocol data, not a captured provider fixture.
+        let frame = json!({"candidates":[{"content":{"parts":[{
+            "functionCall":function,"thoughtSignature":"opaque"
+        }]},"finishReason":reason}]});
+        let events = stream::events(
+            Adapter::Gemini,
+            chunks(&format!("data: {frame}\n\n"), 1),
+            4096,
+            parser_dispatch(),
+        )
+        .collect::<Vec<_>>()
+        .await;
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            Err(acyclic_harness_core::Error::Invalid(_))
+        ));
+    }
+    Ok(())
+}
+
 #[test]
 fn parallel_batches_and_signatures_survive_prepared_request_replay() -> Result<()> {
     let (provider, _) = provider(Adapter::Gemini, 200);

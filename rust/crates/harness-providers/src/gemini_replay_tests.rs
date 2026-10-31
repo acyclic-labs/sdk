@@ -211,6 +211,46 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
     let mut answer = String::new();
     append(events, &mut request, &mut answer);
     finish(&mut request, &answer);
+    for field in ["name", "arguments", "binding"] {
+        let mut changed = request.clone();
+        let call = changed
+            .messages
+            .iter_mut()
+            .find_map(|message| match &mut message.content {
+                ModelContent::Part(ModelContentPart::ToolCall(call)) => Some(call),
+                _ => None,
+            })
+            .unwrap();
+        match field {
+            "name" => call.name = "forged".into(),
+            "arguments" => call.arguments = json!({"path":"forged"}),
+            _ => call.metadata["provider_call"]["id"] = json!("forged"),
+        }
+        assert!(
+            projection::body(&provider, &changed).is_err(),
+            "signed {field} mismatch must refuse"
+        );
+        // Crossing providers drops the native part instead of manufacturing a
+        // signature for this changed canonical call.
+        let (foreign, _) = super::provider(Adapter::Responses, 200);
+        let body = projection::body(&foreign, &changed).unwrap();
+        assert!(!body.to_string().contains("thoughtSignature"));
+    }
+    let mut reordered = request.clone();
+    let calls: Vec<_> = reordered
+        .messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| {
+            matches!(
+                message.content,
+                ModelContent::Part(ModelContentPart::ToolCall(_))
+            )
+            .then_some(index)
+        })
+        .collect();
+    reordered.messages.swap(calls[0], calls[1]);
+    assert!(projection::body(&provider, &reordered).is_err());
     assert!(
         crate::validate_input(
             Adapter::Gemini,

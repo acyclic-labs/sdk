@@ -328,9 +328,16 @@ fn project_message<'a>(
     gemini.begin(message.role)?;
     let mut chat_reasoning = None;
     if let ModelContent::Text(text) = &message.content {
+        gemini.finish()?;
         project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
     }
     for part in message.content.parts() {
+        if !matches!(
+            part,
+            ModelContentPart::ToolCall(_) | ModelContentPart::Reasoning { .. }
+        ) {
+            gemini.finish()?;
+        }
         match part {
             ModelContentPart::Configuration { .. } => {
                 return Err(invalid("configuration update must occupy one message"));
@@ -375,6 +382,15 @@ fn project_message<'a>(
             }) => {
                 let name = names.wire(name)?;
                 let (call_id, freeform, omit_gemini_id) = call_ids.binding(call_id)?;
+                let native = if adapter == Adapter::Gemini {
+                    gemini.take_call(
+                        (!omit_gemini_id).then_some(call_id.as_ref()),
+                        &name,
+                        arguments,
+                    )?
+                } else {
+                    None
+                };
                 let call = call::Call {
                     adapter,
                     id: call_id.into_owned(),
@@ -382,11 +398,7 @@ fn project_message<'a>(
                     arguments,
                     freeform,
                     omit_gemini_id,
-                    native: if adapter == Adapter::Gemini {
-                        gemini.call.take()
-                    } else {
-                        None
-                    },
+                    native,
                 };
                 if adapter == Adapter::Chat {
                     calls.push(call);
