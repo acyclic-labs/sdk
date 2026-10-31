@@ -152,72 +152,44 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             error => Err(error),
         }
     }
-    async fn settle_append<G: AuthorityGuard>(
+    async fn settle_conflicted_append<G: AuthorityGuard>(
         prepared: &AppendReceipt<'_>,
-        outcome: &CommitOutcome,
-        actual: Option<Head>,
+        conflicts: &[acyclic_stream::CommitConflict],
+        actual: Head,
         recovered: Option<DurableCommit>,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
         let epoch = prepared.epoch;
         let commit = prepared.commit;
-        let records = &prepared.records;
         let gate = &prepared.gate;
         let lease_path = &prepared.lease_path;
-        let durable = prepared.durable;
-        let sequence = durable.sequence;
-        match outcome {
-            CommitOutcome::Committed(envelope) => {
-                envelope
-                    .appends
-                    .iter()
-                    .find(|append| {
-                        &append.path == records
-                            && append.start <= sequence.get()
-                            && sequence.get() < append.tail
-                    })
-                    .ok_or_else(|| {
-                        authority_corrupt("commit envelope omits its authority record", work)
-                    })?;
-                Ok(FsAppendOutcome::Committed(durable_commit(
-                    durable,
-                    envelope.committed_at_micros,
-                    commit.payload.clone(),
-                )))
-            }
-            CommitOutcome::Conflict(conflicts) => {
-                if let Some(existing) = recovered {
-                    seal(work, guard).await?;
-                    return Ok(if existing.fingerprint == commit.fingerprint {
-                        FsAppendOutcome::AlreadyCommitted(existing)
-                    } else {
-                        FsAppendOutcome::IdempotencyConflict {
-                            committed_fingerprint: existing.fingerprint,
-                        }
-                    });
+        if let Some(existing) = recovered {
+            seal(work, guard).await?;
+            return Ok(if existing.fingerprint == commit.fingerprint {
+                FsAppendOutcome::AlreadyCommitted(existing)
+            } else {
+                FsAppendOutcome::IdempotencyConflict {
+                    committed_fingerprint: existing.fingerprint,
                 }
-                let actual = actual.ok_or_else(|| {
-                    authority_corrupt("conflicted append has no recovered head", work)
-                })?;
-                let rejected = conflicts.iter().any(|conflict| {
-                    let path = match conflict {
-                        acyclic_stream::CommitConflict::Tail { path, .. }
-                        | acyclic_stream::CommitConflict::Head { path, .. }
-                        | acyclic_stream::CommitConflict::Missing { path }
-                        | acyclic_stream::CommitConflict::Exists { path } => path,
-                    };
-                    path == gate || lease_path.as_ref().is_some_and(|lease| path == lease)
-                });
-                Ok(if rejected || actual.epoch != epoch {
-                    FsAppendOutcome::Fenced {
-                        actual_epoch: actual.epoch,
-                    }
-                } else {
-                    FsAppendOutcome::Conflict { actual }
-                })
-            }
+            });
         }
+        let rejected = conflicts.iter().any(|conflict| {
+            let path = match conflict {
+                acyclic_stream::CommitConflict::Tail { path, .. }
+                | acyclic_stream::CommitConflict::Head { path, .. }
+                | acyclic_stream::CommitConflict::Missing { path }
+                | acyclic_stream::CommitConflict::Exists { path } => path,
+            };
+            path == gate || lease_path.as_ref().is_some_and(|lease| path == lease)
+        });
+        Ok(if rejected || actual.epoch != epoch {
+            FsAppendOutcome::Fenced {
+                actual_epoch: actual.epoch,
+            }
+        } else {
+            FsAppendOutcome::Conflict { actual }
+        })
     }
 }
 

@@ -3,6 +3,9 @@ use acyclic_stream::MemoryStream;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod completion;
+
 pub(in crate::distributed) fn requests(
     authority: AuthorityId,
     count: u8,

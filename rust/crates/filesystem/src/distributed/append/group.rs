@@ -3,6 +3,7 @@ use super::*;
 pub(in crate::distributed) struct PreparedGroup<'a> {
     pub(in crate::distributed) anchor: AuthoritySnapshot,
     pub(in crate::distributed) receipts: crate::kernel::Owned<Vec<AppendReceipt<'a>>>,
+    pub(in crate::distributed) outcomes: crate::kernel::Owned<Vec<FsAppendOutcome>>,
     pub(in crate::distributed) transaction: CommitRequest,
     pub(in crate::distributed) deadline: Option<u64>,
     deadline_owner: usize,
@@ -86,6 +87,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     /// does not certify namespace independence: composition must do that before
     /// constructing these requests. All leases, locators, changes and lineage
     /// fences still go through the ordinary append preparation implementation.
+    /// Native completion storage is funded before submission. After an
+    /// authenticated native commit, caller cancellation or a busy projection
+    /// cache cannot replace or delay delivery of its original member receipts.
     pub async fn compare_and_append_group<G: AuthorityGuard>(
         &self,
         requests: &[crate::GuardedAppend],
@@ -137,6 +141,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             let PreparedGroup {
                 anchor,
                 receipts: prepared,
+                mut outcomes,
                 transaction,
                 deadline,
                 deadline_owner,
@@ -171,25 +176,25 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                         });
                     }
                 };
-            let result = self
-                .settle_group(
-                    &prepared.value,
-                    anchor,
-                    &output.0,
-                    &mut child,
-                    guard.as_deref_mut(),
-                )
-                .await?;
+            self.settle_group(
+                &prepared.value,
+                anchor,
+                &output.0,
+                &mut outcomes.value,
+                &mut child,
+                guard.as_deref_mut(),
+            )
+            .await?;
             if let CommitOutcome::Committed(envelope) = &output.0 {
-                actor
-                    .complete(
-                        revision,
-                        next_projection.seal(envelope.commit_id),
-                        &mut child,
-                    )
-                    .await?;
+                // The receipt is final. A busy cache cannot delay its delivery
+                // or require another admission after physical publication.
+                actor.complete_if_available(revision, next_projection.seal(envelope.commit_id));
             }
-            Ok(result)
+            let (receipts, allocation) = crate::async_storage::authority_parts(outcomes);
+            Ok(AppendGroupOutcome::Published {
+                receipts,
+                allocation,
+            })
         }
         .await;
         work.record(child.spent())?;
@@ -201,54 +206,77 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         prepared: &[AppendReceipt<'_>],
         anchor: AuthoritySnapshot,
         output: &CommitOutcome,
+        receipts: &mut Vec<FsAppendOutcome>,
         work: &mut AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<AppendGroupOutcome, AuthorityError<G::Error>> {
-        let recovery_count = if matches!(output, CommitOutcome::Conflict(_)) {
-            prepared.len()
-        } else {
-            0
+    ) -> Result<(), AuthorityError<G::Error>> {
+        let conflicts = match output {
+            CommitOutcome::Committed(envelope) => {
+                let first = prepared.first().ok_or_else(|| {
+                    authority_corrupt("committed authority group has no members", work)
+                })?;
+                let last = prepared.last().ok_or_else(|| {
+                    authority_corrupt("committed authority group has no members", work)
+                })?;
+                // Preparation proved a dense history on this one authority.
+                // Authenticate its whole range once, then project each member.
+                if !envelope.appends.iter().any(|append| {
+                    append.path == first.records
+                        && append.start <= first.durable.sequence.get()
+                        && last.durable.sequence.get() < append.tail
+                }) {
+                    return Err(authority_corrupt(
+                        "commit envelope omits its authority record",
+                        work,
+                    )
+                    .into());
+                }
+                for member in prepared {
+                    receipts.push(FsAppendOutcome::Committed(durable_commit(
+                        member.durable,
+                        envelope.committed_at_micros,
+                        member.commit.payload.clone(),
+                    )));
+                }
+                return Ok(());
+            }
+            CommitOutcome::Conflict(conflicts) => conflicts,
         };
-        let mut recovered = work.vec_owned(recovery_count)?;
-        recovered.value.resize_with(recovery_count, || None);
-        let actual = match output {
-            CommitOutcome::Committed(_) => None,
-            CommitOutcome::Conflict(conflicts) => Some(
-                self.recover_conflict_head(
-                    prepared
-                        .first()
-                        .ok_or(AuthorityStoreError::RejectedStatic("empty prepared group"))?
-                        .authority_id,
-                    anchor,
-                    conflicts,
-                    work,
-                    |durable, record, work| {
-                        for (member, recovered) in prepared.iter().zip(&mut recovered.value) {
-                            visit(work)?;
-                            if durable.operation_id != member.commit.operation_id {
-                                continue;
-                            }
-                            if recovered.is_some() {
-                                return Err(authority_corrupt(
-                                    "authority suffix duplicates an operation",
-                                    work,
-                                ));
-                            }
-                            let payload = work.bytes(durable.payload)?;
-                            *recovered = Some((
-                                durable_commit(durable, record.committed_at_micros, payload),
-                                super::super::operations::OperationRecordProof::new(
-                                    durable, record, work,
-                                )?,
+        let mut recovered = work.vec_owned(prepared.len())?;
+        recovered.value.resize_with(prepared.len(), || None);
+        let actual = self
+            .recover_conflict_head(
+                prepared
+                    .first()
+                    .ok_or(AuthorityStoreError::RejectedStatic("empty prepared group"))?
+                    .authority_id,
+                anchor,
+                conflicts,
+                work,
+                |durable, record, work| {
+                    for (member, recovered) in prepared.iter().zip(&mut recovered.value) {
+                        visit(work)?;
+                        if durable.operation_id != member.commit.operation_id {
+                            continue;
+                        }
+                        if recovered.is_some() {
+                            return Err(authority_corrupt(
+                                "authority suffix duplicates an operation",
+                                work,
                             ));
                         }
-                        Ok(())
-                    },
-                )
-                .await?,
-            ),
-        };
-        let mut receipts = work.vec_owned(prepared.len())?;
+                        let payload = work.bytes(durable.payload)?;
+                        *recovered = Some((
+                            durable_commit(durable, record.committed_at_micros, payload),
+                            super::super::operations::OperationRecordProof::new(
+                                durable, record, work,
+                            )?,
+                        ));
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
         for (index, member) in prepared.iter().enumerate() {
             let recovered = match recovered.value.get_mut(index).and_then(Option::take) {
                 Some((commit, proof)) => {
@@ -262,25 +290,37 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     Some(commit)
                 }
                 None => {
-                    if let CommitOutcome::Conflict(conflicts) = output {
-                        let operation = work.operation_path(
-                            &self.placement,
-                            member.authority_id,
-                            member.commit.operation_id,
-                        )?;
-                        if conflicts.iter().any(|conflict| matches!(conflict, acyclic_stream::CommitConflict::Exists { path } if path == &operation)) {
-                            Some(self.authority_find_operation(member.authority_id, member.commit.operation_id, work).await?
-                                .ok_or_else(|| authority_corrupt("rejected operation locator has no authenticated receipt", work))?)
-                        } else { None }
+                    let operation = work.operation_path(
+                        &self.placement,
+                        member.authority_id,
+                        member.commit.operation_id,
+                    )?;
+                    if conflicts.iter().any(|conflict| {
+                        matches!(conflict, acyclic_stream::CommitConflict::Exists { path } if path == &operation)
+                    }) {
+                        Some(
+                            self.authority_find_operation(
+                                member.authority_id,
+                                member.commit.operation_id,
+                                work,
+                            )
+                            .await?
+                            .ok_or_else(|| {
+                                authority_corrupt(
+                                    "rejected operation locator has no authenticated receipt",
+                                    work,
+                                )
+                            })?,
+                        )
                     } else {
                         None
                     }
                 }
             };
-            receipts.value.push(
-                Self::settle_append(
+            receipts.push(
+                Self::settle_conflicted_append(
                     member,
-                    output,
+                    conflicts,
                     actual,
                     recovered,
                     work,
@@ -291,11 +331,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         drop(recovered);
         work.check()?;
-        let (receipts, allocation) = crate::async_storage::authority_parts(receipts);
-        Ok(AppendGroupOutcome::Published {
-            receipts,
-            allocation,
-        })
+        Ok(())
     }
 
     pub(in crate::distributed) async fn prepare_group<'a, G: AuthorityGuard>(
@@ -371,6 +407,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         Ok(GroupPreparation::Ready(PreparedGroup {
             anchor,
             receipts,
+            // Terminal reply storage belongs to the original preparation and
+            // is admitted before the provider can accept physical publication.
+            outcomes: work.vec_owned(requests.len())?,
             transaction: transaction
                 .ok_or(AuthorityStoreError::RejectedStatic("empty prepared group"))?,
             deadline,
