@@ -82,6 +82,69 @@ fn client(sockets: Arc<dyn SocketProvider>) -> Client {
     )
 }
 
+#[test]
+fn receive_refusal_releases_owner_before_uncredited_frames_drain() -> TestResult {
+    let mut session = super::properties::empty_session(false);
+    let (gone, left) = oneshot::channel();
+    let (frames, receiver) = mpsc::unbounded();
+    drop(receiver);
+    session
+        .channels
+        .get_mut(&1)
+        .ok_or("missing channel")?
+        .socket = Some(Box::new(EchoInbound {
+        frames,
+        gone: Some(gone),
+    }));
+    session.record(
+        wire::SessionChannel {
+            channel_id: 1,
+            generation: 1,
+        },
+        Ok(Event::Socket {
+            next: 1,
+            bytes: Bytes::from_static(b"queued"),
+        }),
+    )?;
+    assert!(session.ready()?.is_none());
+    session.receive(frame(
+        1,
+        1,
+        Body::Data(wire::SessionData {
+            item: Some(Item::ActorSocket(Bytes::from_static(b"refused"))),
+            ..Default::default()
+        }),
+    ))?;
+    // The original owner's terminal event is independent of peer credit.
+    assert!(matches!(
+        futures::FutureExt::now_or_never(left),
+        Some(Ok(()))
+    ));
+    let channel = session
+        .channels
+        .get(&1)
+        .ok_or("queued channel retired early")?;
+    assert!(channel.socket.is_none());
+    assert_eq!(channel.pending.len(), 1);
+    assert!(session.controls.is_empty());
+    assert!(session.ready()?.is_none());
+    // Later credit still delivers the accepted frame before the failure.
+    session.receive(window(0))?;
+    session.receive(window(1))?;
+    let sent = session.ready()?.ok_or("queued frame lost")?.into_wire();
+    assert!(matches!(sent.body, Some(Body::Data(wire::SessionData {
+        item: Some(Item::ActorSocket(bytes)), ..
+    })) if bytes == b"queued"[..]));
+    assert!(
+        matches!(session.controls.pop_front().and_then(|frame| frame.body),
+        Some(Body::Closed(wire::SessionClosed { code, .. })) if code == StreamError::Unavailable.code())
+    );
+    assert!(session.channels.is_empty());
+    assert_eq!(session.pending_frames, 0);
+    assert_eq!(session.pending_bytes, 0);
+    Ok(())
+}
+
 #[tokio::test]
 async fn socket_frames_flow_both_ways_and_dropping_the_peer_ends_the_owner() -> TestResult {
     let (gone, left) = oneshot::channel();
