@@ -7,6 +7,8 @@
 //! harness/agents/<root>/children/<id>     child subtree, same shape
 //! harness/agents/<root>/targets/<name>     one execution target of the tree: LATEST
 //!                                          "status" holds its TargetRecord (v1)
+//! harness/agents/<path>/machines/<name>    this agent's own Machine on provisioned
+//!                                          target <name>: one MachineBinding (v1)
 //! harness/actors/<actor>                  A4 actor state (`Store` root), outside the subtree
 //! harness/status/<id>                      status records, outside the subtree
 //! ```
@@ -33,7 +35,7 @@ pub const VOLUMES: &str = "harness/volumes";
 /// Root of every agent's status stream, keyed by its globally unique id.
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
-pub const NOT_INHERITED: [&str; 3] = [CHILDREN, CLOSED, TARGETS];
+pub const NOT_INHERITED: [&str; 4] = [CHILDREN, CLOSED, TARGETS, MACHINES];
 /// Deepest admitted nesting; bounds every path and every lineage walk.
 pub const MAX_DEPTH: usize = 64;
 
@@ -41,6 +43,7 @@ const CONVERSATION: &str = "conversation";
 const CLOSED: &str = "closed";
 const CHILDREN: &str = "children";
 const TARGETS: &str = "targets";
+const MACHINES: &str = "machines";
 /// The LATEST key of a target's status record.
 pub const TARGET_STATUS: &str = "status";
 const ID_HEX: usize = 32;
@@ -260,6 +263,12 @@ impl AgentPath {
     /// every target of the tree.
     pub fn target(&self, name: &str) -> Result<StreamPath, Error> {
         stream(&format!("{}/{TARGETS}/{name}", self.tree_root().text))
+    }
+
+    /// The binding of this agent's own Machine on provisioned target `name`.
+    /// No child inherits it: a child forks or creates its own on first use.
+    pub fn machine(&self, name: &str) -> Result<StreamPath, Error> {
+        stream(&format!("{}/{MACHINES}/{name}", self.text))
     }
 }
 

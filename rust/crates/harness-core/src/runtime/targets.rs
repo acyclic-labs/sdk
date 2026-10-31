@@ -40,10 +40,22 @@ impl InProcessTargets {
     /// # Errors
     /// When the record is malformed.
     pub fn home(record: TargetRecord, executor: Arc<dyn ToolExecutor>) -> Result<Self> {
-        let roster = Roster::home(record.clone()).map_err(agent_error)?;
+        let home = record.name.clone();
+        Self::new(&home, vec![Target { record, executor }])
+    }
+
+    /// `targets`, whose home is `home`: for example the agent's checkout and
+    /// its own Machine on each provisioned target
+    /// (`AgentMachines::executor`, with the `machines` feature).
+    ///
+    /// # Errors
+    /// When a record is malformed, a name repeats or the home is unlisted.
+    pub fn new(home: &str, targets: Vec<Target>) -> Result<Self> {
+        let records = targets.iter().map(|target| target.record.clone()).collect();
+        let roster = Roster::new(home, records).map_err(agent_error)?;
         Ok(Self {
             roster: Arc::new(roster),
-            targets: vec![Arc::new(Target { record, executor })],
+            targets: targets.into_iter().map(Arc::new).collect(),
         })
     }
 

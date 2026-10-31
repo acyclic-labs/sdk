@@ -22,6 +22,8 @@ mod host;
 mod input;
 pub mod kernel;
 mod layout;
+mod lifecycle;
+pub use lifecycle::{AgentComposer, AgentLifecycle, CLOSE};
 mod lower;
 mod machine;
 pub(crate) mod records;
