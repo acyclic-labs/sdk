@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { MemoryObjectsV1, blobDigest, ErrorCode } from "@acyclic-labs/objects";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
@@ -10,7 +11,7 @@ const failed = code => error => error.code === code;
 // The response body and all frames come from the actual Rust account, not a
 // reimplementation of its event source, protobuf encoder or cursor rules.
 function endpoint(memory, hooks = {}, credentials = { token: "fixture" }) {
-  return new HttpObjectsV1({ endpoint: "http://localhost", ...credentials, fetch: async (_url, init) => {
+  return new HttpObjectsV1({ endpoint: "http://localhost", timeoutMs: hooks.timeoutMs, ...credentials, fetch: async (_url, init) => {
     hooks.opened?.resolve();
     if (hooks.open) await hooks.open;
     const { decode_objects_v1_json } = await import("../generated/wasm/acyclic_objects_wasm.js");
@@ -26,7 +27,14 @@ function endpoint(memory, hooks = {}, credentials = { token: "fixture" }) {
           const reply = await source.next();
           if (closed || reply === null) { controller.close(); return; }
           const body = hooks.frame?.(reply.body) ?? reply.body;
-          if (hooks.fragment) for (const byte of body) controller.enqueue(new Uint8Array([byte]));
+          if (hooks.holdInitial) {
+            controller.enqueue(body.slice(0, 1));
+            hooks.stalled.resolve();
+            await hooks.holdInitial;
+            if (closed) return;
+            controller.enqueue(body.slice(1));
+          }
+          else if (hooks.fragment) for (const byte of body) controller.enqueue(new Uint8Array([byte]));
           else controller.enqueue(body);
           hooks.delivered?.resolve();
           if (hooks.end) { close(); controller.close(); }
@@ -109,6 +117,47 @@ test("Objects availability owns opening, catch-up, cursor validation and cancell
       const changed = await selected.changed();
       assert.deepEqual(changed.incarnation, initial.incarnation);
       assert.ok(changed.sequence > initial.sequence);
+    } finally { selected.close(); original.free(); }
+  });
+  await t.test("HTTP opening deadline covers an incomplete initial cursor", async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const original = new ObjectsV1Memory();
+    const stalled = Promise.withResolvers(), release = Promise.withResolvers();
+    const stop = new AbortController();
+    let outcome;
+    const opening = endpoint(original, { timeoutMs: 50, stalled, holdInitial: release.promise })
+      .availability(digest, stop.signal)
+      .then(value => { outcome = { value }; }, error => { outcome = { error }; });
+    try {
+      await stalled.promise;
+      t.mock.timers.tick(50);
+      // One event-loop handoff drains the deadline and canonical cursor wakes.
+      // The old header-only completion is observed as unsettled, never awaited.
+      await nextTurn();
+      assert.equal(outcome?.error?.code, ErrorCode.DEADLINE_ELAPSED);
+    } finally {
+      stop.abort();
+      release.resolve();
+      await opening;
+      outcome?.value?.close();
+      original.free();
+    }
+  });
+  await t.test("HTTP accepted initial cursor removes only the opening deadline", async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const original = new ObjectsV1Memory();
+    const body = new Uint8Array([59, 61, 67]);
+    const digest = await blobDigest(body);
+    const selected = await endpoint(original, { timeoutMs: 50, fragment: true }).availability(digest);
+    try {
+      const initial = selected.cursor();
+      const waiting = selected.changed();
+      // Attach a failure observer before advancing the deterministic clock.
+      void waiting.catch(() => {});
+      t.mock.timers.tick(500);
+      const { PutBlobRequestSchema } = await import("@acyclic-labs/objects/proto");
+      await original.invoke("blobs/put", toBinary(PutBlobRequestSchema, create(PutBlobRequestSchema, { digest, body })));
+      assert.ok((await waiting).sequence > initial.sequence);
     } finally { selected.close(); original.free(); }
   });
   await t.test("HTTP retains the original producer and rejects a replayed cursor", async () => {

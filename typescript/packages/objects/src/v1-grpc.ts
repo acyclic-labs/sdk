@@ -50,9 +50,11 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
 /** Rust-verified provider over the generated gRPC Blobs service. */
 export class GrpcObjectsV1 extends ObjectsV1Provider {
   private readonly clients: ReturnType<typeof createObjectsV1GrpcClients>;
+  private readonly timeoutMs: number;
   constructor(options: ObjectsV1GrpcOptions) {
     super();
     this.clients = createObjectsV1GrpcClients(options);
+    this.timeoutMs = options.timeoutMs ?? 30000;
   }
   /** Releases the owned HTTP/2 connection and cancels outstanding calls. */
   close(): void { this.clients.close(); }
@@ -67,7 +69,7 @@ export class GrpcObjectsV1 extends ObjectsV1Provider {
             yield RustRequest.frame(toBinary(wire.AvailabilityCursorSchema, cursor));
           }
         } catch (error) { throw controller.signal.aborted ? controller.signal.reason : grpcError(error); }
-      });
+      }, this.timeoutMs);
     }
     return objectsRequest(input, (bytes, controller) => this.send(route, bytes, controller.signal));
   }

@@ -51,7 +51,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         const ready = ensureObjectsWasm(controller.signal);
         if (ready !== undefined) await ready;
         yield* client.send(route, bytes, controller);
-      });
+      }, this.timeoutMs);
     }
     return objectsRequest(input, async (bytes, controller) => {
       const ready = ensureObjectsWasm(controller.signal);
@@ -65,7 +65,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
             return reply.value;
           } finally { await source.return(); }
         });
-    });
+    }, this.timeoutMs);
   }
   private async *send(route: string, input: Uint8Array, controller: AbortController, sizes?: OperationSizes): AsyncGenerator<Uint8Array, void> {
     controller.signal.throwIfAborted();
@@ -76,7 +76,6 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     let admitted: CredentialRequest | undefined;
     const watch = watchCredential(this.credential, controller.signal, () => new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED));
     const signal = watch?.signal ?? controller.signal;
-    const timeout = setTimeout(() => controller.abort(new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED)), this.timeoutMs);
     try {
       const lease = await resolveCredential(this.credential, signal).catch(error => { throw signal.aborted ? signal.reason : new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED); });
       checkCredential(lease);
@@ -86,7 +85,6 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       reader = response.body?.getReader();
       if (streaming && response.status === 200) {
         if (response.headers.get("content-type") !== "application/x-protobuf" || reader === undefined) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
-        clearTimeout(timeout);
         while (true) {
           const { done, value } = await awaitSignal(reader.read(), signal);
           checkCredential(lease);
@@ -125,7 +123,6 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     } catch (error) {
       throw signal.aborted ? signal.reason : error;
     } finally {
-      clearTimeout(timeout);
       try { if (admitted) checkCredential(admitted); }
       finally {
         watch?.close();

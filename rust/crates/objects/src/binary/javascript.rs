@@ -115,6 +115,18 @@ struct Request {
 }
 
 impl Request {
+    fn opened(&self) -> Result<(), Error> {
+        let opened = Reflect::get(&self.owner, &"opened".into()).map_err(original_error)?;
+        if !opened.is_undefined() {
+            opened
+                .dyn_into::<Function>()
+                .map_err(|_| unavailable())?
+                .call0(&self.owner)
+                .map_err(original_error)?;
+        }
+        Ok(())
+    }
+
     async fn next(&self) -> Result<Option<JsValue>, Error> {
         let promise: Promise = method(&self.owner, "next")?
             .call0(&self.owner)
@@ -181,14 +193,19 @@ impl Transport for JavaScriptTransport {
                 .map_err(|_| acyclic_stream::StreamError::InvalidResponse)
         });
         let mut frames = futures::stream::try_unfold(
-            (request, decoder, Bytes::new()),
-            |(request, mut decoder, mut chunk)| async move {
+            (request, decoder, Bytes::new(), true),
+            |(request, mut decoder, mut chunk, mut opening)| async move {
                 loop {
                     let mut input = chunk.as_ref();
                     let frame = decoder.read(&mut input).map_err(|_| unavailable())?;
                     chunk = chunk.slice(chunk.len() - input.len()..);
                     if let Some(frame) = frame {
-                        return Ok::<_, Error>(Some((frame, (request, decoder, chunk))));
+                        let frame = frame.try_into()?;
+                        if opening {
+                            request.opened()?;
+                            opening = false;
+                        }
+                        return Ok::<_, Error>(Some((frame, (request, decoder, chunk, opening))));
                     }
                     let reply = request.next().await?.ok_or_else(unavailable)?;
                     chunk = reply_body(&reply)?;
@@ -196,11 +213,8 @@ impl Transport for JavaScriptTransport {
             },
         )
         .boxed_local();
-        let initial = frames.next().await.ok_or_else(unavailable)??.try_into()?;
-        Ok(Availability::new(
-            initial,
-            frames.map(|frame| frame?.try_into()),
-        ))
+        let initial = frames.next().await.ok_or_else(unavailable)??;
+        Ok(Availability::new(initial, frames))
     }
 }
 

@@ -31,6 +31,9 @@ export async function blobDigest(bytes: Uint8Array): Promise<wire.Digest> {
 /** One original operation. Closing it settles a pending pull and releases its owner. */
 export interface ObjectsV1Request {
   next(): Promise<ObjectsV1BinaryReply | null>;
+  /** The canonical decoder accepted the initial response. Ends an opening
+   * deadline without imposing a deadline on subsequent subscription waits. */
+  opened?(): void;
   close(): void;
 }
 
@@ -51,12 +54,16 @@ export interface ObjectsV1Availability {
 }
 
 /** One transport's original abort controller, shared by its pull and cancellation. */
-export function objectsRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController) => Promise<Uint8Array>): ObjectsV1Request {
-  return objectsStreamRequest(input, async function* (bytes, controller) { yield await start(bytes, controller); });
+export function objectsRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController) => Promise<Uint8Array>, timeoutMs?: number): ObjectsV1Request {
+  return objectsStreamRequest(input, async function* (bytes, controller, opened) {
+    const reply = await start(bytes, controller);
+    opened();
+    yield reply;
+  }, timeoutMs);
 }
 
 /** Transport chunks retain one abort owner from opening through the final pull. */
-export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController) => AsyncIterable<Uint8Array>): ObjectsV1Request {
+export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController, opened: () => void) => AsyncIterable<Uint8Array>, timeoutMs?: number): ObjectsV1Request {
   let bytes: Uint8Array;
   try { bytes = snapshotBytes(input); }
   catch { throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT); }
@@ -64,9 +71,12 @@ export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Arra
   let closed = false;
   let pulling = false;
   let source: AsyncIterator<Uint8Array> | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const opened = () => { clearTimeout(timeout); timeout = undefined; };
   const close = () => {
     if (closed) return;
     closed = true;
+    opened();
     controller.abort(new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE));
     void source?.return?.().catch(() => {});
   };
@@ -76,13 +86,17 @@ export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Arra
       if (pulling) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
       pulling = true;
       try {
-        source ??= start(bytes, controller)[Symbol.asyncIterator]();
+        if (source === undefined) {
+          if (timeoutMs !== undefined) timeout = setTimeout(() => controller.abort(new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED)), timeoutMs);
+          source = start(bytes, controller, opened)[Symbol.asyncIterator]();
+        }
         const reply = await awaitSignal(source.next(), controller.signal);
         if (reply.done) { close(); return null; }
         return { body: reply.value };
       } catch (error) { close(); throw error; }
       finally { pulling = false; }
     },
+    opened,
     close,
   };
 }
