@@ -207,6 +207,17 @@ impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
         matches!(self, Self::Insert(_) | Self::Remove { .. })
     }
 
+    fn changes_boundary(&self) -> Result<bool, CanonicalDecodeError> {
+        match self {
+            Self::Replace {
+                expected,
+                replacement,
+            } => Ok(FileTableFormat::leaf_item_encoded_length(expected)?
+                != FileTableFormat::leaf_item_encoded_length(replacement)?),
+            _ => Ok(true),
+        }
+    }
+
     fn replacement<'a>(
         &'a self,
         current: Option<&FileRecord>,

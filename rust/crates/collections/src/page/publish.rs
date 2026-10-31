@@ -129,6 +129,8 @@ pub async fn write<F, K, W, const HEADER_BYTES: usize, const TARGET_BYTES: usize
     items: &[K::Item],
     level: u16,
     close: bool,
+    // The exact predecessor tail must join a changed following first item.
+    hold_last: bool,
 ) -> Result<(W::Output, Option<K::Pending<W>>), W::Error>
 where
     F: Format,
@@ -145,9 +147,11 @@ where
     )
     .map_err(W::packing_error)?;
     let mut output = work.allocate(0)?;
+    let mut consumed = 0_usize;
     while let Some((chunk, examined, closed)) = chunks.next_page().map_err(W::packing_error)? {
         work.charge_items(examined)?;
-        if !closed && !close {
+        consumed += chunk.len();
+        if (!closed && !close) || (hold_last && consumed == items.len()) {
             return Ok((output, Some(K::carry(work, chunk)?)));
         }
         let first = work.first(K::key(chunk.first().ok_or_else(W::invalid_input)?))?;

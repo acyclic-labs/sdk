@@ -218,6 +218,17 @@ impl persistent_btree::Mutation<AttributeFormat> for AttributeMutation {
         matches!(self, Self::Insert(_) | Self::Remove { .. })
     }
 
+    fn changes_boundary(&self) -> Result<bool, CanonicalDecodeError> {
+        match self {
+            Self::Replace {
+                expected,
+                replacement,
+            } => Ok(AttributeFormat::leaf_item_encoded_length(expected)?
+                != AttributeFormat::leaf_item_encoded_length(replacement)?),
+            _ => Ok(true),
+        }
+    }
+
     fn replacement<'a>(
         &'a self,
         current: Option<&AttributeEntry>,

@@ -473,3 +473,146 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn hard_object_bounds_keep_valid_attributes_writable_and_history_independent()
+-> Result<(), Box<dyn std::error::Error>> {
+    async fn apply(
+        store: &MemoryObjectStore,
+        root: ObjectId,
+        mutations: Vec<AttributeMutation>,
+        limits: DecodeLimits,
+    ) -> Result<ObjectId, Box<dyn std::error::Error>> {
+        let maximum = u32::try_from(mutations.len())?;
+        Ok(apply_attribute_mutations(
+            store,
+            root,
+            mutations,
+            maximum,
+            limits,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value)
+    }
+    struct ResetLocal;
+    impl Drop for ResetLocal {
+        fn drop(&mut self) {
+            crate::kernel::persistent_btree::LOCAL_REWRITE.with(|local| local.set(false));
+        }
+    }
+    let limits = DecodeLimits {
+        maximum_page_bytes: 200,
+        maximum_object_bytes: 200,
+        ..DecodeLimits::default()
+    };
+    for count in [2_u8, 3, 65] {
+        let store = MemoryObjectStore::default();
+        let empty = put(&store, &AttributePage::Leaf(Vec::new()), 1_024).await?;
+        let entries = (1..=count)
+            .map(|byte| entry(byte, if byte == 2 { 100 } else { 1 }, byte))
+            .collect::<Result<Vec<_>, _>>()?;
+        let bulk = apply(
+            &store,
+            empty,
+            entries
+                .iter()
+                .cloned()
+                .map(AttributeMutation::Insert)
+                .collect(),
+            limits,
+        )
+        .await?;
+        for reverse in [false, true] {
+            let mut ordered = entries.clone();
+            if reverse {
+                ordered.reverse();
+            }
+            let mut incremental = empty;
+            for value in ordered {
+                incremental = apply(
+                    &store,
+                    incremental,
+                    vec![AttributeMutation::Insert(value)],
+                    limits,
+                )
+                .await?;
+            }
+            assert_eq!(incremental, bulk, "count={count}, reverse={reverse}");
+        }
+        // Check the actual encoded closure rather than only the root result.
+        let mut pending = vec![bulk];
+        let mut actual = Vec::new();
+        while let Some(page) = pending.pop() {
+            let bytes = store
+                .read(
+                    page,
+                    200,
+                    &mut crate::AuthorityWork::new(
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    ),
+                )
+                .await?;
+            assert!(bytes.len() <= 200);
+            match decode_attribute_page(&bytes, limits, &mut |_| {
+                Ok::<_, crate::kernel::CanonicalDecodeError>(())
+            })? {
+                AttributePage::Leaf(values) => actual.extend(values),
+                AttributePage::Internal(children) => {
+                    pending.extend(children.into_iter().rev().map(|child| child.page))
+                }
+            }
+        }
+        assert_eq!(actual, entries);
+        let large = entries.get(1).ok_or("missing large attribute")?;
+        let remove = AttributeMutation::Remove {
+            name: large.name.clone(),
+            expected: Some(large.clone()),
+        };
+        let remaining = entries
+            .iter()
+            .filter(|value| value.name != large.name)
+            .cloned()
+            .map(AttributeMutation::Insert)
+            .collect();
+        let expected = apply(&store, empty, remaining, limits).await?;
+        let removed = apply(&store, bulk, vec![remove.clone()], limits).await?;
+        assert_eq!(
+            removed, expected,
+            "removing the item that forced a hard cut: count={count}"
+        );
+        if count == 3 {
+            crate::kernel::persistent_btree::LOCAL_REWRITE.with(|local| local.set(true));
+            let reset = ResetLocal;
+            let local = apply(&store, bulk, vec![remove], limits).await?;
+            drop(reset);
+            assert_ne!(
+                local, expected,
+                "page-local closure must expose the stale predecessor cut"
+            );
+        }
+        // A same-size exact no-op must retain the root without write credit.
+        let first = entries.first().ok_or("missing first attribute")?.clone();
+        let receipt = apply_attribute_mutations(
+            &store,
+            bulk,
+            vec![AttributeMutation::Replace {
+                expected: first.clone(),
+                replacement: first,
+            }],
+            1,
+            limits,
+            WorkBudget {
+                page_writes: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(receipt.value, bulk);
+        assert_eq!(receipt.work.page_writes, 0);
+    }
+    Ok(())
+}

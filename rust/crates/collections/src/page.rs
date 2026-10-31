@@ -63,8 +63,10 @@ pub enum PageRef<'a, F: Format> {
 pub struct PackingLimits {
     /// Maximum entries admitted in one page.
     pub maximum_items: usize,
-    /// Maximum complete encoded page size, including its header.
+    /// Target complete encoded page size, including its header.
     pub maximum_bytes: usize,
+    /// Hard complete encoded object bound, including its header.
+    pub maximum_object_bytes: usize,
 }
 
 /// A packing refusal before a page is handed to its encoder.
@@ -116,18 +118,11 @@ const fn mix(mut value: u64) -> u64 {
 
 /// Splits one level's items into pages at content-defined boundaries.
 ///
-/// Whether a page closes depends only on the items since the page began and
-/// the item at hand. A page closes when it holds two items and the item's key
-/// hash, mixed with the level, falls under a threshold weighted by the item's
-/// encoded bytes, so pages average about `TARGET_BYTES`. It also closes
-/// at the item limit, and once two items pass half its byte capacity. No
-/// item is certain to close a page, so a change's carry stops at a boundary
-/// within a few pages even when the item limit is small. The byte bound
-/// splits work and never refuses it: a leaf item larger than half the
-/// capacity closes the page it joins, and internal pages always take two
-/// summaries, so every level shrinks. Whether a page closes never looks past
-/// the item at hand, so chunking resumed from any page start reproduces every
-/// later page, and the tree's shape is a function of its contents alone.
+/// Content and item boundaries close pages without looking beyond the item
+/// at hand. A hard object bound can additionally cut before the next item.
+/// Rewriting a page's first item therefore revisits the preceding page's tail.
+/// The target byte size splits work; the object bound refuses a single item
+/// that cannot fit. Hash boundaries do not imply a worst-case carry distance.
 pub struct PageChunks<'a, T, L, H, const HEADER_BYTES: usize, const TARGET_BYTES: usize> {
     items: &'a [T],
     encoded_length: L,
@@ -136,6 +131,7 @@ pub struct PageChunks<'a, T, L, H, const HEADER_BYTES: usize, const TARGET_BYTES
     start: usize,
     maximum_items: usize,
     capacity: usize,
+    object_capacity: usize,
     minimum_weight: usize,
     leaf: bool,
 }
@@ -167,6 +163,10 @@ where
             start: 0,
             maximum_items,
             capacity: maximum_bytes.saturating_sub(HEADER_BYTES),
+            object_capacity: limits
+                .maximum_object_bytes
+                .checked_sub(HEADER_BYTES)
+                .ok_or(PackingError::ItemTooLarge)?,
             // Boundaries come often enough that the item limit rarely forces
             // a cut: at least one in a quarter of the limit. No item is a
             // certain boundary, or pages would be positional and an insert
@@ -201,6 +201,13 @@ where
         let mut closed = false;
         for item in rest {
             let bytes = (self.encoded_length)(item).map_err(PackingError::Encode)?;
+            if bytes > self.object_capacity {
+                return Err(PackingError::ItemTooLarge);
+            }
+            if count > 0 && bytes > self.object_capacity.saturating_sub(payload) {
+                closed = true;
+                break;
+            }
             if self.leaf && bytes > half {
                 // A large item closes the page it joins. Cutting before it
                 // instead would make this page depend on the next item, so

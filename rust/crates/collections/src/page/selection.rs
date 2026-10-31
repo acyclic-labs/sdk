@@ -13,6 +13,8 @@ pub struct Selected<'a, K, P> {
     pub upper: Option<&'a K>,
     /// The original sorted mutation positions assigned to this child.
     pub mutations: Range<usize>,
+    /// The following child has a mutation at its exact first key.
+    pub following_first_changes: bool,
 }
 
 /// A monotonically advancing cursor over one page and its selected mutations.
@@ -65,12 +67,23 @@ impl Cursor {
         } else {
             self.mutation_cursor = self.mutation_end;
         }
+        let following_first_changes = if let Some(upper) = upper {
+            if self.mutation_cursor < self.mutation_end {
+                charge_item()?;
+                mutation_key(self.mutation_cursor)? == upper
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         charge_item()?;
         Ok(Some(Selected {
             index,
             child,
             upper,
             mutations: start..self.mutation_cursor,
+            following_first_changes,
         }))
     }
 }

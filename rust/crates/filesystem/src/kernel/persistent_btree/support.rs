@@ -94,6 +94,10 @@ pub(crate) trait Mutation<F: Format> {
 
     fn key(&self) -> &F::Key;
     fn changes_cardinality(&self) -> bool;
+    /// Whether the original expected/replacement can move an encoded cut.
+    fn changes_boundary(&self) -> Result<bool, CanonicalDecodeError> {
+        Ok(self.changes_cardinality())
+    }
     fn replacement<'a>(
         &'a self,
         current: Option<&F::Value>,
@@ -343,6 +347,8 @@ where
         let limits = acyclic_collections::page::PackingLimits {
             maximum_items: usize::try_from(limits.maximum_page_items)
                 .map_err(|_| Error::InvalidLimits)?,
+            maximum_object_bytes: usize::try_from(limits.maximum_object_bytes)
+                .unwrap_or(usize::MAX),
             maximum_bytes: usize::try_from(limits.maximum_page_bytes)
                 .map_err(|_| Error::InvalidLimits)?,
         };
