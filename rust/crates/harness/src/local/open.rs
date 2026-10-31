@@ -431,7 +431,6 @@ impl Opening {
             preset: self.preset,
             approval_models: self.config.approval_models,
             agent: self.config.model,
-            context_manifest: self.config.context_manifest,
             served: self.config.served,
             active_directory: self.config.active_directory,
             skill_cache: context::skills::cache(),

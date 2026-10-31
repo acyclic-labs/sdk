@@ -48,7 +48,6 @@ pub struct LocalHarnessConfig {
     /// Resolves the model selection, approver models and search at open.
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     pub(super) models: Option<(Arc<ModelResolver>, Option<String>)>,
-    pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     /// Standard tools enabled, by name.
     pub(super) default_tools: Vec<String>,
@@ -184,7 +183,6 @@ impl LocalHarnessConfig {
             model,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             models: None,
-            context_manifest: None,
             tools: Vec::new(),
             default_tools: crate::tools::default_names(),
             max_children: None,
@@ -323,12 +321,6 @@ impl LocalHarnessConfig {
             )),
             None => owner::user_state_root().map(StateLocation::ProjectRoot),
         }
-    }
-    /// Overrides default per-turn AGENTS.md/CLAUDE.md capture with an immutable manifest.
-    #[must_use]
-    pub fn context_manifest(mut self, reference: crate::conversation::FileRef) -> Self {
-        self.context_manifest = Some(reference);
-        self
     }
     /// Binds ordered approval policy data to every enabled tool, including defaults.
     #[must_use]
