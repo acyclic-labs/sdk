@@ -48,7 +48,7 @@ fn sync_file_impl(
         })
         .and_then(|()| meter.check());
         #[cfg(any(windows, target_os = "linux"))]
-        return sync_full(file, Some(meter));
+        return sync_full(file, durability, Some(meter));
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         loop {
             meter.check()?;
@@ -75,7 +75,11 @@ fn sync_file_impl(
 
 /// One retry/charging policy for the shared Linux/Windows full-flush primitive.
 #[cfg(any(windows, target_os = "linux"))]
-fn sync_full(file: &File, meter: Option<&dyn NativeReadMeter>) -> io::Result<()> {
+fn sync_full(
+    file: &File,
+    requested: Durability,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
     loop {
         if let Some(meter) = meter {
             meter.check()?;
@@ -91,7 +95,9 @@ fn sync_full(file: &File, meter: Option<&dyn NativeReadMeter>) -> io::Result<()>
             use std::os::windows::io::AsHandle as _;
             file.as_handle()
         };
-        match crate::persistence_syscall(|| sync_descriptor_once(descriptor)) {
+        match crate::persistence_syscall(|| {
+            crate::held_sync::sync_descriptor_requested_once(descriptor, requested)
+        }) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => {
                 return result.and_then(|()| match meter {
@@ -109,11 +115,13 @@ pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::
     #[cfg(not(target_vendor = "apple"))]
     {
         // Every durability is the full flush here; see `Durability::Barrier`.
-        let _ = durability;
         #[cfg(any(windows, target_os = "linux"))]
-        return sync_full(file, None);
+        return sync_full(file, durability, None);
         #[cfg(not(any(windows, target_os = "linux")))]
-        file.sync_all()
+        {
+            let _ = durability;
+            file.sync_all()
+        }
     }
 }
 
@@ -155,9 +163,9 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
                 #[cfg(target_os = "linux")]
                 {
                     use std::os::fd::AsFd as _;
-                    let _ = durability;
                     loop {
-                        match crate::held_sync::sync_data_descriptor_once(file.as_fd()) {
+                        match crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability)
+                        {
                             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                             result => return result,
                         }

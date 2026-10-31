@@ -49,13 +49,6 @@ pub(crate) fn observe_sync(
 /// the caller, whose metered loop owns retry, charging and cancellation for
 /// each native attempt. Unlike std's `sync_all`, nothing is retried here, and
 /// Apple never falls back to a weaker flush.
-#[cfg_attr(
-    not(target_vendor = "apple"),
-    allow(
-        unsafe_code,
-        reason = "one flush call on the caller's borrowed descriptor"
-    )
-)]
 pub fn sync_descriptor_once(
     #[cfg(unix)] descriptor: BorrowedFd<'_>,
     #[cfg(windows)] descriptor: BorrowedHandle<'_>,
@@ -63,32 +56,42 @@ pub fn sync_descriptor_once(
     #[cfg(target_vendor = "apple")]
     return crate::apple::sync_descriptor_once(descriptor);
     #[cfg(not(target_vendor = "apple"))]
-    {
+    sync_descriptor_requested_once(descriptor, crate::Durability::Full)
+}
+
+/// The same physical full flush, retaining the caller's requested guarantee.
+#[cfg(not(target_vendor = "apple"))]
+#[allow(
+    unsafe_code,
+    reason = "one flush call on the caller's borrowed descriptor"
+)]
+pub(crate) fn sync_descriptor_requested_once(
+    #[cfg(unix)] descriptor: BorrowedFd<'_>,
+    #[cfg(windows)] descriptor: BorrowedHandle<'_>,
+    requested: crate::Durability,
+) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let (syscall, identity) = ("fsync", descriptor.as_raw_fd() as u64);
+    #[cfg(windows)]
+    let (syscall, identity) = (
+        "FlushFileBuffers",
+        descriptor.as_raw_handle() as usize as u64,
+    );
+    observe_sync(requested, syscall, identity, || {
         #[cfg(target_os = "linux")]
-        let (syscall, identity) = ("fsync", descriptor.as_raw_fd() as u64);
+        // SAFETY: the borrowed descriptor stays open for this one flush.
+        let failed = unsafe { libc::fsync(descriptor.as_raw_fd()) } == -1;
         #[cfg(windows)]
-        let (syscall, identity) = (
-            "FlushFileBuffers",
-            descriptor.as_raw_handle() as usize as u64,
-        );
-        observe_sync(crate::Durability::Full, syscall, identity, || {
-            #[cfg(target_os = "linux")]
-            // SAFETY: the borrowed descriptor stays open for this one flush.
-            let failed = unsafe { libc::fsync(descriptor.as_raw_fd()) } == -1;
-            #[cfg(windows)]
-            // SAFETY: the borrowed handle stays open for this one flush.
-            let failed = unsafe {
-                windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(
-                    descriptor.as_raw_handle(),
-                )
-            } == 0;
-            if failed {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })
-    }
+        // SAFETY: the borrowed handle stays open for this one flush.
+        let failed = unsafe {
+            windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(descriptor.as_raw_handle())
+        } == 0;
+        if failed {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    })
 }
 
 /// Issues exactly one native ordering barrier of `descriptor`: its writes
@@ -105,7 +108,7 @@ pub fn order_descriptor_once(
     #[cfg(target_vendor = "apple")]
     return crate::apple::order_descriptor_once(descriptor);
     #[cfg(not(target_vendor = "apple"))]
-    sync_descriptor_once(descriptor)
+    sync_descriptor_requested_once(descriptor, crate::Durability::Barrier)
 }
 
 /// One data-only Linux attempt; its caller owns Interrupted retry.
@@ -114,9 +117,12 @@ pub fn order_descriptor_once(
     unsafe_code,
     reason = "one data flush on the caller's borrowed descriptor"
 )]
-pub(crate) fn sync_data_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
+pub(crate) fn sync_data_descriptor_once(
+    descriptor: BorrowedFd<'_>,
+    requested: crate::Durability,
+) -> io::Result<()> {
     observe_sync(
-        crate::Durability::Full,
+        requested,
         "fdatasync",
         descriptor.as_raw_fd() as u64,
         || {
