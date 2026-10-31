@@ -236,6 +236,14 @@ impl ModelProvider for ResolvedModel {
         })
     }
 
+    fn model_profile(
+        &self,
+        model: &Model,
+    ) -> Result<Option<acyclic_harness_core::model::ModelProfileBinding>> {
+        self.validate(model)?;
+        Ok(self.profile)
+    }
+
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.validate(model)?;
         Ok(self.admitted_capacity())

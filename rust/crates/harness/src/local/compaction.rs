@@ -1,46 +1,33 @@
-//! Automatic budgets use the provider's fixed tool/options token accounting.
+//! Startup planning uses the sealed selection; input admission counts the actual request.
 use super::*;
-use crate::{
-    context::{CompactionPolicy, ThresholdCompaction},
-    model::{ModelMessage, ModelRequest, ModelRole, PreparedModelRequest},
-};
+use crate::context::{CompactionPolicy, ThresholdCompaction};
 
-pub(super) async fn select(
+pub(super) fn select(
     selected: Option<CompactionPolicy>,
     model: &Model,
     provider: &dyn ModelProvider,
-    tools: &ToolRegistry,
-    limits: Limits,
 ) -> Result<CompactionPolicy> {
+    if matches!(selected, Some(CompactionPolicy::Disabled)) {
+        return Ok(CompactionPolicy::Disabled);
+    }
+    let capacity = provider.context_capacity(model)?;
+    let output = provider
+        .model_profile(model)?
+        .and_then(|profile| profile.max_output_tokens());
+    let reservation = capacity.output_reservation(output)?;
     match selected {
-        Some(CompactionPolicy::Disabled) => Ok(CompactionPolicy::Disabled),
         Some(CompactionPolicy::Threshold(policy)) => {
-            policy.validate(provider.context_capacity(model)?, None)?;
+            policy.validate(capacity, output)?;
             Ok(CompactionPolicy::Threshold(policy))
         }
-        None => {
-            let capacity = provider.context_capacity(model)?;
-            let reserve = ThresholdCompaction::for_capacity(capacity, 0)?.response_reserve_tokens;
-            let request = PreparedModelRequest::prepare(
-                ModelRequest {
-                    model: model.clone(),
-                    messages: vec![ModelMessage {
-                        role: ModelRole::User,
-                        content: ModelContent::Text("token accounting".into()),
-                    }],
-                    tools: tools.definitions(None)?,
-                    max_output_tokens: Some(reserve),
+        _ => Ok(CompactionPolicy::Threshold(
+            ThresholdCompaction::for_capacity(
+                crate::context::ModelContextCapacity {
+                    output_tokens: Some(reservation),
+                    ..capacity
                 },
-                limits,
-                None,
-            )?;
-            let count = provider.count_tokens(&request).await?;
-            let fixed = u32::try_from(count.validate(&request, &mut None)?).map_err(|_| {
-                Error::Invalid("fixed tool context exceeds provider capacity".into())
-            })?;
-            Ok(CompactionPolicy::Threshold(
-                ThresholdCompaction::for_capacity(capacity, fixed)?,
-            ))
-        }
+                0,
+            )?,
+        )),
     }
 }

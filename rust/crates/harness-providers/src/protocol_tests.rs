@@ -78,7 +78,7 @@ fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Res
             recent_tokens: 1024,
             ..ThresholdCompaction::default()
         };
-        assert!(policy.needs_compaction(capacity, u64::from(count))?);
+        assert!(policy.needs_compaction(capacity, count, prepared.request().max_output_tokens)?);
         // No generation has started. A fresh process uses the verified count;
         // previous usage and a sparse calibration cannot weaken admission.
         assert!(script.sent.lock().expect("fixture requests").is_empty());

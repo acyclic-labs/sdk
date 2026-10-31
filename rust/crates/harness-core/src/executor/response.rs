@@ -242,6 +242,7 @@ impl StockExecution<'_> {
                 with_history_io(self.io, |work| {
                     final_accounting.count.validate(&request, work)
                 })?,
+                self.output_tokens(),
             )? {
                 return Err(stock_boundary(
                     self.io,
@@ -291,7 +292,11 @@ impl StockExecution<'_> {
                 {
                     return Ok(retained);
                 }
-                let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
+                let token_pressure = policy.needs_compaction(
+                    accounting.capacity,
+                    input_tokens,
+                    self.output_tokens(),
+                )?;
                 let selected_base = step == 0 && input.selected_context.is_some();
                 let possible_message_pressure = selected_base
                     && prepared.request().messages.len() > self.compaction_message_limit(true, 0);

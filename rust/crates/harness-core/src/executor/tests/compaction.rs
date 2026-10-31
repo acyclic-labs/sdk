@@ -111,11 +111,11 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
                 },
                 ModelMessage {
                     role: ModelRole::User,
-                    content: ModelContent::Text("o".repeat(28_000)),
+                    content: ModelContent::Text("o".repeat(30_000)),
                 },
                 ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Text("a".repeat(28_000)),
+                    content: ModelContent::Text("a".repeat(30_000)),
                 },
             ],
             ..crate::context::Context::default()
@@ -131,6 +131,11 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
             )) as Arc<dyn crate::context::ContextStage>]),
             ToolRegistry::default(),
         );
+        let requested_output = output_capacity.is_none().then_some(4096);
+        let executor = match requested_output {
+            Some(output) => executor.with_max_output_tokens(output)?,
+            None => executor,
+        };
         let input = TurnInput {
             operation_id: OperationId::new(),
             input: ModelContent::Text("c".repeat(5_000)),
@@ -142,14 +147,8 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
         assert_eq!(executor.execute(input, &journal).await?, output);
         let requests = provider.requests();
         assert_eq!(requests.len(), 2);
-        assert_eq!(
-            requests[0].max_output_tokens,
-            Some(output_capacity.unwrap_or(16_384))
-        );
-        assert_eq!(
-            requests[1].max_output_tokens,
-            Some(output_capacity.unwrap_or(16_384))
-        );
+        assert_eq!(requests[0].max_output_tokens, requested_output);
+        assert_eq!(requests[1].max_output_tokens, requested_output);
         assert_eq!(
             provider.context_capacity(&requests[0].model)?.output_tokens,
             output_capacity
