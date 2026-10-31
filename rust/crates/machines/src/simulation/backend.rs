@@ -565,9 +565,7 @@ impl MachinesProvider for SimulatedMachines {
                         .is_some_and(|value| value.state != MachineState::Destroyed)))
             });
             if live_children {
-                return Err(ProviderError::Conflict(
-                    "machine has live-fork children; destroy them first".into(),
-                ));
+                return Err(ProviderError::FailedPrecondition(Precondition::LiveForks));
             }
             let now = tick(state)?;
             let value = state

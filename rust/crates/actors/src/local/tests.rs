@@ -9,6 +9,83 @@ mod hot_path;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> TestResult {
+    use acyclic_stream::testing::{Counted, RequestClass};
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let store = Store::new(provider.clone(), state_root()?);
+    let parent = actor("fork-parent")?;
+    let child = actor("fork-child")?;
+    place(&store, &parent).await?;
+    let input = StreamPath::new("inputs/fork-child")?;
+    let append = |value: &'static [u8], name: &str| -> Result<_, StreamError> {
+        Ok(acyclic_stream::AppendRequest {
+            path: input.clone(),
+            records: vec![value.to_vec().into()],
+            if_tail: None,
+            idempotency_key: key(name)?,
+        })
+    };
+    provider
+        .append(append(b"before", "fork/input-before")?)
+        .await?;
+    let request = crate::wire::ForkActorRequest {
+        actor_id: parent.id().to_owned(),
+        child_actor_id: child.id().to_owned(),
+        subscriptions: vec![crate::wire::SubscriptionSpec {
+            subscription_id: "inbox".into(),
+            stream_path: input.as_str().into(),
+            start: Some(crate::wire::subscription_spec::Start::CurrentHead(true)),
+            placement_anchor: false,
+        }],
+        idempotency_key: "original-fork".into(),
+        namespace: Some(parent.namespace().as_str().into()),
+        account_id: parent.account().as_bytes().to_vec(),
+    };
+    // The original operation commits, but its caller loses the reply.
+    store.fork_actor(&[], &request).await?;
+    let accepted = store.load(&child).await?;
+    assert_eq!(
+        accepted.state().ok_or("missing child")?.cursor("inbox"),
+        Some(1)
+    );
+    let parent_cut = store.load(&parent).await?;
+    store
+        .set_paused(&parent_cut, 1, true, key("fork/parent-progress")?)
+        .await?;
+    provider
+        .append(append(b"after", "fork/input-after")?)
+        .await?;
+    let reopened = Store::new(provider.clone(), state_root()?);
+    for count in [1, 100, 1_000] {
+        let before = provider.requests();
+        for _ in 0..count {
+            assert_eq!(reopened.fork_actor(&[], &request).await?, child);
+        }
+        let work = provider.requests().since(before);
+        assert_eq!(work.data(), 0, "replay must not redispatch a mutation/read");
+        assert_eq!(work.control(), count);
+        assert_eq!(work.class(RequestClass::Metadata), count);
+        assert_eq!(work.class(RequestClass::Head), 0);
+    }
+    let after = reopened.load(&child).await?;
+    assert_eq!(after.tail, accepted.tail);
+    assert_eq!(after.anchor, accepted.anchor);
+    assert_eq!(
+        after.state().ok_or("missing child")?.cursor("inbox"),
+        Some(1)
+    );
+    // Changing the original caller facts cannot borrow the settled result.
+    let mut changed = request.clone();
+    changed.idempotency_key = "changed-fork".into();
+    assert!(matches!(
+        reopened.fork_actor(&[], &changed).await,
+        Err(Error::Conflict)
+    ));
+    assert_eq!(reopened.load(&child).await?.anchor, accepted.anchor);
+    Ok(())
+}
+
 /// The original publication owns response, cursor, checkpoint and retry. A
 /// missing/foreign response cannot consume input; an empty response is real.
 #[tokio::test]

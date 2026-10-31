@@ -397,15 +397,18 @@ impl PreparedPublish {
     }
 }
 
-/// The commit key of one fork: the child's state path and the caller's key,
-/// so equal caller keys for different children never share an outcome.
-fn fork_key(child: &StreamPath, key: &str) -> Result<IdempotencyKey, Error> {
+/// Bind the original caller intent, before resolving mutable parent/input cuts.
+fn fork_key(
+    child: &StreamPath,
+    request: &crate::wire::ForkActorRequest,
+) -> Result<IdempotencyKey, Error> {
+    use prost::Message as _;
     use sha2::Digest as _;
     let mut hash = sha2::Sha256::new();
     hash.update(b"acyclic.actors.fork.v1\0");
     hash.update(child.as_str().as_bytes());
     hash.update([0]);
-    hash.update(key.as_bytes());
+    hash.update(request.encode_to_vec());
     Ok(IdempotencyKey::new(hash.finalize().to_vec())?)
 }
 
@@ -576,22 +579,30 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// server answers the RPC with this one composition (the local host and a
     /// hosted platform alike); `account` is the caller's authenticated
     /// account, used when the request names none. The commit key binds the
-    /// child and the caller's key, so retrying an unchanged request commits
-    /// once. A child that exists, or a parent that moves between the read and
-    /// the commit, is [`Error::Conflict`]. Cost: one parent head read, one head
-    /// read per `current_head` subscription, and one commit; no state is copied.
+    /// child and original request, so retrying an unchanged request recovers
+    /// its original fork before reading current heads. A child that exists
+    /// under another intent, or a parent that moves before acceptance, is
+    /// [`Error::Conflict`]. Fresh work: one retry-identity lookup, one parent
+    /// read, one head per `current_head` subscription, and one commit. Settled
+    /// replay: one retry-identity lookup, no head read or mutation dispatch.
     pub async fn fork_actor(
         &self,
         account: &[u8],
         request: &crate::wire::ForkActorRequest,
     ) -> Result<ActorReference, Error> {
         let invalid = || Error::Invalid("invalid fork request");
-        let request =
+        let admitted =
             crate::domain::ForkActorRequest::try_from(request.clone()).map_err(|_| invalid())?;
-        let parent = request.reference(account).map_err(|_| invalid())?;
-        let child = request.child_reference(account).map_err(|_| invalid())?;
+        let parent = admitted.reference(account).map_err(|_| invalid())?;
+        let child = admitted.child_reference(account).map_err(|_| invalid())?;
+        let parent_path = self.path(&parent)?;
+        let child_path = self.path(&child)?;
+        let key = fork_key(&child_path, request)?;
+        if self.fork_replay(&key, &parent_path, &child_path).await? {
+            return Ok(child);
+        }
         let mut subscriptions = BTreeMap::new();
-        for spec in request.subscriptions() {
+        for spec in admitted.subscriptions() {
             let path = StreamPath::new(spec.stream_path().to_owned())?;
             let cursor = match spec.start().cursor_value() {
                 Some(cursor) => cursor,
@@ -607,13 +618,49 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             );
         }
         let cut = self.load(&parent).await?;
-        let mut commit =
-            PreparedPublish::foreign(fork_key(&self.path(&child)?, request.idempotency_key())?);
+        let mut commit = PreparedPublish::foreign(key.clone());
         for effect in self.fork(&cut, &child, subscriptions)? {
             commit.join(effect)?;
         }
-        self.submit(commit).await?;
+        match self.submit(commit).await {
+            Ok(()) => {}
+            Err(
+                error @ (Error::Conflict
+                | Error::Stream(StreamError::IdempotencyMismatch)
+                | Error::Unknown { .. }),
+            ) => match self.fork_replay(&key, &parent_path, &child_path).await {
+                Ok(true) => {}
+                Ok(false) => return Err(error),
+                Err(_) if matches!(&error, Error::Unknown { .. }) => return Err(error),
+                Err(recovery) => return Err(recovery),
+            },
+            Err(error) => return Err(error),
+        }
         Ok(child)
+    }
+
+    // Streams retains the original terminal envelope under this exact intent.
+    // Its one fork and one activation are bounded, independent of actor history.
+    async fn fork_replay(
+        &self,
+        key: &IdempotencyKey,
+        parent: &StreamPath,
+        child: &StreamPath,
+    ) -> Result<bool, Error> {
+        let Some(observed) = self.provider.inspect_idempotency(key.clone()).await? else {
+            return Ok(false);
+        };
+        if observed.idempotency_key == *key
+            && let acyclic_stream::IdempotencyOutcome::Commit(envelope) = observed.outcome
+            && envelope.mutations.len() == 2
+            && envelope.mutations.iter().any(|mutation| {
+                matches!(mutation, acyclic_stream::CommittedMutation::Fork(fork)
+                    if fork.source == *parent && fork.destination == *child && fork.exclude.is_empty())
+            })
+        {
+            return Ok(true);
+        }
+        Err(Error::Invalid("fork recovery has a foreign publication"))
     }
 
     /// Read only the final state record; recovery work is independent of history length.
