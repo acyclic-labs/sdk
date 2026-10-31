@@ -218,8 +218,7 @@ where
     if required_bytes > decoder.remaining_bytes() {
         return Err(CanonicalDecodeError::Truncated.into());
     }
-    observe(ReadAllocationStep::CheckCopy(parent_bytes as u64,
-    ))?;
+    observe(ReadAllocationStep::CheckCopy(parent_bytes as u64))?;
     let mut parents = Vec::new();
     super::file_read::reserve_decoded_items(&mut parents, parent_count, &mut observe)?;
     let mut original_parents = decoder;

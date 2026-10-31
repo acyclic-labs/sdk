@@ -28,7 +28,7 @@ impl CheckoutTools {
             environment: self.environment.clone(),
             inherit_environment: false,
             timeout_ms: None,
-            maximum_output_bytes: maximum_output,
+            maximum_output_bytes: None,
             standard_input: None,
             process_custody: workspace.processes.clone(),
         };
