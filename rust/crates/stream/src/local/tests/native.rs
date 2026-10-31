@@ -429,35 +429,34 @@ fn prepared_partial_write_stops_at_exact_accepted_boundary()
 #[tokio::test]
 async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
 -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    let request = prepared_fixture(&provider).await?;
-    let meter = Arc::new(Meter::local());
-    let packet = provider
-        .native_prepare_commit(request, 64, meter.original())
-        .await??;
-    let (packet, guard) = packet.into_parts();
-    drop(packet);
-    drop(guard);
-    assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 1);
-    assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
-    // Preparation may grow the provider's funded retained-entry buffer. Its
-    // allocation belongs to the open provider, not the abandoned worker.
-    let terminal = Arc::downgrade(&provider.inner);
-    drop(provider);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while meter.held.load(Ordering::SeqCst) != 0 {
-            tokio::task::yield_now().await;
-        }
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    journal_lifecycle(&schedule, &mut boundaries, async {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let request = prepared_fixture(&provider).await?;
+        let meter = Arc::new(Meter::local());
+        let packet = provider
+            .native_prepare_commit(request, 64, meter.original())
+            .await??;
+        let (packet, guard) = packet.into_parts();
+        drop(packet);
+        drop(guard);
+        assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 1);
+        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        // Preparation may grow the provider's funded retained-entry buffer. Its
+        // allocation belongs to the open provider, not the abandoned worker.
+        let terminal = Arc::downgrade(&provider.inner);
+        drop(provider);
+        schedule.drained().await;
+        assert!(
+            terminal.upgrade().is_none(),
+            "abandoned worker retained the provider"
+        );
+        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        Ok(())
     })
-    .await?;
-    assert!(
-        terminal.upgrade().is_none(),
-        "abandoned worker retained the provider"
-    );
-    assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
-    meter.assert_refunded();
-    Ok(())
+    .await?
 }
 
 #[test]
@@ -471,41 +470,42 @@ fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let directory = tempfile::tempdir()?;
-        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-        let request = prepared_fixture(&provider).await?;
-        let meter = Arc::new(Meter::local());
-        let packet = provider
-            .native_prepare_commit(request, 64, meter.original())
-            .await??;
-        let (packet, packet_guard) = packet.into_parts();
-        let (started_send, started_receive) = tokio::sync::oneshot::channel();
-        let (release_send, release_receive) = std::sync::mpsc::sync_channel(1);
-        *JOURNAL_PERSIST_BLOCKER
-            .lock()
-            .map_err(|_| "poisoned fixture seam")? = Some((
-            Arc::as_ptr(&provider.inner.journal) as usize,
-            started_send,
-            release_receive,
-        ));
-        let future = packet.finish((OwnedBytes::from_static(b"accepted-without-reply")).into());
-        drop(future);
-        drop(packet_guard);
-        started_receive.await?;
-        assert!(meter.held.load(Ordering::SeqCst) > 0);
-        assert!(meter.write_bytes.load(Ordering::SeqCst) > 0);
-        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
-        release_send.send(())?;
-        assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 2);
-        drop(provider);
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while meter.held.load(Ordering::SeqCst) != 0 {
-                tokio::task::yield_now().await;
-            }
+        let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+        journal_lifecycle(&schedule, &mut boundaries, async {
+            let directory = tempfile::tempdir()?;
+            let provider =
+                LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+            let request = prepared_fixture(&provider).await?;
+            let meter = Arc::new(Meter::local());
+            let packet = provider
+                .native_prepare_commit(request, 64, meter.original())
+                .await??;
+            let (packet, packet_guard) = packet.into_parts();
+            let (started_send, started_receive) = tokio::sync::oneshot::channel();
+            let (release_send, release_receive) = std::sync::mpsc::sync_channel(1);
+            *JOURNAL_PERSIST_BLOCKER
+                .lock()
+                .map_err(|_| "poisoned fixture seam")? = Some((
+                Arc::as_ptr(&provider.inner.journal) as usize,
+                started_send,
+                release_receive,
+            ));
+            let future = packet.finish((OwnedBytes::from_static(b"accepted-without-reply")).into());
+            drop(future);
+            drop(packet_guard);
+            started_receive.await?;
+            assert!(meter.held.load(Ordering::SeqCst) > 0);
+            assert!(meter.write_bytes.load(Ordering::SeqCst) > 0);
+            assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+            assert!(futures::poll!(std::pin::pin!(schedule.drained())).is_pending());
+            release_send.send(())?;
+            assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 2);
+            drop(provider);
+            schedule.drained().await;
+            meter.assert_refunded();
+            Ok(())
         })
-        .await?;
-        meter.assert_refunded();
-        Ok(())
+        .await?
     })
 }
 
