@@ -27,7 +27,10 @@ fn error(error: impl std::error::Error + Send + Sync + 'static) -> CredentialErr
 }
 
 struct State {
-    reference: SourceReference,
+    // Each binding is a separate Auth cache partition, even when two callers
+    // share the same native root or select the same file.
+    identity: [u8; 16],
+    epoch: u64,
     path: NamespacePath,
     file_identity: Mutex<Option<[u8; 32]>>,
     // One generation per delivered batch, unrelated to permission or expiry.
@@ -46,8 +49,8 @@ impl State {
         }
         let generation = self.generation.load(Ordering::Acquire);
         let mut revision = [0; 32];
-        revision[..16].copy_from_slice(&self.reference.identity);
-        revision[16..24].copy_from_slice(&self.reference.epoch.to_le_bytes());
+        revision[..16].copy_from_slice(&self.identity);
+        revision[16..24].copy_from_slice(&self.epoch.to_le_bytes());
         revision[24..].copy_from_slice(&generation.to_le_bytes());
         Some(CredentialRevision::Bytes(revision))
     }
@@ -191,7 +194,8 @@ impl NativeCredentialSource {
             )
             .map_err(error)?;
         let state = Arc::new(State {
-            reference: source.reference(),
+            identity: *crate::identity::fresh_uuid().as_bytes(),
+            epoch: source.reference().epoch,
             path,
             file_identity: Mutex::new(None),
             generation: AtomicU64::new(0),

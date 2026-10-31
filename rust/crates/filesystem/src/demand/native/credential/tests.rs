@@ -4,13 +4,11 @@ use std::sync::atomic::AtomicUsize;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-async fn bind(
+async fn native_source(
     directory: &std::path::Path,
-    entry: &str,
     original: &crate::NativeMaterializationWork,
-    reads: &Arc<AtomicUsize>,
-) -> TestResult<NativeCredentialSource> {
-    let source = NativeDemandSource::open(
+) -> TestResult<NativeDemandSource> {
+    Ok(NativeDemandSource::open(
         std::borrow::Cow::Borrowed(directory),
         FilesystemProfile::Portable,
         VolumeLimits::default(),
@@ -19,7 +17,15 @@ async fn bind(
         original,
         original.cancellation(),
     )
-    .await?;
+    .await?)
+}
+
+async fn bind(
+    source: NativeDemandSource,
+    entry: &str,
+    original: &crate::NativeMaterializationWork,
+    reads: &Arc<AtomicUsize>,
+) -> TestResult<NativeCredentialSource> {
     let portable = crate::path::PortablePath::parse(&format!("/{entry}"), VolumeLimits::default())?;
     let path = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
     let read_work = original.clone();
@@ -76,8 +82,9 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
             .map_err(|(error, _)| error)?;
     let reads = Arc::new(AtomicUsize::new(0));
     let other_reads = Arc::new(AtomicUsize::new(0));
-    let source = bind(directory.path(), "credential", &original, &reads).await?;
-    let other = bind(directory.path(), "independent", &original, &other_reads).await?;
+    let root = native_source(directory.path(), &original).await?;
+    let source = bind(root.clone(), "credential", &original, &reads).await?;
+    let other = bind(root, "independent", &original, &other_reads).await?;
     let (first, follower) = tokio::join!(source.resolve(), source.resolve());
     let first = first?;
     let follower = follower?;
@@ -109,6 +116,11 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     );
 
     let independent_request = other.resolve().await?;
+    assert_ne!(
+        independent_request.binding(),
+        warm.binding(),
+        "a shared native root must not conflate credential partitions"
+    );
     let independent_change = other.watch().await?.ok_or("missing independent watch")?;
     let changed = source.watch().await?.ok_or("missing source watch")?;
     std::fs::write(
