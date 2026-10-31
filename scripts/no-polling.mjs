@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import ts from 'typescript';
+import ts from 'typescript-parser';
 
 // This is a conservative source rule, not a liveness proof. Loops require an
 // exact finite-work or producer-event disposition. In particular, changing a
@@ -26,13 +26,13 @@ export function sourceInScope(file) {
  return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
 }
 
-/** @param {import('typescript').Expression | undefined} expression @returns {string | undefined} */
+/** @param {import('typescript-parser').Expression | undefined} expression @returns {string | undefined} */
 function constantString(expression) {
  if (!expression) return undefined;
  const stack = [expression];
  const pieces = [];
  while (stack.length) {
-  const node = /** @type {import('typescript').Expression} */ (stack.pop());
+  const node = /** @type {import('typescript-parser').Expression} */ (stack.pop());
   if (ts.isStringLiteralLike(node)) pieces.push(node.text);
   else if (ts.isParenthesizedExpression(node)) stack.push(node.expression);
   else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) stack.push(node.right, node.left);
@@ -45,13 +45,13 @@ function scriptTokens(file, source) {
  // Both snapshots share a virtual root; no host filesystem lookup participates
  // in resolving a source binding, and the dependency pass reuses this AST.
  const parsed = ts.createSourceFile('/' + file, source, ts.ScriptTarget.Latest, true);
- const diagnostics = /** @type {typeof parsed & {parseDiagnostics: readonly import('typescript').Diagnostic[]}} */ (parsed).parseDiagnostics;
+ const diagnostics = /** @type {typeof parsed & {parseDiagnostics: readonly import('typescript-parser').Diagnostic[]}} */ (parsed).parseDiagnostics;
  if (diagnostics.length) throw new Error(file + ': ' + ts.flattenDiagnosticMessageText(diagnostics[0].messageText, '\n'));
- /** @type {import('typescript').Node[]} */
+ /** @type {import('typescript-parser').Node[]} */
  const stack = [parsed];
  const out = [];
  while (stack.length) {
-  const node = /** @type {import('typescript').Node} */ (stack.pop());
+  const node = /** @type {import('typescript-parser').Node} */ (stack.pop());
   const start = node.getStart(parsed);
   const line = parsed.getLineAndCharacterOfPosition(start).line + 1;
   if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier
@@ -81,7 +81,7 @@ function scriptTokens(file, source) {
    : node.kind === ts.SyntaxKind.Identifier || (node.kind >= ts.SyntaxKind.FirstKeyword && node.kind <= ts.SyntaxKind.LastKeyword) ? 'word'
    : 'punctuation';
   // The parser preserves executable template substitutions and regex boundaries.
-  const value = kind === 'literal' ? /** @type {import('typescript').LiteralLikeNode} */ (node).text
+  const value = kind === 'literal' ? /** @type {import('typescript-parser').LiteralLikeNode} */ (node).text
    : ts.isIdentifier(node) ? node.text : node.getText(parsed);
   out.push({value, kind, line, start});
  }

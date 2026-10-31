@@ -1,11 +1,11 @@
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
-import ts from 'typescript';
+import ts from 'typescript-parser';
 import {pollingUnit, temporalModule, validateDispositions} from './no-polling.mjs';
 
 /** @typedef {{id: string, unit: string, edges: Set<Dependency>, hazardous: boolean, callable: boolean}} Dependency */
 /** @typedef {{members: Dependency[], edges: Set<Component>, parents: Set<Component>, remaining: number, hazardous: boolean, fingerprint: string}} Component */
-/** @typedef {{node: import('typescript').Node, target?: Dependency, unresolved?: string}} Reference */
+/** @typedef {{node: import('typescript-parser').Node, target?: Dependency, unresolved?: string}} Reference */
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const script = file => /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
 
@@ -106,7 +106,7 @@ export function projectPollingSites(sources) {
   }
   return undefined;
  };
- /** @type {import('typescript').CompilerHost} */
+ /** @type {import('typescript-parser').CompilerHost} */
  const host = {
   getSourceFile: file => units.get(file.slice(1))?.parsed,
   getDefaultLibFileName: () => '/__no_default_lib.d.ts',
@@ -131,12 +131,12 @@ export function projectPollingSites(sources) {
  const localModule = name => name.startsWith('.') || workspaceNames.has(name.split('/').slice(0, name.startsWith('@') ? 2 : 1).join('/'));
  /** @type {Map<string, Dependency>} */
  const dependencies = new Map();
- /** @type {import('typescript').Symbol[]} */
+ /** @type {import('typescript-parser').Symbol[]} */
  const symbolQueue = [];
- /** @type {Map<import('typescript').Symbol, Dependency>} */
+ /** @type {Map<import('typescript-parser').Symbol, Dependency>} */
  const symbols = new Map();
  const indices = new Map([...units].map(([file, unit]) => [file, new Map(unit.stream.map((token, index) => [token.start, index]))]));
- /** @param {import('typescript').Node} node */
+ /** @param {import('typescript-parser').Node} node */
  const nodePosition = node => {
   const file = node.getSourceFile().fileName.slice(1);
   const index = indices.get(file)?.get(node.getStart());
@@ -151,13 +151,13 @@ export function projectPollingSites(sources) {
   dependencies.set(id, value);
   return value;
  };
- /** @param {import('typescript').Symbol | undefined} symbol */
+ /** @param {import('typescript-parser').Symbol | undefined} symbol */
  const canonical = symbol => symbol && (symbol.flags & ts.SymbolFlags.Alias) ? checker.getAliasedSymbol(symbol) : symbol;
- /** @param {import('typescript').Symbol | undefined} symbol */
+ /** @param {import('typescript-parser').Symbol | undefined} symbol */
  const aliasModule = symbol => {
   if (!symbol || !(symbol.flags & ts.SymbolFlags.Alias)) return undefined;
   for (const declaration of symbol.declarations ?? []) {
-   /** @type {import('typescript').Node} */
+   /** @type {import('typescript-parser').Node} */
    let original = declaration;
    while (original.parent && !ts.isImportDeclaration(original) && !ts.isExportDeclaration(original)) original = original.parent;
    if ((ts.isImportDeclaration(original) || ts.isExportDeclaration(original))
@@ -165,7 +165,7 @@ export function projectPollingSites(sources) {
   }
   return undefined;
  };
- /** @param {import('typescript').Symbol | undefined} symbol @returns {Dependency | undefined} */
+ /** @param {import('typescript-parser').Symbol | undefined} symbol @returns {Dependency | undefined} */
  const symbolDependency = symbol => {
   const module = aliasModule(symbol);
   const resolved = canonical(symbol);
@@ -195,16 +195,16 @@ export function projectPollingSites(sources) {
  const roots = new Map([...scripts.keys()].map(file => [file, dependency(file + ':initialization', required(units, file.slice(1)).fingerprint)]));
  /** @type {Reference[]} */
  const references = [];
- /** @type {{node: import('typescript').Node, owner: Dependency, target: Dependency}[]} */
+ /** @type {{node: import('typescript-parser').Node, owner: Dependency, target: Dependency}[]} */
  const initializers = [];
  for (const source of program.getSourceFiles()) {
   const file = source.fileName.slice(1);
   const unit = required(units, file);
   const hazardPositions = new Set(unit.sites.map(site => site.start));
-  /** @type {{node: import('typescript').Node, owner: Dependency}[]} */
+  /** @type {{node: import('typescript-parser').Node, owner: Dependency}[]} */
   const stack = [{node: source, owner: required(roots, source.fileName)}];
   while (stack.length) {
-   const {node, owner: parentOwner} = /** @type {{node: import('typescript').Node, owner: Dependency}} */ (stack.pop());
+   const {node, owner: parentOwner} = /** @type {{node: import('typescript-parser').Node, owner: Dependency}} */ (stack.pop());
    if (ts.isTypeNode(node)) continue;
    let owner = parentOwner;
    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
@@ -228,10 +228,10 @@ export function projectPollingSites(sources) {
      // Escaping/destructured namespace values retain all possible dependencies.
      // A precise property reference uses its own resolved member symbol below.
      owner = dependency(file + ':pattern:' + nodePosition(node).index, unit.fingerprint);
-     /** @type {import('typescript').BindingName[]} */
+     /** @type {import('typescript-parser').BindingName[]} */
      const names = [node.name];
      while (names.length) {
-      const name = /** @type {import('typescript').BindingName} */ (names.pop());
+      const name = /** @type {import('typescript-parser').BindingName} */ (names.pop());
       if (ts.isIdentifier(name)) {
        const bound = symbolDependency(checker.getSymbolAtLocation(name));
        if (bound) bound.edges.add(owner);

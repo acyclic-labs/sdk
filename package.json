@@ -31,6 +31,7 @@
     "ajv": "8.20.0",
     "fast-check": "4.10.2",
     "typescript": "7.0.2",
+    "typescript-parser": "npm:typescript@6.0.3",
     "@bufbuild/protobuf": "2.16.0",
     "@connectrpc/connect": "2.2.0",
     "@connectrpc/connect-node": "2.2.0"
