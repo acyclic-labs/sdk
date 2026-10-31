@@ -16,7 +16,7 @@ use crate::OwnedBytes as Bytes;
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 #[cfg(not(loom))]
 use acyclic_native_runtime::spawn_persistence as spawn_blocking;
-#[cfg(all(not(loom), feature = "test-support"))]
+#[cfg(all(not(loom), any(test, feature = "test-support")))]
 use acyclic_native_runtime::testing::spawn;
 use acyclic_native_runtime::{OwnershipAnchor, PersistenceKey};
 use async_trait::async_trait;
@@ -25,7 +25,7 @@ use futures::{StreamExt as _, stream};
 use query_model::{spawn, spawn_blocking};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
-#[cfg(all(not(loom), not(feature = "test-support")))]
+#[cfg(all(not(loom), not(any(test, feature = "test-support"))))]
 use tokio::spawn;
 use tokio::sync::mpsc;
 
