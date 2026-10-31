@@ -22,8 +22,6 @@ pub enum ServiceStartOutcome {
     Failed(String),
 }
 
-/// The bytes a failure report may carry; a longer reason is truncated.
-const MAXIMUM_FAILURE_BYTES: u64 = 4096;
 const READY_FRAME: u8 = b'\n';
 const FAILURE_FRAME: u8 = b'!';
 
@@ -39,38 +37,66 @@ impl ServiceReadiness {
             error.kind = obs::Empty
         );
         operation.in_scope(|| {
-            let mut frame = [0_u8; 1];
-            let outcome = loop {
-                match self.0.read(&mut frame) {
-                    Ok(0) => break Ok(ServiceStartOutcome::Exited),
-                    Ok(_) if frame[0] == FAILURE_FRAME => {
-                        let mut reason = Vec::new();
-                        // The failing service closes the channel as it exits.
-                        match (&mut self.0)
-                            .take(MAXIMUM_FAILURE_BYTES)
-                            .read_to_end(&mut reason)
-                        {
-                            Ok(_) => {}
-                            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
-                            Err(error) => break Err(error),
-                        }
-                        break Ok(ServiceStartOutcome::Failed(
-                            String::from_utf8_lossy(&reason).into_owned(),
-                        ));
-                    }
-                    Ok(_) => break Ok(ServiceStartOutcome::Ready),
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
-                        break Ok(ServiceStartOutcome::Exited);
-                    }
-                    Err(error) => break Err(error),
-                }
-            };
+            let outcome = receive(&mut self.0);
             if let Ok(outcome) = &outcome {
                 operation.record("ready", *outcome == ServiceStartOutcome::Ready);
             }
             operation.finish(outcome)
         })
+    }
+}
+
+fn receive(reader: &mut impl Read) -> io::Result<ServiceStartOutcome> {
+    let mut frame = [0];
+    match reader.read(&mut frame) {
+        Ok(0) => Ok(ServiceStartOutcome::Exited),
+        Ok(_) if frame[0] == FAILURE_FRAME => {
+            let mut reason = Vec::new();
+            // The original failing service closes its channel on exit.
+            match crate::io_progress::read_to_end(reader, &mut reason) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+                Err(error) => return Err(error),
+            }
+            let reason = String::from_utf8(reason)
+                .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+            Ok(ServiceStartOutcome::Failed(reason))
+        }
+        Ok(_) => Ok(ServiceStartOutcome::Ready),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(ServiceStartOutcome::Exited),
+        Err(error) => Err(error),
+    }
+}
+
+fn send(writer: &mut impl io::Write, frame: u8, body: &[u8]) -> io::Result<()> {
+    let header = [frame];
+    let result = (|| {
+        #[cfg(windows)]
+        if !body.is_empty() {
+            // Windows pipes cannot gather separate buffers in one write.
+            // Assemble once to retain the original single-call publication.
+            let length = body
+                .len()
+                .checked_add(1)
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            let mut frame = Vec::new();
+            frame
+                .try_reserve_exact(length)
+                .map_err(|_| io::ErrorKind::OutOfMemory)?;
+            frame.push(header[0]);
+            frame.extend_from_slice(body);
+            return crate::io_progress::write_all(&mut [io::IoSlice::new(&frame)], |buffers| {
+                writer.write(&buffers[0])
+            });
+        }
+        crate::io_progress::write_all(
+            &mut [io::IoSlice::new(&header), io::IoSlice::new(body)],
+            |buffers| writer.write_vectored(buffers),
+        )
+    })();
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        result => result,
     }
 }
 
@@ -81,28 +107,15 @@ pub struct ServiceReadySignal(File);
 impl ServiceReadySignal {
     /// Tells a connected starter that the service answers requests, and closes the channel.
     /// A starter that has already exited does not prevent the service from running.
-    pub fn signal(self) -> io::Result<()> {
-        self.send(&[READY_FRAME])
+    pub fn signal(mut self) -> io::Result<()> {
+        send(&mut self.0, READY_FRAME, &[])
     }
 
     /// Tells a connected starter why the service cannot start, and closes the
     /// channel, so the starter reports the cause instead of waiting for a
     /// service that will never answer.
-    pub fn fail(self, reason: &str) -> io::Result<()> {
-        let mut frame = vec![FAILURE_FRAME];
-        frame.extend(
-            reason
-                .bytes()
-                .take(usize::try_from(MAXIMUM_FAILURE_BYTES).unwrap_or(usize::MAX)),
-        );
-        self.send(&frame)
-    }
-
-    fn send(mut self, frame: &[u8]) -> io::Result<()> {
-        match io::Write::write_all(&mut self.0, frame) {
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-            result => result,
-        }
+    pub fn fail(mut self, reason: &str) -> io::Result<()> {
+        send(&mut self.0, FAILURE_FRAME, reason.as_bytes())
     }
 }
 

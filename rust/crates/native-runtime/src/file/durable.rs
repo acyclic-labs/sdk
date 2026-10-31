@@ -19,15 +19,10 @@ pub fn write_file_with(
 }
 
 /// Writes all bytes through the same per-call durable boundary.
-pub fn write_file_all(writer: &mut impl Write, mut bytes: &[u8]) -> io::Result<()> {
-    while !bytes.is_empty() {
-        let count = write_file(writer, bytes)?;
-        if count == 0 {
-            return Err(io::ErrorKind::WriteZero.into());
-        }
-        bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
-    }
-    Ok(())
+pub fn write_file_all(writer: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+    crate::io_progress::write_all(&mut [io::IoSlice::new(bytes)], |buffers| {
+        write_file(writer, &buffers[0])
+    })
 }
 
 /// Retains the caller's original data-only flush policy.
