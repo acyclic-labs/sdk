@@ -33,22 +33,19 @@ test("selected report acknowledgement distinguishes live, empty, refusal and pro
     try {
       await ready(running);
       if (mode === "expired") await running.requestReport(0);
-      if (mode === "crash") {
-        // Exercise observed owner death before EOF. EOF arriving while its
-        // owner is still live is covered by the separate producer-loss case.
-        const channel = running.child.stdio[3];
-        channel.pause();
-        const request = running.requestReport(Date.now() + 500);
-        await running.exited;
-        channel.resume();
-        await request;
-      }
       // Closing stderr must not alter delivery on the dedicated control port.
       if (mode === "live") running.child.stderr.destroy();
       await scope.close();
       const result = await running.closed;
       assert.equal(result.termination.report_requested, true);
-      assert.equal(result.termination.report_outcome, expected);
+      if (mode === "crash") {
+        assert.equal(result.code, 17, "the real selected producer exited without acknowledging");
+        // EOF and process exit are independent native observations. Either
+        // terminal is valid, but transport loss must retain its precise cause.
+        assert.ok(result.termination.report_outcome === "exited"
+          || (result.termination.report_outcome === "write-failed"
+            && result.termination.report_cause === "control-eof-before-acknowledgement"));
+      } else assert.equal(result.termination.report_outcome, expected);
       assert.equal(result.termination.report_acknowledged, ["report", "empty", "unsupported"].includes(expected));
       assert.equal(result.termination.missing_wait_report, !["report", "empty"].includes(expected));
       if (expected === "report") assert.equal(result.termination.stuck_on[0].primitive, "channel-close");
@@ -139,6 +136,24 @@ test("a requested report settles at producer EOF while the selected process rema
     assert.equal(result.termination.report_cause, "control-eof-before-acknowledgement");
     assert.equal(result.termination.report_acknowledged, false);
     assert.equal(physicallyClosed, true);
+    assert.equal(scope.children.size, 0);
+  } finally { await scope.close(); }
+});
+
+test("an observed owner exit settles a later report request without an acknowledgement", { skip: process.platform === "win32" }, async () => {
+  const scope = new Processes();
+  const running = launch(scope, false, "no-ready");
+  try {
+    await assert.rejects(running.reportReady, error => error.code === "REPORT_CONTROL_ENDED");
+    const requested = new Promise(resolve => running.child.once("exit", () => {
+      resolve(running.requestReport(Date.now() + 500));
+    }));
+    running.killExecutable();
+    await requested;
+    const result = await running.closed;
+    assert.equal(result.termination.report_outcome, "exited");
+    assert.equal(result.termination.report_acknowledged, false);
+    await scope.close();
     assert.equal(scope.children.size, 0);
   } finally { await scope.close(); }
 });
