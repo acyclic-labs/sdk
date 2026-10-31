@@ -7,8 +7,6 @@ mod native_access;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
 use std::time::Instant;
 
 use acyclic_fs::demand::DemandSource;
@@ -1042,25 +1040,8 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
     let mut cpu_ns = Vec::new();
     let mut read_bytes = Vec::new();
     let mut write_bytes = Vec::new();
-    let mut largest_tick_gap_us = Vec::new();
     for _ in 0..5 {
         let destination = tempfile::tempdir()?;
-        let running = Arc::new(AtomicBool::new(true));
-        let largest_gap = Arc::new(AtomicU64::new(0));
-        let tick_running = Arc::clone(&running);
-        let tick_gap = Arc::clone(&largest_gap);
-        let ticker = tokio::spawn(async move {
-            let mut previous = Instant::now();
-            while tick_running.load(Ordering::Relaxed) {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-                let now = Instant::now();
-                tick_gap.fetch_max(
-                    u64::try_from(now.duration_since(previous).as_micros()).unwrap_or(u64::MAX),
-                    Ordering::Relaxed,
-                );
-                previous = now;
-            }
-        });
         let before = counters()?;
         let started = Instant::now();
         let receipt = exact
@@ -1073,12 +1054,9 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
             .await?;
         materialize_us.push(u64::try_from(started.elapsed().as_micros())?);
         let after = counters()?;
-        running.store(false, Ordering::Relaxed);
-        ticker.await?;
         cpu_ns.push(after.0.saturating_sub(before.0));
         read_bytes.push(after.1.saturating_sub(before.1));
         write_bytes.push(after.2.saturating_sub(before.2));
-        largest_tick_gap_us.push(largest_gap.load(Ordering::Relaxed));
         assert_eq!(receipt.value.files, 100);
 
         let native_destination = tempfile::tempdir()?;
@@ -1116,7 +1094,6 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
             "cpu_ns": cpu_ns,
             "read_bytes": read_bytes,
             "write_bytes": write_bytes,
-            "largest_tick_gap_us": largest_tick_gap_us,
         })
     );
     Ok(())
