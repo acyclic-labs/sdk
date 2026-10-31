@@ -51,7 +51,8 @@ pub enum ItemKind {
     Reasoning,
 }
 
-/// Versioned durable IR item. Raw JSON remains raw through storage and replay.
+/// Versioned durable IR item. Storage encodes each raw JSON body as an exact
+/// UTF-8 string; rendering emits that body's original JSON bytes verbatim.
 ///
 /// A foreign message projection is fixed at admission, not recomputed from its
 /// neighbours. There are at most four entries: lookup work cannot grow with the
@@ -66,7 +67,9 @@ struct Record {
     version: u32,
     provenance: Provenance,
     kind: ItemKind,
+    #[serde(with = "stored_wire")]
     wire: Box<RawValue>,
+    #[serde(with = "stored_projections")]
     projections: BTreeMap<Family, Box<RawValue>>,
 }
 
@@ -137,8 +140,97 @@ impl WireItem {
         &self.0.wire
     }
 
+    /// Borrow the fixed set of admitted foreign projections without decoding.
+    /// There are at most three entries, independent of conversation length.
+    pub fn projections(&self) -> impl ExactSizeIterator<Item = (Family, &RawValue)> {
+        self.0
+            .projections
+            .iter()
+            .map(|(family, wire)| (*family, wire.as_ref()))
+    }
+
     pub(crate) fn projection(&self, family: Family) -> Option<&RawValue> {
         self.0.projections.get(&family).map(AsRef::as_ref)
+    }
+}
+
+// Storage contains UTF-8 bytes, not an embedded JSON tree. In particular,
+// serde's private RawValue marker remains an ordinary byte sequence here.
+// Rendering still borrows RawValue and emits its original JSON verbatim.
+mod stored_wire {
+    use super::*;
+    use serde::Serializer;
+
+    pub(super) fn serialize<S: Serializer>(
+        wire: &RawValue,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(wire.get())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Box<RawValue>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let length = text.len();
+        let wire = RawValue::from_string(text).map_err(serde::de::Error::custom)?;
+        if wire.get().len() != length {
+            return Err(serde::de::Error::custom(
+                "stored wire bytes cannot be trimmed",
+            ));
+        }
+        Ok(wire)
+    }
+}
+
+mod stored_projections {
+    use super::*;
+    use serde::{Serializer, de::MapAccess, ser::SerializeMap};
+
+    struct Borrowed<'a>(&'a RawValue);
+    impl Serialize for Borrowed<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            stored_wire::serialize(self.0, serializer)
+        }
+    }
+    struct Owned(Box<RawValue>);
+    impl<'de> Deserialize<'de> for Owned {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            stored_wire::deserialize(deserializer).map(Self)
+        }
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        projections: &BTreeMap<Family, Box<RawValue>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(projections.len()))?;
+        for (family, wire) in projections {
+            map.serialize_entry(family, &Borrowed(wire))?;
+        }
+        map.end()
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<Family, Box<RawValue>>, D::Error> {
+        struct Projections;
+        impl<'de> serde::de::Visitor<'de> for Projections {
+            type Value = BTreeMap<Family, Box<RawValue>>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("immutable wire projections by protocol family")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut projections = BTreeMap::new();
+                while let Some((family, Owned(wire))) = map.next_entry::<Family, Owned>()? {
+                    if projections.insert(family, wire).is_some() {
+                        return Err(serde::de::Error::custom("duplicate wire projection"));
+                    }
+                }
+                Ok(projections)
+            }
+        }
+        deserializer.deserialize_map(Projections)
     }
 }
 

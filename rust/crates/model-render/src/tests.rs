@@ -72,8 +72,8 @@ fn reference(target: Family, items: &[WireItem]) -> Value {
         if record.get("kind").unwrap() == "reasoning" && item.provenance().family != target {
             continue;
         }
-        inputs.push(if item.provenance().family == target {
-            record.get("wire").unwrap().clone()
+        let stored = if item.provenance().family == target {
+            record.get("wire").unwrap()
         } else {
             let key = serde_json::to_value(target).unwrap();
             record
@@ -81,8 +81,8 @@ fn reference(target: Family, items: &[WireItem]) -> Value {
                 .unwrap()
                 .get(key.as_str().unwrap())
                 .unwrap()
-                .clone()
-        });
+        };
+        inputs.push(serde_json::from_str::<Value>(stored.as_str().unwrap()).unwrap());
     }
     let field = match target {
         Family::Responses => "input",
@@ -155,16 +155,30 @@ fn admission_refuses_corrupt_storage_and_reasoning_replacement() {
             json!({"family":"responses","model":"","endpoint":"x"}),
         ),
         ("wire", json!([])),
+        ("wire", json!({"text":"embedded tree"})),
+        ("wire", json!(" {\"text\":\"trimmed\"} ")),
+        ("wire", json!("{\"text\":\"\\ud800\"}")),
         (
             "projections",
-            json!({"anthropic":{"text":"foreign fallback"}}),
+            json!({"anthropic":"{\"text\":\"foreign fallback\"}"}),
         ),
-        ("projections", json!({"responses":{"text":"replaced"}})),
+        (
+            "projections",
+            json!({"responses":"{\"text\":\"replaced\"}"}),
+        ),
     ] {
         let mut bad = record.clone();
         bad.as_object_mut().unwrap().insert(field.into(), value);
         assert!(serde_json::from_value::<WireItem>(bad).is_err());
     }
+    let provenance = serde_json::to_string(source.provenance()).unwrap();
+    let prefix = format!(
+        "{{\"version\":1,\"provenance\":{provenance},\"kind\":\"message\",\"wire\":\"{{}}\",\"projections\":"
+    );
+    let ordinary = format!("{prefix}{{\"chat\":\"{{}}\"}}}}");
+    let duplicate = format!("{prefix}{{\"chat\":\"{{}}\",\"chat\":\"{{}}\"}}}}");
+    assert!(serde_json::from_str::<WireItem>(&ordinary).is_ok());
+    assert!(serde_json::from_str::<WireItem>(&duplicate).is_err());
     // RawValue alone accepts these bytes. The shared strict walker rejects
     // malformed Unicode in any nested value, including unknown extension keys.
     let malformed = RawValue::from_string(r#"{"extra":[{"text":"\ud800"}]}"#.into()).unwrap();

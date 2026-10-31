@@ -542,6 +542,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-host-platform",
  "acyclic-machines",
+ "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-proto-build",
