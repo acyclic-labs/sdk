@@ -111,6 +111,9 @@ impl MachinesWorkspace {
         maximum_output: u64,
         task_deadline: Option<u64>,
     ) -> Result<acyclic_machines::ExecStream> {
+        if input.output_lines.is_some() {
+            return Err(Error::Unsupported("machine query output selection is unavailable before original output retention; recovery: invoke Grep with head_limit=0 and offset=0 until the original complete-output selector is bound".into()));
+        }
         input.validate()?;
         let expiry = self.verifier.expiry(&self.signed)?.checked_mul(1000)
             .ok_or_else(|| Error::Invalid("machine authority expiry overflow; recovery: issue an exactly representable expiry".into()))?;

@@ -258,18 +258,12 @@ impl adapter::Adapter {
         if glob && !cc {
             return Err(Error::Unsupported("glob: original target root, modification ordering and .geminiignore selection are unavailable; recovery: bind the original target query selector".into()));
         }
-        if !glob {
-            if cc {
-                if number(fields, "head_limit")?.is_some_and(|limit| limit > 0)
-                    || number(fields, "offset")?.is_some_and(|offset| offset > 0)
-                {
-                    return Err(Error::Unsupported("Grep: head/offset selection is unavailable before original output truncation; recovery: invoke Grep with head_limit=0 and offset=0".into()));
-                }
-            } else if optional_text(fields, "exclude_pattern")?.is_some()
-                || number(fields, "total_max_matches")?.is_some()
-            {
-                return Err(Error::Unsupported("grep_search: total/exclusion selection is unavailable before original output truncation; recovery: invoke grep_search without exclude_pattern or total_max_matches".into()));
-            }
+        if !glob
+            && !cc
+            && (optional_text(fields, "exclude_pattern")?.is_some()
+                || number(fields, "total_max_matches")?.is_some())
+        {
+            return Err(Error::Unsupported("grep_search: total/exclusion selection is unavailable before original output truncation; recovery: invoke grep_search without exclude_pattern or total_max_matches".into()));
         }
         let mut custody = crate::tool::edit::allocation(work, 0)?;
         use QueryArgument::{Number, Text};
@@ -375,7 +369,24 @@ impl adapter::Adapter {
         #[derive(Serialize)]
         struct Query<'a> {
             command: &'a [QueryArgument<'a>],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            output_lines: Option<crate::tools::shell::OutputLines>,
         }
-        self.canonical(invocation, &Query { command: &argv }, work)
+        let output_lines = if cc && !glob {
+            let offset = number(fields, "offset")?.unwrap_or(0);
+            let limit = number(fields, "head_limit")?.filter(|limit| *limit > 0);
+            (offset > 0 || limit.is_some())
+                .then_some(crate::tools::shell::OutputLines { offset, limit })
+        } else {
+            None
+        };
+        self.canonical(
+            invocation,
+            &Query {
+                command: &argv,
+                output_lines,
+            },
+            work,
+        )
     }
 }

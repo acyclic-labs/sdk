@@ -34,6 +34,7 @@ impl CheckoutTools {
             standard_input: None,
             process_custody: workspace.processes.clone(),
         };
+        let output_lines = input.output_lines;
         let invocation = native_process::shell::prepare(
             input,
             &state.mounts,
@@ -63,7 +64,7 @@ impl CheckoutTools {
             .native_root
             .clone()
             .unwrap_or_else(|| state.mounts.root.join(".volumes/scratch"));
-        let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output);
+        let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output, output_lines);
         let (output, (state, files, claims, retained)) =
             native_process::capture::capture_with_custody(
                 invocation,

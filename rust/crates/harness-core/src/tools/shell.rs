@@ -17,6 +17,55 @@ pub enum ShellCommand {
     Argv(Vec<String>),
 }
 
+/// A stdout line window applied to original chunks before tail retention.
+/// This selects presentation only; it never stops or restarts the process.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct OutputLines {
+    /// Complete stdout lines to skip, independent of stderr.
+    pub offset: u64,
+    /// Lines to retain; omission selects through the original EOF.
+    pub limit: Option<u64>,
+}
+
+impl OutputLines {
+    /// Advances this window over one original stdout chunk without allocation.
+    /// Newlines complete lines, so a split line uses no extra retained buffer.
+    pub fn select<'a>(&mut self, mut bytes: &'a [u8]) -> &'a [u8] {
+        if self.limit == Some(0) {
+            return &bytes[..0];
+        }
+        while self.offset > 0 {
+            let Some(end) = bytes.iter().position(|byte| *byte == b'\n') else {
+                return &bytes[bytes.len()..];
+            };
+            bytes = &bytes[end + 1..];
+            self.offset -= 1;
+        }
+        if let Some(remaining) = &mut self.limit {
+            for (index, byte) in bytes.iter().enumerate() {
+                if *byte == b'\n' {
+                    *remaining -= 1;
+                    if *remaining == 0 {
+                        return &bytes[..index + 1];
+                    }
+                }
+            }
+        }
+        bytes
+    }
+}
+
 impl From<String> for ShellCommand {
     fn from(source: String) -> Self {
         Self::Source(source)
@@ -169,6 +218,11 @@ pub struct ShellInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1))]
     pub target: Option<String>,
+    /// Internal query presentation selection over the original stdout stream.
+    /// Native declarations supply their own argument names and schemas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub output_lines: Option<OutputLines>,
 }
 
 impl ShellInput {

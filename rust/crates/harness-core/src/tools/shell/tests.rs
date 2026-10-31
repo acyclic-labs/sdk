@@ -24,8 +24,10 @@ proptest! {
     fn command_round_trip_preserves_the_selected_directory(
         command in ".{0,200}", cwd in proptest::option::of(".{0,100}"),
         timeout_ms in proptest::option::of(any::<u32>()),
+        window in prop::option::of((any::<u64>(), prop::option::of(any::<u64>()))),
     ) {
-        let input = ShellInput { command: command.into(), cwd, timeout_ms, target: None };
+        let output_lines = window.map(|(offset, limit)| OutputLines {offset, limit});
+        let input = ShellInput { command: command.into(), cwd, timeout_ms, output_lines, target: None };
         let encoded = serde_json::to_vec(&input).map_err(|error| TestCaseError::fail(error.to_string()))?;
         let restored: ShellInput = serde_json::from_slice(&encoded).map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert_eq!(&restored, &input);
@@ -57,6 +59,7 @@ fn model_cannot_select_a_workspace_or_escape_through_cwd() {
                 command: "pwd".into(),
                 cwd: Some(cwd.into()),
                 timeout_ms: None,
+                output_lines: None,
                 target: None
             }
             .validate()
@@ -68,6 +71,7 @@ fn model_cannot_select_a_workspace_or_escape_through_cwd() {
             command: "pwd".into(),
             cwd: None,
             timeout_ms: Some(0),
+            output_lines: None,
             target: None,
         }
         .validate()

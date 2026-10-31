@@ -134,6 +134,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                     command: command.into(),
                     cwd: None,
                     timeout_ms: None,
+                    output_lines: None,
                     target: None,
                 },
                 1024,
@@ -146,6 +147,41 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
     assert_eq!(output.stdout, b"out");
     assert_eq!(output.stderr, b"err");
     assert_eq!(output.exit_code, Some(7));
+    // This backend cannot select before its producer's output limit or retain
+    // complete skipped output. Refusal must precede the original dispatch.
+    #[cfg(unix)]
+    {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let marker = directory.path().join("must-not-be-created");
+        let result = workspace
+            .shell(
+                acyclic_harness_core::tools::ShellInput {
+                    command: acyclic_harness_core::tools::shell::ShellCommand::Argv(vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf dispatched > \"$1\"".into(),
+                        "query-selector".into(),
+                        marker
+                            .to_str()
+                            .ok_or_else(|| {
+                                Error::Invalid("query control path is not UTF-8".into())
+                            })?
+                            .into(),
+                    ]),
+                    cwd: None,
+                    timeout_ms: None,
+                    target: None,
+                    output_lines: Some(acyclic_harness_core::tools::shell::OutputLines {
+                        offset: 1,
+                        limit: Some(1),
+                    }),
+                },
+                1024,
+            )
+            .await;
+        assert!(matches!(result, Err(Error::Unsupported(_))));
+        assert!(!marker.exists());
+    }
     issuer.revoke_workload(&scope)?;
     assert!(matches!(
         workspace
@@ -154,6 +190,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                     command: command.into(),
                     cwd: None,
                     timeout_ms: None,
+                    output_lines: None,
                     target: None
                 },
                 1024
