@@ -43,6 +43,7 @@ fn user() -> Sender {
 
 fn adopted(agent: AgentId) -> ForkAdopted {
     ForkAdopted {
+        profile: None,
         agent,
         parent: None,
         forked_at: 0,
@@ -258,6 +259,80 @@ async fn seeded() -> Result<Seeded> {
     })
 }
 
+#[tokio::test]
+async fn role_context_excludes_fresh_history_and_preserves_the_original_fork_cut() -> Result {
+    for context in [SpawnContext::Fresh, SpawnContext::Fork] {
+        let Seeded {
+            provider,
+            parent,
+            state,
+        } = seeded().await?;
+        let pin = AgentProfilePin {
+            role: "reviewer".into(),
+            model: "test/reviewer".into(),
+            digest: [7; 32],
+            context,
+        };
+        let mut step = spawning(state, "review");
+        let Out::Spawn { profile, .. } = &mut step.outs[1] else {
+            return Err("missing spawn".into());
+        };
+        *profile = Some(pin.clone());
+        let request = lower(&step, 1, delivery_key(&step.state, "review")?)?;
+        let child = parent.child(&AgentId::derive(&parent.id(), "review"))?;
+        assert!(matches!(
+            provider.commit(request).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let record = provider
+            .read(ReadRequest {
+                path: child.inbox()?,
+                from: 1,
+                key: None,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?
+            .try_next()
+            .await?
+            .ok_or("missing adoption")?;
+        let InboxRecord::ForkAdopted(adoption) = InboxRecord::decode(&record.value)? else {
+            return Err("missing adopted profile".into());
+        };
+        assert_eq!(adoption.profile, Some(pin.clone()));
+        let child_state = AgentState::adopted(child.clone(), &adoption)?;
+        assert_eq!(child_state.profile, Some(pin));
+        match provider
+            .read(ReadRequest {
+                path: child.conversation()?,
+                from: 0,
+                key: None,
+                limit: 3,
+                at_least: Default::default(),
+            })
+            .await
+        {
+            Err(StreamError::NotFound) if context == SpawnContext::Fresh => {
+                assert_eq!(child_state.conversation_tail, 0);
+                assert_eq!(child_state.checkpoint, None);
+            }
+            Ok(records) if context == SpawnContext::Fork => {
+                let records: Vec<_> = records.try_collect().await?;
+                assert_eq!(
+                    records
+                        .iter()
+                        .map(|record| record.value.as_ref())
+                        .collect::<Vec<_>>(),
+                    vec![b"c1".as_slice(), b"c2".as_slice()]
+                );
+                assert_eq!(child_state.conversation_tail, 2);
+            }
+            _ => return Err("role context leaked or discarded the fork's history".into()),
+        }
+    }
+    Ok(())
+}
+
 /// Commits `name`'s spawn from `state`, optionally without the fork exclusion.
 async fn spawn_child(
     provider: &MemoryStream,
@@ -288,6 +363,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
         outs: vec![
             Out::Conversation(b"c3".to_vec()),
             Out::Spawn {
+                profile: None,
                 intent: intent(name),
                 brief: None,
                 volumes: Vec::new(),
@@ -401,6 +477,7 @@ fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
     let step = Step {
         outs: vec![
             Out::Spawn {
+                profile: None,
                 intent: intent("s1"),
                 brief: None,
                 volumes: Vec::new(),
@@ -1033,6 +1110,7 @@ impl TurnDriver for ToolSpawner {
                 reserved_children: 0,
                 checkpoint: None,
                 outs: vec![Out::Spawn {
+                    profile: None,
                     intent: intent("spawn:tool"),
                     brief: None,
                     volumes: Vec::new(),
@@ -1119,6 +1197,7 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
         reserved_children: 0,
         checkpoint: None,
         outs: vec![Out::Spawn {
+            profile: None,
             intent: intent("spawn:tool"),
             brief: None,
             volumes: Vec::new(),

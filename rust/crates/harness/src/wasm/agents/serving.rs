@@ -16,8 +16,6 @@ type Hosted = Server<dyn StreamProvider, Objects>;
 struct Policy {
     policy: Function,
     admitted: Function,
-    /// The preset's open-children bound is not zero.
-    children: bool,
 }
 
 impl hosting::Platform for Policy {
@@ -52,7 +50,8 @@ impl hosting::Platform for Policy {
         })
     }
     fn runs_children(&self) -> bool {
-        self.children
+        // This event binding has no admitted child placement/wake producer.
+        false
     }
     fn admitted(&self) -> BoxProviderFuture<'_, std::result::Result<(), StreamError>> {
         Box::pin(async {
@@ -97,8 +96,6 @@ impl WasmAgentServer {
     ) -> std::result::Result<WasmAgentServer, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let limits = options.limits;
-        // A host without a child execution producer refuses both spawn entrances.
-        let children = options.preset.max_children != Some(0);
         let field = |name: &str| js_sys::Reflect::get(&platform, &JsValue::from_str(name));
         let manifest = field("manifest")?.dyn_into::<js_sys::Uint8Array>()?;
         let manifest = snapshot(&manifest)?;
@@ -170,11 +167,7 @@ impl WasmAgentServer {
             observation,
             server: RefCell::new(None),
             pending: RefCell::new(None),
-            platform: Arc::new(Policy {
-                policy,
-                admitted,
-                children,
-            }),
+            platform: Arc::new(Policy { policy, admitted }),
             authority: authority.authority(),
             binding,
             lifetime: RefCell::new(Some(tokio::sync::watch::channel(()).0)),
@@ -527,6 +520,7 @@ impl WasmAgentServer {
     fn root_request(&self, agent: AgentId) -> std::result::Result<RootRequest, JsValue> {
         let volume = private_volume(self.observation.provider.clone(), &agent).map_err(js_error)?;
         Ok(RootRequest {
+            profile: None,
             agent,
             fresh: vec![VolumeBinding {
                 name: PRIVATE_VOLUME.into(),

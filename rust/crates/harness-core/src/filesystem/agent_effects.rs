@@ -184,6 +184,12 @@ mod tests {
         );
         let effect = |name: &str| -> Result<TurnEffect> {
             Ok(TurnEffect::Spawn {
+                profile: crate::agent::AgentProfilePin {
+                    role: "worker".into(),
+                    model: "test/worker".into(),
+                    digest: [1; 32],
+                    context: crate::agent::SpawnContext::Fork,
+                },
                 intent: IntentId::try_from(name)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
                 brief: Box::new(crate::conversation::FileRef::new(

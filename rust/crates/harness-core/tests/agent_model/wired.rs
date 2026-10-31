@@ -421,6 +421,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
             .await?;
     }
     let forked = ForkAdopted {
+        profile: None,
         agent: id(6),
         parent: Some(parent.clone()),
         forked_at: 0,
@@ -1011,130 +1012,5 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
         let calls = run(issued, given, agent, grant).await?;
         assert_eq!(calls, 0, "{case}: refused before any stream IO");
     }
-    Ok(())
-}
-
-/// Effects recorded in memory, once per call.
-#[derive(Default)]
-struct Recorded(std::sync::Mutex<std::collections::BTreeMap<String, TurnEffect>>);
-
-impl TurnEffects for Recorded {
-    fn record<'a>(
-        &'a self,
-        call: &'a str,
-        effect: &'a TurnEffect,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<TurnEffect>> {
-        let mut recorded = self.0.lock().expect("effects");
-        let first = recorded
-            .entry(call.to_owned())
-            .or_insert_with(|| effect.clone());
-        let first = first.clone();
-        Box::pin(async move { Ok(first) })
-    }
-
-    fn recorded(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Vec<TurnEffect>>> {
-        let recorded = self.0.lock().expect("effects").values().cloned().collect();
-        Box::pin(async move { Ok(recorded) })
-    }
-
-    fn holds(&self, _: OperationId) -> BoxProviderFuture<'_, acyclic_harness_core::Result<bool>> {
-        Box::pin(async { Ok(false) })
-    }
-}
-
-/// A writer that names the agent's private volume and stages every brief as
-/// one fixed file.
-struct Writer(VolumeRef);
-
-impl acyclic_harness_core::conversation::ContentPublisher for Writer {
-    fn volume(&self) -> &VolumeRef {
-        &self.0
-    }
-
-    fn stage_once<'a>(
-        &'a self,
-        _: OperationId,
-        _: &'a str,
-        _: &'a [u8],
-        _: &'a str,
-        _: &'a str,
-        _: acyclic_harness_core::conversation::ContentAccess<'a, 'a>,
-    ) -> acyclic_harness_core::Result<
-        acyclic_harness_core::conversation::BoundedContentFuture<
-            'a,
-            (
-                FileRef,
-                Option<acyclic_harness_core::conversation::ContentHold<'a>>,
-            ),
-        >,
-    > {
-        let file = super::driver::file("brief.md")?;
-        acyclic_harness_core::conversation::BoundedContentFuture::new(None, move || async move {
-            Ok((file, None))
-        })
-    }
-}
-
-#[tokio::test]
-async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
-    let path = AgentPath::root(&id(9));
-    let (_, binding) = private(&path).await?;
-    let mut state = AgentState::adopted(path.clone(), &adopted(id(9))).expect("adopts");
-    state.open_children.insert(path.child(&id(10))?);
-    // Each spawn call in order, under `limit`: which ones the tool refused.
-    let refused = |state: AgentState, limit: Option<u32>| {
-        let volume = binding.volume.clone();
-        async move {
-            let effects = Arc::new(Recorded::default());
-            let mut tools = ToolRegistry::default();
-            acyclic_harness_core::tools::bind_agent_tools(
-                &mut tools,
-                &state,
-                (effects.clone() as Arc<dyn TurnEffects>, None),
-                Arc::new(Writer(volume)),
-                1024,
-                (&acyclic_harness_core::tools::default_names(), limit),
-            )?;
-            let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;
-            let mut refused = Vec::new();
-            for (call, name) in [(1, "b"), (2, "b"), (3, "c")] {
-                let result = spawn
-                    .executor
-                    .execute(
-                        acyclic_harness_core::tool::ToolInvocation {
-                            operation_id: OperationId::from_bytes([call; 16]),
-                            call_id: format!("call-{call}"),
-                            name: "spawn".into(),
-                            arguments: serde_json::json!({"task": "work", "name": name}),
-                        },
-                        None,
-                    )
-                    .await?;
-                refused.push(result.value.get("error").is_some());
-            }
-            Ok::<_, Box<dyn std::error::Error>>((refused, effects.recorded().await?.len()))
-        }
-    };
-    // One open child and a limit of two: `b` fits (twice, as one child), `c` does not.
-    assert_eq!(
-        refused(state.clone(), Some(2)).await?,
-        (vec![false, false, true], 2)
-    );
-    // Control: without a configured limit every spawn is recorded.
-    assert_eq!(
-        refused(state.clone(), None).await?,
-        (vec![false, false, false], 3)
-    );
-    // Without one the agent's hard limit still holds: one below it, `b` fits
-    // and `c` is refused to the model rather than dropped by the step.
-    let mut full = state;
-    for n in 0..MAX_OPEN_CHILDREN - 2 {
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&(n as u64 + 1_000).to_le_bytes());
-        full.open_children
-            .insert(path.child(&AgentId::from_bytes(bytes))?);
-    }
-    assert_eq!(full.open_children.len(), MAX_OPEN_CHILDREN - 1);
-    assert_eq!(refused(full, None).await?, (vec![false, false, true], 2));
     Ok(())
 }

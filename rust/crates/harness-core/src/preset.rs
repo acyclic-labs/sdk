@@ -22,9 +22,6 @@ pub struct Preset {
     /// Whether credential-free web retrieval is enabled; search also needs a
     /// configured provider.
     pub web_tools: bool,
-    /// Open children each agent may have at once; `None` is unbounded.
-    #[cfg_attr(feature = "wasm", tsify(type = "number | null"))]
-    pub max_children: Option<u32>,
     /// Ordered approval chain bound to every enabled tool.
     pub approval_policy: ApprovalPolicy,
 }
@@ -37,7 +34,6 @@ impl Preset {
         Self {
             tools: crate::tools::default_names(),
             web_tools: true,
-            max_children: None,
             approval_policy: ApprovalPolicy::accept_all("graphcoder-default"),
         }
     }

@@ -15,6 +15,7 @@ async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Res
             checkpoint: Some(vec![]),
             reserved_children: 0,
             outs: vec![Out::Spawn {
+                profile: None,
                 intent: intent("spawn:invalid-host"),
                 brief: None,
                 volumes: vec![],
@@ -72,6 +73,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
         checkpoint: None,
         reserved_children: 0,
         outs: vec![Out::Spawn {
+            profile: None,
             intent: recorded.clone(),
             brief: None,
             volumes: vec![],
@@ -179,6 +181,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                         outs: named
                             .iter()
                             .map(|intent| Out::Spawn {
+                                profile: None,
                                 intent: intent.clone(),
                                 brief: None,
                                 volumes: Vec::new(),

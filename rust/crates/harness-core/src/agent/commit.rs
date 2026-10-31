@@ -179,8 +179,27 @@ pub fn spawn(
     adopted.agent = child_id;
     adopted.parent = Some(parent.clone());
     adopted.forked_at = at_tail;
+    let fresh = adopted
+        .profile
+        .as_ref()
+        .is_some_and(|pin| pin.context == super::SpawnContext::Fresh);
+    if adopted
+        .profile
+        .as_ref()
+        .is_some_and(|pin| pin.context == super::SpawnContext::TopLevel)
+    {
+        return Err(Error::Record("a top-level role cannot be spawned"));
+    }
+    if fresh {
+        adopted.conversation_tail = 0;
+        adopted.checkpoint = None;
+    }
     let conversation = adopted.conversation_tail;
     let record = InboxRecord::ForkAdopted(Box::new(adopted)).encode()?;
+    let mut exclude = layout::not_inherited()?;
+    if fresh {
+        exclude.push(StreamPath::new("conversation").map_err(Error::Stream)?);
+    }
     Ok(Spawn {
         request: CommitRequest {
             deadline_unix_millis: None,
@@ -194,7 +213,7 @@ pub fn spawn(
             ],
             mutations: vec![
                 CommitMutation::Fork {
-                    exclude: layout::not_inherited()?,
+                    exclude,
                     source: parent.inbox()?,
                     destination: child.inbox()?,
                     at_tail,

@@ -114,7 +114,7 @@ pub struct StockExecutors {
     limits: Limits,
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
-    max_children: Option<u32>,
+    profiles: Option<Arc<dyn crate::agent::SpawnProfiles>>,
     context: Arc<dyn TurnContext>,
 }
 
@@ -133,7 +133,7 @@ impl Preset {
         context: Arc<dyn TurnContext>,
     ) -> StockExecutors {
         StockExecutors::new(model, tools, (limits, compaction), context)
-            .with_agent_tools(&self.tools, self.max_children)
+            .with_agent_tools(&self.tools)
     }
 
     /// This preset's tools, the one construction every host takes them from:
@@ -202,21 +202,26 @@ impl StockExecutors {
             limits,
             compaction,
             agent_tools: Vec::new(),
-            max_children: None,
+            profiles: None,
             context,
         }
     }
 
-    /// Binds the agent tools among `names` to each turn's effects, with at
-    /// most `max_children` open children per agent.
+    /// Binds the agent tools among `names` to each turn's effects.
     #[must_use]
-    pub fn with_agent_tools(mut self, names: &[String], max_children: Option<u32>) -> Self {
+    pub fn with_agent_tools(mut self, names: &[String]) -> Self {
         self.agent_tools = names
             .iter()
             .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
             .cloned()
             .collect();
-        self.max_children = max_children;
+        self
+    }
+
+    /// Binds the original configured profile loader to child admission.
+    #[must_use]
+    pub fn with_profiles(mut self, profiles: Arc<dyn crate::agent::SpawnProfiles>) -> Self {
+        self.profiles = Some(profiles);
         self
     }
 }
@@ -250,7 +255,7 @@ impl TurnExecutors for StockExecutors {
                     (Arc::clone(effects), authority.children.clone()),
                     Arc::clone(writer),
                     self.limits.file_bytes,
-                    (&self.agent_tools, self.max_children),
+                    (&self.agent_tools, self.profiles.clone()),
                 )?;
             }
             let executor = StockExecutor::new(

@@ -32,6 +32,7 @@ impl TurnDriver for Spawner {
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
+                        profile: None,
                         intent: intent("c"),
                         brief: None,
                         volumes: Vec::new(),

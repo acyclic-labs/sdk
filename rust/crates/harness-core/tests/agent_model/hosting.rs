@@ -201,6 +201,7 @@ fn volume(name: &str, agent: AgentId) -> Result<VolumeBinding> {
 
 fn root(agent: AgentId, fresh: Vec<VolumeBinding>) -> RootRequest {
     RootRequest {
+        profile: None,
         agent,
         fresh,
         retained: Vec::new(),

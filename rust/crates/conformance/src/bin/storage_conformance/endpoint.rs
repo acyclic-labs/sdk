@@ -211,6 +211,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                 Arc::new(User),
                 &IntentId::try_from("root")?,
                 RootRequest {
+                    profile: None,
                     agent: id,
                     fresh: vec![VolumeBinding {
                         name: PRIVATE_VOLUME.into(),

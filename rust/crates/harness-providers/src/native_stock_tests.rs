@@ -218,6 +218,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         .create(
             &intent("root")?,
             ForkAdopted {
+                profile: None,
                 agent: root.id(),
                 parent: None,
                 forked_at: 0,

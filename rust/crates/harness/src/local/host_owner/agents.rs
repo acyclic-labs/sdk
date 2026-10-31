@@ -581,6 +581,7 @@ impl NativeAgents {
             .create(
                 &IntentId::try_from(format!("native:{agent}")).map_err(storage)?,
                 ForkAdopted {
+                    profile: None,
                     agent,
                     parent: None,
                     forked_at: 0,

@@ -294,6 +294,7 @@ mod tests {
     /// The widest adoption: deepest parent, every volume, brief and policy.
     fn adoption() -> ForkAdopted {
         ForkAdopted {
+            profile: None,
             agent: id(u64::MAX),
             parent: Some(agent(MAX_DEPTH - 1)),
             forked_at: u64::MAX,
@@ -452,6 +453,7 @@ mod tests {
                 .collect();
             for outcome in outcomes() {
                 let state = AgentState {
+                    profile: adopted.profile.clone(),
                     parent: path.parent(),
                     path: path.clone(),
                     volumes: adopted.volumes.clone(),

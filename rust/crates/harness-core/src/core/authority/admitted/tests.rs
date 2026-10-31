@@ -998,6 +998,7 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
         let state = AgentState::adopted(
             AgentPath::root(&agent),
             &ForkAdopted {
+                profile: None,
                 agent,
                 parent: None,
                 forked_at: 0,

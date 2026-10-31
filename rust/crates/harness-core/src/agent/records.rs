@@ -26,7 +26,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// code. The headerless format before it is version 1; version 2 carries a
 /// spawn brief by file reference. Version 3 binds goal runs to their committed
 /// terminal conversation entry.
-pub const RECORD_VERSION: u32 = 3;
+/// Version 4 pins each stock agent's resolved role/model/profile at adoption.
+pub const RECORD_VERSION: u32 = 4;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -214,6 +215,38 @@ pub struct VolumeBinding {
     pub volume: VolumeRef,
 }
 
+/// Conversation selected by the role file at spawn admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnContext {
+    /// Root-only role, never admitted as a child.
+    TopLevel,
+    /// The brief and explicitly sent files only.
+    Fresh,
+    /// The parent's settled conversation at the original fork cut.
+    Fork,
+}
+
+/// Immutable profile identity selected before an agent is created.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProfilePin {
+    /// Role file identity.
+    pub role: String,
+    /// Provider-admitted model profile key.
+    pub model: String,
+    /// Resolved profile digest, including its original approval policy.
+    pub digest: [u8; 32],
+    /// Role-selected conversation mode.
+    pub context: SpawnContext,
+}
+
+/// The host's immutable, admitted profile selection, shared by every turn.
+pub trait SpawnProfiles: acyclic_stream::ProviderPlatform {
+    /// Resolves a child and checks the parent's role permission before effects.
+    fn child(&self, parent: &AgentProfilePin, role: &str) -> crate::Result<AgentProfilePin>;
+}
+
 /// First record of every agent, written by the spawn fork or by root creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -222,6 +255,8 @@ pub struct ForkAdopted {
     pub agent: AgentId,
     /// Spawning agent, `None` for a root.
     pub parent: Option<AgentPath>,
+    /// Exact configured profile; external host loops have no stock profile.
+    pub profile: Option<AgentProfilePin>,
     /// Inbox sequence of this record; the agent's first consumed input.
     pub forked_at: u64,
     /// Tail of the inherited conversation at the fork cut.

@@ -165,6 +165,7 @@ impl Swarm {
             }
             Some(Kind::Inbox(root, Some(child))) if sequence == FORKED_AT => OwnedBytes::from(
                 InboxRecord::ForkAdopted(Box::new(ForkAdopted {
+                    profile: None,
                     agent: child_id(root, child),
                     parent: Some(agent(root, None)),
                     forked_at: FORKED_AT,

@@ -74,6 +74,8 @@ pub struct AgentState {
     pub path: AgentPath,
     /// Spawning agent.
     pub parent: Option<AgentPath>,
+    /// Profile selected at adoption, pinned through subsequent turns.
+    pub profile: Option<super::AgentProfilePin>,
     /// Owned volumes.
     pub volumes: Vec<VolumeBinding>,
     /// Approval policy file.
@@ -163,6 +165,7 @@ impl AgentState {
         Ok(Self {
             path,
             parent: adopted.parent.clone(),
+            profile: adopted.profile.clone(),
             volumes: adopted.volumes.clone(),
             policy: adopted.policy.clone(),
             brief,
@@ -343,6 +346,8 @@ pub enum Out {
         /// Task brief, staged on the spawning agent's private volume; the
         /// child's adoption names it.
         brief: Option<FileRef>,
+        /// Child profile resolved before the spawn effect was recorded.
+        profile: Option<super::AgentProfilePin>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<VolumeBinding>,
     },
@@ -542,6 +547,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             },
         ) => {
             outs.push(Out::Spawn {
+                profile: None,
                 intent: requested_intent(sequence)?,
                 brief: Some(*spawn.brief),
                 volumes: Vec::new(),

@@ -222,6 +222,7 @@ async fn asked(
         .create_root(
             &vectors::intent("root")?,
             RootRequest {
+                profile: None,
                 agent,
                 fresh: vec![private],
                 retained: Vec::new(),
