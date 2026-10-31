@@ -6,7 +6,8 @@
 //! the read or wake was issued. The state therefore outlives every packet
 //! that names it, and the thread never touches a packet's `OVERLAPPED`.
 use super::*;
-use std::sync::OnceLock;
+use std::collections::HashSet;
+use std::sync::{LazyLock, OnceLock};
 use windows::Win32::Foundation::{ERROR_NOT_ENOUGH_MEMORY, INVALID_HANDLE_VALUE};
 use windows::Win32::System::IO::{
     CreateIoCompletionPort, GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY,
@@ -17,6 +18,22 @@ use windows::Win32::System::Threading::INFINITE;
 std::thread_local! {
     /// Whether this thread is the port's.
     static SERVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    #[cfg(test)]
+    static REGISTERED: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn observe_registration(sender: std::sync::mpsc::Sender<()>) {
+    REGISTERED.with(|registered| *registered.borrow_mut() = Some(sender));
+}
+
+/// Only an isolated test process may close its process-wide port.
+#[cfg(test)]
+pub(super) fn end_for_test() -> Result<(), DemandError> {
+    // SAFETY: the isolated process deliberately ends its actual collector;
+    // the pending reads retain their original storage until OS retirement.
+    unsafe { CloseHandle(port()?) }.map_err(io::Error::from)?;
+    Ok(())
 }
 
 /// Whether the caller runs on the port's thread, which collects every
@@ -37,7 +54,74 @@ unsafe impl Sync for Port {}
 /// The process's port, created with its thread on first use.
 static PORT: OnceLock<Result<Port, i32>> = OnceLock::new();
 
+/// Set once the port's thread has ended; nothing collects packets after it.
+static LOST: AtomicBool = AtomicBool::new(false);
+/// The watches whose callers block in `await_completion`, by key. The
+/// thread's end wakes each one; it sets `LOST` before reading this set.
+static WAITING: LazyLock<Mutex<HashSet<usize>>> = LazyLock::new(Mutex::default);
+
+/// Whether the port's thread has ended.
+pub(super) fn lost() -> bool {
+    LOST.load(Ordering::Acquire)
+}
+
+pub(super) fn lost_error() -> DemandError {
+    io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "the source-watch completion thread ended",
+    )
+    .into()
+}
+
+fn waiting() -> MutexGuard<'static, HashSet<usize>> {
+    WAITING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One caller blocked on a watch's next collection, registered so the
+/// thread's end can wake it. Only one holder of a watch's reads waits.
+pub(super) struct Waiting<'a>(&'a Shared);
+
+impl<'a> Waiting<'a> {
+    pub(super) fn enter(shared: &'a Shared) -> Result<Self, DemandError> {
+        let mut waiting = waiting();
+        if lost() {
+            return Err(lost_error());
+        }
+        waiting.insert(key(shared));
+        #[cfg(test)]
+        REGISTERED.with(|registered| {
+            if let Some(sender) = registered.borrow_mut().take() {
+                sender.send(()).expect("registration observer remains live");
+            }
+        });
+        Ok(Self(shared))
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        waiting().remove(&key(self.0));
+    }
+}
+
+/// Marks the thread's end, however it ends, and wakes every blocked caller.
+struct Ended;
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        LOST.store(true, Ordering::Release);
+        for &key in waiting().iter() {
+            // SAFETY: a registered watch stays borrowed by its waiter, which
+            // unregisters under this lock before the borrow ends.
+            unsafe { &*(key as *const Shared) }.collected();
+        }
+    }
+}
+
 fn port() -> Result<HANDLE, DemandError> {
+    if lost() {
+        return Err(lost_error());
+    }
     match PORT.get_or_init(start) {
         Ok(port) => Ok(port.0),
         Err(code) => Err(io::Error::from_raw_os_error(*code).into()),
@@ -109,6 +193,7 @@ pub(super) fn wake(shared: &Shared) -> Result<(), DemandError> {
 
 fn serve(port: HANDLE) {
     SERVING.with(|serving| serving.set(true));
+    let _ended = Ended;
     let mut entries = [OVERLAPPED_ENTRY::default(); BATCH];
     loop {
         let mut removed = 0;
@@ -116,8 +201,10 @@ fn serve(port: HANDLE) {
         let waited = unsafe {
             GetQueuedCompletionStatusEx(port, &mut entries, &mut removed, INFINITE, false)
         };
+        // An infinite, non-alertable wait fails only once the port is
+        // unusable, so the thread ends and `Ended` fails every waiter.
         if waited.is_err() {
-            continue;
+            return;
         }
         for entry in entries.iter().take(removed as usize) {
             if entry.lpCompletionKey == 0 {

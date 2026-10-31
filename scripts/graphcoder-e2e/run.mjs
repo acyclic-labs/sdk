@@ -23,6 +23,7 @@ import { qualification } from "./qualification.mjs";
 import { publishReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { withOwnedCase } from "./suite.mjs";
+import { variants } from "./serial.mjs";
 import { conversation } from "./conversation.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
@@ -32,21 +33,18 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const scratch = scratchDirectory("graphcoder-e2e-");
 const output = resolve(process.env.E2E_OUTPUT ?? join(scratch, "results"));
 mkdirSync(output, { recursive: true });
-const roots = [join(scratch, "primary")];
-if (process.platform === "win32") {
-  roots.push(join(scratch, "ntfs"));
-}
-for (const root of roots) mkdirSync(root, { recursive: true });
 const scripts = inventory();
 const coverage = readCoverage(scripts);
-const identities = new Set(scripts.map(test => test.id));
+const suites = variants(scripts, process.platform);
+const identities = new Set(suites.map(test => test.id));
 for (const id of selected) assert.ok(identities.has(id), `unknown case ${id}`);
 assert.ok(process.platform !== "win32" || selected.length === 1,
-  "Windows requires one case suite at a time; use serial.mjs for the complete matrix");
-const cases = scripts
-  .filter(test => !selected.length || selected.includes(test.id))
-  .flatMap(test => roots.filter((_, index) => index === 0 || test.ntfs).map((root, index) => ({ ...test, id: test.id + (index ? "-ntfs" : ""), root })));
+  "Windows requires one case variant at a time; use serial.mjs for the complete matrix");
+const cases = suites.filter(test => !selected.length || selected.includes(test.id))
+  .map(test => ({ ...test, root: join(scratch, test.variant) }));
 assert.ok(cases.length, "no matching cases");
+const roots = [...new Set(cases.map(test => test.root))];
+for (const root of roots) mkdirSync(root, { recursive: true });
 assert.equal(new Set(cases.map(test => test.id)).size, cases.length, "case identities must be unique");
 const processes = new Processes({ transcripts: join(output, "transcripts"), onReport: event => {
   process.stderr.write(`case-lifecycle: ${JSON.stringify({ phase: "report", ...event })}\n`);
@@ -55,7 +53,7 @@ mkdirSync(join(output, "transcripts"), { recursive: true });
 const contexts = new Map();
 const evidence = new Map();
 let server, events, port;
-const started = performance.now();
+const started = 0; // Process start: suite time includes module load, as the envelope does.
 const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "\n");
 function expand(value, fixture) {
   return expandFixture(value, { support: directory.replaceAll("\\", "/"),
@@ -198,7 +196,8 @@ async function verify(result, allRecords) {
 }
 let results, currentPhase, failedPhase, execution, expired = false;
 const phases = {};
-try { execution = await withOwnedCase({ processes, onPhase: event => {
+// This process's start opens the outer ten-second envelope; so does the deadline.
+try { execution = await withOwnedCase({ processes, origin: 0, onPhase: event => {
   currentPhase = event.phase;
   if (event.outcome === "failed" || event.outcome === "deadline") failedPhase ??= event.phase;
   if (event.outcome === "deadline") expired = true;
@@ -225,8 +224,8 @@ try { execution = await withOwnedCase({ processes, onPhase: event => {
   }
   return new Map(await schedule(cases, process.platform, async test => [test.id, await prepare(test, origin)]));
 }, run: async prepared => {
-  // Unix cases share one mock. Windows runs every case and filesystem variant
-  // serially; serial.mjs gives each case its own unchanged ten-second budget.
+  // Unix cases share one mock. Windows runs one case variant per process;
+  // serial.mjs gives each variant its own unchanged ten-second budget.
   results = await schedule(cases, process.platform, test => execute(test, prepared.get(test.id)));
 } }); }
 catch (error) {

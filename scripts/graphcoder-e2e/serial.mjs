@@ -12,19 +12,25 @@ import { publishReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { nativeHost } from "../../plugin/tests/hosts/native-host.mjs";
 
+// Each filesystem variant is its own suite, so each owns one whole envelope.
+export function variants(cases, platform) {
+  return cases.flatMap(test => [{ ...test, variant: "primary" },
+    ...(platform === "win32" && test.ntfs ? [{ ...test, id: `${test.id}-ntfs`, variant: "ntfs" }] : [])]);
+}
+
 export function collect(cases, receipts, platform, coverage) {
-  assert.equal(receipts.length, cases.length, "every case needs a suite receipt");
-  const results = [], suites = [];
-  for (let index = 0; index < cases.length; index++) {
-    const test = cases[index], { code, report, error, seconds, execution } = receipts[index];
-    const expected = [test.id, ...(platform === "win32" && test.ntfs ? [`${test.id}-ntfs`] : [])];
+  const suites = [], results = [], expectedSuites = variants(cases, platform);
+  assert.equal(receipts.length, expectedSuites.length, "every case variant needs a suite receipt");
+  for (let index = 0; index < expectedSuites.length; index++) {
+    const test = expectedSuites[index], { code, report, error, seconds, execution } = receipts[index];
+    const expected = [test.id];
     try {
       assert.ok(report, error ?? "missing suite receipt");
       assert.equal(report.platform, platform, "suite OS mismatch");
       assert.deepEqual(report.selected, [test.id], "suite must select exactly its case");
       assert.equal(report.qualification, false, "selected suite is diagnostic");
       assert.deepEqual(report.coverage, coverage, "suite coverage changed during the matrix");
-      assert.deepEqual(report.results.map(result => result.case), expected, "missing or duplicate filesystem variant");
+      assert.deepEqual(report.results.map(result => result.case), expected, "missing or duplicate case result");
       assert.ok(report.results.every(result => result.platform === platform), "case OS mismatch");
       assert.ok(Number.isFinite(report.seconds) && report.seconds > 0, "missing suite timing");
       assert.equal(report.limit_seconds, 10, "suite budget changed");
@@ -101,7 +107,7 @@ export function collectPartitions(cases, bundles, platform, coverage) {
     assert.deepEqual(bundle.inventory, cases.map(test => test.id), "partition inventory changed");
     const selected = partition(cases, `${index}/${first.count}`).cases;
     assert.deepEqual(bundle.selected, selected.map(test => test.id), "partition selection changed");
-    assert.equal(bundle.receipts.length, selected.length, "partition lost a suite receipt");
+    assert.equal(bundle.receipts.length, variants(selected, platform).length, "partition lost a suite receipt");
   }
   return collect(cases, ordered.flatMap(bundle => bundle.receipts), platform, coverage);
 }
@@ -174,7 +180,7 @@ async function main() {
   let receipts;
   const begin = performance.now();
   try {
-    receipts = await runSuites(cases, async test => {
+    receipts = await runSuites(variants(cases, process.platform), async test => {
       const artifact = join(output, test.id);
       const result = await processes.run(process.execPath, [join(directory, "run.mjs"), resolve(binary), resolve(mock), test.id],
         { env: { ...environment(join(scratch, test.id)), E2E_SCRATCH_ROOT: scratch, E2E_OUTPUT: artifact } });

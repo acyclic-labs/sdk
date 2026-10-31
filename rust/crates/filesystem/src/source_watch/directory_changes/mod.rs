@@ -209,22 +209,28 @@ impl Shared {
     }
     /// Waits until the hub has collected the pending read's completion.
     /// The hub itself cannot wait for its own collection: it answers false,
-    /// and the read's packet resumes whatever waited.
-    fn await_completion(&self, reads: &Reads) -> bool {
+    /// and the read's packet resumes whatever waited. A hub that ended can
+    /// collect nothing more: the wait fails and the read stays pending, so
+    /// its storage stays pinned.
+    fn await_completion(&self, reads: &Reads) -> Result<bool, DemandError> {
         if reads.collected() {
-            return true;
+            return Ok(true);
         }
         if hub::serving() {
-            return false;
+            return Ok(false);
         }
+        let _waiting = hub::Waiting::enter(self)?;
         let mut arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
         while !reads.collected() {
+            if hub::lost() {
+                return Err(hub::lost_error());
+            }
             arrivals = self
                 .arrived
                 .wait(arrivals)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        true
+        Ok(true)
     }
     fn note_failure(&self, error: DemandError) {
         if let Some(birth) = &self.delivery.original {

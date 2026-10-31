@@ -8,7 +8,11 @@ impl crate::native_mount::shared::metering::MeteredView for Runtime {
     }
 
     fn deactivate(&self, work: &crate::NativeMaterializationWork, generation: u64) {
-        lock_recover(&self.active_work).leave(work, generation);
+        let mut active = lock_recover(&self.active_work);
+        active.leave(work, generation);
+        if active.depth == 0 {
+            self.active_work_idle.notify_all();
+        }
     }
 }
 

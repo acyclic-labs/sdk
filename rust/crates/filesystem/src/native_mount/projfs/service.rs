@@ -1,8 +1,8 @@
 //! The projector service of a shared ProjFS instance: one thread runs the
 //! projector passes of every view of the instance, so a view costs no thread
 //! of its own. A view is scheduled when its projector has work, runs one pass
-//! at a time, and is rescheduled while work remains; held entries retry on
-//! one shared timer. Detaching a view waits for its running pass, after which
+//! at a time, and is rescheduled while work remains; a held entry's release
+//! schedules its view again. Detaching a view waits for its running pass, after which
 //! the service holds nothing of it.
 
 use super::*;
@@ -31,8 +31,6 @@ struct Shared {
 struct State {
     views: HashMap<u64, View>,
     ready: VecDeque<u64>,
-    delayed: HashSet<u64>,
-    retry_at: Option<std::time::Instant>,
     running: Option<u64>,
     next: u64,
     stopping: bool,
@@ -52,7 +50,6 @@ impl Shared {
             && !view.queued
         {
             view.queued = true;
-            state.delayed.remove(&id);
             state.ready.push_back(id);
             self.changed.notify_all();
         }
@@ -90,43 +87,14 @@ impl Shared {
                             state.ready.push_back(id);
                         }
                     }
-                    Readiness::Delayed => {
-                        if !state.views.get(&id).is_some_and(|view| view.queued) {
-                            state.delayed.insert(id);
-                        }
-                    }
                     Readiness::Idle | Readiness::Stopped => {}
-                }
-                continue;
-            }
-            if state.delayed.is_empty() {
-                state.retry_at = None;
-                state = self
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                continue;
-            }
-            let now = std::time::Instant::now();
-            let due = *state.retry_at.get_or_insert(now + HELD_RETRY);
-            if now >= due {
-                state.retry_at = None;
-                let delayed = std::mem::take(&mut state.delayed);
-                for id in delayed {
-                    if let Some(view) = state.views.get_mut(&id)
-                        && !view.queued
-                    {
-                        view.queued = true;
-                        state.ready.push_back(id);
-                    }
                 }
                 continue;
             }
             state = self
                 .changed
-                .wait_timeout(state, due - now)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 }
@@ -193,7 +161,6 @@ impl ProjectorService {
     pub(super) fn detach(&self, id: u64) {
         let mut state = lock_recover(&self.shared.state);
         state.views.remove(&id);
-        state.delayed.remove(&id);
         state.ready.retain(|queued| *queued != id);
         while state.running == Some(id) {
             state = self

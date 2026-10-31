@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,6 +52,19 @@ test("one virtual case deadline closes the supplied scope and joins its drain", 
   assert.equal(receipt.expired, true, "expiry must remain a failed receipt even if interruption returns normally");
   assert.equal(receipt.run, "interrupted");
   assert.equal(closes, 1, "deadline and finally share one drain");
+});
+
+test("a supplied origin spends the budget already elapsed before entry", async context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  let closes = 0;
+  const complete = Promise.withResolvers();
+  const running = withOwnedCase({ processes: { close() { closes++; complete.resolve(); } },
+    origin: performance.now() - 4000, run: () => complete.promise });
+  context.mock.timers.tick(4000);
+  assert.equal(closes, 0);
+  context.mock.timers.tick(1000);
+  assert.equal(closes, 1, "setup before entry must not extend the nine-second reservation");
+  assert.equal((await running).expired, true);
 });
 
 test("preparation uses the original deadline and cannot admit a fresh case budget", async context => {

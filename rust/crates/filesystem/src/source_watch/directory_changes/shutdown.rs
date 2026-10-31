@@ -210,7 +210,7 @@ impl Shared {
             reads.cancelling = true;
         }
         // The buffer stays owned until the cancelled read completes.
-        if !self.await_completion(reads) {
+        if !self.await_completion(reads)? {
             return result;
         }
         self.cleanup_start(work, READ)?;

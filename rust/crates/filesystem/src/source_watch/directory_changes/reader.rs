@@ -126,7 +126,7 @@ impl Shared {
         }
         let capacity = reads.capacity();
         if wait {
-            if !self.await_completion(reads) {
+            if !self.await_completion(reads)? {
                 return Ok(false);
             }
             work.record(READ)?;
