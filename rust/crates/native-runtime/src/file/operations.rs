@@ -13,9 +13,9 @@ pub enum Durability {
 
 /// Flushes file contents and metadata according to `durability`.
 ///
-/// On Apple platforms, Full requires `F_FULLFSYNC`. If the filesystem only
-/// supports a weaker fallback, the fallback is performed and Unsupported is
-/// returned; success never acknowledges weaker durability than requested.
+/// On Apple platforms, Full requires `F_FULLFSYNC`; an unsupported full flush
+/// returns directly without performing a weaker barrier. An interruption is
+/// returned to the caller without reissuing the operation.
 pub fn sync_file(
     file: &File,
     durability: Durability,
@@ -48,14 +48,11 @@ fn sync_file_impl(
         #[cfg(any(windows, target_os = "linux"))]
         return sync_full(file, Some(meter));
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        loop {
+        {
             meter.check()?;
             meter.admit_durability()?;
-            let result = crate::persistence_syscall(|| sync_file_unsequenced(file, durability));
-            match result {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                result => return result.and_then(|()| meter.check()),
-            }
+            return crate::persistence_syscall(|| sync_file_unsequenced(file, durability))
+                .and_then(|()| meter.check());
         }
     }
     let operation = obs::span!(
@@ -71,34 +68,27 @@ fn sync_file_impl(
     })
 }
 
-/// One retry/charging policy for the shared Linux/Windows full-flush primitive.
+/// One admission and native full flush on the original held descriptor.
 #[cfg(any(windows, target_os = "linux"))]
 fn sync_full(file: &File, meter: Option<&dyn NativeReadMeter>) -> io::Result<()> {
-    loop {
-        if let Some(meter) = meter {
-            meter.check()?;
-            meter.admit_durability()?;
-        }
-        #[cfg(target_os = "linux")]
-        let descriptor = {
-            use std::os::fd::AsFd as _;
-            file.as_fd()
-        };
-        #[cfg(windows)]
-        let descriptor = {
-            use std::os::windows::io::AsHandle as _;
-            file.as_handle()
-        };
-        match crate::persistence_syscall(|| sync_descriptor_once(descriptor)) {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => {
-                return result.and_then(|()| match meter {
-                    Some(meter) => meter.check(),
-                    None => Ok(()),
-                });
-            }
-        }
+    if let Some(meter) = meter {
+        meter.check()?;
+        meter.admit_durability()?;
     }
+    #[cfg(target_os = "linux")]
+    let descriptor = {
+        use std::os::fd::AsFd as _;
+        file.as_fd()
+    };
+    #[cfg(windows)]
+    let descriptor = {
+        use std::os::windows::io::AsHandle as _;
+        file.as_handle()
+    };
+    crate::persistence_syscall(|| sync_descriptor_once(descriptor)).and_then(|()| match meter {
+        Some(meter) => meter.check(),
+        None => Ok(()),
+    })
 }
 
 pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
@@ -363,40 +353,46 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> NativeCompletion<V
     }
 }
 
-/// Resizes an already-held, ordered handle. Each retry is separately admitted.
+/// Resizes an already-held, ordered handle with one admission and native call.
+/// An interruption returns directly to the caller.
 pub fn set_len(file: &File, size: u64, meter: &dyn NativeReadMeter) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:set_len", || set_len_impl(file, size, meter));
+    return testing::durable_operation("file:set_len", || resize_file(file, size, Some(meter)));
     #[cfg(not(feature = "test-support"))]
-    set_len_impl(file, size, meter)
+    resize_file(file, size, Some(meter))
 }
 
-fn set_len_impl(file: &File, size: u64, meter: &dyn NativeReadMeter) -> io::Result<()> {
-    i64::try_from(size).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    loop {
+pub(super) fn resize_file(
+    file: &File,
+    size: u64,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
+    let size = i64::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?;
+    #[cfg(unix)]
+    let size = libc::off_t::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?;
+    if let Some(meter) = meter {
         meter.check()?;
         meter.admit_write(0)?;
-        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-        let result = {
-            use std::os::fd::AsRawFd as _;
-            let size = libc::off_t::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?;
-            // SAFETY: ftruncate acts only on this live descriptor.
-            #[allow(unsafe_code, reason = "ftruncate acts only on the held descriptor")]
-            if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        };
-        #[cfg(windows)]
-        let result = windows::set_len_once(file, size);
-        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let result = file.set_len(size);
-        match result {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => return result.and_then(|()| meter.check()),
-        }
     }
+    #[cfg(unix)]
+    let result = {
+        use std::os::fd::AsRawFd as _;
+        // SAFETY: ftruncate acts only on this live descriptor with the validated length.
+        #[allow(unsafe_code, reason = "ftruncate acts only on the held descriptor")]
+        if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    };
+    #[cfg(windows)]
+    let result = windows::set_len_once(file, size);
+    #[cfg(not(any(windows, unix)))]
+    let result = file.set_len(size as u64);
+    result.and_then(|()| match meter {
+        Some(meter) => meter.check(),
+        None => Ok(()),
+    })
 }
 
 pub(crate) fn write_bounded_in_place(

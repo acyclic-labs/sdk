@@ -426,10 +426,8 @@ pub(crate) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result
     })
 }
 
-pub(crate) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
-    let info = FILE_END_OF_FILE_INFO {
-        EndOfFile: i64::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?,
-    };
+pub(crate) fn set_len_once(file: &File, size: i64) -> io::Result<()> {
+    let info = FILE_END_OF_FILE_INFO { EndOfFile: size };
     // SAFETY: the initialized buffer and held handle remain live through the syscall.
     if unsafe {
         SetFileInformationByHandle(

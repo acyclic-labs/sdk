@@ -3,8 +3,8 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 
-// The held-descriptor API and the retrying file API share this physical
-// attempt. The caller alone owns admission, cancellation and EINTR retry.
+// The held-descriptor and file APIs share this physical attempt.
+// The original caller owns admission and observes its first result.
 pub(crate) fn sync_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
     syscall_once(descriptor, libc::F_FULLFSYNC)
 }
@@ -15,22 +15,11 @@ pub(crate) fn sync_once(
     mut admit: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     if durability == Durability::Full {
-        match syscall(file, libc::F_FULLFSYNC, &mut admit) {
-            Ok(()) => return Ok(()),
-            Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {}
-            Err(error) => return Err(error),
-        }
+        return syscall(file, libc::F_FULLFSYNC, &mut admit);
     }
     match syscall(file, libc::F_BARRIERFSYNC, &mut admit) {
-        Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => syscall(file, 0, &mut admit)?,
-        result => result?,
-    }
-    match durability {
-        Durability::Barrier => Ok(()),
-        Durability::Full => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "filesystem does not support F_FULLFSYNC; only a write barrier was completed",
-        )),
+        Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => syscall(file, 0, &mut admit),
+        result => result,
     }
 }
 
@@ -39,13 +28,8 @@ fn syscall(
     command: i32,
     admit: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
-    loop {
-        admit()?;
-        match syscall_once(file.as_fd(), command) {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => return result,
-        }
-    }
+    admit()?;
+    syscall_once(file.as_fd(), command)
 }
 
 fn syscall_once(descriptor: BorrowedFd<'_>, command: i32) -> io::Result<()> {
