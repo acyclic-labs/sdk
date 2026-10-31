@@ -65,7 +65,7 @@ async fn source_watch_preserves_fence_and_delivery_loss() -> Result<(), Box<dyn 
         .first()
         .and_then(std::sync::Weak::upgrade)
         .ok_or("physical producer missing")?;
-    let mut accounting = (&original).accounting(&cancellation);
+    let mut accounting = crate::kernel::KernelAccounting::native(&original, &cancellation);
     std::fs::write(
         directory.path().join("change"),
         b"source observation control",
