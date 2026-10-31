@@ -39,7 +39,7 @@ pub const CORE_OPERATIONS: [Operation; 17] = [
     Operation::SessionStart,
 ];
 /// Independently observed work dimensions. Visits expose allocation-free scans.
-pub const METRICS: [&str; 7] = [
+pub const METRICS: [&str; 8] = [
     "syscalls",
     "allocations",
     "locks",
@@ -47,6 +47,7 @@ pub const METRICS: [&str; 7] = [
     "control_requests",
     "visits",
     "allocated_bytes",
+    "durability_calls",
 ];
 
 /// One completed operation, including its completion and cleanup.
@@ -132,6 +133,8 @@ impl Operation {
 }
 
 /// Original-operation counters. `None` means unobserved, never zero work.
+/// `durability_calls` counts original OS durability calls across all owned
+/// workers, not logical commits, barrier requests or inferred device drains.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Work(pub [Option<u64>; METRICS.len()]);
 

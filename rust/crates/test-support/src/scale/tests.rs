@@ -175,24 +175,30 @@ fn lifecycle_detects_scan_thread_timer_and_lost_producer() {
 #[test]
 fn rejects_missing_coverage_hidden_tail_work_memory_growth_and_forged_reports() {
     let original = simulate(Inject::None).expect("lifecycle");
-    let mut missing = original.clone();
-    missing.points[1].samples[2].work[0].missing = 1;
-    assert!(
-        missing
-            .findings(&LIFECYCLE_OPERATIONS, RECOVERY)
-            .iter()
-            .any(|failure| failure.step == "counter coverage")
-    );
-    let mut tail = original.clone();
-    let counter = &mut tail.points[2].samples[2].work[1];
-    // The mean falls below the smaller point's mean, but one op becomes dearer.
-    counter.total = 2;
-    counter.maximum = 2;
-    assert!(
-        tail.findings(&LIFECYCLE_OPERATIONS, RECOVERY)
-            .iter()
-            .any(|failure| failure.step == "constant work")
-    );
+    for (metric, name) in METRICS.iter().enumerate() {
+        let mut missing = original.clone();
+        missing.points[1].samples[2].work[metric].missing = 1;
+        assert!(
+            missing
+                .findings(&LIFECYCLE_OPERATIONS, RECOVERY)
+                .iter()
+                .any(|failure| failure.step == "counter coverage"),
+            "missing {} escaped qualification",
+            name,
+        );
+        let mut tail = original.clone();
+        let counter = &mut tail.points[2].samples[2].work[metric];
+        // The mean falls below the smaller point's mean, but one op becomes dearer.
+        counter.total = 2;
+        counter.maximum = 2;
+        assert!(
+            tail.findings(&LIFECYCLE_OPERATIONS, RECOVERY)
+                .iter()
+                .any(|failure| failure.step == "constant work"),
+            "extra {} escaped qualification",
+            name,
+        );
+    }
     let mut memory = original.clone();
     memory.points[2].idle.bytes = Some(16 * 64 + 1);
     assert!(

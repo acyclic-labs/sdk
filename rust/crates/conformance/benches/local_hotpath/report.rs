@@ -189,7 +189,7 @@ impl Measurements {
         Ok(Observation {
             // Request accounting observes the public provider boundary. It
             // does not infer physical syscalls, locks or transport traffic.
-            work: Work([None, None, None, None, Some(control), None, None]),
+            work: Work([None, None, None, None, Some(control), None, None, None]),
             // This allocator scope cannot observe native worker threads; keep
             // it diagnostic instead of qualifying the allocation dimension.
             coordinator_allocations: allocations.map(|(before, after)| {
