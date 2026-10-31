@@ -636,22 +636,20 @@ mod tests {
 
     #[tokio::test]
     async fn parks_until_applied_and_refuses_foreign_incarnations() {
-        let authority = std::sync::Arc::new(AppliedRevisions::in_process());
+        let authority = AppliedRevisions::in_process();
         let wanted = authority.at(2);
-        let parked = tokio::spawn({
-            let authority = std::sync::Arc::clone(&authority);
-            let cut = RevisionCut::of(wanted.clone());
-            async move { authority.wait(&cut).await }
-        });
-        tokio::task::yield_now().await;
+        let cut = RevisionCut::of(wanted.clone());
+        let parked = authority.wait(&cut);
+        tokio::pin!(parked);
+        assert!(futures::poll!(parked.as_mut()).is_pending());
         authority.advance(1);
-        tokio::task::yield_now().await;
         assert!(
-            !parked.is_finished(),
+            futures::poll!(parked.as_mut()).is_pending(),
             "applied 1 must not satisfy minimum 2"
         );
         authority.advance(2);
-        assert_eq!(parked.await.unwrap().unwrap(), wanted);
+        assert_eq!(parked.await.unwrap(), wanted);
+        assert_eq!(authority.wait(&cut).await.unwrap(), wanted);
 
         let mut foreign = wanted.clone();
         foreign.incarnation ^= 1;
@@ -671,14 +669,12 @@ mod tests {
             Ok(authority.at(2))
         );
 
-        let closing = tokio::spawn({
-            let authority = std::sync::Arc::clone(&authority);
-            let cut = RevisionCut::of(authority.at(9));
-            async move { authority.wait(&cut).await }
-        });
-        tokio::task::yield_now().await;
+        let closing_cut = RevisionCut::of(authority.at(9));
+        let closing = authority.wait(&closing_cut);
+        tokio::pin!(closing);
+        assert!(futures::poll!(closing.as_mut()).is_pending());
         authority.close();
-        assert_eq!(closing.await.unwrap(), Err(StreamError::Unavailable));
+        assert_eq!(closing.await, Err(StreamError::Unavailable));
     }
 
     #[test]

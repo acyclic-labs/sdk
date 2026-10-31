@@ -49,7 +49,7 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
             .with_subscriber(dispatch),
         );
 
-        // The only blocking worker is occupied, so the real Journal::open submitted by the
+        // The occupied worker holds the original submitted Journal::open.
         submitted_rx.await?;
         opening.abort();
         let cancelled = opening.await;
@@ -62,25 +62,22 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
 
         release_blocker_tx.send(())?;
         blocker.await?;
-        // The single blocking worker runs its queue in order, so this
-        tokio::task::spawn_blocking(|| ()).await?;
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            Arc::clone(&lifecycle).lock_owned(),
-        )
-        .await?;
+        drop(Arc::clone(&lifecycle).lock_owned().await);
         assert!(
             ownership_retained,
             "caller cancellation must not release ownership from active Journal::open"
         );
         // Dropping the journal gate precedes the detached task's completion
         // fields. Wait for that task's span, not merely its blocking worker.
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while captured.closed("acyclic.stream.open") == 0 {
-                captured.1.notified().await;
+        loop {
+            let closed = captured.1.notified();
+            tokio::pin!(closed);
+            closed.as_mut().enable();
+            if captured.closed("acyclic.stream.open") != 0 {
+                break;
             }
-        })
-        .await?;
+            closed.await;
+        }
         assert_eq!(captured.closed("acyclic.stream.open"), 1);
         let fields = captured.fields("acyclic.stream.open");
         assert_eq!(
@@ -157,11 +154,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
         );
 
         release_tx.send(())?;
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            Arc::clone(&lifecycle).lock_owned(),
-        )
-        .await?;
+        drop(Arc::clone(&lifecycle).lock_owned().await);
         let fields = captured.fields("acyclic.stream.append");
         assert_eq!(
             fields.get("outcome").ok_or("missing span field")?,
