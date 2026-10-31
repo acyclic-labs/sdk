@@ -299,7 +299,119 @@ mod apple {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::io::{BufRead as _, Read as _, Write as _};
         use std::os::unix::fs::PermissionsExt as _;
+        use std::process::{Child, ChildStdout, Command, Stdio};
+
+        const LOCK_CHILD: &str = "ACYCLIC_DEVICE_DRAIN_LOCK_CHILD";
+
+        struct DrainProcess {
+            child: Child,
+            output: io::BufReader<ChildStdout>,
+        }
+
+        impl DrainProcess {
+            fn spawn(id: u64, mode: &str) -> io::Result<Self> {
+                let mut child = Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        "device_flush::apple::tests::child_holds_or_waits_for_drain",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env(LOCK_CHILD, format!("{id:016x}:{mode}"))
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()?;
+                let output =
+                    io::BufReader::new(child.stdout.take().ok_or(io::ErrorKind::BrokenPipe)?);
+                Ok(Self { child, output })
+            }
+
+            fn event(&mut self, expected: &str) -> io::Result<()> {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if self.output.read_line(&mut line)? == 0 {
+                        return Err(io::Error::other(format!(
+                            "drain process ended before {expected}"
+                        )));
+                    }
+                    if line.trim_end() == expected {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        impl Drop for DrainProcess {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+
+        fn event(name: &str) -> io::Result<()> {
+            println!("{name}");
+            io::stdout().flush()
+        }
+
+        #[test]
+        #[ignore = "subprocess of a_waiting_process_recovers_when_the_drain_holder_exits"]
+        fn child_holds_or_waits_for_drain() -> io::Result<()> {
+            let arguments = std::env::var(LOCK_CHILD).map_err(io::Error::other)?;
+            let (id, mode) = arguments
+                .split_once(':')
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            let shared = shared(u64::from_str_radix(id, 16).map_err(io::Error::other)?)?;
+            let ticket = shared.ticket();
+            if mode == "hold" {
+                shared.settle(ticket, || {
+                    event("DRAIN_HELD")?;
+                    io::stdin().read_exact(&mut [0])
+                })
+            } else {
+                assert_eq!(
+                    shared
+                        .lock
+                        .try_lock(FileLockMode::Exclusive)
+                        .err()
+                        .map(|error| error.kind()),
+                    Some(io::ErrorKind::WouldBlock),
+                    "another process must exclude this drain"
+                );
+                event("DRAIN_BLOCKED")?;
+                shared.settle(ticket, || event("DRAIN_RECOVERED"))
+            }
+        }
+
+        /// The real process lock excludes a competing drain. Killing its
+        /// holder releases the wait without certifying the unfinished drain.
+        #[test]
+        fn a_waiting_process_recovers_when_the_drain_holder_exits() -> io::Result<()> {
+            let id = (u64::from(std::process::id()) << 32) | 0xdead_fade;
+            let path = std::env::temp_dir().join(format!("acyclic-device-v1-{id:016x}.drain"));
+            let result = (|| {
+                let shared = shared(id)?;
+                let before = shared.started.load(Ordering::SeqCst);
+                let completed = shared.completed.load(Ordering::SeqCst);
+                let mut holder = DrainProcess::spawn(id, "hold")?;
+                holder.event("DRAIN_HELD")?;
+                let mut waiter = DrainProcess::spawn(id, "wait")?;
+                waiter.event("DRAIN_BLOCKED")?;
+                assert_eq!(shared.started.load(Ordering::SeqCst), before + 1);
+                assert_eq!(shared.completed.load(Ordering::SeqCst), completed);
+                holder.child.kill()?;
+                holder.child.wait()?;
+                waiter.event("DRAIN_RECOVERED")?;
+                assert!(waiter.child.wait()?.success());
+                assert_eq!(shared.started.load(Ordering::SeqCst), before + 2);
+                assert_eq!(shared.completed.load(Ordering::SeqCst), before + 2);
+                Ok(())
+            })();
+            std::fs::remove_file(path)?;
+            result
+        }
 
         /// Two mappings stand for two processes. A ticket taken before
         /// another process's drain started is settled by that drain; one
