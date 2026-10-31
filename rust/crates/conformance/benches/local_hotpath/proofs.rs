@@ -144,6 +144,7 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
     .await?;
     let expected_child = prepared.child().clone();
     let original = prepared.request().clone();
+    let request_digest = acyclic_stream::request::commit_digest(&mut original.clone())?;
     // This fixture creates only fresh paths. Inspect all requested paths before
     // installing the cut; no pre-existing participant may hide a partial root.
     require_absent(&fixture, &original).await?;
@@ -178,6 +179,7 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
             "schema": 1, "kind": "proof_negative_control", "operation": "swarm.session_start",
             "control": "original journal fails to discard unflushed bytes", "result": "rejected",
             "journal_events": cut.counts(), "typed_outcome": "Unknown",
+            "request_digest": hex::encode(request_digest),
         }));
     }
     cut.require_faithful()?;
@@ -194,9 +196,7 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
         if observation.idempotency_key != original.idempotency_key {
             return Err("recovered root changed its idempotency identity".into());
         }
-        if observation.request_digest
-            != acyclic_stream::request::commit_digest(&mut original.clone())?
-        {
+        if observation.request_digest != request_digest {
             return Err("recovered root receipt is bound to different request bytes".into());
         }
         let IdempotencyOutcome::Commit(envelope) = observation.outcome else {
@@ -237,6 +237,8 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
         "schema": 1, "kind": "proof_cut", "operation": "swarm.session_start", "cut": name,
         "journal_events": cut.counts(), "crashes": 1, "faithful_simulation": true,
         "typed_outcome": "Unknown", "retained_request_exact": true,
+        "request_digest": hex::encode(request_digest),
+        "idempotency_key": hex::encode(original.idempotency_key.as_bytes()),
         "later_original_producer_result": "Unavailable", "recovered": recovered,
         "participants": original.mutations.len(),
         "negative_controls": if stage == 2 { vec!["Unknown is not Created", "omitted recovered participant"] } else { vec!["Unknown is not Created"] },
