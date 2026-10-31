@@ -50,7 +50,7 @@ pub async fn automatic_review(
             };
             (verdict, Some("configured approval rules".into()))
         }
-        Approver::Llm { model, prompt, .. } => {
+        Approver::Llm { model, .. } => {
             let (model, provider) = models.get(model).ok_or_else(|| {
                 Error::Unsupported("independent approver model is not bound".into())
             })?;
@@ -59,7 +59,6 @@ pub async fn automatic_review(
                 request,
                 &expected.principal,
                 (model, provider.as_ref()),
-                prompt,
                 limits,
             )
             .await?
