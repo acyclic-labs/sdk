@@ -197,7 +197,8 @@ pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStor
 #[cfg(any(test, feature = "distributed"))]
 pub use distributed::{
     AuthorityPlacement, FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
-    PreparedFilesystemAppend, StreamAuthorityStore,
+    FilesystemCommitResult, PreparedFilesystemAppend, PreparedFilesystemCommit,
+    StreamAuthorityStore,
 };
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,

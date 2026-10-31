@@ -322,20 +322,13 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FilesystemCommitOutcome> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let accounting = KernelAccounting::standalone(budget, cancellation);
         let result = self
             .inner
             .authority
-            .settle_recorded(commit, outcome, async |commit, commit_id| {
-                if let Ok(mut authority) = authority_work(&accounting, cancellation) {
-                    self.inner
-                        .authority
-                        .refresh_committed(commit, commit_id, &mut authority)
-                        .await;
-                    drop(record_authority_work(&mut accounting, &authority));
-                }
-            })
-            .await;
+            .settle_recorded(commit, outcome, |commit, commit_id| {
+                self.inner.authority.refresh_committed(commit, commit_id);
+            });
         measured(result.map_err(FsError::from), &accounting)
     }
 }

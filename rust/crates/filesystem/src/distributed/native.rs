@@ -3,22 +3,42 @@ use super::*;
 pub(super) const GENERATION_INDEX_DOMAIN: &[u8] = b"fs-generation-v1\0";
 pub(super) const OPERATION_INDEX_DOMAIN: &[u8] = b"fs-operation-v1\0";
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn retain_native_custody(
+    retained: &mut AuthorityAllocation,
+    incoming: Option<&mut crate::NativeAllocation>,
+    original: Option<&crate::NativeMaterializationWork>,
+) -> Result<(), AuthorityStoreError> {
+    if retained.is_some() || incoming.is_some() {
+        let original = original.ok_or(AuthorityStoreError::NativeOriginalUnsupported)?;
+        for allocation in retained.iter().chain(incoming.as_deref()) {
+            let context = allocation
+                .work()
+                .authority_read_original()
+                .unwrap_or(allocation.work());
+            if !context.shares_invocation_context(original) {
+                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+            }
+        }
+    }
+    if let Some(incoming) = incoming {
+        // Keep both guards unchanged on context mismatch or overflow.
+        match retained {
+            Some(retained) => retained.absorb(incoming)?,
+            retained => *retained = Some(incoming.split_off(incoming.bytes())?),
+        }
+    }
+    Ok(())
+}
+
 impl<'a> AuthorityWork<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn retain_request_custody(
         &mut self,
         retained: &mut AuthorityAllocation,
     ) -> Result<(), AuthorityStoreError> {
-        if let Some(request) = &mut self.request_allocation {
-            // Leave the original read context cached here; only paid request
-            // capacity follows the prepared commit. Absorb refuses before
-            // changing either guard if its accounting context differs.
-            match retained {
-                Some(retained) => retained.absorb(request)?,
-                retained => *retained = Some(request.split_off(request.bytes())?),
-            }
-        }
-        Ok(())
+        // Keep the original runtime read context cached in this work owner.
+        retain_native_custody(retained, self.request_allocation.as_mut(), self.original)
     }
 
     pub(super) fn absorb(&mut self, child: &AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {

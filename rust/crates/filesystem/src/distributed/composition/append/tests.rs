@@ -137,7 +137,7 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
         else {
             return Err("same-owner exact publication replay was refused".into());
         };
-        assert_eq!(&replayed, envelope);
+        assert_eq!(&*replayed, envelope);
         assert_eq!(
             store.head(authority, &mut work).await?.sequence.get(),
             u64::from(count)
@@ -235,7 +235,11 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
         receipts,
         allocation,
     } = prepared
-        .confirm(&store, &CommitOutcome::Conflict(conflicts), &mut work)
+        .confirm(
+            &store,
+            &CommitOutcome::Conflict(conflicts.clone()),
+            &mut work,
+        )
         .await?
     else {
         return Err("conditional result did not retain member outcomes".into());

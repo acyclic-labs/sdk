@@ -354,23 +354,24 @@ impl Cut<'_> {
         self.confirm_members(outcome, pages_tail, records, observation, checkpoint, false)
     }
 
-    /// The original normalized batch authenticates caller members before any
-    /// journal member can advance its cache or checkpoint.
+    /// The original filesystem owner has already authenticated every canonical
+    /// caller member. Confirm this Cut without repeating whole-request validation.
     pub(super) fn confirm_composed(
         &self,
-        prepared: &acyclic_fs::FilesystemCommit,
-        outcome: &CommitOutcome,
+        prepared: &acyclic_fs::PreparedFilesystemCommit,
         pages_tail: u64,
         records: &[OwnedBytes],
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
-    ) -> Result<Option<acyclic_stream::CommitId>> {
-        if let CommitOutcome::Committed(receipt) = outcome {
-            receipt
-                .validate_request(prepared.request())
-                .map_err(|_| Error::Indeterminate(self.operation))?;
-        }
-        self.confirm_members(outcome, pages_tail, records, observation, checkpoint, true)
+    ) -> Result<acyclic_stream::CommitId> {
+        self.confirm_receipt(
+            prepared.receipt(),
+            pages_tail,
+            records,
+            observation,
+            checkpoint,
+            true,
+        )
     }
 
     fn confirm_members(
@@ -384,76 +385,95 @@ impl Cut<'_> {
     ) -> Result<Option<acyclic_stream::CommitId>> {
         match outcome {
             CommitOutcome::Conflict(_) => Ok(None),
-            CommitOutcome::Committed(receipt) => {
-                if !composed && receipt.appends.len() != 3 + self.contributions.len() {
-                    return Err(Error::Indeterminate(self.operation));
-                }
-                if !composed && !receipt.forks.is_empty() {
-                    return Err(Error::Indeterminate(self.operation));
-                }
-                // Stream canonicalizes mutations by path before publication.
-                // Visit every member once; contributed paths are admitted in
-                // that same order, independently of the three journal paths.
-                let mut previous = None;
-                let mut seen = 0_u8;
-                let mut contributions = self.contributions.iter().peekable();
-                for append in &receipt.appends {
-                    if previous.is_some_and(|path| path >= &append.path) {
-                        return Err(Error::Indeterminate(self.operation));
-                    }
-                    previous = Some(&append.path);
-                    let (bit, valid) = if append.path == *self.execution {
-                        (
-                            1,
-                            confirms(
-                                append,
-                                self.execution,
-                                self.execution_tail,
-                                std::slice::from_ref(observation),
-                            ),
-                        )
-                    } else if append.path == *self.head {
-                        (
-                            2,
-                            confirms(
-                                append,
-                                self.head,
-                                self.head_tail,
-                                std::slice::from_ref(checkpoint),
-                            ),
-                        )
-                    } else if append.path == *self.pages {
-                        (4, confirms(append, self.pages, pages_tail, records))
-                    } else {
-                        let contribution = contributions.peek();
-                        let target = contribution.map(|item| item.target()).transpose()?;
-                        if composed && target.is_none_or(|(path, _)| path != &append.path) {
-                            continue;
-                        }
-                        let Some(contribution) = contributions.next() else {
-                            return Err(Error::Indeterminate(self.operation));
-                        };
-                        let (path, start) = contribution.target()?;
-                        (
-                            0,
-                            confirms(
-                                append,
-                                path,
-                                start,
-                                std::slice::from_ref(contribution.record),
-                            ),
-                        )
-                    };
-                    if !valid || seen & bit != 0 {
-                        return Err(Error::Indeterminate(self.operation));
-                    }
-                    seen |= bit;
-                }
-                if seen != 7 || contributions.next().is_some() {
-                    return Err(Error::Indeterminate(self.operation));
-                }
-                Ok(Some(receipt.commit_id))
-            }
+            CommitOutcome::Committed(receipt) => self
+                .confirm_receipt(
+                    receipt,
+                    pages_tail,
+                    records,
+                    observation,
+                    checkpoint,
+                    composed,
+                )
+                .map(Some),
         }
+    }
+
+    fn confirm_receipt(
+        &self,
+        receipt: &acyclic_stream::CommitReceipt,
+        pages_tail: u64,
+        records: &[OwnedBytes],
+        observation: &OwnedBytes,
+        checkpoint: &OwnedBytes,
+        composed: bool,
+    ) -> Result<acyclic_stream::CommitId> {
+        if !composed && receipt.appends.len() != 3 + self.contributions.len() {
+            return Err(Error::Indeterminate(self.operation));
+        }
+        if !composed && !receipt.forks.is_empty() {
+            return Err(Error::Indeterminate(self.operation));
+        }
+        // Stream canonicalizes mutations by path before publication.
+        // Visit every member once; contributed paths are admitted in
+        // that same order, independently of the three journal paths.
+        let mut previous = None;
+        let mut seen = 0_u8;
+        let mut contributions = self.contributions.iter().peekable();
+        for append in &receipt.appends {
+            if previous.is_some_and(|path| path >= &append.path) {
+                return Err(Error::Indeterminate(self.operation));
+            }
+            previous = Some(&append.path);
+            let (bit, valid) = if append.path == *self.execution {
+                (
+                    1,
+                    confirms(
+                        append,
+                        self.execution,
+                        self.execution_tail,
+                        std::slice::from_ref(observation),
+                    ),
+                )
+            } else if append.path == *self.head {
+                (
+                    2,
+                    confirms(
+                        append,
+                        self.head,
+                        self.head_tail,
+                        std::slice::from_ref(checkpoint),
+                    ),
+                )
+            } else if append.path == *self.pages {
+                (4, confirms(append, self.pages, pages_tail, records))
+            } else {
+                let contribution = contributions.peek();
+                let target = contribution.map(|item| item.target()).transpose()?;
+                if composed && target.is_none_or(|(path, _)| path != &append.path) {
+                    continue;
+                }
+                let Some(contribution) = contributions.next() else {
+                    return Err(Error::Indeterminate(self.operation));
+                };
+                let (path, start) = contribution.target()?;
+                (
+                    0,
+                    confirms(
+                        append,
+                        path,
+                        start,
+                        std::slice::from_ref(contribution.record),
+                    ),
+                )
+            };
+            if !valid || seen & bit != 0 {
+                return Err(Error::Indeterminate(self.operation));
+            }
+            seen |= bit;
+        }
+        if seen != 7 || contributions.next().is_some() {
+            return Err(Error::Indeterminate(self.operation));
+        }
+        Ok(receipt.commit_id)
     }
 }

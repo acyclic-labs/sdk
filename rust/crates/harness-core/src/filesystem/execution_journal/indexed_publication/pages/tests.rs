@@ -197,70 +197,89 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         &checkpoint,
     )?;
     assert_eq!(prepared.0.request().idempotency_key, key);
-    acyclic_stream::request::validate_commit(
-        prepared.0.request_mut().ok_or_else(|| invalid(None))?,
-    )?;
+    let store = acyclic_fs::StreamAuthorityStore::new(provider.clone());
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut fs_work =
+        acyclic_fs::AuthorityWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation);
+    store
+        .seal(&mut prepared.0, &mut fs_work)
+        .map_err(|_| invalid(None))?;
     let original = prepared.0.request().clone();
     let outcome = provider.commit(original.clone()).await?;
     let CommitOutcome::Committed(receipt) = &outcome else {
         panic!("fresh composed cut refused")
     };
-    assert_eq!(
-        cut.confirm_composed(
-            &prepared.0,
-            &outcome,
-            0,
-            &records,
-            &observation,
-            &checkpoint
-        )?,
-        Some(receipt.commit_id)
-    );
+    let committed = receipt.commit_id;
     assert!(
         cut.confirm(&outcome, 0, &records, &observation, &checkpoint)
             .is_err()
     );
+    let (mut commit, quota) = prepared;
     for omitted in 0..receipt.appends.len() {
         let mut incomplete = receipt.clone();
         incomplete.appends.remove(omitted);
-        assert!(
-            cut.confirm_composed(
-                &prepared.0,
-                &CommitOutcome::Committed(incomplete),
-                0,
-                &records,
-                &observation,
-                &checkpoint
-            )
-            .is_err()
-        );
+        let Err(acyclic_fs::FilesystemCommitOutcome::Unknown {
+            commit: retained, ..
+        }) = store.prepare_settlement(commit, CommitOutcome::Committed(incomplete))
+        else {
+            panic!("missing canonical caller or journal member was accepted")
+        };
+        commit = retained;
+        assert_eq!(commit.request(), &original);
     }
     let mut incomplete = receipt.clone();
     incomplete.forks.clear();
+    let Err(acyclic_fs::FilesystemCommitOutcome::Unknown {
+        commit: retained, ..
+    }) = store.prepare_settlement(commit, CommitOutcome::Committed(incomplete))
+    else {
+        panic!("missing caller fork was accepted")
+    };
+    let validated = store
+        .prepare_settlement(retained, outcome)
+        .map_err(|_| invalid(None))?;
+    // Full membership has already been checked by its original owner. A semantic
+    // mismatch cannot retire the prepared result or require a second validation.
     assert!(
-        cut.confirm_composed(
-            &prepared.0,
-            &CommitOutcome::Committed(incomplete),
-            0,
-            &records,
-            &observation,
-            &checkpoint
-        )
-        .is_err()
+        cut.confirm_composed(&validated, 1, &records, &observation, &checkpoint)
+            .is_err()
     );
-    let replay = provider.commit(original.clone()).await?;
     assert_eq!(
-        cut.confirm_composed(&prepared.0, &replay, 0, &records, &observation, &checkpoint)?,
-        Some(receipt.commit_id)
+        cut.confirm_composed(&validated, 0, &records, &observation, &checkpoint)?,
+        committed
     );
+    let acyclic_fs::FilesystemCommitOutcome::Committed(result) = store
+        .finish_settlement(validated)
+        .map_err(|_| invalid(None))?
+    else {
+        panic!("confirmed original batch did not finish")
+    };
+    assert_eq!(result.commit_id, committed);
+    let mut replay_commit = acyclic_fs::FilesystemCommit::new(original.clone());
+    store
+        .seal(&mut replay_commit, &mut fs_work)
+        .map_err(|_| invalid(None))?;
+    let replay = provider.commit(original.clone()).await?;
+    let validated = store
+        .prepare_settlement(replay_commit, replay)
+        .map_err(|_| invalid(None))?;
+    assert_eq!(
+        cut.confirm_composed(&validated, 0, &records, &observation, &checkpoint)?,
+        committed
+    );
+    drop(validated);
     let mut racing = original;
     racing.idempotency_key = acyclic_stream::IdempotencyKey::unique();
-    let loser = provider.commit(racing).await?;
-    assert_eq!(
-        cut.confirm_composed(&prepared.0, &loser, 0, &records, &observation, &checkpoint)?,
-        None
-    );
-    drop(prepared);
+    let mut racing = acyclic_fs::FilesystemCommit::new(racing);
+    store
+        .seal(&mut racing, &mut fs_work)
+        .map_err(|_| invalid(None))?;
+    let loser = provider.commit(racing.request().clone()).await?;
+    assert!(matches!(
+        store.prepare_settlement(racing, loser),
+        Err(acyclic_fs::FilesystemCommitOutcome::Rejected(_))
+    ));
+    drop(quota);
     Ok(())
 }
 
