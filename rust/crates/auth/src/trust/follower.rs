@@ -602,6 +602,8 @@ fn keyring(
         {
             return Err(VerifyError::Trust);
         }
+    } else if next.sequence == 0 || (next.sequence == 1 && next.previous_digest != [0; 32]) {
+        return Err(VerifyError::Trust);
     }
     if next.issued_at_unix_seconds > now {
         return Err(VerifyError::Time);

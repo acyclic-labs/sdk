@@ -6,7 +6,7 @@ use acyclic_auth::trust::{ChangeSource as _, EnvironmentFrontier, Issuer};
 use acyclic_auth::verify::Trust as _;
 use bytes::Bytes;
 use ed25519_dalek::SigningKey;
-use futures::FutureExt as _;
+use futures::{FutureExt as _, stream};
 use std::{
     collections::HashSet,
     future::Future,

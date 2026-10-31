@@ -4,14 +4,14 @@
 //! served as soon as its Stream delivers it, never on a refresh interval.
 //! Opening a Stream runs alongside the live follows, so one slow account
 //! never delays another's revocations. Any follow ending fences everything;
-//! a refused account record fences that account and is retained, in order
-//! with its successors, until an environment record lets it apply.
+//! a refused account record fences that account and pauses its original
+//! follow until an environment record lets it apply.
 use crate::{FollowFilter, Record, Stream, StreamError, StreamProvider, UnixMillisClock};
 use acyclic_auth::trust::{
     Applied, FenceCause, Follower, FollowerState, account_path, environment_path,
 };
 use futures::{
-    StreamExt as _,
+    FutureExt as _, StreamExt as _,
     channel::mpsc,
     future::{self, BoxFuture, Either},
     stream::{BoxStream, FuturesUnordered},
