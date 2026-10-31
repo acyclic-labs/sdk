@@ -598,15 +598,8 @@ async fn a_local_commit_drains_the_device_once_at_any_size()
     let small = local_commit_flushes(1).await?;
     let large = local_commit_flushes(64).await?;
     eprintln!("LOCAL_COMMIT_FLUSHES files=1 {small:?} files=64 {large:?}");
-    assert!(
-        small.0 >= 1,
-        "the commit's objects were not flushed: {small:?}"
-    );
-    assert!(
-        small.1 >= 1,
-        "the commit was acknowledged without a drain: {small:?}"
-    );
-    assert_eq!(small, large, "flushes per commit grew with its size");
+    assert_eq!(small, (1, 1), "unexpected flush counts for one file");
+    assert_eq!(large, (1, 1), "unexpected flush counts for 64 files");
     Ok(())
 }
 
