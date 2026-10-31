@@ -19,7 +19,7 @@ pub enum StreamError {
     /// Destination already exists.
     #[error("stream already exists")]
     AlreadyExists,
-    /// Requested source prefix is not retained.
+    /// Requested source prefix or conditional publication cut is not retained.
     #[error("stream prefix not retained")]
     PrefixNotRetained,
     /// Requested sequence is beyond the current tail.

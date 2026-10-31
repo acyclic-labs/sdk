@@ -154,6 +154,7 @@ pub(crate) struct Replicated<J> {
     pub(crate) cursor: u64,
     clock: Arc<ReplicaClock>,
     failed: bool,
+    stale: bool,
     acceptance_clock: bool,
 }
 
@@ -170,13 +171,17 @@ impl<J: CommandJournal> Replicated<J> {
             clock,
             cursor,
             failed: false,
+            stale: false,
             acceptance_clock: false,
         }
     }
 
     /// The port samples and persists its own clock under the append CAS. Its
     /// accepted stamp can bind an original plan without a preceding clock read.
-    #[cfg(feature = "postgres")]
+    #[cfg(any(
+        feature = "postgres",
+        all(test, feature = "local", not(target_arch = "wasm32"))
+    ))]
     pub(crate) fn with_acceptance_clock(mut self) -> Self {
         self.acceptance_clock = true;
         self
@@ -204,10 +209,13 @@ impl<J: CommandJournal> Replicated<J> {
         self.provider.revisions.close();
     }
 
-    /// Returns false only for a proven losing proposal that can be reconsidered.
+    /// A proven stale cut refuses this proposal without invalidating the replica.
     fn complete<T>(&mut self, attempt: Attempt, result: &Result<T, StreamError>) -> bool {
         match attempt.appended {
-            Some(AppendIf::Stale { head }) if head > self.cursor => return false,
+            Some(AppendIf::Stale { head }) if head > self.cursor => {
+                self.stale = true;
+                return false;
+            }
             Some(AppendIf::Accepted {
                 sequence,
                 at_millis,
@@ -329,6 +337,8 @@ impl<J: CommandJournal> Replicated<J> {
         .await;
         if result.is_err() {
             self.fail();
+        } else {
+            self.stale = false;
         }
         result
     }
@@ -385,65 +395,55 @@ impl<J: CommandJournal> Replicated<J> {
                     })
                     .collect(),
             };
-            let mut fresh = false;
-            if !self.acceptance_clock {
+            let fresh = !self.acceptance_clock || self.stale;
+            if fresh {
                 self.refresh_with(page, &mut observe).await?;
-                fresh = true;
             }
-            loop {
-                observe.observe(&self.provider, command, false).await?;
-                let expected = self.cursor;
-                let mut attempt = Attempt::default();
-                let frame = JournalFrame {
-                    command,
-                    at_millis: self.clock.now_unix_millis(),
-                    deadline,
-                    #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
-                    changes: changes.clone(),
-                };
-                let result = {
-                    let persist =
-                        std::pin::pin!(attempt.persist(&mut self.journal, expected, frame));
-                    self.provider
-                        .apply_durable(&canonical, deadline, persist)
-                        .await
-                };
-                // Successful replay and a changed request's immutable key
-                // binding are authoritative at the retained cut. Every other
-                // local refusal needs one current observation before returning.
-                let immutable = !attempt.started
-                    && matches!(
-                        &result,
-                        Ok(Execution {
-                            outcome: WriteOutcome::Append(AppendOutcome::Committed(_))
-                                | WriteOutcome::Fork(_)
-                                | WriteOutcome::Commit(CommitOutcome::Committed(_)),
-                            ..
-                        }) | Err(StreamError::IdempotencyMismatch)
-                    );
-                if !attempt.started && !fresh && !immutable {
-                    self.refresh_with(page, &mut observe).await?;
-                    fresh = true;
-                    // An unchanged monotonic cut confirms the original refusal;
-                    // Deadline-bearing refusals must also use the observed
-                    // clock, even when the original refusal was a conflict.
-                    if self.cursor != expected || deadline.is_some() {
-                        continue;
-                    }
+            observe.observe(&self.provider, command, false).await?;
+            let expected = self.cursor;
+            let mut attempt = Attempt::default();
+            let frame = JournalFrame {
+                command,
+                at_millis: self.clock.now_unix_millis(),
+                deadline,
+                #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+                changes,
+            };
+            let result = {
+                let persist = std::pin::pin!(attempt.persist(&mut self.journal, expected, frame));
+                self.provider
+                    .apply_durable(&canonical, deadline, persist)
+                    .await
+            };
+            // Exact accepted identities and mismatched immutable bindings are
+            // authoritative at the retained cut. A local refusal needs one
+            // current observation before it can be returned as current state.
+            let immutable = !attempt.started
+                && matches!(
+                    &result,
+                    Ok(Execution {
+                        outcome: WriteOutcome::Append(AppendOutcome::Committed(_))
+                            | WriteOutcome::Fork(_)
+                            | WriteOutcome::Commit(CommitOutcome::Committed(_)),
+                        ..
+                    }) | Err(StreamError::IdempotencyMismatch)
+                );
+            if !attempt.started && !fresh && !immutable {
+                self.refresh_with(page, &mut observe).await?;
+                if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
+                    return Err(StreamError::DeadlineElapsed);
                 }
-                if !self.complete(attempt, &result) {
-                    // This is the conditional journal's losing proposal. Its
-                    // uninstalled plan was dropped; catch up and decide again
-                    // under the same exact request identity and deadline.
-                    self.refresh_with(page, &mut observe).await?;
-                    fresh = true;
-                    continue;
+                if self.cursor != expected {
+                    return Err(StreamError::PrefixNotRetained);
                 }
-                if self.cursor > expected {
-                    observe.observe(&self.provider, command, true).await?;
-                }
-                return result;
             }
+            if !self.complete(attempt, &result) {
+                return Err(StreamError::PrefixNotRetained);
+            }
+            if self.cursor > expected {
+                observe.observe(&self.provider, command, true).await?;
+            }
+            result
         }
     }
 }

@@ -143,9 +143,13 @@ frames)`, `read(from, page)` and an atomically registered `changed(after)` event
 Storage cursors are opaque and strictly increasing within the retained journal;
 they are separate from Stream sequence numbers and applied revision indexes.
 Catch-up pins its first observed journal head and reads bounded pages through
-that cut, so concurrent writers cannot keep a reader chasing the head. Only a
-reported stale proposal is replanned, with its original request identity and
-deadline; an unknown transport outcome closes that replica. Browser, host,
+that cut, so concurrent writers cannot keep a reader chasing the head. A
+reported stale publication cut returns `PrefixNotRetained` after its one
+conditional proposal; it does not replan or resubmit. The caller may explicitly
+submit the same original request and identity again. A stale cached refusal is
+confirmed by one current observation, returning `PrefixNotRetained` if the cut
+moved, or `DeadlineElapsed` if the original deadline elapsed. An unknown
+transport outcome closes that replica. Browser, host,
 PostgreSQL and local storage retain their native durability boundaries. Native
 local completion and prepared ingress retain their original funded guards.
 
@@ -166,7 +170,7 @@ snapshot without reading the last record or reconstructing inherited origin.
 The response identifies its projection; mismatched or incomplete observations
 are refused before they reach a consumer.
 
-Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery and total retention are bounded by `BrowserStreamLimits` (default 65,536 commands and 256 MiB of journal bytes) and `MemoryLimits`. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow registers before reading and receives publication notifications over `BroadcastChannel`; subscribers catch up new durable commands on notification. Dropping the cursor releases its subscription. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.
+Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery uses bounded pages; logical retention is unbounded by default. Optional `BrowserStreamLimits` and `MemoryLimits` capacities retain explicit caller policies. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow registers before reading and receives publication notifications over `BroadcastChannel`; subscribers catch up new durable commands on notification. Dropping the cursor releases its subscription. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.
 
 `MemoryStream` and `LocalStream` retain successful retry outcomes and immutable commit envelopes indefinitely within their explicit capacity limits. Replay precedes capacity admission; a new identity fails closed when the store is full. An admitted identity cannot execute again or acquire another digest after a clock advance. `LocalStream` preserves these outcomes through journal replay and snapshots. Recovery enforces the same capacity limits as live admission. Hosted services must provide the same no-reexecution guarantee under their own durable account-wide retry authority; local checks do not qualify that service behavior.
 
