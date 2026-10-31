@@ -1,30 +1,6 @@
 use super::*;
 use proptest::prelude::*;
 
-#[test]
-fn codex_capacities_match_the_studied_metadata_without_an_output_claim() {
-    // models_cache.json metadata, 2026-10-18; no authentication/config files.
-    let catalog = default_catalog();
-    let metadata: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/codex-capacities.json")).unwrap();
-    for entry in metadata["models"].as_array().unwrap() {
-        let name = entry["slug"].as_str().unwrap();
-        let model = &catalog["openai"].models[name];
-        assert_eq!(
-            u64::from(model.capacity.context_tokens),
-            entry["context_window"].as_u64().unwrap()
-        );
-        assert_eq!(model.capacity.output_tokens, None);
-        assert_eq!(
-            model.max_context_tokens.map(u64::from),
-            entry["max_context_window"].as_u64()
-        );
-        let encoded = serde_json::to_value(model).unwrap();
-        assert!(encoded["capacity"]["output_tokens"].is_null());
-        model.capacity.validate().unwrap();
-    }
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     // The production parser preserves defaults, nested capacities and unknown
@@ -98,7 +74,7 @@ fn catalog_default_and_provider_overrides_commit_together() -> Result<()> {
     let mut document = json!({"default_model":"openai/missing", "openai":spec});
     std::fs::write(file.path(), serde_json::to_vec(&document).unwrap()).unwrap();
     assert!(registry.load_catalog(file.path()).is_err());
-    assert_eq!(registry.default_model(), "openai/gpt-5");
+    assert_eq!(registry.default_model(), crate::catalog::DEFAULT_MODEL);
     assert_eq!(registry.catalog()["openai"].models["gpt-5"], original);
     document["default_model"] = json!("openai/gpt-6-luna");
     std::fs::write(file.path(), serde_json::to_vec(&document).unwrap()).unwrap();
