@@ -293,6 +293,16 @@ grammar target. One actual bearer writer producer uses deterministic SDK test
 signing output and awaits capture/execution. Transport admission interprets no
 token claims and grants no authority. No real credential is captured.
 
+The shared Stream persistence entry also reaches `native-runtime::LogFrame`
+directly. Sixteen leading fuzz bytes select minimum/maximum body bounds; all
+remaining prefix/body/checksum admission uses the actual codec, for both widths.
+Slice and finite-reader admission must agree; accepted first-frame bytes survive
+the split-part writer, while EOF, checksum changes and a foreign domain refuse.
+Four actual writer producers cover empty/nonempty narrow/wide frames and await
+capture and execution. This pure finite reader adds no IO or waits. The pending
+shared checked-size admission must cover integer extrema before qualification;
+no reproduced crash or SHA-256 proof is claimed.
+
 The Auth target also calls the resource component codec shared with grants:
 arbitrary opaque bytes round-trip, admitted syntax has one spelling, an
 incomplete escape refuses, and an opaque Objects key retains its separators.

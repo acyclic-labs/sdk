@@ -155,6 +155,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
+    for (name, bytes) in acyclic_codec_fuzz::log_frame::seeds()? {
+        save(
+            "stream_persistence",
+            &name,
+            &bytes,
+            "acyclic_native_runtime::LogFrame::encode with narrow/wide test domains and empty/split bodies; first 16 bytes retain caller minimum/maximum bounds",
+            &mut manifest,
+        )?;
+    }
     for (name, bytes) in acyclic_objects::codec_fuzz::seeds() {
         save(
             "object_persistence",
