@@ -66,12 +66,13 @@ pub trait InstructionReader: DiscoverySource {
 
 #[doc(hidden)]
 pub trait SkillReader: DiscoverySource {
+    /// Preserves the provider's byte owner while metadata borrows its prefix.
     fn skill_prefix<'a>(
         &'a mut self,
         path: &'a str,
         revision: &'a Self::Revision,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>>;
+    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>>;
 }
 
 impl DiscoveryWork {
@@ -463,7 +464,7 @@ impl SkillReader for VolumeDiscovery<'_> {
         path: &'a str,
         revision: &'a GenerationRef,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>> {
+    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
         Box::pin(async move {
             let pinned = PinnedContextPath {
                 root: self.root.clone(),
@@ -482,7 +483,7 @@ impl SkillReader for VolumeDiscovery<'_> {
                     crate::conversation::ContentAccess::default(),
                 )?
                 .await?;
-            Ok((prefix.to_vec(), pinned))
+            Ok((prefix, pinned))
         })
     }
 }
