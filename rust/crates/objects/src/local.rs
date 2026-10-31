@@ -15,6 +15,8 @@
 //! When the log holds more dead bytes than live ones, its live frames are
 //! rewritten to a fresh log that replaces it atomically, so space is
 //! reclaimed in amortised constant work per dead byte.
+//! A failed compaction does not refuse the mutation already visible in the
+//! log. It stops later writes and makes flush uncertain until the root reopens.
 use crate::{Medium, MediumError, Store};
 use acyclic_native_runtime::{LogFrame, PersistenceKey, spawn_persistence};
 use acyclic_stream::OwnedBytes;
@@ -115,19 +117,18 @@ impl crate::Account<LocalMedium> {
 /// together and await them after. The key is an opaque address in the original
 /// invocation, never the caller's object name or prefix. The runtime job identity
 /// distinguishes concurrent invocations even when an address is reused.
-fn blocking<T: Send + 'static, F: FnOnce() -> std::io::Result<T> + Send + 'static>(
+fn blocking<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
     medium: &LocalMedium,
     operation: &'static str,
     key: usize,
     work: F,
 ) -> impl Future<Output = std::io::Result<T>> + use<T, F> {
-    let submitted = spawn_persistence(
+    spawn_persistence(
         "objects",
         operation,
         PersistenceKey::new(Arc::as_ptr(&medium.shared) as usize, key as u64),
         work,
-    );
-    async move { submitted.await? }
+    )
 }
 
 fn native(durability: LocalDurability) -> acyclic_native_runtime::Durability {
@@ -272,19 +273,20 @@ impl Shared {
     }
 
     /// Appends one frame, returning where it lies.
-    fn append(&self, log: &mut Log, frame: &[u8]) -> std::io::Result<u64> {
-        self.usable()?;
+    fn append(&self, log: &mut Log, frame: &[u8]) -> Result<u64, MediumError> {
+        self.usable().map_err(failed)?;
         let start = log.end;
         self.stop_on_error(acyclic_native_runtime::persistence_syscall(|| {
             acyclic_native_runtime::write_all_at(&log.file, start, frame, None)
-        }))?;
+        }))
+        .map_err(MediumError::Ambiguous)?;
         log.end += frame.len() as u64;
         log.written += 1;
         Ok(start)
     }
 
-    fn put(&self, log: &mut Log, key: &str, value: &[u8]) -> std::io::Result<()> {
-        let frame = encode(PUT, key, value)?;
+    fn put(&self, log: &mut Log, key: &str, value: &[u8]) -> Result<(), MediumError> {
+        let frame = encode(PUT, key, value).map_err(failed)?;
         let start = self.append(log, &frame)?;
         let slot = Slot {
             frame: start,
@@ -295,29 +297,32 @@ impl Shared {
         log.live += slot.bytes;
         if let Some(old) = log.index.insert(key.to_owned(), slot) {
             log.live -= old.bytes;
-            self.compact_if_due(log)?;
+            self.compact_if_due(log);
         }
         Ok(())
     }
 
-    fn remove(&self, log: &mut Log, key: &str) -> std::io::Result<bool> {
+    fn remove(&self, log: &mut Log, key: &str) -> Result<bool, MediumError> {
         if !log.index.contains_key(key) {
             return Ok(false);
         }
-        self.append(log, &encode(REMOVE, key, &[])?)?;
+        self.append(log, &encode(REMOVE, key, &[]).map_err(failed)?)?;
         if let Some(old) = log.index.remove(key) {
             log.live -= old.bytes;
         }
-        self.compact_if_due(log)?;
+        self.compact_if_due(log);
         Ok(true)
     }
 
-    fn compact_if_due(&self, log: &mut Log) -> std::io::Result<()> {
+    fn compact_if_due(&self, log: &mut Log) {
         let dead = log.end - log.live;
         if dead < COMPACTION_CHUNK || dead <= log.live {
-            return Ok(());
+            return;
         }
-        self.stop_on_error(self.compact(log))
+        // The mutation is already visible in the original log and index.
+        // Maintenance cannot change its result. An uncertain replacement
+        // stops later mutations and flushes until reopen recovers the root.
+        let _maintenance = self.stop_on_error(self.compact(log));
     }
 
     /// Rewrites the live frames to a fresh log and renames it over the old
@@ -385,8 +390,9 @@ fn encode(operation: u8, key: &str, value: &[u8]) -> std::io::Result<Vec<u8>> {
 fn decode(body: &[u8]) -> Option<(u8, &str, Range<usize>)> {
     let (&operation, rest) = body.split_first()?;
     let length = usize::try_from(u32::from_le_bytes(*rest.first_chunk::<4>()?)).ok()?;
-    let key = std::str::from_utf8(rest.get(4..4 + length)?).ok()?;
-    let value = 1 + 4 + length..body.len();
+    let (key, value) = rest.get(4..)?.split_at_checked(length)?;
+    let key = std::str::from_utf8(key).ok()?;
+    let value = body.len() - value.len()..body.len();
     match operation {
         PUT => Some((operation, key, value)),
         REMOVE if value.is_empty() => Some((operation, key, value)),
@@ -594,6 +600,9 @@ fn failed(error: std::io::Error) -> MediumError {
     MediumError::Failed(error)
 }
 
+#[cfg(all(test, feature = "test-support"))]
+mod outcome_tests;
+
 #[async_trait::async_trait]
 impl Medium for LocalMedium {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
@@ -607,7 +616,7 @@ impl Medium for LocalMedium {
             Ok(true)
         })
         .await
-        .map_err(failed)
+        .map_err(MediumError::Ambiguous)?
     }
 
     async fn read(
@@ -638,6 +647,7 @@ impl Medium for LocalMedium {
             Ok(Some(OwnedBytes::from(bytes)))
         })
         .await
+        .and_then(std::convert::identity)
         .map_err(failed)
     }
 
@@ -647,7 +657,7 @@ impl Medium for LocalMedium {
             shared.remove(&mut shared.log(), &key)
         })
         .await
-        .map_err(failed)
+        .map_err(MediumError::Ambiguous)?
     }
 
     async fn replace(
@@ -659,27 +669,27 @@ impl Medium for LocalMedium {
         let (shared, key, expected) = (Arc::clone(&self.shared), key.to_owned(), expected.to_vec());
         blocking(self, "replace", key.as_ptr() as usize, move || {
             let mut log = shared.log();
-            if !holds(&log, &key, &expected)? {
+            if !holds(&log, &key, &expected).map_err(failed)? {
                 return Ok(false);
             }
             shared.put(&mut log, &key, &bytes)?;
             Ok(true)
         })
         .await
-        .map_err(failed)
+        .map_err(MediumError::Ambiguous)?
     }
 
     async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
         let (shared, key, expected) = (Arc::clone(&self.shared), key.to_owned(), expected.to_vec());
         blocking(self, "remove-if", key.as_ptr() as usize, move || {
             let mut log = shared.log();
-            if !holds(&log, &key, &expected)? {
+            if !holds(&log, &key, &expected).map_err(failed)? {
                 return Ok(false);
             }
             shared.remove(&mut log, &key)
         })
         .await
-        .map_err(failed)
+        .map_err(MediumError::Ambiguous)?
     }
 
     /// One data flush covers every write so far, whichever keys are named.
@@ -687,7 +697,8 @@ impl Medium for LocalMedium {
         let shared = Arc::clone(&self.shared);
         blocking(self, "flush", 0, move || shared.sync())
             .await
-            .map_err(failed)
+            .and_then(std::convert::identity)
+            .map_err(MediumError::Ambiguous)
     }
 
     fn volatile(&self) -> bool {
@@ -733,6 +744,7 @@ impl Medium for LocalMedium {
                 .collect())
         })
         .await
+        .and_then(std::convert::identity)
         .map_err(failed)
     }
 }
@@ -919,7 +931,10 @@ mod isolation_tests {
             }
         });
         schedule.cut_at(0, DurableFault::Failed);
-        assert!(schedule.scope(medium.flush(&[])).await.is_err());
+        assert!(matches!(
+            schedule.scope(medium.flush(&[])).await,
+            Err(MediumError::Ambiguous(_))
+        ));
         schedule.drained().await;
         driver.abort();
         let _ = driver.await;

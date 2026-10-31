@@ -322,7 +322,12 @@ impl StreamProvider for PostgresStream {
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                self.refresh().await?;
+                self.check()?;
+                // A retained terminal binding is immutable; an unobserved key still
+                // needs an authoritative cut before absence can be returned.
+                if !self.inner.core.has_replay(&key).await? {
+                    self.refresh().await?;
+                }
                 self.inner.core.inspect_idempotency_inner(key).await
             }
         )

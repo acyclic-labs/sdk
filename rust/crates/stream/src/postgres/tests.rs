@@ -54,6 +54,25 @@ async fn publication_uses_only_required_sql_observations()
     };
     let envelope = provider.read_commit(receipt.commit_id).await?;
     assert!(envelope.committed_at_micros > 0);
+    sql_case(&replica, "inspect-retained").await?;
+    let observed = provider
+        .inspect_idempotency(original.idempotency_key.clone())
+        .now_or_never()
+        .ok_or(StreamError::Unavailable)??
+        .ok_or(StreamError::NotFound)?;
+    assert_eq!(
+        observed.outcome,
+        IdempotencyOutcome::Append(AppendOutcome::Committed(receipt.clone()))
+    );
+    assert_eq!(
+        observed.revision,
+        replica
+            .provider
+            .inspect_idempotency(original.idempotency_key.clone())
+            .await?
+            .ok_or(StreamError::NotFound)?
+            .revision
+    );
     sql_case(&replica, "replay").await?;
     assert_eq!(
         replica
@@ -228,7 +247,31 @@ async fn publication_uses_only_required_sql_observations()
         )
         .await?;
     assert_eq!(rows.get::<_, i64>(0), 7);
-    drop(replica);
+    let unseen = AppendRequest {
+        path: StreamPath::new("unobserved")?,
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::unique(),
+        ..original.clone()
+    };
+    let remote = writer.append(unseen.clone()).await?;
+    assert!(
+        replica
+            .provider
+            .inspect_idempotency(unseen.idempotency_key.clone())
+            .await?
+            .is_none()
+    );
+    sql_case(&replica, "inspect-unobserved").await?;
+    {
+        let inspect = provider.inspect_idempotency(unseen.idempotency_key);
+        let mut inspect = std::pin::pin!(inspect);
+        assert!(futures::poll!(inspect.as_mut()).is_pending());
+        drop(replica);
+        assert_eq!(
+            inspect.await?.ok_or(StreamError::NotFound)?.outcome,
+            IdempotencyOutcome::Append(remote)
+        );
+    }
     drop(provider);
     drop(writer);
     let reopened = PostgresStream::connect(&database, &namespace).await?;

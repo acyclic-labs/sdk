@@ -29,6 +29,7 @@ pub fn decode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<
 pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue> {
     let (_, input, response) = acyclic_objects::HTTP_ROUTES
         .iter()
+        .chain(acyclic_objects::HTTP_STREAM_ROUTES)
         .find(|(name, _, _)| *name == route)
         .ok_or_else(|| error(wire::ErrorCode::InvalidArgument.into()))?;
     Ok(if output { *response } else { *input }.to_owned())
@@ -67,6 +68,11 @@ impl ObjectsV1Memory {
         bytes: &js_sys::Uint8Array,
     ) -> Result<ObjectsV1Request, JsValue> {
         ObjectsV1Request::serve(Arc::clone(&self.inner), route, bytes)
+    }
+
+    /// Register directly with this Rust account's physical producer.
+    pub fn observe(&self, bytes: &js_sys::Uint8Array) -> Result<ObjectsV1Request, JsValue> {
+        ObjectsV1Request::observe_blobs(Arc::clone(&self.inner), bytes)
     }
 
     /// Serves the same original request through its single reply.

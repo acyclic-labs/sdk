@@ -5,6 +5,7 @@ use crate::{NativeReadMeter, RenameMode};
 #[derive(Clone, Copy, Debug)]
 enum Operation {
     Write,
+    UnmeteredWrite,
     Resize,
     Publish,
     Rename,
@@ -49,6 +50,7 @@ fn retains_cut(
                 Operation::Write => {
                     crate::write_all_at(&file, 0, bytes, Some((meter.as_ref(), false)))
                 }
+                Operation::UnmeteredWrite => crate::write_all_at(&file, 0, bytes, None),
                 Operation::Resize => crate::set_len(&file, 3, meter.as_ref()),
                 Operation::Publish => crate::publish_new(&from, &to, Some(&meter)),
                 Operation::Rename => {
@@ -68,7 +70,7 @@ fn retains_cut(
         .and_then(|error| error.get_ref())
         .and_then(|error| error.downcast_ref::<InjectedStorageFault>());
     let expected_operation = match operation {
-        Operation::Write => "file:write",
+        Operation::Write | Operation::UnmeteredWrite => "file:write",
         Operation::Resize => "file:set_len",
         Operation::Publish => "namespace:publish_new",
         Operation::Rename => "namespace:rename",
@@ -86,7 +88,7 @@ fn retains_cut(
     }
     let after = fault == DurableFault::After;
     match operation {
-        Operation::Write => {
+        Operation::Write | Operation::UnmeteredWrite => {
             let transferred = match fault {
                 DurableFault::After => bytes.len(),
                 DurableFault::Torn(count) => count.min(bytes.len() - 1),
@@ -122,14 +124,14 @@ fn retains_cut(
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
-    fn metered_native_calls_keep_physical_effects_and_causes(
+    fn native_calls_keep_physical_effects_and_causes(
         bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 2..32),
         prefix in 0usize..32,
     ) {
         // Reuse only the empty parent namespace. Every cut still starts with
         // newly created original bytes, its own held handle and fresh schedule.
         let directory = tempfile::tempdir().unwrap();
-        for operation in [Operation::Write, Operation::Resize, Operation::Publish, Operation::Rename] {
+        for operation in [Operation::Write, Operation::UnmeteredWrite, Operation::Resize, Operation::Publish, Operation::Rename] {
             for fault in [DurableFault::Before, DurableFault::After, DurableFault::Failed,
                 DurableFault::DiskFull, DurableFault::Torn(prefix)] {
                 proptest::prop_assert!(retains_cut(directory.path(), operation, fault, &bytes, false), "{operation:?} lost {fault:?}");

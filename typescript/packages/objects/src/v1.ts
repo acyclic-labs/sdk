@@ -1,11 +1,12 @@
 /** Objects v1 clients: account-scoped, content-addressed blobs. Public messages are generated from the canonical descriptor. */
 import { create, fromBinary, toBinary, type DescMessage, type MessageInitShape, type MessageShape } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
-import { ObjectsV1Memory, objects_v1_digest, verify_objects_v1 } from "../generated/wasm/acyclic_objects_wasm.js";
+import { ObjectsV1Memory, ObjectsV1Request as RustRequest, objects_v1_digest, verify_objects_v1 } from "../generated/wasm/acyclic_objects_wasm.js";
 import type { ObjectsV1BinaryReply } from "../generated/wasm/acyclic_objects_wasm.js";
 export type { ObjectsV1BinaryReply } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 import { snapshotBytes } from "@acyclic-labs/auth";
+import { awaitSignal } from "@acyclic-labs/auth/credential";
 export * from "../generated/proto/objects/v1/objects_pb.js";
 
 export class ObjectsV1Error extends Error {
@@ -27,40 +28,128 @@ export async function blobDigest(bytes: Uint8Array): Promise<wire.Digest> {
   return create(wire.DigestSchema, { blake3: objects_v1_digest(bytes) });
 }
 
-/** One original unary operation. Closing it settles a pending pull and releases its owner. */
+/** One original operation. Closing it settles a pending pull and releases its owner. */
 export interface ObjectsV1Request {
   next(): Promise<ObjectsV1BinaryReply | null>;
+  /** The canonical decoder accepted the initial response. Ends an opening
+   * deadline without imposing a deadline on subsequent subscription waits. */
+  opened?(): void;
   close(): void;
 }
 
 /** Canonical binary messages over the caller's existing account and credential owner. */
 export interface ObjectsV1BinaryPort {
-  /** Own the input before returning; later caller mutations cannot change this request. */
+  /** Own input before returning. Availability replies carry canonical length-delimited
+   * Protobuf chunks; unary replies carry one unframed message. */
   open(route: string, input: Uint8Array): ObjectsV1Request;
 }
 
+/** Register before verifying bytes. A change requests verification; it never
+ * certifies existence, repair, integrity or durability. Close releases the source. */
+export interface ObjectsV1Availability {
+  cursor(): wire.AvailabilityCursor;
+  /** One outstanding wait per observation. */
+  changed(): Promise<wire.AvailabilityCursor>;
+  close(): void;
+}
+
 /** One transport's original abort controller, shared by its pull and cancellation. */
-export function objectsRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController) => Promise<Uint8Array>): ObjectsV1Request {
+export function objectsRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController) => Promise<Uint8Array>, timeoutMs?: number): ObjectsV1Request {
+  return objectsStreamRequest(input, async function* (bytes, controller, opened) {
+    const reply = await start(bytes, controller);
+    opened();
+    yield reply;
+  }, timeoutMs);
+}
+
+/** Transport chunks retain one abort owner from opening through the final pull. */
+export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController, opened: () => void) => AsyncIterable<Uint8Array>, timeoutMs?: number): ObjectsV1Request {
   let bytes: Uint8Array;
   try { bytes = snapshotBytes(input); }
   catch { throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT); }
   const controller = new AbortController();
-  let pulled = false;
   let closed = false;
-  let settled = false;
+  let pulling = false;
+  let source: AsyncIterator<Uint8Array> | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const opened = () => { clearTimeout(timeout); timeout = undefined; };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    opened();
+    controller.abort(new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE));
+    void source?.return?.().catch(() => {});
+  };
   return {
     async next() {
-      if (pulled || closed) return null;
-      pulled = true;
-      try { return { body: await start(bytes, controller) }; }
-      finally { settled = true; }
+      if (closed) return null;
+      if (pulling) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+      pulling = true;
+      try {
+        if (source === undefined) {
+          if (timeoutMs !== undefined) timeout = setTimeout(() => controller.abort(new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED)), timeoutMs);
+          source = start(bytes, controller, opened)[Symbol.asyncIterator]();
+        }
+        const reply = await awaitSignal(source.next(), controller.signal);
+        if (reply.done) { close(); return null; }
+        return { body: reply.value };
+      } catch (error) { close(); throw error; }
+      finally { pulling = false; }
     },
-    close() {
-      if (closed) return;
-      closed = true;
-      if (pulled && !settled) controller.abort(new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE));
-    },
+    opened,
+    close,
   };
+}
+
+/** Retire a WASM owner only after its outstanding borrow has returned. */
+function rustRequest(request: RustRequest): ObjectsV1Request {
+  let closed = false;
+  let pending = 0;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    request.close();
+    if (pending === 0) request.free();
+  };
+  return {
+    async next() {
+      if (closed) return null;
+      if (pending !== 0) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+      pending++;
+      try {
+        const reply = await request.next();
+        if (reply === null) close();
+        return reply;
+      } catch (error) { close(); throw objectsV1Error(error); }
+      finally { pending--; if (closed) request.free(); }
+    },
+    close,
+  };
+}
+
+async function availabilityRequest(digest: wire.Digest, signal: AbortSignal | undefined, open: (input: Uint8Array) => RustRequest): Promise<ObjectsV1Availability> {
+  signal?.throwIfAborted();
+  const input = toBinary(wire.AvailabilityRequestSchema, create(wire.AvailabilityRequestSchema, { digest }));
+  const ready = ensureObjectsWasm(signal);
+  if (ready !== undefined) await ready;
+  signal?.throwIfAborted();
+  const request = rustRequest(open(input));
+  const stop = () => request.close();
+  const close = () => { signal?.removeEventListener("abort", stop); stop(); };
+  signal?.addEventListener("abort", stop, { once: true });
+  if (signal?.aborted) stop();
+  let current: Uint8Array;
+  const next = async () => {
+    try {
+      signal?.throwIfAborted();
+      const reply = await awaitSignal(request.next(), signal);
+      if (reply === null) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+      current = reply.body;
+      return fromBinary(wire.AvailabilityCursorSchema, current.slice());
+    } catch (error) { close(); throw signal?.aborted ? signal.reason : objectsV1Error(error); }
+  };
+  await next();
+  return { cursor: () => fromBinary(wire.AvailabilityCursorSchema, current.slice()), changed: next, close };
 }
 
 /**
@@ -70,6 +159,11 @@ export function objectsRequest(input: Uint8Array, start: (input: Uint8Array, con
 export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
   /** Own one lazy request through this provider's original transport. */
   abstract open(route: string, input: Uint8Array): ObjectsV1Request;
+  /** Cancellation covers initialization, credential resolution, opening and every
+   * later wait. Supply a deadline signal when this observation has a deadline. */
+  async availability(digest: wire.Digest, signal?: AbortSignal): Promise<ObjectsV1Availability> {
+    return availabilityRequest(digest, signal, input => RustRequest.observe(this, input));
+  }
   protected async call<I extends DescMessage, O extends DescMessage>(route: string, input: I, output: O, value: MessageInitShape<I>): Promise<MessageShape<O>> {
     const ready = ensureObjectsWasm();
     if (ready !== undefined) await ready;
@@ -122,23 +216,9 @@ export class MemoryObjectsV1 extends ObjectsV1Provider {
     return new MemoryObjectsV1(new ObjectsV1Memory());
   }
   open(route: string, input: Uint8Array): ObjectsV1Request {
-    const request = this.memory.open(route, input);
-    let closed = false;
-    let pulled = false;
-    const close = () => {
-      if (closed) return;
-      closed = true;
-      request.close();
-      if (!pulled) request.free();
-    };
-    return {
-      async next() {
-        if (closed || pulled) return null;
-        pulled = true;
-        try { return await request.next(); }
-        finally { close(); request.free(); }
-      },
-      close,
-    };
+    return rustRequest(this.memory.open(route, input));
+  }
+  override availability(digest: wire.Digest, signal?: AbortSignal): Promise<ObjectsV1Availability> {
+    return availabilityRequest(digest, signal, input => this.memory.observe(input));
   }
 }

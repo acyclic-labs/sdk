@@ -282,7 +282,31 @@ pub fn write_all_at(
     meter: Option<(&dyn NativeReadMeter, bool)>,
 ) -> io::Result<()> {
     let Some((meter, held)) = meter else {
-        return with_file_admission(file, || write_all_at_impl(file, offset, bytes));
+        return with_file_admission(file, || {
+            #[cfg(not(feature = "test-support"))]
+            return write_all_at_impl(file, offset, bytes);
+            #[cfg(feature = "test-support")]
+            {
+                validate_prepared_read_range(offset, bytes.len())?;
+                let mut offset = offset;
+                let mut bytes = bytes;
+                while !bytes.is_empty() {
+                    let count = match write_file_with(bytes, |offered| {
+                        write_all_at_impl(file, offset, offered)?;
+                        Ok(offered.len())
+                    }) {
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        result => result?,
+                    };
+                    if count == 0 {
+                        return Err(io::ErrorKind::WriteZero.into());
+                    }
+                    offset += count as u64;
+                    bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
+                }
+                Ok(())
+            }
+        });
     };
     offset
         .checked_add(bytes.len() as u64)
