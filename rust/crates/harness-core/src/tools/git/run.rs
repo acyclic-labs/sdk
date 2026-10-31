@@ -79,7 +79,11 @@ where
     Box::pin(run_inner(workspace, args, before_effect)).await
 }
 
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 async fn run_inner<F, Fut>(
     workspace: Workspace<'_>,
     args: &[String],
