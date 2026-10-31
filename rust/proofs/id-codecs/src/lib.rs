@@ -107,6 +107,52 @@ mod journal_prefix {
 
     #[kani::proof]
     #[kani::unwind(9)]
+    fn impossible_declared_frames_refuse_before_body_io() {
+        use acyclic_native_runtime::LogFrame;
+        use std::io::{self, Read};
+
+        struct PrefixOnly<'a> {
+            remaining: &'a [u8],
+            body_reads: usize,
+        }
+        impl Read for PrefixOnly<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if out.is_empty() {
+                    return Ok(0);
+                }
+                if self.remaining.is_empty() {
+                    self.body_reads += 1;
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                let count = out.len().min(self.remaining.len());
+                out[..count].copy_from_slice(&self.remaining[..count]);
+                self.remaining = &self.remaining[count..];
+                Ok(count)
+            }
+        }
+
+        let format = LogFrame {
+            domain: b"extent-proof\0",
+            wide: kani::any(),
+            minimum_body: 0,
+            maximum_body: u64::MAX,
+        };
+        let bytes: [u8; 8] = kani::any();
+        let prefix = &bytes[..format.prefix_bytes()];
+        let length = format.body_length(prefix).unwrap();
+        kani::assume(format.frame_bytes(length).is_none() || length > isize::MAX as u64);
+        let mut reader = PrefixOnly {
+            remaining: prefix,
+            body_reads: 0,
+        };
+        let error = format.read(&mut reader, u64::MAX).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(reader.remaining.is_empty());
+        assert_eq!(reader.body_reads, 0);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
     fn log_prefixes_preserve_lengths_and_refuse_unrepresentable_or_outside_bounds() {
         use acyclic_native_runtime::LogFrame;
         let wide: bool = kani::any();

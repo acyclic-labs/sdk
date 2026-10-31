@@ -10,6 +10,7 @@ copy a codec into a model. The obligations are:
 | Harness | Safety and negative control |
 | --- | --- |
 | `scalar_metadata_preserves_all_facts_and_refuses_missing_opaque_bodies` | Every optional u32/u64/i64 scalar survives the public wire writer/parser, including zero and signed extrema; each opaque-presence flag refuses without its separate body. |
+| `impossible_declared_frames_refuse_before_body_io` | Every impossible declared extent or body capacity returns the original `InvalidData` after only the fixed prefix read. A body-read tripwire would return `BrokenPipe` and increment its counter if admission moved after body IO. No payload allocation or checksum is needed on this refusal path. |
 | `every_object_kind_and_storage_association_round_trips` | Every bit of all eight kinds, digests and optional sealed associations survives encoding. Plain and sealed lengths differ. |
 | `generation_preserves_the_complete_root` | A GenerationId retains the exact root, locator, file identity and origin generation. A raw 32-byte digest is rejected. |
 | `arbitrary_bytes_have_one_canonical_identity_or_are_rejected` | Accepted encodings reproduce every input byte; invalid tags, widths and non-root generation kinds are rejected. Inputs cover all lengths through the maximum plus one. |
@@ -42,6 +43,11 @@ These added harnesses and the expanded seal negative control are unexecuted.
 The log-prefix harness covers exactly the bounded prefix codec. The separate
 extent harness covers fixed scalar arithmetic, including platform endpoint
 width; neither proves body allocation or SHA-256. Both remain unexecuted.
+The impossible-extent harness calls the actual frame reader with arbitrary
+complete prefix bytes and a body-IO tripwire. It proves the fixed-prefix typed
+refusal path, with no successful body allocation or hash obligation. This
+harness also remains unexecuted; it qualifies only the selected target width
+when run.
 The resource-component model bounds decoded bytes to four and input syntax to
 twelve bytes. The unbounded production grammar performs input-proportional
 work; arbitrary lengths remain in the Auth fuzz target.
