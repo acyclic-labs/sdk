@@ -1,5 +1,4 @@
-//! A held flush makes exactly one native call per metered attempt, so every
-//! interrupted call is charged and passes a cancellation check.
+//! A held flush makes one native call and returns its original interruption.
 use super::*;
 use crate::demand::DemandWork;
 use crate::{CancellationToken, WorkCounters};
@@ -33,24 +32,36 @@ extern "C" fn fsync(descriptor: libc::c_int) -> libc::c_int {
     libc::c_int::try_from(result).unwrap_or(-1)
 }
 
-/// Runs `sync` under two injected interruptions; returns the metered
-/// attempts and the native calls it made.
-fn interrupted_twice(sync: impl FnOnce(&mut DemandWork)) -> (u64, u32) {
+/// Runs `sync` under two injected interruptions, retaining the unused fault
+/// count to distinguish refusal from a hidden second native call.
+fn interrupted_twice(sync: impl FnOnce(&mut DemandWork)) -> (u64, u32, u32) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            INTERRUPTIONS.set(0);
+        }
+    }
+    let _reset = Reset;
     let cancellation = CancellationToken::new();
     let mut work = DemandWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
     INTERRUPTIONS.set(2);
     CALLS.set(0);
     sync(&mut work);
     let calls = CALLS.get();
-    assert_eq!(INTERRUPTIONS.get(), 0, "both interruptions were delivered");
-    (work.work.durability_operations, calls)
+    (work.work.durability_operations, calls, INTERRUPTIONS.get())
 }
 
 #[test]
-fn every_interrupted_held_flush_is_its_own_metered_attempt() {
+fn interrupted_held_flush_returns_after_the_original_native_call() {
     let file = tempfile::tempfile().unwrap();
-    let (attempts, calls) = interrupted_twice(|work| sync_file_held(&file, work).unwrap());
-    assert_eq!((attempts, calls), (3, 3));
+    let (attempts, calls, remaining) = interrupted_twice(|work| {
+        let error = sync_file_held(&file, work).unwrap_err();
+        assert!(
+            matches!(error, DemandError::Io(error) if error.kind() == io::ErrorKind::Interrupted)
+        );
+    });
+    assert_eq!((attempts, calls, remaining), (1, 1, 1));
+    sync_file_held(&file, &mut ordinary_work()).unwrap();
 }
 
 #[test]
@@ -60,9 +71,10 @@ fn negative_control_std_sync_all_hides_interruptions_inside_one_attempt() {
         durability_operations: 1,
         ..WorkCounters::UNCHARGED
     };
-    // The round-2 helper: std retries EINTR inside one metered attempt.
-    let (attempts, calls) = interrupted_twice(|work| {
-        open::retry_io(work, durability, || file.sync_all()).unwrap();
+    // The actual standard-library operation is the negative control: it
+    // consumes both injected interruptions inside one admitted SDK operation.
+    let (attempts, calls, remaining) = interrupted_twice(|work| {
+        work.attempt_io(durability, || file.sync_all()).unwrap();
     });
-    assert_eq!((attempts, calls), (1, 3));
+    assert_eq!((attempts, calls, remaining), (1, 3, 0));
 }

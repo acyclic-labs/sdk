@@ -294,7 +294,7 @@ fn bind_unix_socket_in<W: SourceDemandReadWork>(
     let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
     #[cfg(target_os = "macos")]
     let kind = libc::SOCK_STREAM;
-    let socket = retry_io(work, WRITE, || {
+    let socket = work.attempt_io(WRITE, || {
         // SAFETY: socket returns a fresh descriptor or -1.
         let fd = unsafe { libc::socket(libc::AF_UNIX, kind, 0) };
         if fd < 0 {
@@ -359,7 +359,7 @@ pub(crate) fn rename_held<W: NativeHostWork>(
         require_leaf(to_name)?;
         unix_name(from_name.as_os_str(), work, |source, work| {
             unix_name(to_name.as_os_str(), work, |destination, work| {
-                retry_io(work, WRITE, || {
+                work.attempt_io(WRITE, || {
                     rename_unix_names_once(from, source, to, destination, mode)
                 })
             })
@@ -432,8 +432,7 @@ pub(crate) fn sync_file_held<W: NativeHostWork>(
     #[cfg(windows)] file: &impl std::os::windows::io::AsHandle,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    retry_io(
-        work,
+    work.attempt_io(
         WorkCounters {
             durability_operations: 1,
             ..WorkCounters::UNCHARGED

@@ -354,6 +354,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     }
 
     /// Resolves only the original durable operation. A lost acknowledgement
+    /// is resolved with the same operation identity and original publication head.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn retry_stale_commit_with_native_work<'a, E, F, Fut>(
         &mut self,
@@ -484,6 +485,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         Ok(outcome)
     }
 
+    /// Resolves an explicit resend using its original operation identity and
+    /// publication head, without replanning against another writer's cut.
     pub(crate) async fn retry_stale_commit<E, F, Fut>(
         &mut self,
         operation_id: OperationId,

@@ -7,8 +7,8 @@ use std::os::windows::io::{AsRawHandle as _, BorrowedHandle};
 
 /// Issues exactly one native full flush of `descriptor`: `fcntl(F_FULLFSYNC)`
 /// on Apple, where a bare `fsync` stops at the drive cache, and `fsync` on
-/// Linux, and `FlushFileBuffers` on Windows. Every failure returns to the caller, whose metered
-/// loop owns retry, charging and cancellation for each native attempt.
+/// Linux, and `FlushFileBuffers` on Windows. Every failure returns directly to
+/// the caller's original metered operation, including an interrupted flush.
 /// Unlike std's `sync_all`, nothing is retried here, and Apple never falls
 /// back to a weaker flush.
 #[cfg_attr(

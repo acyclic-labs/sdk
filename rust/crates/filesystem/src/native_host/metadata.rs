@@ -1,3 +1,17 @@
+/// Applies the original mode once through the held file capability. The
+/// original native error returns without reissuing the mutation.
+#[cfg(unix)]
+pub(crate) fn set_posix_mode_held<W: super::NativeHostWork>(
+    file: &impl std::os::fd::AsRawFd,
+    mode: u32,
+    work: &mut W,
+) -> Result<(), W::Error> {
+    // SAFETY: the borrowed descriptor stays live for this one mode change.
+    super::unix_mutation(work, || unsafe {
+        libc::fchmod(file.as_raw_fd(), mode as libc::mode_t)
+    })
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[cfg(any(feature = "native-mount", test))]
 #[derive(Debug, thiserror::Error)]
