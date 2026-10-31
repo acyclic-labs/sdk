@@ -142,7 +142,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             &IdempotencyKey::new("invalid-sequence")?
         )
         .await,
-        Err(Error::Conflict(_))
+        Err(Error::ExactEdit(_))
     ));
     assert!(matches!(
         host.edit_text(
