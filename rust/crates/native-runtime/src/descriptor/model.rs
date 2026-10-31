@@ -401,6 +401,37 @@ fn an_exclusive_discard_omits_only_the_obsolete_log_flush() {
     }
 }
 
+/// An eviction's retained descriptor is not a competing writer lease.
+#[test]
+fn a_pending_eviction_does_not_refuse_the_only_discard_lease() {
+    explore(|| {
+        let sim = Sim::default();
+        let cache = cache(&sim, 1);
+        let log = entry(&cache, &sim, "/log")?;
+        append(&log).map_err(failed)?;
+        let evicting = {
+            let cache = Arc::clone(&cache);
+            let sim = sim.clone();
+            loom::thread::spawn(move || entry(&cache, &sim, "/other").map(drop))
+        };
+        let mut lease = log.lease(&mut |_| Ok(())).map_err(failed)?;
+        let discarded = lease.discard(|file| {
+            file.discard();
+            Ok(())
+        });
+        drop(lease);
+        join(evicting)??;
+        discarded.map_err(failed)?;
+        drop(log);
+        drop(cache);
+        let world = sim.world();
+        check(
+            world.dropped == 0 && world.discarded + world.flushed == 1,
+            "an eviction lost a write or refused the only discard lease",
+        )
+    });
+}
+
 /// A competing lease refuses without changing its live writes.
 #[test]
 fn a_refused_discard_preserves_live_writes() {
