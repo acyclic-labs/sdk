@@ -28,9 +28,8 @@ pub(super) fn inject(
         injection.remaining -= 1;
         injection.delivered.fetch_add(1, Ordering::Relaxed);
         std::fs::write(&injection.path, b"after").map_err(storage)?;
-        // A zero-deadline fence deterministically marks native continuity
-        // unconfirmed, the same invalidation delivered by a lost OS batch.
-        watcher.fence(Duration::ZERO).map_err(storage)?;
+        // Mark the same lost continuity as a dropped OS batch without I/O.
+        watcher.invalidate().map_err(storage)?;
     }
     Ok(())
 }
