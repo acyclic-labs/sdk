@@ -158,17 +158,12 @@ impl ToolRegistry {
                 },
             },
         };
-        if io.is_none() {
-            return Ok(lookup::get(&self.data.versions, name, revision).map(Arc::as_ref));
-        }
-        Ok(self
-            .data
-            .versions
-            .get(&(
-                crate::executor::stock_string_copy(name, io)?,
-                crate::executor::stock_string_copy(revision, io)?,
-            ))
-            .map(Arc::as_ref))
+        crate::executor::with_history_io(io, |work| {
+            if let Some(work) = work.as_deref_mut() {
+                work.check_cancellation()?;
+            }
+            Ok(lookup::get(&self.data.versions, name, revision).map(Arc::as_ref))
+        })
     }
 
     /// Returns the unambiguous model selection in canonical order.

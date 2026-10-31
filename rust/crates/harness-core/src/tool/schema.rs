@@ -8,8 +8,8 @@ use serde_json::Value;
 
 /// Borrowed model schema: omit draft/title metadata without cloning the tree.
 /// Property names and literal enum/const values are never treated as metadata.
-pub fn model_input(value: &Value) -> impl Serialize + '_ {
-    ModelSchema {
+pub fn model_input(value: &Value) -> ModelInput<'_> {
+    ModelInput {
         value,
         position: Position::Root,
     }
@@ -24,12 +24,13 @@ enum Position {
     Literal,
 }
 
-struct ModelSchema<'a> {
+/// Borrowed schema view shared by request rendering and pinned tool bindings.
+pub struct ModelInput<'a> {
     value: &'a Value,
     position: Position,
 }
 
-impl Serialize for ModelSchema<'_> {
+impl Serialize for ModelInput<'_> {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
@@ -40,7 +41,7 @@ impl Serialize for ModelSchema<'_> {
             (Position::List, Value::Array(values)) => {
                 let mut list = serializer.serialize_seq(Some(values.len()))?;
                 for value in values {
-                    list.serialize_element(&ModelSchema {
+                    list.serialize_element(&ModelInput {
                         value,
                         position: Position::Schema,
                     })?;
@@ -80,7 +81,7 @@ impl Serialize for ModelSchema<'_> {
                             _ => Position::Literal,
                         }
                     };
-                    map.serialize_entry(key, &ModelSchema { value, position })?;
+                    map.serialize_entry(key, &ModelInput { value, position })?;
                 }
                 map.end()
             }

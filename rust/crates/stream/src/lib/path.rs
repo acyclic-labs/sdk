@@ -67,7 +67,11 @@ impl StreamPath {
         })
     }
 
-    pub(crate) fn validate(path: &str) -> Result<(), StreamError> {
+    /// Checks the canonical path grammar without allocating a path owner.
+    ///
+    /// # Errors
+    /// Returns an invalid-path error for a noncanonical or oversized path.
+    pub fn validate(path: &str) -> Result<(), StreamError> {
         if path.is_empty()
             || path.len() > MAX_PATH_BYTES
             || !path.is_ascii()

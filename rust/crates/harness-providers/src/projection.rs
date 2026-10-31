@@ -171,13 +171,7 @@ pub(crate) fn body_named<'a>(
     let tools = request
         .tools
         .iter()
-        .map(|tool| {
-            Ok(acyclic_model_render::ToolDeclaration::Function {
-                name: names.wire(&tool.name)?,
-                description: &tool.description,
-                parameters: wire::Parameters(&tool.input_schema),
-            })
-        })
+        .map(|tool| Ok(tool.model_declaration(names.wire(&tool.name)?)))
         .collect::<Result<Vec<_>>>()?;
     let tools = acyclic_model_render::ToolDeclarations::new(adapter, tools)
         .map_err(|error| invalid(error.to_string()))?;
