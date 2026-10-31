@@ -50,6 +50,20 @@ pub fn run(
 
 #[doc(hidden)]
 pub async fn run_with_guard<F, Fut>(
+    workspace: Workspace<'_>,
+    args: &[String],
+    before_effect: F,
+) -> crate::Result<Output>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = crate::Result<()>> + Send,
+{
+    // Callers retain only the command pointer, rather than the state for
+    // every filesystem preparation and action nested in this command.
+    Box::pin(run_inner(workspace, args, before_effect)).await
+}
+
+async fn run_inner<F, Fut>(
     mut workspace: Workspace<'_>,
     args: &[String],
     before_effect: F,
