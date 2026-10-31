@@ -1,5 +1,6 @@
 use super::*;
-use crate::conversation::{ContentAccess, ContentChange, ContentChanges};
+use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult, ContentChanges};
+use acyclic_fs::access::Action;
 
 impl CheckoutPublisher {
     pub(super) fn publish_changes<'a, 'io: 'a, Output: acyclic_stream::ProviderTask + 'a>(
@@ -18,7 +19,11 @@ impl CheckoutPublisher {
                 if let Some(changes) = changes {
                     for change in changes {
                         mount.check_with_work(
-                            acyclic_fs::access::Action::Write,
+                            match change {
+                                ContentChange::CreateAbsent { .. } => Action::Create,
+                                ContentChange::UpdateExpected { .. } => Action::Write,
+                                ContentChange::DeleteExpected { .. } => Action::Delete,
+                            },
                             change.path(),
                             self.tools.clock.now_unix_millis() / 1000,
                             access.io.and_then(ContentIo::original_native_work),
@@ -105,10 +110,14 @@ impl CheckoutPublisher {
                 let Some(receipt) = receipt else {
                     return Ok((finish(None)?, hold));
                 };
-                for file in &receipt.files {
+                for member in &receipt.members {
                     mount.check_with_work(
-                        acyclic_fs::access::Action::Write,
-                        file.path(),
+                        match member {
+                            ContentChangeResult::Created(_) => Action::Create,
+                            ContentChangeResult::Updated(_) => Action::Write,
+                            ContentChangeResult::Deleted(_) => Action::Delete,
+                        },
+                        member.path(),
                         self.tools.clock.now_unix_millis() / 1000,
                         access.io.and_then(ContentIo::original_native_work),
                     )?;

@@ -12,8 +12,9 @@ struct PatchInput {
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
-struct PatchResult {
-    files: Vec<FileRef>,
+#[schemars(rename = "PatchResult")]
+struct PatchResult<Files = Vec<FileRef>> {
+    files: Files,
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

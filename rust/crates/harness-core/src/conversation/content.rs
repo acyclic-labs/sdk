@@ -354,36 +354,89 @@ impl ContentChange<'_> {
     }
 }
 
+/// One original publication action, retained through recovery and authorization.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ContentChangeResult {
+    /// Newly created file at the committed cut.
+    Created(FileRef),
+    /// Replaced file at the committed cut.
+    Updated(FileRef),
+    /// Removed path, relative to the original bound volume.
+    Deleted(String),
+}
+
+impl ContentChangeResult {
+    /// Exact path whose original action must be authorized.
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Created(file) | Self::Updated(file) => file.path(),
+            Self::Deleted(path) => path,
+        }
+    }
+
+    /// A created or replaced file; deletion does not invent a resulting file.
+    pub fn file(&self) -> Option<&FileRef> {
+        match self {
+            Self::Created(file) | Self::Updated(file) => Some(file),
+            Self::Deleted(_) => None,
+        }
+    }
+}
+
 /// The original atomic publication cut, including a batch containing only deletes.
+/// Serialization projects its resulting files without copying the retained members.
 #[derive(Debug, Eq, PartialEq)]
 pub struct ContentChanges {
     /// Exact committed generation; never inferred from a later head.
     pub generation: GenerationRef,
-    /// Created and replaced files at that cut, in request order.
-    pub files: Vec<FileRef>,
+    /// Original actions and paths, in request order.
+    pub members: Vec<ContentChangeResult>,
 }
 
 impl ContentChanges {
-    /// Releases generation metadata only after its publication consumer settles.
-    pub(crate) fn into_files<'a>(
-        self,
-        mut hold: Option<ContentHold<'a>>,
-    ) -> Result<(Vec<FileRef>, Option<ContentHold<'a>>)> {
-        let Self { generation, files } = self;
-        #[cfg(feature = "filesystem")]
-        let generation_bytes = generation.logical_owned_bytes()?;
-        drop(generation);
-        #[cfg(feature = "filesystem")]
-        if let Some(hold) = hold.as_mut() {
-            let bytes = hold
-                .bytes()
-                .checked_sub(generation_bytes)
-                .ok_or_else(|| Error::Storage("conditional generation custody underflow".into()))?;
-            hold.substitute(bytes)?;
+    /// Borrows created and replaced files at the original cut.
+    pub fn files(&self) -> impl Iterator<Item = &FileRef> {
+        self.members.iter().filter_map(ContentChangeResult::file)
+    }
+
+    pub(crate) fn into_single_file(mut self) -> Option<FileRef> {
+        if self.members.len() != 1 {
+            return None;
         }
-        #[cfg(not(feature = "filesystem"))]
-        let _ = &mut hold;
-        Ok((files, hold))
+        match self.members.pop()? {
+            ContentChangeResult::Created(file) | ContentChangeResult::Updated(file) => Some(file),
+            ContentChangeResult::Deleted(_) => None,
+        }
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.members.iter().try_fold(
+            crate::core::owned_sum([
+                self.generation.logical_owned_bytes()?,
+                self.members.capacity() as u64 * std::mem::size_of::<ContentChangeResult>() as u64,
+            ])?,
+            |total, member| {
+                crate::core::owned_sum([
+                    total,
+                    match member {
+                        ContentChangeResult::Created(file) | ContentChangeResult::Updated(file) => {
+                            file.logical_owned_bytes()?
+                        }
+                        ContentChangeResult::Deleted(path) => path.capacity() as u64,
+                    },
+                ])
+            },
+        )
+    }
+}
+
+impl serde::Serialize for ContentChanges {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.files())
     }
 }
 

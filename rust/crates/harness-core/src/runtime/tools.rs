@@ -517,8 +517,8 @@ impl ToolContext {
         volume: &VolumeRef,
         changes: &[crate::conversation::ContentChange<'_>],
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(Vec<FileRef>, u64)> {
-        use crate::conversation::{ContentAccess, ContentChange};
+    ) -> Result<(crate::conversation::ContentChanges, u64)> {
+        use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult};
         let content = self
             .task()
             .content_binding(Some(volume))
@@ -573,9 +573,35 @@ impl ToolContext {
                 },
             )?
             .await?;
-        let (files, hold) = files.into_files(hold)?;
-        let mut outputs = files.iter();
-        for change in changes {
+        if files.members.len() != changes.len() {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "conditional publisher returned another member count",
+            ));
+        }
+        for (change, member) in changes.iter().zip(&files.members) {
+            if member.path() != change.path() {
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "conditional publisher returned another destination",
+                ));
+            }
+            let file = match (change, member) {
+                (ContentChange::CreateAbsent { .. }, ContentChangeResult::Created(file))
+                | (ContentChange::UpdateExpected { .. }, ContentChangeResult::Updated(file)) => {
+                    file
+                }
+                (ContentChange::DeleteExpected { .. }, ContentChangeResult::Deleted(_)) => continue,
+                _ => {
+                    return Err(crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "conditional publisher returned another action",
+                    ));
+                }
+            };
             let (bytes, media, display) = match change {
                 ContentChange::CreateAbsent {
                     bytes,
@@ -590,9 +616,6 @@ impl ToolContext {
                 ),
                 ContentChange::DeleteExpected { .. } => continue,
             };
-            let file = outputs
-                .next()
-                .ok_or_else(|| Error::Storage("conditional publisher omitted a file".into()))?;
             if file.volume() != volume
                 || file.path() != change.path()
                 || file.descriptor().media_type() != media
@@ -610,11 +633,6 @@ impl ToolContext {
                 .reader
                 .verify_publication(file, file.descriptor().byte_length(), io)?
                 .await?;
-        }
-        if outputs.next().is_some() {
-            return Err(Error::Storage(
-                "conditional publisher returned extra files".into(),
-            ));
         }
         #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
@@ -634,7 +652,7 @@ impl ToolContext {
         operation: OperationId,
         volume: &VolumeRef,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(Option<Vec<FileRef>>, u64)> {
+    ) -> Result<(Option<crate::conversation::ContentChanges>, u64)> {
         let content = self
             .task()
             .content_binding(Some(volume))
@@ -659,15 +677,8 @@ impl ToolContext {
                 },
             )?
             .await?;
-        let (files, hold) = match files {
-            Some(files) => {
-                let (files, hold) = files.into_files(hold)?;
-                (Some(files), hold)
-            }
-            None => (None, hold),
-        };
         if let Some(files) = &files {
-            for file in files {
+            for file in files.files() {
                 crate::executor::with_history_io(io, |work| {
                     self.effective_scope().limits().validate_file(file, work)
                 })?;

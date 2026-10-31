@@ -61,7 +61,7 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         )
         .await
         .map_err(storage)?;
-    let mounted = root
+    let mut mounted = root
         .mount_task_view(
             view,
             &*task,
@@ -72,6 +72,61 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
             ),
         )
         .await?;
+    // Compile an additional task policy through the original mount admission.
+    // File creation and deletion here are permitted independently of writes.
+    use acyclic_fs::access::{Action, Capability, Context, Effect, Principal, PrincipalKind};
+    let principal = Principal {
+        kind: PrincipalKind::Agent,
+        id: "owner".into(),
+        lineage: vec!["owner".into()],
+        groups: Default::default(),
+        roles: Default::default(),
+        tags: Default::default(),
+        attributes: Default::default(),
+    };
+    let view = |original: &crate::workspace::VolumeView<_>| {
+        let mut policy = (*original.policy).clone();
+        for (path, actions) in [
+            ("action-only", vec![Action::Write]),
+            ("no-delete", vec![Action::Write, Action::Delete]),
+            ("no-create", vec![Action::Create]),
+        ] {
+            let mut deny = policy.layers[0][0].clone();
+            deny.id = path.into();
+            deny.effect = Effect::Deny;
+            deny.actions = actions.into_iter().collect();
+            deny.resource.path = path.into();
+            policy.layers[0].push(deny);
+        }
+        crate::workspace::VolumeView {
+            name: original.name.clone(),
+            agent: original.agent.clone(),
+            volume: original.volume.clone(),
+            lineage: original.lineage.clone(),
+            generation: original.generation,
+            head: original.head,
+            config: original.config,
+            policy: Arc::new(policy),
+            source: original.source.clone(),
+        }
+    };
+    let mounts = Arc::new(crate::workspace::compose(
+        mounted.path.clone(),
+        &principal,
+        &Capability::whole_volume(None, &Action::ALL),
+        Context {
+            now: 0,
+            approvals: 0,
+        },
+        view(&mounted.mounts.named(None)?.1.view),
+        mounted
+            .mounts
+            .mounts()
+            .filter(|(path, _)| !path.is_empty())
+            .map(|(_, mount)| view(&mount.view)),
+    )?);
+    Arc::get_mut(&mut mounted).unwrap().mounts = Arc::clone(&mounts);
+    lock_owned(StateArc::clone(&mounted.state)).await.mounts = mounts;
     let tools = Arc::new(
         CheckoutTools::new(
             Arc::clone(&mounted),
@@ -88,6 +143,191 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         &harness.project,
         &harness.verifier,
         harness.limits.file_bytes,
+    );
+    use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult};
+    let create = [ContentChange::CreateAbsent {
+        path: "action-only",
+        bytes: b"created",
+        media_type: "text/plain",
+        display_name: "action-only",
+    }];
+    let operation = OperationId::new();
+    let (created, _) = publisher
+        .stage_changes(
+            &harness.project,
+            operation,
+            &create,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(matches!(
+        &created.members[0],
+        ContentChangeResult::Created(_)
+    ));
+    let encoding_work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            bytes_encoded: 64 * 1024,
+            allocation_operations: 1024,
+            peak_allocation_bytes: 1024 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &stop,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (encoded, _custody) = crate::tool::value(&created, 4096, Some(&encoding_work))?;
+    assert_eq!(encoded.as_array().unwrap().len(), 1);
+    assert_eq!(encoded[0]["path"], "action-only");
+    assert_eq!(
+        publisher
+            .observe_changes(&harness.project, operation, 4096, ContentAccess::default())?
+            .await?
+            .0,
+        Some(created)
+    );
+    let (created, _) = publisher
+        .stage_changes(
+            &harness.project,
+            operation,
+            &create,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        std::fs::read(mounted.path.join("action-only")).map_err(storage)?,
+        b"created"
+    );
+    let update = [ContentChange::UpdateExpected {
+        source: created.members[0].file().unwrap(),
+        bytes: b"forbidden",
+    }];
+    assert!(
+        publisher
+            .stage_changes(
+                &harness.project,
+                OperationId::new(),
+                &update,
+                ContentAccess::default()
+            )?
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(mounted.path.join("action-only")).map_err(storage)?,
+        b"created"
+    );
+    let deletion = [ContentChange::DeleteExpected {
+        source: created.members[0].file().unwrap(),
+    }];
+    let operation = OperationId::new();
+    let (deleted, _) = publisher
+        .stage_changes(
+            &harness.project,
+            operation,
+            &deletion,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        &deleted.members,
+        &[ContentChangeResult::Deleted("action-only".into())]
+    );
+    assert_eq!(
+        publisher
+            .observe_changes(&harness.project, operation, 4096, ContentAccess::default())?
+            .await?
+            .0,
+        Some(deleted)
+    );
+    assert!(!mounted.path.join("action-only").exists());
+    let denied = [ContentChange::CreateAbsent {
+        path: "no-create",
+        bytes: b"denied",
+        media_type: "text/plain",
+        display_name: "no-create",
+    }];
+    assert!(
+        publisher
+            .stage_changes(
+                &harness.project,
+                OperationId::new(),
+                &denied,
+                ContentAccess::default()
+            )?
+            .await
+            .is_err()
+    );
+    assert!(!mounted.path.join("no-create").exists());
+    let retained = [ContentChange::CreateAbsent {
+        path: "no-delete",
+        bytes: b"retained",
+        media_type: "text/plain",
+        display_name: "no-delete",
+    }];
+    let (retained, _) = publisher
+        .stage_changes(
+            &harness.project,
+            OperationId::new(),
+            &retained,
+            ContentAccess::default(),
+        )?
+        .await?;
+    let deletion = [ContentChange::DeleteExpected {
+        source: retained.members[0].file().unwrap(),
+    }];
+    assert!(
+        publisher
+            .stage_changes(
+                &harness.project,
+                OperationId::new(),
+                &deletion,
+                ContentAccess::default()
+            )?
+            .await
+            .is_err()
+    );
+    // The storage writer can author a deletion under its own wider authority.
+    // Recovery through this mounted task must still apply its Delete decision.
+    let operation = OperationId::new();
+    publisher
+        .writer_for(&harness.project, mounted.view().workspace(), None)?
+        .stage_changes(
+            &harness.project,
+            operation,
+            &deletion,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(
+        publisher
+            .observe_changes(&harness.project, operation, 4096, ContentAccess::default())?
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(mounted.path.join("no-delete")).map_err(storage)?,
+        b"retained"
+    );
+    let operation = OperationId::new();
+    publisher
+        .writer_for(&harness.project, mounted.view().workspace(), None)?
+        .stage_changes(
+            &harness.project,
+            operation,
+            &[ContentChange::CreateAbsent {
+                path: "no-delete",
+                bytes: b"retained",
+                media_type: "text/plain",
+                display_name: "no-delete",
+            }],
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(
+        publisher
+            .observe_changes(&harness.project, operation, 4096, ContentAccess::default())?
+            .await?
+            .0
+            .is_some()
     );
     publisher
         .stage_once(
@@ -574,7 +814,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             ContentAccess::default(),
         )?
         .await?;
-    assert!(deletion.files.is_empty());
+    assert!(deletion.files().next().is_none());
     let (later, _) = publisher
         .stage_once(
             OperationId::new(),

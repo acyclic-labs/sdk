@@ -1,7 +1,7 @@
 //! Conditional file changes share the existing authored transaction, successful
 //! operation index, protected publication receipt and commit authorization.
 use super::*;
-use crate::conversation::{ContentAccess, ContentChange, ContentChanges};
+use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult, ContentChanges};
 use acyclic_fs::access::Action;
 
 #[derive(Serialize)]
@@ -94,11 +94,11 @@ mod tests {
             .await?;
         let changes = [
             ContentChange::UpdateExpected {
-                source: &original.files[0],
+                source: original.members[0].file().unwrap(),
                 bytes: b"new",
             },
             ContentChange::DeleteExpected {
-                source: &original.files[1],
+                source: original.members[1].file().unwrap(),
             },
             ContentChange::CreateAbsent {
                 path: "c",
@@ -111,8 +111,24 @@ mod tests {
         let published = host
             .put_changes(&volume, &write, &changes, &key, 4096, access)?
             .await?;
-        assert_eq!(published.files.len(), 2);
-        assert_eq!(published.files[0].version(), published.files[1].version());
+        assert_eq!(published.files().count(), 2);
+        assert_eq!(published.members.len(), 3);
+        assert!(matches!(
+            &published.members[0],
+            ContentChangeResult::Updated(_)
+        ));
+        assert_eq!(
+            &published.members[1],
+            &ContentChangeResult::Deleted("b".into())
+        );
+        assert!(matches!(
+            &published.members[2],
+            ContentChangeResult::Created(_)
+        ));
+        assert_eq!(
+            published.members[0].file().unwrap().version(),
+            published.members[2].file().unwrap().version()
+        );
         assert_eq!(
             host.read_private_path(&volume, &read, "a", None, 4096, access)
                 .await?
@@ -140,7 +156,7 @@ mod tests {
                 display_name: "partial",
             },
             ContentChange::UpdateExpected {
-                source: &original.files[0],
+                source: original.members[0].file().unwrap(),
                 bytes: b"stale",
             },
         ];
@@ -314,7 +330,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let count = receipt.1.len();
             self.finish_change_files(
                 &generation,
-                receipt.1.into_iter().filter_map(|record| record.file),
+                receipt
+                    .1
+                    .into_iter()
+                    .map(|record| change_result(record.source.as_ref(), record.file, io)),
                 count,
                 io,
             )
@@ -634,7 +653,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let count = records.len();
             self.finish_change_files(
                 &generation,
-                records.into_iter().filter_map(|record| record.file),
+                records
+                    .into_iter()
+                    .map(|record| change_result(record.source, record.file, io)),
                 count,
                 io,
             )
@@ -644,23 +665,57 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     fn finish_change_files(
         &self,
         generation: &Generation<A, O>,
-        originals: impl Iterator<Item = FileRef>,
+        originals: impl Iterator<Item = Result<ContentChangeResult>>,
         capacity: usize,
         io: &PreparationIo,
     ) -> Result<ContentChanges> {
         let generation_ref = self.generation_ref_id(generation.id(), Some(io))?;
         let version = bounded_io::hex_key(generation_ref.as_resource().key(), Some(io))?;
-        let mut files = crate::model::vec_with_capacity(capacity, Some(io))?;
-        for mut file in originals {
-            file.pin_version(
-                stock_string_copy(&version, Some(io))?,
-                &mut Some(&mut io.history_io()),
-            )?;
-            files.push(self.seal_publication(file, Some(io))?);
+        let mut members = crate::model::vec_with_capacity(capacity, Some(io))?;
+        for member in originals {
+            let member = match member? {
+                ContentChangeResult::Created(file) => {
+                    ContentChangeResult::Created(self.finish_change_file(file, &version, io)?)
+                }
+                ContentChangeResult::Updated(file) => {
+                    ContentChangeResult::Updated(self.finish_change_file(file, &version, io)?)
+                }
+                deleted @ ContentChangeResult::Deleted(_) => deleted,
+            };
+            members.push(member);
         }
         Ok(ContentChanges {
             generation: generation_ref,
-            files,
+            members,
         })
+    }
+
+    fn finish_change_file(
+        &self,
+        mut file: FileRef,
+        version: &str,
+        io: &PreparationIo,
+    ) -> Result<FileRef> {
+        file.pin_version(
+            stock_string_copy(version, Some(io))?,
+            &mut Some(&mut io.history_io()),
+        )?;
+        self.seal_publication(file, Some(io))
+    }
+}
+
+fn change_result(
+    source: Option<&FileRef>,
+    file: Option<FileRef>,
+    io: &PreparationIo,
+) -> Result<ContentChangeResult> {
+    match (source, file) {
+        (None, Some(file)) => Ok(ContentChangeResult::Created(file)),
+        (Some(_), Some(file)) => Ok(ContentChangeResult::Updated(file)),
+        (Some(source), None) => Ok(ContentChangeResult::Deleted(stock_string_copy(
+            source.path(),
+            Some(io),
+        )?)),
+        (None, None) => Err(io.invalid("empty conditional publication member")),
     }
 }

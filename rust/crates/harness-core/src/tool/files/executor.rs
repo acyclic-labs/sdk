@@ -82,11 +82,11 @@ impl FileTool {
                     media_type: "text/plain",
                     display_name: path.rsplit('/').next().unwrap_or(&path),
                 }];
-                let (mut files, retained) = context
+                let (files, retained) = context
                     .stage_tool_changes(invocation.operation_id, volume, &changes, io)
                     .await?;
                 let file = files
-                    .pop()
+                    .into_single_file()
                     .ok_or_else(|| rejection(work, "create receipt omitted its file"))?;
                 (file, retained)
             }
@@ -495,7 +495,9 @@ impl ToolExecutor for FileTool {
                 let receipt = context
                     .observe_tool_changes(invocation.operation_id, volume, Some(&io))
                     .await?;
-                let file = receipt.0.and_then(|mut files| files.pop());
+                let file = receipt
+                    .0
+                    .and_then(crate::conversation::ContentChanges::into_single_file);
                 let encoded = file
                     .map(|file| super::value(&FileResult { file }, u64::MAX, Some(work)))
                     .transpose()?;
@@ -597,7 +599,7 @@ impl ToolExecutor for FileTool {
                     .await?;
                 return receipt
                     .0
-                    .and_then(|mut files| files.pop())
+                    .and_then(crate::conversation::ContentChanges::into_single_file)
                     .map(|file| {
                         super::value(&FileResult { file }, u64::MAX, None)
                             .map(|encoded| ToolResult { value: encoded.0 })

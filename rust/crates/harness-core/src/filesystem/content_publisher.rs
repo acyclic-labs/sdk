@@ -94,34 +94,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                 .host
                 .observe_changes(&self.volume, &self.grant, &key, maximum, access)?
                 .await?;
-            let owned = files.as_ref().map_or(Ok(0), |files| {
-                files.files.iter().try_fold(
-                    files
-                        .generation
-                        .logical_owned_bytes()?
-                        .checked_add(
-                            files.files.capacity() as u64 * std::mem::size_of::<FileRef>() as u64,
-                        )
-                        .ok_or_else(|| {
-                            stock_boundary(
-                                access.io,
-                                crate::wire::ErrorCode::Invalid,
-                                "conditional publication ownership overflow",
-                            )
-                        })?,
-                    |total, file| {
-                        total
-                            .checked_add(file.logical_owned_bytes()?)
-                            .ok_or_else(|| {
-                                stock_boundary(
-                                    access.io,
-                                    crate::wire::ErrorCode::Invalid,
-                                    "conditional publication ownership overflow",
-                                )
-                            })
-                    },
-                )
-            })?;
+            let owned = files
+                .as_ref()
+                .map_or(Ok(0), ContentChanges::logical_owned_bytes)?;
             let hold = access.io.map(|io| io.guard_owned(owned)).transpose()?;
             Ok((files, hold))
         })
@@ -153,32 +128,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     access,
                 )?
                 .await?;
-            let owned = files.files.iter().try_fold(
-                files
-                    .generation
-                    .logical_owned_bytes()?
-                    .checked_add(
-                        files.files.capacity() as u64 * std::mem::size_of::<FileRef>() as u64,
-                    )
-                    .ok_or_else(|| {
-                        stock_boundary(
-                            access.io,
-                            crate::wire::ErrorCode::Invalid,
-                            "conditional publication ownership overflow",
-                        )
-                    })?,
-                |total, file| {
-                    total
-                        .checked_add(file.logical_owned_bytes()?)
-                        .ok_or_else(|| {
-                            stock_boundary(
-                                access.io,
-                                crate::wire::ErrorCode::Invalid,
-                                "conditional publication ownership overflow",
-                            )
-                        })
-                },
-            )?;
+            let owned = files.logical_owned_bytes()?;
             let hold = access.io.map(|io| io.guard_owned(owned)).transpose()?;
             Ok((files, hold))
         })
