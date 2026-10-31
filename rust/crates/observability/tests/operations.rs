@@ -175,12 +175,11 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
     drop(ready(output.recv())?.ok_or("completed terminal absent")?);
     assert_eq!(admission.available_permits(), 2);
     assert_eq!(export.stats().retained, 0);
+    assert_bounded_detail_cost()?;
     Ok(())
 }
 
-#[test]
-fn bound_detail_cost_is_independent_of_unrelated_live_operations()
--> Result<(), Box<dyn std::error::Error>> {
+fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Binding, BindingError, Export};
     use std::sync::Arc;
     use tokio::sync::Semaphore;
