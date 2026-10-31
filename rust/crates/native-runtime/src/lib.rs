@@ -49,14 +49,17 @@ use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
-#[cfg(not(target_arch = "wasm32"))]
-pub use process_tree::run_external_process_host;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureProgress, CaptureSchedule, CaptureWakes,
     ControlledCapture, OwnedCaptureInput, ProcessCaptureFailure, ProcessCaptureStream,
     ProcessChunk, ProcessControl, ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput,
     ProcessOutput, ProcessReadiness, ProcessTree, ProcessTreeIo, ProcessTreeStorage,
     ProcessWaitOutcome, ProcessWake,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use process_tree::{
+    ProcessHostCompletion, ProcessHostControl, ProcessHostControlObservation, ProcessHostProgress,
+    run_external_process_host, run_external_process_host_with_progress,
 };
 #[cfg(windows)]
 pub use process_tree::{ProcessPipeReader, ProcessPipeWriter};
