@@ -233,18 +233,58 @@ impl ProcessTree {
     /// process owner. No reusable command can retain a consumed boundary or
     /// launch after a refusal without that boundary.
     pub fn spawn_granted(
-        mut command: ProcessCommand,
+        command: ProcessCommand,
         grant: &crate::execution::ExecutionGrant,
         custody: Option<&ProcessCustody>,
     ) -> io::Result<Self> {
+        let mut retained = None;
+        if let Err(error) =
+            Self::spawn_granted_controlled(command, grant, custody, None, &mut retained)
+        {
+            if let Some(tree) = retained.as_mut() {
+                tree.terminate(None).map_err(crate::execution::failure)?;
+            }
+            return Err(error);
+        }
+        retained.ok_or_else(|| crate::execution::failure(io::ErrorKind::NotFound.into()))
+    }
+
+    /// Consumes a confined command while retaining the original launch meter
+    /// and recovery slot. On error, `retained` can still own an admitted tree
+    /// or custody record: the caller must preserve it through recovery. This
+    /// method never replaces an occupied slot or performs unmetered cleanup.
+    /// The meter covers the shared process owner; native grant preparation
+    /// does not yet support invocation-local resource accounting.
+    pub fn spawn_granted_controlled(
+        mut command: ProcessCommand,
+        grant: &crate::execution::ExecutionGrant,
+        custody: Option<&ProcessCustody>,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        retained: &mut Option<Self>,
+    ) -> io::Result<()> {
+        if retained.is_some() {
+            return Err(crate::execution::failure(
+                io::ErrorKind::AlreadyExists.into(),
+            ));
+        }
+        if let Some(meter) = meter {
+            meter.check()?;
+        }
         grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
-        let boundary = grant.prepare()?;
-        command.boundary = Some(boundary);
+        command.boundary = Some(grant.prepare()?);
         let result = match custody {
-            Some(custody) => Self::spawn_in_custody(&mut command, custody),
-            None => Self::spawn(&mut command),
+            Some(custody) => {
+                Self::spawn_in_custody_controlled(&mut command, custody, meter, retained)
+            }
+            None => Self::spawn_controlled(&mut command, meter, retained),
         };
-        result.map_err(crate::execution::failure)
+        result.map_err(|error| {
+            if error.kind() == io::ErrorKind::Interrupted {
+                error
+            } else {
+                crate::execution::failure(error)
+            }
+        })
     }
 
     /// Starts a child whose whole tree is tied to this host process and

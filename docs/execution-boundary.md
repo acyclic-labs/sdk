@@ -24,7 +24,14 @@ refuse subtree attenuation until an equivalent native operation is available;
 retaining the same verified roots can still remove writes or network authority.
 `ProcessTree::spawn_granted` prepares active enforcement and enters the same
 process creation, custody, capture, cancellation and retirement implementation.
-It consumes the original `ProcessCommand`; ordinary command conversion refuses
+`spawn_granted_controlled` borrows the original invocation's launch meter and
+recovery slot. It refuses an occupied slot before any native preparation and
+checks cancellation before preparing enforcement. Admission errors preserve
+any acquired tree or custody record in that slot. Recovery remains a separately
+admitted operation; the controlled entry performs no hidden cleanup. Original
+control interruption remains interruption, rather than a definitive refusal.
+The grant-preparation objects themselves still require resource accounting.
+The granted entry consumes the original `ProcessCommand`; ordinary command conversion refuses
 to discard an attached boundary. Linux custodied launches carry the prepared
 ruleset descriptor and native filter in their original launch request. Both
 direct and custodied children call one allocation-free enforcement entry after

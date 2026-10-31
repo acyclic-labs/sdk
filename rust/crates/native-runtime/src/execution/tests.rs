@@ -101,7 +101,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     {
         let grant =
             ExecutionGrant::new(&workspace, access, read.clone(), ExecutionNetwork::Off).unwrap();
-        let command = || {
+        let make_command = || {
             let mut command = Command::new("/bin/sh");
             command.args(["-c", "(printf changed > escape) 2>/dev/null; (printf created > new) 2>/dev/null; cat escape 2>/dev/null; true"])
                 .current_dir(&workspace).stdin(Stdio::null())
@@ -111,7 +111,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
         // A valid filesystem grant cannot expose ambient host secrets. Refuse
         // before native preparation; the same real command below is admitted
         // only after its environment has been made explicit.
-        let error = match ProcessTree::spawn_granted(command(), &grant, custody) {
+        let error = match ProcessTree::spawn_granted(make_command(), &grant, custody) {
             Ok(_) => panic!("confined command inherited the host environment"),
             Err(error) => error,
         };
@@ -122,20 +122,68 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
         );
         assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
         assert!(!workspace.join("new").exists());
-        let mut command = command();
+        let cancelled = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        cancelled
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut retained = None;
+        let mut cancelled_command = make_command();
+        cancelled_command.env_clear();
+        let error = ProcessTree::spawn_granted_controlled(
+            cancelled_command,
+            &grant,
+            custody,
+            Some(&cancelled),
+            &mut retained,
+        )
+        .expect_err("a cancelled invocation prepared a native boundary");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(retained.is_none());
+        assert!(!workspace.join("new").exists());
+        let mut command = make_command();
         command.env_clear();
-        let mut tree = match ProcessTree::spawn_granted(command, &grant, custody) {
-            Ok(tree) => tree,
+        let original = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        let mut retained = None;
+        match ProcessTree::spawn_granted_controlled(
+            command,
+            &grant,
+            custody,
+            Some(&original),
+            &mut retained,
+        ) {
+            Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
                 // An unavailable boundary must return a concrete refusal and
                 // must not run even the workspace-authorized part of the guest.
                 assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+                assert!(retained.is_none());
                 assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
                 assert!(!workspace.join("new").exists());
                 continue;
             }
             Err(error) => panic!("confined launch failed: {error}"),
-        };
+        }
+        // An existing recovery slot is authority, not replaceable output.
+        // The rejected command would create another observable file if the
+        // consuming entry accidentally launched or overwrote that slot.
+        let mut rejected = Command::new("/bin/sh");
+        rejected
+            .args(["-c", "printf replaced > unexpected"])
+            .env_clear()
+            .current_dir(&workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let error = ProcessTree::spawn_granted_controlled(
+            rejected,
+            &grant,
+            custody,
+            Some(&original),
+            &mut retained,
+        )
+        .expect_err("an occupied recovery slot was replaced");
+        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        let mut tree = retained.expect("admitted tree retains its original recovery slot");
         let output = tree.wait_with_output(
             std::time::Duration::from_secs(5),
             65536,
@@ -147,6 +195,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
             None,
         );
         assert!(output.is_ok(), "{output:?}");
+        assert!(!workspace.join("unexpected").exists());
         assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
         let output = output.unwrap();
         assert!(output.status.success(), "{output:?}");
@@ -360,15 +409,29 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
     };
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
     for custody in [None, Some(&custody)] {
-        let error = match ProcessTree::spawn_granted(command(), &grant, custody) {
-            Ok(_) => panic!("an outside writable stdio descriptor entered the guest"),
-            Err(error) => error,
-        };
+        let original = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        let mut retained = None;
+        let error = ProcessTree::spawn_granted_controlled(
+            command(),
+            &grant,
+            custody,
+            Some(&original),
+            &mut retained,
+        )
+        .expect_err("an outside writable stdio descriptor entered the guest");
         assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
         assert!(matches!(
             error.kind(),
             io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
         ));
+        if let Some(tree) = retained.as_mut() {
+            // A failed guest admission can retain the original warden/record.
+            // Cleanup is a separate admitted operation, never a hidden retry
+            // against the failed invocation or an unmetered convenience path.
+            let recovery = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+            tree.terminate(Some(&recovery)).unwrap();
+            assert!(tree.is_reaped());
+        }
         assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
     }
     // Real negative control: the identical trusted command writes through
