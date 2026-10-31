@@ -351,32 +351,24 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         self.verify_allocation(journal).await
     }
     /// Publishes progress with its current revision.
+    /// A lost conditional write returns `Contended` without adopting another
+    /// writer's progress or repeating its publication.
     pub async fn persist(
         &self,
         mut journal: MaterializationJournal,
     ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            if let Some(work) = self.observed_work()? {
-                journal.work = work;
-            }
-            let expected = next_revision(&mut journal.revision);
-            let (stored, replacement) = self
-                .store
-                .compare_and_swap(journal.plan.operation_id, expected, journal)
-                .await
-                .map_err(MaterializationError::Store)?;
-            journal = replacement;
-            if stored {
-                return Ok(journal);
-            }
-            let current = self
-                .load(journal.plan.operation_id)
-                .await?
-                .ok_or(MaterializationError::IncompatibleJournal)?;
-            if current.plan != journal.plan {
-                return Err(MaterializationError::PlanConflict);
-            }
-            journal = current;
+        if let Some(work) = self.observed_work()? {
+            journal.work = work;
+        }
+        let expected = next_revision(&mut journal.revision);
+        let (stored, replacement) = self
+            .store
+            .compare_and_swap(journal.plan.operation_id, expected, journal)
+            .await
+            .map_err(MaterializationError::Store)?;
+        journal = replacement;
+        if stored {
+            return Ok(journal);
         }
         Err(MaterializationError::Contended)
     }

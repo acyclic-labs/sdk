@@ -113,42 +113,40 @@ impl<
         if saved != input {
             return Err(LazyWorkspaceError::StaleIdentity);
         }
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let state = self
-                .store
-                .load_lazy_workspace(self.workspace.id(), ctx)
-                .await?
-                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-            let pending = state.pending_remove.as_ref().filter(|pending|
-                matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key.operation_id() == operation));
-            let Some(pending) = pending else {
-                return Ok(snapshot);
-            };
-            if pending.prepared_overlay != snapshot.overlay
-                || state.overlay != snapshot.overlay
-                || state.shadows != snapshot.shadows
-                || state.source != snapshot.source
-            {
-                return Err(LazyWorkspaceError::StaleIdentity);
-            }
-            let revision = state.revision;
-            let next = LazyWorkspaceState {
-                revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-                pending_remove: None,
-                selected_import_roots: Some([
-                    (snapshot, self.workspace.volume.config),
-                    (destination, self.workspace.volume.config),
-                    (source, config),
-                ]),
-                ..state
-            };
-            if self
-                .store
-                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
-                .await?
-            {
-                return Ok(snapshot);
-            }
+        let state = self
+            .store
+            .load_lazy_workspace(self.workspace.id(), ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+        let pending = state.pending_remove.as_ref().filter(|pending|
+            matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key.operation_id() == operation));
+        let Some(pending) = pending else {
+            return Ok(snapshot);
+        };
+        if pending.prepared_overlay != snapshot.overlay
+            || state.overlay != snapshot.overlay
+            || state.shadows != snapshot.shadows
+            || state.source != snapshot.source
+        {
+            return Err(LazyWorkspaceError::StaleIdentity);
+        }
+        let revision = state.revision;
+        let next = LazyWorkspaceState {
+            revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
+            pending_remove: None,
+            selected_import_roots: Some([
+                (snapshot, self.workspace.volume.config),
+                (destination, self.workspace.volume.config),
+                (source, config),
+            ]),
+            ..state
+        };
+        if self
+            .store
+            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
+            .await?
+        {
+            return Ok(snapshot);
         }
         Err(LazyWorkspaceError::Concurrent)
     }

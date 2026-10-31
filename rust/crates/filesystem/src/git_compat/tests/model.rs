@@ -22,7 +22,7 @@ fn ready<F: Future>(mut future: Pin<Box<F>>) -> F::Output {
 }
 
 #[test]
-fn concurrent_branch_registration_preserves_both_atomic_updates() {
+fn concurrent_branch_registration_publishes_only_accepted_updates() {
     registrations(MemoryGitCompatStore::default);
 }
 
@@ -38,39 +38,59 @@ fn registrations<S: GitCompatStore + 'static>(store: impl Fn() -> S + Send + Syn
     loom::model(move || {
         let repository = loom::sync::Arc::new(GitCompatRepository::new(
             WorkspaceId::from_bytes([0; 16]),
-            store(),
+            super::model_store::CountedStore::new(store()),
         ));
         let mut writers = Vec::new();
         for (name, identity) in [("A", [1; 16]), ("B", [2; 16])] {
             let repository = repository.clone();
             writers.push(loom::thread::spawn(move || {
-                ready(Box::pin(repository.register_branch_workspace(
+                let result = ready(Box::pin(repository.register_branch_workspace(
                     name,
                     WorkspaceId::from_bytes(identity),
                     None,
                     false,
-                )))
-                .unwrap();
+                )));
+                (name, identity, result)
             }));
         }
+        let mut accepted = BTreeMap::new();
         for writer in writers {
-            writer.join().unwrap();
+            let (name, identity, result) = writer.join().unwrap();
+            match result {
+                Ok(_) => {
+                    accepted.insert(name, WorkspaceId::from_bytes(identity));
+                }
+                Err(GitCompatError::Contended) => {}
+                other => panic!("unexpected registration: {other:?}"),
+            }
         }
+        assert_eq!(
+            repository.store.attempts(),
+            2,
+            "conditional write was repeated"
+        );
         let state = ready(Box::pin(
             repository.store.load(WorkspaceId::from_bytes([0; 16])),
         ))
         .unwrap()
         .unwrap();
-        assert_eq!(state.branches.len(), 3, "lost branch update");
-        assert_eq!(
-            state.branches["A"].workspace_id,
-            WorkspaceId::from_bytes([1; 16])
+        assert!(
+            !accepted.is_empty(),
+            "neither conditional writer progressed"
         );
         assert_eq!(
-            state.branches["B"].workspace_id,
-            WorkspaceId::from_bytes([2; 16])
+            state.branches.len(),
+            accepted.len() + 1,
+            "lost branch update"
         );
-        assert_eq!(state.revision, 2);
+        for name in ["A", "B"] {
+            assert_eq!(
+                state.branches.get(name).map(|branch| branch.workspace_id),
+                accepted.get(name).copied(),
+                "lost branch update"
+            );
+        }
+        assert_eq!(state.revision, accepted.len() as u64);
         assert!(validate_git_state(&state).is_ok());
     });
 }
@@ -87,10 +107,12 @@ fn lease_model_detects_unconditional_replacement() {
 }
 
 fn renewals<S: OperationWindowStore + 'static>(store: impl Fn() -> S + Send + Sync + 'static) {
-    // One lease, two renewals: run the real coordinator's snapshot/CAS/retry
+    // One lease, two renewals: run the real coordinator's snapshot/CAS
     // path in every interleaving, with deterministic time and identities.
     loom::model(move || {
-        let coordinator = loom::sync::Arc::new(OperationWindowCoordinator::new(store()));
+        let coordinator = loom::sync::Arc::new(OperationWindowCoordinator::new(
+            super::model_store::CountedStore::new(store()),
+        ));
         let workspace = WorkspaceId::from_bytes([0; 16]);
         let lease = ready(Box::pin(coordinator.begin_with_lease_id(
             workspace,
@@ -113,11 +135,15 @@ fn renewals<S: OperationWindowStore + 'static>(store: impl Fn() -> S + Send + Sy
         for renewal in renewals {
             match renewal.join().unwrap() {
                 Ok(lease) => successful.push(lease),
-                Err(OperationWindowError::StaleLease) => {}
+                Err(OperationWindowError::StaleLease | OperationWindowError::Contended) => {}
                 other => panic!("unexpected renewal: {other:?}"),
             }
         }
         assert_eq!(successful.len(), 1, "stale lease renewed");
+        assert!(
+            coordinator.store().attempts() <= 3,
+            "conditional write was repeated"
+        );
         let snapshot = ready(Box::pin(coordinator.snapshot(workspace))).unwrap();
         let OperationWindowPhase::Active {
             leases,

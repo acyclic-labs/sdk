@@ -142,14 +142,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
 
     async fn update<T>(
         &self,
-        mut edit: impl FnMut(&mut GitCompatState) -> Result<T, GitCompatError<S::Error>>,
+        edit: impl FnOnce(&mut GitCompatState) -> Result<T, GitCompatError<S::Error>>,
     ) -> Result<T, GitCompatError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut state = self.load().await?;
-            let output = edit(&mut state)?;
-            if self.publish(state).await? {
-                return Ok(output);
-            }
+        let mut state = self.load().await?;
+        let output = edit(&mut state)?;
+        if self.publish(state).await? {
+            return Ok(output);
         }
         Err(GitCompatError::Contended)
     }

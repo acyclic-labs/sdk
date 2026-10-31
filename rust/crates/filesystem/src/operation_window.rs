@@ -5,13 +5,15 @@
 //! are active. Parent advances are coalesced and reconciled exactly once after
 //! the last lease closes. Durable stores make crash recovery and writer fencing
 //! independent of the process that opened the window.
+//! Each conditional transition returns its first lost revision as
+//! [`OperationWindowError::Contended`]; it does not replan against another window.
 //!
 //! Stream-backed windows use only the v1 namespace and exact-expiry lease gates.
 //! Previously stored v2 windows are incompatible and are not read or migrated.
 //! Each renewal retains another gate stream; lifetime storage depends on provider
 //! retention and is not bounded by the active lease count.
 
-use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
+use crate::record_store::{MemoryRecords, next_revision};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationId, IdempotencyKey, OperationId, Workspace,
     WorkspaceError, WorkspaceId, WorkspaceRebase,
@@ -277,7 +279,7 @@ pub enum OperationWindowError<E: std::error::Error + 'static> {
     /// The supplied lease was closed, expired, or superseded by a renewal.
     #[error("operation lease is no longer active")]
     StaleLease,
-    /// Optimistic-concurrency contention exceeded the bounded retry policy.
+    /// The conditional publication lost its expected revision.
     #[error("operation-window state remained contended")]
     Contended,
     /// Reconciliation completion used a stale ticket.

@@ -22,7 +22,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             authored_at_seconds,
             message,
         );
-        self.update(|state| record_captured_commit_state(state, commit.clone()))
+        self.update(|state| record_captured_commit_state(state, commit))
             .await
     }
 
@@ -31,48 +31,46 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         &self,
         publication: GitPublicationRecord,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut state = self.load().await?;
-            let current = state.current().map_err(|_| GitCompatError::InvalidState)?;
-            let head = current.head;
-            if publication.workspace_tree.workspace_id() != current.workspace_id {
-                return Err(GitCompatError::WorkspaceMismatch);
+        let mut state = self.load().await?;
+        let current = state.current().map_err(|_| GitCompatError::InvalidState)?;
+        let head = current.head;
+        if publication.workspace_tree.workspace_id() != current.workspace_id {
+            return Err(GitCompatError::WorkspaceMismatch);
+        }
+        let previous = head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
+        if previous == Some(publication.tree) {
+            return Ok(GitCommandOutput::NoOp);
+        }
+        if !capture_proof_valid(
+            publication.tree,
+            publication.workspace_tree,
+            publication.capture_proof.as_ref(),
+            previous,
+        ) {
+            return Err(GitCompatError::WorkspaceMismatch);
+        }
+        let mut parents: Vec<_> = head.into_iter().collect();
+        if let Some(source) = publication.source_head
+            && !parents.contains(&source)
+        {
+            if !state.commits.contains_key(&source) {
+                state.external_parents.insert(source);
             }
-            let previous = head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
-            if previous == Some(publication.tree) {
-                return Ok(GitCommandOutput::NoOp);
-            }
-            if !capture_proof_valid(
-                publication.tree,
-                publication.workspace_tree,
-                publication.capture_proof.as_ref(),
-                previous,
-            ) {
-                return Err(GitCompatError::WorkspaceMismatch);
-            }
-            let mut parents: Vec<_> = head.into_iter().collect();
-            if let Some(source) = publication.source_head
-                && !parents.contains(&source)
-            {
-                if !state.commits.contains_key(&source) {
-                    state.external_parents.insert(source);
-                }
-                parents.push(source);
-            }
-            let commit = GitCommit::new(
-                publication.tree,
-                publication.workspace_tree,
-                publication.capture_proof.clone(),
-                publication.tracked_paths.clone(),
-                parents,
-                publication.author.clone(),
-                publication.authored_at_seconds,
-                publication.message.clone(),
-            );
-            let output = record_commit_state::<S::Error>(&mut state, commit, head)?;
-            if self.publish(state).await? {
-                return Ok(output);
-            }
+            parents.push(source);
+        }
+        let commit = GitCommit::new(
+            publication.tree,
+            publication.workspace_tree,
+            publication.capture_proof,
+            publication.tracked_paths,
+            parents,
+            publication.author,
+            publication.authored_at_seconds,
+            publication.message,
+        );
+        let output = record_commit_state::<S::Error>(&mut state, commit, head)?;
+        if self.publish(state).await? {
+            return Ok(output);
         }
         Err(GitCompatError::Contended)
     }

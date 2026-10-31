@@ -7,28 +7,26 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         operation: OperationId,
         paths: &BTreeMap<String, Option<crate::FileId>>,
     ) -> Result<(), GitCompatError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut state = self.load().await?;
-            let pending = state.pending.as_mut().ok_or(GitCompatError::InvalidState)?;
-            if pending.id.operation_id() != operation
-                || !matches!(pending.action, GitFilesystemAction::Join { .. })
-            {
-                return Err(GitCompatError::InvalidState);
-            }
-            let GitPendingMutation::Join { conflicts, .. } = &mut pending.mutation else {
-                return Err(GitCompatError::InvalidState);
+        let mut state = self.load().await?;
+        let pending = state.pending.as_mut().ok_or(GitCompatError::InvalidState)?;
+        if pending.id.operation_id() != operation
+            || !matches!(pending.action, GitFilesystemAction::Join { .. })
+        {
+            return Err(GitCompatError::InvalidState);
+        }
+        let GitPendingMutation::Join { conflicts, .. } = &mut pending.mutation else {
+            return Err(GitCompatError::InvalidState);
+        };
+        if let Some(existing) = conflicts.as_ref() {
+            return if existing == paths {
+                Ok(())
+            } else {
+                Err(GitCompatError::InvalidState)
             };
-            if let Some(existing) = conflicts.as_ref() {
-                return if existing == paths {
-                    Ok(())
-                } else {
-                    Err(GitCompatError::InvalidState)
-                };
-            }
-            *conflicts = Some(paths.clone());
-            if self.publish(state).await? {
-                return Ok(());
-            }
+        }
+        *conflicts = Some(paths.clone());
+        if self.publish(state).await? {
+            return Ok(());
         }
         Err(GitCompatError::Contended)
     }
@@ -115,7 +113,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         let branch = branch.into();
         self.update(|state| {
-            register_branch_workspace_state(state, branch.clone(), workspace_id, head, switch)
+            register_branch_workspace_state(state, branch, workspace_id, head, switch)
         })
         .await
     }

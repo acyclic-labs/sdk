@@ -99,8 +99,7 @@ impl<
             return Err(LazyWorkspaceError::Concurrent);
         }
         drop(original);
-        let mut ready = false;
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        {
             let state = self
                 .store
                 .load_lazy_workspace(child.id(), ctx)
@@ -110,30 +109,24 @@ impl<
             if origin.snapshot != cut {
                 return Err(LazyWorkspaceError::Concurrent);
             }
-            if origin.phase == LazyForkPhase::Committed {
-                ready = true;
-                break;
+            if origin.phase != LazyForkPhase::Committed {
+                let revision = state.revision;
+                let next = LazyWorkspaceState {
+                    revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
+                    fork_origin: Some(LazyForkOrigin {
+                        phase: LazyForkPhase::Committed,
+                        ..origin
+                    }),
+                    ..state
+                };
+                if !self
+                    .store
+                    .compare_and_swap_lazy_workspace(child.id(), revision, next, ctx)
+                    .await?
+                {
+                    return Err(LazyWorkspaceError::Concurrent);
+                }
             }
-            let revision = state.revision;
-            let next = LazyWorkspaceState {
-                revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-                fork_origin: Some(LazyForkOrigin {
-                    phase: LazyForkPhase::Committed,
-                    ..origin
-                }),
-                ..state
-            };
-            if self
-                .store
-                .compare_and_swap_lazy_workspace(child.id(), revision, next, ctx)
-                .await?
-            {
-                ready = true;
-                break;
-            }
-        }
-        if !ready {
-            return Err(LazyWorkspaceError::Concurrent);
         }
         ctx.charge(WorkCounters {
             bytes_hashed: LazySnapshotRef::hash_bytes(original_generation),
@@ -175,43 +168,41 @@ impl<
             return Err(LazyWorkspaceError::Concurrent);
         }
         self.validate_snapshot(cut, ctx).await?;
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            if let Some(state) = self.store.load_lazy_workspace(id, ctx).await? {
-                let origin = self.fork_origin(&state, id, operation)?;
-                return if origin.snapshot == cut {
-                    Ok(cut)
-                } else {
-                    Err(LazyWorkspaceError::Concurrent)
-                };
-            }
-            let hold = accounted!(ctx, |work, cancel| self
-                .workspace
-                .volume
-                .fs
-                .make_generation_durable(
-                    &self.workspace.volume,
-                    cut.authored_generation,
-                    work,
-                    cancel
-                ))?;
-            let state = LazyWorkspaceState {
-                parent_workspace_id: Some(self.workspace.id()),
-                fork_origin: Some(LazyForkOrigin {
-                    operation_id: operation,
-                    snapshot: cut,
-                    config: self.workspace.volume.config,
-                    phase: LazyForkPhase::Prepared,
-                }),
-                ..LazyWorkspaceState::new(id, cut.source, cut.overlay, cut.shadows)
+        if let Some(state) = self.store.load_lazy_workspace(id, ctx).await? {
+            let origin = self.fork_origin(&state, id, operation)?;
+            return if origin.snapshot == cut {
+                Ok(cut)
+            } else {
+                Err(LazyWorkspaceError::Concurrent)
             };
-            let swapped = self
-                .store
-                .compare_and_swap_lazy_workspace(id, 0, state, ctx)
-                .await;
-            drop(hold);
-            if swapped? {
-                return Ok(cut);
-            }
+        }
+        let hold = accounted!(ctx, |work, cancel| self
+            .workspace
+            .volume
+            .fs
+            .make_generation_durable(
+                &self.workspace.volume,
+                cut.authored_generation,
+                work,
+                cancel
+            ))?;
+        let state = LazyWorkspaceState {
+            parent_workspace_id: Some(self.workspace.id()),
+            fork_origin: Some(LazyForkOrigin {
+                operation_id: operation,
+                snapshot: cut,
+                config: self.workspace.volume.config,
+                phase: LazyForkPhase::Prepared,
+            }),
+            ..LazyWorkspaceState::new(id, cut.source, cut.overlay, cut.shadows)
+        };
+        let swapped = self
+            .store
+            .compare_and_swap_lazy_workspace(id, 0, state, ctx)
+            .await;
+        drop(hold);
+        if swapped? {
+            return Ok(cut);
         }
         Err(LazyWorkspaceError::Concurrent)
     }
