@@ -28,10 +28,9 @@ async fn seeded(
 async fn write_if_checks_absence_identity_and_digest() -> Result<(), Box<dyn Error>> {
     let workspace = seeded("conditional-write").await?;
     let actual = unbounded!(workspace, stat("/file.txt"))?.file_id;
-    let mut stale = FileId::new();
-    while stale == actual {
-        stale = FileId::new();
-    }
+    let mut stale = actual.into_bytes();
+    stale[0] ^= 1;
+    let stale = FileId::from_bytes(stale);
     let mut write = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
     for refused in [
         FileCondition::Absent,
