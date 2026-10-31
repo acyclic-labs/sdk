@@ -36,7 +36,9 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::ThreadId;
 
 /// The runner's image, built with this library.
 static IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/runner"));
@@ -56,11 +58,21 @@ const HAS_GID: u8 = 4;
 /// Resource limits a request carries: every Linux limit, 0..`RLIM_NLIMITS`.
 const LIMITS: u32 = 16;
 
+#[derive(PartialEq, Eq)]
+struct Security {
+    settings: Vec<u8>,
+    // Filter counts identify additions only within the original thread's
+    // monotone filter stack. Equal counts in different threads do not attest
+    // equal programs. ThreadId is lifetime-unique, unlike a reusable OS TID.
+    filtered_caller: Option<ThreadId>,
+    reusable: bool,
+}
+
 /// Appends what a fork of the owner would have inherited but the long-lived
 /// runner cannot know: the owner's current file-creation mask and resource
 /// limits and launching thread's signal mask. Returns the security state
 /// that must still match the runner's original owner before it may clone.
-fn put_settings(body: &mut Vec<u8>) -> io::Result<Vec<u8>> {
+fn put_settings(body: &mut Vec<u8>) -> io::Result<Security> {
     // Read without changing it; umask(2) can only set it.
     let mut status = std::fs::read("/proc/thread-self/status")?;
     let mask = status
@@ -84,6 +96,19 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<Vec<u8>> {
         .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
         .ok_or(io::ErrorKind::InvalidData)?;
     body.extend_from_slice(&ignored.to_ne_bytes());
+    let filtered = status
+        .split(|byte| *byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"Seccomp:"))
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .ok_or(io::ErrorKind::InvalidData)?
+        != 0;
+    let filter_count_known = status
+        .split(|byte| *byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"Seccomp_filters:"))
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .is_some();
     for resource in 0..LIMITS {
         let mut limit = libc::rlimit {
             rlim_cur: 0,
@@ -125,7 +150,13 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<Vec<u8>> {
         read += length;
     }
     status.truncate(written);
-    Ok(status)
+    Ok(Security {
+        settings: status,
+        filtered_caller: filtered.then(|| std::thread::current().id()),
+        // Older kernels do not expose the monotone stack count. Launch under
+        // the current caller each time rather than asserting filter equality.
+        reusable: !filtered || filter_count_known,
+    })
 }
 
 /// Appends a slot per standard stream, and the descriptor each sent one
@@ -182,7 +213,7 @@ fn encode(
     body: &mut Vec<u8>,
     command: &ProcessCommand,
     environment: &BTreeMap<&OsStr, &OsStr>,
-) -> io::Result<Vec<u8>> {
+) -> io::Result<Security> {
     let identity = &command.unix;
     let flags = [
         (command.cwd.is_some(), HAS_CWD),
@@ -278,13 +309,22 @@ pub(super) fn start(
     let mut message = Vec::with_capacity(8 + body.len());
     put_count(&mut message, body.len());
     message.extend_from_slice(&body);
-    send(&descriptors, &message, security)?;
+    // Retain the original runner, including its group anchor and control
+    // socket, until the original exec acknowledgement closes this reply.
+    let launch_owner = send(&descriptors, &message, security)?;
+    #[cfg(test)]
+    LAUNCH_SENT.with(|notice| {
+        if let Some(notice) = notice.borrow_mut().take() {
+            notice.send(launch_owner.pid).expect("launch observer");
+        }
+    });
     // Only the runner and its clone hold the child's ends now.
     drop(theirs);
     drop(reply_end);
     drop(here);
     let mut replied = Vec::new();
     File::from(reply).read_to_end(&mut replied)?;
+    drop(launch_owner);
     let mut pid = None;
     let mut failure = None;
     for frame in replied.chunks(5) {
@@ -347,16 +387,21 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 /// This owner's runner: its control socket and process.
 struct Runner {
     owner: u32,
-    security: Vec<u8>,
-    control: UnixStream,
+    security: Security,
+    control: Option<UnixStream>,
     pid: pid_t,
-    reaped: bool,
+    reaped: AtomicBool,
 }
 
-static RUNNER: Mutex<Option<Runner>> = Mutex::new(None);
+static RUNNER: Mutex<Option<Arc<Runner>>> = Mutex::new(None);
+
+#[cfg(test)]
+thread_local! {
+    static LAUNCH_SENT: std::cell::RefCell<Option<std::sync::mpsc::Sender<pid_t>>> = const { std::cell::RefCell::new(None) };
+}
 
 impl Runner {
-    fn start(security: Vec<u8>) -> io::Result<Self> {
+    fn start(security: Security) -> io::Result<Self> {
         let image = image()?;
         let (control, theirs) = UnixStream::pair()?;
         // The runner's standard input is its control socket.
@@ -377,31 +422,33 @@ impl Runner {
         Ok(Self {
             owner: std::process::id(),
             security,
-            control,
+            control: Some(control),
             pid,
-            reaped: false,
+            reaped: AtomicBool::new(false),
         })
     }
 
     /// Whether this runner still serves this process: it is alive, and this
     /// is the process that started it, not a fork of it.
-    fn serves(&mut self) -> bool {
+    fn serves(&self) -> bool {
         if self.owner != std::process::id() {
             return false;
         }
         let mut status = 0;
         // SAFETY: this process's own unreaped child and writable storage.
         if unsafe { libc::waitpid(self.pid, &raw mut status, libc::WNOHANG) } == self.pid {
-            self.reaped = true;
+            self.reaped.store(true, Ordering::Relaxed);
         }
-        !self.reaped
+        !self.reaped.load(Ordering::Relaxed)
     }
+}
 
-    fn retire(self) {
+impl Drop for Runner {
+    fn drop(&mut self) {
         // EOF ends the original control loop even when a credential drop
         // means the owner can no longer signal its earlier privileged child.
-        drop(self.control);
-        if self.owner == std::process::id() && !self.reaped {
+        drop(self.control.take());
+        if self.owner == std::process::id() && !self.reaped.load(Ordering::Relaxed) {
             // SAFETY: this process's own unreaped child, so the PID is its.
             unsafe { libc::kill(self.pid, libc::SIGKILL) };
             let mut status = 0;
@@ -464,31 +511,45 @@ fn make_image() -> io::Result<OwnedFd> {
     Ok(file.into())
 }
 
-fn runner() -> std::sync::MutexGuard<'static, Option<Runner>> {
+fn runner() -> std::sync::MutexGuard<'static, Option<Arc<Runner>>> {
     RUNNER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Sends one request, starting a runner when none serves this process.
-fn send(descriptors: &[RawFd], message: &[u8], security: Vec<u8>) -> io::Result<()> {
+fn send(descriptors: &[RawFd], message: &[u8], security: Security) -> io::Result<Arc<Runner>> {
     let mut slot = runner();
     if slot
         .as_mut()
-        .is_some_and(|runner| runner.security != security || !runner.serves())
+        .is_some_and(|runner| !security.reusable || runner.security != security || !runner.serves())
         && let Some(stale) = slot.take()
     {
-        stale.retire();
+        drop(stale);
     }
     if slot.is_none() {
-        *slot = Some(Runner::start(security)?);
+        *slot = Some(Arc::new(Runner::start(security)?));
     }
     let runner = slot.as_mut().ok_or(io::ErrorKind::NotFound)?;
-    let sent = send_message(&runner.control, descriptors, message);
+    let sent = send_message(
+        runner.control.as_ref().ok_or(io::ErrorKind::BrokenPipe)?,
+        descriptors,
+        message,
+    )
+    .map(|()| Arc::clone(runner));
+    if sent.is_err() {
+        // Withdraw a partially written request even while earlier launches
+        // retain this runner: receive must reach EOF, not wait for its tail.
+        let _ = runner
+            .control
+            .as_ref()
+            .ok_or(io::ErrorKind::BrokenPipe)?
+            .shutdown(std::net::Shutdown::Write);
+    }
     if sent.is_err()
         && let Some(failed) = slot.take()
     {
-        failed.retire();
+        drop(failed);
     }
     sent
 }
@@ -557,6 +618,6 @@ pub(super) fn runner_pid() -> Option<u32> {
 #[cfg(test)]
 pub(super) fn retire_runner() {
     if let Some(runner) = runner().take() {
-        runner.retire();
+        drop(runner);
     }
 }
