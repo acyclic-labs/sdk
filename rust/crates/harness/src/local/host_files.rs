@@ -658,7 +658,7 @@ pub async fn serve_until(
         .watch(&requests, RecursiveMode::NonRecursive)
         .map_err(storage)?;
     let result = tokio::select! {
-        result = serve_requests(&owner, directory.path(), session, &notices) => result,
+        result = serve_requests(&owner, &directory, session, &notices) => result,
         result = shutdown => result,
     };
     drop(watcher);
@@ -872,7 +872,7 @@ impl Served {
     /// Publishes one dispatch's immutable reply unless it was withdrawn.
     fn answer(
         &mut self,
-        directory: &Path,
+        directory: &acyclic_fs::HeldRoot,
         operation: OperationId,
         outcome: Result<Value>,
     ) -> Result<()> {
@@ -883,8 +883,7 @@ impl Served {
             return Ok(());
         }
         let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
-        let root = acyclic_fs::hold_root(directory)
-            .map_err(native_file_error)?
+        let root = directory
             .create_directories(&Path::new("status").join(&key))
             .map_err(native_file_error)?;
         match root.publish_immutable(Path::new(&format!("{operation}.json")), &bytes) {
@@ -903,7 +902,7 @@ impl Served {
 
 async fn serve_requests(
     owner: &HostWorkspaceOwner,
-    directory: &Path,
+    directory: &acyclic_fs::HeldRoot,
     session: uuid::Uuid,
     notices: &Notices,
 ) -> Result<()> {
