@@ -263,14 +263,23 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         invocation: &ToolInvocation,
         context: &ToolContext,
     ) -> Result<ToolResult> {
+        // Dispatch publishes no Run for malformed input. Both first execution
+        // and recovery must return that verdict before following its outcome.
+        let input: ShellInput = serde_json::from_value(invocation.arguments.clone())
+            .map_err(|error| Error::Invalid(format!("shell input decode failed: {error}")))?;
+        input.validate()?;
         let mut request =
             FollowRequest::new(self.paths.run(&self.name, invocation.operation_id)?, 0);
         request.when_absent = WhenAbsent::Wait;
         let mut events = self.provider.follow(request).await?;
         let mut ended: Option<acyclic_stream::FollowStream> = None;
         let mut output = super::output::Output::new(context);
-        let mut session_ended = false;
+        let mut closed_at = None;
+        let mut next = 0;
         loop {
+            if closed_at.is_some_and(|tail| next >= tail) {
+                return Err(Error::Indeterminate(invocation.operation_id));
+            }
             let update = tokio::select! {
                 biased;
                 end = futures::future::OptionFuture::from(ended.as_mut().map(futures::StreamExt::next)), if ended.is_some() => {
@@ -279,22 +288,12 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
                         let RunRecord { event: RunEvent::Lost { .. }, .. } = decode(&record.value)? else {
                             return Err(Error::Invalid("device session has no terminal marker".into()));
                         };
-                        // An Exit committed before Close remains recoverable. A
-                        // lagging observation can only produce Indeterminate;
-                        // it never certifies that the command did not run.
-                        let head = self.provider.head(self.paths.run(&self.name, invocation.operation_id)?).await?;
-                        if let Some(last) = head.last {
-                            let RunRecord { event, .. } = decode(&last.value)?;
-                            if let Some(result) = self.terminal(event, invocation) {
-                                // Drain the original finite terminal prefix so
-                                // every output file is materialized in order.
-                                result?;
-                                session_ended = true;
-                                ended = None;
-                                continue;
-                            }
-                        }
-                        return Err(Error::Indeterminate(invocation.operation_id));
+                        // Drain only the accepted prefix observed at session end,
+                        // including output preceding Lost or an absent terminal.
+                        // An Exit within that cut still wins; exhaustion remains
+                        // uncertainty and never waits for another incarnation.
+                        closed_at = Some(self.provider.head(self.paths.run(&self.name, invocation.operation_id)?).await?.tail);
+                        ended = None;
                     }
                     continue;
                 }
@@ -303,9 +302,16 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             let FollowUpdate::Record(record) = update? else {
                 continue;
             };
+            if closed_at.is_some_and(|tail| record.sequence >= tail) {
+                return Err(Error::Indeterminate(invocation.operation_id));
+            }
+            next = record
+                .sequence
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("device run sequence overflows".into()))?;
             let RunRecord { event, .. } = decode(&record.value)?;
             if let RunEvent::Started { generation, .. } = event {
-                if session_ended {
+                if closed_at.is_some() {
                     continue;
                 }
                 let mut request =
@@ -464,9 +470,6 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
-            let input: ShellInput = serde_json::from_value(invocation.arguments.clone())
-                .map_err(|error| Error::Invalid(format!("shell input decode failed: {error}")))?;
-            input.validate()?;
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("device shell has no original task".into()))?;

@@ -287,7 +287,7 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             arguments: serde_json::json!({"command": "exit 0", "target": "desktop"}),
         };
         let context = acyclic_harness_core::runtime::ToolContext::new(
-            task,
+            task.clone(),
             oversized.operation_id,
             &oversized.call_id,
         )?;
@@ -305,7 +305,13 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             .ok_or("shell is missing")?
             .executor;
         assert!(shell.dispatch(&oversized, Some(&context))?.is_none());
+        let mut recovery = shell.reconcile(oversized.clone(), Some(context.clone()));
+        let std::task::Poll::Ready(recovered) = futures::poll!(recovery.as_mut()) else {
+            return Err("rejected command recovery waited for an unpublished Run".into());
+        };
+        let recovered = recovered?.ok_or("rejected command recovery lost its verdict")?;
         let refusal = shell.execute(oversized, Some(context)).await?;
+        assert_eq!(recovered.value, refusal.value);
         assert!(
             refusal.value["error"]
                 .as_str()
@@ -315,6 +321,44 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             provider.tail(paths.queue("desktop")?).await,
             Ok(0) | Err(acyclic_stream::StreamError::NotFound)
         ));
+        for arguments in [
+            serde_json::json!({"target": "desktop"}),
+            serde_json::json!({"command": ""}),
+        ] {
+            let invalid = acyclic_harness_core::tool::ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "malformed-before-dispatch".into(),
+                name: "shell".into(),
+                arguments,
+            };
+            let context = acyclic_harness_core::runtime::ToolContext::new(
+                task.clone(),
+                invalid.operation_id,
+                &invalid.call_id,
+            )?;
+            assert!(
+                remote
+                    .executor
+                    .dispatch(&invalid, Some(&context))?
+                    .is_none()
+            );
+            let mut recovery = remote
+                .executor
+                .reconcile(invalid.clone(), Some(context.clone()));
+            let std::task::Poll::Ready(recovered) = futures::poll!(recovery.as_mut()) else {
+                return Err("malformed command recovery waited for an unpublished Run".into());
+            };
+            let recovered = recovered
+                .err()
+                .ok_or("malformed recovery accepted the call")?;
+            let executed = remote
+                .executor
+                .execute(invalid, Some(context))
+                .await
+                .err()
+                .ok_or("malformed execution accepted the call")?;
+            assert_eq!(recovered.to_string(), executed.to_string());
+        }
         let marker = tempfile::tempdir()?;
         let marker_path = marker.path().join("executions");
         let path = marker_path
@@ -465,6 +509,83 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
                 .verify(&scope, &mut None)
                 .is_err()
         );
+        // Consume the original connection's committed end before recovery.
+        // The failed command's output still belongs to its accepted prefix.
+        let mut ended_request =
+            FollowRequest::new(paths.session_end("desktop", online.generation)?, 0);
+        ended_request.when_absent = acyclic_stream::WhenAbsent::Wait;
+        let mut ended = provider.follow(ended_request).await?;
+        drop(_device);
+        loop {
+            let event = ended
+                .next()
+                .await
+                .ok_or("original session-end producer dropped")??;
+            if matches!(event, FollowUpdate::Record(_)) {
+                break;
+            }
+        }
+        for (operation, expected_exit) in [(op, Some(7)), (active_op, None)] {
+            let invocation = acyclic_harness_core::tool::ToolInvocation {
+                operation_id: operation,
+                call_id: "original-call".into(),
+                name: "shell".into(),
+                arguments: run.arguments.clone(),
+            };
+            let context = acyclic_harness_core::runtime::ToolContext::new(
+                task.clone(),
+                operation,
+                &invocation.call_id,
+            )?;
+            let recovered = remote.executor.reconcile(invocation, Some(context)).await;
+            if let Some(exit) = expected_exit {
+                let result = recovered?.ok_or("committed Exit disappeared during recovery")?;
+                assert_eq!(result.value["exit_code"], exit);
+            } else {
+                assert!(
+                    matches!(recovered, Err(acyclic_harness_core::Error::Indeterminate(id)) if id == operation)
+                );
+            }
+            let mut records = provider
+                .follow(FollowRequest::new(paths.run("desktop", operation)?, 0))
+                .await?;
+            let mut chunks = 0;
+            loop {
+                let event = records.next().await.ok_or("original run prefix ended")??;
+                let FollowUpdate::Record(record) = event else {
+                    continue;
+                };
+                let value: serde_json::Value = serde_json::from_slice(&record.value)?;
+                if let Some(output) = value["event"].get("output") {
+                    let channel = if output["stderr"] == true {
+                        "stderr"
+                    } else {
+                        "stdout"
+                    };
+                    let path = format!(
+                        "tools/{operation}/device/{:020}-{channel}.bin",
+                        record.sequence
+                    );
+                    let (_, bytes, _) = storage
+                        .content_reader()
+                        .read_private_path(
+                            storage.volume(),
+                            "",
+                            &path,
+                            None,
+                            4096,
+                            acyclic_harness_core::conversation::ContentAccess::default(),
+                        )?
+                        .await?;
+                    let original: Vec<u8> = serde_json::from_value(output["data"].clone())?;
+                    assert_eq!(bytes.as_ref(), original.as_slice());
+                    chunks += 1;
+                } else if value["event"].get("started").is_none() {
+                    break;
+                }
+            }
+            assert!(chunks > 0, "real command produced no retained output");
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     };
     tokio::select! {
