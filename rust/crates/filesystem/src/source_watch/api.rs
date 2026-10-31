@@ -1,6 +1,26 @@
 use super::*;
 
 impl NativeSourceWatch {
+    /// Observes destruction of the original data, after its payload and keepers.
+    #[cfg(test)]
+    pub(super) fn observe_data_drop(
+        &self,
+        complete: std::sync::mpsc::Sender<()>,
+    ) -> std::io::Result<()> {
+        let mut observer = self
+            .data_drop()
+            .lock()
+            .map_err(|_| std::io::Error::other("native watch data-drop observer poisoned"))?;
+        if observer.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "native watch data-drop observer already registered",
+            ));
+        }
+        *observer = Some(complete);
+        Ok(())
+    }
+
     /// The original delivery path cannot wait for its own next batch.
     pub(crate) fn ensure_wait_available(&self) -> Result<(), DemandError> {
         self.delivery().ensure_stop_available()

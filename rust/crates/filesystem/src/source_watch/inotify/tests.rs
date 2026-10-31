@@ -847,11 +847,7 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
     let reader = Arc::downgrade(&watch.shared);
     let (complete, completed) = std::sync::mpsc::channel();
-    *watch
-        .shared
-        .drop_complete
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(complete);
+    watch.observe_data_drop(complete)?;
     let (entered, dropping) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     *sink
@@ -873,6 +869,13 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
     // Negative control for the former inference: Shared's weak pointer is
     // already expired, but its Delivery field still owns the original here.
     assert!(lifetime.upgrade().is_some());
+    assert!(
+        matches!(
+            completed.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
+        "the data-drop event follows the retained physical payload"
+    );
     release.send(())?;
     assert!(
         completed.recv().is_err(),

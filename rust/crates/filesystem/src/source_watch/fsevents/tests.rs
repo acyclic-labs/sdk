@@ -112,6 +112,7 @@ fn callback_admission_and_cancellation_preserve_work_and_retire_owned_paths() ->
             stream_bytes: AtomicU64::new(0),
             delivery: Arc::new(Delivery::new(sink.clone(), &mut original)?),
             ownership: SourcePayloadOwnership::default(),
+            drop_complete: Mutex::new(None),
         };
         if precancel {
             cancellation.cancel();

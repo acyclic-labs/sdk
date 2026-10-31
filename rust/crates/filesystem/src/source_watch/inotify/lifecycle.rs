@@ -1,6 +1,11 @@
 use super::*;
 
 impl NativeSourceWatch {
+    #[cfg(test)]
+    pub(in crate::source_watch) fn data_drop(&self) -> &super::super::DataDrop {
+        &self.shared.drop_complete
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "Startup retains every cleanup slot until worker ownership transfers or rollback completes."
@@ -62,7 +67,7 @@ impl NativeSourceWatch {
                 cleanup: Mutex::new(StartupCleanup::default()),
                 ownership,
                 delivery,
-                #[cfg(all(test, feature = "native-mount"))]
+                #[cfg(test)]
                 drop_complete: Mutex::new(None),
             }));
             let initialized = shared.as_ref().ok_or(DemandError::InvalidRequest)?;

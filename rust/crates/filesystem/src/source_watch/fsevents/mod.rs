@@ -42,9 +42,17 @@ struct Shared {
     stream_bytes: AtomicU64,
     delivery: Arc<Delivery>,
     ownership: SourcePayloadOwnership,
+    /// Last: disconnects only after the original payload and work owners drop.
+    #[cfg(test)]
+    drop_complete: super::DataDrop,
 }
 
 impl NativeSourceWatch {
+    #[cfg(test)]
+    pub(super) fn data_drop(&self) -> &super::DataDrop {
+        &self.shared.drop_complete
+    }
+
     pub(crate) fn start_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot,
         delivery: Arc<Delivery>,
@@ -75,6 +83,8 @@ impl NativeSourceWatch {
                 stream_bytes: AtomicU64::new(0),
                 delivery,
                 ownership,
+                #[cfg(test)]
+                drop_complete: Mutex::new(None),
             });
             let handler_bytes = super::arc_control_bytes::<Arc<Shared>>();
             work.claim(handler_bytes)?;

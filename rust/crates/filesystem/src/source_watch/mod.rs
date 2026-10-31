@@ -7,6 +7,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Test observer disconnected only after the original watch data's other fields.
+#[cfg(test)]
+type DataDrop = std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>;
+
 #[cfg(windows)]
 mod directory_changes;
 #[cfg(target_os = "macos")]
