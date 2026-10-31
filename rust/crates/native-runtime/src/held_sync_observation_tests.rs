@@ -44,25 +44,66 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
         use std::os::windows::io::AsRawHandle as _;
         file.as_raw_handle() as usize as u64
     };
+    #[cfg(target_vendor = "apple")]
+    let full_attempts = 2;
+    #[cfg(not(target_vendor = "apple"))]
+    let full_attempts = 1;
     let mut native_error = None;
     tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
+        let denied = crate::tests::ReadBudgetMeter::new(0, 0);
+        let before = query.snapshot();
+        let refusal = crate::sync_file(&file, Durability::Full, Some(&denied))
+            .expect_err("refused admission cannot reach a native attempt");
+        assert_eq!(refusal.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            query.snapshot(),
+            before,
+            "admission refusal became an OS call"
+        );
         crate::persistence_syscall(|| {
             crate::persistence_syscall(|| crate::sync_file(&file, Durability::Full, None))
         })?;
-        assert_eq!(query.snapshot().ok, 1, "nested markers counted as OS calls");
+        assert_eq!(
+            query.snapshot().ok,
+            full_attempts,
+            "nested markers counted as OS calls"
+        );
         crate::sync_data(&file, Durability::Full)?;
-        assert_eq!(query.snapshot().ok, 2);
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            let result = crate::sync_file(&file, Durability::Barrier, None);
-            assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::Unsupported));
+        assert_eq!(query.snapshot().ok, full_attempts * 2);
+        // These keep the original weaker request even on platforms whose only
+        // physical implementation is a full flush. No flush policy changes.
+        let admitted = crate::tests::ReadBudgetMeter::new(1, 0);
+        for index in 0..4 {
+            match index {
+                0 => crate::sync_file(&file, Durability::Barrier, None)?,
+                1 => crate::sync_file(&file, Durability::Barrier, Some(&admitted))?,
+                2 => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::fd::AsFd as _;
+                        crate::order_descriptor_once(file.as_fd())?;
+                    }
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::io::AsHandle as _;
+                        crate::order_descriptor_once(file.as_handle())?;
+                    }
+                }
+                _ => crate::sync_data(&file, Durability::Barrier)?,
+            }
             assert_eq!(
                 query.snapshot().ok,
-                2,
-                "unsupported barrier counted as a flush"
+                full_attempts * 2 + index + 1,
+                "one actual ordering attempt must count once"
             );
             assert_eq!(query.snapshot().err, 0);
         }
+        assert_eq!(
+            admitted
+                .used_operations
+                .load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
         #[cfg(unix)]
         let error = {
             use std::os::fd::AsFd as _;
@@ -128,9 +169,9 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
         job.await?
     })?;
     #[cfg(any(windows, target_os = "linux"))]
-    assert_eq!(query.snapshot().ok, 5);
+    assert_eq!(query.snapshot().ok, 9);
     #[cfg(not(any(windows, target_os = "linux")))]
-    assert_eq!(query.snapshot().ok, 3);
+    assert_eq!(query.snapshot().ok, full_attempts * 3 + 4);
     assert_eq!(export.stats().full, Some(0));
     drop(dispatch);
     drop(export);
@@ -151,15 +192,20 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
     let first = attempts.first().expect("original full flush");
     let full = first.durability.expect("typed full flush");
     assert_eq!(full.requested, Some(DurabilityRequest::Full));
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     assert_eq!(full.syscall, Some(DurabilitySyscall::Fsync));
     #[cfg(target_vendor = "apple")]
-    assert_eq!(full.syscall, Some(DurabilitySyscall::FullFsync));
+    assert_eq!(
+        attempts[1].durability.unwrap().syscall,
+        Some(DurabilitySyscall::FullFsync)
+    );
     #[cfg(windows)]
     assert_eq!(full.syscall, Some(DurabilitySyscall::FlushFileBuffers));
     assert_eq!(full.descriptor, Some(descriptor));
     assert_eq!(full.os_error, None);
-    let data = attempts.get(1).expect("original data flush");
+    let data = attempts
+        .get(full_attempts as usize)
+        .expect("original data flush");
     #[cfg(target_os = "linux")]
     assert_eq!(
         data.durability.unwrap().syscall,
@@ -167,12 +213,39 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
     );
     #[cfg(not(target_os = "linux"))]
     assert_eq!(data.durability.unwrap().syscall, full.syscall);
-    let failed = attempts.get(2).expect("actual failed native attempt");
+    let barrier_start = (full_attempts * 2) as usize;
+    for (index, attempt) in attempts[barrier_start..barrier_start + 4]
+        .iter()
+        .enumerate()
+    {
+        let evidence = attempt.durability.unwrap();
+        assert_eq!(evidence.requested, Some(DurabilityRequest::Barrier));
+        assert_eq!(evidence.descriptor, Some(descriptor));
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            evidence.syscall,
+            Some(if index == 3 {
+                DurabilitySyscall::Fdatasync
+            } else {
+                DurabilitySyscall::Fsync
+            })
+        );
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(evidence.syscall, Some(DurabilitySyscall::BarrierFsync));
+        #[cfg(windows)]
+        assert_eq!(evidence.syscall, Some(DurabilitySyscall::FlushFileBuffers));
+        #[cfg(not(target_os = "linux"))]
+        let _ = index;
+    }
+    let failed_index = barrier_start + 4;
+    let failed = attempts
+        .get(failed_index)
+        .expect("actual failed native attempt");
     assert_eq!(failed.outcome, Outcome::Err);
     assert_eq!(failed.durability.unwrap().os_error, native_error);
     assert!(failed.error_kind.is_none(), "failure detail was disabled");
     for injected in attempts
-        .get(3..5)
+        .get(failed_index + 1..failed_index + 3)
         .expect("two injected Interrupted attempts")
     {
         let evidence = injected.durability.unwrap();
@@ -185,7 +258,14 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
         assert_eq!(evidence.descriptor, Some(0));
     }
     let worker = attempts.last().expect("original worker attempt");
-    assert_eq!(worker.durability, Some(full));
+    let worker_attempt = worker.durability.unwrap();
+    assert_eq!(worker_attempt.requested, full.requested);
+    assert_eq!(worker_attempt.descriptor, full.descriptor);
+    assert_eq!(worker_attempt.os_error, None);
+    #[cfg(not(target_vendor = "apple"))]
+    assert_eq!(worker_attempt.syscall, full.syscall);
+    #[cfg(target_vendor = "apple")]
+    assert_eq!(worker_attempt.syscall, Some(DurabilitySyscall::FullFsync));
     let evidence = capture
         .0
         .lock()

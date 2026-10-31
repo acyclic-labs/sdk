@@ -66,7 +66,7 @@ fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
     // to the same observer used by the metered file operations.
     loop {
         let result = if data_only {
-            crate::held_sync::sync_data_descriptor_once(file.as_fd())
+            crate::held_sync::sync_data_descriptor_once(file.as_fd(), Durability::Full)
         } else {
             crate::sync_descriptor_once(file.as_fd())
         };
