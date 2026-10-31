@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
-import { isAbsolute } from "node:path";
+import { execFileSync } from "node:child_process";
+import { createReadStream, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { Processes, ProcessObservationFailed } from "./process.mjs";
 
 test("original process phases retain exact input, output and exit without treating close as EOF", async () => {
@@ -93,6 +96,50 @@ test("original process phase observer loss is typed only after the same physical
       && error.phase === "closed" && error.cause === cause);
     assert.equal(late.children.size, 0, "a failure after transcript completion still follows original physical retirement");
   } finally { await late.close().catch(error => { assert.ok(error instanceof ProcessObservationFailed); }); }
+});
+
+test("original process phase cleanup joins a blocked transcript after physical reap", { skip: process.platform === "win32" }, async () => {
+  const transcripts = mkdtempSync(join(tmpdir(), "process-phase-pipe-"));
+  const path = join(transcripts, "0.stdout");
+  execFileSync("mkfifo", [path]);
+  const cause = new Error("original final observer failed");
+  let reaped;
+  const physical = new Promise(resolve => { reaped = resolve; });
+  const scope = new Processes({ transcripts, onProgress: event => {
+    if (event.phase === "reaped") reaped();
+    if (event.phase === "closed") throw cause;
+  } });
+  let drain;
+  const readOriginal = () => drain ??= (async () => {
+    const bytes = [];
+    for await (const chunk of createReadStream(path)) bytes.push(chunk);
+    return Buffer.concat(bytes).toString();
+  })();
+  try {
+    const running = scope.start(process.execPath, ["-e", "process.stdout.write('phase-output')"]);
+    running.input.end();
+    await physical;
+    assert.equal(scope.children.size, 0, "the original child is already physically retired");
+    let completed = false;
+    const closing = scope.close();
+    const observed = closing.then(() => { completed = true; }, error => { completed = true; return error; });
+    assert.equal(scope.close(), closing, "cleanup retains the original terminal join");
+    // One scheduler turn lets all already-runnable close continuations finish.
+    // The original FIFO write remains blocked on the reader below.
+    await new Promise(setImmediate);
+    const completedBeforeDrain = completed;
+    assert.equal(await readOriginal(), "phase-output");
+    const failure = await observed;
+    assert.equal(completedBeforeDrain, false, "physical reap cannot certify the still-blocked transcript/final observation");
+    assert.ok(failure instanceof ProcessObservationFailed);
+    assert.equal(failure.phase, "closed");
+    assert.equal(failure.cause, cause);
+    await assert.rejects(running.closed, error => error === failure);
+    await assert.rejects(scope.close(), error => error === failure);
+  } finally {
+    await readOriginal();
+    await scope.close().catch(error => { assert.ok(error instanceof ProcessObservationFailed); });
+  }
 });
 
 // This is the actual native report producer from the compiled test target,

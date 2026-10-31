@@ -34,9 +34,11 @@ export class Processes {
   #onReport;
   #onProgress;
   #progressFailure;
+  #progressJoins;
   #admissions = new Set();
   constructor({ transcripts, onReport, onProgress } = {}) {
     this.#transcripts = transcripts; this.#onReport = onReport; this.#onProgress = onProgress;
+    if (onProgress) this.#progressJoins = new Set();
   }
   get transcripts() { return this.#transcripts ??= mkdtempSync(join(tmpdir(), "e2e-transcripts-")); }
   start(program, args, options = {}) {
@@ -143,6 +145,13 @@ export class Processes {
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
+    if (this.#progressJoins) {
+      // Retain only active original terminal joins. A child can be physically
+      // reaped while its transcript and final observer are still pending.
+      const joined = Promise.allSettled([written, reaped, closed]);
+      this.#progressJoins.add(joined);
+      joined.then(() => this.#progressJoins.delete(joined));
+    }
     this.children.set(child, { kill, reaped, report,
       cancel: process.platform === "win32" ? undefined : () => child.kill("SIGTERM") });
     return { child, input, exited, closed, reportReady: report?.ready,
@@ -231,6 +240,7 @@ export class Processes {
     } finally {
       for (const child of children) child.kill();
       await Promise.all(children.map(child => child.reaped));
+      if (this.#progressJoins) await Promise.all(this.#progressJoins);
     }
     if (observationError ?? this.#progressFailure) throw observationError ?? this.#progressFailure;
   }
