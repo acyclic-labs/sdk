@@ -46,7 +46,7 @@ impl ContextCheckpoint<'_> {
 }
 
 /// Complete conditional receipt authority for this exact pending source.
-/// Keep it while installing the already-prepared catalog/registry state.
+/// Keep prepared catalog/registry state invisible until confirmation succeeds.
 /// Dropping it leaves the original source pending for replay; it does not
 /// fabricate confirmation or withdraw an already committed publication.
 pub struct ContextPublicationReceipt<'a, 'io> {
@@ -66,8 +66,9 @@ impl ContextPublicationReceipt<'_, '_> {
             .changes())
     }
 
-    /// Confirms only this receipt's source after the caller installs its
-    /// prepared state. No caller-selected cursor, path or closure flag exists.
+    /// Confirms only this receipt's source. After success, the owner exposes its
+    /// already-prepared state without further fallible work. No caller-selected
+    /// cursor, path or closure flag exists.
     pub fn confirm(self) -> Result<()> {
         self.source.confirm_publication(self.cursor)?;
         self.checkpoint.cursor = self.cursor;
