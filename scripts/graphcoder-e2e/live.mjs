@@ -29,15 +29,13 @@ export function answer(result, format) {
   return line;
 }
 
-export function requireTools(hooks, names) {
-  const used = new Set(hooks.filter(hook => hook.hook_event_name === "PostToolUse").map(hook => hook.tool_name));
-  for (const name of names) assert.ok(used.has(name), `missing completed ${name} tool call`);
-}
-
-function requireChildResult(hooks, expected) {
-  let child;
+export function requireTools(hooks, names, expectedChildResult) {
+  const remaining = new Set(names);
+  let child, consumed = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
+    remaining.delete(hook.tool_name);
+    if (expectedChildResult === undefined) continue;
     if (hook.tool_name === "spawn" && typeof hook.tool_response?.agent === "string") {
       child = hook.tool_response.agent;
     } else if (hook.tool_name === "wait" && child && hook.tool_response?.settled?.length) {
@@ -47,11 +45,12 @@ function requireChildResult(hooks, expected) {
       const [settled] = hook.tool_response.settled;
       assert.equal(settled.agent, child, "settlement names a different child");
       assert.equal(settled.phase, "idle", "child did not settle successfully");
-      assert.equal(settled.answer, expected, "parent did not consume the child's exact result");
-      return;
+      assert.equal(settled.answer, expectedChildResult, "parent did not consume the child's exact result");
+      consumed = true;
     }
   }
-  assert.fail("missing completed public wait for the spawned child's result");
+  for (const name of remaining) assert.fail(`missing completed ${name} tool call`);
+  if (expectedChildResult !== undefined) assert.ok(consumed, "missing completed public wait for the spawned child's result");
 }
 
 async function runCase(binary, login, root, name) {
@@ -116,8 +115,7 @@ async function runCase(binary, login, root, name) {
           "Use wait with the exact canonical agent path from the preceding spawn result. Read that child's settled idle answer, then reply with exactly that answer, without additional text.");
         step = "assert child result read by parent";
         const recorded = childHooks = await hooks();
-        requireTools(recorded, ["spawn", "wait"]);
-        requireChildResult(recorded, marker);
+        requireTools(recorded, ["spawn", "wait"], marker);
       } else if (name === "resume") {
         const prompt = `Use the shell tool to append exactly one line ${marker} to once.txt, then reply with exactly ${marker}.`;
         const first = await invoke(prompt, "jsonl");
@@ -135,8 +133,7 @@ async function runCase(binary, login, root, name) {
         step = "assert child fork and merged parent bytes";
         assert.equal((await readFile(join(workspace, "child.txt"), "utf8")).trim(), marker);
         const recorded = childHooks = await hooks();
-        requireTools(recorded, ["spawn", "wait", "shell", "fs"]);
-        requireChildResult(recorded, marker);
+        requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker);
         assert.ok(recorded.some(hook => hook.hook_event_name === "PostToolUse" && hook.tool_name === "fs"
           && /\bmerge\s+['\"]?agents\//.test(hook.tool_input?.command ?? "")), "missing completed child merge");
       } else assert.fail(`unknown case ${name}`);
