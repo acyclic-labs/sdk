@@ -150,7 +150,9 @@ pub(crate) use extents::seek_record_extent_with_accounting;
 #[cfg(any(test, feature = "distributed"))]
 mod composition;
 #[cfg(any(test, feature = "distributed"))]
-pub use composition::{CreateSpec, ForkSpec};
+pub(crate) use composition::PreparedCheckoutPublication;
+#[cfg(any(test, feature = "distributed"))]
+pub use composition::{CreateSpec, ForkSpec, PublicationContribution};
 mod fork;
 mod fs;
 mod generation;

@@ -37,6 +37,7 @@ pub struct FilesystemCommit {
     authorities: Vec<AuthorityId>,
     contributions: Vec<Contribution>,
     holds: Vec<crate::PublicationHold>,
+    publications: Vec<crate::facade::PreparedCheckoutPublication>,
     /// Set once the request was fenced: retries resend these exact
     /// bytes and key, never a request re-fenced under a newer policy cut.
     sealed: bool,
@@ -83,6 +84,7 @@ impl FilesystemCommit {
             authorities: Vec::new(),
             contributions: Vec::new(),
             holds: Vec::new(),
+            publications: Vec::new(),
             sealed: false,
             owner: None,
             allocation: None,
@@ -144,7 +146,24 @@ impl FilesystemCommit {
         for hold in &mut self.holds {
             hold.created();
         }
+        for publication in &mut self.publications {
+            publication.recorded();
+        }
         RecordedCommit(self)
+    }
+
+    pub(crate) fn reserve_publication(
+        &mut self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        grow(&mut self.publications, 1, work)
+    }
+
+    pub(crate) fn hold_publication(
+        &mut self,
+        publication: crate::facade::PreparedCheckoutPublication,
+    ) {
+        self.publications.push(publication);
     }
 
     pub(super) fn reserve_hold(
@@ -293,6 +312,8 @@ impl FilesystemCommit {
             authorities: self.authorities.len(),
             contributions: self.contributions.len(),
             holds: self.holds.len(),
+            publications: self.publications.len(),
+            deadline: self.request.deadline_unix_millis,
             owner: self.owner,
         }
     }
@@ -305,6 +326,8 @@ impl FilesystemCommit {
         self.authorities.truncate(mark.authorities);
         self.contributions.truncate(mark.contributions);
         self.holds.truncate(mark.holds);
+        self.publications.truncate(mark.publications);
+        self.request.deadline_unix_millis = mark.deadline;
         self.owner = mark.owner;
     }
 }
@@ -318,6 +341,8 @@ struct CommitMark {
     authorities: usize,
     contributions: usize,
     holds: usize,
+    publications: usize,
+    deadline: Option<u64>,
 }
 
 /// Rolls a [`FilesystemCommit`] back to its mark on drop unless disarmed.
@@ -601,6 +626,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let FilesystemCommit {
             contributions,
             holds,
+            publications,
             allocation,
             ..
         } = commit.0;
@@ -613,6 +639,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             actor.complete_if_available(revision, projection.seal(commit_id));
         }
         drop(holds);
+        drop(publications);
         drop(allocation);
     }
 }

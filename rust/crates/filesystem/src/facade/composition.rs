@@ -2,6 +2,116 @@
 use super::*;
 use crate::distributed::{FilesystemCommit, FilesystemCommitOutcome, StreamAuthorityStore};
 
+/// Preparation adds a proposed generation or returns the original authority
+/// refusal. A proposal becomes visible only when the caller's commit succeeds.
+#[must_use]
+pub enum PublicationContribution {
+    /// The authenticated generation contributed to the caller's transaction.
+    Prepared(GenerationId),
+    /// Nothing was added, including on an already committed operation.
+    Rejected(crate::AppendGroupOutcome),
+}
+
+pub(crate) struct PreparedCheckoutPublication {
+    publication: crate::kernel::PublicationContributionCustody,
+    _read_fence: super::proof::PublicationFreeze,
+    // Last: borrowed store custody retires before the original lifecycle owner.
+    _owner: Arc<dyn acyclic_stream::ProviderPlatform>,
+}
+
+impl PreparedCheckoutPublication {
+    pub(crate) fn recorded(&mut self) {
+        self.publication.recorded();
+    }
+}
+
+impl<P, O> Checkout<StreamAuthorityStore<P>, O>
+where
+    P: crate::distributed::AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// Consumes an authored checkout into a caller's all-or-none commit.
+    ///
+    /// Uses the original publication preparation, including closure
+    /// authentication, object durability and policy/projection fences. The
+    /// original dependency freeze and every proof/collection hold stay in
+    /// `commit`, including when submission returns Unknown. Preparation submits
+    /// nothing. On refusal or a dropped future, the caller's entries remain
+    /// unchanged. The consumed checkout needs no post-publication root install.
+    pub async fn contribute_publication<W: FsWork>(
+        self,
+        operation_id: OperationId,
+        mut intent: PublicationIntent,
+        commit: &mut FilesystemCommit,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<PublicationContribution, FsError> {
+        let mut accounting = work.accounting(cancellation);
+        let mut guard = commit.guard();
+        let result = async {
+            cancellation.check()?;
+            accounting.check()?;
+            if self.mode.access != AccessMode::ReadWrite
+                || self.mode.mutations != MutationMode::PrivateOverlay
+            {
+                return Err(FsError::MutationNotAllowed);
+            }
+            let expected = self
+                .authority_head
+                .ok_or(FsError::WritableCheckoutRequiresHead)?;
+            let (read_fence, preconditions) = self.publication_dependencies()?;
+            intent.preconditions = preconditions;
+            let root = self
+                .checkpoint_root_with_accounting(&mut accounting, cancellation)
+                .await?;
+            let prepared = crate::kernel::prepare_generation_contribution(
+                &self.volume.fs,
+                self.publication_request(operation_id, expected, root),
+                intent,
+                closure_limits(self.volume.config),
+                Some(&self.volume.fs.inner.publication_proof.inner),
+                &mut accounting,
+                cancellation,
+            )
+            .await?;
+            let generation = prepared.generation();
+            let mut authority = authority_work(&accounting, cancellation)?;
+            let contributed = async {
+                guard.commit().reserve_publication(&mut authority)?;
+                self.volume
+                    .fs
+                    .inner
+                    .authority
+                    .contribute_append_group(
+                        guard.commit(),
+                        std::slice::from_ref(prepared.append()),
+                        &[],
+                        &mut authority,
+                    )
+                    .await
+            }
+            .await;
+            record_authority_work(&mut accounting, &authority)?;
+            if let Some(refused) = contributed? {
+                return Ok(PublicationContribution::Rejected(refused));
+            }
+            guard
+                .commit()
+                .hold_publication(PreparedCheckoutPublication {
+                    publication: prepared,
+                    _read_fence: read_fence,
+                    _owner: self.volume.fs.inner.clone(),
+                });
+            Ok(PublicationContribution::Prepared(generation))
+        }
+        .await;
+        if matches!(result, Ok(PublicationContribution::Prepared(_))) {
+            guard.disarm();
+        }
+        work.finish(result, &accounting)
+    }
+}
+
 /// One workspace fork in a composed commit.
 pub struct ForkSpec<'g, A: 'static, O: 'static> {
     /// The new workspace's name; its identity derives from this name.

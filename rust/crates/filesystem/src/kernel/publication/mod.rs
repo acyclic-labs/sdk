@@ -235,6 +235,8 @@ use construction::*;
 mod authenticate;
 mod engine;
 mod preparation;
+#[cfg(any(test, feature = "distributed"))]
+pub(crate) use preparation::{PublicationContributionCustody, prepare_generation_contribution};
 mod projection;
 use engine::*;
 mod api;

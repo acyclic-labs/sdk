@@ -56,6 +56,8 @@ mod persistent_point;
 pub use persistent_point::Owned;
 mod probe;
 mod publication;
+#[cfg(any(test, feature = "distributed"))]
+pub(crate) use publication::{PublicationContributionCustody, prepare_generation_contribution};
 mod publication_evidence;
 mod range;
 mod read;

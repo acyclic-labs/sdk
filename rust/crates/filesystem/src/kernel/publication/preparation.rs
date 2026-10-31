@@ -27,6 +27,61 @@ pub(super) struct PreparedGeneration {
     pub(super) publication_hold: crate::PublicationHold,
 }
 
+/// The original authenticated generation, before its caller's commit settles.
+/// Keeping this together preserves proof funding, projection exclusion and
+/// collection admission through an uncertain composed submission.
+#[cfg(any(test, feature = "distributed"))]
+pub(crate) struct PublicationContributionCustody(PreparedGeneration);
+
+#[cfg(any(test, feature = "distributed"))]
+impl PublicationContributionCustody {
+    pub(crate) fn append(&self) -> &GuardedAppend {
+        &self.0.append
+    }
+
+    pub(crate) fn generation(&self) -> crate::GenerationId {
+        self.0.authentication.proof.generation_id
+    }
+
+    pub(crate) fn recorded(&mut self) {
+        if let Some(pending) = self.0.authentication.pending.take() {
+            pending.created();
+        }
+    }
+}
+
+#[cfg(any(test, feature = "distributed"))]
+pub(crate) async fn prepare_generation_contribution<P: PublicationOwner>(
+    owner: &P,
+    request: PublishGenerationRequest,
+    mut intent: PublicationIntent,
+    limits: ClosureLimits,
+    cache: Option<&Mutex<CachedProofs>>,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<PublicationContributionCustody, crate::FsError> {
+    // The caller's transaction owns the exact authority cut. It cannot join
+    // an independently submitted publication group or rebase its companions.
+    if let Some(preconditions) = intent.preconditions.as_mut() {
+        preconditions.rebase = false;
+    }
+    match (Preparation {
+        owner,
+        request,
+        intent,
+        limits,
+        cache,
+        cancellation,
+        resolved: None,
+    })
+    .prepare(accounting, &mut |_, _, _| Ok::<_, crate::FsError>(()))
+    .await?
+    {
+        Prepared::Ready(prepared) => Ok(PublicationContributionCustody(prepared)),
+        Prepared::Complete(_) => Err(crate::FsError::InvalidAuthorityHistory),
+    }
+}
+
 struct Unflushed {
     candidate: combiner::Candidate,
     authentication: authenticate::Authenticated,

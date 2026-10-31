@@ -628,6 +628,7 @@ mod paths;
 mod profiles;
 mod protocol_helpers;
 mod publication;
+mod publication_composition;
 mod read;
 mod selection;
 mod special;
