@@ -12,8 +12,8 @@ impl LocalHarness {
     /// `None` when it selects neither a command nor a skill name.
     ///
     /// # Errors
-    /// A name both a command and a skill define, or that two prompt
-    /// directories define, is a conflict; an unknown name is not found.
+    /// A name both a command and a skill define, or that multiple commands
+    /// or skills define, is a conflict; an unknown name is not found.
     pub(in crate::local) async fn resolve_prompt_command(
         &self,
         text: &str,
@@ -29,11 +29,15 @@ impl LocalHarness {
         if commands.next().is_some() {
             return Err(Error::Conflict(format!("duplicate command: {name}")));
         }
-        let skill = self
+        let mut skills = self
             .skills_with_work(None, &mut crate::context::DiscoveryWork::default())
             .await?
             .into_iter()
-            .find(|skill| skill.name.eq_ignore_ascii_case(&name));
+            .filter(|skill| skill.name.eq_ignore_ascii_case(&name));
+        let skill = skills.next();
+        if skills.next().is_some() {
+            return Err(Error::Conflict(format!("ambiguous skill: {name}")));
+        }
         let body = match (command, skill) {
             (Some(_), Some(_)) => {
                 return Err(Error::Conflict(format!("skill/command collision: {name}")));

@@ -43,19 +43,35 @@ fn definition(name: String, description: String) -> ToolDefinition {
 // Property: canonical encoding is idempotent, preserves array order and round-trips
 // arbitrary descriptions; byte admission rejects before accepting an oversized manifest.
 proptest! {
-    // Property: order never changes uniqueness or membership; duplicate source
-    // metadata, selected invocations and tool names are all rejected.
+    // Property: display names do not identify sources; explicit name-only
+    // invocations must be unambiguous, and tool names remain unique.
     #[test]
-    fn catalog_uniqueness_is_independent_of_order(names in prop::collection::vec("[a-z]{1,8}", 0..16)) {
+    fn source_names_and_invocations_have_distinct_identity_rules(names in prop::collection::vec("[a-z]{1,8}", 0..16)) {
         let unique = names.iter().collect::<std::collections::BTreeSet<_>>().len() == names.len();
         let mut skills = Vec::new();
-        for name in &names {
-            let mut skill = skill("skills/x/SKILL.md".into())?;
+        for (index, name) in names.iter().enumerate() {
+            let mut skill = skill(format!("skills/x{index}/SKILL.md"))?;
             skill.name = name.clone();
             skills.push(skill);
         }
         let discovery = DiscoveredContext { instructions: Vec::new(), skills };
-        prop_assert_eq!(discovery.validate(&mut None).is_ok(), unique);
+        prop_assert!(discovery.validate(&mut None).is_ok());
+        let mut selected = names.clone();
+        selected.sort_unstable();
+        selected.dedup();
+        let manifest = ContextManifest { discovery: discovery.clone(), selected_skills: selected, ..Default::default() };
+        prop_assert_eq!(manifest.validate(Limits::default()).is_ok(), unique);
+        if let Some(first) = discovery.skills.first() {
+            let mut other = first.clone();
+            other.source.path = "skills/other/SKILL.md".into();
+            let manifest = ContextManifest {
+                discovery: DiscoveredContext { instructions: Vec::new(), skills: vec![first.clone(), other] },
+                selected_skills: vec![first.name.clone(), "missing-selection".into()],
+                ..Default::default()
+            };
+            prop_assert!(matches!(manifest.validate(Limits::default()), Err(Error::Conflict(_))),
+                         "duplicate matches cannot conceal a missing selected skill");
+        }
         let manifest = ContextManifest {
             tools: names.iter().map(|name| definition(name.clone(), "test".into())).collect(),
             ..Default::default()

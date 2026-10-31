@@ -13,9 +13,9 @@ pub(super) fn project(
     authorization: &acyclic_stream::session::ResourceAuthorization,
 ) -> Result<FollowUpdate, StreamError> {
     let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
+    let context = crate::PublicationContext::from_bytes(&changes.context)?;
     if !acyclic_stream::is_changes(&record.headers)
-        || changes.context.len() != 56
-        || changes.context.get(..16) != Some(volume.into_bytes().as_slice())
+        || context.volume != volume
         || changes.entries.len() != record.headers.keys().len()
         || changes
             .entries
@@ -229,11 +229,14 @@ mod tests {
         });
         let authorization =
             acyclic_stream::session::testing::resource_authorization(&encoded, &name).unwrap();
-        let mut context = volume.into_bytes().to_vec();
-        context.extend_from_slice(&[8; 32]);
-        context.extend_from_slice(&1u64.to_le_bytes());
+        let context = crate::PublicationContext {
+            volume,
+            generation: crate::GenerationId::new(crate::Digest::from_bytes([8; 32])),
+            authority_sequence: crate::Sequence::new(1),
+        }
+        .encode();
         let appended =
-            AppendRecord::changes(&context, std::slice::from_ref(&entry), vec![]).unwrap();
+            AppendRecord::changes(context.as_ref(), std::slice::from_ref(&entry), vec![]).unwrap();
         let record = Record {
             sequence: 3,
             value: appended.value,
@@ -266,11 +269,26 @@ mod tests {
             &capability,
         )
         .unwrap();
-        // The same record and credential are disclosed once the exact owner deny is removed.
         assert!(matches!(
-            project(record, volume, config, &allowing, &authorization).unwrap(),
-            FollowUpdate::Record(_)
+            project(
+                record.clone(),
+                VolumeId::from_bytes([14; 16]),
+                config,
+                &allowing,
+                &authorization,
+            ),
+            Err(StreamError::InvalidArgument)
         ));
+        // The same record and credential are disclosed once the exact owner deny is removed.
+        let projected = project(record.clone(), volume, config, &allowing, &authorization).unwrap();
+        let FollowUpdate::Record(projected) = projected else {
+            panic!("authorized changes remain a record");
+        };
+        assert_eq!(projected.origin, record.origin);
+        assert_eq!(projected.sequence, record.sequence);
+        assert_eq!(projected.commit_id, record.commit_id);
+        let changes = acyclic_stream::decode_changes(projected.value.as_ref()).unwrap();
+        assert_eq!(changes.context.as_ref(), context.as_ref());
         for cut in [0, 1, entry.metadata.len() - 1] {
             let mut malformed = entry.clone();
             malformed.metadata = malformed.metadata.slice(..cut);

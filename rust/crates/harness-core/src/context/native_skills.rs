@@ -27,7 +27,7 @@ type View = acyclic_fs::LazyWorkspace<
     acyclic_fs::LocalCoreStateStore,
 >;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Source {
     volume: VolumeRef,
     root: PathBuf,
@@ -58,6 +58,7 @@ type UserCatalog = Option<SkillCatalog>;
 
 type Catalog = Option<(acyclic_fs::LazySnapshotId, SkillCatalog)>;
 
+#[derive(Clone)]
 struct SkillWorkspace {
     filesystem: acyclic_fs::LocalFs,
     store: acyclic_fs::LocalCoreStateStore,
@@ -73,10 +74,36 @@ pub struct NativeSkills {
     user_roots: Vec<PathBuf>,
     cache: crate::sync::owned::Arc<crate::sync::owned::Mutex<Catalog>>,
     users: crate::sync::owned::Arc<crate::sync::owned::Mutex<UserCatalog>>,
+    user_sources: crate::sync::owned::Arc<crate::sync::owned::Mutex<UserCatalog>>,
+    #[cfg(test)]
+    user_pages: Arc<std::sync::atomic::AtomicUsize>,
     records: retained::RecordCache,
 }
 
 impl NativeSkills {
+    /// Binds the existing host sources to another executing owner's journal.
+    ///
+    /// This does not grant access or copy owner-bound metadata: retained pins
+    /// embed their journal owner, so those caches start empty. Configured user
+    /// source discovery stays shared and its pins are rebound before use.
+    /// Call `catalog` with that owner's bound view to retain its exact lazy cut.
+    /// Retained source storage and decoded records remain shared without I/O.
+    pub fn for_volume(&self, journal: VolumeRef) -> Arc<Self> {
+        Arc::new(Self {
+            directory: self.directory.clone(),
+            journal,
+            workspace: self.workspace.clone(),
+            materializer: super::skill_materializer::SkillMaterializer::new(),
+            user_roots: self.user_roots.clone(),
+            cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
+            users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
+            user_sources: self.user_sources.clone(),
+            #[cfg(test)]
+            user_pages: Arc::clone(&self.user_pages),
+            records: self.records.clone(),
+        })
+    }
+
     pub(crate) fn retain_sources_from(&mut self, previous: &Self) {
         self.directory = previous.directory.clone();
         self.materializer = previous.materializer.clone();
@@ -167,6 +194,9 @@ impl NativeSkills {
             user_roots,
             cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
+            user_sources: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
+            #[cfg(test)]
+            user_pages: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             records: retained::RecordCache::default(),
         }))
     }
@@ -433,6 +463,58 @@ impl NativeSkills {
             {
                 return Ok(skills);
             }
+            let mut skills = self.source_user_catalog(bounds)?.await?;
+            let mut records = RetainedBatch::default();
+            for skill in &mut skills {
+                if skill.source.root.volume == self.journal {
+                    continue;
+                }
+                let retained = self
+                    .records
+                    .read(
+                        self.directory.clone(),
+                        hex::encode(skill.source.generation.as_resource().key()),
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        Error::NotFound("retained user skill source is absent".into())
+                    })?;
+                let RetainedSource::Native(source) = retained.as_ref() else {
+                    return Err(Error::Invalid(
+                        "configured user skill source is not native".into(),
+                    ));
+                };
+                if source.volume != skill.source.root.volume {
+                    return Err(Error::Conflict("retained user skill owner changed".into()));
+                }
+                let mut source = source.as_ref().clone();
+                source.volume = self.journal.clone();
+                skill.source =
+                    records.retain(&self.journal, RetainedSource::Native(Box::new(source)))?;
+            }
+            let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
+            records.publish(self.directory.clone()).await?;
+            *cached = Some(catalog);
+            Ok(skills)
+        })
+    }
+
+    // This cache belongs to the configured source set, not an executing owner.
+    // Its pins remain internal: user_catalog re-owns them before returning.
+    #[inline(never)]
+    fn source_user_catalog<'a>(
+        &'a self,
+        bounds: &'a mut DiscoveryWork,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            bounds.limits.validate()?;
+            let before = *bounds;
+            let mut cached = crate::sync::owned::lock_owned(self.user_sources.clone()).await;
+            if let Some(catalog) = &*cached
+                && let Some(skills) = catalog.reuse(bounds)?
+            {
+                return Ok(skills);
+            }
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = native_work(&cancellation)?;
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
@@ -507,7 +589,7 @@ impl SkillReader for ProjectCatalog<'_> {
         relative: &'a str,
         cut: &'a Self::Revision,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>> {
+    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
         Box::pin(async move {
             let path = format!("/{relative}");
             let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
@@ -563,7 +645,7 @@ impl SkillReader for ProjectCatalog<'_> {
                     &mut accounting,
                 )
                 .await?;
-            Ok((prefix.bytes.to_vec(), pinned))
+            Ok((prefix.bytes, pinned))
         })
     }
 }
@@ -600,6 +682,10 @@ impl DiscoverySource for UserCatalogSource<'_> {
                 &mut accounting,
                 cancellation,
             )?;
+            #[cfg(test)]
+            self.sources
+                .user_pages
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut page = self
                 .source
                 .list_page(reference, &path, cursor, maximum, self.work, cancellation)
@@ -636,7 +722,7 @@ impl SkillReader for UserCatalogSource<'_> {
         path: &'a str,
         reference: &'a SourceReference,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>> {
+    ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
         Box::pin(async move {
             let cancellation = self.work.cancellation();
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
@@ -680,13 +766,153 @@ impl SkillReader for UserCatalogSource<'_> {
             let pinned = self
                 .sources
                 .retain(self.records, self.source, self.root, &path, node)?;
-            Ok((prefix.bytes.to_vec(), pinned))
+            Ok((prefix.bytes, pinned))
         })
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    use crate::{
+        Capabilities,
+        conversation::{ContentAccess, ContentGrant, VolumeClass, VolumeOperation, VolumeOwner},
+        core::{AggregateKind, Authority, AuthorityRoot},
+        filesystem::{FilesystemHost, PreparationIo},
+        resources::ProviderRef,
+    };
+
+    #[tokio::test]
+    async fn child_skill_binding_reads_own_sources_and_rejects_parent_private_sources() -> Result<()>
+    {
+        acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+        acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
+        let home = tempfile::tempdir().map_err(storage)?;
+        let skill = home.path().join("skills/example");
+        std::fs::create_dir_all(&skill).map_err(storage)?;
+        let body = b"---\nname: example\ndescription: Example skill\n---\nretained body";
+        std::fs::write(skill.join("SKILL.md"), body).map_err(storage)?;
+        let provider =
+            ProviderRef::new("binding".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let volume = |id| {
+            VolumeRef::new(
+                provider.clone(),
+                "private".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes([id; 16])),
+                &mut None,
+            )
+        };
+        let parent = volume(1)?;
+        let child = volume(2)?;
+        let sources = NativeSkills::new(
+            home.path().join("retained"),
+            parent.clone(),
+            None,
+            vec![home.path().join("skills")],
+        )?;
+        let bound = sources.for_volume(child.clone());
+        let mut parent_work = DiscoveryWork::default();
+        let parent_skills = sources.user_catalog(&mut parent_work)?.await?;
+        let pages = sources.user_pages.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            pages > 0,
+            "the first catalog must exercise native discovery"
+        );
+        let mut child_work = DiscoveryWork::default();
+        let child_skills = bound.user_catalog(&mut child_work)?.await?;
+        assert_eq!(
+            sources.user_pages.load(std::sync::atomic::Ordering::SeqCst),
+            pages,
+            "the first child catalog must reuse configured source discovery",
+        );
+        assert_eq!(child_work.entries, parent_work.entries);
+        assert_eq!(child_work.directories, parent_work.directories);
+        sources.user_catalog(&mut DiscoveryWork::default())?.await?;
+        assert_eq!(
+            sources.user_pages.load(std::sync::atomic::Ordering::SeqCst),
+            pages,
+            "returning to the parent must also reuse discovery",
+        );
+        let parent_source = &parent_skills[0].source;
+        let child_source = &child_skills[0].source;
+        let mut host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+        host.create_volume(&parent).await?;
+        host.create_volume(&child).await?;
+        host = host
+            .with_native_skills(sources)?
+            .with_native_skills(bound)?;
+        let issuer = AuthorityRoot::new(
+            "binding",
+            [21; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "binding".into(),
+            },
+        );
+        let scope = issuer.bootstrap_scope(
+            "child",
+            &Capabilities::new([child.capability(VolumeOperation::Read, &mut None)?]),
+            Some(crate::AgentId::from_bytes([2; 16])),
+            &mut None,
+        )?;
+        let grant = ContentGrant::verify_directory_read(
+            &issuer.verifier(&mut None)?,
+            &scope,
+            &child,
+            "inputs/skills",
+            &mut None,
+        )?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = native_work(&cancellation)?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let access = ContentAccess {
+            ceiling: None,
+            io: Some(&io),
+        };
+        // Negative controls use the actual child grant: neither the original
+        // parent reference nor relabeling its outer volume can read the body.
+        assert!(matches!(
+            host.read_private_path(
+                &parent,
+                &grant,
+                &parent_source.path,
+                Some(&parent_source.generation),
+                4096,
+                ContentAccess::default(),
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            host.read_private_path(
+                &child,
+                &grant,
+                &parent_source.path,
+                Some(&parent_source.generation),
+                4096,
+                access,
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let (_, bytes) = host
+            .read_private_path(
+                &child,
+                &grant,
+                &child_source.path,
+                Some(&child_source.generation),
+                4096,
+                access,
+            )
+            .await?;
+        assert_eq!(bytes.as_ref(), body);
+        Ok(())
+    }
+}
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())

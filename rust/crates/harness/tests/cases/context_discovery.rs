@@ -27,9 +27,39 @@ use std::sync::{
 struct CountingReader<'a> {
     inner: &'a dyn ContentResidencyVerifier,
     reads: AtomicUsize,
+    prefix: std::sync::Mutex<Option<acyclic_stream::OwnedBytes>>,
 }
 
 impl ContentResidencyVerifier for CountingReader<'_> {
+    fn read_private_prefix<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        generation: &'a acyclic_harness::resources::GenerationRef,
+        maximum_bytes: u64,
+        access: acyclic_harness::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+    {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let read = self.inner.read_private_prefix(
+            volume,
+            granted_prefix,
+            path,
+            generation,
+            maximum_bytes,
+            access,
+        )?;
+        acyclic_harness::conversation::BoundedContentFuture::new(None, || async move {
+            let bytes = read.await?;
+            *self
+                .prefix
+                .lock()
+                .map_err(|error| Error::Storage(error.to_string()))? = Some(bytes.clone());
+            Ok(bytes)
+        })
+    }
+
     fn read<'a>(
         &'a self,
         reference: &'a acyclic_harness::conversation::FileRef,
@@ -74,6 +104,94 @@ impl ContentResidencyVerifier for CountingReader<'_> {
             acyclic_harness::conversation::ContentAccess { ceiling, io },
         )
     }
+}
+
+#[tokio::test]
+async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let path = "skills/inspect/SKILL.md";
+    let original = b"---\nname: inspect\ndescription: Original description\n---\noriginal body";
+    fixture.put(path, original, "initial-skill").await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let original_skill = first_skill(&captured)?;
+    let root = &original_skill.source.root;
+    let reader = CountingReader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+        prefix: std::sync::Mutex::new(None),
+    };
+    for unrelated in [
+        "plans/current.md",
+        "skills/inspect/notes.md",
+        "skills/inspect/nested/SKILL.md",
+        "skills-extra/inspect/SKILL.md",
+        "skills/SKILL.md",
+    ] {
+        assert!(
+            root.skill_metadata_at(
+                &reader,
+                unrelated,
+                &original_skill.source.generation,
+                "SKILL.md",
+                declaration.limits,
+            )
+            .await?
+            .is_none()
+        );
+    }
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 0);
+    let workspace = acyclic_harness::filesystem::workspace_ref(
+        fixture.volume.provider().clone(),
+        &fixture.volume.storage_name(&mut None)?,
+    )?;
+    let mut replacement = b"---\nname: inspect\ndescription: Revised description\n---\n".to_vec();
+    replacement.resize(100_000, b'x');
+    fixture.put(path, &replacement, "revised-skill").await?;
+    let generation = fixture.host.resolve(&workspace, None).await?.generation;
+    // This reader deliberately has no directory-list implementation. A rescan
+    // or complete body read cannot satisfy the changed-path operation.
+    let revised = root
+        .skill_metadata_at(&reader, path, &generation, "SKILL.md", declaration.limits)
+        .await?
+        .ok_or_else(|| Error::NotFound("changed skill metadata".into()))?;
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(revised.description, "Revised description");
+    assert_eq!(revised.source.generation, generation);
+    assert_eq!(original_skill.description, "Original description");
+    let (_, body) = original_skill.source.read(&reader, 256).await?;
+    assert_eq!(body.as_ref(), original);
+
+    fixture
+        .put(path, b"malformed replacement", "malformed-skill")
+        .await?;
+    let malformed = fixture.host.resolve(&workspace, None).await?.generation;
+    assert!(
+        root.skill_metadata_at(&reader, path, &malformed, "SKILL.md", declaration.limits)
+            .await
+            .is_err()
+    );
+    assert_eq!(revised.description, "Revised description");
+    assert_eq!(revised.source.generation, generation);
+
+    // Inspect the real provider's retained allocation at the shared adapter
+    // boundary. Equal contents alone would miss a copied prefix and its owner.
+    use acyclic_harness::context::SkillReader;
+    let (prefix, pinned) = acyclic_harness::context::VolumeDiscovery {
+        reader: &reader,
+        root,
+    }
+    .skill_prefix(path, &generation, declaration.limits.header_bytes)
+    .await?;
+    let retained = reader.prefix.lock().unwrap();
+    let retained = retained.as_ref().expect("real prefix read completed");
+    assert_eq!(prefix.as_ptr(), retained.as_ptr());
+    assert_eq!(pinned, revised.source);
+    let copied = prefix.to_vec();
+    assert_eq!(copied.as_slice(), prefix.as_ref());
+    assert_ne!(copied.as_ptr(), retained.as_ptr(), "copy negative control");
+    Ok(())
 }
 
 #[path = "../context_discovery_cases/manifest.rs"]
@@ -328,6 +446,7 @@ async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<
     let reader = CountingReader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        prefix: std::sync::Mutex::new(None),
     };
     let message = skill.invoke(&reader, 512).await?;
     let ModelContent::Text(text) = message.content else {
@@ -473,10 +592,11 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         )
         .await?;
     let mut declaration = fixture.declaration();
-    assert!(matches!(
-        declaration.capture(fixture.reader.as_ref()).await,
-        Err(Error::Conflict(message)) if message == "discovered skill names are repeated"
-    ));
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    assert_eq!(captured.skills.len(), 2);
+    assert!(captured.skills.iter().all(|skill| skill.name == "same"));
+    assert_eq!(captured.skills[0].source.path, "skills/a/SKILL.md");
+    assert_eq!(captured.skills[1].source.path, "skills/b/SKILL.md");
     declaration.policy.skill_name = None;
     declaration.limits.entries = 1;
     assert!(matches!(

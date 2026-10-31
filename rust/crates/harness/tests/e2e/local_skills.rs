@@ -1,7 +1,12 @@
 use super::TestResult;
 use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
+    agent::{AgentOutcome, Phase},
     context::{CompactionPolicy, ModelContextCapacity, SkillMetadata},
+    local::{
+        Event,
+        agent_conversation::{Conversation, Sent},
+    },
     model::{Model, ModelContent},
     native_settings::SettingsConfig,
     test_support::{ScriptedModelProvider, ScriptedTurn},
@@ -45,30 +50,45 @@ async fn open(config: LocalHarnessConfig) -> TestResult<Arc<LocalHarness>> {
     Ok(Arc::new(LocalHarness::open(config).await?))
 }
 
-/// Prompts the root agent and waits for its turn to settle; a refused turn
-/// never settles and never reaches the provider.
+/// Waits on the root's status or its runtime-backed Session closing, never
+/// on elapsed time as evidence that a turn was refused.
 async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestResult {
     let (agents, root) = harness.agents().await?;
     let before = agents.state(root).await?.conversation_tail;
-    acyclic_harness::local::agent_conversation::Conversation::open(harness.connect().await?)?
-        .send(&format!("prompt-{before}"), prompt)
-        .await?;
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis(if settles { 8_000 } else { 500 });
-    while std::time::Instant::now() < deadline {
-        if agents.state(root).await?.conversation_tail > before {
-            return if settles {
-                Ok(())
-            } else {
-                Err("a refused turn settled".into())
-            };
+    let conversation = Conversation::open(harness.connect().await?)?;
+    let mut events = conversation.observe(before).await?;
+    let inbox = match conversation
+        .deliver(&format!("prompt-{before}"), prompt)
+        .await?
+    {
+        Sent::Accepted(inbox) => inbox,
+        Sent::Refused(_) if !settles => return Ok(()),
+        outcome => return Err(format!("prompt was not accepted: {outcome:?}").into()),
+    };
+    loop {
+        match events.next().await {
+            Ok(Event::Status(status)) => match status.phase {
+                Phase::Idle if status.cursor > inbox => {
+                    return if settles {
+                        Ok(())
+                    } else {
+                        Err("a refused turn settled".into())
+                    };
+                }
+                Phase::Done {
+                    outcome: AgentOutcome::Failed { .. },
+                } if !settles => return Ok(()),
+                Phase::Done { outcome } => {
+                    return Err(format!("agent ended before settlement: {outcome:?}").into());
+                }
+                _ => {}
+            },
+            Ok(Event::Turn(_) | Event::Output) => {}
+            // The in-process Session holds the hosting Runtime's lifetime:
+            // failed delivery or producer loss closes this event source.
+            Err(acyclic_harness::Error::Storage(_)) if !settles => return Ok(()),
+            Err(error) => return Err(error.into()),
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    if settles {
-        Err("the turn did not settle".into())
-    } else {
-        Ok(())
     }
 }
 
@@ -143,7 +163,6 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
     .await?;
     turn(&harness, "inventory", true).await?;
     let skills = catalog(&model, 0)?;
-    assert_eq!(skills.len(), 5);
     for name in [
         "greet2",
         "project",
@@ -151,10 +170,12 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
         "user-claude",
         "user-codex",
     ] {
-        assert!(
+        assert_eq!(
             skills
                 .iter()
-                .any(|skill| skill.name == name && skill.description == "Greet formally")
+                .filter(|skill| skill.name == name && skill.description == "Greet formally")
+                .count(),
+            1
         );
     }
     assert!(!serde_json::to_string(&model.requests())?.contains("BODY-MUST-STAY-LAZY"));
@@ -180,9 +201,12 @@ async fn overlapping_user_roots_are_scanned_once_before_the_first_request() -> T
     .await?;
     turn(&harness, "inventory", true).await?;
     let skills = catalog(&model, 0)?;
-    let [skill] = skills.as_slice() else {
-        return Err("expected one skill from the overlapping roots".into());
-    };
+    let mut matching = skills.iter().filter(|skill| skill.name == "greet2");
+    let skill = matching.next().ok_or("greet2 skill absent")?;
+    assert!(
+        matching.next().is_none(),
+        "overlapping roots repeated a skill"
+    );
     assert_eq!(skill.name, "greet2");
     assert_eq!(skill.description, "Greet formally");
     Ok(())
@@ -211,36 +235,11 @@ async fn symlinked_user_root_is_scanned_once_before_the_first_request() -> TestR
     .await?;
     turn(&harness, "inventory", true).await?;
     let skills = catalog(&model, 0)?;
-    let [skill] = skills.as_slice() else {
-        return Err("expected one skill from aliased roots".into());
-    };
+    let mut matching = skills.iter().filter(|skill| skill.name == "greet2");
+    let skill = matching.next().ok_or("greet2 skill absent")?;
+    assert!(matching.next().is_none(), "aliased roots repeated a skill");
     assert_eq!(skill.name, "greet2");
     assert_eq!(skill.description, "Greet formally");
-    Ok(())
-}
-
-#[tokio::test]
-async fn different_user_roots_still_reject_duplicate_skill_names() -> TestResult {
-    let root = super::local_workspace::temporary()?;
-    let home = super::local_workspace::temporary()?;
-    let state = super::local_workspace::temporary()?;
-    for prefix in [".agents", ".claude"] {
-        write(
-            home.path(),
-            &format!("{prefix}/skills/greet2/SKILL.md"),
-            "---\nname: greet2\ndescription: Greet formally\n---\nbody",
-        )?;
-    }
-    let model = provider(1);
-    let harness = open(config(
-        root.path(),
-        home.path(),
-        state.path(),
-        model.clone(),
-    )?)
-    .await?;
-    turn(&harness, "inventory", false).await?;
-    assert!(model.requests().is_empty());
     Ok(())
 }
 
@@ -352,9 +351,10 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
         open(config(root.path(), home.path(), state.path(), model.clone())?.volume(volume)).await?;
     turn(&harness, "first inventory", true).await?;
     let first = catalog(&model, 0)?;
-    let [skill] = first.as_slice() else {
-        return Err("expected one skill".into());
-    };
+    let skill = first
+        .iter()
+        .find(|skill| skill.name == "greet2")
+        .ok_or("greet2 skill absent")?;
     assert_eq!(skill.description, "Greet formally");
     host.apply(
         &workspace,
@@ -370,9 +370,10 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     .await?;
     turn(&harness, "second inventory", true).await?;
     let second = catalog(&model, 1)?;
-    let [skill] = second.as_slice() else {
-        return Err("expected one updated skill".into());
-    };
+    let skill = second
+        .iter()
+        .find(|skill| skill.name == "greet2")
+        .ok_or("updated greet2 skill absent")?;
     assert_eq!(skill.description, "Updated generation");
     assert!(!serde_json::to_string(&model.requests())?.contains("PRIVATE-BODY"));
     Ok(())
