@@ -48,11 +48,12 @@ test('Linux host qualification uses the smallest registered runner and retains e
    assert.equal(step['working-directory'],undefined,name+': working directory');
    const actual=step.run.replace(/\\\r?\n/g,' ').replace(/\s+/g,' ').trim();
    if(Array.isArray(command)){
+    const lines=step.run.replace(/\\\r?\n/g,' ').split(/\r?\n/).map(line=>line.trim().replace(/\s+/g,' '));
     let after=0;
     for(const required of command){
-     const at=actual.indexOf(required,after);
+     const at=lines.findIndex((line,index)=>index>=after&&(line===required||line.startsWith(required+' ')));
      assert.ok(at>=after,name+': command '+required);
-     after=at+required.length;
+     after=at+1;
     }
    }else assert.equal(actual,command,name+': command');
   }
