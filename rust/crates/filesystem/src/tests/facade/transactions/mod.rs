@@ -154,6 +154,72 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
     Ok(())
 }
 
+/// Under one bound operation a name renamed away is created again, step by
+/// step as the native mount applies it and within one batch, and an identical
+/// replay from the same base derives identical identities.
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn bound_operation_recreates_a_renamed_away_name_with_replayable_ids() -> TestResult {
+    let cancel = CancellationToken::new();
+    let (_, checkout) = fixture(config(), &cancel).await?;
+    let operation = OperationId::new();
+    let lock = AuthoredMutation::CreateFile {
+        path: path("lock")?,
+        bytes: OwnedBytes::from_static(b"lock"),
+        metadata: FileMetadata::default(),
+    };
+    let rename = AuthoredMutation::Rename {
+        source: path("lock")?,
+        destination: path("index")?,
+        replace: false,
+    };
+    let steps = [lock.clone(), rename, lock];
+    for batched in [false, true] {
+        let mut replays = Vec::new();
+        for _replay in 0..2 {
+            let mut candidate = checkout.private_candidate(
+                &mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel),
+                &cancel,
+            )?;
+            candidate.bind_authored_operation(operation);
+            let mut created = Vec::new();
+            if batched {
+                created = candidate
+                    .apply_authored_transaction(steps.to_vec(), B, &cancel)
+                    .await?
+                    .value
+                    .created_file_ids;
+            } else {
+                for step in &steps {
+                    created.extend(
+                        candidate
+                            .apply_authored_transaction(vec![step.clone()], B, &cancel)
+                            .await?
+                            .value
+                            .created_file_ids,
+                    );
+                }
+            }
+            let [Some(renamed), None, Some(recreated)] = created[..] else {
+                return Err(format!("unexpected creations {created:?}").into());
+            };
+            assert_ne!(renamed, recreated);
+            for (name, id) in [("index", renamed), ("lock", recreated)] {
+                let record = candidate
+                    .lookup_no_follow(&path(name)?, B, &cancel)
+                    .await?
+                    .value
+                    .record
+                    .ok_or(name)?;
+                assert_eq!(record.file_id, id, "{name} batched={batched}");
+            }
+            replays.push(created);
+        }
+        assert_eq!(replays[0], replays[1], "batched={batched}");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn inverse_private_mutations_restore_the_base_and_clear_replay_state() -> TestResult {
     let cancel = CancellationToken::new();

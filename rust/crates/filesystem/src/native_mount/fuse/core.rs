@@ -48,11 +48,7 @@ impl std::ops::DerefMut for StateGuard<'_> {
 
 impl StateGuard<'_> {
     #[track_caller]
-    pub(super) fn wait_timeout(
-        mut self,
-        condition: &RankedCondvar,
-        duration: Duration,
-    ) -> Result<Self, NativeMountError> {
+    pub(super) fn wait(mut self, condition: &RankedCondvar) -> Result<Self, NativeMountError> {
         let Some(state) = self.state.take() else {
             unreachable!("the guard owns its lock until drop");
         };
@@ -66,9 +62,8 @@ impl StateGuard<'_> {
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
-                .wait_timeout(state, duration)
-                .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?
-                .0,
+                .wait(state)
+                .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?,
         );
         Ok(self)
     }
@@ -263,17 +258,30 @@ impl ProjectionCore {
     }
 
     pub(super) fn retain_handler_failure(&self, failure: (NativeMountError, WorkCounters)) {
+        // Pair terminal publication with the invalidation wait's mutex so a failure
+        // between its predicate check and atomic wait cannot lose its notification.
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut reports = self
             .handler_error
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if reports.first_fatal.is_none() {
+            tracing::error!(
+                errno = callback_errno(&failure.0),
+                "FUSE callback failed; this view stops serving"
+            );
             reports.first_fatal = Some(failure);
         }
         // Publish terminal admission only after its original cause is in the
         // slot. A concurrent packet must not observe an empty retirement slot
         // and substitute ENODEV before the original refusal is retained.
         self.handler_failed.store(true, Ordering::Release);
+        drop(reports);
+        drop(state);
+        #[cfg(all(test, loom))]
+        if invalidation::model_checking::omit_terminal_notification() {
+            return;
+        }
         self.invalidation.notify_all();
     }
 

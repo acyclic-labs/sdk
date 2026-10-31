@@ -38,6 +38,15 @@ fn projection_core(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
 ) -> Result<Arc<super::ProjectionCore>, NativeMountError> {
+    projection_core_at(source, budget, cancellation, 0)
+}
+
+fn projection_core_at(
+    source: Arc<dyn MountFilesystem>,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+    inode_base: u64,
+) -> Result<Arc<super::ProjectionCore>, NativeMountError> {
     let original = source.native_original_work()?;
     let setup = original.clone().unwrap_or_else(fuse_fixture_work);
     let root = source
@@ -56,7 +65,7 @@ fn projection_core(
         super::ProjectionConfig {
             writable: true,
             owner: (0, 0),
-            inode_base: 0,
+            inode_base,
             cache: super::ProjectionCache::Notifications,
         },
         &work,
