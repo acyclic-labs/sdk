@@ -144,9 +144,12 @@ if prompt=='resumed':
    print('NATIVE_FIXTURE_PASS cancelled-spawn',time.monotonic()-started,flush=True)
    while not (view/'ready').exists():assert time.monotonic()<deadline,'child native write readiness';time.sleep(.01)
    print('NATIVE_FIXTURE_PASS cancelled-native-ready',time.monotonic()-started,flush=True)
+   # Cancellation retires this view. Retain the observed process identity
+   # while its ready marker still proves the original native session is live.
+   pid=int((view/'descendant.pid').read_text())
    waiter=submit('wait','cancelled');stopped=tool('cancel','cancelled');response(waiter)
    assert stopped['control']=='interrupt' and stopped['status']['settled'],stopped
-   pid=int((view/'descendant.pid').read_text());proc=pathlib.Path('/proc')/str(pid)/'stat'
+   proc=pathlib.Path('/proc')/str(pid)/'stat'
    assert not proc.exists() or proc.read_text().split()[2]=='Z','descendant still running after cancel'
    assert not (workspace/'cancelled.txt').exists(),'cancelled child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/cancelled'});assert (workspace/'cancelled.txt').read_text()=='native'
