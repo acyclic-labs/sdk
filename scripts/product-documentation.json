@@ -62,6 +62,7 @@
   "rust/README.md",
   "rust/crates/actors-napi/README.md",
   "rust/crates/actors/README.md",
+  "rust/crates/auth/README.md",
   "rust/crates/conformance/README.md",
   "rust/crates/conformance/client-conformance.md",
   "rust/crates/conformance/S3_STORAGE_DESIGN.md",

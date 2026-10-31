@@ -14,6 +14,7 @@ pub struct Options {
     pub tag: Option<u32>,
     pub kind: Option<String>,
     pub oneof: Option<LitStr>,
+    pub redacted: bool,
 }
 
 impl Options {
@@ -39,6 +40,8 @@ impl Options {
             self.post = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("name") {
             self.name = Some(meta.value()?.parse()?);
+        } else if meta.path.is_ident("redacted") {
+            self.redacted = true;
         } else {
             return Err(meta.error("unknown contract declaration option"));
         }

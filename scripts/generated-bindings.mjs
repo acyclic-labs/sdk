@@ -30,6 +30,7 @@ export const compatibilityArtifacts = {
   auth: {
     schemaDigest: "rust/crates/auth/proto/auth/v1/auth.proto",
     descriptorDigest: "compatibility/descriptors/auth-v1.bin",
+    conformanceDigest: "rust/crates/auth/conformance/secrets-v1.json",
   },
   harness: {
     schemaDigest: "rust/crates/harness-core/proto/harness/v2/harness.proto",
@@ -68,6 +69,7 @@ export const compatibilityArtifacts = {
 
 export const nativeWasmVector = "rust/crates/harness/conformance/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
+  [compatibilityArtifacts.auth.conformanceDigest, "typescript/packages/auth/generated/conformance/secrets-v1.json"],
   [compatibilityArtifacts.actors.descriptorDigest, "rust/crates/actors/tests/fixtures/actors/v1/actors-v1.bin"],
   ...[
     "conversation-message", "conversation-kinds", "file-ref", "file-ref-security-cases", "private-directory-page", "task-outcome",

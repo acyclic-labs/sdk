@@ -71,6 +71,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AuditRecord::decl(&ts_rs::Config::default()),
         RecordAttributes::decl(&ts_rs::Config::default()),
         AuditDecision::decl(&ts_rs::Config::default()),
+        SecretKind::decl(&ts_rs::Config::default()),
+        SecretPutRequest::decl(&ts_rs::Config::default()),
+        SecretListCursor::decl(&ts_rs::Config::default()),
+        SecretListRequest::decl(&ts_rs::Config::default()),
+        SecretDeleteRequest::decl(&ts_rs::Config::default()),
+        SecretMutationReply::decl(&ts_rs::Config::default()),
+        PlainSecretVariable::decl(&ts_rs::Config::default()),
+        ProtectedSecretVariable::decl(&ts_rs::Config::default()),
+        SecretVariableKind::decl(&ts_rs::Config::default()),
+        SecretVariable::decl(&ts_rs::Config::default()),
+        SecretListReply::decl(&ts_rs::Config::default()),
     ] {
         typescript.push_str("export ");
         typescript.push_str(&declaration);
@@ -85,6 +96,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("\n")
         + "\n";
     fs::write(path, typescript)?;
+    let vectors = root.join("typescript/packages/auth/generated/conformance");
+    fs::create_dir_all(&vectors)?;
+    fs::write(
+        vectors.join("secrets-v1.json"),
+        acyclic_auth::secrets::conformance::SUITE,
+    )?;
     if std::env::args_os().nth(2).as_deref() == Some(std::ffi::OsStr::new("--wire-baseline")) {
         fs::write(
             root.join("compatibility/descriptors/auth-v1.bin"),

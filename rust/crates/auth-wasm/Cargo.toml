@@ -16,6 +16,9 @@ acyclic-auth = { version = "=0.2.0", path = "../auth" }
 js-sys.workspace = true
 prost.workspace = true
 wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = ["Headers", "Request", "RequestInit", "AbortController", "AbortSignal", "RequestRedirect", "RequestCredentials", "RequestCache", "ReferrerPolicy", "Response"] }
+url = "=2.5.8"
 zeroize.workspace = true
 
 [dev-dependencies]

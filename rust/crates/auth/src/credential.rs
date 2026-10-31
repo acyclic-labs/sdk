@@ -33,6 +33,10 @@ pub struct CredentialBinding {
 /// Maximum UTF-8 byte length of an authorization credential.
 pub const MAX_CREDENTIAL_BYTES: usize = 12 * 1024;
 
+/// Whole HTTP request budget, including response headers and successful bodies.
+/// Identity and secrets transports share the same absolute request deadline.
+pub const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A failed callback or a value that cannot be sent as a credential.
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialError {
@@ -305,4 +309,25 @@ pub fn bearer_bytes(value: &str) -> Vec<u8> {
     bytes.extend_from_slice(PREFIX);
     bytes.extend_from_slice(value.as_bytes());
     bytes
+}
+
+/// Admit an origin only: no embedded credential, query, fragment or path.
+/// HTTPS is required except for the loopback hosts used by local tools.
+pub fn endpoint(value: &str) -> Result<url::Url, CredentialError> {
+    let url = url::Url::parse(value).map_err(|_| CredentialError::Invalid)?;
+    let local = url.host_str() == Some("localhost")
+        || matches!(url.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
+        || matches!(url.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
+    if url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path() == "/"
+        && url.host().is_some()
+        && (url.scheme() == "https" || url.scheme() == "http" && local)
+    {
+        Ok(url)
+    } else {
+        Err(CredentialError::Invalid)
+    }
 }
