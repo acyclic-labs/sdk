@@ -88,14 +88,14 @@ async fn branch_switch_accepts_only_the_destination_workspace() -> Result<()> {
     Ok(())
 }
 
-async fn run(
-    fs: &LocalFs,
-    store: &LocalCoreStateStore,
-    lazy: &Lazy,
+fn run<'a>(
+    fs: &'a LocalFs,
+    store: &'a LocalCoreStateStore,
+    lazy: &'a Lazy,
     repository_id: acyclic_fs::WorkspaceId,
-    args: &[&str],
-) -> Result<(GitCommandOutput, Option<Lazy>)> {
-    run_reserving(fs, store, lazy, repository_id, &[], args).await
+    args: &'a [&'a str],
+) -> impl Future<Output = Result<(GitCommandOutput, Option<Lazy>)>> + 'a {
+    run_reserving(fs, store, lazy, repository_id, &[], args)
 }
 
 async fn run_reserving(
