@@ -780,6 +780,7 @@ where
         revisit_tail: bool,
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
         let mut changed;
+        let mut join_next = false;
         // A ranged mutation reaching the next leaf may join items across the
         // boundary, so this leaf's items carry right into it, closed or not.
         if M::RANGED {
@@ -792,6 +793,16 @@ where
                 lower,
                 upper,
             )?;
+            if !rightmost {
+                if let Some(upper) = upper {
+                    for (_, mutation) in mutations {
+                        self.charge_items(1)?;
+                        join_next |= reaches(mutation.last(), upper);
+                    }
+                }
+                self.charge_items(1)?;
+                join_next |= rewritten.value.last() != entries.value.last();
+            }
             changed = !carried.value.is_empty() || rewritten.value != entries.value;
             carried.retire(self.accounting)?;
             entries.retire(self.accounting)?;
@@ -816,7 +827,7 @@ where
         }
         let result = if entries.value.is_empty() {
             Owned::allocate(0, self.accounting)?
-        } else if !changed && !revisit_tail {
+        } else if !changed && !revisit_tail && !join_next {
             let mut result = Owned::allocate(1, self.accounting)?;
             let first = self.clone_key(F::key(
                 entries
@@ -828,7 +839,7 @@ where
             result
         } else {
             let (result, open) = self
-                .write_leaf_chunks(&entries.value, rightmost, revisit_tail)
+                .write_leaf_chunks(&entries.value, rightmost, revisit_tail || join_next)
                 .await?;
             if let Some(open) = open {
                 std::mem::replace(&mut self.carry_values, open).retire(self.accounting)?;
@@ -960,7 +971,7 @@ where
             entries,
             0,
             close || local_rewrite(),
-            (hold_last || (!close && M::RANGED)) && !local_rewrite(),
+            hold_last && !local_rewrite(),
         )
         .await
     }
