@@ -111,6 +111,7 @@ consumer's generation authority or protection against an aliasing bug.
 cargo run --features storage-schedules --example capture -- --accept-goldens
 cargo +nightly fuzz run --fuzz-dir . --features storage-schedules object_schedule -- -max_total_time=30
 cargo run --features storage-schedules --example object_schedules -- corpus/object_schedule/medium-false-0-0-0
+cargo run --features storage-schedules --example object_schedules -- --all-sites --seed medium-false-0-1-0
 ```
 
 Capture uses the same provenance and golden mechanism as the syntax targets;
@@ -118,6 +119,9 @@ without this feature, it preserves previous physical schedule entries. Replay
 of those entries requires the feature. The report groups reached physical
 operation/fault/stage/outcome branches and counts actual calls, owned boundaries
 and requested bytes. It establishes coverage only for the supplied inputs.
+`--seed` selects original writer inputs without a saved capture. `--all-sites`
+visits each physical site from one successful baseline, streaming each report
+without retaining a history or repeating that baseline for every cut.
 No campaign, compaction/rename coverage, power-loss simulation or complexity
 bound follows from adding the target. Larger remove inputs can enter the
 adapter's original compaction path; its policy is never copied into the
