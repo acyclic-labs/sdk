@@ -2,7 +2,7 @@ use super::{histories, verify_contract, wave1};
 use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, IdempotencyKey, OwnedBytes, ProviderPlatform, ReadRequest,
-    StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
+    StreamError, StreamPath, StreamProvider,
     testing::{Counted, RequestClass, RequestLedger, Requests},
 };
 use futures::{StreamExt as _, TryStreamExt as _};
