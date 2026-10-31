@@ -464,6 +464,7 @@ mod tests {
                     brief: Some([u8::MAX; 32]),
                     conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
+                    pending_notices: Some(0..u64::MAX),
                     dropped_before: u64::MAX,
                     checkpoint: Some(u64::MAX),
                     roster: Some([u8::MAX; 32]),

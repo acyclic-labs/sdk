@@ -38,6 +38,7 @@ pub use targets::{
     TargetRefusal, TargetState, USER_PREFIX,
 };
 mod volumes;
+pub mod wake;
 pub use volumes::SpawnVolumes;
 
 pub use checkpoint::MAX_CHECKPOINT_BYTES;

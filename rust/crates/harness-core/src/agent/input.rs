@@ -13,6 +13,14 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TurnInput {
+    /// A primitive event that explicitly requests a model call.
+    Notice {
+        /// Original producer event identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// Event payload retained at the original inbox position.
+        notice: crate::conversation::wire::Notice,
+    },
     /// The adoption brief.
     Brief {
         /// Brief file.
@@ -114,6 +122,9 @@ pub struct Progress {
 /// The turn input an inbox record at `sequence` carries.
 pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
     let input = match record {
+        InboxRecord::Notice { id, notice } => {
+            notice.wake.then_some(TurnInput::Notice { id, notice })
+        }
         InboxRecord::Message(message) => Some(TurnInput::Message {
             from: message.from,
             id: message.id,
