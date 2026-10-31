@@ -1,6 +1,6 @@
 //! Nonserialized custody accompanying one immutable physical session frame.
 
-use crate::{Record, wire};
+use crate::{Record, StreamError, StreamPath, wire, wire_codec};
 
 /// One received frame and any original provider record it still owns.
 ///
@@ -24,6 +24,37 @@ impl Frame {
     #[must_use]
     pub fn into_wire(self) -> wire::SessionFrame {
         self.wire
+    }
+
+    /// The original record retained by in-process publication. Wire-only
+    /// transports cannot manufacture this process-local backing custody.
+    #[must_use]
+    pub fn original_record(&self) -> Option<&Record> {
+        self.record.as_ref()
+    }
+
+    pub(super) fn into_data(self) -> Result<wire::SessionData, StreamError> {
+        match self.wire.body {
+            Some(wire::session_frame::Body::Data(data)) => Ok(data),
+            _ => Err(StreamError::Unavailable),
+        }
+    }
+
+    pub(super) fn into_record(self, path: &StreamPath) -> Result<Record, StreamError> {
+        let original = self.record;
+        let Some(wire::session_frame::Body::Data(data)) = self.wire.body else {
+            return Err(StreamError::Unavailable);
+        };
+        let Some(wire::session_data::Item::Record(record)) = data.item else {
+            return Err(StreamError::Unavailable);
+        };
+        // Keep canonical validation and derived headers on every transport.
+        // Transfer only the exact original publication's payload owner.
+        let mut decoded = wire_codec::record(record, Some(path))?;
+        if let Some(original) = original {
+            decoded.value = original.value;
+        }
+        Ok(decoded)
     }
 }
 

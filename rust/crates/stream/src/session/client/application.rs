@@ -16,8 +16,7 @@ pub struct ApplicationSubscription {
 /// Dropping an undecided delivery ends the interest without advancing its cut.
 #[must_use = "commit or discard after the durable application decision"]
 pub struct ApplicationDelivery {
-    frame: wire::SessionFrame,
-    record: Option<crate::Record>,
+    frame: Frame,
     checkpoint: wire::SessionSubscription,
     before: Option<wire::SessionFrame>,
     sequence: u64,
@@ -73,12 +72,8 @@ impl ApplicationSubscription {
             generation,
             credit,
         } = delivery;
-        let (frame, record) = match item {
-            Received::Frame(frame) => (frame, None),
-            Received::Owned { frame, record } => (frame, Some(record)),
-            _ => return Err(StreamError::InvalidResponse),
-        };
-        let (after, preceding) = match &frame.body {
+        let frame = item;
+        let (after, preceding) = match &frame.wire().body {
             Some(Body::Data(data)) => (
                 data.after.clone(),
                 match &data.item {
@@ -106,7 +101,6 @@ impl ApplicationSubscription {
         self.completion = Some(completion);
         Ok(Some(ApplicationDelivery {
             frame,
-            record,
             checkpoint,
             before,
             sequence,
@@ -153,7 +147,7 @@ impl ApplicationDelivery {
     /// The canonical received frame, including its proposed cursor.
     #[must_use]
     pub fn frame(&self) -> &wire::SessionFrame {
-        &self.frame
+        self.frame.wire()
     }
 
     /// The original provider record retained by in-process publication.
@@ -161,7 +155,7 @@ impl ApplicationDelivery {
     /// validate the canonical frame before admitting its payload into a view.
     #[must_use]
     pub fn original_record(&self) -> Option<&crate::Record> {
-        self.record.as_ref()
+        self.frame.original_record()
     }
 
     /// A filtered prefix that precedes this frame at the same delivery cut.
@@ -188,7 +182,12 @@ impl ApplicationDelivery {
             if let Some(before) = &self.before {
                 consume_frame(&self.progress, self.generation, self.sequence, before)?;
             }
-            consume_frame(&self.progress, self.generation, self.sequence, &self.frame)
+            consume_frame(
+                &self.progress,
+                self.generation,
+                self.sequence,
+                self.frame.wire(),
+            )
         })();
         if result.is_ok() {
             drop(self.credit.take());

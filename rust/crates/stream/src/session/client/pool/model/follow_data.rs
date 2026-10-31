@@ -56,11 +56,8 @@ pub fn verify_follow_data(broken: u8) {
             .expect("standalone watermark must be delivered")
             .unwrap();
         assert!(matches!(
-            first.item,
-            Received::Frame(wire::SessionFrame {
-                body: Some(Body::Watermark(wire::SessionWatermark { accepted: 3, .. })),
-                ..
-            })
+            first.item.wire().body,
+            Some(Body::Watermark(wire::SessionWatermark { accepted: 3, .. }))
         ));
         drop(first.credit);
         let released = loom::future::block_on(pool.released.next()).unwrap();
@@ -70,11 +67,8 @@ pub fn verify_follow_data(broken: u8) {
             .expect("latest durability must follow without data")
             .unwrap();
         assert!(matches!(
-            latest.item,
-            Received::Frame(wire::SessionFrame {
-                body: Some(Body::Watermark(wire::SessionWatermark { accepted: 12, .. })),
-                ..
-            })
+            latest.item.wire().body,
+            Some(Body::Watermark(wire::SessionWatermark { accepted: 12, .. }))
         ));
         assert!(received.try_recv().is_err());
         // Controls cannot spend aggregate data credit or admit extra data.

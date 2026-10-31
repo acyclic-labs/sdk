@@ -642,20 +642,9 @@ impl Pool {
         };
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
-        let item = if let Some(record) = record {
-            Received::Owned {
-                frame: frame(id, generation, Body::Data(data)),
-                record,
-            }
-        } else if route.raw {
-            Received::Frame(frame(id, generation, Body::Data(data)))
-        } else if matches!(
-            route.kind,
-            Kind::Follow(_) | Kind::ActorCall(_) | Kind::ChildrenPage(_) | Kind::Heads(_)
-        ) {
-            Received::Data(data)
-        } else {
-            return Err(StreamError::Unavailable);
+        let item = Frame {
+            wire: frame(id, generation, Body::Data(data)),
+            record,
         };
         route.buffered_data = route
             .buffered_data
@@ -704,7 +693,7 @@ impl Pool {
             .epoch;
         let delivery = Delivery {
             before: None,
-            item: Received::Frame(value),
+            item: value.into(),
             sequence: route.received,
             generation: route.generation,
             credit: Credit::new(
