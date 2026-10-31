@@ -58,6 +58,7 @@ fn pinned_tool_revisions_require_explicit_model_selection() -> Result<()> {
         tools.register(
             (
                 Tool {
+                    skill_source: None,
                     hook_names: &[],
                     definition: ToolDefinition {
                         name: "example.echo".into(),
@@ -221,6 +222,7 @@ async fn scoped_install_requires_capability_and_exact_approval_operation() -> Re
         digest,
     };
     let tool = Tool {
+        skill_source: None,
         hook_names: &[],
         definition,
         executor: files::read()?.executor,

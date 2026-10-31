@@ -54,6 +54,7 @@ pub fn conversion_tool() -> Result<Tool> {
         write: files::write()?.executor,
     });
     Ok(Tool {
+        skill_source: None,
         hook_names: &[],
         definition: ToolDefinition {
             name: "example.convert_image".into(),

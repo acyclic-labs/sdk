@@ -1076,6 +1076,7 @@ async fn stock_tool_validation_failure_returns_to_the_model_and_replays_without_
         tools.register(
             (
                 crate::tool::Tool {
+                    skill_source: None,
                     hook_names: &[],
                     definition: crate::tool::ToolDefinition {
                         name: "example.echo".into(),

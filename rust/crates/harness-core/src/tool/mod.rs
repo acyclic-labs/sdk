@@ -30,6 +30,8 @@ mod approval;
 pub use approval::ToolApprovalVerifier;
 mod registry;
 pub use registry::{Tool, ToolRegistry};
+mod skill_source;
+pub use skill_source::SkillSource;
 mod codec;
 #[cfg(feature = "filesystem")]
 pub(crate) use codec::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES;

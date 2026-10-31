@@ -47,6 +47,8 @@ type ToolSettlement<T> = std::result::Result<T, crate::model::ToolResultContent>
 enum ToolInvocationOutcome {
     Settled(crate::model::ToolResultContent),
     Interrupted,
+    #[cfg(feature = "filesystem")]
+    Progress(ExecutionProgress<()>),
 }
 
 impl StockExecution<'_> {
@@ -60,13 +62,47 @@ impl StockExecution<'_> {
         prior_messages: &mut Vec<ModelMessage>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<()>> {
-        self.verify_task_context_binding(operation_id)?;
         let metadata = metadata_for_call(
             prior_messages,
             invocation_index,
             &invocation.call_id,
             self.io,
         )?;
+        match self
+            .settle_tool_invocation(
+                journal,
+                operation_id,
+                step,
+                invocation,
+                metadata,
+                _hook_context,
+            )
+            .await?
+        {
+            ExecutionProgress::Ready((invocation, content)) => {
+                self.push_tool_result(&invocation, content, prior_messages)
+            }
+            ExecutionProgress::Pending(operation) => Ok(ExecutionProgress::Pending(operation)),
+            ExecutionProgress::Failed(reason) => Ok(ExecutionProgress::Failed(reason)),
+            ExecutionProgress::PreDispatchFailed(failure) => {
+                Ok(ExecutionProgress::PreDispatchFailed(failure))
+            }
+        }
+    }
+
+    /// One admission, approval, claim and settlement implementation for both model
+    /// calls and code/skill host calls. Metadata is retained in the same exact
+    /// original invocation record; a resumed call cannot replace its source pin.
+    pub(in crate::executor) async fn settle_tool_invocation(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        invocation: ToolInvocation,
+        metadata: &Value,
+        _hook_context: &mut Vec<ModelMessage>,
+    ) -> Result<ExecutionProgress<(ToolInvocation, crate::model::ToolResultContent)>> {
+        self.verify_task_context_binding(operation_id)?;
         let invocation_limits = crate::conversation::Limits {
             file_bytes: self
                 .stock
@@ -93,7 +129,7 @@ impl StockExecution<'_> {
                 let content = self
                     .settle_tool_refusal(journal, operation_id, step, &invocation, rejection)
                     .await?;
-                return self.push_tool_result(&invocation, content, prior_messages);
+                return Ok(ExecutionProgress::Ready((invocation, content)));
             }
         };
         if let Some(context) = &mut context {
@@ -128,7 +164,7 @@ impl StockExecution<'_> {
                             .settle_tool_refusal(journal, operation_id, step, &effective, rejection)
                             .await?;
                         self.append_hook_context(_hook_context, output)?;
-                        return self.push_tool_result(&effective, content, prior_messages);
+                        return Ok(ExecutionProgress::Ready((effective, content)));
                     }
                 }
                 if let Some(context) = &mut context {
@@ -160,7 +196,7 @@ impl StockExecution<'_> {
                 )
                 .await?;
             self.append_hook_context(_hook_context, pre_hook)?;
-            return self.push_tool_result(&invocation, content, prior_messages);
+            return Ok(ExecutionProgress::Ready((invocation, content)));
         }
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let hook_approval = pre_hook.approval.take();
@@ -205,7 +241,9 @@ impl StockExecution<'_> {
                         .await?
                 {
                     match stop {
-                        PolicyStop::Progress(progress) => return Ok(progress),
+                        PolicyStop::Progress(progress) => {
+                            return transplant_tool_progress(progress);
+                        }
                         PolicyStop::Failed(error) => {
                             let content = self
                                 .settle_tool_refusal(
@@ -216,7 +254,7 @@ impl StockExecution<'_> {
                                     ToolCallRejection::Failed(error),
                                 )
                                 .await?;
-                            return self.push_tool_result(&invocation, content, prior_messages);
+                            return Ok(ExecutionProgress::Ready((invocation, content)));
                         }
                     }
                 }
@@ -224,7 +262,9 @@ impl StockExecution<'_> {
                     .require_tool_policy(journal, operation_id, &invocation, tool, started)
                     .await?
                 {
-                    Some(PolicyStop::Progress(progress)) => return Ok(progress),
+                    Some(PolicyStop::Progress(progress)) => {
+                        return transplant_tool_progress(progress);
+                    }
                     Some(PolicyStop::Failed(denial)) => {
                         let content = self
                             .settle_tool_refusal(
@@ -235,7 +275,7 @@ impl StockExecution<'_> {
                                 ToolCallRejection::Failed(denial),
                             )
                             .await?;
-                        return self.push_tool_result(&invocation, content, prior_messages);
+                        return Ok(ExecutionProgress::Ready((invocation, content)));
                     }
                     None => {}
                 }
@@ -255,13 +295,17 @@ impl StockExecution<'_> {
                     .await?
                 {
                     ToolInvocationOutcome::Settled(content) => content,
+                    #[cfg(feature = "filesystem")]
+                    ToolInvocationOutcome::Progress(progress) => {
+                        return transplant_tool_progress(progress);
+                    }
                     ToolInvocationOutcome::Interrupted => {
                         return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
                     }
                 }
             }
         };
-        self.push_tool_result(&invocation, content, prior_messages)
+        Ok(ExecutionProgress::Ready((invocation, content)))
     }
 
     fn push_tool_result(
@@ -666,4 +710,18 @@ mod cancellation_tests {
             Ok(Some(7))
         ));
     }
+}
+
+/// Pending/failure contains no value and crosses the same original dispatch path.
+fn transplant_tool_progress<T>(progress: ExecutionProgress<()>) -> Result<ExecutionProgress<T>> {
+    Ok(match progress {
+        ExecutionProgress::Pending(operation) => ExecutionProgress::Pending(operation),
+        ExecutionProgress::Failed(reason) => ExecutionProgress::Failed(reason),
+        ExecutionProgress::PreDispatchFailed(failure) => {
+            ExecutionProgress::PreDispatchFailed(failure)
+        }
+        ExecutionProgress::Ready(()) => {
+            return Err(Error::tool_rejected("tool progress has no settled result"));
+        }
+    })
 }

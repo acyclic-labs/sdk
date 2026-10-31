@@ -64,6 +64,7 @@ impl FileTool {
         };
         definition.validate(&mut None)?;
         Ok(Tool {
+            skill_source: None,
             hook_names: if matches!(self, Self::Patch { .. } | Self::Insert) {
                 &["Edit"]
             } else {

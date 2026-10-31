@@ -51,11 +51,14 @@ fn original_control() -> (tokio::sync::watch::Sender<bool>, Arc<dyn CodeControl>
 #[derive(Default)]
 struct Echo(Mutex<Vec<ToolInvocation>>);
 impl CodeHost for Echo {
-    fn dispatch(&self, invocation: ToolInvocation) -> BoxProviderFuture<'_, Result<ToolResult>> {
+    fn dispatch(
+        &self,
+        invocation: ToolInvocation,
+    ) -> BoxProviderFuture<'_, Result<CodeHostResult>> {
         Box::pin(async move {
             let value = invocation.arguments.clone();
             lock(&self.0).push(invocation);
-            Ok(ToolResult { value })
+            Ok(ToolResult { value }.into())
         })
     }
 }
@@ -169,7 +172,7 @@ struct HeldHost {
     released: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 impl CodeHost for HeldHost {
-    fn dispatch(&self, _: ToolInvocation) -> BoxProviderFuture<'_, Result<ToolResult>> {
+    fn dispatch(&self, _: ToolInvocation) -> BoxProviderFuture<'_, Result<CodeHostResult>> {
         let started = lock(&self.started).take();
         let released = lock(&self.released).take();
         Box::pin(async move {
@@ -183,7 +186,8 @@ impl CodeHost for HeldHost {
                 .map_err(|_| rejected("host producer dropped"))?;
             Ok(ToolResult {
                 value: json!("released"),
-            })
+            }
+            .into())
         })
     }
 }
@@ -258,7 +262,10 @@ fn declarations_preserve_structural_and_recursive_schema_types() -> Result<()> {
 
 struct ReverseCompletion(tokio::sync::watch::Sender<bool>);
 impl CodeHost for ReverseCompletion {
-    fn dispatch(&self, invocation: ToolInvocation) -> BoxProviderFuture<'_, Result<ToolResult>> {
+    fn dispatch(
+        &self,
+        invocation: ToolInvocation,
+    ) -> BoxProviderFuture<'_, Result<CodeHostResult>> {
         Box::pin(async move {
             if invocation.arguments["value"] == "first" {
                 let mut completed = self.0.subscribe();
@@ -273,7 +280,8 @@ impl CodeHost for ReverseCompletion {
             }
             Ok(ToolResult {
                 value: invocation.arguments,
-            })
+            }
+            .into())
         })
     }
 }
@@ -300,7 +308,7 @@ async fn concurrent_host_completion_order_cannot_change_replay_continuations() -
 
 struct Uncertain;
 impl CodeHost for Uncertain {
-    fn dispatch(&self, _: ToolInvocation) -> BoxProviderFuture<'_, Result<ToolResult>> {
+    fn dispatch(&self, _: ToolInvocation) -> BoxProviderFuture<'_, Result<CodeHostResult>> {
         Box::pin(async { Err(Error::Storage("original unacknowledged request".into())) })
     }
 }

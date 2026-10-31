@@ -116,6 +116,7 @@ pub async fn open<B: Backend + ?Sized>(
     tools.register(
         (
             Tool {
+                skill_source: None,
                 hook_names: &[],
                 definition: tool_definition(),
                 executor: Arc::new(Echo(effects.clone())),

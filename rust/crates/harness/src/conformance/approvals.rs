@@ -111,6 +111,7 @@ impl TurnExecutors for Approving {
             tools.register(
                 (
                     Tool {
+                        skill_source: None,
                         hook_names: &[],
                         definition: ToolDefinition {
                             name: TOOL.into(),

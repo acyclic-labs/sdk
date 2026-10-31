@@ -329,6 +329,7 @@ impl McpCatalog {
             next.register_checked(
                 (
                     Tool {
+                        skill_source: None,
                         hook_names: &[],
                         definition,
                         executor: Arc::new(RemoteTool {

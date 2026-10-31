@@ -51,6 +51,9 @@ impl ToolRegistry {
             crate::executor::with_history_io(io, |work| {
                 tool.definition.validate_checked(work, check)
             })?;
+            if let Some(source) = &tool.skill_source {
+                source.verify(&tool.definition, io)?;
+            }
             check()?;
             self.admit_version_slot(io)?;
             let key = (
@@ -151,8 +154,16 @@ impl ToolRegistry {
                 });
             }
             let original = self.native_owned_bytes()?;
+            let source_bytes = tool
+                .0
+                .skill_source
+                .as_ref()
+                .map(|source| source.file().logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0);
             let definition_bytes = (std::mem::size_of::<ToolDefinition>() as u64)
                 .checked_add(tool.0.definition.logical_owned_bytes()?)
+                .and_then(|bytes| bytes.checked_add(source_bytes))
                 .ok_or(OWNERSHIP_OVERFLOW)?;
             let registry = custody.as_mut().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,

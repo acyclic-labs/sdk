@@ -250,6 +250,7 @@ impl WasmAgentRegistry {
             .register(
                 (
                     Tool {
+                        skill_source: None,
                         hook_names: &[],
                         definition,
                         executor: host.clone(),
