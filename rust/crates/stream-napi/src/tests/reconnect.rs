@@ -2,6 +2,7 @@ use super::*;
 use acyclic_stream::StreamProviderExt as _;
 use parking_lot::Mutex as SyncMutex;
 use std::sync::atomic::AtomicUsize;
+use std::time::Duration;
 use tonic::{Response, Streaming};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
 

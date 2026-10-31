@@ -307,8 +307,8 @@ impl StreamProvider for TcpDropProbe {
 
 async fn await_tcp_event(
     event: &tokio::sync::Notify,
-    server: &mut tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    server: &mut tokio::task::JoinHandle<std::result::Result<(), tonic::transport::Error>>,
+) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::select! {
         () = event.notified() => Ok(()),
         result = server => Err(format!("TCP producer ended before its lifecycle event: {result:?}").into()),
