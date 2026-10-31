@@ -33,74 +33,6 @@ impl crate::heap_layout::HeapLayout for Version {
     const LAYOUT: &'static crate::heap_layout::JsonLayout = &crate::heap_layout::JsonLayout::Scalar;
 }
 
-/// Original exclusive follow position of the record producing a context delta.
-/// This is provenance, not a capability or a publication-completion witness.
-#[derive(Serialize, Deserialize, crate::HeapLayout)]
-#[serde(try_from = "PositionFields")]
-#[heap_layout(as = PositionFields)]
-pub struct SourcePosition {
-    stream: String,
-    exclusive: u64,
-    commit: [u8; 32],
-}
-
-#[derive(Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
-struct PositionFields {
-    stream: String,
-    exclusive: u64,
-    commit: [u8; 32],
-}
-impl TryFrom<PositionFields> for SourcePosition {
-    type Error = &'static str;
-    fn try_from(fields: PositionFields) -> std::result::Result<Self, Self::Error> {
-        if fields.exclusive == 0 || acyclic_stream::StreamPath::validate(&fields.stream).is_err() {
-            return Err("invalid original context record position");
-        }
-        Ok(Self {
-            stream: fields.stream,
-            exclusive: fields.exclusive,
-            commit: fields.commit,
-        })
-    }
-}
-
-impl SourcePosition {
-    /// Retains the actual follow path and record identity on the original
-    /// operation ledger. The next position must be checked by that follow owner.
-    pub fn from_record(
-        stream: &acyclic_stream::StreamPath,
-        exclusive: u64,
-        commit: [u8; 32],
-        io: &PreparationIo,
-    ) -> Result<Self> {
-        if exclusive == 0 {
-            return Err(crate::executor::stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Invalid,
-                "a source record requires a nonzero exclusive position",
-            ));
-        }
-        Ok(Self {
-            stream: crate::executor::stock_string_copy(stream.as_str(), Some(io))?,
-            exclusive,
-            commit,
-        })
-    }
-    /// Original stream, without reopening its current head.
-    pub fn stream(&self) -> &str {
-        &self.stream
-    }
-    /// Exclusive position of this record, not the containing publication's end.
-    pub fn exclusive(&self) -> u64 {
-        self.exclusive
-    }
-    /// Original record's commit identity; grouped members may share it.
-    pub fn commit(&self) -> [u8; 32] {
-        self.commit
-    }
-}
-
 /// One admitted context delta. Earlier metadata and pinned bodies remain in
 /// their original envelopes; a replacement never rewrites the old prefix.
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
@@ -127,12 +59,13 @@ pub enum Payload {
         /// Immutable native body and its admitted foreign projections.
         item: WireItem,
     },
-    /// Changed context at its original publication observation.
-    Context {
-        /// Original follow observation, independently of publication closure.
-        position: SourcePosition,
-        /// Only the changed metadata or removed path.
-        change: ContextChange,
+    /// All selected changes from one original source cut. The digest identifies
+    /// the exact producer checkpoint contributed in the same conditional commit.
+    ContextBatch {
+        /// Canonical source checkpoint identity, including its original cursor.
+        checkpoint: [u8; 32],
+        /// Changed metadata only; earlier envelopes retain their original bodies.
+        changes: Vec<ContextChange>,
     },
 }
 
@@ -202,14 +135,15 @@ impl Envelope {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         match &self.payload {
-            Payload::Context {
-                change: ContextChange::Skill { metadata },
-                ..
-            } => metadata.validate(work),
-            Payload::Context {
-                change: ContextChange::Removed { source },
-                ..
-            } => source.validate(work),
+            Payload::ContextBatch { changes, .. } => {
+                for change in changes {
+                    match change {
+                        ContextChange::Skill { metadata } => metadata.validate(work)?,
+                        ContextChange::Removed { source } => source.validate(work)?,
+                    }
+                }
+                Ok(())
+            }
             Payload::Wire { .. } => Ok(()),
         }
     }
@@ -252,3 +186,66 @@ impl Envelope {
 }
 
 impl crate::filesystem::PreparationRecord for Envelope {}
+
+// Borrow the producer's selected metadata once. This has the same wire shape as
+// ContextChange; decoding and replay use the one owned Payload above.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum BorrowedChange<'a> {
+    Skill { metadata: &'a SkillMetadata },
+    Removed { source: &'a PinnedContextPath },
+}
+#[cfg(not(target_arch = "wasm32"))]
+struct BorrowedChanges<'a>(&'a [crate::context::SkillPublicationChange]);
+#[cfg(not(target_arch = "wasm32"))]
+impl Serialize for BorrowedChanges<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use crate::context::SkillPublicationChange;
+        serializer.collect_seq(self.0.iter().map(|change| match change {
+            SkillPublicationChange::Skill(metadata) => BorrowedChange::Skill { metadata },
+            SkillPublicationChange::Removed(source) => BorrowedChange::Removed { source },
+        }))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn encode_context_batch(
+    intent: OperationId,
+    profile: [u8; 32],
+    checkpoint: [u8; 32],
+    changes: &[crate::context::SkillPublicationChange],
+    io: &PreparationIo,
+) -> Result<acyclic_stream::OwnedBytes> {
+    #[derive(Serialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum BorrowedPayload<'a> {
+        ContextBatch {
+            checkpoint: [u8; 32],
+            changes: BorrowedChanges<'a>,
+        },
+    }
+    #[derive(Serialize)]
+    struct BorrowedEnvelope<'a> {
+        version: Version,
+        intent: OperationId,
+        profile: [u8; 32],
+        payload: BorrowedPayload<'a>,
+    }
+    io.encode(
+        &BorrowedEnvelope {
+            version: Version,
+            intent,
+            profile,
+            payload: BorrowedPayload::ContextBatch {
+                checkpoint,
+                changes: BorrowedChanges(changes),
+            },
+        },
+        io.remaining()?.bytes_encoded,
+        true,
+    )
+}

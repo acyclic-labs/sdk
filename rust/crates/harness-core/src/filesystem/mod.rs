@@ -33,6 +33,10 @@ mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
+#[cfg(not(target_arch = "wasm32"))]
+pub use execution_journal::{
+    ContextCheckpoint, ContextPublicationReceipt, ContextPublicationRequest,
+};
 mod agent_effects;
 mod agent_goal;
 pub use agent_goal::GOAL_VOLUME;

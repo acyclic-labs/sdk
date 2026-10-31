@@ -96,7 +96,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                 None,
             )?;
             let executor = uncompacted_executor(
-                Model::new("test".into(), "replay".into(), "1".into(), Value::Null)?,
+                Model::new("test".into(), "replay".into(), "1".into())?,
                 Arc::new(scripted_model()),
                 ContextPipeline::default(),
                 tools,

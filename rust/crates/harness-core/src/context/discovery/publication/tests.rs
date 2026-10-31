@@ -2,7 +2,11 @@ use super::*;
 use crate::{
     conversation::{VolumeClass, VolumeOperation, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityRoot},
-    filesystem::{FilesystemContentVerifier, FilesystemHost},
+    executor::{ExecutionEvent, ExecutionJournal},
+    filesystem::{
+        ContextPublicationRequest, FilesystemContentVerifier, FilesystemExecutionJournal,
+        FilesystemHost, FilesystemJournalBinding,
+    },
     resources::ProviderRef,
 };
 use acyclic_auth::{contract::*, testing as signed};
@@ -44,6 +48,15 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         .await
         .map_err(|error| error.error)?
         .value;
+    let agent = crate::AgentId::new();
+    let private = VolumeRef::new(
+        provider.clone(),
+        "private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    host.create_volume(&private).await?;
     let issuer = AuthorityRoot::new(
         "source",
         [41; 32],
@@ -57,8 +70,10 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         &crate::Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
+            private.capability(VolumeOperation::Read, &mut None)?,
+            private.capability(VolumeOperation::Write, &mut None)?,
         ]),
-        None,
+        Some(agent),
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
@@ -225,9 +240,155 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
             .is_err()
     );
     assert_eq!(source.accepted(), cursor);
-    // The journal adapter alone calls this after its actual receipt. This
-    // source control tests the private acknowledgement fence, not that adapter.
-    source.confirm_publication(ready)?;
+    // The actual journal joins this source and epoch with its indexed observation.
+    let operation = crate::OperationId::new();
+    let journal = FilesystemExecutionJournal::new(
+        streams.clone(),
+        host.clone(),
+        FilesystemJournalBinding {
+            volume: &private,
+            verifier: &verifier,
+            scope: &scope,
+            io: None,
+        },
+    )?
+    .with_turn(operation, operation);
+    journal
+        .append(
+            operation,
+            "start",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            Some(&session),
+        )?
+        .await?;
+    let mut binding = journal
+        .bind_context_source(&volume, workspace.id().volume_id(), cursor, &session)?
+        .await?;
+    use crate::conversation::epochs::{Epoch, Snapshot, SummaryKey};
+    let epoch = Snapshot::genesis(Epoch {
+        header: [3; 32],
+        profile: [7; 32],
+        summary: None,
+        key: SummaryKey {
+            source: StreamPath::new("conversation")?,
+            through: 0,
+            renderer: 1,
+            model: [5; 32],
+        },
+    })?;
+    assert!(
+        journal
+            .publish_context(
+                &mut binding,
+                &mut source,
+                ContextPublicationRequest {
+                    operation,
+                    key: "wrong-profile",
+                    step: 0,
+                    expected_tail: 1,
+                    profile: [8; 32]
+                },
+                &epoch,
+                &session,
+            )?
+            .await
+            .is_err()
+    );
+    assert!(
+        journal
+            .publish_context(
+                &mut binding,
+                &mut source,
+                ContextPublicationRequest {
+                    operation,
+                    key: "conditional-loser",
+                    step: 0,
+                    expected_tail: 0,
+                    profile: [7; 32]
+                },
+                &epoch,
+                &session,
+            )?
+            .await?
+            .is_none()
+    );
+    assert_eq!(source.accepted(), cursor);
+    let receipt = journal
+        .publish_context(
+            &mut binding,
+            &mut source,
+            ContextPublicationRequest {
+                operation,
+                key: "context",
+                step: 0,
+                expected_tail: 1,
+                profile: [7; 32],
+            },
+            &epoch,
+            &session,
+        )?
+        .await?
+        .ok_or("context publication lost")?;
+    assert!(matches!(
+        receipt.changes()?,
+        [SkillPublicationChange::Skill(_)]
+    ));
+    // Losing the caller's acknowledgement cannot fabricate ephemeral visibility.
+    drop(receipt);
+    assert_eq!(source.accepted(), cursor);
+    let recovered = journal
+        .bind_context_source(&volume, workspace.id().volume_id(), cursor, &session)?
+        .await?;
+    assert_eq!(recovered.cursor(), ready);
+    drop(recovered);
+    let receipt = journal
+        .publish_context(
+            &mut binding,
+            &mut source,
+            ContextPublicationRequest {
+                operation,
+                key: "context",
+                step: 0,
+                expected_tail: 1,
+                profile: [7; 32],
+            },
+            &epoch,
+            &session,
+        )?
+        .await?
+        .ok_or("original publication retry lost")?;
+    receipt.confirm()?;
+    let observations = journal.replay(operation, 0, 3, Some(&session))?.await?;
+    assert_eq!(observations.len(), 2, "retry appended another observation");
+    let ExecutionEvent::ConversationItem { envelope, .. } = &observations[1].event else {
+        panic!("context observation missing");
+    };
+    assert!(
+        journal
+            .append(
+                operation,
+                "missing-source-cut",
+                &ExecutionEvent::ConversationItem {
+                    step: 0,
+                    envelope: envelope.clone(),
+                    publication: None,
+                },
+                Some(&session)
+            )?
+            .await
+            .is_err()
+    );
+    let bytes = journal.load(envelope, Some(&session))?.await?;
+    let (restored, hold) = crate::conversation::envelope::Envelope::decode(&bytes, &session)?;
+    let crate::conversation::envelope::Payload::ContextBatch { changes, .. } = restored.payload()
+    else {
+        panic!("context batch missing");
+    };
+    assert_eq!(changes.len(), 1);
+    drop(restored);
+    drop(hold);
     assert!(
         source
             .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)

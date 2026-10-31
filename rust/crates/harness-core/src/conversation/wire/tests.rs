@@ -115,15 +115,6 @@ async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -
     assert!(
         crate::conversation::envelope::Envelope::decode(changed_version.as_bytes(), &io).is_err()
     );
-    for position in [0, 1] {
-        let source = crate::conversation::envelope::SourcePosition::from_record(
-            &acyclic_stream::StreamPath::new("context/changes")?,
-            position,
-            [3; 32],
-            &io,
-        );
-        assert_eq!(source.is_ok(), position == 1);
-    }
     // Generated provenance DTOs exercise the original decoder; they are not
     // evidence of filesystem authorization or publication completion.
     let provider = crate::resources::ProviderRef::new(
@@ -149,28 +140,25 @@ async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -
     let context = crate::conversation::envelope::Envelope::new(
         intent,
         [7; 32],
-        crate::conversation::envelope::Payload::Context {
-            position: crate::conversation::envelope::SourcePosition::from_record(
-                &acyclic_stream::StreamPath::new("context/changes")?,
-                1,
-                [3; 32],
-                &io,
-            )?,
-            change: crate::conversation::envelope::ContextChange::Removed {
+        crate::conversation::envelope::Payload::ContextBatch {
+            checkpoint: [3; 32],
+            changes: vec![crate::conversation::envelope::ContextChange::Removed {
                 source: source.clone(),
-            },
+            }],
         },
         &io,
     )?;
     let context_bytes = context.encode(&io, 65_536)?;
     let (restored, restored_hold) =
         crate::conversation::envelope::Envelope::decode(&context_bytes, &io)?;
-    let crate::conversation::envelope::Payload::Context {
-        change: crate::conversation::envelope::ContextChange::Removed { source: retained },
-        ..
-    } = restored.payload()
+    let crate::conversation::envelope::Payload::ContextBatch { changes, .. } = restored.payload()
     else {
         panic!("context envelope")
+    };
+    let [crate::conversation::envelope::ContextChange::Removed { source: retained }] =
+        changes.as_slice()
+    else {
+        panic!("removed context path")
     };
     assert_eq!(retained, &source);
     drop(restored);

@@ -53,3 +53,6 @@ pub use source::{
     PROJECT_SKILL_ROOTS, SkillCatalog, SkillReader, VolumeDiscovery, capture_instructions,
     discover_skills_from,
 };
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use publication::SkillSourceCheckpoint;
