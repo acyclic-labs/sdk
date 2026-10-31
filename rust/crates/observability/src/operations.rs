@@ -178,6 +178,9 @@ pub enum Outcome {
 
 /// One operation's terminal evidence, shared by metrics and exporters.
 pub struct Sample<'a> {
+    /// Original ID in this subscriber's registry, for joining diagnostics.
+    /// It is not a metric label or a globally unique operation identifier.
+    pub span_id: &'a Id,
     /// Original static span metadata. Exporters must use bounded static labels.
     pub metadata: &'static tracing::Metadata<'static>,
     /// RPC method declared by the operation factory, never a resource label.
@@ -194,6 +197,8 @@ pub struct Sample<'a> {
 /// The same terminal evidence with ownership of its recorded fields. The
 /// collector transfers these fields into asynchronous output without copying.
 pub struct OwnedSample {
+    /// Original registry ID. An ID retains no span or physical operation.
+    pub span_id: Id,
     /// Original static operation metadata.
     pub metadata: &'static tracing::Metadata<'static>,
     /// Declared method, retained from span creation.
@@ -210,6 +215,7 @@ impl OwnedSample {
     /// Borrows evidence without cloning its owned fields.
     pub fn sample(&self) -> Sample<'_> {
         Sample {
+            span_id: &self.span_id,
             metadata: self.metadata,
             rpc: self.rpc.as_deref(),
             error_kind: self.error_kind.as_deref(),
@@ -708,6 +714,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         }
         if let Some(outcome) = terminal.outcome {
             self.0.record_owned(OwnedSample {
+                span_id: id.clone(),
                 metadata,
                 rpc: operation.rpc.take(),
                 elapsed: operation.started.elapsed(),
@@ -748,6 +755,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         // Notification may run arbitrary wakers. Never call them while holding
         // the registry's extension lock.
         self.0.record_owned(OwnedSample {
+            span_id: id.clone(),
             metadata,
             rpc,
             elapsed: started.elapsed(),
@@ -765,6 +773,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             && !operation.completed
         {
             self.0.record_owned(OwnedSample {
+                span_id: id,
                 metadata: operation.metadata,
                 rpc: operation.rpc,
                 elapsed: operation.started.elapsed(),

@@ -130,6 +130,7 @@ impl Sink for Export {
 
     fn record(&self, sample: &Sample<'_>) {
         self.publish(|| OwnedSample {
+            span_id: sample.span_id.clone(),
             metadata: sample.metadata,
             rpc: sample.rpc.map(str::to_owned),
             error_kind: if self.details {

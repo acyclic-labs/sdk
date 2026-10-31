@@ -45,16 +45,25 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Export, Outcome, Sink};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
     use tokio::sync::{Semaphore, oneshot};
     #[derive(Clone, Default)]
-    struct OriginalCause(Arc<AtomicUsize>);
+    struct OriginalCause {
+        pointer: Arc<AtomicUsize>,
+        closed: Arc<AtomicU64>,
+    }
     impl Sink for OriginalCause {
         fn record(&self, sample: &acyclic_observability::Sample<'_>) {
             if let Some(kind) = sample.error_kind {
-                self.0.store(kind.as_ptr() as usize, Ordering::Relaxed);
+                self.pointer
+                    .store(kind.as_ptr() as usize, Ordering::Relaxed);
             }
+        }
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for OriginalCause {
+        fn on_close(&self, id: tracing::Id, _: tracing_subscriber::layer::Context<'_, S>) {
+            self.closed.store(id.into_u64(), Ordering::Relaxed);
         }
     }
     let original_cause = OriginalCause::default();
@@ -62,10 +71,14 @@ fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
     let (export, mut output) = Export::channel(credit.clone(), true);
     let metrics = Metrics::default();
     let query = metrics.query("acyclic.test.export");
-    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Operations((
-        metrics,
-        (original_cause.clone(), export.clone()),
-    ))));
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry()
+            .with(original_cause.clone())
+            .with(Operations((
+                metrics,
+                (original_cause.clone(), export.clone()),
+            ))),
+    );
     let baseline = export.stats();
     let (send, receive) = mpsc::channel::<()>();
     drop(send);
@@ -105,8 +118,13 @@ fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
         .ok_or("original failure category absent")?;
     assert_eq!(
         kind.as_ptr() as usize,
-        original_cause.0.load(Ordering::Relaxed),
+        original_cause.pointer.load(Ordering::Relaxed),
         "export copied the collector's original category"
+    );
+    assert_eq!(
+        held.sample().span_id.into_u64(),
+        original_cause.closed.load(Ordering::Relaxed),
+        "retained output held the original span open or lost its registry identity"
     );
     let copied = kind.to_owned();
     assert_ne!(

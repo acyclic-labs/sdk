@@ -65,6 +65,10 @@ than sampled. These are exporter resources, not process-wide OS counters.
 An exporter can opt into the first recorded static `error.kind`. Later generic
 failures cannot replace it. It remains diagnostic evidence, never a metric
 label, and does not change uncertainty or an operation's original result.
+Every sample carries its original subscriber registry span ID, so diagnostics
+can join the existing provider/key/stage/predecessor observations. This scalar
+retains no span or physical work; it is not a metric label, globally unique
+operation identity, or a reason to reconstruct a result after completion.
 Metrics alone retain no failure string. Detail retains one failure category per
 active operation, with one owned copy when first recorded. The collector calls
 `Sink::record_owned` to transfer its original recorded fields into output;
