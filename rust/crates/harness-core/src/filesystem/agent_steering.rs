@@ -100,6 +100,25 @@ where
                 .through
                 .unwrap_or_else(|| self.inbox.saturating_add(1).max(self.agent.steered_through))
         });
+        // The first request uses the turn's frozen original input and Notice
+        // selection. Arrivals become steering only after that request's next
+        // model boundary; a resumed first request cannot gain a newer prefix.
+        if step == 0 {
+            if frozen.is_some_and(|cut| cut.from != from || cut.through != from) {
+                return Err(Error::Storage(
+                    "initial request has a nonempty steering range".into(),
+                ));
+            }
+            return Ok(Selected {
+                operation,
+                step,
+                cut: BoundaryCut {
+                    from,
+                    through: from,
+                },
+                messages: Vec::new(),
+            });
+        }
         let selection = crate::agent::select_boundary(
             &*self.stream,
             &self.agent.path,
