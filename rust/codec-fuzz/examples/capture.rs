@@ -139,6 +139,20 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-storage") {
+        #[cfg(feature = "storage-schedules")]
+        {
+            let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+                .lines()
+                .filter(|line| !line.starts_with("object_schedule/"))
+                .map(|line| format!("{line}\n"))
+                .collect::<String>();
+            capture_storage(&mut manifest)?;
+            return finish(&manifest, "object_schedule/");
+        }
+        #[cfg(not(feature = "storage-schedules"))]
+        return Err("storage capture requires storage-schedules; recovery: cargo run --features storage-schedules --example capture -- --only-storage --extend-goldens".into());
+    }
     golden_controls()?;
     capture_identity_vectors()?;
     let mut manifest =
@@ -262,15 +276,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
         )?;
     }
     #[cfg(feature = "storage-schedules")]
-    for (name, bytes) in acyclic_codec_fuzz::object_schedule::seeds() {
-        save(
-            "object_schedule",
-            &name,
-            &bytes,
-            "Manifest::encode and complete GenerationId::to_bytes with explicit mutation/flush, fault, original-site selector and torn-prefix configuration; original LocalMedium operation and Schedule oracle",
-            &mut manifest,
-        )?;
-    }
+    capture_storage(&mut manifest)?;
     #[cfg(not(feature = "storage-schedules"))]
     {
         let previous = match std::fs::read_to_string("corpus/SOURCES.tsv") {
@@ -613,16 +619,41 @@ fn capture() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    finish(&manifest, "")
+}
+
+#[cfg(feature = "storage-schedules")]
+fn capture_storage(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes) in acyclic_codec_fuzz::object_schedule::seeds() {
+        save(
+            "object_schedule",
+            &name,
+            &bytes,
+            "Manifest::encode and complete GenerationId::to_bytes with explicit mutation/flush/compaction, fault, original-site selector and torn-prefix configuration; original LocalMedium operation and Schedule oracle",
+            manifest,
+        )?;
+    }
+    Ok(())
+}
+
+fn finish(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {
     if std::env::args().any(|arg| matches!(arg.as_str(), "--accept-goldens" | "--extend-goldens")) {
         let path = Path::new("../../compatibility/frames/golden.hex");
         let previous = std::fs::read_to_string(path)?;
         let mut frames = previous
             .lines()
-            .filter(|line| !line.starts_with("corpus/"))
+            .filter(|line| {
+                !line
+                    .strip_prefix("corpus/")
+                    .is_some_and(|name| name.starts_with(replaced_prefix))
+            })
             .map(|line| format!("{line}\n"))
             .collect::<String>();
         for line in manifest.lines().filter(|line| !line.starts_with('#')) {
             let name = line.split('\t').next().ok_or("missing capture name")?;
+            if !name.starts_with(replaced_prefix) {
+                continue;
+            }
             let bytes = std::fs::read(Path::new("corpus").join(name))?;
             frames.push_str(&format!("corpus/{name} {}\n", hex::encode(bytes)));
         }

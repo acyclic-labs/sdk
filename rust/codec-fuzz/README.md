@@ -113,6 +113,7 @@ must preserve the original successful mutation and both live/reopened values.
 
 ```sh
 cargo run --features storage-schedules --example capture -- --accept-goldens
+cargo run --features storage-schedules --example capture -- --only-storage --extend-goldens
 cargo +nightly fuzz run --fuzz-dir . --features storage-schedules object_schedule -- -max_total_time=30
 cargo run --features storage-schedules --example object_schedules -- corpus/object_schedule/medium-false-0-0-0
 cargo run --features storage-schedules --example object_schedules -- --all-sites --seed medium-false-0-1-0
@@ -120,7 +121,10 @@ cargo run --features storage-schedules --example object_schedules -- --all-sites
 ```
 
 Capture uses the same provenance and golden mechanism as the syntax targets;
-without this feature, it preserves previous physical schedule entries. Replay
+`--only-storage` runs only the physical producers and preserves unrelated
+provenance and golden rows. `--extend-goldens` admits new names while refusing
+changes to an existing captured value.
+Without this feature, capture preserves previous physical schedule entries. Replay
 of those entries requires the feature. The report groups reached physical
 operation/fault/stage/outcome branches and counts actual calls, owned boundaries
 and requested bytes. It establishes coverage only for the supplied inputs.
