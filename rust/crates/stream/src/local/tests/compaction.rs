@@ -1,7 +1,7 @@
 use super::*;
 use crate::{CommitMutation, Record};
 use futures::TryFutureExt as _;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// The compacted snapshot alone restores both appended paths in order.
@@ -115,16 +115,17 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(started.elapsed())
             }
         });
-        // Timeout bounds liveness only; the device remains gated until all
-        // accepted observations finish. Release even if a regression blocks I/O.
-        let observed = tokio::time::timeout(Duration::from_secs(1), &mut observing).await;
+        let observed = tokio::select! {
+            observed = &mut observing => observed??,
+            terminal = &mut writing => {
+                terminal??;
+                return Err("compaction completed before its held device cut".into());
+            }
+        };
         let was_writing = !writing.is_finished();
         release.send(())?;
         writing.await??;
-        match observed {
-            Ok(value) => eprintln!("accepted_compaction_observations before_device_release=6 append_to_all_observers={:?}", value??),
-            Err(error) => { observing.await??; return Err(error.into()); }
-        }
+        eprintln!("accepted_compaction_observations before_device_release=6 append_to_all_observers={observed:?}");
         assert!(was_writing, "compaction completed before the device gate was released");
         assert_eq!(provider.watermarks(path).await?, crate::StreamWatermarks { accepted: 2, durable: 2 });
         assert_snapshot_restores(directory.path(), limits).await
@@ -160,11 +161,18 @@ fn append_to_follow_latency_with_frequent_compaction() -> Result {
                         if_tail: Some(sequence), idempotency_key: crate::IdempotencyKey::unique(),
                     }).await }
                 });
-                let next = tokio::time::timeout(Duration::from_secs(1), records.next()).await?
-                    .ok_or("latency follow ended")??;
-                samples.push(started.elapsed().as_nanos());
+                let ((next, latency), ()) = tokio::try_join!(
+                    async {
+                        let next = records.next().await.ok_or("latency follow ended")??;
+                        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((next, started.elapsed().as_nanos()))
+                    },
+                    async {
+                        writing.await??;
+                        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+                    },
+                )?;
+                samples.push(latency);
                 assert_eq!(next.sequence, sequence);
-                writing.await??;
             }
             samples.sort_unstable();
             let (Some(p50), Some(p99)) = (samples.get(32), samples.get(63)) else {
