@@ -93,20 +93,33 @@ fn pending_stream_survives_its_polling_runtime() {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap();
-            runtime.block_on(async {
-                assert!(
-                    follow
-                        .as_mut()
-                        .poll_next(&mut Context::from_waker(Waker::noop()))
-                        .is_pending()
-                );
+            let unpolled = runtime.block_on(async {
+                let (pending, observed) =
+                    crate::snapshot::observe(crate::snapshot::Cut::Pending, || {
+                        follow
+                            .as_mut()
+                            .poll_next(&mut Context::from_waker(Waker::noop()))
+                            .is_pending()
+                    });
+                assert!(pending);
                 if poll_worker {
-                    tokio::task::yield_now().await;
+                    observed
+                        .await
+                        .expect("snapshot worker ended before its lock wait");
+                    None
+                } else {
+                    Some(observed)
                 }
             });
             clock.release.wait();
             writer.join().unwrap();
             drop(runtime);
+            if let Some(mut unpolled) = unpolled {
+                assert!(
+                    unpolled.try_recv().is_err(),
+                    "unpolled worker published a lock wait"
+                );
+            }
             assert_eq!(futures::executor::block_on(follow.next()), Some(Ok(())));
             append(&provider);
         }

@@ -136,15 +136,20 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
                 .boxed()
         };
         let held = provider.inner.publication.write().await;
-        assert!(
+        let cut = if keep {
+            crate::snapshot::Cut::Pending
+        } else {
+            crate::snapshot::Cut::Retired
+        };
+        let (pending, settled) = crate::snapshot::observe(cut, || {
             follow
                 .as_mut()
                 .poll_next(&mut Context::from_waker(Waker::noop()))
                 .is_pending()
-        );
+        });
+        assert!(pending);
         let kept = keep.then_some(follow);
-        // Run the spawned job while the writer still holds the lock.
-        tokio::task::yield_now().await;
+        settled.await?;
         drop(held);
         assert_eq!(
             provider.inner.publication.try_write().is_ok(),
