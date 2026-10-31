@@ -79,8 +79,17 @@ impl Cut<'_> {
         }
         add_records(&mut request, self.pages, records)?;
         if publication.is_some() {
+            let mut previous = None;
             for contribution in self.contributions {
                 let (path, _) = contribution.target()?;
+                if previous.is_some_and(|prior| prior >= path)
+                    || path == self.execution
+                    || path == self.head
+                    || path == self.pages
+                {
+                    return Err(invalid(None));
+                }
+                previous = Some(path);
                 crate::distributed::add_condition(&mut request, contribution.condition.clone())?;
                 add_records(
                     &mut request,
@@ -210,35 +219,64 @@ impl Cut<'_> {
                 if receipt.appends.len() != 3 + self.contributions.len() {
                     return Err(Error::Indeterminate(self.operation));
                 }
-                let valid = match &receipt.appends[..3] {
-                    [execution, head, pages] => {
-                        confirms(
-                            execution,
-                            self.execution,
-                            self.execution_tail,
-                            std::slice::from_ref(observation),
-                        ) && confirms(
-                            head,
-                            self.head,
-                            self.head_tail,
-                            std::slice::from_ref(checkpoint),
-                        ) && confirms(pages, self.pages, pages_tail, records)
-                    }
-                    _ => false,
-                };
-                if !valid || !receipt.forks.is_empty() {
+                if !receipt.forks.is_empty() {
                     return Err(Error::Indeterminate(self.operation));
                 }
-                for (append, contribution) in receipt.appends[3..].iter().zip(self.contributions) {
-                    let (path, start) = contribution.target()?;
-                    if !confirms(
-                        append,
-                        path,
-                        start,
-                        std::slice::from_ref(contribution.record),
-                    ) {
+                // Stream canonicalizes mutations by path before publication.
+                // Visit every member once; contributed paths are admitted in
+                // that same order, independently of the three journal paths.
+                let mut previous = None;
+                let mut seen = 0_u8;
+                let mut contributions = self.contributions.iter();
+                for append in &receipt.appends {
+                    if previous.is_some_and(|path| path >= &append.path) {
                         return Err(Error::Indeterminate(self.operation));
                     }
+                    previous = Some(&append.path);
+                    let (bit, valid) = if append.path == *self.execution {
+                        (
+                            1,
+                            confirms(
+                                append,
+                                self.execution,
+                                self.execution_tail,
+                                std::slice::from_ref(observation),
+                            ),
+                        )
+                    } else if append.path == *self.head {
+                        (
+                            2,
+                            confirms(
+                                append,
+                                self.head,
+                                self.head_tail,
+                                std::slice::from_ref(checkpoint),
+                            ),
+                        )
+                    } else if append.path == *self.pages {
+                        (4, confirms(append, self.pages, pages_tail, records))
+                    } else {
+                        let Some(contribution) = contributions.next() else {
+                            return Err(Error::Indeterminate(self.operation));
+                        };
+                        let (path, start) = contribution.target()?;
+                        (
+                            0,
+                            confirms(
+                                append,
+                                path,
+                                start,
+                                std::slice::from_ref(contribution.record),
+                            ),
+                        )
+                    };
+                    if !valid || seen & bit != 0 {
+                        return Err(Error::Indeterminate(self.operation));
+                    }
+                    seen |= bit;
+                }
+                if seen != 7 || contributions.next().is_some() {
+                    return Err(Error::Indeterminate(self.operation));
                 }
                 Ok(true)
             }
