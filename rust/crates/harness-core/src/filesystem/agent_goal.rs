@@ -110,7 +110,7 @@ where
         Box::pin(async move {
             let key = IdempotencyKey::new(format!("{key}:{}", goal.source.version()))?;
             // Conditioned on the observed version: a concurrent edit wins and
-            // the retried step decides again on the edited goal.
+            // the committed actor continuation decides on the edited goal.
             self.host
                 .put_content(
                     &self.volume,
