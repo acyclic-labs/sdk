@@ -1,6 +1,8 @@
 //! Logical ownership of the main reducer's records.
 use super::*;
 mod walk;
+#[cfg(feature = "filesystem")]
+pub(crate) use walk::tree_nodes;
 pub(crate) use walk::{OwnedBytes, owned_enum, owned_struct, owned_tuple};
 #[cfg(test)]
 mod tests;
