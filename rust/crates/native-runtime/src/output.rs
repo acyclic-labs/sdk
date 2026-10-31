@@ -50,11 +50,18 @@ impl InheritedOutput {
         #[cfg(unix)]
         {
             let file = unix::admit(file)?;
-            Ok(Self {
-                descriptor: Some(tokio::io::unix::AsyncFd::with_interest(
+            // SAFETY: this private File keeps the same descriptor and open file
+            // description alive until AsyncFd drops; no exchange is exposed.
+            #[expect(unsafe_code, reason = "registers an exclusively owned descriptor")]
+            let descriptor = unsafe {
+                tokio::io::unix::AsyncFd::register_with_interest(
                     file,
                     tokio::io::Interest::WRITABLE,
-                )?),
+                )
+            }
+            .map_err(io::Error::from)?;
+            Ok(Self {
+                descriptor: Some(descriptor),
             })
         }
         #[cfg(not(unix))]

@@ -48,10 +48,12 @@ fn full_output_preserves_credit_flags_and_independent_progress() -> io::Result<(
                 0,
             );
 
-            // Exhaust real kernel credit. Each successful iteration advances
-            // bytes; the first pending syscall/readiness cut ends filling.
+            // Await initial registration before exhausting real kernel credit.
+            // Subsequent writes consume the cached readiness until the actual
+            // full pipe clears it and registers its next drain/close event.
             let chunk = [b'x'; 8192];
-            let mut filled = 0;
+            let mut filled = output.write(&chunk).await?;
+            assert_ne!(filled, 0);
             loop {
                 let written = poll_fn(|cx| {
                     Poll::Ready(match Pin::new(&mut output).poll_write(cx, &chunk) {
