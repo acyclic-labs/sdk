@@ -209,6 +209,17 @@ impl ModelRequest {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         match part {
+            ModelContentPart::Notices { notices } => {
+                if !standalone
+                    || !pending.is_empty()
+                    || notices.is_empty()
+                    || matches!(role, ModelRole::Assistant | ModelRole::Tool)
+                {
+                    return Err(Error::Invalid(
+                        "notices require a standalone event boundary".into(),
+                    ));
+                }
+            }
             ModelContentPart::Configuration { effort, .. } => {
                 if role != ModelRole::User
                     || !standalone

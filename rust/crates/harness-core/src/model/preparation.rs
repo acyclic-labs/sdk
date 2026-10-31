@@ -305,6 +305,21 @@ impl ModelContentPart {
     fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
         history_step(quota.work(), 1)?;
         Ok(match self {
+            Self::Notices { notices } => Self::Notices {
+                notices: copy_vector(notices, quota, |notice, quota| {
+                    Ok(crate::conversation::wire::Notice {
+                        source: copy_text(&notice.source, quota)?,
+                        kind: copy_text(&notice.kind, quota)?,
+                        body: copy_value(&notice.body, quota)?,
+                        wake: notice.wake,
+                        coalesce_key: notice
+                            .coalesce_key
+                            .as_ref()
+                            .map(|key| copy_text(key, quota))
+                            .transpose()?,
+                    })
+                })?,
+            },
             Self::Configuration { prefix, effort } => Self::Configuration {
                 prefix: *prefix,
                 effort: *effort,

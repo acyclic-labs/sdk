@@ -49,6 +49,8 @@ pub struct Provenance {
 pub enum ItemKind {
     /// User or assistant message, call, result, or context update.
     Message,
+    /// A frozen batch of primitive event notices.
+    Notice,
     /// Native reasoning, signature, encrypted or redacted continuation.
     Reasoning,
 }

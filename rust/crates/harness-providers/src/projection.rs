@@ -162,6 +162,21 @@ pub(crate) fn body_named<'a>(
         .as_ref()
         .and_then(|profile| profile.baseline_effort());
     for message in &request.messages {
+        if let ModelContent::Part(ModelContentPart::Notices { notices }) = &message.content {
+            let notice = acyclic_model_render::notice_block(
+                acyclic_model_render::Provenance {
+                    family: adapter,
+                    provider: target.provider.clone(),
+                    model: target.model.clone(),
+                    endpoint: endpoint(provider)?,
+                    credential_scope: target.credential_scope,
+                },
+                notices,
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+            sequence::push(adapter, &mut messages, Message::Notice(notice))?;
+            continue;
+        }
         if let ModelContent::Part(ModelContentPart::Configuration { prefix, effort }) =
             &message.content
         {
@@ -325,6 +340,9 @@ fn project_message<'a>(
     }
     for part in message.content.parts() {
         match part {
+            ModelContentPart::Notices { .. } => {
+                return Err(invalid("notice batch must occupy one message"));
+            }
             ModelContentPart::Configuration { .. } => {
                 return Err(invalid("configuration update must occupy one message"));
             }
