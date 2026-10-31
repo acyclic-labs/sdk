@@ -665,7 +665,8 @@ pub(crate) async fn awaited_with_io(
         if unsettled.contains(&child) {
             continue;
         }
-        match children.settled_with_io(&child, io)?.await {
+        let settled = children.settled_with_io(&child, io)?.await;
+        match settled {
             Ok(Some(_)) if any => return Ok(None),
             Ok(Some(_)) => {}
             Err(error) if error.code() == crate::wire::ErrorCode::NotFound => return Ok(None),

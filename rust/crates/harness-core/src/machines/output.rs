@@ -87,7 +87,7 @@ pub async fn capture_shell_output(
         .stage_source_once(
             operation,
             &path,
-            Pin::new(&mut source),
+            Pin::<&mut ExecSource>::new(&mut source),
             "application/octet-stream",
             "Shell output",
             access,
