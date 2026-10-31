@@ -90,6 +90,40 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
         ],
         Some(5),
     );
+    let updates = [
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Part(ModelContentPart::Configuration {
+                prefix: [7; 32],
+                effort: acyclic_model_render::Effort::High,
+            }),
+        },
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Parts(vec![ModelContentPart::Configuration {
+                prefix: [7; 32],
+                effort: acyclic_model_render::Effort::Low,
+            }]),
+        },
+    ];
+    let mut configured = source.clone();
+    configured.messages.insert(1, updates[0].clone());
+    configured.messages.insert(4, updates[1].clone());
+    configured.current_input_index = Some(7);
+    let expected = vec![
+        configured.messages[0].clone(),
+        updates[0].clone(),
+        updates[1].clone(),
+        configured.messages[7].clone(),
+    ];
+    assert_eq!(mandatory_messages(&configured, 8, &mut None)?, expected);
+    let (mut retained, proof) = compact(&configured, 5, 8)?;
+    assert_eq!(retained.messages.get(1..), Some(expected.as_slice()));
+    validate_compaction(&proof, &configured, &retained, None)?;
+    // An unchanged final effort does not justify deleting an earlier admitted
+    // transition: the original ordered context remains the replay contract.
+    retained.messages.remove(2);
+    assert!(validate_compaction(&proof, &configured, &retained, None).is_err());
     for budget in 1..=6 {
         let projection = compact(&source, budget, 6);
         if matches!(budget, 1 | 2) {

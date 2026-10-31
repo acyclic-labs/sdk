@@ -149,12 +149,18 @@ pub(in crate::context) fn mandatory_flags<'a>(
     let mut selected = quota_vector::<bool>(context.messages.len(), quota)?;
     for (position, message) in context.messages.iter().enumerate() {
         compaction_step(quota)?;
+        let mut configuration = false;
+        for part in message.content.parts() {
+            compaction_step(quota)?;
+            configuration |= matches!(part, ModelContentPart::Configuration { .. });
+        }
         selected.push(
             context.current_input_index.map(|index| index as usize) == Some(position)
                 || position + 1 == context.messages.len()
                 || position >= covered
                 || message.content.contains_project_instructions()
                 || message.role == crate::model::ModelRole::System
+                || configuration
                 || message.content.contains_native_media(),
         );
     }
