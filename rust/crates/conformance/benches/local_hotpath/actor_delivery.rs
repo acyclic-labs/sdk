@@ -33,7 +33,8 @@ impl std::error::Error for EntryError {}
 
 struct Pending {
     actor: ActorReference,
-    sequence: u64,
+    epoch: u64,
+    trigger: Trigger,
     sender: Option<oneshot::Sender<std::result::Result<Instant, EntryError>>>,
 }
 
@@ -60,7 +61,8 @@ impl Entries {
     pub(super) fn arm(
         self: &Arc<Self>,
         actor: ActorReference,
-        sequence: u64,
+        epoch: u64,
+        trigger: Trigger,
     ) -> Result<(
         Scope,
         oneshot::Receiver<std::result::Result<Instant, EntryError>>,
@@ -72,7 +74,8 @@ impl Entries {
         let (sender, receiver) = oneshot::channel();
         *pending = Some(Pending {
             actor,
-            sequence,
+            epoch,
+            trigger,
             sender: Some(sender),
         });
         Ok((Scope(self.clone()), receiver))
@@ -91,9 +94,10 @@ impl Entries {
     pub(super) fn check_owned_scope(
         self: &Arc<Self>,
         actor: ActorReference,
-        sequence: u64,
+        epoch: u64,
+        trigger: Trigger,
     ) -> Result {
-        match self.arm(actor, sequence) {
+        match self.arm(actor, epoch, trigger) {
             Err(error)
                 if error.downcast_ref::<EntryError>()
                     == Some(&EntryError::ConcurrentObservation) =>
@@ -106,8 +110,13 @@ impl Entries {
         }
     }
 
-    pub(super) async fn check_dropped_producer(self: &Arc<Self>, actor: ActorReference) -> Result {
-        let (scope, receiver) = self.arm(actor, 0)?;
+    pub(super) async fn check_dropped_producer(
+        self: &Arc<Self>,
+        actor: ActorReference,
+        epoch: u64,
+        trigger: Trigger,
+    ) -> Result {
+        let (scope, receiver) = self.arm(actor, epoch, trigger)?;
         drop(scope);
         if Self::receive(receiver).await != Err(EntryError::ProducerDropped) {
             return Err("handler-entry control did not report its dropped producer".into());
@@ -144,7 +153,8 @@ impl Handler for Observed {
             && let Some(sender) = pending.sender.take()
         {
             let expected = pending.actor == delivery.actor
-                && matches!(&delivery.trigger, Trigger::Record { sequence, .. } if *sequence == pending.sequence);
+                && pending.epoch == delivery.epoch
+                && pending.trigger == delivery.trigger;
             let _ = sender.send(if expected {
                 Ok(entered)
             } else {

@@ -64,7 +64,8 @@ continuous activation-follow notification. Entry identity and exactly one
 invocation are checked, along with the consumed cursor and idle checkpoint.
 The delivery scope closes the observing channel on completion, error or
 cancellation. A dropped scope must return typed producer loss, and a real
-entry checked against another input cursor must be rejected. Entry-prefix work
+entry checked against another actor, input cursor, subscription or admitted epoch
+must be rejected. Entry-prefix work
 counts remain missing because whole-drain work cannot be attributed to it.
 Warm Actor reads borrow the admitted value through `ActorStateBinding::get`,
 without a transaction or handle clone, and charge no payload-copy floor.
