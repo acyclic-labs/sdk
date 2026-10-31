@@ -44,6 +44,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
             invocation: &invocation,
             metadata: &metadata,
             target: None,
+            filesystem: None,
         };
         assert!(
             serde_json::to_vec(&saved).expect("fixture encoding").len()

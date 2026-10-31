@@ -32,6 +32,7 @@ pub struct FilesystemTools<P: ?Sized + 'static, O: 'static> {
     host: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
     store: StreamGitCompatStore<P>,
     volumes: BTreeMap<String, VolumeRef>,
+    binding_identity: [u8; 32],
     verifier: AuthorityVerifier,
     scope: Scope,
 }
@@ -56,10 +57,28 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                 return Err(Error::Invalid("duplicate filesystem volume binding".into()));
             }
         }
+        // Hash the canonical, sorted binding once, rather than reconstructing
+        // or serializing all volume references for every command and replay.
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"acyclic.filesystem.tool-binding.v1");
+        for part in [
+            host.provider.namespace(),
+            host.provider.family(),
+            host.provider.version(),
+        ] {
+            identity.update(&(part.len() as u64).to_be_bytes());
+            identity.update(part.as_bytes());
+        }
+        for (name, volume) in &volumes {
+            identity.update(&(name.len() as u64).to_be_bytes());
+            identity.update(name.as_bytes());
+            identity.update(&volume.identity_digest(u64::MAX, &mut None)?);
+        }
         Ok(Self {
             host,
             store,
             volumes,
+            binding_identity: identity.finalize().into(),
             verifier,
             scope: authority.scope.copy(&mut None)?,
         })
@@ -227,6 +246,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         Ok(Some(ToolResult {
             value: serde_json::json!({"result": command}),
         }))
+    }
+}
+
+impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
+    crate::runtime::FilesystemExecutor for FilesystemTools<P, O>
+{
+    fn binding_identity(&self) -> [u8; 32] {
+        self.binding_identity
     }
 }
 
