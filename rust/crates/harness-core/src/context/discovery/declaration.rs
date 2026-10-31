@@ -131,6 +131,7 @@ impl ContextDiscovery {
                     &mut VolumeDiscovery {
                         reader,
                         root: &scope.root,
+                        io: None,
                     },
                     &scope.root.directory,
                     &scope.active_directory,

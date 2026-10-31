@@ -197,6 +197,7 @@ impl LocalHarness {
                     &mut crate::context::VolumeDiscovery {
                         reader: binding.reader,
                         root: &root,
+                        io: None,
                     },
                     directory,
                     "SKILL.md",

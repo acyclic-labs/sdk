@@ -266,7 +266,11 @@ pub async fn discover_skills_at(
         root.validate(&mut None)?;
         result.extend(
             discover_skills_from(
-                &mut VolumeDiscovery { reader, root },
+                &mut VolumeDiscovery {
+                    reader,
+                    root,
+                    io: None,
+                },
                 &root.directory,
                 name,
                 work,

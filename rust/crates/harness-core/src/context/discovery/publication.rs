@@ -469,6 +469,7 @@ impl SkillPublicationSource {
                             &generation,
                             "SKILL.md",
                             limits,
+                            Some(session),
                         ),
                     )
                     .await??

@@ -365,7 +365,7 @@ impl ContextRoot {
         name: &str,
         limits: ContextDiscoveryLimits,
     ) -> Result<Option<SkillMetadata>> {
-        self.skill_metadata_parsed_at(reader, path, generation, name, limits)
+        self.skill_metadata_parsed_at(reader, path, generation, name, limits, None)
             .await?
             .transpose()
     }
@@ -377,9 +377,12 @@ impl ContextRoot {
         generation: &GenerationRef,
         name: &str,
         limits: ContextDiscoveryLimits,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<Result<SkillMetadata>>> {
-        self.validate(&mut None)?;
-        validate_content_path(name, &mut None)?;
+        crate::executor::with_history_io(io, |work| {
+            self.validate(work)?;
+            validate_content_path(name, work)
+        })?;
         if name.contains('/') {
             return Err(Error::Invalid("skill entry must be one filename".into()));
         }
@@ -387,7 +390,11 @@ impl ContextRoot {
             return Ok(None);
         }
         let metadata = read_skill_metadata_parsed(
-            &mut VolumeDiscovery { reader, root: self },
+            &mut VolumeDiscovery {
+                reader,
+                root: self,
+                io,
+            },
             path,
             generation,
             limits,
@@ -402,6 +409,8 @@ impl ContextRoot {
 pub struct VolumeDiscovery<'a> {
     pub reader: &'a dyn ContentResidencyVerifier,
     pub root: &'a ContextRoot,
+    /// Original owner of prefix reads and retained pinned identities.
+    pub io: Option<&'a crate::executor::PreparationIo>,
 }
 impl DiscoverySource for VolumeDiscovery<'_> {
     type Revision = GenerationRef;
@@ -492,12 +501,32 @@ impl SkillReader for VolumeDiscovery<'_> {
         maximum: u32,
     ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
         Box::pin(async move {
-            let pinned = PinnedContextPath {
-                root: self.root.clone(),
-                generation: revision.clone(),
-                path: path.into(),
-            };
-            pinned.validate(&mut None)?;
+            let pinned = crate::executor::with_history_io(self.io, |work| {
+                crate::wire_codec::CodecQuota::produce(work, |quota| {
+                    #[cfg(feature = "filesystem")]
+                    let generation = GenerationRef::from_resource(
+                        crate::core::copy_resource(revision.as_resource(), quota)?,
+                        quota.work(),
+                    )?;
+                    #[cfg(not(feature = "filesystem"))]
+                    let generation = revision.clone();
+                    let pinned = PinnedContextPath {
+                        root: ContextRoot {
+                            volume: self.root.volume.clone_in_quota(quota)?,
+                            directory: crate::core::copy_text(&self.root.directory, quota)?,
+                        },
+                        generation,
+                        path: crate::core::copy_text(path, quota)?,
+                    };
+                    pinned.validate(quota.work())?;
+                    Ok(pinned)
+                })
+                .map(|(pinned, _)| pinned)
+            })?;
+            #[cfg(feature = "filesystem")]
+            let content_io = self.io;
+            #[cfg(not(feature = "filesystem"))]
+            let content_io = None;
             let prefix = self
                 .reader
                 .read_private_prefix(
@@ -506,7 +535,10 @@ impl SkillReader for VolumeDiscovery<'_> {
                     path,
                     revision,
                     u64::from(maximum),
-                    crate::conversation::ContentAccess::default(),
+                    crate::conversation::ContentAccess {
+                        ceiling: None,
+                        io: content_io,
+                    },
                 )?
                 .await?;
             Ok((prefix, pinned))
