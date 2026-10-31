@@ -106,6 +106,11 @@ async fn public_follow_shares_one_session_and_slow_channels_do_not_block_others(
         .follow(crate::FollowRequest::new(StreamPath::new("fast")?, 1))
         .map_ok(crate::records_only)
         .await?;
+    assert_eq!(
+        fixture.counts.opening_interests.load(Ordering::Relaxed),
+        1,
+        "the first request must share admission's flight"
+    );
     append(&provider, "slow", 20).await?;
     append(&provider, "fast", 20).await?;
     for sequence in 1..=20 {

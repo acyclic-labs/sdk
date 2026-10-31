@@ -42,31 +42,36 @@ export function sessionService(wire, follow) {
         if (!route.controller.signal.aborted) emit(frame(route.id, route.generation, { case: "closed", value: create(wire.SessionClosedSchema, { code: "unavailable", message: String(error) }) }));
       }
     };
+    const interest = value => {
+      for (const removed of value.remove) {
+        routes.get(removed.channelId)?.controller.abort();
+        routes.delete(removed.channelId);
+      }
+      for (const subscription of value.upsert) {
+        if (subscription.kind.case !== "follow") throw new Error("fixture expects Streams follows only");
+        const { channelId: id, generation } = subscription.channel;
+        routes.get(id)?.controller.abort();
+        const route = { id, generation, subscription, controller: new AbortController(), credit: { bytes: 0n, frames: 0 } };
+        routes.set(id, route);
+        route.controller.signal.addEventListener("abort", wake, { once: true });
+        emit(frame(id, generation, { case: "opened", value: create(wire.SessionOpenedSchema, { resume: subscription.resume }) }));
+        void source(route);
+      }
+      emit(frame(0n, 0n, { case: "interestApplied", value: create(wire.SessionInterestAppliedSchema, { revision: value.revision }) }));
+      wake();
+    };
     const read = async () => {
       try {
         for await (const input of requests) {
           switch (input.body.case) {
             case "hello":
+              if (input.body.value.version !== 2) throw Object.assign(new Error("unsupported session version"), { code: "unsupported" });
               credit.bytes = input.body.value.receiveBytes; credit.frames = input.body.value.receiveFrames;
-              emit(frame(0n, 0n, { case: "welcome", value: create(wire.SessionWelcomeSchema, { version: 1, nodeId: "fixture" }) }));
+              emit(frame(0n, 0n, { case: "welcome", value: create(wire.SessionWelcomeSchema, { version: 2, nodeId: "fixture" }) }));
+              if (input.body.value.interest !== undefined) interest(input.body.value.interest);
               break;
             case "interest":
-              for (const removed of input.body.value.remove) {
-                routes.get(removed.channelId)?.controller.abort();
-                routes.delete(removed.channelId);
-              }
-              for (const subscription of input.body.value.upsert) {
-                if (subscription.kind.case !== "follow") throw new Error("fixture expects Streams follows only");
-                const { channelId: id, generation } = subscription.channel;
-                routes.get(id)?.controller.abort();
-                const route = { id, generation, subscription, controller: new AbortController(), credit: { bytes: 0n, frames: 0 } };
-                routes.set(id, route);
-                route.controller.signal.addEventListener("abort", wake, { once: true });
-                emit(frame(id, generation, { case: "opened", value: create(wire.SessionOpenedSchema, { resume: subscription.resume }) }));
-                void source(route);
-              }
-              emit(frame(0n, 0n, { case: "interestApplied", value: create(wire.SessionInterestAppliedSchema, { revision: input.body.value.revision }) }));
-              wake();
+              interest(input.body.value);
               break;
             case "window": {
               const balance = input.channelId === 0n ? credit : routes.get(input.channelId)?.credit;

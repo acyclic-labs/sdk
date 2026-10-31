@@ -7,7 +7,7 @@
 //! child's first delivery is its `ForkAdopted` record. There is no other timer,
 //! poller or per-agent task.
 
-use super::checkpoint::{checkpoint_state, codec, decode};
+use super::checkpoint::{checkpoint_state, codec};
 use super::{
     AgentId, AgentPath, AgentRecord, AgentState, Alarm, Error, ForkAdopted, InboxRecord, IntentId,
     Out, Spawn, TurnDriver, Wake, create_root, delivery_key, lower,
@@ -267,14 +267,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         checkpoint: Option<&Checkpoint>,
         cancellation: acyclic_actors::guest::CancellationToken,
     ) -> Result<Transition, Error> {
-        let saved = checkpoint
-            .map(|checkpoint| {
-                if checkpoint.codec != codec() {
-                    return Err(Error::Record("agent checkpoint codec differs"));
-                }
-                decode(&checkpoint.bytes)
-            })
-            .transpose()?;
+        let saved = checkpoint.map(checkpoint_state).transpose()?;
         let cut = delivery
             .subscriptions
             .get(INBOX)
@@ -432,7 +425,10 @@ where
         Box::pin(async move {
             self.transition(delivery, checkpoint, cancellation)
                 .await
-                .map_err(guest)
+                .map_err(|error| match error {
+                    Error::IncompatibleCheckpointCodec => GuestError::IncompatibleCodec,
+                    error => guest(error),
+                })
         })
     }
 }

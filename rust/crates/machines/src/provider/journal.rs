@@ -1,28 +1,11 @@
 //! Keyed admission and settled results on the canonical Streams commit boundary.
+use super::journal_codec::{Operation, decode as decode_bytes, encode};
 use super::*;
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt,
     CommitRequest, PathHead, ReadRequest, StreamError, StreamPath, StreamProvider,
     StreamProviderExt as _,
 };
-
-#[derive(Serialize, Deserialize)]
-struct Operation {
-    digest: [u8; 32],
-    phase: OperationPhase,
-    outcome: Option<MutationOutcome>,
-}
-
-#[derive(Serialize, Deserialize)]
-enum Version {
-    #[serde(rename = "1")]
-    V1,
-}
-#[derive(Serialize, Deserialize)]
-struct Envelope<T> {
-    version: Version,
-    value: T,
-}
 
 /// Storage of one admitted Machine incarnation. No process-local result map,
 /// resource scan, periodic observer or second durability barrier participates.
@@ -347,9 +330,8 @@ impl Journal {
                         .ok_or(ProviderError::Indeterminate(key))?,
                     () = producer_lost(&mut producer) => return Err(ProviderError::Indeterminate(key)),
                 };
-                let value: Envelope<Operation> = serde_json::from_slice(record.value.as_ref())
-                    .map_err(|_| ProviderError::Indeterminate(key))?;
-                let phase = value.value.phase;
+                let value: Operation = decode_bytes(record.value.as_ref())?;
+                let phase = value.phase;
                 Ok(Some((
                     OperationObservation {
                         id: operation,
@@ -397,9 +379,7 @@ impl Journal {
         let mut events = Vec::new();
         while let Some(record) = records.next().await {
             let record = record.map_err(storage)?;
-            let value: Envelope<MachineObservation> =
-                serde_json::from_slice(record.value.as_ref()).map_err(encoding)?;
-            let value = value.value;
+            let value: MachineObservation = decode_bytes(record.value.as_ref())?;
             events.push(MachineEvent {
                 machine: self.machine,
                 sequence: record.sequence + 1,
@@ -443,26 +423,13 @@ fn condition(path: StreamPath, head: &PathHead) -> Result<CommitCondition, Provi
 fn append(path: StreamPath, value: &impl Serialize) -> Result<CommitMutation, ProviderError> {
     Ok(CommitMutation::Append {
         path,
-        records: vec![AppendRecord::from(
-            serde_json::to_vec(&Envelope {
-                version: Version::V1,
-                value,
-            })
-            .map_err(encoding)?,
-        )],
+        records: vec![AppendRecord::from(encode(value)?)],
     })
 }
 
 fn decode<T: serde::de::DeserializeOwned>(head: PathHead) -> Result<T, ProviderError> {
     let record = head.last.ok_or_else(|| ProviderError::NotFound("Machine journal has no original record; recovery: use the original admitted provider and key".into()))?;
-    let envelope: Envelope<T> = serde_json::from_slice(record.value.as_ref()).map_err(encoding)?;
-    Ok(envelope.value)
-}
-
-fn encoding(error: serde_json::Error) -> ProviderError {
-    ProviderError::Rejected(format!(
-        "Machine journal encoding failed: {error}; recovery: restore the original version-one records"
-    ))
+    decode_bytes(record.value.as_ref())
 }
 
 fn storage(error: StreamError) -> ProviderError {

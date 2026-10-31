@@ -20,7 +20,7 @@ fuzz_target!(|bytes: &[u8]| {
     }
     if let Ok(value) = decode_capability(bytes) {
         assert_eq!(
-            decode_capability(&CapabilityProto::from(value.clone()).encode_to_vec()),
+            decode_capability(&CapabilityProto::from(value.clone()).encode_canonical()),
             Ok(value)
         );
     }

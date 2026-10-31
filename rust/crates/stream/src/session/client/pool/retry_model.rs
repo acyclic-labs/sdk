@@ -35,7 +35,7 @@ impl transport::Transport for Peer {
                 0,
                 0,
                 Body::Welcome(wire::SessionWelcome {
-                    version: 1,
+                    version: crate::session::VERSION,
                     node_id: "good".into(),
                     ..Default::default()
                 }),

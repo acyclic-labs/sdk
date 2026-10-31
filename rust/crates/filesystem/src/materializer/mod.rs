@@ -48,6 +48,8 @@ native_modules! {
     witness;
     metadata;
 }
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+pub use witness::codec_fuzz;
 #[cfg(not(target_arch = "wasm32"))]
 mod directories;
 #[cfg(not(target_arch = "wasm32"))]

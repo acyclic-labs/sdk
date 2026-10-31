@@ -23,7 +23,9 @@ async fn round_trip(
     let bytes = encode_observation(&value, BOUND)?;
     assert_eq!(decode_observation(&bytes, bytes.len())?, value);
     assert_eq!(
-        bytes,
+        bytes
+            .strip_prefix(OBSERVATION_MAGIC)
+            .ok_or("missing format header")?,
         wire_codec::observation_wire(value.clone()).encode_to_vec()
     );
     if let IdempotencyOutcome::Commit(envelope) = &value.outcome {
@@ -171,7 +173,7 @@ fn bounds_and_malformed_persistence_fail_closed() -> Result<(), Box<dyn std::err
     let mut wire = wire_codec::observation_wire(value);
     wire.request_digest = bytes::Bytes::from_static(b"short");
     assert_eq!(
-        decode_observation(&wire.encode_to_vec(), BOUND),
+        decode_observation(&encode(&wire, BOUND, OBSERVATION_MAGIC)?, BOUND),
         Err(StreamError::InvalidArgument)
     );
     assert_eq!(
@@ -226,7 +228,11 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
             encode_envelope(&broken, BOUND),
             Err(StreamError::InvalidArgument)
         );
-        let bytes = wire_codec::envelope_to_wire(broken).encode_to_vec();
+        let bytes = encode(
+            &wire_codec::envelope_to_wire(broken),
+            usize::MAX,
+            ENVELOPE_MAGIC,
+        )?;
         assert_eq!(
             decode_envelope(&bytes, BOUND),
             Err(StreamError::InvalidArgument)
@@ -257,7 +263,10 @@ async fn a_retained_receipt_without_its_revision_is_refused()
         .ok_or("missing outcome")?;
     let mut wire = wire_codec::observation_wire(value.clone());
     // Negative control: the intact v1 record decodes.
-    assert_eq!(decode_observation(&wire.encode_to_vec(), BOUND)?, value);
+    assert_eq!(
+        decode_observation(&encode(&wire, BOUND, OBSERVATION_MAGIC)?, BOUND)?,
+        value
+    );
     let Some(wire::idempotency_observation::Outcome::Append(append)) = wire.outcome.as_mut() else {
         return Err("expected an append outcome".into());
     };
@@ -266,8 +275,42 @@ async fn a_retained_receipt_without_its_revision_is_refused()
     };
     receipt.revision = None;
     assert_eq!(
-        decode_observation(&wire.encode_to_vec(), BOUND),
+        decode_observation(&encode(&wire, BOUND, OBSERVATION_MAGIC)?, BOUND),
         Err(StreamError::InvalidArgument)
     );
+    Ok(())
+}
+
+#[test]
+fn old_and_unknown_fact_versions_refuse_before_payload() -> Result<(), Box<dyn std::error::Error>> {
+    let observation = observation()?;
+    let IdempotencyOutcome::Commit(envelope) = &observation.outcome else {
+        return Err("expected committed envelope".into());
+    };
+    type Decoder = fn(&[u8], usize) -> Result<(), StreamError>;
+    let frames: [(Vec<u8>, &[u8], Decoder); 2] = [
+        (
+            encode_observation(&observation, BOUND)?,
+            OBSERVATION_MAGIC,
+            |bytes, maximum| decode_observation(bytes, maximum).map(|_| ()),
+        ),
+        (
+            encode_envelope(envelope, BOUND)?,
+            ENVELOPE_MAGIC,
+            |bytes, maximum| decode_envelope(bytes, maximum).map(|_| ()),
+        ),
+    ];
+    for (current, magic, decode) in frames {
+        decode(&current, current.len())?;
+        assert_eq!(
+            decode(&current[magic.len()..], BOUND),
+            Err(StreamError::InvalidArgument)
+        );
+        for version in [b'0', b'2', u8::MAX] {
+            let mut refused = current[..magic.len()].to_vec();
+            refused[magic.len() - 2] = version;
+            assert_eq!(decode(&refused, BOUND), Err(StreamError::Unsupported));
+        }
+    }
     Ok(())
 }

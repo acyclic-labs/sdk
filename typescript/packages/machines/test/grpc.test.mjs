@@ -225,6 +225,7 @@ test("exec preserves nonzero exit status, cancellation, timeout and unavailable 
   const { machines } = await fixture(t, {
     async *exec(query, context) {
       authenticate(context);
+      assert.ok(context.timeoutMs() <= Number(query.timeoutMs), "RPC deadline exceeds the original command timeout");
       attempts++;
       const deadline = /^(\d{1,8})([HMSmun])$/.exec(context.requestHeader.get("grpc-timeout"));
       assert.ok(deadline, "exec admission omitted its original deadline");

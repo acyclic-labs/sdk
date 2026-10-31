@@ -33,6 +33,8 @@ mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
+#[cfg(feature = "test-support")]
+pub use execution_journal::codec_fuzz as execution_codec_fuzz;
 #[cfg(not(target_arch = "wasm32"))]
 pub use execution_journal::{
     ContextCheckpoint, ContextPublicationReceipt, ContextPublicationRequest,

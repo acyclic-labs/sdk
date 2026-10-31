@@ -94,7 +94,7 @@ where
                 ))
             })
             .transpose()?;
-        let observation: Observation = crate::filesystem::decode_record(&record.value, io)?;
+        let observation = observations::decode_observation(&record.value, io)?;
         let valid_event = match (&observation.event, outcome) {
             (
                 ExecutionEvent::ToolCompleted { step, call_id, .. },
@@ -113,7 +113,6 @@ where
             )
         })?;
         if record.sequence != sequence - 1
-            || observation.version != OBSERVATION_VERSION
             || observation.operation_id != query.turn
             || observation.turn_operation != self.turn_operation(query.turn)
             || observation.retry_digest != retry

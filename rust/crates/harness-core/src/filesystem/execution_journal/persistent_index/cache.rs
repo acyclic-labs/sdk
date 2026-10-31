@@ -289,7 +289,7 @@ mod tests {
             let mut writer = Writer::new(&provider, &path, tail, Some(&io), scratch)?;
             writer.set_cache(cache, Some(&io))?;
             let key = *blake3::hash(&(update % distinct).to_be_bytes()).as_bytes();
-            root = Some(writer.set(root, key, &update.to_be_bytes()).await?);
+            root = Some(writer.set(root, key, &update.to_be_bytes(), false).await?);
             cache = writer.prepare_cache()?;
             let outcome = provider
                 .append(acyclic_stream::AppendRequest {

@@ -1,4 +1,4 @@
-use super::{Checkpoint, CheckpointCodec, GuestError};
+use super::{Checkpoint, CheckpointCodec, CodecIdentity, GuestError};
 
 /// Installed update boundary. Hosts publish this as one fenced operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,18 +34,23 @@ pub fn prepare_update<State>(
     checkpoint: Option<&Checkpoint>,
     candidate: &CheckpointCodec<State>,
 ) -> Result<Option<State>, GuestError> {
-    if candidate.identity.name.is_empty()
-        || candidate.identity.version.is_empty()
-        || !candidate.readable.contains(&candidate.identity)
-    {
+    admit_checkpoint(checkpoint, &candidate.identity)?;
+    checkpoint
+        .map(|checkpoint| (candidate.decode)(checkpoint))
+        .transpose()
+}
+
+/// Refuse a checkpoint of any other codec before interpreting its state bytes.
+/// Admission borrows the checkpoint and never migrates or rewrites it.
+pub fn admit_checkpoint(
+    checkpoint: Option<&Checkpoint>,
+    identity: &CodecIdentity,
+) -> Result<(), GuestError> {
+    if identity.name.is_empty() || identity.version.is_empty() {
         return Err(GuestError::IncompatibleCodec);
     }
-    checkpoint
-        .map(|checkpoint| {
-            if !candidate.readable.contains(&checkpoint.codec) {
-                return Err(GuestError::IncompatibleCodec);
-            }
-            (candidate.decode)(checkpoint)
-        })
-        .transpose()
+    if checkpoint.is_some_and(|checkpoint| checkpoint.codec != *identity) {
+        return Err(GuestError::IncompatibleCodec);
+    }
+    Ok(())
 }

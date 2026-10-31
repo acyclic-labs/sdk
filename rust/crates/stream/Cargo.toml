@@ -105,6 +105,7 @@ rustls-platform-verifier = { workspace = true, optional = true }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 
 [dev-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 ed25519-dalek = "=3.0.0"
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }

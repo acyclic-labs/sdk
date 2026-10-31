@@ -35,15 +35,21 @@ fn read_snapshot(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let (body, checksum) = encoded
+    decode_snapshot(&encoded, limits).map(Some)
+}
+
+fn decode_snapshot(
+    encoded: &[u8],
+    limits: LocalStreamLimits,
+) -> Result<Snapshot, LocalStreamError> {
+    let rest = versioned_header(encoded, b"ACYCLIC-STREAM-SNAP-V", b"02\0", "snapshot")?;
+    let (rest, checksum) = rest
         .split_last_chunk::<32>()
         .ok_or(LocalStreamError::Corrupt)?;
+    let body = &encoded[..encoded.len() - 32];
     if snapshot_checksum(body) != *checksum {
         return Err(LocalStreamError::Corrupt);
     }
-    let rest = body
-        .strip_prefix(SNAPSHOT_MAGIC)
-        .ok_or(LocalStreamError::Corrupt)?;
     let (found, rest) = rest
         .split_at_checked(LIMITS_BYTES)
         .ok_or(LocalStreamError::Corrupt)?;
@@ -54,10 +60,29 @@ fn read_snapshot(
         .split_first_chunk::<8>()
         .ok_or(LocalStreamError::Corrupt)?;
     let state = rest;
-    Ok(Some(Snapshot {
+    Ok(Snapshot {
         epoch: u64::from_le_bytes(*epoch),
         state: state.to_vec(),
-    }))
+    })
+}
+
+fn encode_incarnation(incarnation: u128) -> [u8; INCARNATION_MAGIC.len() + 16] {
+    let mut encoded = [0; INCARNATION_MAGIC.len() + 16];
+    let (header, value) = encoded.split_at_mut(INCARNATION_MAGIC.len());
+    header.copy_from_slice(INCARNATION_MAGIC);
+    value.copy_from_slice(&incarnation.to_be_bytes());
+    encoded
+}
+
+fn decode_incarnation(encoded: &[u8]) -> Result<u128, LocalStreamError> {
+    let value = versioned_header(
+        encoded,
+        b"ACYCLIC-STREAM-INCARNATION-V",
+        b"1\0",
+        "incarnation",
+    )?;
+    let value = <[u8; 16]>::try_from(value).map_err(|_| LocalStreamError::Corrupt)?;
+    Ok(u128::from_be_bytes(value))
 }
 
 /// The store's revision incarnation. It survives a reopen after a run whose
@@ -71,9 +96,7 @@ fn incarnation(root: &Path, fresh: bool) -> Result<u128, LocalStreamError> {
     if !fresh {
         match std::fs::read(&path) {
             Ok(recorded) => {
-                let recorded = <[u8; 16]>::try_from(recorded.as_slice())
-                    .map_err(|_| LocalStreamError::Corrupt)?;
-                return Ok(u128::from_be_bytes(recorded));
+                return decode_incarnation(&recorded);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -83,7 +106,8 @@ fn incarnation(root: &Path, fresh: bool) -> Result<u128, LocalStreamError> {
     let temporary = root.join(INCARNATION_TEMPORARY);
     {
         let mut file = File::create(&temporary)?;
-        acyclic_native_runtime::write_file_all(&mut file, &incarnation.to_be_bytes())?;
+        let encoded = encode_incarnation(incarnation);
+        acyclic_native_runtime::write_file_all(&mut file, &encoded)?;
         sync_file(&file, LocalDurability::FullFlush)?;
     }
     acyclic_native_runtime::rename_file(&temporary, &path)?;

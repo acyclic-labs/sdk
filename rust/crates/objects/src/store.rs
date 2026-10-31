@@ -51,7 +51,7 @@
 //! stalled past that grace fails its commit; no commit references a lost
 //! blob. An index key of a holder that crashed before committing pins its
 //! child; it never refuses wrongly in the unsafe direction.
-use crate::blob::{Envelope, corrupt, decode_batch, encode_batch, invalid};
+use crate::blob::{Envelope, corrupt, decode_batch, decode_incarnation, encode_batch, invalid};
 use crate::{
     ByteRange, Collection, Delete, Deletion, Digest, Error, Head, Kind, Manifest, Medium,
     MediumError, MemoryMedium, Object, Page, Put, Released, Retained, RootId, Usage, Verified,
@@ -63,6 +63,146 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 const PAGE: usize = 1000;
+
+#[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
+mod format_recovery_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_recovery_preserves_refused_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        acyclic_native_runtime::initialize_native_io_services()?;
+        let root = tempfile::tempdir()?;
+        let store =
+            Store::new(crate::LocalMedium::open(root.path(), Default::default(), None).await?);
+        let account = store.account(b"format-recovery")?;
+        let digest = Digest::of(b"payload");
+        let envelope = Envelope {
+            kind: Kind::Blob,
+            length: 7,
+            stored: 7,
+            references: Vec::new(),
+            version: [1; 16],
+            dying: None,
+            condemned: 0,
+        }
+        .encode();
+        let envelope_key = account.envelope_key(&digest);
+        let batch = encode_batch(&[]);
+        let batch_key = format!(
+            "{}batch",
+            account.root_prefix(&RootId::new(b"root".to_vec())?)
+        );
+        account.issued().await?;
+        for (key, original) in [(&envelope_key, &envelope), (&batch_key, &batch)] {
+            assert!(account.medium.create(key, original.clone().into()).await?);
+        }
+        for (key, original) in [(&envelope_key, &envelope), (&batch_key, &batch)] {
+            let header = original
+                .iter()
+                .position(|byte| *byte == 0)
+                .expect("original domain terminator")
+                + 1;
+            for version in [None, Some(b'0'), Some(b'9')] {
+                let mut refused = original.clone();
+                match version {
+                    None => {
+                        refused.drain(..header);
+                    }
+                    Some(version) => refused[header - 2] = version,
+                }
+                assert!(
+                    account
+                        .medium
+                        .replace(key, original, refused.clone().into())
+                        .await?
+                );
+                if key == &envelope_key {
+                    assert_eq!(
+                        account.stored_envelope(&digest).await.unwrap_err().code,
+                        ErrorCode::Unsupported
+                    );
+                    assert_eq!(
+                        account.clear_torn(key).await.unwrap_err().code,
+                        ErrorCode::Unsupported
+                    );
+                    let retained = encode_batch(&[digest]);
+                    assert!(
+                        account
+                            .medium
+                            .replace(&batch_key, &batch, retained.clone().into())
+                            .await?
+                    );
+                    assert_eq!(
+                        crate::Blobs::collect(&account).await.unwrap_err().code,
+                        ErrorCode::Unsupported
+                    );
+                    assert!(
+                        account
+                            .medium
+                            .replace(&batch_key, &retained, batch.clone().into())
+                            .await?
+                    );
+                } else {
+                    assert_eq!(
+                        account.batch(key).await.unwrap_err().code,
+                        ErrorCode::Unsupported
+                    );
+                    assert_eq!(
+                        account.rooted().await.unwrap_err().code,
+                        ErrorCode::Unsupported
+                    );
+                    assert_eq!(
+                        crate::Blobs::collect(&account).await.unwrap_err().code,
+                        ErrorCode::Unsupported
+                    );
+                    assert_eq!(
+                        account
+                            .batch_survived(key, &HashMap::new())
+                            .await
+                            .unwrap_err()
+                            .code,
+                        ErrorCode::Unsupported
+                    );
+                }
+                assert_eq!(
+                    account.medium.read(key, None).await?.as_deref(),
+                    Some(refused.as_slice())
+                );
+                assert!(
+                    account
+                        .medium
+                        .replace(key, &refused, original.clone().into())
+                        .await?
+                );
+            }
+        }
+        assert!(account.stored_envelope(&digest).await?.is_some());
+        assert!(account.batch_survived(&batch_key, &HashMap::new()).await?);
+        // A damaged current payload remains recoverable, unlike a refused header.
+        let header = envelope.iter().position(|byte| *byte == 0).unwrap() + 1;
+        assert!(
+            account
+                .medium
+                .replace(&envelope_key, &envelope, envelope[..header].to_vec().into())
+                .await?
+        );
+        assert!(account.stored_envelope(&digest).await?.is_none());
+        account.clear_torn(&envelope_key).await?;
+        assert!(account.medium.read(&envelope_key, None).await?.is_none());
+        let mut corrupt_batch = batch.clone();
+        corrupt_batch.push(1);
+        assert!(
+            account
+                .medium
+                .replace(&batch_key, &batch, corrupt_batch.into())
+                .await?
+        );
+        assert!(!account.batch_survived(&batch_key, &HashMap::new()).await?);
+        assert_eq!(account.batch(&batch_key).await?, Some(Vec::new()));
+        assert!(account.medium.read(&batch_key, None).await?.is_none());
+        Ok(())
+    }
+}
 
 /// Why a root batch did not commit.
 enum Commit {
@@ -176,18 +316,9 @@ impl Issued {
     }
 }
 
-/// An account's stored incarnation: 16 incarnation bytes, then the last
-/// claimed run, both big-endian.
+/// An account's versioned incarnation and last claimed run, both big-endian.
 fn incarnation_record(incarnation: u128, run: u64) -> OwnedBytes {
-    [incarnation.to_be_bytes().as_slice(), &run.to_be_bytes()]
-        .concat()
-        .into()
-}
-
-fn decode_incarnation(record: &[u8]) -> Result<(u128, u64), Error> {
-    let (incarnation, run) = record.split_first_chunk::<16>().ok_or_else(corrupt)?;
-    let run: [u8; 8] = run.try_into().map_err(|_| corrupt())?;
-    Ok((u128::from_be_bytes(*incarnation), u64::from_be_bytes(run)))
+    crate::blob::encode_incarnation(incarnation, run).into()
 }
 
 impl<M: Medium> Store<M> {
@@ -523,8 +654,10 @@ impl<M: Medium> Account<M> {
         let Some(bytes) = self.medium.read(key, None).await.map_err(medium)? else {
             return Ok(true);
         };
-        let Ok(members) = decode_batch(&bytes) else {
-            return Ok(false);
+        let members = match decode_batch(&bytes) {
+            Ok(members) => members,
+            Err(error) if error.code == ErrorCode::Corrupt => return Ok(false),
+            Err(error) => return Err(error),
         };
         let (root, name) = key
             .strip_prefix(&format!("{}r/", self.prefix))
@@ -569,7 +702,7 @@ impl<M: Medium> Account<M> {
                 Ok(claimed) => claimed,
                 // Torn before its flush: neither its run nor any earlier one
                 // can be told apart, so the account starts a new incarnation.
-                Err(_) if self.medium.volatile() => {
+                Err(error) if error.code == ErrorCode::Corrupt && self.medium.volatile() => {
                     self.medium.remove_if(&key, &record).await.map_err(medium)?;
                     continue;
                 }
@@ -1000,7 +1133,7 @@ impl<M: Medium> Account<M> {
         };
         match Envelope::decode(&bytes) {
             Ok(envelope) => Ok(Some((bytes, envelope))),
-            Err(_) if self.medium.volatile() => Ok(None),
+            Err(error) if error.code == ErrorCode::Corrupt && self.medium.volatile() => Ok(None),
             Err(error) => Err(error),
         }
     }
@@ -1010,8 +1143,14 @@ impl<M: Medium> Account<M> {
         let Some(bytes) = self.medium.read(key, None).await.map_err(medium)? else {
             return Ok(());
         };
-        if self.medium.volatile() && Envelope::decode(&bytes).is_err() {
-            self.medium.remove_if(key, &bytes).await.map_err(medium)?;
+        if self.medium.volatile() {
+            match Envelope::decode(&bytes) {
+                Ok(_) => {}
+                Err(error) if error.code == ErrorCode::Corrupt => {
+                    self.medium.remove_if(key, &bytes).await.map_err(medium)?;
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }
@@ -1263,10 +1402,16 @@ impl<M: Medium> Account<M> {
         })
     }
 
-    /// Every reference held by a retained root. Any failure is `Suspended`:
-    /// an incomplete scan never means an empty root set.
+    /// Every reference held by a retained root. Unsupported formats retain
+    /// their refusal; other failures suspend an incomplete scan.
     async fn rooted(&self) -> Result<Vec<Digest>, Error> {
-        let suspended = |_| Error::from(ErrorCode::Suspended);
+        let suspended = |error: Error| {
+            if error.code == ErrorCode::Unsupported {
+                error
+            } else {
+                ErrorCode::Suspended.into()
+            }
+        };
         let mut references = Vec::new();
         for (key, _) in self
             .list_all(&format!("{}r/", self.prefix))
@@ -1292,7 +1437,7 @@ impl<M: Medium> Account<M> {
         };
         match decode_batch(&bytes) {
             Ok(batch) => Ok(Some(batch)),
-            Err(_) if self.medium.volatile() => {
+            Err(error) if error.code == ErrorCode::Corrupt && self.medium.volatile() => {
                 self.medium.remove_if(key, &bytes).await.map_err(medium)?;
                 Ok(Some(Vec::new()))
             }
@@ -1708,6 +1853,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                         }
                         // A retained reference to nothing protects nothing.
                         Ok(None) => {}
+                        Err(error) if error.code == ErrorCode::Unsupported => return Err(error),
                         Err(_) => return Err(ErrorCode::Suspended.into()),
                     }
                 }
@@ -1724,14 +1870,18 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     .read(&self.epoch_key(), None)
                     .await
                     .map_err(medium)?;
-                let fence = match observed.as_deref().map(<[u8; 8]>::try_from) {
-                    Some(Ok(bytes)) => u64::from_be_bytes(bytes),
-                    Some(Err(_)) if !self.medium.volatile() => return Err(corrupt()),
+                let fence = match observed.as_deref().map(crate::blob::decode_epoch) {
+                    Some(Ok(epoch)) => epoch,
+                    Some(Err(error))
+                        if error.code != ErrorCode::Corrupt || !self.medium.volatile() =>
+                    {
+                        return Err(error);
+                    }
                     // Torn by a crash, or never claimed.
                     Some(Err(_)) | None => 0,
                 };
                 let epoch = fence.checked_add(1).ok_or_else(corrupt)?;
-                let advanced = OwnedBytes::from(epoch.to_be_bytes().to_vec());
+                let advanced = OwnedBytes::from(crate::blob::encode_epoch(epoch));
                 // One collector wins each epoch, across processes.
                 let claimed = match &observed {
                     Some(observed) => {
@@ -1746,15 +1896,6 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     Ok(false) => return Err(ErrorCode::Conflict.into()),
                     Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
                     Err(error) => return Err(medium(error)),
-                }
-                // Revisions and admissions of the earlier put protocol fence nothing.
-                for prefix in ["g/", "a/"] {
-                    let mut pages = self.pages(format!("{}{prefix}", self.prefix));
-                    while let Some(page) = pages.next().await? {
-                        for (key, _) in page {
-                            self.medium.remove(&key).await.map_err(medium)?;
-                        }
-                    }
                 }
                 let mut collection = Collection {
                     epoch,

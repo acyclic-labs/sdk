@@ -254,33 +254,7 @@ machine_mutations! {
                     read_error(&error)
                 })?
                 .into_inner();
-            let mut previous = after;
-            let mut machines = Vec::with_capacity(page.machines.len());
-            for value in page.machines {
-                let expected = decode_machine(value.machine.as_ref())?;
-                if previous.is_some_and(|cursor| expected <= cursor) {
-                    return Err(ProviderError::Rejected(
-                        "server returned a noncanonical machine page".into(),
-                    ));
-                }
-                machines.push(decode_machine_observation(value, expected)?);
-                previous = Some(expected);
-            }
-            let next = page
-                .next
-                .as_ref()
-                .map(|value| decode_machine(Some(value)))
-                .transpose()?;
-            if machines.len()
-                > usize::try_from(limit)
-                    .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
-                || next.is_some() && next != machines.last().map(|value| value.id)
-            {
-                return Err(ProviderError::Rejected(
-                    "server returned a malformed machine cursor".into(),
-                ));
-            }
-            Ok(MachinePage { machines, next })
+            decode_machine_page(page, after, limit)
         })
     }
 

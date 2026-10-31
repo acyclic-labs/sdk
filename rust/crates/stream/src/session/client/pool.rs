@@ -84,7 +84,8 @@ impl Pool {
             return Ok(());
         }
         match result {
-            Ok(ready) => {
+            Ok(mut ready) => {
+                let opening = ready.1.opening_subscription.take();
                 // Recovery through the home endpoint must serve later Opens
                 // without rediscovery. A moved-node endpoint cannot bind home.
                 let home_endpoint = std::sync::Arc::ptr_eq(&ready.1.channel, &self.home_channel);
@@ -92,7 +93,18 @@ impl Pool {
                 // installed link if both handshakes found the same live node.
                 let reused = self.links.contains_key(&ready.0);
                 let installed = if reused {
-                    ready.0
+                    // The duplicate admission may already have effects. Only
+                    // a resumable read may be submitted on the retained link.
+                    if let Some(opening) = &opening {
+                        if self
+                            .routes
+                            .get(&opening.channel_id)
+                            .is_some_and(|route| !route.resumable())
+                        {
+                            self.reject(opening.channel_id, StreamError::Unavailable);
+                        }
+                    }
+                    ready.0.clone()
                 } else {
                     self.install(ready)?
                 };
@@ -111,6 +123,15 @@ impl Pool {
                             .ok_or(StreamError::Unavailable)?;
                     }
                 }
+                if !reused && let Some(opening) = opening {
+                    if self
+                        .routes
+                        .get(&opening.channel_id)
+                        .is_none_or(|route| route.generation != opening.generation || !route.live())
+                    {
+                        self.cancel_subscription(&installed, opening)?;
+                    }
+                }
                 if reused {
                     // Routes already on the reused link were queued when it was
                     // installed. A second same-generation upsert is a protocol
@@ -120,6 +141,12 @@ impl Pool {
                     self.pending.extend(
                         self.routes
                             .on_node(&installed)
+                            .filter(|(id, route)| {
+                                opening.as_ref().is_none_or(|opening| {
+                                    opening.channel_id != **id
+                                        || opening.generation != route.generation
+                                })
+                            })
                             .map(|(id, route)| (*id, route.generation)),
                     );
                 }

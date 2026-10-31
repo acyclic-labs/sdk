@@ -318,6 +318,7 @@ cases! {
             .map_err(|(error, _)| error)?.claim(1, 1, WorkCounters::UNCHARGED)?,
     }) => Aborted;
     fs_local_stream: fs(FsError::LocalStream(acyclic_stream::LocalStreamError::Corrupt)) => DataLoss;
+    fs_local_stream_version: fs(FsError::LocalStream(acyclic_stream::LocalStreamError::UnsupportedVersion { format: "snapshot" })) => FailedPrecondition;
     fs_local_objects: fs(FsError::LocalObjects(acyclic_objects::local::LocalOpenError::AlreadyOwned)) => FailedPrecondition;
     fs_local_root: fs(FsError::LocalRoot(io(std::io::ErrorKind::PermissionDenied))) => PermissionDenied;
     fs_local_options: fs(FsError::LocalOptionsConflict) => FailedPrecondition;
@@ -331,6 +332,7 @@ fn every_native_materialization_category_keeps_its_wire_code() {
     use crate::NativeTreeMaterializationError as E;
     for (error, expected) in [
         (E::InvalidLayout, Code::DataLoss),
+        (E::UnsupportedFormat, Code::FailedPrecondition),
         (E::MissingEntry, Code::NotFound),
         (E::ExternalMutation, Code::Aborted),
         (E::UnexpectedBackup, Code::FailedPrecondition),

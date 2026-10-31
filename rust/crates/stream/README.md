@@ -96,8 +96,9 @@ on the original work owner's ledger. Session reads use the same credit and
 authorization as ordinary finite reads and reject changed key bytes.
 
 Opening a local snapshot written before receipt revisions returns
-`UnsupportedPreRevisionStore`, with instructions to re-create the store. It does
-not infer a missing revision or alter the persisted snapshot.
+`LocalStreamError::UnsupportedVersion { format }`, identifying the refused format
+and instructing the caller to re-create the store. Old and unknown format versions
+refuse before snapshot interpretation; the stored snapshot remains unchanged.
 
 `Stream::submit` returns an owned `'static` `Pending` for one canonical Commit.
 Submission transfers custody to the executor immediately. Cloned handles share

@@ -202,6 +202,9 @@ pub enum PublicationError {
 mod accounting;
 use accounting::*;
 mod codec;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod codec_fuzz;
 pub(crate) use codec::decode_publication_evidence_with_accounting;
 pub use codec::decode_published_generation;
 use codec::*;

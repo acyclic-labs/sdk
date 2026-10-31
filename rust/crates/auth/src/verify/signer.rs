@@ -54,7 +54,7 @@ impl CertifiedSigner {
         };
         let secret = Zeroizing::new(next.to_bytes());
         drop(next);
-        let encoded = wire::encode(&[signed], 18, secret.as_ref(), VERSION);
+        let encoded = wire::encode(&[signed], Some((18, secret.as_ref())), VERSION);
         self.authentication
             .lock()
             .map_err(|_| VerifyError::Trust)?

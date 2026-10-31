@@ -1181,7 +1181,7 @@ async fn a_delayed_collector_never_removes_a_later_version()
 }
 
 #[test]
-fn envelopes_round_trip_and_decode_earlier_encodings() -> Result<(), Box<dyn std::error::Error>> {
+fn envelopes_refuse_obsolete_encodings() -> Result<(), Box<dyn std::error::Error>> {
     let envelope = crate::blob::Envelope {
         kind: crate::Kind::Blob,
         length: 3,
@@ -1200,14 +1200,16 @@ fn envelopes_round_trip_and_decode_earlier_encodings() -> Result<(), Box<dyn std
         ..envelope.clone()
     };
     assert_eq!(restamped.encode().len(), encoded.len());
-    // An envelope from before stamps is unstamped.
-    let earlier = crate::blob::Envelope::decode(&encoded[..encoded.len() - 8])?;
-    assert_eq!((earlier.dying, earlier.condemned), (Some([5; 16]), 0));
-    // A pending one, which this protocol no longer writes, marks no deleter.
+    assert_eq!(
+        crate::blob::Envelope::decode(&encoded[..encoded.len() - 8]).map_err(|error| error.code),
+        Err(ErrorCode::Corrupt)
+    );
     let mut pending = encoded[..encoded.len() - 24].to_vec();
     *pending.last_mut().ok_or("empty")? = 2;
-    let decoded = crate::blob::Envelope::decode(&pending)?;
-    assert_eq!((decoded.dying, decoded.condemned), (None, 0));
+    assert_eq!(
+        crate::blob::Envelope::decode(&pending).map_err(|error| error.code),
+        Err(ErrorCode::Corrupt)
+    );
     Ok(())
 }
 

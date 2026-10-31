@@ -269,6 +269,22 @@ fn copied_or_malformed_receipts_cannot_substitute_physical_custody()
     assert_eq!(guards[0].owned_root(&work)?, None);
     original.set_len(123)?;
     assert_eq!(guards[0].owned_root(&work)?, None);
+    for version in [b"000000", b"000001", b"000002", b"000004", b"999999"] {
+        let mut unsupported = bytes;
+        unsupported[10..16].copy_from_slice(version);
+        for length in [124, 16] {
+            assert_eq!(original.seek_write(&unsupported, 0)?, unsupported.len());
+            original.set_len(length)?;
+            let before = work.receipt();
+            assert!(matches!(
+                guards[0].owned_root(&work),
+                Err(NativeMountError::Materialization(
+                    crate::NativeTreeMaterializationError::UnsupportedFormat
+                ))
+            ));
+            assert_eq!(work.receipt().bytes_hashed, before.bytes_hashed);
+        }
+    }
     for name in ["original", "copied"] {
         assert_eq!(
             std::fs::read(root.path().join(name).join("authored"))?,

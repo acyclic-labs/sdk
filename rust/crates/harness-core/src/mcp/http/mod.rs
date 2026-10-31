@@ -3,18 +3,21 @@
 use super::{
     McpToolTransport, PROTOCOL_VERSION,
     callbacks::{McpCallbackPolicy, McpRuntimeCallbacks},
-    rpc::{initialization, request, rpc_result},
+    rpc::{initialization, request},
 };
 use crate::{Error, OperationId, Result, runtime::ToolContext};
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use bytes::Bytes;
-use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod codec_fuzz;
 #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
 mod native;
+mod response;
 mod sse;
 #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
 pub use native::NativeMcpHttpProvider;
@@ -222,55 +225,16 @@ impl HttpMcpTransport {
     async fn response(
         &self,
         operation: OperationId,
-        mut response: McpHttpResponse,
+        response: McpHttpResponse,
         context: Option<ToolContext>,
     ) -> Result<Value> {
-        if response.status != 200 {
-            return Err(Error::Indeterminate(operation));
-        }
-        let media = response.headers.get("content-type").map(|value| {
-            value
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase()
-        });
-        match media.as_deref() {
-            Some("text/event-stream") => {
-                return sse::response(
-                    response.body,
-                    operation,
-                    self.maximum_bytes,
-                    context.map(|context| (self, context)),
-                )
-                .await;
-            }
-            Some("application/json") => {}
-            _ => {
-                return Err(Error::Invalid(
-                    "MCP HTTP response content type unsupported".into(),
-                ));
-            }
-        }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.body.next().await {
-            let chunk = chunk?;
-            bytes
-                .len()
-                .checked_add(chunk.len())
-                .filter(|total| *total as u64 <= u64::from(self.maximum_bytes))
-                .ok_or(Error::Indeterminate(operation))?;
-            bytes.extend_from_slice(&chunk);
-        }
-        let value = crate::contract::json_from_slice(&bytes).map_err(|error| {
-            if error.is_eof() {
-                Error::Indeterminate(operation)
-            } else {
-                Error::Invalid(error.to_string())
-            }
-        })?;
-        rpc_result(value, operation, None)
+        response::decode(
+            response,
+            operation,
+            self.maximum_bytes,
+            context.map(|context| (self, context)),
+        )
+        .await
     }
 
     /// Exchanges an admitted request with optional enclosing task authority.

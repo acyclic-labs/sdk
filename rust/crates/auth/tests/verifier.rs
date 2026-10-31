@@ -28,14 +28,41 @@ proptest! {
         prop_assert_eq!(measured.count_total, 1);
         prop_assert_eq!(measured.bytes_total, encoded.len() as u64);
         let wire = CapabilityProto::decode(encoded.as_slice()).unwrap();
-        let canonical = wire.encode_to_vec();
+        let canonical = wire.encode_canonical();
         prop_assert_eq!(canonical.as_slice(), encoded.as_slice());
+        let proof = match wire.proof.as_ref().unwrap() {
+            TipProofProto::Secret(bytes) => TipProofRef::Secret(bytes.as_slice().try_into().unwrap()),
+            TipProofProto::Sealed(bytes) => TipProofRef::Sealed(bytes.as_slice().try_into().unwrap()),
+        };
+        let borrowed = encode_capability(&wire.blocks, proof);
+        prop_assert_eq!(borrowed.as_slice(), encoded.as_slice());
+        // Version admission precedes even a missing/malformed nested body and
+        // allocates no blocks, proof or canonical-comparison buffer.
+        for version in [0, 1, 3, u32::MAX] {
+            let mut refused = wire.clone();
+            refused.version = version;
+            let refused = refused.encode_canonical();
+            let header = 1 + prost::encoding::encoded_len_varint(u64::from(version));
+            for end in [header, header + 1, refused.len()] {
+                let input = &refused[..end];
+                let measured = acyclic_test_support::measure(|| {
+                    assert_eq!(acyclic_auth::authority::decode_capability(input), Err(acyclic_auth::Error::UnsupportedVersion(version)));
+                    assert!(matches!(verify(input, &trust, NOW), Err(VerifyError::Version(found)) if found == version));
+                });
+                prop_assert_eq!(measured.count_total, 0);
+            }
+        }
+        // Generic protobuf puts the version after the body. It cannot be used
+        // as an opaque capability encoder or grant authority through old order.
+        let old_order = wire.encode_to_vec();
+        prop_assert!(matches!(verify(&old_order, &trust, NOW), Err(VerifyError::Version(0))));
+        prop_assert_eq!(acyclic_auth::authority::decode_capability(&old_order), Err(acyclic_auth::Error::UnsupportedVersion(0)));
         let decoded = verify(&encoded, &trust, NOW).unwrap();
         let round_trip = decoded.encode();
         prop_assert_eq!(round_trip.as_slice(), encoded.as_slice());
         // The former deep-clone encoder must fail the same allocation budget.
         let broken = acyclic_test_support::measure(|| {
-            std::hint::black_box(wire.clone().encode_to_vec());
+            std::hint::black_box(wire.clone().encode_canonical());
         });
         prop_assert!(broken.count_total > 1);
     }
@@ -45,7 +72,7 @@ proptest! {
         let cap = verify(&root(|_| {}), &trust, NOW).unwrap();
         let mut bytes = if first_sealed { cap.seal().unwrap().encode().to_vec() } else { cap.encode().to_vec() };
         let proof = if second_sealed { [vec![26, 64], vec![0; 64]].concat() } else { [vec![18, 32], secret.to_vec()].concat() };
-        bytes.splice(bytes.len()-2..bytes.len()-2, proof);
+        bytes.extend(proof);
         prop_assert!(matches!(verify(&bytes, &trust, NOW), Err(VerifyError::Malformed)));
     }
 }
@@ -189,11 +216,23 @@ proptest! {
         let bytes = root(|_| {});
         let mut wire = CapabilityProto::decode(bytes.as_slice()).unwrap();
         *wire.blocks.first_mut().unwrap().signature.get_mut(index).unwrap() ^= 1 << bit;
-        let changed = wire.encode_to_vec();
+        let changed = wire.encode_canonical();
         // Negative control: replacing authenticated verification with structural
         // admission accepts every generated forgery. The signature property fails.
         prop_assert!(acyclic_auth::authority::decode_capability(&changed).is_ok());
         prop_assert!(verify(&changed, &trust, NOW).is_err());
+        // A valid v1 block signature cannot be relabelled as the successor
+        // envelope. Start from the actual signing transcript and change only
+        // the former version word before signing with the real fixture key.
+        let mut legacy = CapabilityProto::decode(bytes.as_slice()).unwrap();
+        let signed = legacy.blocks.first_mut().unwrap();
+        let mut transcript = acyclic_auth::crypto::block_transcript(0, &[0;32], &signed.payload);
+        let offset = acyclic_auth::BLOCK_DOMAIN.len() + 8;
+        transcript[offset..offset + 4].copy_from_slice(&1u32.to_le_bytes());
+        signed.signature = key(3).sign(&transcript).to_bytes().to_vec();
+        let changed = legacy.encode_canonical();
+        prop_assert!(acyclic_auth::authority::decode_capability(&changed).is_ok());
+        prop_assert!(matches!(verify(&changed, &trust, NOW), Err(VerifyError::Signature)));
         // Re-sign the outer block to isolate each certificate signature check.
         for birth in [false, true] {
             let mut wire = CapabilityProto::decode(bytes.as_slice()).unwrap();
@@ -203,7 +242,7 @@ proptest! {
             *signature.get_mut(index).unwrap() ^= 1 << bit;
             wire.blocks.first_mut().unwrap().payload = block.encode_to_vec();
             wire.blocks.first_mut().unwrap().signature = key(3).sign(&acyclic_auth::crypto::block_transcript(0, &[0;32], &wire.blocks.first().unwrap().payload)).to_bytes().to_vec();
-            let changed = wire.encode_to_vec();
+            let changed = wire.encode_canonical();
             prop_assert!(acyclic_auth::authority::decode_capability(&changed).is_ok());
             prop_assert!(matches!(verify(&changed, &trust, NOW), Err(VerifyError::Signature)));
         }
@@ -211,7 +250,7 @@ proptest! {
         let mut wire = CapabilityProto::decode(sealed.as_slice()).unwrap();
         let Some(TipProofProto::Sealed(signature)) = &mut wire.proof else { unreachable!() };
         *signature.get_mut(index).unwrap() ^= 1 << bit;
-        prop_assert!(matches!(verify(&wire.encode_to_vec(), &trust, NOW), Err(VerifyError::Signature)));
+        prop_assert!(matches!(verify(&wire.encode_canonical(), &trust, NOW), Err(VerifyError::Signature)));
     }
     #[test]
     fn revoking_block_k_invalidates_k_and_every_descendant(k in 0..4usize) {
@@ -250,7 +289,7 @@ proptest! {
         let message = acyclic_auth::crypto::block_transcript(1, cap.block_ids().first().unwrap(), &payload);
         wire.blocks.push(SignedBlockProto { payload, signature: key(4).sign(&message).to_bytes().to_vec() });
         wire.proof = Some(TipProofProto::Secret(vec![seed;32]));
-        prop_assert!(matches!(verify(&wire.encode_to_vec(), &trust, NOW), Err(VerifyError::RepeatedKey)));
+        prop_assert!(matches!(verify(&wire.encode_canonical(), &trust, NOW), Err(VerifyError::RepeatedKey)));
     }
     #[test]
     fn cached_admission_allocates_nothing_per_caveat(repetitions in 0..32usize) {
@@ -385,7 +424,7 @@ fn valid_blocks_cannot_be_spliced_reordered_or_truncated() {
     truncated.blocks.pop();
     for wire in [spliced, reordered, truncated] {
         assert!(matches!(
-            verify(&wire.encode_to_vec(), &trust, NOW),
+            verify(&wire.encode_canonical(), &trust, NOW),
             Err(VerifyError::Signature)
         ));
     }
@@ -493,7 +532,7 @@ fn every_signature_precedes_semantic_claim_admission() {
         .first_mut()
         .unwrap() ^= 1;
     assert!(matches!(
-        verify(&wire.encode_to_vec(), &trust, NOW),
+        verify(&wire.encode_canonical(), &trust, NOW),
         Err(VerifyError::Signature)
     ));
 }

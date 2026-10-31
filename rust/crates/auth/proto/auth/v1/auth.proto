@@ -1,6 +1,11 @@
 // Normative acyclic.auth.v1 wire rules:
-// Capability.version is exactly 1 and enters each block transcript as LE u32
+// Capability.version is exactly 2 and enters each block transcript as LE u32
 // after its LE u64 index. Unsupported versions have a distinct error.
+// Opaque Capability tokens require version (field 4) first, then signed blocks
+// and the tip proof. Use the canonical capability writer; generic protobuf field
+// ordering is not the canonical token encoding. Admit the version before any
+// nested block or secret allocation. Version 1 used trailing version ordering;
+// neither that spelling nor its signature transcript is accepted.
 // Block 0 contains only the PUBLIC Birth + complete KeyCertificate chain.
 // No block contains an account bearer or a signing key (except the tip proof).
 // Verify Birth with environment trust, each key with the trusted account issuer

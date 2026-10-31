@@ -23,7 +23,6 @@ fn definition() -> ActorDefinition<u8, Arc<Signals>> {
         abi_version: GUEST_ABI_VERSION,
         codec: CheckpointCodec {
             identity: codec(),
-            readable: vec![codec()],
             encode: |value| Ok(Bytes::copy_from_slice(&[*value])),
             decode: |_| Ok(0),
         },
@@ -103,6 +102,57 @@ async fn initialization_once_interleaved_handlers_and_quiesced_checkpoint() -> R
     assert_eq!(signals.entered.load(Ordering::SeqCst), 3);
     signals.finish.add_permits(1);
     third.await?;
+    Ok(())
+}
+
+#[test]
+fn activation_refuses_other_checkpoint_versions_before_restore() {
+    let signals = Arc::new(Signals {
+        restores: AtomicUsize::new(0),
+        entered: AtomicUsize::new(0),
+        finish: Semaphore::new(0),
+    });
+    for version in ["0", "2", "unknown"] {
+        let mut codec = codec();
+        codec.version = version.into();
+        let checkpoint = Checkpoint {
+            codec,
+            bytes: Bytes::new(),
+        };
+        let context = GuestContext::builder(signals.clone(), Box::new(|| 0)).build();
+        assert!(matches!(
+            GuestActivation::new(definition(), Some(checkpoint), context),
+            Err(GuestError::IncompatibleCodec)
+        ));
+    }
+    assert_eq!(signals.restores.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn activation_refuses_emitting_another_checkpoint_format() -> Result<(), GuestError> {
+    let signals = Arc::new(Signals {
+        restores: AtomicUsize::new(0),
+        entered: AtomicUsize::new(0),
+        finish: Semaphore::new(0),
+    });
+    let mut definition = definition();
+    definition.checkpoint = |_, _| {
+        Box::pin(async {
+            let mut codec = codec();
+            codec.version = "2".into();
+            Ok(Checkpoint {
+                codec,
+                bytes: Bytes::new(),
+            })
+        })
+    };
+    let context = GuestContext::builder(signals.clone(), Box::new(|| 0)).build();
+    let activation = GuestActivation::new(definition, None, context)?;
+    assert_eq!(
+        activation.checkpoint().await,
+        Err(GuestError::IncompatibleCodec)
+    );
+    assert_eq!(signals.restores.load(Ordering::SeqCst), 1);
     Ok(())
 }
 

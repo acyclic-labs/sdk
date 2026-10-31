@@ -80,7 +80,7 @@ const LOG: &str = "log";
 /// A compaction's replacement log, until it is renamed over [`LOG`].
 const NEXT: &str = "log.next";
 /// Dead bytes below this are never compacted: a chunk of work, not a bound.
-const COMPACTION_CHUNK: u64 = 1 << 20;
+pub(crate) const COMPACTION_CHUNK: u64 = 1 << 20;
 
 /// The log's frame: an operation, the key and, for a put, the value.
 const LOG_FRAME: LogFrame = LogFrame {
@@ -431,7 +431,9 @@ fn replay(
         let Some((operation, key, value)) = decode(&body) else {
             return Err(std::io::ErrorKind::InvalidData.into());
         };
-        let bytes = LOG_FRAME.frame_bytes(body.len() as u64);
+        let bytes = LOG_FRAME
+            .frame_bytes(body.len() as u64)
+            .ok_or(std::io::ErrorKind::InvalidData)?;
         let previous = if operation == PUT {
             let slot = Slot {
                 frame: end,

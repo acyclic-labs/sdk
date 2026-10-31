@@ -60,9 +60,19 @@ pub(super) fn decode(
     mut bytes: &[u8],
     io: Option<&PreparationIo>,
 ) -> Result<Option<ModelEventAdmission>> {
-    if take(&mut bytes, 4, io)? != b"EXM2" {
-        return Err(corrupt(io));
-    }
+    bytes = acyclic_auth::format::header(
+        bytes,
+        b"EXM",
+        b"2",
+        || corrupt(io),
+        || {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "unsupported execution model cell version",
+            )
+        },
+    )?;
     match take(&mut bytes, 1, io)? {
         [0] if bytes.is_empty() => return Ok(None),
         [1] => (),
@@ -110,6 +120,62 @@ pub(super) fn decode(
     })
 }
 
+#[cfg(feature = "test-support")]
+pub(in crate::filesystem::execution_journal) mod codec_fuzz {
+    use super::*;
+
+    pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
+        if let Ok(value) = decode(bytes, None) {
+            let encoded = encode(value.as_ref(), None).expect("admitted model cell encodes");
+            assert_eq!(encoded.as_ref(), bytes);
+            let restored = decode(&encoded, None).expect("writer output decodes");
+            assert_eq!(encode(restored.as_ref(), None).unwrap(), encoded);
+            for version in [b'0', b'1', b'3', u8::MAX] {
+                let mut header = bytes[..4].to_vec();
+                header[3] = version;
+                assert_eq!(
+                    decode(&header, None).err().unwrap().code(),
+                    crate::wire::ErrorCode::Unsupported
+                );
+            }
+            assert_ne!(
+                decode(&bytes[..4], None).err().unwrap().code(),
+                crate::wire::ErrorCode::Unsupported
+            );
+            let mut trailing = bytes.to_vec();
+            trailing.push(0);
+            assert!(decode(&trailing, None).is_err());
+        }
+    }
+
+    pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>>
+    {
+        let mut seeds = Vec::new();
+        for (name, value) in [
+            ("execution-model-cell-absent", None),
+            (
+                "execution-model-cell-empty",
+                Some(ModelEventAdmission::default()),
+            ),
+            (
+                "execution-model-cell-populated",
+                Some(ModelEventAdmission {
+                    count: usize::MAX,
+                    calls: vec!["".into(), "tool-\u{1f980}".into()],
+                    completed: true,
+                    text_bytes: u64::MAX,
+                }),
+            ),
+        ] {
+            let bytes = encode(value.as_ref(), None)?;
+            decode(&bytes, None)?;
+            check(&bytes);
+            seeds.push((name, bytes.to_vec()));
+        }
+        Ok(seeds)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +189,14 @@ mod tests {
             text_bytes: 37,
         };
         let encoded = encode(Some(&value), None)?;
+        for version in [b'0', b'1', b'3', u8::MAX] {
+            let mut header = encoded[..4].to_vec();
+            header[3] = version;
+            assert_eq!(
+                decode(&header, None).err().map(|error| error.code()),
+                Some(crate::wire::ErrorCode::Unsupported)
+            );
+        }
         let decoded = decode(&encoded, None)?.expect("model cell");
         assert_eq!(
             (

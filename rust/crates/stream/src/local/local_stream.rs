@@ -117,15 +117,11 @@ impl LocalStream {
                         .restore_state(&encoded)
                         .await
                         .map_err(|error| match error {
-                            crate::memory::RestoreError::PreRevision => {
-                                LocalStreamError::UnsupportedPreRevisionStore
+                            StreamError::Unsupported => {
+                                LocalStreamError::UnsupportedVersion { format: "state" }
                             }
-                            crate::memory::RestoreError::State(StreamError::InvalidArgument) => {
-                                LocalStreamError::Corrupt
-                            }
-                            crate::memory::RestoreError::State(error) => {
-                                LocalStreamError::Replay(error)
-                            }
+                            StreamError::InvalidArgument => LocalStreamError::Corrupt,
+                            error => LocalStreamError::Replay(error),
                         })
                 }
                 Recovered::WriteRequest {

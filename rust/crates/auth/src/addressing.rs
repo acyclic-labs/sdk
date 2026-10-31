@@ -1,6 +1,7 @@
 //! Resource identity is exactly (account, id). Both components are opaque,
 //! nonempty byte strings. No kind, digest, generation or normalization is added.
-//! The view's encoding uses two u64 big-endian length-prefixed fields.
+//! The view's encoding has a versioned domain and two u64 big-endian
+//! length-prefixed fields.
 //! Existing account-scoped RPC and storage fields remain unchanged.
 //! Decoding is a left inverse of encoding, so this representation is injective.
 
@@ -14,6 +15,9 @@ pub use actor::{
 /// Invalid identity component or canonical encoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum IdentityError {
+    /// A known identity domain carries an absent, old or unknown format version.
+    #[error("unsupported identity version")]
+    UnsupportedVersion,
     /// An account cannot be absent.
     #[error("account is empty")]
     EmptyAccount,
@@ -41,6 +45,7 @@ impl IdentityError {
     /// Stable error code for language bindings.
     pub const fn code(self) -> &'static str {
         match self {
+            Self::UnsupportedVersion => "unsupported_identity_version",
             Self::EmptyAccount => "empty_account",
             Self::EmptyId => "empty_id",
             Self::Malformed => "malformed_identity",
@@ -99,6 +104,9 @@ pub struct ResourceIdentity {
     id: ResourceId,
 }
 
+const RESOURCE_DOMAIN: &[u8] = b"\0\0\0\0\0\0\0\0acyclic.resource";
+const RESOURCE_VERSION: &[u8] = b"\x01";
+
 impl ResourceIdentity {
     /// Validate the two opaque components. This does not create a resource.
     pub fn new(account: &[u8], id: &[u8]) -> Result<Self, IdentityError> {
@@ -127,12 +135,14 @@ impl ResourceIdentity {
     }
     /// Exact canonical wire/storage size.
     pub fn encoded_len(&self) -> usize {
-        16 + self.account.0.len() + self.id.0.len()
+        RESOURCE_DOMAIN.len() + RESOURCE_VERSION.len() + 16 + self.account.0.len() + self.id.0.len()
     }
-    /// Canonical encoding of this view: u64-BE account length, account bytes,
-    /// u64-BE id length, id bytes. Existing RPC/storage formats do not change.
+    /// Version-one resource domain, u64-BE account length, account bytes,
+    /// u64-BE id length, id bytes. Account-scoped RPC fields remain unchanged.
     pub fn encode(&self) -> Vec<u8> {
         let mut output = Vec::with_capacity(self.encoded_len());
+        output.extend_from_slice(RESOURCE_DOMAIN);
+        output.extend_from_slice(RESOURCE_VERSION);
         for field in [self.account.as_bytes(), self.id.as_bytes()] {
             output.extend_from_slice(&(field.len() as u64).to_be_bytes());
             output.extend_from_slice(field);
@@ -140,7 +150,14 @@ impl ResourceIdentity {
         output
     }
     /// Decode exactly one canonical pair. Framing is checked before allocation.
-    pub fn decode(mut bytes: &[u8]) -> Result<Self, IdentityError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, IdentityError> {
+        let mut bytes = crate::format::header(
+            bytes,
+            RESOURCE_DOMAIN,
+            RESOURCE_VERSION,
+            || IdentityError::UnsupportedVersion,
+            || IdentityError::UnsupportedVersion,
+        )?;
         let account = field(&mut bytes)?;
         validate_account(account)?;
         let id = field(&mut bytes)?;
