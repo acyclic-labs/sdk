@@ -96,6 +96,7 @@ fn item(intent: OperationId, value: u8, io: &PreparationIo) -> Result<Envelope> 
             provider: "codec".into(),
             model: "codec".into(),
             endpoint: "codec".into(),
+            credential_scope: Some([9; 32]),
         },
         ItemKind::Message,
         RawValue::from_string(format!("{{ \"value\" : {value} }}")).unwrap(),

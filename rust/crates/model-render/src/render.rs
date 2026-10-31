@@ -1,5 +1,5 @@
 use crate::selection::{Selection, select};
-use crate::{Family, ItemKind, RENDERER_VERSION, WireItem};
+use crate::{Family, ItemKind, Provenance, RENDERER_VERSION, WireItem};
 use serde_json::{Map, Value, value::RawValue};
 use std::{
     fmt,
@@ -35,8 +35,7 @@ impl std::error::Error for RenderError {}
 /// Frozen epoch header. Encoding is paid once, independently of item count.
 #[derive(Clone, Debug)]
 pub struct Header {
-    family: Family,
-    provider: String,
+    target: Provenance,
     epoch: [u8; 32],
     prefix: Vec<u8>,
     summary_permitted: bool,
@@ -48,15 +47,18 @@ impl Header {
     /// Refuses another renderer version, a second conversation input field, or
     /// per-step tool controls that could conflict with the request purpose.
     pub fn new(
-        family: Family,
-        provider: String,
+        target: Provenance,
         epoch: [u8; 32],
         version: u32,
         fields: &Map<String, Value>,
     ) -> Result<Self, RenderError> {
-        if provider.trim().is_empty() {
+        if target.provider.trim().is_empty()
+            || target.endpoint.trim().is_empty()
+            || target.model.trim().is_empty()
+        {
             return Err(RenderError::InvalidItem("missing target provider identity"));
         }
+        let family = target.family;
         if version != RENDERER_VERSION {
             return Err(RenderError::InvalidItem("unsupported renderer version"));
         }
@@ -99,8 +101,7 @@ impl Header {
         serde_json::to_writer(&mut prefix, family.input()).map_err(RenderError::Json)?;
         prefix.extend_from_slice(b":[");
         Ok(Self {
-            family,
-            provider,
+            target,
             epoch,
             prefix,
             summary_permitted,
@@ -126,28 +127,31 @@ impl Tail {
     }
 }
 
-/// Pure per-item projection. Same-provider reasoning is replayed unchanged even
-/// when the model changes; foreign reasoning is dropped, never displayed as text.
+/// Pure per-item projection. Reasoning requires the original provider, endpoint
+/// and known credential ownership scope. It survives a model change unchanged;
+/// foreign or unowned reasoning is dropped, never displayed as text.
 ///
 /// # Errors
 /// A foreign message without its write-time capability projection refuses.
 pub fn seg<'a>(
-    target: Family,
-    provider: &str,
+    target: &Provenance,
     item: &'a WireItem,
 ) -> Result<Option<&'a RawValue>, RenderError> {
-    let same_family = item.provenance().family == target;
-    // Provider identity is relevant only to native reasoning. Ordinary items
-    // and foreign-family omissions need no string comparison.
+    let origin = item.provenance();
+    let same_family = origin.family == target.family;
     let same_provider = item.kind() != ItemKind::Reasoning
-        || (same_family && item.provenance().provider == provider);
+        || (same_family
+            && origin.provider == target.provider
+            && origin.endpoint == target.endpoint
+            && origin.credential_scope.is_some()
+            && origin.credential_scope == target.credential_scope);
     match select(item.kind(), same_family, same_provider) {
         Selection::Native => Ok(Some(item.wire())),
         Selection::Drop => Ok(None),
         Selection::Foreign => item
-            .projection(target)
+            .projection(target.family)
             .map(Some)
-            .ok_or(RenderError::MissingProjection(target)),
+            .ok_or(RenderError::MissingProjection(target.family)),
     }
 }
 
@@ -174,7 +178,9 @@ pub fn render<'a>(
 /// # Errors
 /// Refuses Gemini built-in tools before writing any request bytes: its function
 /// calling control cannot disable those tools. Other failures are the same as
-/// [`render`]. No summary instruction is persisted as conversation history.
+/// [`render`]. A nonempty Gemini range must end with an admitted model turn;
+/// otherwise rendering refuses after the unchanged prefix, before appending an
+/// instruction. No summary instruction is persisted as conversation history.
 pub fn render_summary<'a>(
     header: &Header,
     items: impl IntoIterator<Item = &'a WireItem>,
@@ -204,8 +210,10 @@ fn render_request<'a>(
         .write_all(header.bytes())
         .map_err(RenderError::Write)?;
     let mut separator = b"".as_slice();
+    let mut last_gemini_model = None;
     for item in items {
-        if let Some(raw) = seg(header.family, &header.provider, item)? {
+        if let Some(raw) = seg(&header.target, item)? {
+            last_gemini_model = Some(item.gemini_model_turn());
             writer.write_all(separator).map_err(RenderError::Write)?;
             writer
                 .write_all(raw.get().as_bytes())
@@ -214,10 +222,17 @@ fn render_request<'a>(
         }
     }
     if let Some(instruction) = summary {
+        if header.target.family == Family::Gemini
+            && last_gemini_model.is_some_and(|role| role != Some(true))
+        {
+            return Err(RenderError::InvalidItem(
+                "Gemini summary range must end at a model turn",
+            ));
+        }
         writer.write_all(separator).map_err(RenderError::Write)?;
         // Serialize borrowed leaves directly into the original sink. There
         // is no Value tree, second message encoder or request-sized buffer.
-        match header.family {
+        match header.target.family {
             Family::Responses | Family::Chat | Family::Anthropic => {
                 #[derive(serde::Serialize)]
                 struct Message<'a> {
@@ -255,7 +270,7 @@ fn render_request<'a>(
             Some(kind) => RenderError::Write(io::Error::new(kind, error)),
             None => RenderError::Json(error),
         })?;
-        let controls = match header.family {
+        let controls = match header.target.family {
             Family::Responses | Family::Chat => b"],\"tool_choice\":\"none\"}".as_slice(),
             Family::Anthropic => b"],\"tool_choice\":{\"type\":\"none\"}}",
             Family::Gemini => b"],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"NONE\"}}}",

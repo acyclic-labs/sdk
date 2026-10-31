@@ -17,6 +17,9 @@ fn raw(text: String) -> Box<RawValue> {
     RawValue::from_string(text).unwrap()
 }
 fn item(family: Family, kind: ItemKind, text: &str) -> WireItem {
+    item_for(family, kind, text, "producing-provider")
+}
+fn item_for(family: Family, kind: ItemKind, text: &str, provider: &str) -> WireItem {
     // Generated IR inputs, not claims of captured provider fixtures.
     let wire = format!("{{ \"text\" : {} }}", serde_json::to_string(text).unwrap());
     let projections = if kind == ItemKind::Reasoning {
@@ -36,9 +39,10 @@ fn item(family: Family, kind: ItemKind, text: &str) -> WireItem {
     WireItem::capture(
         Provenance {
             family,
-            provider: "producing-provider".into(),
+            provider: provider.into(),
             model: "producing-model".into(),
             endpoint: "https://example.invalid/v1".into(),
+            credential_scope: Some([9; 32]),
         },
         kind,
         raw(wire),
@@ -46,10 +50,21 @@ fn item(family: Family, kind: ItemKind, text: &str) -> WireItem {
     )
     .unwrap()
 }
-fn header(family: Family) -> Header {
-    Header::new(
+fn target(family: Family, provider: &str) -> Provenance {
+    Provenance {
         family,
-        "producing-provider".into(),
+        provider: provider.into(),
+        model: "target-model".into(),
+        endpoint: "https://example.invalid/v1".into(),
+        credential_scope: Some([9; 32]),
+    }
+}
+fn header(family: Family) -> Header {
+    header_for(family, "producing-provider")
+}
+fn header_for(family: Family, provider: &str) -> Header {
+    Header::new(
+        target(family, provider),
         [7; 32],
         RENDERER_VERSION,
         json!({"model":"target-model"}).as_object().unwrap(),
@@ -65,11 +80,16 @@ fn bytes(header: &Header, items: &[WireItem]) -> Vec<u8> {
 // Independent reference: JSON values and a full array, not seg/render or a
 // copy of their iterator. Semantic equality is checked separately from exact
 // raw-byte and prefix preservation.
-fn reference(target: Family, items: &[WireItem]) -> Value {
+fn reference(target: Family, provider: &str, items: &[WireItem]) -> Value {
     let mut inputs = Vec::new();
     for item in items {
         let record = serde_json::to_value(item).unwrap();
-        if record.get("kind").unwrap() == "reasoning" && item.provenance().family != target {
+        if record.get("kind").unwrap() == "reasoning"
+            && (item.provenance().family != target
+                || item.provenance().provider != provider
+                || item.provenance().endpoint != "https://example.invalid/v1"
+                || item.provenance().credential_scope != Some([9; 32]))
+        {
             continue;
         }
         let stored = if item.provenance().family == target {
@@ -99,23 +119,24 @@ fn reference(target: Family, items: &[WireItem]) -> Value {
 proptest! {
     #[test]
     fn append_fork_and_alloy_schedules_match_reference(
-        schedule in prop::collection::vec((prop::sample::select(&FAMILIES), any::<bool>(), any::<bool>(), any::<bool>(), ".{0,80}"), 0..100),
+        schedule in prop::collection::vec((prop::sample::select(&FAMILIES), any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>(), ".{0,80}"), 0..100),
     ) {
         let mut branches = [Vec::new(), Vec::new()];
-        for (family, reasoning, fork, child, text) in schedule {
+        for (family, reasoning, fork, child, other_provider, text) in schedule {
             let [parent, child_branch] = &mut branches;
             if fork { *child_branch = parent.clone(); }
             let branch = if child { child_branch } else { parent };
-            let old: Vec<_> = FAMILIES.into_iter().map(|target| bytes(&header(target), branch)).collect();
+            let targets: Vec<_> = FAMILIES.into_iter().flat_map(|family| ["producing-provider", "other-provider"].map(move |provider| (family, provider))).collect();
+            let old: Vec<_> = targets.iter().map(|(family, provider)| bytes(&header_for(*family, provider), branch)).collect();
             let kind = if reasoning { ItemKind::Reasoning } else { ItemKind::Message };
-            branch.push(item(family, kind, &text));
+            branch.push(item_for(family, kind, &text, if other_provider { "other-provider" } else { "producing-provider" }));
             // Serialization is the actual persisted representation. Reopening
             // validates the raw bytes again without normalizing them.
             let stored = serde_json::to_vec(branch).unwrap();
             let reopened: Vec<WireItem> = serde_json::from_slice(&stored).unwrap();
-            for (target, previous) in FAMILIES.into_iter().zip(old) {
-                let out = bytes(&header(target), &reopened);
-                prop_assert_eq!(serde_json::from_slice::<Value>(&out).unwrap(), reference(target, &reopened));
+            for ((target, provider), previous) in targets.into_iter().zip(old) {
+                let out = bytes(&header_for(target, provider), &reopened);
+                prop_assert_eq!(serde_json::from_slice::<Value>(&out).unwrap(), reference(target, provider, &reopened));
                 let prefix = previous.get(..previous.len() - Tail.bytes().len()).unwrap();
                 prop_assert!(out.starts_with(prefix), "append changed an earlier segment");
             }
@@ -131,9 +152,18 @@ proptest! {
             prop_assert_eq!(source.wire().get(), reopened.wire().get());
             // A shared protocol is not a shared provider. In particular, two
             // Chat-compatible services must never exchange opaque reasoning.
-            prop_assert!(seg(family, "other-provider", &reopened).unwrap().is_none());
+            prop_assert!(seg(&self::target(family, "other-provider"), &reopened).unwrap().is_none());
+            for changed in [
+                Provenance { endpoint: "https://other.invalid".into(), ..self::target(family, "producing-provider") },
+                Provenance { credential_scope: Some([8;32]), ..self::target(family, "producing-provider") },
+                Provenance { credential_scope: None, ..self::target(family, "producing-provider") },
+            ] { prop_assert!(seg(&changed, &reopened).unwrap().is_none()); }
+            let unknown = Provenance { credential_scope: None, ..source.provenance().clone() };
+            let unowned = WireItem::capture(unknown.clone(), ItemKind::Reasoning,
+                raw(source.wire().get().into()), BTreeMap::new()).unwrap();
+            prop_assert!(seg(&unknown, &unowned).unwrap().is_none());
             for target in FAMILIES {
-                let projected = seg(target, "producing-provider", &reopened).unwrap();
+                let projected = seg(&self::target(target, "producing-provider"), &reopened).unwrap();
                 prop_assert_eq!(projected.is_some(), target == family);
                 if let Some(projected) = projected {
                     prop_assert!(std::ptr::eq(projected, reopened.wire()));
@@ -205,14 +235,20 @@ fn missing_foreign_message_binding_refuses_instead_of_dropping_history() {
     )
     .unwrap();
     assert!(matches!(
-        seg(Family::Anthropic, "producing-provider", &source),
+        seg(
+            &self::target(Family::Anthropic, "producing-provider"),
+            &source
+        ),
         Err(RenderError::MissingProjection(Family::Anthropic))
     ));
     assert_eq!(
-        seg(Family::Responses, "producing-provider", &source)
-            .unwrap()
-            .unwrap()
-            .get(),
+        seg(
+            &self::target(Family::Responses, "producing-provider"),
+            &source
+        )
+        .unwrap()
+        .unwrap()
+        .get(),
         source.wire().get()
     );
 }
@@ -225,16 +261,22 @@ fn old_reencoding_and_foreign_text_paths_violate_the_oracles() {
             .unwrap();
     assert_ne!(normalized, source.wire().get());
     assert!(
-        seg(Family::Anthropic, "producing-provider", &source)
-            .unwrap()
-            .is_none()
+        seg(
+            &self::target(Family::Anthropic, "producing-provider"),
+            &source
+        )
+        .unwrap()
+        .is_none()
     );
     // Actual former policy: readable foreign reasoning became ordinary text.
     let foreign_text_fallback = Some(source.wire());
     assert_ne!(
-        seg(Family::Anthropic, "producing-provider", &source)
-            .unwrap()
-            .is_some(),
+        seg(
+            &self::target(Family::Anthropic, "producing-provider"),
+            &source
+        )
+        .unwrap()
+        .is_some(),
         foreign_text_fallback.is_some()
     );
 }
@@ -387,19 +429,25 @@ proptest! {
             let fields = if family == Family::Gemini { json!({"tools":tools}) }
                 else { json!({"model":"target-model","tools":tools}) };
             let fields = fields.as_object().unwrap();
-            let header = Header::new(family, "producing-provider".into(), [7;32], RENDERER_VERSION, fields).unwrap();
+            let header = Header::new(target(family, "producing-provider"), [7;32], RENDERER_VERSION, fields).unwrap();
             let items: Vec<_> = history.iter().enumerate().map(|(index, text)| {
                 let role = if index % 2 == 0 { "user" } else if family == Family::Gemini { "model" } else { "assistant" };
                 let wire = if family == Family::Gemini { json!({"role":role,"parts":[{"text":text}]}) }
                     else { json!({"role":role,"content":text}) };
-                WireItem::capture(Provenance {family,provider:"producing-provider".into(),model:"producing-model".into(),endpoint:"https://example.invalid".into()}, ItemKind::Message, raw(wire.to_string()), BTreeMap::new()).unwrap()
+                WireItem::capture(Provenance {family,provider:"producing-provider".into(),model:"producing-model".into(),endpoint:"https://example.invalid".into(),credential_scope:Some([9;32])}, ItemKind::Message, raw(wire.to_string()), BTreeMap::new()).unwrap()
             }).collect();
             let ordinary = bytes(&header, &items);
             let prefix = &ordinary[..ordinary.len() - Tail.bytes().len()];
             let mut summary = Vec::new();
             let mut visited = 0;
-            render_summary(&header, items.iter().inspect(|_| visited += 1), &instruction, &mut summary).unwrap();
+            let result = render_summary(&header, items.iter().inspect(|_| visited += 1), &instruction, &mut summary);
             prop_assert_eq!(visited, items.len());
+            if family == Family::Gemini && items.len() % 2 == 1 {
+                prop_assert!(matches!(result, Err(RenderError::InvalidItem(_))));
+                prop_assert_eq!(summary, prefix);
+                continue;
+            }
+            result.unwrap();
             prop_assert!(summary.starts_with(prefix));
             let actual: Value = serde_json::from_slice(&summary).unwrap();
             let mut expected: Value = serde_json::from_slice(&ordinary).unwrap();
@@ -421,7 +469,7 @@ proptest! {
             let list = changed.get_mut("tools").unwrap();
             let list = if family == Family::Gemini { &mut list[0]["functionDeclarations"] } else { list };
             list.as_array_mut().unwrap().reverse();
-            let changed = Header::new(family, "producing-provider".into(), [7;32], RENDERER_VERSION, &changed).unwrap();
+            let changed = Header::new(target(family, "producing-provider"), [7;32], RENDERER_VERSION, &changed).unwrap();
             let mut negative = Vec::new();
             render_summary(&changed, &items, &instruction, &mut negative).unwrap();
             prop_assert!(!negative.starts_with(prefix));
@@ -433,8 +481,7 @@ proptest! {
 fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
     let fields = json!({"tools":[{"google_search":{}}]});
     let server_header = Header::new(
-        Family::Gemini,
-        "provider".into(),
+        target(Family::Gemini, "provider"),
         [7; 32],
         RENDERER_VERSION,
         fields.as_object().unwrap(),
@@ -464,8 +511,7 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
     for fields in [json!({"tool_choice":"auto"}), json!({"toolConfig":{}})] {
         assert!(
             Header::new(
-                Family::Gemini,
-                "provider".into(),
+                target(Family::Gemini, "provider"),
                 [7; 32],
                 RENDERER_VERSION,
                 fields.as_object().unwrap()

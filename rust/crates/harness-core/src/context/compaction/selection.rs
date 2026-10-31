@@ -9,6 +9,7 @@ impl ThresholdCompaction {
         context: &Context,
         count: &ModelTokenCount,
         maximum_messages: usize,
+        recent_tokens: u32,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(usize, usize)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
@@ -18,7 +19,7 @@ impl ThresholdCompaction {
                 "compaction requires a summary message allowance",
             )
         })?;
-        if self.recent_tokens == 0 {
+        if recent_tokens == 0 {
             return Err(compaction_error(
                 quota.work(),
                 "recent token budget must be positive",
@@ -27,7 +28,7 @@ impl ThresholdCompaction {
         let mut recent = 0_u64;
         let mut start = count.message_tokens.len();
         for tokens in count.message_tokens.iter().rev() {
-            if recent >= u64::from(self.recent_tokens) {
+            if recent >= u64::from(recent_tokens) {
                 break;
             }
             compaction_step(&mut quota)?;

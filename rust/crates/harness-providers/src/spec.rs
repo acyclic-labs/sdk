@@ -42,6 +42,10 @@ impl Authentication {
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct ProviderSpec {
     /// Protocol dialect.
+    #[cfg_attr(
+        all(target_arch = "wasm32", feature = "browser"),
+        tsify(type = "Family")
+    )]
     pub adapter: Adapter,
     /// Credential policy supplied by the catalog, independent of its provider ID.
     pub authentication: Authentication,

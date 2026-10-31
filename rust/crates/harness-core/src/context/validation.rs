@@ -6,12 +6,13 @@ pub(crate) fn plan_compaction_budget(
     context: &Context,
     count: &ModelTokenCount,
     maximum_messages: usize,
+    recent_tokens: u32,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(usize, usize)> {
     // Weights select the retained suffix; they cannot reject or admit a request.
     // The completed compacted request is counted before response dispatch.
     crate::executor::with_history_io(io, |work| {
-        policy.projection_budget(context, count, maximum_messages, work)
+        policy.projection_budget(context, count, maximum_messages, recent_tokens, work)
     })
 }
 
