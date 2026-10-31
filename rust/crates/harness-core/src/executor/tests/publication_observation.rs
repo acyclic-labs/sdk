@@ -30,13 +30,14 @@ impl Sink for Publications {
     }
 }
 
-async fn journal() -> Result<
+async fn journal() -> Result<(
     crate::filesystem::FilesystemExecutionJournal<
         acyclic_stream::MemoryStream,
         acyclic_fs::MemoryAuthorityBackend,
         acyclic_fs::MemoryObjectBackend,
     >,
-> {
+    crate::core::AuthorityRoot,
+)> {
     use crate::{
         conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
         filesystem::{FilesystemExecutionJournal, FilesystemHost, FilesystemJournalBinding},
@@ -75,7 +76,7 @@ async fn journal() -> Result<
         Some(agent),
         &mut None,
     )?;
-    FilesystemExecutionJournal::new(
+    let journal = FilesystemExecutionJournal::new(
         Arc::new(acyclic_stream::MemoryStream::default()),
         host,
         FilesystemJournalBinding {
@@ -84,7 +85,8 @@ async fn journal() -> Result<
             scope: &scope,
             io: None,
         },
-    )
+    )?;
+    Ok((journal, issuer))
 }
 
 #[tokio::test]
@@ -94,7 +96,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
 
     for rejected in [false, true] {
         for mode in 0..3 {
-            let journal = journal().await?;
+            let (journal, _issuer) = journal().await?;
             let model = Arc::new(ScriptedModelProvider::new([
                 tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
                     "call".into(),
