@@ -174,14 +174,7 @@ where
                 }
                 #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
                 acyclic_differential::record(("execution-record-decoded", 1u64));
-                let observation: Observation = crate::filesystem::decode_record(&record.value, io)?;
-                if observation.version != OBSERVATION_VERSION {
-                    return Err(canonical_boundary(
-                        io,
-                        crate::wire::ErrorCode::Storage,
-                        "execution journal observation version is unsupported",
-                    ));
-                }
+                let observation = observations::decode_observation(&record.value, io)?;
                 if observation.operation_id != operation_id {
                     return Err(canonical_boundary(
                         io,

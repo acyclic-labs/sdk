@@ -33,6 +33,24 @@ mod cancellation;
 mod canonical;
 mod checkpoint;
 mod checkpoint_maps;
+#[cfg(feature = "test-support")]
+/// On-demand checks of the original retained execution metadata codecs.
+pub mod codec_fuzz {
+    use super::*;
+
+    /// Check metadata syntax without granting checkpoint signature authority.
+    pub fn check(bytes: &[u8]) {
+        observations::codec_fuzz::check(bytes);
+        checkpoint::codec_fuzz::check(bytes);
+    }
+
+    /// Capture the actual observation and fixed checkpoint frame writers.
+    pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>> {
+        let mut seeds = observations::codec_fuzz::seeds()?;
+        seeds.extend(checkpoint::codec_fuzz::seeds()?);
+        Ok(seeds)
+    }
+}
 mod configuration;
 mod content;
 #[cfg(not(target_arch = "wasm32"))]

@@ -190,6 +190,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
+    for (name, bytes) in acyclic_harness_core::filesystem::execution_codec_fuzz::seeds()? {
+        save(
+            "harness_codecs",
+            name,
+            &bytes,
+            "Filesystem execution observation writer and fixed checkpoint metadata writer; metadata parsing does not authenticate the proof",
+            &mut manifest,
+        )?;
+    }
     for (name, bytes) in acyclic_harness_core::mcp::http::codec_fuzz::seeds()? {
         save(
             "harness_codecs",

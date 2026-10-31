@@ -72,6 +72,8 @@ struct Checkpoint {
 }
 
 mod codec;
+#[cfg(feature = "test-support")]
+pub(super) mod codec_fuzz;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where

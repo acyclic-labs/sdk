@@ -55,7 +55,7 @@ pub(super) fn state_bytes(
     Ok(bytes)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn encode(
     checkpoint: &Checkpoint,
     io: Option<&PreparationIo>,
@@ -88,7 +88,20 @@ pub(super) fn encode_state(
 }
 
 pub(super) fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Checkpoint> {
-    if bytes.len() != FRAME_BYTES || bytes.get(..4) != Some(b"EXC5") {
+    acyclic_auth::format::header(
+        bytes,
+        b"EXC",
+        b"5",
+        || missing(io),
+        || {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "unsupported execution checkpoint version",
+            )
+        },
+    )?;
+    if bytes.len() != FRAME_BYTES {
         return Err(missing(io));
     }
     fn take<const N: usize>(input: &mut &[u8], io: Option<&PreparationIo>) -> Result<[u8; N]> {
