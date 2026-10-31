@@ -1,6 +1,14 @@
 use super::*;
 
 #[cfg(all(feature = "local", any(unix, windows)))]
+fn assert_local_open_pending(opening: std::pin::Pin<&mut impl std::future::Future>) {
+    // Finish canonicalization inline, so Pending observes the real registry lock.
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(opening, &mut context).is_pending());
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_reopens_durable_volume_and_exact_generation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -30,8 +38,7 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
             .await?;
         generation_id = checkout.value.generation_id();
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    tokio::task::spawn_blocking(move || root_released.wait_until(deadline)).await??;
+    root_released.released().await;
     for relative in ["stream/stream.lock", "objects/owner.lock"] {
         drop(acyclic_native_runtime::StoreClaim::acquire(
             &directory.path().join(relative),
@@ -149,19 +156,16 @@ async fn cancelled_local_open_keeps_the_canonical_lifecycle_gate()
         .clone();
     drop(first);
 
-    let retry_options = options.clone();
-    let opening = tokio::spawn(async move { Fs::local(retry_options).await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(!opening.is_finished());
-    let cancelled_options = options.clone();
-    let cancelled = tokio::spawn(async move { Fs::local(cancelled_options).await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(!cancelled.is_finished());
-    cancelled.abort();
-    assert!(cancelled.await.is_err_and(|error| error.is_cancelled()));
+    let mut opening = std::pin::pin!(Fs::local(options.clone()));
+    assert_local_open_pending(opening.as_mut());
+    {
+        let mut cancelled = std::pin::pin!(Fs::local(options.clone()));
+        assert_local_open_pending(cancelled.as_mut());
+    }
+    assert_local_open_pending(opening.as_mut());
 
     drop(retained);
-    let reopened = tokio::time::timeout(std::time::Duration::from_secs(2), opening).await???;
+    let reopened = opening.await?;
     let coalesced = Fs::local(options).await?;
     assert!(reopened.same_deployment(&coalesced));
     Ok(())
@@ -196,12 +200,10 @@ async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
         Arc::clone(&lifecycle).try_lock_owned().is_err(),
         "caller cancellation must not release ownership from an active startup worker"
     );
-    let _ = release_tx.send(());
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        Arc::clone(&lifecycle).lock_owned(),
-    )
-    .await?;
+    release_tx
+        .send(())
+        .map_err(|_| "startup worker lost its release event")?;
+    let _released = Arc::clone(&lifecycle).lock_owned().await;
     Ok(())
 }
 
@@ -472,25 +474,18 @@ async fn local_facade_waits_per_root_without_serializing_independent_roots()
         .clone();
     drop(first);
 
-    let same_root = first_root.clone();
-    let reopening = tokio::spawn(async move { Fs::local(LocalOptions::new(first_root)).await });
-    let concurrent = tokio::spawn(async move { Fs::local(LocalOptions::new(same_root)).await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(
-        !reopening.is_finished(),
-        "retained native owner must fence reopening"
-    );
-    assert!(!concurrent.is_finished());
+    let mut reopening = std::pin::pin!(Fs::local(LocalOptions::new(&first_root)));
+    let mut concurrent = std::pin::pin!(Fs::local(LocalOptions::new(&first_root)));
+    assert_local_open_pending(reopening.as_mut());
+    assert_local_open_pending(concurrent.as_mut());
 
-    let second = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        Fs::local(LocalOptions::new(second_root)),
-    )
-    .await??;
+    let second = Fs::local(LocalOptions::new(second_root)).await?;
+    assert_local_open_pending(reopening.as_mut());
+    assert_local_open_pending(concurrent.as_mut());
     drop(second);
     drop(retained);
-    let reopened = tokio::time::timeout(std::time::Duration::from_secs(2), reopening).await???;
-    let shared = tokio::time::timeout(std::time::Duration::from_secs(2), concurrent).await???;
+    let reopened = reopening.await?;
+    let shared = concurrent.await?;
     assert!(reopened.same_deployment(&shared));
     drop(shared);
     drop(reopened);
