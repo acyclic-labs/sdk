@@ -398,6 +398,7 @@ impl HostDriver {
             // model context.
             TurnInput::Approval { .. }
             | TurnInput::ApprovalRequested { .. }
+            | TurnInput::Notice { .. }
             | TurnInput::Context { .. } => {
                 return Ok(idle(Vec::new()));
             }

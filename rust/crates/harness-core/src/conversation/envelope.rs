@@ -3,7 +3,7 @@
 //! Source positions describe one observed record, never the completion of a
 //! filesystem publication or model exchange. Only the owning producer can
 //! establish those boundaries. Encoding does not submit another transaction.
-use super::wire::WireItem;
+use super::wire::{Notice, WireItem};
 use crate::{
     OperationId, Result,
     context::{PinnedContextPath, SkillMetadata},
@@ -54,6 +54,11 @@ pub enum ContextChange {
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Payload {
+    /// Original event before its eventual immutable request block.
+    Notice {
+        /// Producer payload and independent scheduling policy.
+        notice: Notice,
+    },
     /// Exact admitted provider bytes, retaining native replay provenance.
     Wire {
         /// Immutable native body and its admitted foreign projections.
@@ -145,6 +150,9 @@ impl Envelope {
                 Ok(())
             }
             Payload::Wire { .. } => Ok(()),
+            Payload::Notice { notice } => notice
+                .validate()
+                .map_err(|error| crate::Error::Invalid(error.to_string())),
         }
     }
 

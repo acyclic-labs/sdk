@@ -12,6 +12,7 @@
 )]
 
 mod item;
+mod notice;
 mod profile;
 mod render;
 mod selection;
@@ -20,6 +21,7 @@ pub mod strict;
 mod tools;
 
 pub use item::{Family, ItemKind, Provenance, WireItem};
+pub use notice::{Notice, PendingNotices, notice_block};
 pub use profile::{Cache, Effort, Reasoning};
 pub use render::{Header, RenderError, Tail, render, render_summary, seg};
 pub use tools::{ToolDeclaration, ToolDeclarations};
@@ -27,6 +29,8 @@ pub use tools::{ToolDeclaration, ToolDeclarations};
 /// Changing rendered bytes requires a new renderer version and corpus review.
 pub const RENDERER_VERSION: u32 = 1;
 
+#[cfg(test)]
+mod notice_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

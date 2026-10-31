@@ -386,6 +386,9 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
         policy: FileProjectionPolicy::BoundedFull,
     };
     Ok(match input {
+        TurnInput::Notice { notice, .. } => ModelContent::Part(ModelContentPart::Notices {
+            notices: vec![notice.clone()],
+        }),
         TurnInput::Message {
             body: file,
             attachments: Some(manifest),
