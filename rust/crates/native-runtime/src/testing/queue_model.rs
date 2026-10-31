@@ -356,21 +356,32 @@ fn waiter_charge(cancel: bool, broken: bool) {
             let filler = crate::workers::receive_job(&receiving, &released).unwrap();
             wake_capacity_waiter(filler.run());
         });
-        if cancel {
+        let mut notifier = Some(notifier);
+        let submission = if cancel {
             crate::remove_capacity_waiter(&workers, waiter.take());
+            None
         } else {
-            while crate::workers::poll_submission_with(&workers, &mut pending, &mut waiter, &cx)
-                .is_pending()
-            {
-                thread::yield_now();
+            let mut submission =
+                crate::workers::poll_submission_with(&workers, &mut pending, &mut waiter, &cx);
+            if submission.is_pending() {
+                notifier.take().unwrap().join().unwrap();
+                submission =
+                    crate::workers::poll_submission_with(&workers, &mut pending, &mut waiter, &cx);
             }
+            Some(submission)
+        };
+        // Ready admission and cancellation can precede the notifier's release.
+        // Pending admission waits for that original producer's terminal, while
+        // retained still owns the funded waiter in either order. Defer a failing
+        // assertion until the producer has retired inside the model.
+        let retained_funding = meter.memory.load(Ordering::SeqCst);
+        if let Some(notifier) = notifier {
+            notifier.join().unwrap();
+        }
+        if let Some(submission) = submission {
+            assert!(matches!(submission, Poll::Ready(Ok(()))));
             assert!(pending.is_none() && waiter.is_none());
         }
-        // Observe before joining: the notifier may still hold the node. Defer
-        // a failing assertion until it has retired inside the model, so the
-        // negative control cannot strand a modeled receiver during unwind.
-        let retained_funding = meter.memory.load(Ordering::SeqCst);
-        notifier.join().unwrap();
         drop(retained);
         assert_eq!(meter.memory.load(Ordering::SeqCst), registered - funded);
         let admission = workers.admission.lock().unwrap();
