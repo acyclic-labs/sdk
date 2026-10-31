@@ -190,6 +190,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     let counted = CountingReader {
         inner: reader.as_ref(),
         reads: AtomicUsize::new(0),
+        prefix: std::sync::Mutex::new(None),
     };
     let (selected, stage) =
         ContextManifest::bind(reference.clone(), &counted, tools()?, limits).await?;
@@ -289,6 +290,7 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
     let counted = CountingReader {
         inner: reader.as_ref(),
         reads: AtomicUsize::new(0),
+        prefix: std::sync::Mutex::new(None),
     };
     let (selected, stage) =
         ContextManifest::bind(reference.clone(), &counted, tools()?, limits).await?;
@@ -383,6 +385,7 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
     let counted = CountingReader {
         inner: reader.as_ref(),
         reads: AtomicUsize::new(0),
+        prefix: std::sync::Mutex::new(None),
     };
     assert!(matches!(
         ContextManifest::bind(
@@ -496,6 +499,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
         let counted = CountingReader {
             inner: reader.as_ref(),
             reads: AtomicUsize::new(0),
+            prefix: std::sync::Mutex::new(None),
         };
         assert!(
             ContextManifest::bind(reference, &counted, tools()?, limits)
