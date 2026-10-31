@@ -87,15 +87,21 @@ fn render(schema: &Value, aliases: &BTreeMap<String, String>) -> Result<String> 
     }
     if let Some(types) = schema.get("type").and_then(Value::as_array) {
         return join(
-            types.iter().map(|kind| {
-                let mut schema = schema.clone();
-                schema["type"] = kind.clone();
-                render(&schema, aliases)
-            }),
+            types
+                .iter()
+                .map(|kind| render_type(schema, Some(kind.as_str().ok_or_else(invalid)?), aliases)),
             " | ",
         );
     }
-    match schema.get("type").and_then(Value::as_str) {
+    render_type(schema, schema.get("type").and_then(Value::as_str), aliases)
+}
+
+fn render_type(
+    schema: &Value,
+    kind: Option<&str>,
+    aliases: &BTreeMap<String, String>,
+) -> Result<String> {
+    match kind {
         Some("string") => Ok("string".into()),
         Some("number" | "integer") => Ok("number".into()),
         Some("boolean") => Ok("boolean".into()),
@@ -108,10 +114,7 @@ fn render(schema: &Value, aliases: &BTreeMap<String, String>) -> Result<String> 
                 .unwrap_or_else(|| "unknown".into());
             Ok(format!("Array<{items}>"))
         }
-        Some("object") | None
-            if schema.get("properties").is_some()
-                || schema.get("type") == Some(&Value::String("object".into())) =>
-        {
+        Some("object") | None if schema.get("properties").is_some() || kind == Some("object") => {
             let mut output = String::from("{ ");
             if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
                 for (name, property) in properties {
@@ -142,11 +145,21 @@ fn render(schema: &Value, aliases: &BTreeMap<String, String>) -> Result<String> 
 }
 
 fn join(values: impl Iterator<Item = Result<String>>, separator: &str) -> Result<String> {
-    let values: Vec<_> = values.collect::<Result<_>>()?;
-    if values.is_empty() {
-        return Ok("never".into());
+    let mut output = String::new();
+    for value in values {
+        if output.is_empty() {
+            output.push('(');
+        } else {
+            output.push_str(separator);
+        }
+        output.push_str(&value?);
     }
-    Ok(format!("({})", values.join(separator)))
+    if output.is_empty() {
+        output.push_str("never");
+    } else {
+        output.push(')');
+    }
+    Ok(output)
 }
 
 fn literal(value: &Value) -> Result<String> {
