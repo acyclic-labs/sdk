@@ -89,6 +89,7 @@ pub enum AgentReply {
     Usage {
         /// Exact original inbox sequence, at or after this agent's fork cut.
         input: u64,
+        /// One fixed journal page; None marks the current committed inbox tail.
         page: Option<acyclic_harness_core::executor::ModelUsagePage>,
     },
     /// How far an agent has settled.
