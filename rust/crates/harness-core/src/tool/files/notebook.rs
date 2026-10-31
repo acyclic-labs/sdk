@@ -5,18 +5,72 @@ use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;
 use std::{borrow::Cow, fmt};
 
+/// The value is destroyed before the admission that owns its allocations.
+struct Decoded<T> {
+    value: T,
+    _hold: crate::NativeCustody,
+}
+impl<T> std::ops::Deref for Decoded<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+fn decode<'de, S: DeserializeSeed<'de>>(
+    seed: S,
+    source: &'de str,
+    work: crate::NativeWork<'_>,
+) -> Result<Decoded<S::Value>>
+where
+    S::Value: crate::HeapLayout,
+{
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let decoded = io.decode_seed(
+            seed,
+            source.as_bytes(),
+            crate::executor::json::JsonValueSchema::None,
+            crate::executor::json::preparation_serde_diagnostic_label_bytes(),
+            crate::wire::ErrorCode::Invalid,
+        )?;
+        let (value, hold) = crate::filesystem::native_decoded(decoded)?;
+        return Ok(Decoded {
+            value,
+            _hold: Some(hold),
+        });
+    }
+    let _ = work;
+    Ok(Decoded {
+        value: crate::executor::json::json_from_slice_bounded(
+            seed,
+            source.as_bytes(),
+            crate::executor::json::JsonBounds {
+                maximum_bytes: source.len() as u64,
+                maximum_items: u64::MAX,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            },
+            None,
+            Some(crate::executor::json::JsonValueSchema::None),
+            &mut |_| Ok(()),
+        )?,
+        _hold: None,
+    })
+}
+
 #[cfg(test)]
 #[path = "notebook_checks.rs"]
 mod checks;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 struct Notebook<'a> {
     nbformat: u32,
     #[serde(borrow)]
     cells: &'a RawValue,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 struct Cell<'a> {
     #[serde(borrow)]
     id: Option<Cow<'a, str>>,
@@ -31,38 +85,43 @@ struct Cell<'a> {
 }
 
 struct EachCell<F>(F);
+struct CellCount(u64);
+impl crate::HeapLayout for CellCount {
+    const LAYOUT: &'static crate::executor::json::layout::JsonLayout =
+        &crate::executor::json::layout::JsonLayout::list(
+            crate::executor::json::layout::Alloc::INLINE,
+            &[<RawValue as crate::HeapLayout>::LAYOUT],
+        );
+}
 impl<'de, F: FnMut(u64, &'de RawValue)> DeserializeSeed<'de> for EachCell<F> {
-    type Value = u64;
+    type Value = CellCount;
     fn deserialize<D: serde::Deserializer<'de>>(
         self,
         deserializer: D,
-    ) -> std::result::Result<u64, D::Error> {
+    ) -> std::result::Result<CellCount, D::Error> {
         deserializer.deserialize_seq(self)
     }
 }
 impl<'de, F: FnMut(u64, &'de RawValue)> Visitor<'de> for EachCell<F> {
-    type Value = u64;
+    type Value = CellCount;
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a notebook cell array")
     }
     fn visit_seq<A: SeqAccess<'de>>(
         mut self,
         mut sequence: A,
-    ) -> std::result::Result<u64, A::Error> {
+    ) -> std::result::Result<CellCount, A::Error> {
         let mut index = 0;
         while let Some(cell) = sequence.next_element::<&RawValue>()? {
             (self.0)(index, cell);
             index += 1;
         }
-        Ok(index)
+        Ok(CellCount(index))
     }
 }
 
-fn notebook<'a>(source: &'a str, work: crate::NativeWork<'_>) -> Result<Notebook<'a>> {
-    let charge = edit::allocation(work, 0)?;
-    edit::charge(&charge, 0, source.len() as u64)?;
-    let notebook: Notebook<'a> = serde_json::from_str(source)
-        .map_err(|_| executor::rejection(work, "invalid notebook JSON"))?;
+fn notebook<'a>(source: &'a str, work: crate::NativeWork<'_>) -> Result<Decoded<Notebook<'a>>> {
+    let notebook = decode(std::marker::PhantomData::<Notebook<'a>>, source, work)?;
     if notebook.nbformat != 4 {
         return Err(executor::rejection(
             work,
@@ -77,11 +136,9 @@ fn each<'a>(
     callback: impl FnMut(u64, &'a RawValue),
     work: crate::NativeWork<'_>,
 ) -> Result<u64> {
-    EachCell(callback)
-        .deserialize(&mut serde_json::Deserializer::from_str(
-            notebook.cells.get(),
-        ))
-        .map_err(|_| executor::rejection(work, "notebook cells must be an array"))
+    Ok(decode(EachCell(callback), notebook.cells.get(), work)?
+        .value
+        .0)
 }
 
 fn span(source: &str, raw: &RawValue) -> (usize, usize) {
@@ -132,8 +189,8 @@ pub(super) fn read(
         .ok_or_else(|| executor::rejection(work, "invalid notebook span"))?;
     let shown =
         crate::tools::bounds::prefix(selected, usize::try_from(maximum).unwrap_or(usize::MAX));
-    let mut text = String::new();
     let mut hold = edit::allocation(work, std::mem::size_of::<String>())?;
+    let mut text = String::new();
     edit::reserve_string(&mut hold, &mut text, shown.len())?;
     edit::charge(&hold, shown.len() as u64, 1)?;
     text.push_str(shown);
@@ -158,10 +215,11 @@ fn encoded<T: Serialize>(
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let hold;
         let bytes = io.encode(value, io.remaining()?.bytes_encoded, false)?;
-        let hold = io.guard_bytes(&bytes)?;
-        let mut text = String::new();
+        hold = io.guard_bytes(&bytes)?;
         let mut allocation = edit::allocation(Some(work), std::mem::size_of::<String>())?;
+        let mut text = String::new();
         edit::reserve_string(&mut allocation, &mut text, bytes.len())?;
         edit::charge(&allocation, bytes.len() as u64, 0)?;
         text.push_str(
@@ -195,6 +253,7 @@ pub(super) fn edit(
     let mut previous = None;
     let mut next = None;
     let mut duplicate = false;
+    let mut cell_error = None;
     let count = each(
         &notebook,
         |position, raw| {
@@ -208,13 +267,19 @@ pub(super) fn edit(
                 next = Some(span(source, raw).0);
             }
             if let NotebookEdit::Insert { id, .. } = operation {
-                if let Ok(cell) = serde_json::from_str::<Cell<'_>>(raw.get()) {
-                    duplicate |= cell.id.as_deref() == Some(id.as_str());
+                if cell_error.is_none() {
+                    match decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work) {
+                        Ok(cell) => duplicate |= cell.id.as_deref() == Some(id.as_str()),
+                        Err(error) => cell_error = Some(error),
+                    }
                 }
             }
         },
         work,
     )?;
+    if let Some(error) = cell_error {
+        return Err(error);
+    }
     if index > count || (index == count && !matches!(operation, NotebookEdit::Insert { .. })) {
         return Err(executor::rejection(work, "cell index exceeds notebook"));
     }
@@ -226,8 +291,7 @@ pub(super) fn edit(
             source: new_source, ..
         } => {
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
-            let cell: Cell<'_> = serde_json::from_str(raw.get())
-                .map_err(|_| executor::rejection(work, "invalid notebook cell"))?;
+            let cell = decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?;
             if expected_id.is_some_and(|id| cell.id.as_deref() != Some(id)) {
                 return Err(executor::rejection(
                     work,
@@ -298,8 +362,7 @@ pub(super) fn edit(
         }
         NotebookEdit::Delete { .. } => {
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
-            let cell: Cell<'_> = serde_json::from_str(raw.get())
-                .map_err(|_| executor::rejection(work, "invalid notebook cell"))?;
+            let cell = decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?;
             if expected_id.is_some_and(|id| cell.id.as_deref() != Some(id)) {
                 return Err(executor::rejection(
                     work,
@@ -324,8 +387,8 @@ pub(super) fn edit(
         .flatten()
         .try_fold(0usize, |total, (_, _, text)| total.checked_add(text.len()))
         .ok_or_else(|| executor::rejection(work, "notebook output size overflow"))?;
-    let mut text = String::new();
     let mut hold = edit::allocation(work, std::mem::size_of::<String>())?;
+    let mut text = String::new();
     edit::reserve_string(
         &mut hold,
         &mut text,

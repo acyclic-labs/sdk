@@ -243,14 +243,36 @@ impl PreparationIo {
         bytes: &'de [u8],
         code: crate::wire::ErrorCode,
     ) -> Result<(T, DecodeReservation<'a>)> {
+        let mut decoded = self.decode_seed(
+            seed,
+            bytes,
+            T::json_value_schema(),
+            T::diagnostic_label_bytes(),
+            code,
+        )?;
+        if let Some(bytes) = decoded.0.decoded_owned_bytes()? {
+            decoded.1.substitute(bytes)?;
+        }
+        Ok(decoded)
+    }
+
+    /// The same typed admission for a seed whose value borrows the input.
+    /// The caller keeps the reservation until the decoded value is dropped.
+    pub(crate) fn decode_seed<'a, 'de, T: crate::HeapLayout>(
+        &'a self,
+        seed: impl serde::de::DeserializeSeed<'de, Value = T>,
+        bytes: &'de [u8],
+        schema: &'static Schema,
+        diagnostic_labels: u64,
+        code: crate::wire::ErrorCode,
+    ) -> Result<(T, DecodeReservation<'a>)> {
         let bounds = self.bounds(
             bytes.len() as u64,
             crate::executor::json::RECORD_MAXIMUM_DEPTH,
         )?;
-        let schema = T::json_value_schema();
         let code = self.original_native_work().is_some().then_some(code);
-        let mut decoded = self.decode_guarded(
-            (schema != Schema::Root).then(T::diagnostic_label_bytes),
+        self.decode_guarded(
+            (schema != Schema::Root).then_some(diagnostic_labels),
             code,
             |observe| {
                 crate::executor::json::json_from_slice_bounded(
@@ -262,11 +284,7 @@ impl PreparationIo {
                     &mut |charge| observe(charge),
                 )
             },
-        )?;
-        if let Some(bytes) = decoded.0.decoded_owned_bytes()? {
-            decoded.1.substitute(bytes)?;
-        }
-        Ok(decoded)
+        )
     }
 
     pub(crate) fn value_json<T: Serialize>(

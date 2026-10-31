@@ -72,3 +72,59 @@ fn empty_notebook_insert_delete_retains_metadata() {
     .unwrap();
     assert_eq!(removed, source);
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_048_576, 1_048_576),
+        &cancellation,
+    )
+    .unwrap();
+    // Escaped field names and IDs exercise serde's owned escape scratch;
+    // the raw source/output spans remain borrowed from this same document.
+    let source = r#"{"nbformat":4,"cells":[{"i\u0064":"\u0061","cell_type":"code","source":["x\n"],"outputs":[],"execution_count":1}],"metadata":{"keep":true}}"#;
+    let baseline = native.live_allocation_bytes();
+    let (text, hold) = edit(
+        source,
+        &NotebookEdit::Replace {
+            index: 0,
+            id: Some("a".into()),
+            source: "\"\\\nλ".into(),
+        },
+        Some(&native),
+    )
+    .unwrap();
+    assert!(native.live_allocation_bytes() > baseline);
+    let actual: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(actual["cells"][0]["source"], "\"\\\nλ");
+    assert_eq!(actual["cells"][0]["execution_count"], Value::Null);
+    drop(text);
+    drop(hold);
+    assert_eq!(native.live_allocation_bytes(), baseline);
+
+    // A differently encoded spelling of the same stable ID must conflict.
+    let error = edit(
+        source,
+        &NotebookEdit::Insert {
+            index: 0,
+            id: "a".into(),
+            cell_type: "raw".into(),
+            source: String::new(),
+        },
+        Some(&native),
+    )
+    .err()
+    .expect("duplicate ID refused");
+    assert!(matches!(error, Error::ToolRejected { .. }));
+    drop(error);
+    assert_eq!(native.live_allocation_bytes(), baseline);
+
+    // Refusal happens on the original ledger before a decoded value escapes.
+    cancellation.cancel();
+    assert!(read(source, 0, Some(1), 4096, Some(&native)).is_err());
+    assert_eq!(native.live_allocation_bytes(), baseline);
+}
