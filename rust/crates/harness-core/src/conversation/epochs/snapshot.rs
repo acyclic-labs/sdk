@@ -2,7 +2,7 @@
 //! writes. Reopening reads only the last record, independent of history length.
 
 use super::{
-    Epoch, InvalidEpoch,
+    Epoch, FileRef, InvalidEpoch,
     protocol::{Completion, Pending, Refusal, State},
 };
 use acyclic_stream::{
@@ -16,7 +16,32 @@ use serde::{Deserialize, Serialize};
 pub struct Snapshot {
     epoch: Epoch,
     state: State,
+    outcome: Option<SummaryOutcome>,
     anchor: Option<(u64, CommitId)>,
+}
+
+/// The immutable result associated with the prepared summary identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "body",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum SummaryOutcome {
+    /// Exact immutable reference returned by the original summary producer.
+    Ready(FileRef),
+    /// The producer terminated without a summary, including loss of custody.
+    Failed,
+}
+
+impl SummaryOutcome {
+    const fn completion(&self) -> Completion {
+        match self {
+            Self::Ready(_) => Completion::Ready,
+            Self::Failed => Completion::Failed,
+        }
+    }
 }
 
 /// Refusal before an epoch record or conditional publication is constructed.
@@ -31,6 +56,9 @@ pub enum SnapshotError {
     /// The stored preparation and its content address disagree.
     #[error("epoch preparation identity differs from its source range")]
     Identity,
+    /// A swap supplied another body's reference for the prepared result.
+    #[error("epoch summary differs from its committed producer result")]
+    ResultReference,
     /// Unsupported or malformed durable bytes.
     #[error("epoch record encoding: {0}")]
     Encoding(#[from] serde_json::Error),
@@ -45,61 +73,26 @@ impl From<Refusal> for SnapshotError {
 // These are wire adapters only; all transitions use the one protocol reducer.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "version", content = "snapshot", deny_unknown_fields)]
-enum RecordWire<E> {
+enum RecordWire<E, O> {
     #[serde(rename = "1")]
-    V1(SnapshotWire<E>),
+    V1(SnapshotWire<E, O>),
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SnapshotWire<E> {
+struct SnapshotWire<E, O> {
     epoch: E,
     generation: u64,
-    pending: Option<PendingWire>,
+    pending: Option<PendingWire<O>>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PendingWire {
+struct PendingWire<O> {
     summary: [u8; 32],
     generation: u64,
     through: u64,
-    completion: Option<CompletionWire>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum CompletionWire {
-    Ready,
-    Failed,
-}
-
-impl From<Pending> for PendingWire {
-    fn from(value: Pending) -> Self {
-        Self {
-            summary: value.summary,
-            generation: value.generation,
-            through: value.through,
-            completion: value.completion.map(|outcome| match outcome {
-                Completion::Ready => CompletionWire::Ready,
-                Completion::Failed => CompletionWire::Failed,
-            }),
-        }
-    }
-}
-
-impl From<PendingWire> for Pending {
-    fn from(value: PendingWire) -> Self {
-        Self {
-            summary: value.summary,
-            generation: value.generation,
-            through: value.through,
-            completion: value.completion.map(|outcome| match outcome {
-                CompletionWire::Ready => Completion::Ready,
-                CompletionWire::Failed => Completion::Failed,
-            }),
-        }
-    }
+    completion: Option<O>,
 }
 
 impl Snapshot {
@@ -110,6 +103,7 @@ impl Snapshot {
         Ok(Self {
             epoch,
             state: State::default(),
+            outcome: None,
             anchor: None,
         })
     }
@@ -117,17 +111,25 @@ impl Snapshot {
     /// Admits the one versioned record against its inherited source and head.
     /// Decoding never scans previous snapshots or reconstructs a missing job.
     pub fn decode(record: &Record, source: &StreamPath, head: u64) -> Result<Self, SnapshotError> {
-        let RecordWire::V1(wire): RecordWire<Epoch> = serde_json::from_slice(&record.value)?;
+        let RecordWire::V1(wire): RecordWire<Epoch, SummaryOutcome> =
+            serde_json::from_slice(&record.value)?;
         wire.epoch.validate(source, head)?;
         if (wire.generation == 0) != (wire.epoch.cursor() == 0) {
             return Err(Refusal::Stale.into());
         }
-        let state = State::restore(
-            wire.generation,
-            wire.epoch.cursor(),
-            wire.pending.map(Into::into),
-            head,
-        )?;
+        let (pending, outcome) = match wire.pending {
+            Some(pending) => (
+                Some(Pending {
+                    summary: pending.summary,
+                    generation: pending.generation,
+                    through: pending.through,
+                    completion: pending.completion.as_ref().map(SummaryOutcome::completion),
+                }),
+                pending.completion,
+            ),
+            None => (None, None),
+        };
+        let state = State::restore(wire.generation, wire.epoch.cursor(), pending, head)?;
         if let Some(pending) = state.pending() {
             if wire.epoch.key.digest_through(pending.through) != pending.summary {
                 return Err(SnapshotError::Identity);
@@ -136,6 +138,7 @@ impl Snapshot {
         Ok(Self {
             epoch: wire.epoch,
             state,
+            outcome,
             anchor: Some((record.sequence, record.commit_id)),
         })
     }
@@ -152,7 +155,14 @@ impl Snapshot {
         self.state
     }
 
-    /// Claims exactly the content address of this source range. The common
+    /// The original producer's result, retained across reopen without rereading
+    /// or reconstructing another result reference.
+    #[must_use]
+    pub const fn outcome(&self) -> Option<&SummaryOutcome> {
+        self.outcome.as_ref()
+    }
+
+    /// Pins exactly the content address of this source range. The common
     /// ancestor's conditional publication arbitrates shared producer ownership.
     pub fn prepare(&mut self, through: u64, head: u64) -> Result<[u8; 32], SnapshotError> {
         let summary = self.epoch.key.digest_through(through);
@@ -164,9 +174,16 @@ impl Snapshot {
     pub fn complete(
         &mut self,
         summary: [u8; 32],
-        completion: Completion,
+        outcome: SummaryOutcome,
     ) -> Result<(), SnapshotError> {
-        Ok(self.state.complete(summary, completion)?)
+        let mut state = self.state;
+        state.complete(summary, outcome.completion())?;
+        if self.outcome.as_ref().is_some_and(|prior| prior != &outcome) {
+            return Err(Refusal::Contradiction.into());
+        }
+        self.state = state;
+        self.outcome = Some(outcome);
+        Ok(())
     }
 
     /// Installs the summary and frozen Header together. Refusal leaves both
@@ -179,8 +196,14 @@ impl Snapshot {
         }
         let mut state = self.state;
         state.swap(pending.summary, expected, head)?;
+        if !matches!((&self.outcome, &next.summary),
+            (Some(SummaryOutcome::Ready(body)), Some(summary)) if body == summary)
+        {
+            return Err(SnapshotError::ResultReference);
+        }
         self.state = state;
         self.epoch = next;
+        self.outcome = None;
         Ok(())
     }
 
@@ -204,7 +227,12 @@ impl Snapshot {
         let wire = RecordWire::V1(SnapshotWire {
             epoch: &self.epoch,
             generation: self.state.generation(),
-            pending: self.state.pending().map(Into::into),
+            pending: self.state.pending().map(|pending| PendingWire {
+                summary: pending.summary,
+                generation: pending.generation,
+                through: pending.through,
+                completion: self.outcome.as_ref(),
+            }),
         });
         Ok(CommitRequest {
             deadline_unix_millis: None,

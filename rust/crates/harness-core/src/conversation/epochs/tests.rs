@@ -406,13 +406,51 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     ));
     assert_eq!(reopened, unchanged);
 
-    reopened.complete(summary, Completion::Ready).unwrap();
+    let body = next.summary.clone().unwrap();
+    reopened
+        .complete(summary, SummaryOutcome::Ready(body.clone()))
+        .unwrap();
+    let other_body =
+        super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "other-summary.txt")
+            .unwrap();
+    let ready = reopened.clone();
+    assert!(matches!(
+        reopened.complete(summary, SummaryOutcome::Ready(other_body.clone())),
+        Err(SnapshotError::Transition(Refusal::Contradiction))
+    ));
+    assert!(matches!(
+        reopened.complete(summary, SummaryOutcome::Failed),
+        Err(SnapshotError::Transition(Refusal::Contradiction))
+    ));
+    assert_eq!(reopened, ready);
+    let request = reopened
+        .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
+        .unwrap();
+    assert!(matches!(
+        provider.commit(request).await.unwrap(),
+        CommitOutcome::Committed(_)
+    ));
+    let mut reopened = Snapshot::decode(&last(&provider, &path).await, &source, 12).unwrap();
+    assert_eq!(reopened.outcome(), Some(&SummaryOutcome::Ready(body)));
+    let ready = reopened.clone();
     let mut wrong = next.clone();
     wrong.key.through = 11;
     assert!(matches!(
         reopened.swap(0, wrong, 12),
         Err(SnapshotError::Identity)
     ));
+    let mut wrong = next.clone();
+    wrong.summary = Some(other_body);
+    // The former unbound-ready route accepted both this epoch and its swap.
+    // The result association is required in addition to those two checks.
+    assert!(wrong.validate(&source, 12).is_ok());
+    let mut unbound = reopened.state();
+    assert!(unbound.swap(summary, 0, 12).is_ok());
+    assert!(matches!(
+        reopened.swap(0, wrong, 12),
+        Err(SnapshotError::ResultReference)
+    ));
+    assert_eq!(reopened, ready);
     reopened.swap(0, next, 12).unwrap();
     let request = reopened
         .publication(path.clone(), acyclic_stream::IdempotencyKey::unique())
@@ -425,6 +463,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     let settled = Snapshot::decode(&final_record, &source, 12).unwrap();
     assert_eq!(settled.state().cursor(), 10);
     assert_eq!(settled.state().generation(), 1);
+    assert!(settled.outcome().is_none());
     assert!(check_partition(12, &[0..10], &[10, 11]));
     // The unchanged stale producer cannot replace the committed epoch.
     assert!(matches!(

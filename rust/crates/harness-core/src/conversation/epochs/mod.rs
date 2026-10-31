@@ -13,7 +13,7 @@ mod kernel;
 pub use kernel::{Boundary, Cut, fits, inherited, token_bound};
 pub mod protocol;
 mod snapshot;
-pub use snapshot::{Snapshot, SnapshotError};
+pub use snapshot::{Snapshot, SnapshotError, SummaryOutcome};
 
 /// Immutable identity of a shared summary on the source's common ancestor.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
