@@ -53,6 +53,11 @@ impl ProcessTreeIo<'_> {
     pub fn readiness(&mut self) -> io::Result<ProcessReadiness> {
         self.tree.readiness()
     }
+    /// Waits for input progress after [`Self::pump_stdin`] returns false,
+    /// excluding unread output; see [`ProcessTree::stdin_readiness`].
+    pub fn stdin_readiness(&mut self) -> io::Result<ProcessReadiness> {
+        self.tree.stdin_readiness()
+    }
     /// Reads bounded stdout without waiting for data.
     pub fn read_stdout(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
         self.tree
@@ -216,10 +221,11 @@ impl ProcessTreeStorage {
     }
 
     /// Captures through the same retained tree and original meter. Callers fund
-    /// the supplied capture buffers before entering this operation.
+    /// the supplied capture buffers before entering this operation. The schedule
+    /// is the original caller's policy, including explicitly unbounded capture.
     pub fn wait_with_output(
         &mut self,
-        timeout: Duration,
+        schedule: impl Into<CaptureSchedule>,
         max_bytes: usize,
         input: Option<CaptureInput<'_>>,
         check: impl FnMut() -> io::Result<()>,
@@ -233,7 +239,7 @@ impl ProcessTreeStorage {
             .as_mut()
             .ok_or_else(|| ProcessCaptureFailure::before_capture(io::ErrorKind::NotFound.into()))?;
         tree.wait_with_output_controlled(
-            timeout,
+            schedule,
             max_bytes,
             input,
             check,

@@ -94,17 +94,19 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
         platform::write_pipe(pipe, &mut process.writer, &bytes, None, None)?;
     operation?;
     assert_eq!(prefilled, Some(bytes.len()));
-    let (written, operation) = platform::write_pipe(
-        pipe,
-        &mut process.writer,
-        &bytes,
-        Some(meter.as_ref()),
-        None,
-    )?;
-    operation?;
-    assert_eq!(
-        written, None,
+    process.queue_stdin(bytes.to_vec())?;
+    let owner: Arc<dyn crate::NativeReadMeter> = meter.clone();
+    assert!(
+        !process.pump_stdin_controlled(Some(&owner))?,
         "the child must block on its real stderr pipe"
+    );
+    // The child's full stderr is an actual ready output source and keeps it
+    // from reading stdin. That output must not settle an input-only wait.
+    process.readiness()?.0.block();
+    let input_ready = process.stdin_readiness()?;
+    assert!(
+        !input_ready.0.fired(),
+        "unread child output cannot report stdin progress"
     );
     assert_eq!(meter.used_bytes.load(Ordering::Acquire), bytes.len() as u64);
     assert!(
@@ -115,6 +117,7 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     meter.cancelled.store(true, Ordering::Release);
     // Abandon the capture's writer reference: only IOCP now retains the
     // accepted transfer, including its original reservation and meter owner.
+    process.queued_stdin.take();
     process.writer.0.take();
     let mut output = [0; 128 * 1024];
     process
@@ -125,6 +128,7 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
         .as_mut()
         .unwrap()
         .read_exact(&mut output)?;
+    input_ready.0.block();
     let result = completion.recv().map_err(io::Error::other);
     process.terminate(None)?;
     assert_eq!(result?, (bytes.len() as u64, bytes.len() as u64));
