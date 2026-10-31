@@ -566,10 +566,13 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                 task.harness = crate::runtime::Bindings {
                     scope: scope.clone(),
                     targets: Some(Arc::new(Devices {
-                        roster: Arc::new(crate::agent::Roster {
-                            home: devices[0].record.name.clone(),
-                            targets: devices.iter().map(|device| device.record.clone()).collect(),
-                        }),
+                        roster: Arc::new(
+                            crate::agent::Roster::new(
+                                &devices[0].record.name,
+                                devices.iter().map(|device| device.record.clone()).collect(),
+                            )
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                        ),
                         devices,
                     })),
                     ..crate::runtime::Bindings::local()
