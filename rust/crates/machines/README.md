@@ -1,6 +1,11 @@
 # acyclic-machines
 
-Machines protocol 1.4 is shape-free. Customers choose an immutable image and
+Rust fork outcomes use the shared `Provenance<ForkSource, ForkFidelity>` from
+Streams. Its `source` identifies the parent or checkpoint, and `inherited`
+declares the fork fidelity. Wire and JavaScript projections retain their
+existing source/fidelity fields.
+
+Machines protocol 1.5 is shape-free. Customers choose an immutable image and
 policies; the platform manages CPU, memory, and disk capacity. Create and
 checkpoint fork no longer accept an Elastic/Dedicated performance selection.
 The removed protobuf field numbers and names are reserved. Servers must reject

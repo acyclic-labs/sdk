@@ -15,7 +15,7 @@ pub struct PathHead {
     /// Confirmed durable prefix; zero makes no persistence claim.
     pub durable: u64,
     /// Immediate inherited source when history is requested, at its immutable cut.
-    pub origin: Option<ForkOrigin>,
+    pub origin: Option<Provenance<StreamPath, ForkCut>>,
 }
 
 /// Data required for each named path at the shared snapshot.
@@ -195,21 +195,10 @@ impl PathHead {
             || self
                 .origin
                 .as_ref()
-                .is_some_and(|origin| origin.forked_at > self.tail)
+                .is_some_and(|origin| origin.inherited.forked_at > self.tail)
         {
             return Err(StreamError::InvalidResponse);
         }
         Ok(())
     }
-}
-
-/// The source of this path's most recent enclosing subtree fork.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ForkOrigin {
-    /// Source path, including this descendant's relative suffix.
-    pub source: StreamPath,
-    /// Exclusive inherited source prefix, unaffected by later appends.
-    pub forked_at: u64,
-    /// The fork publication, rather than the last inherited record's commit.
-    pub commit_id: CommitId,
 }

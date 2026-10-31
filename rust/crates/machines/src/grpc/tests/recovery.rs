@@ -320,7 +320,7 @@ async fn snapshot_recovery_uses_retained_results_without_resource_reads()
                             } else {
                                 ForkSource::Machine(source)
                             },
-                            fidelity: ForkFidelity::MemoryAndDisk,
+                            inherited: ForkFidelity::MemoryAndDisk,
                         },
                         machines: vec![decode_machine_observation(machine, child)?],
                     },

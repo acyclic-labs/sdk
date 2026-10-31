@@ -227,8 +227,8 @@ impl SettledResults {
             .origin
             .ok_or_else(|| invalid("result publication has no original fork cut"))?;
         if count == 0
-            || origin.commit_id != settlement
-            || origin.forked_at != count
+            || origin.inherited.commit_id != settlement
+            || origin.inherited.forked_at != count
             || head.tail < count
         {
             return Err(invalid(

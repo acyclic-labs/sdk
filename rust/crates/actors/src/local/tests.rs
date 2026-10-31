@@ -88,6 +88,46 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
     Ok(())
 }
 
+/// Runtime delivery keeps the confirmed publication cut without reopening it.
+/// Either missing provenance handoff must fail before a later load can mask it.
+#[tokio::test]
+async fn forked_prepared_publication_retains_original_provenance() -> TestResult {
+    let store = Store::new(Arc::new(MemoryStream::default()), state_root()?);
+    let parent = actor("parent")?;
+    let child = actor("child")?;
+    place(&store, &parent).await?;
+    let parent_cut = store.load(&parent).await?;
+    let mut publication = PreparedPublish::foreign(key("fork")?);
+    for effect in store.fork(&parent_cut, &child, inbox(&child)?)? {
+        publication.join(effect)?;
+    }
+    store.submit(publication).await?;
+    let forked = store.load(&child).await?;
+    let original = forked.provenance().cloned().ok_or("missing fork origin")?;
+    assert_eq!(original.source, *parent_cut.path());
+    store.claim(&forked, 1, key("claim")?).await?;
+    let mut retained = store.load(&child).await?;
+    for sequence in 0..2 {
+        let publication = store.prepare_publish(
+            &retained,
+            1,
+            &record(sequence),
+            None,
+            transition(7, AlarmChange::Keep),
+            key(&format!("publish/{sequence}"))?,
+        )?;
+        let next = store
+            .submit_retained(publication)
+            .await?
+            .ok_or("missing retained publication")?;
+        assert_eq!(next.provenance(), Some(&original));
+        assert_eq!(next.tail, retained.tail + 1);
+        assert_ne!(next.anchor, retained.anchor);
+        retained = next;
+    }
+    Ok(())
+}
+
 /// The original publication owns response, cursor, checkpoint and retry. A
 /// missing/foreign response cannot consume input; an empty response is real.
 #[tokio::test]

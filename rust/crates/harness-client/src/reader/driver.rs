@@ -1312,7 +1312,11 @@ mod tests {
             };
             let origin = head.origin.as_ref().unwrap();
             assert_eq!(
-                (&origin.source, origin.forked_at, origin.commit_id),
+                (
+                    &origin.source,
+                    origin.inherited.forked_at,
+                    origin.inherited.commit_id
+                ),
                 (&source, 2, fork.commit_id)
             );
             assert_eq!(head.last.as_ref().unwrap().value.as_slice(), b"second");
@@ -1336,8 +1340,11 @@ mod tests {
             let [child] = children.as_slice() else {
                 panic!("one child");
             };
-            assert_eq!(child.origin.as_ref().unwrap().forked_at, 0);
-            assert_eq!(child.origin.as_ref().unwrap().commit_id, fork.commit_id);
+            assert_eq!(child.origin.as_ref().unwrap().inherited.forked_at, 0);
+            assert_eq!(
+                child.origin.as_ref().unwrap().inherited.commit_id,
+                fork.commit_id
+            );
             assert_eq!(child.tail.as_ref().unwrap().value.as_ref(), b"second");
 
             let mut reader = Reader::new(super::super::ReaderPolicy::default()).unwrap();

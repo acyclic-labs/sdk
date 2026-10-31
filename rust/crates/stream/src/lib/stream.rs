@@ -2,6 +2,7 @@
 pub struct Stream<P: ?Sized> {
     provider: Arc<P>,
     path: StreamPath,
+    fork_receipt: Option<ForkReceipt>,
 }
 
 impl<P: ?Sized> Clone for Stream<P> {
@@ -9,6 +10,7 @@ impl<P: ?Sized> Clone for Stream<P> {
         Self {
             provider: Arc::clone(&self.provider),
             path: self.path.clone(),
+            fork_receipt: self.fork_receipt.clone(),
         }
     }
 }
@@ -19,6 +21,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         Ok(Self {
             provider,
             path: StreamPath::new(path)?,
+            fork_receipt: None,
         })
     }
 
@@ -26,6 +29,12 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     #[must_use]
     pub const fn path(&self) -> &StreamPath {
         &self.path
+    }
+
+    /// Original fork publication when this handle was returned by [`Self::fork`].
+    /// Rebinding the same path with [`Self::new`] does not reconstruct a receipt.
+    pub const fn fork_receipt(&self) -> Option<&ForkReceipt> {
+        self.fork_receipt.as_ref()
     }
 
     /// Submits one canonical commit across this provider's paths. The returned
@@ -95,8 +104,9 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         at_tail: Option<u64>,
         exclude: Vec<RelativePath>,
         idempotency_key: IdempotencyKey,
-    ) -> Result<ForkReceipt, StreamError> {
-        self.provider
+    ) -> Result<Self, StreamError> {
+        let receipt = self
+            .provider
             .fork(ForkRequest {
                 exclude,
                 source: self.path.clone(),
@@ -104,7 +114,12 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                 at_tail,
                 idempotency_key,
             })
-            .await
+            .await?;
+        Ok(Self {
+            provider: Arc::clone(&self.provider),
+            path: receipt.destination.clone(),
+            fork_receipt: Some(receipt),
+        })
     }
 
     /// Reads at most `limit` records from `from`.

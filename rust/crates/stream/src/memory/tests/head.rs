@@ -250,10 +250,12 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen()
     assert_eq!(root.last, None);
     assert_eq!(
         root.origin,
-        Some(crate::ForkOrigin {
+        Some(crate::Provenance {
             source: StreamPath::new("tree")?,
-            forked_at: 0,
-            commit_id: first.commit_id,
+            inherited: crate::ForkCut {
+                forked_at: 0,
+                commit_id: first.commit_id,
+            }
         })
     );
     let child = provider.head(StreamPath::new("first/child")?).await?;
@@ -261,10 +263,12 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen()
     assert_eq!(child.last.as_ref().map(|record| record.sequence), Some(1));
     assert_eq!(
         child.origin,
-        Some(crate::ForkOrigin {
+        Some(crate::Provenance {
             source: StreamPath::new("tree/child")?,
-            forked_at: 1,
-            commit_id: first.commit_id,
+            inherited: crate::ForkCut {
+                forked_at: 1,
+                commit_id: first.commit_id,
+            }
         })
     );
     for path in ["first/new", "first/excluded/leaf"] {
@@ -284,10 +288,12 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen()
             .head(StreamPath::new("first/nested")?)
             .await?
             .origin,
-        Some(crate::ForkOrigin {
+        Some(crate::Provenance {
             source: StreamPath::new("tree/child")?,
-            forked_at: 2,
-            commit_id: nested.commit_id,
+            inherited: crate::ForkCut {
+                forked_at: 2,
+                commit_id: nested.commit_id,
+            }
         })
     );
     let second = provider
@@ -307,10 +313,12 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen()
     ] {
         assert_eq!(
             provider.head(StreamPath::new(path)?).await?.origin,
-            Some(crate::ForkOrigin {
+            Some(crate::Provenance {
                 source: StreamPath::new(source)?,
-                forked_at: cut,
-                commit_id: second.commit_id,
+                inherited: crate::ForkCut {
+                    forked_at: cut,
+                    commit_id: second.commit_id,
+                }
             })
         );
     }

@@ -2,6 +2,13 @@
 
 Hierarchical append-only streams with exact sequence cursors, conditional appends, forks, and coordinated commits. A `StreamClient` wraps any `StreamProvider` without changing provider semantics.
 
+The Rust `Stream::fork` returns another `Stream` on the same provider. Use its
+ordinary append/read/follow methods directly; `fork_receipt()` borrows the
+original publication receipt. History heads and children expose
+`Provenance<StreamPath, ForkCut>`: `source` names the inherited path and
+`inherited` retains its exclusive prefix and fork publication. This production
+type also carries Actor state ancestry and Machines source/fidelity metadata.
+
 Remote consumers adopt `grpc::Client` for the provider contract and obtain its
 `session_client()` for multiplexed calls and live queries. Reuse those handles
 within an authority scope: `session::Client` owns channel credit, checked resume,

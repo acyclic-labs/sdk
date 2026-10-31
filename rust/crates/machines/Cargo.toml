@@ -27,7 +27,7 @@ javascript = ["grpc", "dep:js-sys", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 futures.workspace = true
@@ -43,6 +43,7 @@ tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false, features = ["conformance"] }
 proptest.workspace = true
 rcgen = "0.14.10"
 tokio-stream.workspace = true

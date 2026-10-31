@@ -6,6 +6,8 @@
 
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
+/// Shared source and inherited-state metadata for every fork.
+pub use acyclic_stream::Provenance;
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};

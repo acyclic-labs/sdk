@@ -1,5 +1,8 @@
 impl Namespace {
-    fn origin(&self, path: &StreamPath) -> Result<Option<crate::ForkOrigin>, StreamError> {
+    fn origin(
+        &self,
+        path: &StreamPath,
+    ) -> Result<Option<crate::Provenance<crate::StreamPath, crate::ForkCut>>, StreamError> {
         let mut parts = path.as_str().split('/');
         let first = parts.next().ok_or(StreamError::InvalidPath)?;
         let mut node = lookup(&self.roots, first).ok_or(StreamError::NotFound)?;
@@ -28,18 +31,20 @@ impl Namespace {
                 source = child;
             }
         }
-        Ok(Some(crate::ForkOrigin {
+        Ok(Some(crate::Provenance {
             source: if relative.is_empty() {
                 origin.source.clone()
             } else {
                 StreamPath::new(format!("{}{relative}", origin.source.as_str()))?
             },
-            forked_at: if relative.is_empty() {
-                origin.forked_at
-            } else {
-                source.data.tail
+            inherited: crate::ForkCut {
+                forked_at: if relative.is_empty() {
+                    origin.forked_at
+                } else {
+                    source.data.tail
+                },
+                commit_id: origin.commit_id,
             },
-            commit_id: origin.commit_id,
         }))
     }
 }

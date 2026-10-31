@@ -794,7 +794,7 @@ pub struct ProvenanceOut {
     source: ForkSourceOut,
     fidelity: ForkFidelityOut,
 }
-fn provenance_out(value: Provenance) -> ProvenanceOut {
+fn provenance_out(value: Provenance<ForkSource, ForkFidelity>) -> ProvenanceOut {
     ProvenanceOut {
         source: match value.source {
             ForkSource::Machine(id) => ForkSourceOut::Machine {
@@ -804,7 +804,7 @@ fn provenance_out(value: Provenance) -> ProvenanceOut {
                 checkpoint_id: id.to_string(),
             },
         },
-        fidelity: match value.fidelity {
+        fidelity: match value.inherited {
             ForkFidelity::MemoryAndDisk => ForkFidelityOut::MemoryAndDisk,
             ForkFidelity::DiskOnly => ForkFidelityOut::DiskOnly,
         },
