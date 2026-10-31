@@ -30,7 +30,102 @@ fn immutable_bytes_survive_each_publication_kill_and_reject_changed_content()
         );
         assert_eq!(std::fs::read(directory.path().join(leaf))?, bytes);
     }
-    publication_barriers_follow_the_requested_guarantee()
+    publication_barriers_follow_the_requested_guarantee()?;
+    #[cfg(all(feature = "test-support", feature = "native-mount"))]
+    scoped_publication_keeps_the_original_root_and_restores_after_unwind()?;
+    Ok(())
+}
+
+#[cfg(all(feature = "test-support", feature = "native-mount"))]
+fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Result<(), DemandError>
+{
+    use crate::native_host::publication_test_support::{
+        Configuration, PublicationStep, with_probe,
+    };
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    for durability in [NativeDurability::Visibility, NativeDurability::Durable] {
+        for step in [
+            PublicationStep::Created,
+            PublicationStep::PartialWrite,
+            PublicationStep::FileClosed,
+            PublicationStep::Renamed,
+        ] {
+            for unwind in [false, true] {
+                let fixture = tempfile::tempdir()?;
+                let path = fixture.path().join("workspace");
+                let moved = fixture.path().join("retained");
+                std::fs::create_dir(&path)?;
+                let held = hold_root(&path)?;
+                std::fs::rename(&path, &moved)?;
+                std::fs::create_dir(&path)?;
+                let bytes = br#"{"request":"complete"}"#;
+                let outer_calls = Rc::new(Cell::new(0));
+                let outer = Rc::clone(&outer_calls);
+                with_probe(
+                    Configuration {
+                        kill_after: Some(step),
+                        ..Configuration::default()
+                    },
+                    Some(Box::new(move || outer.set(outer.get() + 1))),
+                    || -> Result<(), DemandError> {
+                        let inner_calls = Rc::new(Cell::new(0));
+                        let inner = Rc::clone(&inner_calls);
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            with_probe(
+                                Configuration::default(),
+                                Some(Box::new(move || inner.set(inner.get() + 1))),
+                                || -> Result<(), DemandError> {
+                                    held.publish_immutable(Path::new("inner"), bytes, durability)?;
+                                    if unwind {
+                                        std::panic::resume_unwind(Box::new(()));
+                                    }
+                                    Ok(())
+                                },
+                            )
+                        }));
+                        if unwind {
+                            assert!(result.is_err(), "inner scope must exercise unwind cleanup");
+                        } else {
+                            result.expect("unexpected inner publication panic")?;
+                        }
+                        assert_eq!(inner_calls.get(), 1);
+                        assert_eq!(outer_calls.get(), 0, "inner scope consumed outer callback");
+                        let leaf = Path::new("outer");
+                        assert!(
+                            matches!(
+                                held.publish_immutable(leaf, bytes, durability),
+                                Err(DemandError::Io(error))
+                                    if error.to_string() == "killed during record publication"
+                            ),
+                            "inner scope lost the original outer cut: {step:?}, unwind={unwind}"
+                        );
+                        match std::fs::read(moved.join(leaf)) {
+                            Ok(retained) => {
+                                assert!(matches!(step, PublicationStep::Renamed));
+                                assert_eq!(retained, bytes);
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                assert!(!matches!(step, PublicationStep::Renamed));
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                        held.publish_immutable(leaf, bytes, durability)?;
+                        assert_eq!(outer_calls.get(), 1, "outer callback was not restored");
+                        Ok(())
+                    },
+                )?;
+                held.publish_immutable(Path::new("after-scope"), bytes, durability)?;
+                assert_eq!(outer_calls.get(), 1, "callback escaped its original scope");
+                for leaf in ["inner", "outer", "after-scope"] {
+                    assert_eq!(std::fs::read(moved.join(leaf))?, bytes);
+                    assert!(!path.join(leaf).try_exists()?);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Use the original finite work frame to observe barriers on the physical

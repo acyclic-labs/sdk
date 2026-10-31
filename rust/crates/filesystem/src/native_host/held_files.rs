@@ -11,6 +11,8 @@ use std::path::PathBuf;
 pub enum NativeDurability {
     /// Complete bytes or the removal are visible to subsequent lookups. No
     /// persistence barrier is requested, so a crash may lose the change.
+    /// Use only for disposable projections reconstructed from durable state;
+    /// authoritative accepted-work and recovery records require `Durable`.
     Visibility,
     /// Complete bytes and their directory entries cross persistence barriers
     /// before success. Ancestor names must already have durable admission.
