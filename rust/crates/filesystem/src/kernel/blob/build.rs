@@ -67,11 +67,15 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
             let maximum =
                 chunk_capacity.min(usize::try_from(detection_bytes).unwrap_or(usize::MAX));
             let owned = read_owned_blob_source(source, maximum, accounting, cancellation).await?;
-            let (chunk, filled) = if let Some(chunk) = owned {
+            let (chunk, filled, at_eof) = if let Some(chunk) = owned {
                 let filled = chunk.bytes.len();
-                (chunk, filled)
+                // A short transferred chunk is not the producer's terminal event.
+                (chunk, filled, filled == 0)
             } else {
-                read_blob_chunk(source, maximum, accounting, cancellation).await?
+                let (chunk, filled) =
+                    read_blob_chunk(source, maximum, accounting, cancellation).await?;
+                // Buffered reads stop short only after observing an explicit zero.
+                (chunk, filled, filled < maximum)
             };
             if filled == 0 {
                 drop_source_chunk(chunk, accounting)?;
@@ -88,7 +92,7 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
                 cancellation,
             )
             .await?;
-            if filled < maximum {
+            if at_eof {
                 break;
             }
         }

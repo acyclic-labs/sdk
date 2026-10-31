@@ -599,3 +599,87 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
     assert!(failure.work.peak_allocation_bytes <= maximum);
     Ok(())
 }
+
+#[tokio::test]
+async fn owned_stream_requires_terminal_after_short_chunks()
+-> Result<(), Box<dyn std::error::Error>> {
+    use futures::{StreamExt, channel::mpsc};
+    struct ChannelSource(mpsc::UnboundedReceiver<Option<OwnedBytes>>);
+    impl AsyncBlobSource for ChannelSource {
+        async fn read<'a>(
+            &'a mut self,
+            _destination: &'a mut [u8],
+            _budget: WorkBudget,
+            _cancellation: &'a CancellationToken,
+        ) -> std::io::Result<usize> {
+            Err(std::io::Error::other("owned producer must not be copied"))
+        }
+        async fn read_owned(
+            &mut self,
+            _maximum: usize,
+            _budget: WorkBudget,
+            _cancellation: &CancellationToken,
+        ) -> std::io::Result<Option<OwnedSourceChunk>> {
+            match self.0.next().await {
+                Some(Some(bytes)) => {
+                    let retained = bytes.len() as u64;
+                    Ok(Some(OwnedSourceChunk::claimed(bytes, retained)))
+                }
+                Some(None) => Ok(Some(OwnedSourceChunk::claimed(OwnedBytes::new(), 0))),
+                None => Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "producer dropped before its terminal item",
+                )),
+            }
+        }
+    }
+    let options = BlobBuildOptions {
+        chunk_bytes: 8,
+        page_items: 2,
+        page_bytes: 127,
+        maximum_blob_bytes: 16,
+    };
+    let cancellation = CancellationToken::new();
+    for terminal in [true, false] {
+        let (sender, input) = mpsc::unbounded();
+        sender.unbounded_send(Some(OwnedBytes::from_static(b"abc")))?;
+        sender.unbounded_send(Some(OwnedBytes::from_static(b"def")))?;
+        if terminal {
+            sender.unbounded_send(None)?;
+        }
+        drop(sender);
+        let store = MemoryObjectStore::default();
+        let result = build_blob(
+            &store,
+            &mut ChannelSource(input),
+            options,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await;
+        if terminal {
+            let built = result?;
+            assert_eq!(built.logical_bytes, 6);
+            assert_eq!(built.work.source_bytes_read, 6);
+            let read = read_blob_range(
+                &store,
+                built.root,
+                ByteRange {
+                    offset: 0,
+                    length: 6,
+                },
+                DecodeLimits::default(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+            assert_eq!(read.bytes.as_ref(), b"abcdef");
+        } else {
+            let failure = result.err().ok_or("missing terminal was accepted")?;
+            assert!(matches!(failure.error, BlobBuildError::Source(ref error)
+                if error.kind() == std::io::ErrorKind::UnexpectedEof));
+            assert_eq!(failure.work.source_bytes_read, 6);
+        }
+    }
+    Ok(())
+}

@@ -208,6 +208,8 @@ mod history;
 mod message;
 mod outcome;
 mod selection;
+#[cfg(feature = "filesystem")]
+mod source;
 mod state;
 mod volumes;
 pub use attachments::{
@@ -232,6 +234,8 @@ pub use files::{FileDescriptor, FileRef};
 pub(crate) use files::{PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
+#[cfg(feature = "filesystem")]
+pub use source::{ContentSource, ContentSourceAdapter};
 pub use volumes::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
 #[doc(hidden)]
 pub use volumes::{
