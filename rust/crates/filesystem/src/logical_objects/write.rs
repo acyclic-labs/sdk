@@ -186,20 +186,19 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             durability_operations: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        let root = super::Epoch::root(self.epoch.current());
-        let (mut references, custody) =
-            vector::<acyclic_objects::Digest>(scope.objects.len(), work)?;
-        let bytes = (references.capacity() * size_of::<acyclic_objects::Digest>()) as u64;
-        references.extend(scope.objects.iter().copied().map(blob));
+        let (root, mut references) = retention(self.epoch.current(), scope.objects, work)?;
         match work {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
                 let original = *original;
+                let request = acyclic_objects::ObjectsNativeRequest::new(
+                    (root.value, references.value),
+                    (root.allocation, references.allocation),
+                    &original.runtime_meter(),
+                )
+                .map_err(|error| native_error(error, original))?;
                 self.provider
-                    .retain_native(
-                        packet((root, references), custody, original)?,
-                        original.runtime_meter(),
-                    )
+                    .retain_native(request, original.runtime_meter())
                     .map_err(|error| native_error(error, original))?
                     .await
                     .map_err(|error| native_error(error, original))?;
@@ -209,8 +208,12 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     backend_write_operations: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let retained = self.provider.retain(&root, references).await;
-                release(work, custody, bytes)?;
+                let retained = self
+                    .provider
+                    .retain(&root.value, std::mem::take(&mut references.value))
+                    .await;
+                drop(root);
+                drop(references);
                 retained.map_err(ObjectStoreError::LogicalObjects)?;
             }
         }

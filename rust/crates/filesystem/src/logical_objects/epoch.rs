@@ -82,7 +82,13 @@ impl Epoch {
 
     /// The root that epoch's publications retain under.
     pub fn root(epoch: u64) -> acyclic_objects::RootId {
-        let mut bytes = Vec::with_capacity(ROOT.len() + 8);
+        Self::root_from(epoch, Vec::with_capacity(Self::ROOT_BYTES))
+    }
+
+    pub(super) const ROOT_BYTES: usize = ROOT.len() + 8;
+
+    /// Fills the caller's empty, preallocated root storage without growing it.
+    pub(super) fn root_from(epoch: u64, mut bytes: Vec<u8>) -> acyclic_objects::RootId {
         bytes.extend_from_slice(ROOT);
         bytes.extend_from_slice(&epoch.to_be_bytes());
         acyclic_objects::RootId::new(bytes).expect("a fixed-width epoch root is a valid root")

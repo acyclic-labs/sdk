@@ -1,6 +1,31 @@
 use super::*;
+use crate::kernel::allocation::retained::Retained;
 pub(super) type GetRequest = (acyclic_objects::Digest, ByteRange, u64);
 pub(super) type PutRequest = (acyclic_stream::SealedBytes, Vec<acyclic_objects::Digest>);
+pub(super) type RetentionRequest = (
+    Retained<acyclic_objects::RootId>,
+    Retained<Vec<acyclic_objects::Digest>>,
+);
+
+/// Each value retires before its original funding, including on cancellation.
+pub(super) fn retention(
+    epoch: u64,
+    objects: &[ObjectId],
+    work: &mut KernelAccounting<'_>,
+) -> Result<RetentionRequest, crate::FsError> {
+    use crate::kernel::Owned;
+
+    let owned = Owned::<Vec<u8>>::allocate(super::Epoch::ROOT_BYTES, work)?;
+    let root = Retained::from_owned(owned, work)?;
+    let root = Retained {
+        value: super::Epoch::root_from(epoch, root.value),
+        allocation: root.allocation,
+    };
+    let owned = Owned::<Vec<acyclic_objects::Digest>>::allocate(objects.len(), work)?;
+    let mut references = Retained::from_owned(owned, work)?;
+    references.value.extend(objects.iter().copied().map(blob));
+    Ok((root, references))
+}
 
 pub(super) fn children(
     id: ObjectId,

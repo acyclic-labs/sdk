@@ -235,11 +235,15 @@ pub(crate) fn retain<'a, M: Medium>(
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, Retained>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
-    let ((root, references), custody) = request.split();
     let (medium, account) = metered(account, &meter);
     native_future(&meter, async move {
-        let _custody = custody;
-        checked(&medium, account.retain(&root, references).await)
+        // The account borrows the root. Keep it in the original request so
+        // its backing retires before the request's funding on every exit.
+        let mut request = request;
+        let result = account
+            .retain(&request.data.0, std::mem::take(&mut request.data.1))
+            .await;
+        checked(&medium, result)
     })
 }
 
