@@ -12,7 +12,7 @@ use crate::{
     conversation::{ContentGrant, FileRef, VolumeRef},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
-use acyclic_stream::BoxProviderFuture;
+use acyclic_stream::{BoxProviderFuture, OwnedBytes};
 use std::sync::Arc;
 
 /// Directory entries read per listing page.
@@ -114,12 +114,12 @@ where
             .value)
     }
 
-    /// The bytes of internal file `path`, if it exists.
+    /// The original owned bytes of internal file `path`, if it exists.
     pub(in crate::filesystem) async fn read(
         &self,
         path: &str,
         maximum_bytes: u64,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<OwnedBytes>> {
         Self::read_at(
             &self.head().await?,
             &format!("/{}", internal(path)),
@@ -133,7 +133,7 @@ where
         head: &acyclic_fs::Generation<A, O>,
         path: &str,
         maximum_bytes: u64,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<OwnedBytes>> {
         let read = head
             .read(
                 path,
@@ -143,7 +143,7 @@ where
             )
             .await;
         match read {
-            Ok(receipt) => Ok(Some(receipt.value.to_vec())),
+            Ok(receipt) => Ok(Some(receipt.value)),
             Err(failure) => {
                 let error = super::map_error(failure.error);
                 if missing(&error) {
@@ -162,7 +162,7 @@ where
         path: &str,
         bytes: &[u8],
         maximum_bytes: u64,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<OwnedBytes>> {
         if let Some(existing) = self.read(path, maximum_bytes).await? {
             return Ok(Some(existing));
         }
@@ -306,7 +306,11 @@ where
         path: &'a str,
         maximum_bytes: u64,
     ) -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
-        Box::pin(Self::read(self, path, maximum_bytes))
+        Box::pin(async move {
+            Ok(Self::read(self, path, maximum_bytes)
+                .await?
+                .map(|bytes| bytes.to_vec()))
+        })
     }
 
     fn create<'a>(
@@ -318,7 +322,7 @@ where
         Box::pin(async move {
             Ok(
                 match Self::create(self, path, &bytes, maximum_bytes).await? {
-                    Some(existing) => ApprovalCreate::Existing(existing),
+                    Some(existing) => ApprovalCreate::Existing(existing.to_vec()),
                     None => ApprovalCreate::Created,
                 },
             )
