@@ -282,6 +282,18 @@ impl CheckoutTools {
 }
 
 impl ToolExecutor for CheckoutTools {
+    fn prepare_shell_script(
+        &self,
+        source: &str,
+        input: &serde_json::Value,
+        _context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<crate::tools::ShellInput> {
+        // This executor's native process preparation uses this same PLATFORM
+        // selection, including its resolved executable and stdin contract.
+        crate::tools::ShellInput::from_script(&crate::tools::shell::PLATFORM, source, input, work)
+    }
+
     // A cancelled turn drops its call: the command's stop guard stops the
     // process tree, the spawned capture keeps the workspace guard until the
     // tree is reaped, and the next call reconciles from the durable capture.

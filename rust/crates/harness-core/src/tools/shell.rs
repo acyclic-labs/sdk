@@ -108,6 +108,38 @@ pub struct ShellInput {
 }
 
 impl ShellInput {
+    /// Prepares a standard command for an already admitted target. Shell skills
+    /// receive one JSON document as their first positional argument. Native
+    /// executors require their own accounted producer before allocating source.
+    pub fn from_script(
+        target: &ShellSpec,
+        source: &str,
+        input: &serde_json::Value,
+        work: crate::NativeWork<'_>,
+    ) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "native shell script projection has no accounted command producer; recovery: use the admitted ordinary shell execution path",
+            });
+        }
+        let _ = work;
+        if source.is_empty() || source.contains('\0') {
+            return Err(Error::Invalid("skill shell source is empty or contains NUL; recovery: publish nonempty UTF-8 shell source without NUL".into()));
+        }
+        let input = serde_json::to_string(input).map_err(|cause| {
+            Error::Invalid(format!("skill JSON input encoding failed: {cause}; recovery: retain the schema-validated skill input"))
+        })?;
+        let input = Self {
+            command: target.prepare_script(source, &[input]),
+            cwd: None,
+            timeout_ms: None,
+        };
+        input.validate()?;
+        Ok(input)
+    }
+
     /// Validates the command and relative directory before any native I/O.
     pub fn validate(&self) -> Result<()> {
         let cwd = Path::new(self.cwd.as_deref().unwrap_or(""));
