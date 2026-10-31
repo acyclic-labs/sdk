@@ -651,7 +651,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         .provider()
         .append(acyclic_stream::AppendRequest {
             path: shared.layout.socket(&connection)?,
-            records: vec![Bytes::from_static(b"foreign close")],
+            records: vec![Bytes::from_static(b"foreign close").into()],
             if_tail: Some(1),
             idempotency_key: IdempotencyKey::new(b"foreign-close".to_vec())?,
         })
