@@ -96,7 +96,6 @@ impl LocalHarness {
         operation: OperationId,
         binding: &'a Binding<'a>,
         publisher: &'a dyn ContentPublisher,
-        #[cfg(any(test, feature = "native-execution"))] workspace: Option<&'a LocalWorkspace>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
