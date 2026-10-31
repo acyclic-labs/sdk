@@ -5,6 +5,7 @@ mod gemini_results;
 pub(crate) mod image;
 mod json_string;
 pub(crate) mod native_reasoning;
+mod profile;
 mod sequence;
 pub(crate) mod text;
 pub(crate) mod wire;
@@ -17,7 +18,10 @@ use acyclic_harness_core::{
         PreparedModelRequest, ToolResultContent,
     },
 };
-use serde_json::{Value, json};
+pub(crate) use profile::validate as validate_profile;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use serde_json::Value;
+use serde_json::json;
 use wire::{Body, Item, Message};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
@@ -139,6 +143,15 @@ pub(crate) fn body_named<'a>(
     files: &mut FileText,
 ) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
+    if provider
+        .profile
+        .as_ref()
+        .is_some_and(|profile| profile.max_output_tokens() != request.max_output_tokens)
+    {
+        return Err(invalid(
+            "request output reservation differs from its admitted profile",
+        ));
+    }
     let call_ids = crate::call_ids::CallIds::new(request, adapter);
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
@@ -231,6 +244,9 @@ pub(crate) fn body_named<'a>(
                 );
             }
         }
+    }
+    if let Some(profile) = &provider.profile {
+        profile::project(adapter, profile, &mut fields);
     }
     let messages_field = match adapter {
         Adapter::Responses => "input",

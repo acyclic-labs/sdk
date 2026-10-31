@@ -302,6 +302,7 @@ pub(super) fn provider_with(
             name: "model".into(),
             revision: "1".into(),
         },
+        profile: None,
         config: Arc::new(ProviderSpec {
             adapter,
             authentication: Authentication::ApiKey,

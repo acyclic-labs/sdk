@@ -12,6 +12,7 @@
 )]
 
 mod item;
+mod profile;
 mod render;
 mod selection;
 mod sink;
@@ -19,6 +20,7 @@ pub mod strict;
 mod tools;
 
 pub use item::{Family, ItemKind, Provenance, WireItem};
+pub use profile::{Cache, Effort, Reasoning};
 pub use render::{Header, RenderError, Tail, render, render_summary, seg};
 pub use tools::{ToolDeclaration, ToolDeclarations};
 

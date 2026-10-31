@@ -26,52 +26,7 @@ pub struct ToolRevision {
     pub revision: String,
 }
 
-/// Semantic reasoning baseline; provider encoding belongs to the renderer.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "mode",
-    content = "effort",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum Reasoning {
-    /// Model has no admitted reasoning control.
-    Disabled,
-    /// Effort-based reasoning, with summary visibility handled by the renderer.
-    Effort(Effort),
-    /// Adaptive reasoning with the selected effort.
-    Adaptive(Effort),
-    /// Provider thinking-level control.
-    Level(Effort),
-}
-
-/// Profile effort, independent of the provider/model identity.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Effort {
-    /// Low effort.
-    Low,
-    /// Medium effort.
-    Medium,
-    /// High effort.
-    High,
-    /// Adaptive effort chosen through the model's admitted control.
-    Adaptive,
-}
-
-/// Cache semantics selected by the model file, encoded by the renderer.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Cache {
-    /// Provider-managed implicit cache.
-    Automatic,
-    /// Short-lived explicit breakpoint.
-    Ephemeral,
-    /// Hour-lived explicit breakpoint.
-    Hour,
-    /// Model-specific retained cache object.
-    Explicit,
-}
+pub use acyclic_model_render::{Cache, Effort, Reasoning};
 
 /// Context carried by a role. `TopLevel` refuses child admission.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
