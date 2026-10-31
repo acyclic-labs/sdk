@@ -60,6 +60,7 @@ pub(crate) enum Held {
 pub struct PublicationHold {
     _gate: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
     _inner: Option<Box<PublicationHold>>,
+    proof: Option<crate::kernel::closure::PendingProof>,
 }
 
 impl PublicationHold {
@@ -68,15 +69,39 @@ impl PublicationHold {
         Self {
             _gate: None,
             _inner: None,
+            proof: None,
         }
     }
 
     /// Also holds the hold of the store this one composes over.
     pub(crate) fn with(mut self, inner: Self) -> Self {
-        if inner._gate.is_some() || inner._inner.is_some() {
+        if inner._gate.is_some() || inner._inner.is_some() || inner.proof.is_some() {
             self._inner = Some(Box::new(inner));
         }
         self
+    }
+
+    /// Keeps the original proof unpublished until this hold's creation commits.
+    pub(crate) fn with_proof(
+        mut self,
+        proof: Option<crate::kernel::closure::PendingProof>,
+    ) -> Self {
+        self.proof = proof;
+        self
+    }
+
+    /// The authoritative creation outcome, before any fallible cache refresh.
+    pub(crate) fn created(&mut self) {
+        let mut hold = self;
+        loop {
+            if let Some(proof) = hold.proof.take() {
+                proof.created();
+            }
+            let Some(inner) = hold._inner.as_deref_mut() else {
+                return;
+            };
+            hold = inner;
+        }
     }
 }
 
@@ -87,6 +112,7 @@ impl Unswept {
         PublicationHold {
             _gate: Some(self.0),
             _inner: None,
+            proof: None,
         }
     }
 }

@@ -12,7 +12,7 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationReceipt, WorkCounters, WorkError};
 use crate::storage::{HashedObject, ObjectId, ObjectKind, ObjectStoreError};
-use acyclic_collections::page::rewrite::{self, Action, Entered};
+use acyclic_collections::page::rewrite::{self, Entered};
 use acyclic_collections::page::{merge, publish, selection};
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -84,6 +84,32 @@ where
 
     fn append(&mut self, frame: &mut Self::Frame, output: Self::Output) -> Result<(), Self::Error> {
         append_owned(&mut frame.rewritten, output, self.accounting)
+    }
+}
+
+impl<'mutation, S, F, M> rewrite::Io<[(usize, &'mutation M)]> for Context<'_, '_, '_, S, F, M>
+where
+    S: crate::AsyncObjectStore,
+    F: Format,
+    M: Mutation<F> + 'mutation,
+{
+    fn enter(
+        &mut self,
+        request: NodeRequest<F::Key>,
+        mutations: &[(usize, &'mutation M)],
+    ) -> impl Future<Output = Result<EnteredNode<F>, crate::FsError>> {
+        self.enter_node(request, mutations)
+    }
+
+    fn finish(
+        &mut self,
+        frame: InternalFrame<F>,
+    ) -> impl Future<Output = Result<Owned<Vec<Child<F::Key>>>, crate::FsError>> {
+        self.finish_frame(frame)
+    }
+
+    fn retire_stack(&mut self, stack: Owned<Vec<InternalFrame<F>>>) -> Result<(), crate::FsError> {
+        stack.retire(self.accounting)
     }
 }
 
@@ -371,7 +397,7 @@ where
         root: ObjectId,
         mutations: &[(usize, &M)],
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
-        let mut stack = Owned::<Vec<InternalFrame<F>>>::allocate(0, self.accounting)?;
+        let stack = Owned::<Vec<InternalFrame<F>>>::allocate(0, self.accounting)?;
         let request = NodeRequest {
             page: root,
             lower: self.empty(None)?,
@@ -379,23 +405,7 @@ where
             mutations: 0..mutations.len(),
             height: 1,
         };
-        let mut action = Action::Enter(request);
-        loop {
-            action = match action {
-                Action::Enter(request) => {
-                    let entered = self.enter_node(request, mutations).await?;
-                    rewrite::descend(self, &mut stack, entered, mutations)?
-                }
-                Action::Finish(frame) => {
-                    let result = self.finish_frame(frame).await?;
-                    rewrite::ascend(self, &mut stack, result, mutations)?
-                }
-                Action::Complete(result) => {
-                    stack.retire(self.accounting)?;
-                    return Ok(result);
-                }
-            };
-        }
+        rewrite::run(self, stack, request, mutations).await
     }
 
     async fn enter_node(

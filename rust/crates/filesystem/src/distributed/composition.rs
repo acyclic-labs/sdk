@@ -34,6 +34,9 @@ pub struct FilesystemCommit {
     allocation: AuthorityAllocation,
 }
 
+/// Original custody after its authoritative durable outcome consumed the proofs.
+pub(crate) struct RecordedCommit(FilesystemCommit);
+
 /// Terminal and nonterminal results of one composed submission.
 #[must_use]
 pub enum FilesystemCommitOutcome {
@@ -104,6 +107,13 @@ impl FilesystemCommit {
 
     pub(crate) fn hold(&mut self, hold: crate::PublicationHold) {
         self.holds.push(hold);
+    }
+
+    pub(super) fn recorded(mut self) -> RecordedCommit {
+        for hold in &mut self.holds {
+            hold.created();
+        }
+        RecordedCommit(self)
     }
 
     pub(super) fn reserve_hold(
@@ -298,6 +308,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let owner = self.operation_claims().owner_identity();
         commit.check_owner(owner)?;
         commit.ensure_unclaimed(authority)?;
+        commit.reserve_hold(work)?;
         // The creation is built in its own request and joins the caller's only
         // once every entry is prepared: a failed preparation leaves the
         // commit exactly as it was, with no publishable fragment. One creation
@@ -488,7 +499,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         &self,
         commit: FilesystemCommit,
         outcome: CommitOutcome,
-        refresh: impl AsyncFnOnce(FilesystemCommit, acyclic_stream::CommitId),
+        refresh: impl AsyncFnOnce(RecordedCommit, acyclic_stream::CommitId),
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
         if let Err(error) = commit
             .check_owner(self.operation_claims().owner_identity())
@@ -498,7 +509,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         Ok(match outcome {
             CommitOutcome::Committed(envelope) => {
-                refresh(commit, envelope.commit_id).await;
+                refresh(commit.recorded(), envelope.commit_id).await;
                 FilesystemCommitOutcome::Committed(envelope)
             }
             CommitOutcome::Conflict(conflicts) => FilesystemCommitOutcome::Rejected(conflicts),
@@ -511,7 +522,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     /// re-reads the durable head instead of trusting a stale one.
     pub(crate) async fn refresh_committed(
         &self,
-        commit: FilesystemCommit,
+        commit: RecordedCommit,
         commit_id: acyclic_stream::CommitId,
         work: &mut AuthorityWork<'_>,
     ) {
@@ -520,7 +531,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             holds,
             allocation,
             ..
-        } = commit;
+        } = commit.0;
         for Contribution {
             actor,
             revision,
