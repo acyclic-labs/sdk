@@ -124,6 +124,7 @@ async fn selection_case(body: Vec<u8>, a: u16, b: u16, mutate: bool) -> Result<(
             start: range.offset,
             end: range.offset + range.length,
         }),
+        selection: None,
     };
     assert_eq!(
         serde_json::from_slice::<crate::tool::files::ReadFileInput>(

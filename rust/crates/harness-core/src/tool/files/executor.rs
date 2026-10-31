@@ -159,96 +159,7 @@ impl FileTool {
             )
             .await
     }
-    async fn read(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
-        let invalid = |reason| rejection(work, reason);
-
-        let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        if (input.0.range.is_some() && input.0.version.is_none())
-            || input
-                .0
-                .version
-                .as_deref()
-                .is_some_and(super::version::is_authored)
-        {
-            let selected_version = input
-                .0
-                .version
-                .as_deref()
-                .map(|version| {
-                    super::version::decode_tool_version(Some(context), &input.0.path, version, work)
-                })
-                .transpose()?;
-            let authored = selected_version
-                .as_ref()
-                .and_then(|(source, _)| match source {
-                    FileReadSource::Authored(selected) => Some(selected),
-                    FileReadSource::Content(_) => None,
-                });
-            return self
-                .read_path_range(context, &input.0, authored, work, io)
-                .await;
-        }
-        let (file, resolved, _source_custody) = self
-            .source(context, &input.0.path, input.0.version.as_deref(), work, io)
-            .await?;
-        let length = file.descriptor().byte_length();
-        if input.0.range.is_some_and(|range| range.end > length) {
-            return Err(invalid("read range exceeds the file"));
-        }
-        let empty = input.0.range.is_some_and(|range| range.start == range.end);
-        let selected_length = input
-            .0
-            .range
-            .map_or(Some(length), |range| range.end.checked_sub(range.start));
-        if selected_length.is_none_or(|length| {
-            length
-                > context
-                    .effective_scope()
-                    .limits()
-                    .render_bytes
-                    .min(context.effective_scope().limits().file_bytes)
-        }) {
-            return Err(invalid("file selection exceeds text rendering bound"));
-        }
-        let bytes = if let Some(bytes) = resolved {
-            bytes
-        } else if let Some(range) = input.0.range {
-            let count = range
-                .end
-                .checked_sub(range.start)
-                .ok_or_else(|| invalid("read range is reversed"))?;
-            if range.end > length {
-                return Err(invalid("read range exceeds the file"));
-            }
-            context
-                .read_file_range(
-                    &file,
-                    acyclic_fs::ByteRange {
-                        offset: range.start,
-                        // An empty interval still has to lie on a UTF-8 boundary.
-                        length: if empty && range.start < length {
-                            1
-                        } else {
-                            count
-                        },
-                    },
-                    io,
-                )
-                .await?
-        } else {
-            context.read_file(&file, io).await?
-        };
-        let source = read_text(bytes.as_ref(), empty, work)?;
-        read_result(FileReadSource::Content(file), source, work)
-    }
-
-    async fn read_path_range(
+    pub(super) async fn read_path_range(
         &self,
         context: &ToolContext,
         input: &ReadFileInput,
@@ -301,7 +212,7 @@ impl FileTool {
         read_result(FileReadSource::Authored(selected), text, work)
     }
 
-    async fn source(
+    pub(super) async fn source(
         &self,
         context: &ToolContext,
         path: &str,
@@ -373,13 +284,28 @@ impl FileTool {
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-        let edited = super::edit::exact_replace(
-            source,
-            &input.0.old_text,
-            &input.0.new_text,
-            maximum,
-            &mut allocation,
-        )?;
+        if input.0.notebook.is_some()
+            && (!input.0.old_text.is_empty() || !input.0.new_text.is_empty())
+        {
+            return Err(invalid("notebook and text edits are mutually exclusive"));
+        }
+        let (edited, _notebook_hold) = if let Some(operation) = &input.0.notebook {
+            super::notebook::edit(source, operation, work)?
+        } else {
+            (
+                super::edit::exact_replace(
+                    source,
+                    &input.0.old_text,
+                    &input.0.new_text,
+                    maximum,
+                    &mut allocation,
+                )?,
+                None,
+            )
+        };
+        if edited.len() as u64 > maximum {
+            return Err(invalid("edited file exceeds admitted file credit"));
+        }
         context
             .stage_file_at(invocation.operation_id, &file, edited.as_bytes(), io)
             .await

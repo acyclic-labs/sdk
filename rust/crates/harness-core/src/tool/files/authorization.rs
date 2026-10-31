@@ -101,7 +101,13 @@ impl FileTool {
                     work,
                     io,
                 )?;
-                let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
+                if input.0.selection.is_some() && input.0.range.is_some() {
+                    return Err(error(
+                        crate::wire::ErrorCode::Invalid,
+                        "byte ranges and projections are mutually exclusive",
+                    ));
+                }
+                let maximum = scope.limits().file_bytes;
                 let length = match input.0.range {
                     Some(range)
                         if source

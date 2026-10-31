@@ -49,7 +49,8 @@ mod inputs;
 mod source;
 pub(crate) use inputs::FileView;
 pub use inputs::{
-    EditFileInput, FileResult, PatchFileInput, ReadFileInput, ReadFileResult, WriteFileInput,
+    EditFileInput, FileResult, NotebookEdit, PatchFileInput, ReadFileInput, ReadFileResult,
+    ReadPage, ReadSelection, WriteFileInput,
 };
 pub use source::FileReadSource;
 mod executor;
@@ -57,7 +58,9 @@ mod version;
 pub(crate) use executor::FileTool;
 mod assembly;
 mod authorization;
+mod notebook;
 mod projection;
+mod read;
 pub use projection::FileProjection;
 #[cfg(test)]
 mod tests;
