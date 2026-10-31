@@ -52,25 +52,35 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
             id: "source".into(),
         },
     );
+    let agent = Some(crate::AgentId::from_bytes([42; 16]));
     let volume_scope = issuer.bootstrap_scope(
         "source",
         &crate::Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
-        None,
+        agent,
         &mut None,
     )?;
     let scope = issuer.bootstrap_scope(
         "context-reader",
         &crate::Capabilities::new([volume.directory_read_capability("skills", &mut None)?]),
-        None,
+        agent,
+        &mut None,
+    )?;
+    let denied_scope = issuer.bootstrap_scope(
+        "unrelated-directory",
+        &crate::Capabilities::new([volume.directory_read_capability("elsewhere", &mut None)?]),
+        agent,
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
     let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
     let denied_reader =
-        FilesystemContentVerifier::new(host.clone(), &verifier, &volume_scope, 32_768, None)?;
+        FilesystemContentVerifier::new(host.clone(), &verifier, &denied_scope, 32_768, None)?;
+    crate::conversation::ContentGrant::verify_directory_read(
+        &verifier, &scope, &volume, "skills", &mut None,
+    )?;
     let resource = acyclic_fs::session::resource(workspace.id().volume_id(), "")?;
     let credential = signed::root(|block| {
         for certificate in block
@@ -207,7 +217,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
                 .await,
             Err(Error::Unauthorized(_))
         ),
-        "ordinary volume read substituted for the original directory grant"
+        "an unrelated directory grant substituted for the original read boundary"
     );
     assert_eq!(
         hex::encode(metadata.source.generation.as_resource().key()),
