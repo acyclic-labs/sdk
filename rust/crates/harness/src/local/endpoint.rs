@@ -35,13 +35,18 @@ fn exchange(error: impl std::fmt::Display) -> Error {
 }
 
 impl Connection {
+    /// A session `unavailable` names no cause: the in-process owner adds the
+    /// one it retained, its stream's poison or else the Actors runtime failure
+    /// that closed the session's lifetime.
     pub(super) fn stream_failure(&self, error: impl std::fmt::Display) -> Error {
-        match self
-            ._host
-            .as_ref()
-            .and_then(|host| host.agent_stream.as_ref())
-            .and_then(|stream| stream.failure())
-        {
+        let cause = self._host.as_ref().and_then(|host| {
+            host.agent_stream
+                .as_ref()
+                .and_then(|stream| stream.failure())
+                .map(|cause| cause.to_string())
+                .or_else(|| host.agents.get()?.runtime.failure())
+        });
+        match cause {
             Some(cause) => Error::Storage(format!("{error}; {cause}")),
             None => exchange(error),
         }

@@ -49,6 +49,14 @@ impl Runtime {
         self.lifetime.clone()
     }
 
+    /// The retained delivery or runtime failure that closed, or is closing,
+    /// this lifetime. A Session closed by that lifetime only reports
+    /// `unavailable`; this is its original cause.
+    #[must_use]
+    pub fn failure(&self) -> Option<String> {
+        self.failure.borrow().clone()
+    }
+
     /// Waits for the actual runtime failure or the loss of its task producer.
     /// Each observer shares the same retained failure; no polling or history.
     pub fn completion(&self) -> impl Future<Output = Result<()>> + Send + 'static {
