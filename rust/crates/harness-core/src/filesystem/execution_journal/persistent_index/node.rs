@@ -15,6 +15,14 @@ impl<'a> Node<'a> {
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         let malformed = || invalid(io, "execution index node is malformed");
+        let version = [bytes.first().copied().ok_or_else(malformed)? >> 4];
+        acyclic_auth::format::header(&version, b"", &[1], malformed, || {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "unsupported execution index node version",
+            )
+        })?;
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
             return Err(malformed());
         }
@@ -147,12 +155,141 @@ fn read_number(bytes: &mut &[u8], io: Option<&PreparationIo>) -> Result<u64> {
     Err(malformed())
 }
 
+#[cfg(feature = "test-support")]
+pub(in crate::filesystem::execution_journal) mod codec_fuzz {
+    use super::*;
+
+    pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
+        for sequence in [0, u64::MAX] {
+            let ordinary = Node::decode(bytes, sequence, None);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let work = acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::NativeMaterializationBudget::UNBOUNDED,
+                    acyclic_fs::NativeCancellationToken::default(),
+                )
+                .expect("unbounded decoder work");
+                let baseline = work.live_allocation_bytes();
+                {
+                    let io =
+                        PreparationIo::from_native_work(&work).expect("original work is admitted");
+                    let funded = Node::decode(bytes, sequence, Some(&io));
+                    assert_eq!(
+                        funded.as_ref().map(|_| ()).map_err(Error::code),
+                        ordinary.as_ref().map(|_| ()).map_err(Error::code)
+                    );
+                    if let Ok(value) = funded {
+                        let (encoded, held) = value.encode(Some(&io)).unwrap();
+                        let _hold = io.guard_owned(held).unwrap();
+                        assert_eq!(encoded.as_ref(), bytes);
+                        assert!(Node::decode(&encoded, sequence, Some(&io)).is_ok());
+                    }
+                }
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            }
+            if let Ok(value) = ordinary {
+                let (encoded, _) = value.encode(None).expect("admitted node encodes");
+                assert_eq!(encoded.as_ref(), bytes);
+                let required = match value {
+                    Node::Leaf { .. } => LEAF_HEADER_BYTES,
+                    Node::Branch { .. } => encoded.len(),
+                };
+                for end in 0..required {
+                    assert!(Node::decode(&encoded[..end], sequence, None).is_err());
+                }
+                for version in [0, 2, 15] {
+                    let header = [(encoded[0] & 15) | (version << 4)];
+                    assert_eq!(
+                        Node::decode(&header, sequence, None).err().unwrap().code(),
+                        crate::wire::ErrorCode::Unsupported
+                    );
+                }
+                assert_eq!(
+                    Node::decode(&[0x12], sequence, None).err().unwrap().code(),
+                    crate::wire::ErrorCode::Storage
+                );
+                if matches!(value, Node::Branch { .. }) {
+                    assert!(Node::decode(&encoded, 0, None).is_err());
+                    let mut trailing = encoded.to_vec();
+                    trailing.push(0);
+                    assert!(Node::decode(&trailing, sequence, None).is_err());
+                }
+            }
+        }
+    }
+
+    pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>>
+    {
+        let mut seeds = Vec::new();
+        for (name, value) in [
+            ("execution-index-leaf-empty", b"".as_slice()),
+            ("execution-index-leaf-value", b"retained summary".as_slice()),
+        ] {
+            let (bytes, _) = Node::Leaf {
+                key: [6; 32],
+                value,
+            }
+            .encode(None)?;
+            Node::decode(&bytes, u64::MAX, None)?;
+            seeds.push((name, bytes.to_vec()));
+        }
+        for (name, sequence) in [
+            ("execution-index-branch-zero", 0),
+            ("execution-index-branch-one", 1),
+            ("execution-index-branch-seven-bits", 127),
+            ("execution-index-branch-eight-bits", 128),
+            ("execution-index-branch-fourteen-bits", 16_383),
+            ("execution-index-branch-fifteen-bits", 16_384),
+            ("execution-index-branch-sixty-three-bits", (1_u64 << 63) - 1),
+            ("execution-index-branch-sixty-four-bits", 1_u64 << 63),
+            ("execution-index-branch-maximum-parent", u64::MAX - 1),
+        ] {
+            let (bytes, _) = Node::Branch {
+                bit: 255,
+                children: [
+                    NodeRef {
+                        sequence: 0,
+                        digest: [7; 32],
+                    },
+                    NodeRef {
+                        sequence,
+                        digest: [8; 32],
+                    },
+                ],
+            }
+            .encode(None)?;
+            Node::decode(&bytes, u64::MAX, None)?;
+            // The first child is zero. Its two-byte spelling must not alias
+            // the original canonical varint or shift the following digest.
+            let mut overlong = bytes.to_vec();
+            drop(overlong.splice(2..3, [128, 0]));
+            assert!(Node::decode(&overlong, u64::MAX, None).is_err());
+            seeds.push((name, bytes.to_vec()));
+        }
+        Ok(seeds)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn page_sequences_are_canonical_at_every_varint_boundary() -> Result<()> {
+        for header in [0x00, 0x01, 0x20, 0x21, 0xf0, 0xf1] {
+            assert_eq!(
+                Node::decode(&[header], 0, None)
+                    .err()
+                    .map(|error| error.code()),
+                Some(crate::wire::ErrorCode::Unsupported)
+            );
+        }
+        assert_eq!(
+            Node::decode(&[0x12], 0, None)
+                .err()
+                .map(|error| error.code()),
+            Some(crate::wire::ErrorCode::Storage)
+        );
         for value in [0, 1, 127, 128, 16_383, 16_384, u64::MAX] {
             let mut bytes = Vec::new();
             write_number(value, &mut bytes);
