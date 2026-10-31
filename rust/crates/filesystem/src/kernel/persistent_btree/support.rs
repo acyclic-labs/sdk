@@ -324,12 +324,14 @@ pub(super) const PAGE_WRITE: WorkCounters = WorkCounters {
 };
 
 pub(crate) const TARGET_PAGE_BYTES: usize = 2 * 1024;
-const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
+pub(super) const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
 
+#[cfg(test)]
 pub(super) struct PageChunks<'a, T, L> {
     inner: acyclic_collections::page::PageChunks<'a, T, L, PAGE_HEADER_BYTES, TARGET_PAGE_BYTES>,
 }
 
+#[cfg(test)]
 impl<'a, T, L> PageChunks<'a, T, L>
 where
     L: Fn(&T) -> Result<usize, CanonicalDecodeError>,
@@ -362,6 +364,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn packing_error<E: std::error::Error>(
     error: acyclic_collections::page::PackingError<CanonicalDecodeError>,
 ) -> Error<E> {
