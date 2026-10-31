@@ -34,6 +34,9 @@ pub mod heap_layout {
 pub use heap_layout::HeapLayout;
 
 pub mod agent;
+/// Shared, isolated in-process execution of profile-selected TypeScript tools.
+#[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+pub mod code_mode;
 #[doc(hidden)]
 pub mod command_request;
 pub mod context;
