@@ -24,6 +24,7 @@ pub enum Terminal {
 pub struct Report {
     pub generation: GenerationId,
     pub operation: &'static str,
+    pub maintenance: bool,
     pub baseline: Vec<DurableWrite>,
     pub writes: Vec<DurableWrite>,
     pub boundaries: usize,
@@ -37,6 +38,7 @@ struct Case<'a> {
     generation: GenerationId,
     mutation: Mutation,
     flush: bool,
+    compaction: bool,
     fault: DurableFault,
     ordinal: u64,
     payload: &'a [u8],
@@ -48,6 +50,10 @@ impl<'a> Case<'a> {
         let (config, rest) = bytes.split_at_checked(20)?;
         let (identity, payload) = rest.split_at_checked(usize::from(config[3]))?;
         let prefix = u64::from_le_bytes(config[12..20].try_into().ok()?);
+        let compaction = config[1] & 2 != 0;
+        if compaction && (config[0] % 3 == 0 || config[1] & 1 != 0) {
+            return None;
+        }
         Some(Self {
             generation: GenerationId::from_bytes(identity)?,
             mutation: match config[0] % 3 {
@@ -56,6 +62,7 @@ impl<'a> Case<'a> {
                 _ => Mutation::Remove,
             },
             flush: config[1] & 1 != 0,
+            compaction,
             fault: match config[2] % 5 {
                 0 => DurableFault::Before,
                 1 => DurableFault::After,
@@ -69,9 +76,16 @@ impl<'a> Case<'a> {
     }
 
     fn value(&self, tag: u8) -> OwnedBytes {
-        let mut value = Vec::with_capacity(self.payload.len() + 1);
+        let length = self.payload.len() + 1;
+        let length = if self.compaction && tag == 0 {
+            length.max(acyclic_objects::codec_fuzz::compaction_chunk_bytes())
+        } else {
+            length
+        };
+        let mut value = Vec::with_capacity(length);
         value.push(tag);
         value.extend_from_slice(self.payload);
+        value.resize(length, 0);
         value.into()
     }
 
@@ -95,6 +109,9 @@ impl<'a> Case<'a> {
         let medium = LocalMedium::open(root, LocalObjectsLimits::default(), None).await?;
         if let Some(before) = self.before() {
             assert!(medium.create(key, before).await?, "prepare original value");
+            if self.compaction {
+                assert!(medium.create(&format!("{key}/kept"), self.value(2)).await?);
+            }
             medium.flush(&[key.to_owned()]).await?;
         }
         if self.flush {
@@ -213,6 +230,20 @@ fn check_sites(
             !baseline.writes.is_empty(),
             "original physical operation escaped the fault controller"
         );
+        if case.compaction {
+            assert!(
+                baseline
+                    .writes
+                    .iter()
+                    .any(|call| call.operation.contains("sync"))
+            );
+            assert!(
+                baseline
+                    .writes
+                    .iter()
+                    .any(|call| call.operation == "namespace:rename")
+            );
+        }
         drop(baseline_medium);
 
         let cut = (case.ordinal % baseline.writes.len() as u64) as usize;
@@ -226,6 +257,14 @@ fn check_sites(
             let root = tempfile::tempdir()?;
             let medium = case.prepare(root.path(), &key).await?;
             let actual = execute(&case, &medium, &key, Some(cut)).await?;
+            let maintenance = case.compaction && cut != 0;
+            if maintenance {
+                assert!(
+                    matches!(actual.terminal, Terminal::Mutation(Ok(true))),
+                    "maintenance replaced the original visible mutation outcome: {:?}",
+                    actual.terminal
+                );
+            }
             let fault = actual
                 .fault
                 .expect("selected original physical site was reached");
@@ -251,6 +290,13 @@ fn check_sites(
                 );
             }
             let visible = medium.read(&key, None).await;
+            if case.compaction {
+                assert_eq!(
+                    medium.read(&format!("{key}/kept"), None).await?,
+                    Some(case.value(2)),
+                    "maintenance changed an unrelated live frame"
+                );
+            }
             if let Ok(value) = &visible {
                 assert!(
                     *value == case.before() || *value == case.after(),
@@ -261,6 +307,13 @@ fn check_sites(
             let reopened =
                 LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
             let recovered = reopened.read(&key, None).await?;
+            if case.compaction {
+                assert_eq!(
+                    reopened.read(&format!("{key}/kept"), None).await?,
+                    Some(case.value(2)),
+                    "recovery lost an unrelated live frame"
+                );
+            }
             assert!(
                 recovered == case.before() || recovered == case.after(),
                 "recovery exposed a torn mutation: {recovered:?}"
@@ -297,6 +350,7 @@ fn check_sites(
                     Mutation::Replace => "replace",
                     Mutation::Remove => "remove-if",
                 },
+                maintenance,
                 baseline: if cut == last_cut {
                     std::mem::take(&mut baseline.writes)
                 } else {
@@ -344,5 +398,16 @@ pub fn seeds() -> Vec<(String, Vec<u8>)> {
             }
         }
     }
+    let compacting: Vec<_> = seeds
+        .iter()
+        .filter_map(|(name, bytes)| {
+            (bytes[0] != 0 && bytes[1] == 0).then(|| {
+                let mut bytes = bytes.clone();
+                bytes[1] |= 2;
+                (format!("compact-{name}"), bytes)
+            })
+        })
+        .collect();
+    seeds.extend(compacting);
     seeds
 }

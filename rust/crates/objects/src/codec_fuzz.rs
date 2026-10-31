@@ -5,6 +5,13 @@ use crate::blob::{
 };
 use crate::{Digest, Kind, Manifest, Part};
 
+/// Prepare an obsolete value using the original local compaction chunk size.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub fn compaction_chunk_bytes() -> usize {
+    usize::try_from(crate::local::COMPACTION_CHUNK)
+        .expect("local compaction chunk fits a native allocation")
+}
+
 /// Exercise every stored Objects decoder, including the metadata behind HEAD.
 pub fn check(bytes: &[u8]) -> bool {
     if let Ok(value) = Manifest::decode(bytes) {

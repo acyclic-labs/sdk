@@ -106,12 +106,17 @@ The current small seed producers cover create, replace and conditional remove,
 both mutation and flush stages, all five fault kinds and plain/sealed complete
 generation references. Those references are opaque keys, not evidence of a
 consumer's generation authority or protection against an aliasing bug.
+Twenty additional `compact-medium-*` producers prepare an obsolete value using
+the original compaction chunk and retain a second live value. They require an
+actual sync and rename in the successful trace. Post-append maintenance faults
+must preserve the original successful mutation and both live/reopened values.
 
 ```sh
 cargo run --features storage-schedules --example capture -- --accept-goldens
 cargo +nightly fuzz run --fuzz-dir . --features storage-schedules object_schedule -- -max_total_time=30
 cargo run --features storage-schedules --example object_schedules -- corpus/object_schedule/medium-false-0-0-0
 cargo run --features storage-schedules --example object_schedules -- --all-sites --seed medium-false-0-1-0
+cargo run --features storage-schedules --example object_schedules -- --all-sites --seed compact-medium-false-1-0-1
 ```
 
 Capture uses the same provenance and golden mechanism as the syntax targets;
