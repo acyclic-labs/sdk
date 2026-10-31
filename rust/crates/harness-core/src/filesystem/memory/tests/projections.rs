@@ -2,6 +2,186 @@
 use super::*;
 use crate::runtime::{Bindings, TaskContext, ToolContext};
 
+#[test]
+fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let storage = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 131_072))?;
+    let selected = json!({"id":"selected", "cell_type":"code", "source":["λ\n"],
+        "outputs":[{"output_type":"stream","name":"stdout","text":["kept\n"]}],
+        "execution_count":4,"metadata":{"retain":true}});
+    let notebook = json!({"cells":[
+        {"id":"large","cell_type":"code","source":[],"outputs":[{"data":{"text/plain":"αβ".repeat(4000)}}]},
+        selected,
+        {"id":"last","cell_type":"markdown","source":["after"]}
+    ], "metadata":{"nested":{"cells":[]}}, "nbformat":4, "nbformat_minor":5});
+    let source = serde_json::to_string_pretty(&notebook)
+        .unwrap()
+        .replace("\"cells\"", "\"ce\\u006cls\"");
+    let file = runtime.block_on(storage.stage(
+        OperationId::new(),
+        "book.ipynb",
+        source.as_bytes(),
+        "application/x-ipynb+json",
+        "book.ipynb",
+    ))?;
+    let limits = Limits {
+        file_bytes: 4096,
+        render_bytes: 4096,
+        ..Limits::default()
+    };
+    let task = Bindings {
+        scope: RuntimeScope::new(
+            Capabilities::new([storage.read_capability.clone(), "tool:call:read".into()]),
+            limits,
+        )?,
+        content: Some(storage.content_bindings()),
+        ..Bindings::local()
+    }
+    .build()?;
+    let tool = crate::tool::files::read()?;
+    let mut invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "selected-cell".into(),
+        name: tool.definition.name.clone(),
+        arguments: json!({"path":"book.ipynb",
+            "selection":{"kind":"cells","offset":1,"limit":1}}),
+    };
+    let context = ToolContext::new(
+        Arc::new(task.clone()),
+        invocation.operation_id,
+        &invocation.call_id,
+    )?;
+    let (result, trace) =
+        acyclic_test_support::differential::observe::<_, _, (&'static str, u64, u64)>(
+            || context.clone(),
+            |context| runtime.block_on(tool.executor.execute(invocation.clone(), Some(context))),
+        );
+    let result = result?;
+    assert_eq!(
+        serde_json::from_str::<Value>(result.value["text"].as_str().unwrap()).unwrap(),
+        selected
+    );
+    let start = result.value["page"]["start"].as_u64().unwrap() as usize;
+    let end = result.value["page"]["end"].as_u64().unwrap() as usize;
+    assert_eq!(&source[start..end], result.value["text"]);
+    assert!(
+        trace
+            .iter()
+            .any(|(kind, offset, length)| *kind == "generation-bound range"
+                && *offset > 4096
+                && *length != 0)
+    );
+    assert!(
+        trace
+            .iter()
+            .all(|(kind, _, length)| *kind != "generation-bound range"
+                || *length <= limits.file_bytes)
+    );
+    let projection = tool.projection.project(&invocation, &result, None)?.0;
+    tool.definition
+        .validate_projection(&projection, limits, None)?;
+    assert!(serde_json::to_vec(&projection).unwrap().len() as u64 <= limits.render_bytes);
+
+    // The original complete descriptor selects the same cell even when its
+    // source body exceeds file credit. The ordinary complete read still fails.
+    invocation.arguments["version"] = json!(serde_json::to_string(&file).unwrap());
+    let pinned = runtime.block_on(
+        tool.executor
+            .execute(invocation.clone(), Some(context.clone())),
+    )?;
+    assert_eq!(pinned.value["text"], result.value["text"]);
+    assert_eq!(pinned.value["page"], result.value["page"]);
+    assert_eq!(
+        runtime
+            .block_on(task.read_file(&file, None))
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Invalid
+    );
+    invocation.arguments["selection"]["offset"] = json!(99);
+    assert!(
+        runtime
+            .block_on(
+                tool.executor
+                    .execute(invocation.clone(), Some(context.clone()))
+            )
+            .is_err()
+    );
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        invocation.arguments["selection"]["offset"] = json!(1);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let custody;
+        let (native, retained) = runtime.block_on(tool.executor.execute_with_native_context(
+            &context,
+            &invocation,
+            &work,
+        )?)?;
+        custody = retained;
+        assert_eq!(native.value["text"], result.value["text"]);
+        drop(native);
+        drop(custody);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        cancellation.cancel();
+        let cancelled =
+            match tool
+                .executor
+                .execute_with_native_context(&context, &invocation, &work)
+            {
+                Ok(future) => runtime.block_on(future).map(|_| ()),
+                Err(error) => Err(error),
+            };
+        assert!(cancelled.is_err());
+    }
+    let workspace = super::super::super::bounded_io::content_workspace(
+        &storage.host.provider,
+        &storage.volume,
+        None,
+    )?;
+    let mut wrong_format = notebook;
+    wrong_format["nbformat"] = json!(3);
+    let wrong_format = serde_json::to_vec(&wrong_format).unwrap();
+    for (key, bytes) in [
+        ("wrong-notebook-format", wrong_format),
+        (
+            "incomplete-notebook",
+            source.as_bytes()[..source.len() - 1].to_vec(),
+        ),
+    ] {
+        runtime.block_on(storage.host.apply(
+            &workspace,
+            None,
+            &[crate::filesystem::WorkspaceMutation::PutFile {
+                path: "/book.ipynb".into(),
+                bytes: bytes::Bytes::from(bytes).into(),
+            }],
+            &crate::IdempotencyKey::new(key)?,
+        ))?;
+        invocation
+            .arguments
+            .as_object_mut()
+            .unwrap()
+            .remove("version");
+        invocation.arguments["selection"]["offset"] = json!(1);
+        assert!(
+            runtime
+                .block_on(
+                    tool.executor
+                        .execute(invocation.clone(), Some(context.clone()))
+                )
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
 async fn read(task: &TaskContext, version: Option<&str>) -> Result<(Value, String)> {
     let tool = crate::tool::files::read()?;
     let mut arguments =

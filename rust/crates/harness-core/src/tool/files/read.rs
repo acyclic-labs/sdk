@@ -20,71 +20,22 @@ impl FileTool {
         if let Some(ReadSelection::Lines { offset, limit }) = input.0.selection {
             return super::lines::read(context, &input.0, offset, limit, work, io).await;
         }
-        let byte_selection = input.0.selection.is_none()
-            && (input.0.range.is_some() || !input.0.path.ends_with(".ipynb"));
-        if byte_selection {
+        if let Some(ReadSelection::Cells { offset, limit }) = input.0.selection {
+            return super::notebook_read::read(context, &input.0, offset, limit, work, io).await;
+        }
+        if input.0.selection.is_none()
+            && input.0.range.is_none()
+            && input.0.path.ends_with(".ipynb")
+        {
+            return super::notebook_read::read(context, &input.0, 0, None, work, io).await;
+        }
+        if input.0.selection.is_none() {
             return self.read_path_range(context, &input.0, work, io).await;
         }
-        let (file, resolved, _source_custody) = self
+        let (file, _resolved, _source_custody) = self
             .source(context, &input.0.path, input.0.version.as_deref(), work, io)
             .await?;
-        let selection = input.0.selection.clone().or_else(|| {
-            if input.0.range.is_some() {
-                return None;
-            }
-            match file.descriptor().media_type() {
-                "image/png" | "image/jpeg" | "image/webp" | "image/gif" => {
-                    Some(ReadSelection::Image {
-                        detail: crate::model::ImageDetail::Auto,
-                    })
-                }
-                "application/pdf" => Some(ReadSelection::Pdf),
-                _ if input.0.path.ends_with(".ipynb") => Some(ReadSelection::Cells {
-                    offset: 0,
-                    limit: None,
-                }),
-                _ => None,
-            }
-        });
-        if matches!(
-            selection,
-            Some(ReadSelection::Image { .. } | ReadSelection::Pdf)
-        ) {
-            return self.media_result(file, selection, work);
-        }
-        if let Some(selection) = &selection {
-            let maximum = text_budget(
-                &file,
-                &input.0.path,
-                context.effective_scope().limits().render_bytes,
-                work,
-                io,
-            )?;
-            let bytes = match resolved {
-                Some(bytes) => bytes,
-                None => context.read_file(&file, io).await?,
-            };
-            let source = std::str::from_utf8(&bytes)
-                .map_err(|_| invalid("text/cell projection requires UTF-8"))?;
-            let (text, page, _hold) = match selection {
-                ReadSelection::Cells { offset, limit } => {
-                    notebook::read(source, *offset, *limit, maximum, work)?
-                }
-                _ => return Err(invalid("unsupported read projection")),
-            };
-            let encoded = super::value(
-                &ReadFileResult {
-                    file: FileReadSource::Content(file),
-                    text,
-                    page: Some(page),
-                    media: None,
-                },
-                u64::MAX,
-                work,
-            )?;
-            return Ok((ToolResult { value: encoded.0 }, encoded.1));
-        }
-        Err(invalid("unsupported read projection"))
+        self.media_result(file, input.0.selection.clone(), work)
     }
 
     async fn read_path_range(
@@ -256,19 +207,6 @@ fn text_result(
         work,
     )?;
     Ok((ToolResult { value: encoded.0 }, encoded.1))
-}
-
-fn text_budget(
-    file: &FileRef,
-    path: &str,
-    maximum: u64,
-    work: crate::NativeWork<'_>,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<u64> {
-    let _hold;
-    let (version, hold) = super::version::encode_version(file, work)?;
-    _hold = hold;
-    encoded_text_budget(&version, path, maximum, work, io)
 }
 
 pub(super) fn encoded_text_budget(

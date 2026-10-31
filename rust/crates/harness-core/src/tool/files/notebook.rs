@@ -6,7 +6,7 @@ use serde_json::value::RawValue;
 use std::{borrow::Cow, fmt};
 
 /// The value is destroyed before the admission that owns its allocations.
-struct Decoded<T> {
+pub(super) struct Decoded<T> {
     value: T,
     _hold: crate::NativeCustody,
 }
@@ -17,7 +17,7 @@ impl<T> std::ops::Deref for Decoded<T> {
     }
 }
 
-fn decode<'de, S: DeserializeSeed<'de>>(
+pub(super) fn decode<'de, S: DeserializeSeed<'de>>(
     seed: S,
     source: &'de str,
     work: crate::NativeWork<'_>,
@@ -144,67 +144,6 @@ fn each<'a>(
 fn span(source: &str, raw: &RawValue) -> (usize, usize) {
     let start = raw.get().as_ptr() as usize - source.as_ptr() as usize;
     (start, start + raw.get().len())
-}
-
-pub(super) fn read(
-    source: &str,
-    offset: u64,
-    limit: Option<u64>,
-    maximum: u64,
-    work: crate::NativeWork<'_>,
-) -> Result<(String, ReadPage, crate::NativeCustody)> {
-    let notebook = notebook(source, work)?;
-    let mut interval = None;
-    let mut empty_boundary = None;
-    let mut next_cell = offset;
-    let count = each(
-        &notebook,
-        |index, cell| {
-            if index == offset {
-                empty_boundary = Some(span(source, cell).0);
-            }
-            if index >= offset && index - offset < limit.unwrap_or(u64::MAX) {
-                let (start, end) = span(source, cell);
-                let first = interval.map_or(start, |(first, _)| first);
-                if (end - first) as u64 <= maximum || interval.is_none() {
-                    interval = Some((first, end));
-                    next_cell = index + 1;
-                }
-            }
-        },
-        work,
-    )?;
-    if offset > count {
-        return Err(executor::rejection(
-            work,
-            "notebook offset exceeds cell count",
-        ));
-    }
-    let (start, end) = interval.unwrap_or_else(|| {
-        let end = empty_boundary.unwrap_or_else(|| span(source, notebook.cells).1 - 1);
-        (end, end)
-    });
-    let selected = source
-        .get(start..end)
-        .ok_or_else(|| executor::rejection(work, "invalid notebook span"))?;
-    let shown =
-        crate::tools::bounds::prefix(selected, usize::try_from(maximum).unwrap_or(usize::MAX));
-    let mut hold = edit::allocation(work, std::mem::size_of::<String>())?;
-    let mut text = String::new();
-    edit::reserve_string(&mut hold, &mut text, shown.len())?;
-    edit::charge(&hold, shown.len() as u64, 1)?;
-    text.push_str(shown);
-    let end = start + shown.len();
-    Ok((
-        text,
-        ReadPage {
-            start: start as u64,
-            end: end as u64,
-            next: (next_cell < count || shown.len() < selected.len()).then_some(end as u64),
-            offset,
-        },
-        hold,
-    ))
 }
 
 /// Encode borrowed fields on the original ledger, without a temporary Value graph.
