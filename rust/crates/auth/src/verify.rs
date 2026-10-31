@@ -568,7 +568,7 @@ impl VerifiedCapability {
             payload,
             signature: signature.to_vec(),
         });
-        Ok(wire::encode(&signed, 26, &sealed, VERSION))
+        Ok(wire::encode(&signed, Some((26, &sealed)), VERSION))
     }
 
     /// Consume append authority and replace it with a final tip signature.
