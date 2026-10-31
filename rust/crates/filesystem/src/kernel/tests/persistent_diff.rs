@@ -624,13 +624,8 @@ async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_valu
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
     assert_eq!(warm.work.page_reads, 4);
-    // Three UTF-8 bytes, one arena slot/link/root and two moved result values.
-    // Cached pages still avoid decoding or copying any unchanged leaf.
-    let routing = std::mem::size_of::<ValueChange<LogicalName, TreeEntry>>()
-        + std::mem::size_of::<crate::kernel::ordered_links::Links>()
-        + std::mem::size_of::<Option<usize>>()
-        + 2 * std::mem::size_of::<Option<TreeEntry>>();
-    assert_eq!(warm.work.bytes_copied, 3 + routing as u64);
+    // Only the two result names and their retained routing key are copied.
+    assert_eq!(warm.work.bytes_copied, 3);
     assert_eq!(store.stats()?.decoded_hits, 4);
     Ok(())
 }

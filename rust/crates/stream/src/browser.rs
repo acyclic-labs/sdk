@@ -30,7 +30,6 @@ const METADATA: &str = "metadata";
 const INCARNATION: &str = "incarnation";
 const METADATA_WORDS: usize = 18;
 
-
 /// Finite durable recovery/retention and canonical in-memory admission limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BrowserStreamLimits {
