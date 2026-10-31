@@ -279,7 +279,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             },
         };
         let runtime = crate::runtime::Bindings {
-            workspace_tools: Some(publisher.tools.clone()),
+            targets: Some(crate::local::agents::home(publisher.tools.clone())?),
             scope: RuntimeScope::new(grants, harness.limits.clone())?,
             content: Some(content),
             ..crate::runtime::Bindings::local()
