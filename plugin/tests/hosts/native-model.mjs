@@ -10,6 +10,32 @@ import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
 import {nativeHost} from './native-host.mjs';
 
+// Pi's print process can exit zero after a failed model turn. The native
+// message terminal, rather than that exit code alone, owns its outcome.
+export function assertNativeCompletion(host,result,answer) {
+ assert.equal(result.code,0,result.stderr);
+ if(host==='pi') {
+  let terminal;
+  for(const line of result.stdout.split('\n')) {
+   if(!line)continue;
+   const event=JSON.parse(line),message=event.type==='message_end'?event.message:undefined;
+   if(message?.role!=='assistant')continue;
+   terminal=message;
+   if(message.stopReason==='error') {
+    const error=new Error(message.errorMessage,{cause:message});
+    error.code=message.errorMessage.startsWith('step=admit Pi keyless Responses provider:')
+     ?'UNSUPPORTED_NATIVE_KEYLESS_PROVIDER':'NATIVE_HOST_MODEL_FAILED';
+    throw error;
+   }
+  }
+  assert.equal(terminal?.stopReason,'stop','native assistant terminal missing');
+  assert.ok(terminal.content.filter(part=>part.type==='text').map(part=>part.text).join('').includes(answer),
+   'native answer missing');
+  return;
+ }
+ assert.ok(result.stdout.includes(answer),'native answer missing');
+}
+
 // Native policy arguments the root runs under and every managed child inherits
 // (ACYCLIC_HOST_ARGS), plus each host's own keyless provider selection.
 // Sandbox and approval policy stay unchanged. Codex asks the plugin's
@@ -99,8 +125,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='complete installed native session';
   if(execute)return await execute({native,configuration,run});
   const completed=await run(native.program,[...native.args,...args]);
-  assert.equal(completed.code,0,completed.stderr);
-  assert.ok(completed.stdout.includes(answer),'native answer missing');
+  assertNativeCompletion(host,completed,answer);
  } catch(error) {
   throw new Error(`step=${host} ${step}: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`,{cause:error});
  }

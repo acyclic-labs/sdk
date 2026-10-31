@@ -9,7 +9,7 @@ import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
 import {nativeHost} from './native-host.mjs';
-import {launchNativeHost} from './native-model.mjs';
+import {assertNativeCompletion,launchNativeHost} from './native-model.mjs';
 import register from './keyless-pi-provider.mjs';
 
 // Exercise the actual lockfile-pinned native provider/auth/Responses path.
@@ -39,13 +39,19 @@ test('pinned Pi retains native keyless refusal without a credential or HTTP requ
   const launch=await launchNativeHost('pi',{url:process.env.ACYCLIC_E2E_MODEL_URL,env,prompt:'keyless admission'});
   const completed=await scope.runOwned(native.program,[...native.args,...launch.args],{cwd:root,env});
   t.diagnostic(JSON.stringify({native_entry:native.entry,...completed}));
-  assert.notEqual(completed.code,0,'unsupported native provider must not report successful coding');
-  assert.match(completed.stdout+completed.stderr,/step=admit Pi keyless Responses provider: No API key for provider: fixture/);
+  assert.equal(completed.code,0,'retain the pinned CLI zero-exit convention');
+  assert.equal(completed.signal,null);
+  assert.throws(()=>assertNativeCompletion('pi',completed,'NATIVE_PLUGIN_MODEL_DONE'),error=>
+   error.code==='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER'&&error.cause.stopReason==='error'
+    &&error.message.startsWith('step=admit Pi keyless Responses provider: No API key for provider: fixture'));
   assert.equal(requests,0,'no credential/fetch shim may silently admit a different native request');
  } finally {
-  await scope.close();await rm(root,{recursive:true,force:true});
-  if(previous===undefined)delete process.env.ACYCLIC_E2E_MODEL_URL;
-  else process.env.ACYCLIC_E2E_MODEL_URL=previous;
-  await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
+  try {await scope.close();}
+  finally {
+   await rm(root,{recursive:true,force:true});
+   if(previous===undefined)delete process.env.ACYCLIC_E2E_MODEL_URL;
+   else process.env.ACYCLIC_E2E_MODEL_URL=previous;
+   await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
+  }
  }
 });
