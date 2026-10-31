@@ -317,14 +317,14 @@ impl AgentTool {
             .map_err(|_| invalid("operation identity is not ASCII"))?;
         let step = context.map_or(0, |context| context.model_turn.1);
         let key = format_work(format_args!("{step:010}-{operation}"), io)?;
-        if let Some(recorded) = turn.effects.recorded_call_with_io(&key, io)?.await? {
-            return self.recorded_result(recorded, work, io);
-        }
         let _spawning = if self.name == "spawn" {
             Some(turn.spawning.lock().await)
         } else {
             None
         };
+        if let Some(recorded) = turn.effects.recorded_call_with_io(&key, io)?.await? {
+            return self.recorded_result(recorded, work, io);
+        }
         let access = || ContentAccess {
             ceiling: context.map(|context| context.effective_scope().grants()),
             io,
@@ -497,24 +497,31 @@ impl AgentTool {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<bool> {
         let turn = &*self.turn;
+        let child = crate::executor::with_history_io(io, |work| {
+            turn.agent.child_for_intent(intent.as_str(), work)
+        })?;
+        if turn.children.contains(&child) {
+            return Err(invalid("an agent with this name exists"));
+        }
         let recorded = turn.effects.recorded_with_io(io)?.await?;
         let mut children = vector(recorded.len(), io)?;
         for effect in &recorded {
-            if let TurnEffect::Spawn { intent, .. } = effect {
+            if let TurnEffect::Spawn {
+                intent: recorded, ..
+            } = effect
+            {
+                if recorded == intent {
+                    return Err(invalid("an agent with this name exists"));
+                }
                 let child = crate::executor::with_history_io(io, |work| {
-                    turn.agent.child_for_intent(intent.as_str(), work)
+                    turn.agent.child_for_intent(recorded.as_str(), work)
                 })?;
                 if !turn.children.contains(&child) && !children.contains(&child) {
                     children.push(child);
                 }
             }
         }
-        let child = crate::executor::with_history_io(io, |work| {
-            turn.agent.child_for_intent(intent.as_str(), work)
-        })?;
-        Ok(turn.children.contains(&child)
-            || children.contains(&child)
-            || turn.children.len() + children.len() < limit)
+        Ok(turn.children.len() + children.len() < limit)
     }
 
     fn recipient(

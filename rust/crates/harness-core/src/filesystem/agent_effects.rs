@@ -223,7 +223,7 @@ where
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 match crate::agent::inbox_tail(&*self.stream, &child).await {
                     Err(crate::agent::Error::NoSuchAgent) => {}
-                    Ok(_) => return Err(Error::Conflict("an agent with this name exists".into())),
+                    Ok(_) => return Err(Error::tool_rejected("an agent with this name exists")),
                     Err(error) => return Err(Error::Storage(error.to_string())),
                 }
             }
@@ -347,6 +347,14 @@ mod tests {
             u64::MAX,
             &mut None,
         )?;
+        let publisher = super::super::FilesystemContentPublisher::new(
+            host.clone(),
+            &volume,
+            &issuer.verifier(&mut None)?,
+            &scope,
+            4096,
+            None,
+        )?;
         let files = Arc::new(AgentInternalFiles::new(host, volume.clone(), write));
         let effects = FilesystemTurnEffects::new(
             files.clone(),
@@ -451,6 +459,109 @@ mod tests {
             Err(Error::UnsupportedRecordVersion(version)) if version == refusal
         ));
         assert_eq!(effects.record("0000000001-a", &later).await?, first);
+        // The actual tool, private effect files and create-once publisher share
+        // replay identity. A different call may not reuse a pending child name.
+        {
+            use crate::{
+                agent::{AgentState, ForkAdopted},
+                profile::{ModelProfile, Profiles, ProjectLayer, RoleFile},
+                tool::{ToolInvocation, ToolRegistry},
+            };
+            const EMPTY: &str = "---\nversion: 1\n---\n";
+            let profiles = Arc::new(Profiles::new(
+                [ModelProfile::parse(
+                    "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\ncache: automatic\nwatermark_tokens: 700\n---\n",
+                    "---\nversion: 1\nkey: test/worker\n---\n",
+                    crate::context::ModelContextCapacity {
+                        context_tokens: 1000,
+                        output_tokens: Some(200),
+                    },
+                    "test-renderer-1",
+                )?],
+                [RoleFile::parse(
+                    "---\nversion: 1\nname: worker\nmodel: test/worker\ncontext: fork\nmay_spawn: [worker]\n---\n",
+                )?],
+                ProjectLayer::parse(EMPTY)?,
+                EMPTY,
+                crate::approvals::ApprovalPolicy::default().bind()?,
+            )?);
+            let mut state = AgentState::adopted(
+                effects.agent.clone(),
+                &ForkAdopted {
+                    agent: effects.agent.id(),
+                    parent: None,
+                    profile: Some(profiles.role_pin("worker")?),
+                    forked_at: 0,
+                    conversation_tail: 0,
+                    checkpoint: None,
+                    volumes: Vec::new(),
+                    brief: None,
+                    policy: None,
+                },
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            state.open_children.insert(
+                crate::tools::spawned_child(&effects.agent, "existing")
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+            let pending = Arc::new(FilesystemTurnEffects::new(
+                files.clone(),
+                effects.stream.clone(),
+                effects.agent.clone(),
+                (OperationId::from_bytes([5; 16]), 3),
+                4096,
+            ));
+            let mut tools = ToolRegistry::default();
+            crate::tools::bind_agent_tools(
+                &mut tools,
+                &state,
+                (pending.clone(), None),
+                publisher,
+                4096,
+                (&["spawn".into()], Some(profiles)),
+            )?;
+            let tool = tools
+                .get("spawn", None, None)?
+                .ok_or_else(|| Error::Storage("spawn declaration was not bound".into()))?;
+            let invoke = |operation, name: &str, task: &str| ToolInvocation {
+                operation_id: OperationId::from_bytes([operation; 16]),
+                call_id: format!("spawn-{operation}"),
+                name: "spawn".into(),
+                arguments: serde_json::json!({"name": name, "task": task, "role": "worker"}),
+            };
+            let original = invoke(21, "candidate", "first brief");
+            let (first, replay) = futures::join!(
+                tool.executor.execute(original.clone(), None),
+                tool.executor.execute(original, None),
+            );
+            assert_eq!(first?.value, replay?.value);
+            for invocation in [
+                invoke(22, "candidate", "first brief"),
+                invoke(23, "candidate", "changed brief"),
+                invoke(24, "existing", "replacement brief"),
+            ] {
+                assert!(matches!(
+                    tool.executor.execute(invocation, None).await,
+                    Err(Error::ToolRejected { .. })
+                ));
+            }
+            tool.executor
+                .execute(invoke(25, "independent", "another child"), None)
+                .await?;
+            let recorded = pending.recorded().await?;
+            assert_eq!(recorded.len(), 2);
+            let TurnEffect::Spawn { brief, .. } = &recorded[0] else {
+                return Err(Error::Storage("original spawn effect was replaced".into()));
+            };
+            assert_eq!(
+                brief.descriptor(),
+                &crate::conversation::FileDescriptor::from_bytes(
+                    b"first brief",
+                    "text/markdown",
+                    &mut None,
+                )?
+            );
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = acyclic_fs::CancellationToken::new();
