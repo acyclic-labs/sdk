@@ -12,7 +12,8 @@ let tools = Arc::new(host.workspace(observation, &selected_volume, original_scop
     .with_shell(resolved_shell, &acyclic_host_platform::shell::PLATFORM)?);
 // The server and local application both install this same home target.
 let home = InProcessTargets::record(
-    ("machine", owner), TargetClass::Attached, std::env::consts::OS, tools.shell_spec(),
+    ("machine", owner), (TargetClass::Attached, DeviceKind::Desktop),
+    std::env::consts::OS, tools.shell_spec(),
 );
 bindings.targets = Some(Arc::new(InProcessTargets::home(home, tools)?));
 ```

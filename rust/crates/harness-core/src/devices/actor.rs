@@ -519,13 +519,21 @@ impl Composition for Handover {
                 );
             }
             if let Some((connection, text)) = self.send {
-                // The original socket host produces Close on send refusal;
-                // its actor then settles this accepted run as Lost.
-                let _sent = self.host.web_socket_send(
-                    &self.actor,
-                    &connection,
-                    SocketPayload::Text { text },
-                );
+                if self
+                    .host
+                    .web_socket_send(&self.actor, &connection, SocketPayload::Text { text })
+                    .is_err()
+                {
+                    // Presence can precede the socket's Open verdict. A
+                    // refused handover retires that original session; the
+                    // accepted operation is never sent on another connection.
+                    self.host.web_socket_close(
+                        &self.actor,
+                        &connection,
+                        1011,
+                        "device handover was not accepted",
+                    )?;
+                }
             }
             Ok(())
         })

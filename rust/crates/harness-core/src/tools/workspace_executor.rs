@@ -112,6 +112,17 @@ impl ToolExecutor for WorkspaceExecutor {
         let Some(context) = context else {
             return Ok(None);
         };
+        if super::bounds::operands(
+            self.name,
+            &invocation.arguments,
+            super::bounds::limits(context),
+        )
+        .is_err()
+        {
+            // Ordinary execution returns this same rejection to the model.
+            // Nothing may be handed to a remote target before that verdict.
+            return Ok(None);
+        }
         target(context, invocation, None)?
             .executor
             .dispatch(invocation, Some(context))
