@@ -479,13 +479,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             {
                 return Err(StreamError::InvalidArgument);
             }
-            for (slot, credential) in hello.credentials.iter().enumerate() {
-                self.authority.register(
-                    &mut self.slots,
-                    u32::try_from(slot).map_err(|_| StreamError::Capacity)?,
-                    credential,
-                )?;
-            }
             self.deadline = self.authority.deadline(&mut self.slots);
             self.hello = true;
             self.credit = wire::SessionWindow {
