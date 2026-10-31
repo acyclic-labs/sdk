@@ -33,6 +33,16 @@ test("selected report acknowledgement distinguishes live, empty, refusal and pro
     try {
       await ready(running);
       if (mode === "expired") await running.requestReport(0);
+      if (mode === "crash") {
+        // Exercise observed owner death before EOF. EOF arriving while its
+        // owner is still live is covered by the separate producer-loss case.
+        const channel = running.child.stdio[3];
+        channel.pause();
+        const request = running.requestReport(Date.now() + 500);
+        await running.exited;
+        channel.resume();
+        await request;
+      }
       // Closing stderr must not alter delivery on the dedicated control port.
       if (mode === "live") running.child.stderr.destroy();
       await scope.close();
