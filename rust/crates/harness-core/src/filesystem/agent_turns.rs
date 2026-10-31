@@ -269,7 +269,7 @@ impl<'v> AdmittedAgent<'v> {
                     value.logical_owned_bytes()
                 })?;
                 quota.transfer();
-                Ok(grants)
+                Ok::<_, Error>(grants)
             })?,
             None => {
                 let labels = root_grants_with_io(volumes, external, io)?;
@@ -481,7 +481,7 @@ fn root_grants_with_io(
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let grants = crate::core::reserve_copy_vector(count, &mut quota)?;
         quota.transfer();
-        Ok(grants)
+        Ok::<_, Error>(grants)
     })?;
     grants.push(crate::executor::with_history_io(io, |work| {
         crate::executor::preparation_format(

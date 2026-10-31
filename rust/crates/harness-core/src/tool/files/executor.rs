@@ -614,7 +614,7 @@ impl ToolExecutor for FileTool {
                     context.effective_scope(),
                     &invocation,
                     None,
-                    Some(context),
+                    Some(&context),
                 )?;
                 let receipt = context
                     .observe_tool_source_file_once(invocation.operation_id, source.0.as_ref(), None)

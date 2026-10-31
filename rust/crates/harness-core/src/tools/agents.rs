@@ -363,7 +363,7 @@ impl AgentTool {
                             Ok((pin.role.capacity() + pin.model.capacity()) as u64)
                         })?;
                         quota.transfer();
-                        Ok(pin)
+                        Ok::<_, Error>(pin)
                     })?
                 } else {
                     profiles.child(parent, &input.role)?

@@ -772,10 +772,10 @@ impl ToolContext {
     /// Selects an executing agent's volume from the same mounted path spelling
     /// used by shell. This selects a resource; the original read grant is still
     /// checked at the read boundary.
-    pub(crate) fn tool_path_selection<'a>(
-        &'a self,
-        path: &'a str,
-    ) -> Result<(&'a VolumeRef, &'a str)> {
+    pub(crate) fn tool_path_selection<'task, 'path>(
+        &'task self,
+        path: &'path str,
+    ) -> Result<(&'task VolumeRef, &'path str)> {
         let Some(selected) = path.strip_prefix(".volumes/") else {
             return Ok((&self.task().tool_read_content().volume, path));
         };
