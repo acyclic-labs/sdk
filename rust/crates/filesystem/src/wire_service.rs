@@ -100,13 +100,14 @@ pub struct CredentialGrantRequest {
 /// Deployment-produced scoped credential material.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CredentialGrant {
-    /// Opaque bearer capability for the native mount transport.
-    Bearer {
+    /// Sealed volume capability for the native mount transport, minted with
+    /// [`mount_capability`] and admitted with [`admit_mount`].
+    Mount {
         /// Customer endpoint for the mount transport.
         endpoint: String,
-        /// Opaque bearer capability.
-        token: String,
-        /// Absolute Unix expiry enforced by the endpoint.
+        /// Encoded sealed `acyclic.auth.v1` capability.
+        capability: Vec<u8>,
+        /// Absolute Unix expiry, which the capability itself enforces.
         expires_at_unix_seconds: i64,
     },
     /// Standard S3 `SigV4` coordinates scoped to one workspace.
@@ -450,6 +451,12 @@ include!("wire_service/join_encoding.rs");
 include!("wire_service/output.rs");
 mod errors;
 use errors::status;
+mod mount;
+#[cfg(test)]
+mod mount_fixture;
+pub use mount::{
+    MountOwner, MountRefusal, admit_mount, mount_audience, mount_capability, mount_resource,
+};
 
 #[cfg(test)]
 mod tests;

@@ -404,6 +404,12 @@ impl VerifiedCapability {
             .ok_or(VerifyError::Malformed)
     }
 
+    /// The verified blocks, root first, in the order of [`Self::block_ids`].
+    #[must_use]
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
     /// Borrow effective principal, conjunctive grant/filter sets and numeric minima.
     pub fn effective(&self) -> Effective<'_> {
         Effective { capability: self }

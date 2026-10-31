@@ -121,6 +121,44 @@ fn host_matches(rule: Rule<'_>, host: Host<'_>) -> bool {
         _ => false,
     }
 }
+// Whether every destination `child` admits, `parent` admits too.
+fn rule_covers(parent: Rule<'_>, child: Rule<'_>) -> bool {
+    match (parent, child) {
+        (parent, Rule::Dns(host)) => host_matches(parent, Host::Dns(host)),
+        (parent, Rule::Ip(ip)) => host_matches(parent, Host::Ip(ip)),
+        (Rule::Suffix(parent), Rule::Suffix(child)) => {
+            child.eq_ignore_ascii_case(parent)
+                || host_matches(Rule::Suffix(parent), Host::Dns(child))
+        }
+        (Rule::Network(network, prefix), Rule::Network(child, length)) => {
+            length >= prefix && network_contains(network, prefix, child)
+        }
+        _ => false,
+    }
+}
+
+fn ports(rule: &crate::contract::SocketHostRule) -> impl Iterator<Item = (u32, u32)> + '_ {
+    let https = rule.ports.is_empty().then_some((443, 443));
+    https
+        .into_iter()
+        .chain(rule.ports.iter().map(|range| (range.first, range.last)))
+}
+
+/// Whether `child` admits only destinations `parent` admits: each child rule
+/// lies within one parent rule, host and ports alike. Allocation-free.
+pub fn covers(parent: &WebsocketConnectGrant, child: &WebsocketConnectGrant) -> bool {
+    child.rules.iter().all(|rule| {
+        parse_rule(&rule.host).is_some_and(|host| {
+            parent.rules.iter().any(|outer| {
+                parse_rule(&outer.host).is_some_and(|outer_host| rule_covers(outer_host, host))
+                    && ports(rule).all(|(first, last)| {
+                        ports(outer).any(|(low, high)| low <= first && last <= high)
+                    })
+            })
+        })
+    })
+}
+
 /// Union of valid destination rules; empty ports means 443. Grant sets from
 /// different certificates and caveat blocks are intersected by `authority::permits`.
 /// No DNS lookup, allocation, or mutable state occurs during matching.

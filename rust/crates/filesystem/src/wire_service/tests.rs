@@ -77,9 +77,9 @@ impl FilesystemCredentialIssuer for TestIssuer {
 
     async fn issue(&self, request: CredentialGrantRequest) -> Result<CredentialGrant, Status> {
         Ok(match request.kind {
-            CredentialKind::Mount => CredentialGrant::Bearer {
+            CredentialKind::Mount => CredentialGrant::Mount {
                 endpoint: "mount://test".to_owned(),
-                token: hex::encode(request.workspace_id.into_bytes()),
+                capability: super::mount_fixture::Mounts::new().mint(&request),
                 expires_at_unix_seconds: request.expires_at_unix_seconds,
             },
             CredentialKind::S3 => CredentialGrant::S3 {
@@ -276,7 +276,14 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
     assert_eq!(credential.endpoint, "mount://test");
     assert!(matches!(
         credential.credential,
-        Some(wire::credential_response::Credential::BearerToken(token)) if !token.is_empty()
+        Some(wire::credential_response::Credential::BearerToken(token))
+            if acyclic_auth::credential::capability_from_text(&token)
+                .ok()
+                .and_then(|capability| acyclic_auth::authority::decode_capability(&capability).ok())
+                .is_some_and(|capability| matches!(
+                    capability.proof,
+                    acyclic_auth::contract::TipProof::Sealed(_)
+                ))
     ));
 
     let committed = service

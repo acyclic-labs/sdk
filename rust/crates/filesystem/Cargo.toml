@@ -103,6 +103,7 @@ async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
+ed25519-dalek = "=3.0.0"
 hex.workspace = true
 notify = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
@@ -119,6 +120,7 @@ icu_casemap.workspace = true
 writeable.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", optional = true, default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 base64 = { version = "0.23.1", optional = true }

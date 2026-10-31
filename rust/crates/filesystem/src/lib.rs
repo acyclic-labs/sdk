@@ -31,7 +31,8 @@ pub use wire_service::{
     DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, FILESYSTEM_PROTOCOL_VERSION, FilesystemCredentialIssuer,
     FilesystemSourceProvider, FilesystemWireLimits, FilesystemWireService,
     HostedSourceInvalidation, HostedSourceOperation, HostedSourceResult, HostedSourceScope,
-    HostedSourceState,
+    HostedSourceState, MountOwner, MountRefusal, admit_mount, mount_audience, mount_capability,
+    mount_resource,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

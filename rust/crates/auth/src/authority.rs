@@ -143,12 +143,11 @@ pub fn valid_chain(blocks: &[Block]) -> bool {
         })
 }
 
-/// An appended block only narrows. Requests already meet every block's grants
-/// conjunctively; a typed grant also carries values its consumer takes as the
-/// effective setting (a reservation, a mount's POSIX owner), so each typed
-/// grant must lie within every earlier ceiling: the certified leaf's grants
-/// and each earlier block's. Each allowance covers a subset of every earlier
-/// allowance's products.
+/// An appended block only narrows: each grant it states lies within every
+/// earlier ceiling (the certified leaf's grants and each earlier block's), and
+/// each allowance covers a subset of every earlier allowance's products.
+/// Requests also meet every block conjunctively; this is what lets a consumer
+/// take a typed value (a reservation, a mount's POSIX owner) as effective.
 fn narrows(ancestors: &[Block], block: &Block) -> bool {
     let leaf = ancestors
         .first()
@@ -176,7 +175,7 @@ fn narrows(ancestors: &[Block], block: &Block) -> bool {
         })
         .collect();
     block.caveats.iter().all(|caveat| match &caveat.kind {
-        CaveatKind::Grants(set) => set.grants.iter().filter(|grant| typed(grant)).all(|grant| {
+        CaveatKind::Grants(set) => set.grants.iter().all(|grant| {
             ceilings
                 .iter()
                 .all(|ceiling| ceiling.grants.iter().any(|parent| covers(parent, grant)))
@@ -213,25 +212,30 @@ fn within(parent: &ResourceGrant, child: &ResourceGrant) -> bool {
             .all(|action| parent.actions.contains(action))
 }
 
-const fn typed(grant: &Grant) -> bool {
-    matches!(
-        grant.kind,
-        GrantKind::Execution(_) | GrantKind::Billing(_) | GrantKind::Filesystem(_)
-    )
+const fn resource_of(grant: &Grant) -> Option<&ResourceGrant> {
+    match &grant.kind {
+        GrantKind::Resource(grant) => Some(grant),
+        GrantKind::Execution(grant) => Some(&grant.grant),
+        GrantKind::Billing(grant) => Some(&grant.grant),
+        GrantKind::Filesystem(grant) => Some(&grant.grant),
+        GrantKind::WebsocketConnect(_) => None,
+    }
 }
 
-// A plain resource ceiling bounds only the resource; a typed one also bounds
-// its own kind's values.
+// A typed ceiling bounds its own kind's values; a plain resource on either
+// side bounds only the resource, and the typed side's values still apply to
+// every request conjunctively.
 fn covers(parent: &Grant, child: &Grant) -> bool {
-    let resource = match &child.kind {
-        GrantKind::Resource(grant) => grant,
-        GrantKind::Execution(grant) => &grant.grant,
-        GrantKind::Billing(grant) => &grant.grant,
-        GrantKind::Filesystem(grant) => &grant.grant,
-        GrantKind::WebsocketConnect(_) => return false,
-    };
     match (&parent.kind, &child.kind) {
-        (GrantKind::Resource(parent), _) => within(parent, resource),
+        (GrantKind::WebsocketConnect(parent), GrantKind::WebsocketConnect(child)) => {
+            crate::socket::covers(parent, child)
+        }
+        (GrantKind::Resource(_), _) | (_, GrantKind::Resource(_)) => {
+            match (resource_of(parent), resource_of(child)) {
+                (Some(parent), Some(child)) => within(parent, child),
+                _ => false,
+            }
+        }
         (GrantKind::Execution(parent), GrantKind::Execution(child)) => {
             within(&parent.grant, &child.grant)
                 && at_most(parent.cpu_millis, child.cpu_millis)

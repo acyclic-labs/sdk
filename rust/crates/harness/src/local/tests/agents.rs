@@ -412,6 +412,7 @@ async fn follow_tool_output(
     denied.scope = denied.scope.attenuate_workload(
         "denied",
         &crate::Capabilities::new(Vec::<String>::new()),
+        denied.scope.agent(),
         &issuer.public_workload_trust()?,
         &crate::core::Authority {
             kind: crate::core::AggregateKind::Conversation,
