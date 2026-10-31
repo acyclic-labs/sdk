@@ -15,7 +15,7 @@ concurrency:
 jobs:
   static:
     name: SDK Static
-    runs-on: ubuntu-24.04
+    runs-on: kaizen-linux
     timeout-minutes: 1
     env:
       RUSTUP_TOOLCHAIN: stable
