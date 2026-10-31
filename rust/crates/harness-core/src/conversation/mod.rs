@@ -542,6 +542,10 @@ pub use identity::assistant_message_id;
 /// Immutable model wire items shared with the pure request renderer.
 pub mod wire;
 
+/// Versioned items encoded through the original bounded journal boundary.
+#[cfg(feature = "filesystem")]
+pub mod envelope;
+
 crate::core::ownership::owned_struct!(Limits {
     file_bytes,
     path_bytes,
