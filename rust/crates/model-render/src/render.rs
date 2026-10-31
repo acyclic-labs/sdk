@@ -1,3 +1,4 @@
+use crate::selection::{Selection, select};
 use crate::{Family, ItemKind, RENDERER_VERSION, WireItem};
 use serde_json::{Map, Value, value::RawValue};
 use std::{
@@ -12,7 +13,7 @@ pub enum RenderError {
     InvalidItem(&'static str),
     /// A foreign message has no admitted projection for the target family.
     MissingProjection(Family),
-    /// Header JSON encoding failed.
+    /// Model JSON encoding failed.
     Json(serde_json::Error),
     /// The caller's writer ended or refused output; rendering never retries it.
     Write(io::Error),
@@ -135,18 +136,19 @@ pub fn seg<'a>(
     provider: &str,
     item: &'a WireItem,
 ) -> Result<Option<&'a RawValue>, RenderError> {
-    if item.kind() == ItemKind::Reasoning && item.provenance().provider != provider {
-        return Ok(None);
+    let same_family = item.provenance().family == target;
+    // Provider identity is relevant only to native reasoning. Ordinary items
+    // and foreign-family omissions need no string comparison.
+    let same_provider = item.kind() != ItemKind::Reasoning
+        || (same_family && item.provenance().provider == provider);
+    match select(item.kind(), same_family, same_provider) {
+        Selection::Native => Ok(Some(item.wire())),
+        Selection::Drop => Ok(None),
+        Selection::Foreign => item
+            .projection(target)
+            .map(Some)
+            .ok_or(RenderError::MissingProjection(target)),
     }
-    if item.provenance().family == target {
-        return Ok(Some(item.wire()));
-    }
-    if item.kind() == ItemKind::Reasoning {
-        return Ok(None);
-    }
-    item.projection(target)
-        .map(Some)
-        .ok_or(RenderError::MissingProjection(target))
 }
 
 /// Writes exactly the caller-selected epoch items. There is no history window,
@@ -197,6 +199,7 @@ fn render_request<'a>(
     summary: Option<&str>,
     writer: &mut impl Write,
 ) -> Result<(), RenderError> {
+    let mut writer = crate::sink::Sink(writer);
     writer
         .write_all(header.bytes())
         .map_err(RenderError::Write)?;
@@ -222,7 +225,7 @@ fn render_request<'a>(
                     content: &'a str,
                 }
                 serde_json::to_writer(
-                    &mut *writer,
+                    &mut writer,
                     &Message {
                         role: "user",
                         content: instruction,
@@ -240,7 +243,7 @@ fn render_request<'a>(
                     parts: [Part<'a>; 1],
                 }
                 serde_json::to_writer(
-                    &mut *writer,
+                    &mut writer,
                     &Content {
                         role: "user",
                         parts: [Part { text: instruction }],
