@@ -5,6 +5,24 @@ use crate::{
 };
 use serde::Serialize;
 
+// Numeric argv elements serialize directly as strings into the original funded
+// argument value; formatting flags does not allocate an intermediate String.
+enum QueryArgument<'a> {
+    Text(&'a str),
+    Number(u64),
+}
+impl Serialize for QueryArgument<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Text(text) => serializer.serialize_str(text),
+            Self::Number(number) => serializer.collect_str(number),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Capability {
     Read,
@@ -236,15 +254,33 @@ impl adapter::Adapter {
     fn query(&self, invocation: &ToolInvocation, work: crate::NativeWork<'_>) -> Result<Adapted> {
         let fields = &invocation.arguments;
         let cc = self.profile == NativeToolProfile::Anthropic;
-        let mut custody = crate::tool::edit::allocation(work, 0)?;
-        let mut argv: Vec<&str> = Vec::new();
-        crate::tool::edit::reserve_vec(&mut custody, &mut argv, 24)?;
-        argv.push("rg");
         let glob = self.capability == Capability::Glob;
+        if glob && !cc {
+            return Err(Error::Unsupported("glob: original target root, modification ordering and .geminiignore selection are unavailable; recovery: bind the original target query selector".into()));
+        }
+        if !glob {
+            if cc {
+                if number(fields, "head_limit")?.is_some_and(|limit| limit > 0)
+                    || number(fields, "offset")?.is_some_and(|offset| offset > 0)
+                {
+                    return Err(Error::Unsupported("Grep: head/offset selection is unavailable before original output truncation; recovery: invoke Grep with head_limit=0 and offset=0".into()));
+                }
+            } else if optional_text(fields, "exclude_pattern")?.is_some()
+                || number(fields, "total_max_matches")?.is_some()
+            {
+                return Err(Error::Unsupported("grep_search: total/exclusion selection is unavailable before original output truncation; recovery: invoke grep_search without exclude_pattern or total_max_matches".into()));
+            }
+        }
+        let mut custody = crate::tool::edit::allocation(work, 0)?;
+        use QueryArgument::{Number, Text};
+        let mut argv = Vec::new();
+        // Fixed schema: at most 27 flags/operands, irrespective of input size.
+        crate::tool::edit::reserve_vec(&mut custody, &mut argv, 27)?;
+        argv.push(Text("rg"));
         let pattern = text(fields, "pattern")?;
         if glob {
-            argv.push("--files");
-            argv.push(
+            argv.push(Text("--files"));
+            argv.push(Text(
                 if fields
                     .get("case_sensitive")
                     .and_then(Value::as_bool)
@@ -254,54 +290,91 @@ impl adapter::Adapter {
                 } else {
                     "--iglob"
                 },
-            );
-            argv.push(pattern);
+            ));
+            argv.push(Text(pattern));
             if fields.get("respect_git_ignore").and_then(Value::as_bool) == Some(false) {
-                argv.push("--no-ignore-vcs");
+                argv.push(Text("--no-ignore-vcs"));
             }
         } else {
-            match fields
+            let mode = fields
                 .get("output_mode")
                 .and_then(Value::as_str)
-                .unwrap_or(if cc { "files_with_matches" } else { "content" })
-            {
-                "files_with_matches" => argv.push("--files-with-matches"),
-                "count" => argv.push("--count"),
-                _ => argv.push("--line-number"),
-            }
-            if fields.get("names_only").and_then(Value::as_bool) == Some(true) {
-                argv.push("--files-with-matches");
+                .unwrap_or(if cc { "files_with_matches" } else { "content" });
+            if !cc && boolean(fields, "names_only")? || mode == "files_with_matches" {
+                argv.push(Text("--files-with-matches"));
+            } else if mode == "count" {
+                argv.push(Text("--count"));
+            } else if mode == "content" {
+                argv.push(Text(
+                    if fields.get("-n").is_none() || boolean(fields, "-n")? {
+                        "--line-number"
+                    } else {
+                        "--no-line-number"
+                    },
+                ));
+                if boolean(fields, "-o")? {
+                    argv.push(Text("--only-matching"));
+                }
+                // Context supplies both defaults; specific before/after counts
+                // override them in the same ripgrep invocation.
+                for (flag, value) in [
+                    (
+                        "--context",
+                        number(fields, "context")?.or(number(fields, "-C")?),
+                    ),
+                    ("--after-context", number(fields, "-A")?),
+                    ("--before-context", number(fields, "-B")?),
+                ] {
+                    if let Some(value) = value {
+                        argv.push(Text(flag));
+                        argv.push(Number(value));
+                    }
+                }
+            } else {
+                return Err(Error::Invalid(
+                    "Grep: invalid output_mode; recovery: use content, files_with_matches or count"
+                        .into(),
+                ));
             }
             if fields.get("-i").and_then(Value::as_bool) == Some(true)
                 || fields.get("case_sensitive").and_then(Value::as_bool) == Some(false)
             {
-                argv.push("--ignore-case");
+                argv.push(Text("--ignore-case"));
             }
             if fields.get("multiline").and_then(Value::as_bool) == Some(true) {
-                argv.push("--multiline");
-                argv.push("--multiline-dotall");
+                argv.push(Text("--multiline"));
+                argv.push(Text("--multiline-dotall"));
             }
             if fields.get("fixed_strings").and_then(Value::as_bool) == Some(true) {
-                argv.push("--fixed-strings");
+                argv.push(Text("--fixed-strings"));
             }
             if let Some(include) =
                 optional_text(fields, if cc { "glob" } else { "include_pattern" })?
             {
-                argv.push("--glob");
-                argv.push(include);
+                argv.push(Text("--glob"));
+                argv.push(Text(include));
             }
             if let Some(kind) = optional_text(fields, "type")? {
-                argv.push("--type");
-                argv.push(kind);
+                argv.push(Text("--type"));
+                argv.push(Text(kind));
             }
-            argv.push("--regexp");
-            argv.push(pattern);
+            if let Some(limit) = number(fields, "max_matches_per_file")? {
+                if limit == 0 {
+                    return Err(Error::Invalid("grep_search: max_matches_per_file must be positive; recovery: omit it for unbounded matches".into()));
+                }
+                argv.push(Text("--max-count"));
+                argv.push(Number(limit));
+            }
+            argv.push(Text("--regexp"));
+            argv.push(Text(pattern));
         }
-        argv.push("--");
-        argv.push(optional_text(fields, if cc { "path" } else { "dir_path" })?.unwrap_or("."));
+        argv.push(Text("--"));
+        argv.push(Text(
+            optional_text(fields, if cc { "path" } else { "dir_path" })?.unwrap_or("."),
+        ));
         #[derive(Serialize)]
         struct Query<'a> {
-            command: &'a [&'a str],
+            command: &'a [QueryArgument<'a>],
         }
         self.canonical(invocation, &Query { command: &argv }, work)
     }
