@@ -157,7 +157,7 @@ pub(crate) fn project_text(
         &TextProjection::Parts {
             parts: [TextPart::Text { text }],
         },
-        u64::MAX,
+        None,
         work,
     )
 }

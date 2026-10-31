@@ -920,9 +920,6 @@ impl<'a> TurnContext<'a> {
                 .filter(|(_, summary)| !summary.is_empty()),
             None => None,
         };
-        if settled.is_empty() && summary.is_none() && prompt.is_none() && roster.is_none() {
-            return Ok(None);
-        }
         let capacity = 2 * settled.len()
             + 2
             + usize::from(summary.is_some())
