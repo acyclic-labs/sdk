@@ -12,16 +12,19 @@ use thiserror::Error;
 
 pub(crate) struct FileTableFormat;
 
-impl Format for FileTableFormat {
+impl acyclic_collections::page::Format for FileTableFormat {
     type Key = FileId;
     type Value = FileRecord;
-
-    fn kind() -> ObjectKind {
-        ObjectKind::FileTablePage
-    }
+    type Reference = ObjectId;
 
     fn key(value: &Self::Value) -> &Self::Key {
         &value.file_id
+    }
+}
+
+impl Format for FileTableFormat {
+    fn kind() -> ObjectKind {
+        ObjectKind::FileTablePage
     }
 
     fn decode<E: From<CanonicalDecodeError>>(

@@ -35,7 +35,14 @@ enum Task {
     After(ObjectId),
 }
 
-type Changes<F> = Owned<Vec<ValueChange<<F as Format>::Key, <F as Format>::Value>>>;
+type Changes<F> = Owned<
+    Vec<
+        ValueChange<
+            <F as acyclic_collections::page::Format>::Key,
+            <F as acyclic_collections::page::Format>::Value,
+        >,
+    >,
+>;
 
 async fn diff_with_accounting<
     S: AsyncObjectStore,

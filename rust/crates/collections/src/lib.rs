@@ -1,9 +1,10 @@
-//! An admitted, fixed-width index shared by primitive consumers.
+//! Caller-funded indexes and immutable page mechanics shared by primitives.
 //!
 //! Branch bits strictly increase along every path. Lookup therefore examines
 //! at most eight branches per key byte and one leaf, independent of entry count.
 //! Key widths share insertion, accounting, lookup and constant-space retirement.
 
+pub mod page;
 mod recent;
 pub use recent::RecentIndex;
 
