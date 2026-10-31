@@ -2848,9 +2848,9 @@ zero extra reads, allocations, copies, syscalls or durability barriers.
 | `rust/crates/machines/src/grpc/recovery.rs` (`decode_fork_admissions`) | Arbitrary child total | Preserve original fork admission and settled provenance; reject empty/malformed admission without the former maximum child count | Actioned |
 | `rust/crates/machines/src/simulation/tests/forks.rs` (`checkpoint_fork_lifetimes_and_endpoints_are_independent`) | Finite paged traversal | Advance actual machine-list cursors to completion; duplicate and nonadvancing cursors fail immediately. The existing 1,025-child control preserves every child's checkpoint contract and independent lifetime | Event primitive |
 | `rust/crates/actors/src/local/runtime.rs` (`pause_with`) | Conditional control retry | Preserve the original pinned slot, serialized control, active-delivery cancellation and cleanup join. Read once, conditionally commit once, and return the original Conflict; resume releases the same paused owner and wakes it | Actioned |
-| `compatibility/descriptors/actors-v1.bin` | Composed schema capture | Regenerate from the original Rust exporter after fork fields and retry-counter removal are composed; retained main capture does not yet describe this schema | Pending |
-| `rust/crates/actors/tests/fixtures/actors/v1/actors-v1.bin` | Composed schema capture | Copy the same actual Rust exporter descriptor after canonical capture | Pending |
-| `rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin` | Independent composed schema capture | Regenerate independently with pinned Buf, then use the original canonicalizer; do not substitute Rust output | Pending |
+| `compatibility/descriptors/actors-v1.bin` | Composed schema capture | Captured from the shared pinned Rust compiler/canonicalizer at f56588ca65 after fork fields and retry-counter removal were composed | Actioned |
+| `rust/crates/actors/tests/fixtures/actors/v1/actors-v1.bin` | Composed schema capture | Copied the same actual canonical Rust descriptor captured at f56588ca65 | Actioned |
+| `rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin` | Independent composed schema capture | Independently captured with pinned Buf and the original canonicalizer at f56588ca65; Rust output was not substituted | Actioned |
 
 The preserved pause join has one producer: the active delivery releases its
 original lock after cleanup and retained publication. No second control slot,
@@ -2859,5 +2859,6 @@ request per actual page, with no interval or readiness recheck. Its test index
 is built once from admitted pages; it is not a per-child repeated list scan.
 
 The earlier descriptor capture receipt qualifies its original schema only.
-These three captures and their manifest digests require a fresh canonical
-capture for the composed source; no current descriptor comparison is claimed.
+Fresh actual Rust/protoc and independent Buf captures now describe the composed
+schema, and the manifest binds its exact schema and descriptor bytes. The named
+freshly compiled Rust/Buf descriptor comparison remains unrun.
