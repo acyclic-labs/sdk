@@ -63,6 +63,7 @@ pub struct SkillPublicationCut {
     executing_volume: VolumeId,
     member: Option<SkillPublicationMember>,
     changes: Vec<SkillPublicationChange>,
+    rejection: Option<Error>,
     // Dropped after the payload. This is the original preparation's ownership,
     // transferred once; retries retain it without recharging or copying.
     _custody: Option<crate::filesystem::PreparationCustody>,
@@ -80,6 +81,7 @@ impl Drop for Preparing<'_> {
             self.source.changes = Vec::new();
             self.source.pending = None;
             self.source.member = None;
+            self.source.rejection = None;
             self.source.records = None;
             self.source.open = None;
         }
@@ -103,6 +105,12 @@ impl SkillPublicationCut {
     /// Metadata to contribute through the single conversation admission path.
     pub fn changes(&self) -> &[SkillPublicationChange] {
         &self.changes
+    }
+    /// Invalid replacement metadata rejects this member's catalog changes.
+    /// Its source checkpoint can still be admitted, allowing later repairs to
+    /// arrive without replaying this rejected member forever.
+    pub fn rejection(&self) -> Option<&Error> {
+        self.rejection.as_ref()
     }
 
     /// Encodes the producer checkpoint for the original journal owner to fence
@@ -158,6 +166,7 @@ pub struct SkillPublicationSource {
     records: Option<FollowStream>,
     member: Option<SkillPublicationMember>,
     changes: Vec<SkillPublicationChange>,
+    rejection: Option<Error>,
     pending: Option<SkillPublicationCut>,
     failed: bool,
 }
@@ -198,6 +207,7 @@ impl SkillPublicationSource {
             records: None,
             member: None,
             changes: Vec::new(),
+            rejection: None,
             pending: None,
             failed: false,
         })
@@ -322,6 +332,7 @@ impl SkillPublicationSource {
                     executing_volume: self.volume,
                     member: self.member.take(),
                     changes: std::mem::take(&mut self.changes),
+                    rejection: self.rejection.take(),
                     _custody: None,
                 });
                 return Ok(());
@@ -365,6 +376,9 @@ impl SkillPublicationSource {
         }
         let mut generation = None;
         for entry in changes.entries {
+            if self.rejection.is_some() {
+                break;
+            }
             let facts = PublicationEntry::from_parts(
                 &entry.key,
                 &entry.operation,
@@ -390,10 +404,24 @@ impl SkillPublicationSource {
                     let metadata = gated(
                         &mut self.terminal,
                         session,
-                        root.skill_metadata_at(reader, &path, &generation, "SKILL.md", limits),
+                        root.skill_metadata_parsed_at(
+                            reader,
+                            &path,
+                            &generation,
+                            "SKILL.md",
+                            limits,
+                        ),
                     )
                     .await??
                     .ok_or(StreamError::InvalidArgument)?;
+                    let metadata = match metadata {
+                        Ok(metadata) => metadata,
+                        Err(error) => {
+                            self.rejection = Some(error);
+                            self.changes = Vec::new();
+                            break;
+                        }
+                    };
                     SkillPublicationChange::Skill(metadata)
                 } else if facts.before_present {
                     let source = PinnedContextPath {

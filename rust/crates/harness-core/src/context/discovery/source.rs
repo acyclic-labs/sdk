@@ -317,6 +317,17 @@ async fn read_skill_metadata<S: SkillReader>(
     revision: &S::Revision,
     limits: ContextDiscoveryLimits,
 ) -> Result<SkillMetadata> {
+    read_skill_metadata_parsed(source, path, revision, limits).await?
+}
+
+// Preserve the distinction between a failed authorized read and an invalid
+// header. Only the latter can be checkpointed as a rejected replacement.
+async fn read_skill_metadata_parsed<S: SkillReader>(
+    source: &mut S,
+    path: &str,
+    revision: &S::Revision,
+    limits: ContextDiscoveryLimits,
+) -> Result<Result<SkillMetadata>> {
     limits.validate()?;
     let (prefix, pinned) = source
         .skill_prefix(path, revision, limits.header_bytes)
@@ -324,7 +335,7 @@ async fn read_skill_metadata<S: SkillReader>(
     if prefix.len() > limits.header_bytes as usize {
         return Err(Error::Storage("prefix reader exceeded bound".into()));
     }
-    parse_skill_metadata(&prefix, pinned)
+    Ok(parse_skill_metadata(&prefix, pinned))
 }
 
 impl ContextRoot {
@@ -354,6 +365,19 @@ impl ContextRoot {
         name: &str,
         limits: ContextDiscoveryLimits,
     ) -> Result<Option<SkillMetadata>> {
+        self.skill_metadata_parsed_at(reader, path, generation, name, limits)
+            .await?
+            .transpose()
+    }
+
+    pub(super) async fn skill_metadata_parsed_at(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        path: &str,
+        generation: &GenerationRef,
+        name: &str,
+        limits: ContextDiscoveryLimits,
+    ) -> Result<Option<Result<SkillMetadata>>> {
         self.validate(&mut None)?;
         validate_content_path(name, &mut None)?;
         if name.contains('/') {
@@ -362,7 +386,7 @@ impl ContextRoot {
         if !self.is_skill_path(path, name) {
             return Ok(None);
         }
-        let metadata = read_skill_metadata(
+        let metadata = read_skill_metadata_parsed(
             &mut VolumeDiscovery { reader, root: self },
             path,
             generation,

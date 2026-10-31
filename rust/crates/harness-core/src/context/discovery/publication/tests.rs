@@ -202,23 +202,6 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         panic!("one original skill expected")
     };
     assert_eq!(metadata.description, "Original header");
-    assert!(
-        matches!(
-            metadata
-                .source
-                .root
-                .skill_metadata_at(
-                    denied_reader.as_ref(),
-                    &metadata.source.path,
-                    &metadata.source.generation,
-                    "SKILL.md",
-                    ContextDiscoveryLimits::default(),
-                )
-                .await,
-            Err(Error::Unauthorized(_))
-        ),
-        "an unrelated directory grant substituted for the original read boundary"
-    );
     assert_eq!(
         hex::encode(metadata.source.generation.as_resource().key()),
         original.version()
@@ -240,6 +223,46 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     workspace
         .write_text("/skills/check/SKILL.md", "malformed replacement")
         .await?;
+    let denied = host
+        .change_provider(streams.clone())?
+        .follow(ResourceFollowRequest {
+            resource: resource.clone(),
+            from: ready.next,
+            preceding: ready.preceding.map(acyclic_stream::CommitId::from_bytes),
+            filter: Default::default(),
+            authorization: acyclic_stream::session::testing::resource_authorization(
+                &credential,
+                &resource,
+            )?,
+        })?;
+    let mut denied = SkillPublicationSource::new(
+        denied,
+        vec![ContextRoot {
+            volume: volume.clone(),
+            directory: "skills".into(),
+        }],
+        workspace.id().volume_id(),
+        workspace.volume_config(),
+        ready,
+    )?;
+    assert!(
+        matches!(
+            denied
+                .prepare(
+                    denied_reader.as_ref(),
+                    ContextDiscoveryLimits::default(),
+                    &session
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ),
+        "an unrelated directory grant substituted for the original read boundary"
+    );
+    assert_eq!(denied.accepted(), ready);
+    assert!(
+        denied.pending().is_err(),
+        "authorization failure became a skippable header rejection"
+    );
     source
         .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
         .await?;
@@ -266,16 +289,40 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let [SkillPublicationChange::Skill(retained)] = admitted.changes() else {
         panic!("admission lost its original metadata owner")
     };
-    assert!(
-        source
-            .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
-            .await
-            .is_err()
-    );
+    source
+        .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
+        .await?;
     assert_eq!(source.accepted(), ready);
-    assert!(source.pending().is_err());
+    let rejected = source
+        .pending()?
+        .ok_or("invalid member lost its checkpoint")?;
+    assert!(matches!(rejected.rejection(), Some(Error::Invalid(_))));
+    assert!(
+        rejected.changes().is_empty(),
+        "partial member became visible"
+    );
+    let rejected_cursor = rejected.cursor();
     let (_, body) = retained.source.read(reader.as_ref(), 32_768).await?;
     assert!(std::str::from_utf8(&body)?.contains("original body"));
+    source.confirm_publication(rejected_cursor)?;
+    workspace
+        .write_text(
+            "/skills/check/SKILL.md",
+            "---\nname: check\ndescription: Repaired header\n---\nrepaired body\n",
+        )
+        .await?;
+    source
+        .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
+        .await?;
+    let repaired = source
+        .pending()?
+        .ok_or("repair was stranded behind rejected metadata")?;
+    assert!(repaired.rejection().is_none());
+    assert_eq!(repaired.from(), rejected_cursor);
+    let [SkillPublicationChange::Skill(metadata)] = repaired.changes() else {
+        panic!("repair did not produce its original metadata")
+    };
+    assert_eq!(metadata.description, "Repaired header");
 
     // A dropped original wait producer must complete even when data is quiet.
     // The live-producer negative first proves that the wait does not fabricate
