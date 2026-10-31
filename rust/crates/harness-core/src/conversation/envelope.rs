@@ -37,13 +37,14 @@ impl crate::heap_layout::HeapLayout for Version {
 /// This is provenance, not a capability or a publication-completion witness.
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(try_from = "PositionFields")]
+#[heap_layout(as = PositionFields)]
 pub struct SourcePosition {
     stream: String,
     exclusive: u64,
     commit: [u8; 32],
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct PositionFields {
     stream: String,
