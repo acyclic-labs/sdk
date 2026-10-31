@@ -53,7 +53,8 @@ export async function qualification(processes, input, fixture, capture) {
   if (input.format === "installed-host") {
     const { installedHost } = await import("../../plugin/tests/hosts/native-model.mjs");
     await installedHost({ host: input.host, processes, fixture, capture,
-      tools: input.tools, prompt: input.prompt, answer: input.answer });
+      tools: input.tools, nativePermissions: input.native_permissions,
+      prompt: input.prompt, answer: input.answer });
     return;
   }
   const binary = fixture.env[input.binary_env];

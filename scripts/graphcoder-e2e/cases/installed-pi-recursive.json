@@ -10,7 +10,9 @@
       "host": "pi",
       "tools": [
         "spawn",
-        "wait"
+        "wait",
+        "resume",
+        "archive"
       ],
       "prompt": "NATIVE_PLUGIN_MODEL",
       "answer": "NATIVE_PLUGIN_MODEL_DONE"
@@ -24,7 +26,22 @@
         },
         "tools": [
           {
-            "id": "native_spawn",
+            "id": "native_parent",
+            "name": "bash",
+            "arguments": {
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' parent '{{workspace}}'"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
+          "tool_result": "NATIVE_EFFECT_PARENT"
+        },
+        "tools": [
+          {
+            "id": "native_spawn_1",
             "name": "spawn",
             "arguments": {
               "reference": "native-child",
@@ -35,11 +52,12 @@
       },
       {
         "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
           "tool_result": "inbox"
         },
         "tools": [
           {
-            "id": "native_wait",
+            "id": "native_wait_2",
             "name": "wait",
             "arguments": {
               "reference": "native-child"
@@ -49,7 +67,84 @@
       },
       {
         "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
           "tool_result": "NATIVE_PLUGIN_CHILD_DONE"
+        },
+        "tools": [
+          {
+            "id": "native_merge",
+            "name": "bash",
+            "arguments": {
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' merge '{{workspace}}'"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
+          "tool_result": "NATIVE_EFFECT_MERGE"
+        },
+        "tools": [
+          {
+            "id": "native_resume_4",
+            "name": "resume",
+            "arguments": {
+              "reference": "native-child",
+              "prompt": "NATIVE_PLUGIN_RESUMED"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
+          "tool_result": "inbox"
+        },
+        "tools": [
+          {
+            "id": "native_wait_5",
+            "name": "wait",
+            "arguments": {
+              "reference": "native-child"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
+          "tool_result": "NATIVE_PLUGIN_CHILD_RESUMED"
+        },
+        "tools": [
+          {
+            "id": "native_finish",
+            "name": "bash",
+            "arguments": {
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' finish '{{workspace}}'"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
+          "tool_result": "NATIVE_EFFECT_FINISH"
+        },
+        "tools": [
+          {
+            "id": "native_archive_7",
+            "name": "archive",
+            "arguments": {
+              "reference": "native-child"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
+          "tool_result": "archive"
         },
         "text": [
           "NATIVE_PLUGIN_MODEL_DONE"
@@ -59,18 +154,64 @@
         "when": {
           "user": "NATIVE_PLUGIN_CHILD"
         },
+        "tools": [
+          {
+            "id": "native_child",
+            "name": "bash",
+            "arguments": {
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' child '{{workspace}}'"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_CHILD",
+          "tool_result": "NATIVE_EFFECT_CHILD"
+        },
         "text": [
           "NATIVE_PLUGIN_CHILD_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_RESUMED"
+        },
+        "tools": [
+          {
+            "id": "native_resumed",
+            "name": "bash",
+            "arguments": {
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' resumed '{{workspace}}'"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_RESUMED",
+          "tool_result": "NATIVE_EFFECT_RESUMED"
+        },
+        "text": [
+          "NATIVE_PLUGIN_CHILD_RESUMED"
         ]
       }
     ]
   },
   "id": "installed-pi-recursive",
   "assert": {
-    "requests": 4,
+    "requests": 13,
     "tool_contains": [
       "NATIVE_PLUGIN_CHILD_DONE",
-      "Succeeded"
-    ]
+      "NATIVE_PLUGIN_CHILD_RESUMED",
+      "Succeeded",
+      "NATIVE_EFFECT_MERGE",
+      "NATIVE_EFFECT_FINISH"
+    ],
+    "files": {
+      "parent.txt": "PARENT",
+      "child.txt": "CHILD",
+      "resumed.txt": "RESUMED"
+    }
   }
 }
