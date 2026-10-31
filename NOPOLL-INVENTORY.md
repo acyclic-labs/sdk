@@ -3840,9 +3840,9 @@ agent implementation remains separate from this expanded test audit.
 | `rust/crates/filesystem/src/source_watch/tests.rs:632` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/source_watch/tests.rs:663` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:437` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Actioned |
-| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:494` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
-| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:594` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
-| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:604` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:494` | Late-stop readiness recheck | Observe the existing unsubscribe phase hook through the same stop-result channel. Early refusal or producer loss settles that channel; keep the original held accounting leaf and actual native retirement. Delete the five-second spin deadline. | Actioned |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:594` | Original callback-entry or loss event | One original channel reports callback entry or delivery loss; early loss returns an explicit test error. A stack release guard unblocks the callback before watch cleanup on error or unwind. | Actioned |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:604` | Original callback-loss event | The same channel reports original delivery loss after controlled callback unwind; no timer surrounds the receive. | Actioned |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:744` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Actioned |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:1054` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:1057` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
@@ -4102,7 +4102,7 @@ The extended direct census below includes conditional-variable helper spellings 
 
 | Site | Kind | Producer / terminal disposition | Status |
 | --- | --- | --- | --- |
-| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:616` | Timed conditional-variable readiness | Await the original stopped-reader/continuity terminal under the same producer lock; retain the real inotify failure and watch-stop control. | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:616` | Original service cursor-release join | The original service owns this cursor through its retirement attempt. Acquire it once after loss and check physical completion before controller cleanup; failure settles the assertion instead of waiting on a completed flag. | Actioned |
 
 ## Temporal checker helper coverage
 
@@ -4141,3 +4141,27 @@ Coordinates below retain source revision `1b71afed46` for the removed wait sites
 | `rust/crates/filesystem/src/native_mount/shared/view_table.rs:474` | Timed no-completion assertion | Delete the duplicate timed assertion. Preserve original physical lease lifetime and retirement/unwind joins; the shared Loom no-drain negative still checks the production mechanism. | Actioned |
 
 Required work decreases by six timers, three channels, one observer thread and one path clone. Existing two scoped thread joins remain two joins, now used directly. No product operation, syscall, durability barrier, round trip, payload copy or allocation is added. Response processing and each join perform fixed work per delivered event; no scan or retry is introduced. Producer panic is reported by the original join, session loss by the original output, and the synchronous failed-start call returns its original error. The original session queued-revocation negative, real name-slot concurrency and shared-table Loom negative are retained. This does not establish whole-provider worst-case constant time.
+
+## Original inotify callback and retirement event
+
+Source coordinates: `72c0144de5`. The original service keeps the read cursor from callback delivery through `retire_in_service`; the failed nonblocking controller stop in this control does not acquire that cursor or take over retirement. Join that original cursor once after observing loss, then check its settled physical state. Do not wait for a later cleanup attempt to manufacture success.
+
+| Site | Kind | Original producer event | Status |
+| --- | --- | --- | --- |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:584` | Timed callback-entry receive | One original event channel reports either callback entry or delivery loss; early loss is a typed test error. | Actioned |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:594` | Original callback-entry or loss event | One original channel reports callback entry or delivery loss; early loss returns an explicit test error. A stack release guard unblocks the callback before watch cleanup on error or unwind. | Actioned |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:606` | Timed physical-retirement condition recheck | Acquire the original read-cursor mutex once; its unlock settles this service pass, including failed retirement. Check completion before calling controller cleanup. | Actioned |
+
+The callback-panic control removes three timers and one duplicate event channel. The same read-cursor mutex is the producer's completion join; no extra observer, task, thread, clock, syscall, payload copy, allocation or durability barrier is introduced. A stack release guard uses the original condition variable to unblock the held callback before watch cleanup on every error path. Entry and terminal loss share one channel, so loss before entry refuses immediately. Failed physical retirement is checked at the original service unlock, before any controller cleanup can conceal it. Restoring the missing original retirement call would fail that settled-state assertion; this source negative has not been executed. Original cancellation, held-cursor refusal, late cleanup, exact receipt, descriptor retirement and single-loss assertions remain. This control is source-only until its named execution is qualified.
+
+## Original inotify late-cancellation phase
+
+Source `72c0144de5`: the late-cancellation control at `inotify/tests.rs:481` through `:484` spins on `stopping` with a five-second deadline. Use the existing unsubscribe phase hook, reached after the original stop flag and credit check, to send Started through the existing completion channel. Early stop refusal sends Finished instead. Retain the original held accounting leaf and actual unsubscribe/retirement work; the phase hook is an observation, not invented physical completion. No new product event, channel, task or timer is needed.
+
+| Site | Kind | Original producer event | Status |
+| --- | --- | --- | --- |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:481` | Stop-readiness deadline | Delete the five-second deadline; the original unsubscribe phase and terminal result share the existing channel. | Actioned |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:482` | Stop-readiness spin loop | Receive one original Started or Finished event. A refusal before unsubscribe returns Finished, and producer unwind disconnects instead of leaving a flag wait. | Actioned |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:484` | Stop-readiness yield recheck | No yield or recheck remains. The existing unsubscribe phase hook follows the stop flag/credit admission and precedes the actual metered native retirement. | Actioned |
+
+The late-cancellation control retains one original completion channel, one stopper thread, the same accounting hold and native stop, and one completion join. Added channels, threads, tasks, timers, syscalls, payload copies, allocations or barriers: zero. A single existing test phase callback sends Started before Finished; the controller releases the accounting leaf before propagating any early failure. The original final Cancelled result is still asserted only after actual physical retirement. This is a deterministic phase observation, not a physical-completion substitute. Formatting/source checks only; execution is not yet qualified.
