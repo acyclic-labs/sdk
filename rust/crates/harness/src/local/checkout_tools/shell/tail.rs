@@ -8,6 +8,7 @@ use std::{
 
 pub(super) struct Tail {
     bytes: VecDeque<u8>,
+    channels: VecDeque<(bool, usize)>,
     total: u64,
     maximum: usize,
     path: PathBuf,
@@ -18,6 +19,7 @@ impl Tail {
     pub(super) fn new(path: PathBuf, maximum: usize) -> Self {
         Self {
             bytes: VecDeque::new(),
+            channels: VecDeque::new(),
             total: 0,
             maximum,
             path,
@@ -25,7 +27,7 @@ impl Tail {
         }
     }
 
-    pub(super) fn observe(&mut self, bytes: &[u8]) -> io::Result<()> {
+    pub(super) fn observe(&mut self, bytes: &[u8], stderr: bool) -> io::Result<()> {
         self.total = self.total.checked_add(bytes.len() as u64).ok_or_else(|| {
             io::Error::other(
                 "shell output count overflow; recovery: reconcile the original command",
@@ -50,25 +52,60 @@ impl Tail {
             .saturating_add(keep)
             .saturating_sub(self.maximum);
         self.bytes.drain(..remove);
+        let mut evicted = remove;
+        while evicted > 0 {
+            let Some((_, length)) = self.channels.front_mut() else {
+                break;
+            };
+            let cut = evicted.min(*length);
+            *length -= cut;
+            evicted -= cut;
+            if *length == 0 {
+                self.channels.pop_front();
+            }
+        }
         self.bytes.extend(&bytes[bytes.len() - keep..]);
+        if keep > 0 {
+            if let Some((_, length)) = self
+                .channels
+                .back_mut()
+                .filter(|(channel, _)| *channel == stderr)
+            {
+                *length += keep;
+            } else {
+                self.channels.push_back((stderr, keep));
+            }
+        }
         Ok(())
     }
 
-    pub(super) fn finish(mut self) -> (String, u64, bool) {
-        // A byte boundary may cut the first scalar. Omit that partial scalar
-        // rather than presenting an invented replacement as process output.
+    pub(super) fn finish(mut self) -> (String, String, u64, bool) {
         let raw = self.bytes.make_contiguous();
-        let skip = if self.total > raw.len() as u64 {
-            raw.iter().take_while(|byte| **byte & 0xc0 == 0x80).count()
-        } else {
-            0
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut offset = 0;
+        for (error, length) in self.channels {
+            let output = if error { &mut stderr } else { &mut stdout };
+            output.extend_from_slice(&raw[offset..offset + length]);
+            offset += length;
+        }
+        let mut omitted = self.total - raw.len() as u64;
+        // A retained suffix can start inside a scalar on either channel.
+        // Omit the partial scalar rather than displaying an invented byte.
+        let mut text = |bytes: &[u8]| {
+            let skip = if self.total > raw.len() as u64 {
+                bytes
+                    .iter()
+                    .take_while(|byte| **byte & 0xc0 == 0x80)
+                    .count()
+            } else {
+                0
+            };
+            omitted += skip as u64;
+            String::from_utf8_lossy(&bytes[skip..]).into_owned()
         };
-        let text = String::from_utf8_lossy(&raw[skip..]).into_owned();
-        (
-            text,
-            self.total - (raw.len() - skip) as u64,
-            self.spill.is_some(),
-        )
+        let (stdout, stderr) = (text(&stdout), text(&stderr));
+        (stdout, stderr, omitted, self.spill.is_some())
     }
 }
 
@@ -85,13 +122,18 @@ mod tests {
             let directory = tempfile::tempdir()?;
             let path = directory.path().join("output");
             let mut tail = Tail::new(path.clone(), maximum);
-            for bytes in bytes.chunks(chunk) {
-                tail.observe(bytes)?;
+            let mut channels = Vec::new();
+            for (index, bytes) in bytes.chunks(chunk).enumerate() {
+                let stderr = index % 2 == 1;
+                channels.extend(std::iter::repeat_n(stderr, bytes.len()));
+                tail.observe(bytes, stderr)?;
                 prop_assert!(tail.bytes.len() <= maximum);
             }
             let raw = bytes.len().saturating_sub(maximum);
             prop_assert!(tail.bytes.iter().copied().eq(bytes[raw..].iter().copied()));
-            let (_, _, spilled) = tail.finish();
+            let retained_channels = tail.channels.iter().flat_map(|(channel, length)| std::iter::repeat_n(*channel, *length)).collect::<Vec<_>>();
+            prop_assert_eq!(retained_channels.as_slice(), &channels[raw..]);
+            let (_, _, _, spilled) = tail.finish();
             prop_assert_eq!(spilled, bytes.len() > maximum);
             if spilled {
                 prop_assert_eq!(std::fs::read(path)?, bytes);

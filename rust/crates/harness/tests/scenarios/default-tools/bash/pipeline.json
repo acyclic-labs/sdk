@@ -1,6 +1,6 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"shell",
   "arguments":{"command":"printf changed | cat > plans/a.md; printf pipe"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"results":{"call":{"content":{"value":{"stdout":"pipe"}}}}},
+ "expect":{"results":{"call":{"content":{"kind":"parts","parts":[{"kind":"text","text":"Exit code: 0\npipe"}]}}}},
  "platforms":{
   "windows": {
     "turns": [

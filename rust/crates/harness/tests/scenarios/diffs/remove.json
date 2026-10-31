@@ -29,16 +29,7 @@
   "results": {
    "change": {
     "name": "shell",
-    "content": {
-     "kind": "json",
-     "value": {
-      "success": true,
-      "exit_code": 0,
-      "stdout": "",
-      "stderr": "",
-      "stop": null
-     }
-    }
+    "content": {"kind":"parts","parts":[{"kind":"text","text":"Exit code: 0\n"}]}
    }
   },
   "diffs": {

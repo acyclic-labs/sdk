@@ -75,9 +75,14 @@ impl CheckoutTools {
                 ),
                  chunk| {
                     files.observe(chunk)?;
-                    let (acyclic_native_runtime::ProcessOutput::Stdout(bytes)
-                    | acyclic_native_runtime::ProcessOutput::Stderr(bytes)) = chunk;
-                    retained.observe(bytes)
+                    match chunk {
+                        acyclic_native_runtime::ProcessOutput::Stdout(bytes) => {
+                            retained.observe(bytes, false)
+                        }
+                        acyclic_native_runtime::ProcessOutput::Stderr(bytes) => {
+                            retained.observe(bytes, true)
+                        }
+                    }
                 },
                 move || {
                     output_health.check()?;
@@ -97,14 +102,14 @@ impl CheckoutTools {
                 native_process::capture::OutputRetention::Observe,
             )
             .await?;
-        let (text, omitted, spilled) = retained.finish();
+        let (stdout, stderr, omitted, spilled) = retained.finish();
         let result = output
             .ok_or_else(|| Error::Conflict("process capture was interrupted".into()))
             .map(|output| ToolResult {
                 value: serde_json::json!({
                     "success": output.success, "exit_code": output.exit_code,
-                    "stdout": text,
-                    "stderr": "",
+                    "stdout": stdout,
+                    "stderr": stderr,
                     "omitted_bytes": omitted,
                     "spill": spilled.then(|| format!(".volumes/scratch/{spill_name}")),
                     "stop": output.stop,
