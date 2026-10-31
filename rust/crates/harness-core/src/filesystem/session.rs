@@ -31,7 +31,7 @@ pub struct SessionWork {
 }
 
 /// A selected agent's retained preparation on the original session ledger.
-/// The slot survives turn retirement, but cannot outlive session cancellation.
+/// The slot survives turn retirement; its work refuses after session cancellation.
 pub struct AgentSession {
     io: PreparationIo,
     _allocation: NativeAllocation,
@@ -59,8 +59,8 @@ impl SessionWork {
         ))
     }
 
-    /// Selects the original slot by the complete actor identity. Fixed-width
-    /// indexing examines at most 128 branches, independently of other agents.
+    /// Selects the original slot by the complete actor identity. Each index
+    /// traversal examines at most 128 branches, independently of other agents.
     /// A repeat shares custody; it does not clone a registry or a turn budget.
     pub fn agent(&self, agent: &AgentId) -> Result<Arc<AgentSession>> {
         let work = self
