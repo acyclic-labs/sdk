@@ -179,7 +179,10 @@ struct Shared {
     stopped: AtomicBool,
     #[cfg(test)]
     counts: Counts,
-    _lock: std::fs::File,
+    /// The root's exclusive lock. It unlocks before its file closes, so a
+    /// child forked meanwhile, which shares the open file description until
+    /// it execs, never keeps the root owned after this store drops.
+    lock: acyclic_native_runtime::FileLock,
     _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
 }
 
@@ -462,6 +465,13 @@ impl LocalMedium {
         })
     }
 
+    /// Another copy of the root lock's open file description, as a child
+    /// forked during a spawn holds one until it execs.
+    #[cfg(test)]
+    pub(crate) fn lock_description(&self) -> std::io::Result<std::fs::File> {
+        self.shared.lock.try_clone()
+    }
+
     /// The files created and flushes issued since open.
     #[cfg(test)]
     pub(crate) fn counts(&self) -> (usize, usize) {
@@ -503,11 +513,16 @@ fn open_root(
         .truncate(false)
         .write(true)
         .open(root.join("LOCK"))?;
-    match lock.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => return Err(LocalOpenError::AlreadyOwned),
-        Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
-    }
+    let lock = match acyclic_native_runtime::FileLock::try_acquire(
+        lock,
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    ) {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            return Err(LocalOpenError::AlreadyOwned);
+        }
+        Err(error) => return Err(error.into()),
+    };
     // A compaction that never renamed its log left only garbage.
     match std::fs::remove_file(root.join(NEXT)) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
@@ -569,7 +584,7 @@ fn open_root(
         stopped: AtomicBool::new(false),
         #[cfg(test)]
         counts: Counts::default(),
-        _lock: lock,
+        lock,
         _anchor: anchor,
     })
 }
