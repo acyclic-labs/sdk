@@ -173,9 +173,7 @@ pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObser
 }
 
 /// Validate an append outcome through the same decoder as the SDK client.
-pub fn append_outcome_from_wire(
-    value: wire::AppendResponse,
-) -> Result<AppendOutcome, StreamError> {
+pub fn append_outcome_from_wire(value: wire::AppendResponse) -> Result<AppendOutcome, StreamError> {
     match value.outcome.ok_or(StreamError::Unavailable)? {
         wire::append_response::Outcome::Committed(receipt) => {
             Ok(AppendOutcome::Committed(append_receipt(&receipt)?))
@@ -187,9 +185,7 @@ pub fn append_outcome_from_wire(
 }
 
 /// Validate a conditional commit outcome, including every conflicting cut.
-pub fn commit_outcome_from_wire(
-    value: wire::CommitResponse,
-) -> Result<CommitOutcome, StreamError> {
+pub fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOutcome, StreamError> {
     match value.outcome.ok_or(StreamError::Unavailable)? {
         wire::commit_response::Outcome::Committed(receipt) => {
             Ok(CommitOutcome::Committed(receipt_from_wire(receipt)?))
