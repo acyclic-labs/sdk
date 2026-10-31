@@ -78,3 +78,15 @@ changing either identity refuses the binding. An unsupported version cannot
 require a payload or reach hashing. These harnesses do not prove BLAKE3; the
 separate production-codec fuzz oracle checks checksum corruption. These proof
 runs remain required before claiming their results.
+
+The multipart record header has one in-crate bounded harness:
+
+```sh
+cargo kani -p acyclic-fs --no-default-features --features s3-http --harness multipart_header_refuses_versions_before_record_fields
+```
+
+It calls the production cursor on every zero-, one- and two-byte input. Missing,
+old and unknown versions refuse without consuming a record field; a current
+truncated header is malformed, and a full current header preserves the tag.
+The synchronous header performs fixed scalar work with no allocation, IO or
+wait. This harness is unexecuted and does not prove multipart replay or storage.
