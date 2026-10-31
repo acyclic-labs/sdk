@@ -17,6 +17,56 @@ pub enum FileChange<'a> {
     },
 }
 
+impl<'a> FileChange<'a> {
+    /// The original source path, or the absent destination for an addition.
+    pub const fn path(self) -> &'a str {
+        match self {
+            Self::Add { path, .. } | Self::Delete { path } | Self::Update { path, .. } => path,
+        }
+    }
+
+    /// A move is published as create plus conditional delete in the same cut.
+    pub const fn move_to(self) -> Option<&'a str> {
+        match self {
+            Self::Update { move_to, .. } => move_to,
+            _ => None,
+        }
+    }
+
+    /// Materializes the selected text operation before publication. The caller
+    /// retains the original source generation and its bytes; this planner does
+    /// no I/O and cannot publish a partially validated document.
+    pub(crate) fn materialize(
+        self,
+        source: &str,
+        maximum_bytes: u64,
+        meter: &mut NativeCustody,
+    ) -> Result<Option<String>> {
+        match self {
+            Self::Delete { .. } => Ok(None),
+            Self::Add { body, .. } => {
+                let mut output = String::new();
+                for line in body.split_inclusive('\n') {
+                    let text = line
+                        .strip_prefix('+')
+                        .ok_or_else(|| invalid(meter, "added file lines must begin with +"))?;
+                    super::append(&mut output, text, maximum_bytes, meter)?;
+                }
+                Ok(Some(output))
+            }
+            Self::Update { diff: "", .. } => {
+                // The pinned grammar admits a move without update hunks.
+                let mut output = String::new();
+                super::append(&mut output, source, maximum_bytes, meter)?;
+                Ok(Some(output))
+            }
+            Self::Update { diff, .. } => {
+                super::apply_update_admitted(source, diff, maximum_bytes, meter).map(Some)
+            }
+        }
+    }
+}
+
 fn header(line: &str) -> bool {
     line.starts_with("*** Add File: ")
         || line.starts_with("*** Delete File: ")
@@ -159,6 +209,9 @@ mod tests {
                 maximum_bytes: 4096, maximum_work: 4096, maximum_hunks: 4,
             }, &mut meter).unwrap();
             prop_assert_eq!(actual, format!("{new}\n"));
+            prop_assert_eq!(changes[0].materialize("", 4096, &mut meter)?, Some(format!("{new}\n")));
+            prop_assert_eq!(changes[1].materialize(&format!("{old}\n"), 4096, &mut meter)?, Some(format!("{new}\n")));
+            prop_assert_eq!(changes[2].materialize("", 4096, &mut meter)?, None);
             // Omit the final delimiter: no prefix of a multi-file document may
             // be admitted as a complete batch.
             prop_assert!(parse_document(patch.strip_suffix("*** End Patch\n").unwrap(), &mut meter).is_err());
@@ -192,5 +245,11 @@ mod tests {
                 diff: ""
             }
         ));
+        let change = parse_document(patch, &mut None).unwrap()[0];
+        assert_eq!(
+            change.materialize("unchanged\n", 4096, &mut None).unwrap(),
+            Some("unchanged\n".into())
+        );
+        assert!(change.materialize("unchanged\n", 1, &mut None).is_err());
     }
 }
