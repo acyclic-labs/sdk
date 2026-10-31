@@ -1206,7 +1206,7 @@ async fn prepared_state_flush_composes_without_consuming_or_submitting() -> Test
             provider
                 .append(acyclic_stream::AppendRequest {
                     path: companion.clone(),
-                    records: vec![acyclic_stream::OwnedBytes::from_static(b"concurrent")],
+                    records: vec![acyclic_stream::OwnedBytes::from_static(b"concurrent").into()],
                     if_tail: None,
                     idempotency_key: key("companion-race")?,
                 })

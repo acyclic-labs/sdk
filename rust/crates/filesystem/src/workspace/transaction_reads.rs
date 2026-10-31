@@ -1,5 +1,4 @@
 use super::*;
-use crate::facade::FsWork as _;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
     /// Reads a staged file in this transaction's original selected generation.
