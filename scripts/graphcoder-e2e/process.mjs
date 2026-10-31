@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync } from "node:fs";
+import { close, closeSync, createWriteStream, mkdtempSync, open, openSync, readFileSync, readSync, write, writev } from "node:fs";
 import { tmpdir } from "node:os";
 import { Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
@@ -21,6 +21,10 @@ export async function schedule(items, platform, execute) {
 //
 // Output is not retained in memory: each stream goes to a transcript file in
 // the scope's transcript directory, and a settled result reads it on demand.
+// onProgress is a synchronous metadata sink. Its first thrown failure is
+// retained until closed, after the original transcript and physical joins.
+// Node exit describes the launched process, which may itself be a host;
+// the selected root's native completion receipt remains authoritative.
 export class Processes {
   children = new Map();
   stopping = false;
@@ -28,8 +32,12 @@ export class Processes {
   #transcripts;
   #closing;
   #onReport;
+  #onProgress;
+  #progressFailure;
   #admissions = new Set();
-  constructor({ transcripts, onReport } = {}) { this.#transcripts = transcripts; this.#onReport = onReport; }
+  constructor({ transcripts, onReport, onProgress } = {}) {
+    this.#transcripts = transcripts; this.#onReport = onReport; this.#onProgress = onProgress;
+  }
   get transcripts() { return this.#transcripts ??= mkdtempSync(join(tmpdir(), "e2e-transcripts-")); }
   start(program, args, options = {}) {
     if (process.platform === "win32" && options.scopeReport) {
@@ -53,7 +61,11 @@ export class Processes {
   }
   #start(program, args, options = {}, selectedReport, endpoint) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
-    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReport = false, ...spawnOptions } = options;
+    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReport = false, scopeOperation, ...spawnOptions } = options;
+    if (scopeOperation !== undefined && (typeof scopeOperation !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(scopeOperation))) {
+      throw new Error("step=process-progress-operation; recovery=pass the original opaque operation UUID as scopeOperation");
+    }
     const report = selectedReport ?? (scopeReport ? new ProcessReport() : undefined);
     const env = { ...(spawnOptions.env ?? process.env) };
     for (const key of ["ACYCLIC_REPORT_FD", "ACYCLIC_REPORT_PIPE", "ACYCLIC_REPORT_OWNER_PID",
@@ -61,29 +73,48 @@ export class Processes {
     if (report) Object.assign(env, endpoint?.environment ?? { ACYCLIC_REPORT_FD: "3" }, {
       ACYCLIC_REPORT_GENERATION: report.generation, ACYCLIC_REPORT_REQUEST_ID: report.requestId,
     });
+    const index = this.started, origin = this.#onProgress ? performance.now() : undefined;
+    let progressFailure;
+    const observe = this.#onProgress ? (phase, detail) => {
+      const event = { schema: "acyclic.process-progress.v1", ordinal: index, operation: scopeOperation ?? null,
+        report_generation: report?.generation ?? null, report_request_id: report?.requestId ?? null,
+        phase, elapsed_seconds: (performance.now() - origin) / 1000, ...detail };
+      try { this.#onProgress(event); }
+      catch (cause) {
+        progressFailure ??= new ProcessObservationFailed(event, cause);
+        this.#progressFailure ??= progressFailure;
+      }
+    } : undefined;
     const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions,
       env, ...(report && !endpoint ? { stdio: ["pipe", "pipe", "pipe", "pipe"] } : {}),
     });
     report?.attach(child, endpoint?.connected ?? child.stdio[3]);
+    const input = observe ? observedInput(child.stdin, observe) : child.stdin;
+    if (observe) {
+      child.once("spawn", () => observe("node-spawn"));
+      child.stdin.once("finish", () => observe("stdin-finish"));
+      child.stdin.once("close", () => observe("stdin-close"));
+    }
     child.stdin.on("error", error => { if (error.code !== "EPIPE") child.emit("error", error); });
     const kill = () => {
-      if (scopeTreeControl) { child.stdin.end(); return; }
+      if (scopeTreeControl) { input.end(); return; }
       child.kill(scopeKillSignal);
     };
-    const index = this.started++;
+    this.started++;
     const stdoutPath = join(this.transcripts, `${index}.stdout`), stderrPath = join(this.transcripts, `${index}.stderr`);
-    const written = Promise.all([transcript(child.stdout, stdoutPath), transcript(child.stderr, stderrPath)]);
+    const written = Promise.all([transcript(child.stdout, stdoutPath, observe, "stdout"), transcript(child.stderr, stderrPath, observe, "stderr")]);
     // Exit is the owner-death barrier. Close may wait for inherited pipes in
     // surviving descendants, which recovery must be allowed to fence first.
     const exited = new Promise((resolve, reject) => {
       child.once("error", reject);
-      child.once("exit", (code, signal) => resolve({ code, signal }));
+      child.once("exit", (code, signal) => { observe?.("node-exit", { code, signal }); resolve({ code, signal }); });
     });
     exited.catch(() => {});
     // Reaped once the child and its pipes are gone, however `closed` settles.
     const reaped = new Promise((resolve, reject) => {
       child.once("close", () => {
-        const finish = () => { this.children.delete(child); resolve(); };
+        observe?.("node-close");
+        const finish = () => { this.children.delete(child); observe?.("reaped"); resolve(); };
         if (endpoint) report.closeTransport(endpoint.close).then(finish, error => {
           this.children.delete(child); reject(error);
         });
@@ -102,6 +133,8 @@ export class Processes {
       child.on("close", (code, signal) => {
         // Settle only after both transcripts are complete on disk.
         Promise.all([written, reaped]).then(() => {
+          observe?.("closed");
+          if (progressFailure) { reject(progressFailure); return; }
           const result = settled(code, signal, stdoutPath, stderrPath);
           if (report?.termination) result.termination = report.termination;
           resolve(result);
@@ -112,13 +145,13 @@ export class Processes {
     closed.catch(() => {});
     this.children.set(child, { kill, reaped, report,
       cancel: process.platform === "win32" ? undefined : () => child.kill("SIGTERM") });
-    return { child, exited, closed, reportReady: report?.ready,
+    return { child, input, exited, closed, reportReady: report?.ready,
       requestReport: report ? deadline => report.request(deadline) : undefined,
       killExecutable: () => child.kill("SIGKILL") };
   }
   async run(program, args, options, input = "") {
     const process = options?.scopeReport ? await this.startReported(program, args, options) : this.start(program, args, options);
-    process.child.stdin.end(input);
+    process.input.end(input);
     return process.closed;
   }
   // Windows Job custody kills the whole tree with its host; POSIX custody
@@ -168,13 +201,13 @@ export class Processes {
     await Promise.allSettled(this.#admissions);
     const children = [...this.children.values()];
     const reporting = children.filter(child => child.report);
-    let observationError;
+    let observationError = this.#progressFailure;
     const observed = (report, outcome) => {
       try {
         this.#onReport?.({ request_id: report.requestId, generation: report.generation,
           outcome, acknowledged: report.termination?.report_acknowledged === true,
           cause: report.termination?.report_cause });
-      } catch (error) { observationError ??= error; }
+      } catch (error) { observationError ??= this.#progressFailure ?? error; }
     };
     try {
       if (reporting.length) {
@@ -199,7 +232,45 @@ export class Processes {
       for (const child of children) child.kill();
       await Promise.all(children.map(child => child.reaped));
     }
-    if (observationError) throw observationError;
+    if (observationError ?? this.#progressFailure) throw observationError ?? this.#progressFailure;
+  }
+}
+
+// Only this launch's original write/end calls are observed. A completed Node
+// write is pipe acceptance, not child consumption; finish/close are not proof
+// that a nested child received EOF. Raw child.stdin calls bypass this port.
+function observedInput(stream, observe) {
+  let first = true, ended = false;
+  const completed = callback => error => {
+    observe(error ? "stdin-write-failed" : "stdin-write-complete", error ? { error_code: error.code ?? null } : undefined);
+    callback?.(error);
+  };
+  return {
+    write(chunk, encoding, callback) {
+      if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+      const initial = first && chunk?.length > 0;
+      const result = stream.write(chunk, encoding, initial ? completed(callback) : callback);
+      if (initial) { first = false; observe("stdin-write-admitted"); }
+      return result;
+    },
+    end(chunk, encoding, callback) {
+      if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
+      else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+      const initial = first && chunk?.length > 0;
+      const result = stream.end(chunk, encoding, initial ? completed(callback) : callback);
+      if (initial) { first = false; observe("stdin-write-admitted"); }
+      if (!ended) { ended = true; observe("stdin-end-submitted"); }
+      return result;
+    },
+  };
+}
+
+export class ProcessObservationFailed extends Error {
+  constructor(event, cause) {
+    super(`process observation failed at ${event.phase}`, { cause });
+    this.name = "ProcessObservationFailed";
+    this.code = "PROCESS_OBSERVATION_FAILED";
+    this.ordinal = event.ordinal; this.operation = event.operation; this.phase = event.phase;
   }
 }
 
@@ -223,14 +294,31 @@ export function conptyArgs(binary, args) {
 // A stream's bytes go straight to its transcript file; nothing is decoded or
 // kept in memory. Resolves once the file holds every byte. On a file failure
 // the source keeps draining so the child is never blocked on a full pipe.
-function transcript(stream, path) {
-  const file = createWriteStream(path);
+function transcript(stream, path, observe, channel) {
+  let first = true;
+  const completed = observe ? callback => (error, count, buffers) => {
+    if (!error && count > 0 && first) { first = false; observe(`${channel}-first-write`); }
+    callback(error, count, buffers);
+  } : undefined;
+  // Observe the SAME file writer's first successful byte transfer. This is
+  // transcript write completion, not the OS pipe-read timestamp. Later writes
+  // use the original callback directly; no reader, payload copy or history.
+  const file = createWriteStream(path, observe ? { fs: {
+    open, close,
+    write(fd, buffer, offset, length, position, callback) {
+      return write(fd, buffer, offset, length, position, first ? completed(callback) : callback);
+    },
+    writev(fd, buffers, position, callback) {
+      return writev(fd, buffers, position, first ? completed(callback) : callback);
+    },
+  } } : undefined);
   stream.pipe(file);
+  if (observe) stream.once("end", () => observe(`${channel}-eof`));
   // A source destroyed without an end never ends its pipe: end the file so
   // its finish still arrives.
-  stream.once("close", () => { if (!stream.readableEnded) file.end(); });
+  stream.once("close", () => { observe?.(`${channel}-close`); if (!stream.readableEnded) file.end(); });
   return new Promise((resolve, reject) => {
-    file.once("finish", resolve);
+    file.once("finish", observe ? () => { observe(`${channel}-finish`); resolve(); } : resolve);
     file.once("error", error => { stream.unpipe(file); stream.resume(); reject(error); });
     stream.once("error", reject);
   });
