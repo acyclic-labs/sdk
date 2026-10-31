@@ -12,9 +12,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .map_err(crate::async_storage::object_error)?;
         let unswept = self.collection.unswept().await;
         let mut spill = self.spill_io.write().await;
-        let PublicationScope {
-            objects, proven_at, ..
-        } = scope;
+        let PublicationScope { objects, .. } = scope;
         let unswept = self
             .collection
             .admit_held(

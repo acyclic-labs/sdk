@@ -969,7 +969,13 @@ async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
                 store.relieve_window(&mut work).await
             } else {
                 store
-                    .flush(PublicationScope::Everything, &mut work)
+                    .flush(
+                        PublicationScope {
+                            objects: &[id],
+                            proven_at,
+                        },
+                        &mut work,
+                    )
                     .await
                     .map(drop)
             }
@@ -992,7 +998,7 @@ async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
             .admit_held(
                 pin_gate,
                 &store,
-                PublicationScope::Closure {
+                PublicationScope {
                     objects: &[id],
                     proven_at,
                 },
