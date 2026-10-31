@@ -1,5 +1,6 @@
 //! WebAssembly boundary for the Rust Actors client.
-#![cfg(target_arch = "wasm32")]
+// Keep the bridge type-checkable on the host so contract generators inventory
+// the same exported implementation without executing JavaScript operations.
 
 use acyclic_actors::{client, domain};
 use js_sys::{BigInt, Function, Reflect, Uint8Array};
