@@ -16,13 +16,12 @@ pub(super) async fn connect(
     server: &McpServer,
     workspace: &Path,
     limits: McpClientLimits,
-    secrets: &dyn acyclic_auth::secrets::Resolver,
-    scope: &str,
+    secrets: &dyn crate::secrets::SecretSource,
 ) -> Result<Connected> {
     let (connection, binding) = match &server.transport {
         #[cfg(feature = "mcp-stdio")]
         McpTransport::Stdio { env_vars, .. } => {
-            let credentials = credentials_for(env_vars.iter(), secrets, scope).await?;
+            let credentials = credentials_for(env_vars.iter(), secrets).await?;
             let child = command_for(
                 server,
                 workspace,
@@ -51,12 +50,8 @@ pub(super) async fn connect(
         } => {
             use super::super::http::{HttpMcpTransport, McpHttpProvider, NativeMcpHttpProvider};
             let environment = crate::native_environment::variable;
-            let credentials = credentials_for(
-                env_headers.values().chain(bearer_token_env_var),
-                secrets,
-                scope,
-            )
-            .await?;
+            let credentials =
+                credentials_for(env_headers.values().chain(bearer_token_env_var), secrets).await?;
             let headers = headers_for(
                 headers,
                 env_headers,
@@ -241,31 +236,20 @@ where
 pub(super) type Credentials = std::collections::BTreeMap<String, zeroize::Zeroizing<String>>;
 
 /// Resolves every credential variable of one server through the host's
-/// resolver, before any connection, so only the host ever holds them. Each
-/// name is the boundary: it becomes the canonical reference current in
-/// `scope`, which then resolves to exactly that version. A name the resolver
-/// does not hold is absent from the result.
+/// source before any connection. These are explicit native configuration names,
+/// not immutable published SecretRef identities.
 pub(super) async fn credentials_for<'a>(
     names: impl Iterator<Item = &'a String>,
-    secrets: &dyn acyclic_auth::secrets::Resolver,
-    scope: &str,
+    secrets: &dyn crate::secrets::SecretSource,
 ) -> Result<Credentials> {
-    use acyclic_auth::secrets::ResolveError;
-    let failed = |error: ResolveError| match error {
-        ResolveError::PermissionDenied => Error::Unauthorized(format!("MCP credential: {error}")),
-        _ => Error::Storage(format!("MCP credential: {error}")),
-    };
     let mut resolved = Credentials::new();
     for name in names {
         if resolved.contains_key(name) {
             continue;
         }
-        let reference = match secrets.current(scope, name).await {
-            Ok(reference) => reference,
-            Err(ResolveError::NotFound) => continue,
-            Err(error) => return Err(failed(error)),
+        let Some(value) = secrets.secret(name).await? else {
+            continue;
         };
-        let value = secrets.resolve(&reference).await.map_err(failed)?;
         let text = std::str::from_utf8(value.expose())
             .map_err(|_| Error::Invalid("secret is not UTF-8".into()))?;
         resolved.insert(name.clone(), zeroize::Zeroizing::new(text.to_owned()));

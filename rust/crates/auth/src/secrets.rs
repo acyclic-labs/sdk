@@ -303,34 +303,17 @@ pub type ResolveFuture<'a> =
 #[cfg(target_arch = "wasm32")]
 pub type ResolveFuture<'a> = Pin<Box<dyn Future<Output = Result<SecretValue, ResolveError>> + 'a>>;
 
-/// Host-side future for the current reference of a name.
-#[cfg(not(target_arch = "wasm32"))]
-pub type CurrentFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<SecretRef, ResolveError>> + Send + 'a>>;
-/// Host-side future for the current reference of a name, with JavaScript's
-/// single-threaded ownership.
-#[cfg(target_arch = "wasm32")]
-pub type CurrentFuture<'a> = Pin<Box<dyn Future<Output = Result<SecretRef, ResolveError>> + 'a>>;
-
 /// The host's one secrets source. It is never reachable from the API: the
 /// public surface has no read action. Only host credential adapters hold a
 /// resolver; resolved values never enter guest execution.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait Resolver: Send + Sync {
-    /// The boundary for a caller that holds only a name: the reference to the
-    /// value `name` holds in `scope` now, whose version later resolves to
-    /// exactly that value. [`ResolveError::NotFound`] when the name is unset.
-    fn current<'a>(&'a self, scope: &'a str, name: &'a str) -> CurrentFuture<'a>;
     /// Resolves exactly `reference`, or fails typed.
     fn resolve<'a>(&'a self, reference: &'a SecretRef) -> ResolveFuture<'a>;
 }
 /// The host's one secrets source, with JavaScript's single-threaded ownership.
 #[cfg(target_arch = "wasm32")]
 pub trait Resolver {
-    /// The boundary for a caller that holds only a name: the reference to the
-    /// value `name` holds in `scope` now, whose version later resolves to
-    /// exactly that value. [`ResolveError::NotFound`] when the name is unset.
-    fn current<'a>(&'a self, scope: &'a str, name: &'a str) -> CurrentFuture<'a>;
     /// Resolves exactly `reference`, or fails typed.
     fn resolve<'a>(&'a self, reference: &'a SecretRef) -> ResolveFuture<'a>;
 }

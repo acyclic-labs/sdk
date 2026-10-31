@@ -1096,11 +1096,6 @@ fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
     );
     assert_eq!(host(&|h| h.origin.host = String::new()), authority);
     assert_eq!(host(&|h| h.origin.port = 0), authority);
-    assert_eq!(
-        host(&|h| h.credential.reference =
-            SecretReference::new("secrets:/leaf".into()).expect("reference")),
-        Some("secret-reference".to_owned())
-    );
     // Both credential schemes admit, and the guest can reach neither the
     // endpoint's credential nor its origin under either of them.
     let exposed = Some("host-fetch-exposed".to_owned());

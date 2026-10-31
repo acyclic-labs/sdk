@@ -729,7 +729,6 @@ IFS= read -r input
                 ..Default::default()
             },
             Arc::new(crate::secrets::EnvSecrets),
-            crate::secrets::EnvSecrets::SCOPE,
         )
         .await?;
     assert!(installed.diagnostics.is_empty());
