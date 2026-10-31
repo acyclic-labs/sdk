@@ -5,6 +5,21 @@ pub(crate) trait StreamTerminal: Send + Sync {
     fn stream_stopped(&self);
 }
 
+#[cfg(test)]
+pub(crate) struct DeliveryFence(&'static Hub);
+
+#[cfg(test)]
+impl DeliveryFence {
+    /// Settles the original callback queue, including deferred terminal drops.
+    pub(crate) fn wait(self) -> Result<(), DemandError> {
+        if on_queue() {
+            return Err(DemandError::WorkerUnavailable);
+        }
+        self.0.drain();
+        Ok(())
+    }
+}
+
 /// One registration of some roots on the process's shared `FSEvents` hub,
 /// delivering file events beneath them on the hub's serial queue. Dropping
 /// it unregisters it, after any batch in delivery.
@@ -19,6 +34,11 @@ pub(crate) struct EventStream {
 }
 
 impl EventStream {
+    #[cfg(test)]
+    pub(crate) fn delivery_fence(&self) -> DeliveryFence {
+        DeliveryFence(self.hub)
+    }
+
     /// Initializes process-global framework services outside finite source work.
     pub(crate) fn initialize_services() -> notify::Result<()> {
         let cancellation = crate::CancellationToken::new();
