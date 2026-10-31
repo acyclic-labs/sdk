@@ -194,7 +194,7 @@ export function wireRequest(request: WireRequest): Uint8Array {
   }
 }
 
-export async function validateWireRequest(request: WireRequest): Promise<void> {
+export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {
   let input: Uint8Array;
   try {
     input = wireRequest(request);
@@ -202,9 +202,11 @@ export async function validateWireRequest(request: WireRequest): Promise<void> {
     if (error instanceof StreamError) throw error;
     throw new StreamError("invalid_argument", `stream request fields are malformed: ${error instanceof Error ? error.message : String(error)}`);
   }
+  const kind = request.kind;
   await ensureStreamWasm();
-  const error = validateRequest(request.kind, input);
+  const error = validateRequest(kind, input);
   if (error) validationError(error, "request");
+  return input;
 }
 
 function requirePathType(value: unknown): void {
