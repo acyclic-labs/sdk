@@ -16,7 +16,7 @@ function fail(message) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options });
+  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: Infinity, ...options });
   if (result.error) throw result.error;
   return result;
 }
@@ -78,13 +78,16 @@ export function publicationDependencyErrors(packages, byName) {
 }
 
 async function registryVersion(name, version) {
-  const response = await fetch(`https://crates.io/api/v1/crates/${encodeURIComponent(name)}`, {
+  const response = await fetch(`https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(version)}`, {
     headers: { "User-Agent": "acyclic-release/0.1 (github.com/acyclic-labs/sdk)" },
   });
   if (response.status === 404) return null;
-  if (!response.ok) fail(`crates.io returned ${response.status} for ${name}`);
-  const payload = await response.json();
-  return payload.versions.find(item => item.num === version) ?? null;
+  if (!response.ok) fail(`step=cargo-registry-observation ${name}@${version} returned HTTP ${response.status}; recovery command: ${publicationCommand()}`);
+  const observed = (await response.json()).version;
+  if (!observed || observed.num !== version || typeof observed.checksum !== "string" || typeof observed.yanked !== "boolean") {
+    fail(`step=cargo-registry-observation ${name}@${version} returned invalid exact-version metadata; recovery command: ${publicationCommand()}`);
+  }
+  return observed;
 }
 
 function archiveChecksum(name, version, item) {

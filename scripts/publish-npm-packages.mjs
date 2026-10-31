@@ -16,7 +16,7 @@ function fail(message) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", ...options });
+  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: Infinity, ...options });
   if (result.error) throw result.error;
   return result;
 }

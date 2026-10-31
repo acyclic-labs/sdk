@@ -35,7 +35,7 @@ async function digest(file) {
   return `sha256:${hash.digest('hex')}`;
 }
 
-export async function publish({ env = process.env, directory = env.RELEASE_ASSET_DIR, gh = (...args) => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }) } = {}) {
+export async function publish({ env = process.env, directory = env.RELEASE_ASSET_DIR, gh = (...args) => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: Infinity }) } = {}) {
   if (!directory) throw new Error('An explicit qualified release asset directory is required');
   const files = assets(directory);
   if (!files.length) throw new Error('Qualified release asset directory is empty');
@@ -67,13 +67,15 @@ export async function publish({ env = process.env, directory = env.RELEASE_ASSET
     release = JSON.parse(gh('api', `repos/${repository}/releases/tags/${tag}`));
   }
   admitRelease(release, source, version);
+  const byName = new Map();
+  for (const asset of release.assets) byName.set(asset.name, asset);
   const names = new Set();
   for (const file of files) {
     const name = path.basename(file);
     if (names.has(name)) throw new Error(`Duplicate release asset name ${name}`);
     names.add(name);
     const expected = await digest(file);
-    const existing = release.assets.find(asset => asset.name === name);
+    const existing = byName.get(name);
     if (existing) {
       let actual = existing.digest;
       if (!actual) {
