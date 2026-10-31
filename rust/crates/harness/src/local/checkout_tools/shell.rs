@@ -63,7 +63,7 @@ impl CheckoutTools {
             .native_root
             .clone()
             .unwrap_or_else(|| state.mounts.root.join(".volumes/scratch"));
-        let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output.min(30_000));
+        let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output);
         let (output, (state, files, claims, retained)) =
             native_process::capture::capture_with_custody(
                 invocation,

@@ -106,7 +106,6 @@ fn shell(mut fields: Map<String, Value>, maximum: usize) -> Result<Value> {
         .ok_or_else(|| bound_too_small(super::shell::PLATFORM.name))?;
     let error = escaped_len(&stderr);
     // Output keeps what stderr leaves, and at least half the budget.
-    let budget = budget.min(30_000);
     let output = suffix(&stdout, budget.saturating_sub(error).max(budget / 2));
     let error = suffix(&stderr, budget - escaped_len(output));
     let omitted =
@@ -200,17 +199,19 @@ mod tests {
     // once the projection wraps it.
     #[test]
     fn a_result_filling_the_bound_fits_its_projection() {
-        let flooded = ToolResult {
-            value: json!({"success": true, "exit_code": 0, "stop": null,
-                "stdout": "o".repeat(4096), "stderr": ""}),
-        };
-        let bounded = result(super::super::shell::PLATFORM.name, flooded, BOUND).unwrap();
-        assert!(
-            projected_len(&bounded) <= BOUND,
-            "{}",
-            projected_len(&bounded)
-        );
-        assert!(projected_len(&bounded) > BOUND - 24);
+        for maximum in [BOUND, 65_536] {
+            let flooded = ToolResult {
+                value: json!({"success": true, "exit_code": 0, "stop": null,
+                    "stdout": "o".repeat(maximum as usize), "stderr": ""}),
+            };
+            let bounded = result(super::super::shell::PLATFORM.name, flooded, maximum).unwrap();
+            assert!(
+                projected_len(&bounded) <= maximum,
+                "{}",
+                projected_len(&bounded)
+            );
+            assert!(projected_len(&bounded) > maximum - 24);
+        }
     }
 
     // A shell that floods both streams still returns its exit status, within
