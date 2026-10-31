@@ -42,6 +42,200 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 }
 
 #[test]
+fn exported_evidence_retains_original_parent_and_native_field_contract()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{Export, Outcome, Sink};
+    use std::sync::{Arc, mpsc};
+    use tokio::sync::Semaphore;
+
+    #[derive(Clone)]
+    struct Closed(mpsc::Sender<tracing::Id>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Closed {
+        fn on_close(&self, id: tracing::Id, _: tracing_subscriber::layer::Context<'_, S>) {
+            let _ = self.0.send(id);
+        }
+    }
+
+    let (closed, retired) = mpsc::channel();
+    let (export, mut output) = Export::channel(Arc::new(Semaphore::new(4)), false);
+    let dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Closed(closed)).with(
+            Operations(export.clone()).with_filter(tracing_subscriber::filter::filter_fn(
+                |metadata| metadata.name().starts_with("acyclic."),
+            )),
+        ));
+    let (work, owner, unrelated) = tracing::dispatcher::with_default(&dispatch, || {
+        let owner = tracing::info_span!(parent: None, "original.persistence");
+        let unrelated = tracing::info_span!(parent: None, "unrelated.caller");
+        // Explicit roots must not inherit the currently entered owner.
+        owner.in_scope(|| {
+            drop(tracing::info_span!(parent: None, "acyclic.test.parent", outcome = "ok"));
+            drop(tracing::info_span!(
+                "acyclic.test.parent",
+                outcome = tracing::field::Empty
+            ));
+        });
+        let work = unrelated.in_scope(|| {
+            acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+                parent: &owner,
+                "acyclic.test.parent",
+                outcome = tracing::field::Empty,
+                error.kind = tracing::field::Empty
+            ))
+        });
+        (work, owner.id(), unrelated.id())
+    });
+    let owner = owner.ok_or("original owner was disabled")?;
+    let unrelated = unrelated.ok_or("unrelated caller was disabled")?;
+    let result = std::thread::spawn(move || {
+        // Completion-time ambient context is the negative control: it has no
+        // parent, while this work still belongs to its original provider.
+        assert!(tracing::Span::current().is_none());
+        let (producer, receive) = mpsc::channel::<()>();
+        drop(producer);
+        work.in_scope(|| work.finish(receive.recv().map_err(std::io::Error::other)))
+    })
+    .join()
+    .map_err(|_| "observation worker panicked")?;
+    assert!(
+        result
+            .err()
+            .and_then(std::io::Error::into_inner)
+            .is_some_and(|cause| cause.is::<mpsc::RecvError>())
+    );
+    let root = ready(output.recv())?.ok_or("root sample absent")?;
+    let abandoned = ready(output.recv())?.ok_or("incomplete sample absent")?;
+    let failed = ready(output.recv())?.ok_or("worker sample absent")?;
+    assert_eq!(root.sample().outcome, Outcome::Ok);
+    assert_eq!(root.sample().parent_id, None);
+    assert_eq!(abandoned.sample().outcome, Outcome::Incomplete);
+    assert_eq!(abandoned.sample().parent_id, Some(&owner));
+    assert_eq!(failed.sample().outcome, Outcome::Err);
+    assert_eq!(failed.sample().durability, None);
+    assert_eq!(failed.sample().parent_id, Some(&owner));
+    assert_ne!(failed.sample().parent_id, Some(&unrelated));
+    // Borrowed sinks preserve the same edge when preparing credited output.
+    export.record(&failed.sample());
+    let copied = ready(output.recv())?.ok_or("borrowed export absent")?;
+    assert_eq!(copied.sample().parent_id, Some(&owner));
+    let closed: Vec<_> = retired.try_iter().collect();
+    assert!(
+        closed.contains(&owner),
+        "output retained its original owner"
+    );
+    assert!(closed.contains(&unrelated), "worker retained its caller");
+    assert!(closed.contains(failed.sample().span_id));
+
+    // Exercise the producer's field contract through the real registry and
+    // credited sink. This checks projection, not an additional native hook.
+    use acyclic_observability::{DurabilityAttempt, DurabilityRequest, DurabilitySyscall};
+    let native = std::fs::File::open("").expect_err("an empty path cannot open a file");
+    let code = native.raw_os_error().ok_or("native error code absent")?;
+    let (fields, mut field_output) = Export::channel(Arc::new(Semaphore::new(1)), false);
+    let field_dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(fields.clone())));
+    for (requested, syscall, expected) in [
+        ("full", "fsync", Some(DurabilitySyscall::Fsync)),
+        ("full", "fdatasync", Some(DurabilitySyscall::Fdatasync)),
+        ("full", "F_FULLFSYNC", Some(DurabilitySyscall::FullFsync)),
+        (
+            "barrier",
+            "F_BARRIERFSYNC",
+            Some(DurabilitySyscall::BarrierFsync),
+        ),
+        (
+            "full",
+            "FlushFileBuffers",
+            Some(DurabilitySyscall::FlushFileBuffers),
+        ),
+        ("full", "syncfs", Some(DurabilitySyscall::Syncfs)),
+        ("unrecognized", "unrecognized", None),
+    ] {
+        tracing::dispatcher::with_default(&field_dispatch, || {
+            let span = tracing::info_span!(
+                "acyclic.runtime.durability",
+                requested,
+                syscall,
+                descriptor = 0_u64,
+                error.os = tracing::field::Empty,
+                outcome = tracing::field::Empty,
+            );
+            span.record("error.os", code);
+            // A later generic/overwritten error must not replace original evidence.
+            span.record("error.os", i64::from(code) + 1);
+            span.record("outcome", "err");
+        });
+        let record = ready(field_output.recv())?.ok_or("typed attempt sample absent")?;
+        let attempt = record.sample().durability.ok_or("attempt fields absent")?;
+        assert_eq!(attempt.syscall, expected);
+        assert_eq!(attempt.descriptor, Some(0), "zero is a present opaque ID");
+        assert_eq!(attempt.os_error, Some(code), "first native code was lost");
+        assert_eq!(
+            attempt.requested,
+            match requested {
+                "full" => Some(DurabilityRequest::Full),
+                "barrier" => Some(DurabilityRequest::Barrier),
+                _ => None,
+            }
+        );
+    }
+    tracing::dispatcher::with_default(&field_dispatch, || {
+        drop(tracing::info_span!(
+            "acyclic.runtime.durability",
+            error.os = i64::MAX,
+            outcome = "err",
+        ));
+    });
+    let absent = ready(field_output.recv())?.ok_or("unknown attempt sample absent")?;
+    assert_eq!(
+        absent.sample().durability,
+        Some(DurabilityAttempt::default())
+    );
+    drop(absent);
+    tracing::dispatcher::with_default(&field_dispatch, || {
+        let span = tracing::info_span!(
+            "acyclic.runtime.durability",
+            requested = tracing::field::Empty,
+            syscall = tracing::field::Empty,
+            descriptor = tracing::field::Empty,
+            error.os = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        );
+        span.record("requested", "barrier");
+        span.record("syscall", "F_BARRIERFSYNC");
+        span.record("descriptor", 0_u64);
+        span.record("error.os", code);
+        // Separately recorded fields keep their first original value.
+        span.record("requested", "full");
+        span.record("syscall", "fsync");
+        span.record("descriptor", 1_u64);
+        span.record("outcome", "err");
+        // Completion freezes the same record, even while its span is retained.
+        span.record("requested", "full");
+        span.record("syscall", "syncfs");
+        span.record("descriptor", 2_u64);
+        span.record("outcome", "ok");
+    });
+    let deferred = ready(field_output.recv())?.ok_or("deferred attempt sample absent")?;
+    assert_eq!(deferred.sample().outcome, Outcome::Err);
+    assert_eq!(
+        deferred.sample().durability,
+        Some(DurabilityAttempt {
+            requested: Some(DurabilityRequest::Barrier),
+            syscall: Some(DurabilitySyscall::BarrierFsync),
+            descriptor: Some(0),
+            os_error: Some(code),
+        })
+    );
+    assert_eq!(
+        fields.stats().full,
+        Some(0),
+        "completion emitted duplicate output"
+    );
+    Ok(())
+}
+
+#[test]
 fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Export, Outcome, Sink};

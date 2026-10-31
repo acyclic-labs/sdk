@@ -181,6 +181,11 @@ pub struct Sample<'a> {
     /// Original ID in this subscriber's registry, for joining diagnostics.
     /// It is not a metric label or a globally unique operation identifier.
     pub span_id: &'a Id,
+    /// Immediate parent in the same registry, captured at creation. This is a
+    /// diagnostic join, not a metric label or a retained operation owner.
+    pub parent_id: Option<&'a Id>,
+    /// Fixed native-attempt fields from the original durability producer.
+    pub durability: Option<crate::DurabilityAttempt>,
     /// Original static span metadata. Exporters must use bounded static labels.
     pub metadata: &'static tracing::Metadata<'static>,
     /// RPC method declared by the operation factory, never a resource label.
@@ -199,6 +204,10 @@ pub struct Sample<'a> {
 pub struct OwnedSample {
     /// Original registry ID. An ID retains no span or physical operation.
     pub span_id: Id,
+    /// Original immediate parent ID, without retaining its span.
+    pub parent_id: Option<Id>,
+    /// Original fixed physical-attempt evidence, with no dynamic field map.
+    pub durability: Option<crate::DurabilityAttempt>,
     /// Original static operation metadata.
     pub metadata: &'static tracing::Metadata<'static>,
     /// Declared method, retained from span creation.
@@ -216,6 +225,8 @@ impl OwnedSample {
     pub fn sample(&self) -> Sample<'_> {
         Sample {
             span_id: &self.span_id,
+            parent_id: self.parent_id.as_ref(),
+            durability: self.durability,
             metadata: self.metadata,
             rpc: self.rpc.as_deref(),
             error_kind: self.error_kind.as_deref(),
@@ -641,6 +652,8 @@ pub struct Operations<C = Metrics>(pub C);
 
 struct Operation {
     metadata: &'static tracing::Metadata<'static>,
+    parent_id: Option<Id>,
+    durability: Option<crate::DurabilityAttempt>,
     rpc: Option<String>,
     started: Instant,
     completed: bool,
@@ -651,6 +664,7 @@ struct Operation {
 struct Terminal {
     outcome: Option<Outcome>,
     has_error_kind: bool,
+    has_durability_fields: bool,
 }
 
 struct FirstCause<'a>(&'a mut Option<Box<str>>);
@@ -663,18 +677,38 @@ impl Visit for FirstCause<'_> {
     fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
 }
 
-#[derive(Default)]
-struct Method(Option<String>);
-impl Visit for Method {
+struct Fields {
+    rpc: Option<String>,
+    durability: Option<crate::DurabilityAttempt>,
+}
+impl Visit for Fields {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "rpc" {
-            self.0 = Some(value.to_owned());
+            self.rpc = Some(value.to_owned());
+        } else if let Some(attempt) = self.durability.as_mut() {
+            attempt.record_str(field, value);
+        }
+    }
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        if let Some(attempt) = self.durability.as_mut() {
+            attempt.record_u64(field, value);
+        }
+    }
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        if let Some(attempt) = self.durability.as_mut() {
+            attempt.record_i64(field, value);
         }
     }
     fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
 }
 
 impl Visit for Terminal {
+    fn record_i64(&mut self, field: &Field, _: i64) {
+        self.has_durability_fields |= field.name() == "error.os";
+    }
+    fn record_u64(&mut self, field: &Field, _: u64) {
+        self.has_durability_fields |= matches!(field.name(), "error.os" | "descriptor");
+    }
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "outcome" {
             self.outcome = match value {
@@ -685,6 +719,8 @@ impl Visit for Terminal {
             };
         } else if field.name() == "error.kind" {
             self.has_error_kind = true;
+        } else if matches!(field.name(), "requested" | "syscall") {
+            self.has_durability_fields = true;
         }
     }
     fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
@@ -698,11 +734,23 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             return;
         }
         let Some(span) = context.span(id) else { return };
-        let mut method = Method::default();
-        attributes.record(&mut method);
+        let mut fields = Fields {
+            rpc: None,
+            durability: (metadata.name() == "acyclic.runtime.durability")
+                .then(crate::DurabilityAttempt::default),
+        };
+        attributes.record(&mut fields);
         let mut operation = Operation {
             metadata,
-            rpc: method.0,
+            // SpanRef::parent can scan past ancestors filtered by this layer.
+            // Read only the producer's creation-time edge, including roots.
+            parent_id: if attributes.is_contextual() {
+                context.current_span().id().cloned()
+            } else {
+                attributes.parent().cloned()
+            },
+            durability: fields.durability,
+            rpc: fields.rpc,
             started: Instant::now(),
             completed: false,
             error_kind: None,
@@ -715,6 +763,8 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         if let Some(outcome) = terminal.outcome {
             self.0.record_owned(OwnedSample {
                 span_id: id.clone(),
+                parent_id: operation.parent_id.take(),
+                durability: operation.durability.take(),
                 metadata,
                 rpc: operation.rpc.take(),
                 elapsed: operation.started.elapsed(),
@@ -729,7 +779,10 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
     fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
         let mut terminal = Terminal::default();
         values.record(&mut terminal);
-        if terminal.outcome.is_none() && !(terminal.has_error_kind && self.0.error_details()) {
+        if terminal.outcome.is_none()
+            && !(terminal.has_error_kind && self.0.error_details())
+            && !terminal.has_durability_fields
+        {
             return;
         }
         let Some(span) = context.span(id) else { return };
@@ -740,6 +793,9 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         if operation.completed {
             return;
         }
+        if let Some(attempt) = operation.durability.as_mut() {
+            values.record(attempt);
+        }
         if operation.error_kind.is_none() && self.0.error_details() {
             values.record(&mut FirstCause(&mut operation.error_kind));
         }
@@ -748,6 +804,8 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         };
         operation.completed = true;
         let metadata = operation.metadata;
+        let parent_id = operation.parent_id.take();
+        let durability = operation.durability.take();
         let rpc = operation.rpc.take();
         let started = operation.started;
         let error_kind = operation.error_kind.take();
@@ -756,6 +814,8 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         // the registry's extension lock.
         self.0.record_owned(OwnedSample {
             span_id: id.clone(),
+            parent_id,
+            durability,
             metadata,
             rpc,
             elapsed: started.elapsed(),
@@ -774,6 +834,8 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         {
             self.0.record_owned(OwnedSample {
                 span_id: id,
+                parent_id: operation.parent_id,
+                durability: operation.durability,
                 metadata: operation.metadata,
                 rpc: operation.rpc,
                 elapsed: operation.started.elapsed(),
