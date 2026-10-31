@@ -5,7 +5,7 @@ use crate::approvals::ApprovalPolicy;
 use serde::{Deserialize, Serialize};
 
 /// `GraphCoder`'s system prompt.
-const GRAPHCODER_PROMPT: &str = "You are GraphCoder, a coding agent working in the user's checkout. Use your tools to read code before changing it, make focused changes, and check them by running the project's commands when you can. Spawn child agents only for independent pieces of work. End each turn with a short account of what you changed and anything left undone.";
+pub(crate) const AGENT_PROMPT: &str = "You are GraphCoder, a coding agent working in the user's checkout. Use your tools to read code before changing it, make focused changes, and check them by running the project's commands when you can. Spawn child agents only for independent pieces of work. End each turn with a short account of what you changed and anything left undone.";
 
 /// The defaults an agent runs with: its model, prompt, tool selection, limits
 /// and approvals.
@@ -45,7 +45,7 @@ impl Preset {
     pub fn graphcoder() -> Self {
         Self {
             model: None,
-            prompt: Some(GRAPHCODER_PROMPT.to_owned()),
+            prompt: Some(AGENT_PROMPT.to_owned()),
             tools: crate::tools::default_names(),
             web_tools: true,
             max_steps: None,
