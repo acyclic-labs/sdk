@@ -69,6 +69,7 @@ pub(crate) mod transcript;
 mod working_tail;
 pub(crate) use transcript::load_projection as load_response_projection;
 mod summary;
+pub use summary::SummaryProduction;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
 mod tool_execution;

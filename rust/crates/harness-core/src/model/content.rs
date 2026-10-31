@@ -50,6 +50,11 @@ pub enum ModelContent {
 )]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelContentPart {
+    /// A frozen batch of primitive event notices; never a human message.
+    Notices {
+        /// Original events selected at the request's immutable boundary.
+        notices: Vec<crate::conversation::wire::Notice>,
+    },
     /// Host-admitted fixed effort change at its original conversation position.
     /// Direct user inputs cannot introduce configuration changes.
     Configuration {
@@ -185,6 +190,14 @@ impl ModelContent {
                 }
             }
             match part {
+                ModelContentPart::Notices { notices } => {
+                    for notice in notices {
+                        notice
+                            .validate()
+                            .map_err(|_| invalid(work, "invalid notice"))?;
+                        value_bound(&notice.body, limits.render_bytes, work)?;
+                    }
+                }
                 ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes => {
                     return Err(invalid(work, "model text exceeds render limit"));
                 }

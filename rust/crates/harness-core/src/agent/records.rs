@@ -393,6 +393,13 @@ pub enum InboxRecord {
     ForkAdopted(Box<ForkAdopted>),
     /// `send`.
     Message(Message),
+    /// One primitive event; the payload independently decides whether to run.
+    Notice {
+        /// Original producer event identity, retained across delivery replay.
+        id: IntentId,
+        /// Appended event, also readable without running a model.
+        notice: crate::conversation::wire::Notice,
+    },
     /// A child finished.
     ChildDone(ChildDone),
     /// The parent's turn waits for this agent to settle: once it is idle or
@@ -587,6 +594,9 @@ impl AgentRecord for InboxRecord {
                 Ok(())
             }
             Self::ChildDone(done) => check_outcome(&done.outcome),
+            Self::Notice { notice, .. } => notice
+                .validate()
+                .map_err(|_| Error::Record("invalid primitive event notice")),
             Self::Message(Message { from, .. })
             | Self::Cancel(Control { by: from, .. })
             | Self::Archive(Control { by: from, .. })

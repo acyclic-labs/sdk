@@ -51,6 +51,111 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
+async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn() -> Result {
+    struct Calls {
+        count: Arc<AtomicUsize>,
+        pause: bool,
+    }
+    impl TurnDriver for Calls {
+        fn step<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: u64,
+            input: Option<Queued>,
+            _: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            assert!(matches!(
+                input,
+                Some(Queued {
+                    input: TurnInput::Notice { .. },
+                    ..
+                })
+            ));
+            self.count.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(TurnStep {
+                    reserved_children: 0,
+                    checkpoint: None,
+                    outs: Vec::new(),
+                    wait: if self.pause {
+                        Wait::Approval(intent("decision"))
+                    } else {
+                        Wait::Input
+                    },
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    for pause in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let count = Arc::new(AtomicUsize::new(0));
+        let host = AgentHost::new(
+            provider.clone(),
+            Calls {
+                count: count.clone(),
+                pause,
+            },
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        let notice = |name: &str, wake| InboxRecord::Notice {
+            id: intent(name),
+            notice: acyclic_harness_core::conversation::wire::Notice {
+                source: "filesystem".into(),
+                kind: "arbitrary.open.tag".into(),
+                body: serde_json::json!({"paths": [name]}),
+                wake,
+                coalesce_key: Some("files".into()),
+            },
+        };
+        let quiet = notice("before", false);
+        host.send(&root, &user(), &quiet).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+
+        let waking = notice("waking", true);
+        host.send(&root, &user(), &waking).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let before = host.state(&root).await?;
+        // The original append key owns delivery deduplication, including a
+        // caller retry after losing the successful acknowledgement.
+        host.send(&root, &user(), &waking).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        let after = notice("after", false);
+        host.send(&root, &user(), &after).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let reopened = host.state(&root).await?;
+        assert_eq!(reopened.pending_notices, Some(1..4));
+        assert_eq!(reopened.phase, before.phase);
+        assert_eq!(reopened.turn, before.turn);
+        let records = values(&provider, root.inbox()?).await?;
+        let notices = records
+            .iter()
+            .map(|record| InboxRecord::decode(record))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(
+            notices,
+            vec![
+                InboxRecord::ForkAdopted(Box::new(adopted(id(1)))),
+                quiet,
+                waking,
+                after
+            ]
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_input() -> Result {
     use acyclic_actors::guest::CancellationToken;
     use std::sync::Mutex;

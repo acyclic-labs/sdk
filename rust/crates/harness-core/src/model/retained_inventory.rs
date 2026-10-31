@@ -17,6 +17,9 @@ fn map_slack(value: &Value) -> Result<u64> {
 
 fn part_slack(part: &ModelContentPart) -> Result<u64> {
     match part {
+        ModelContentPart::Notices { notices } => notices
+            .iter()
+            .try_fold(0, |bytes, notice| add(bytes, map_slack(&notice.body)?)),
         ModelContentPart::ToolCall(call) => call
             .retained_payload_bytes()?
             .checked_sub(call.payload_bytes()?)

@@ -112,7 +112,7 @@ where
             ));
         }
         match envelope.payload() {
-            Payload::Wire { .. } => Ok(()),
+            Payload::Wire { .. } | Payload::Notice { .. } => Ok(()),
             Payload::ContextBatch { changes, .. } => {
                 for change in changes {
                     self.authorize_context_source(

@@ -140,14 +140,20 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
-        let execution = journal.claim_execution(operation, None)?;
-        let phase = &mut DispatchPhase::new();
-        let result = StockExecution::ordinary(self)
-            .summarize(journal, None, operation, 0, (source, instruction), phase)
-            .await
-            .map(|(summary, _)| summary)?;
-        execution.release();
-        Ok(result)
+        let execution = StockExecution::ordinary(self);
+        let mut phase = DispatchPhase::new();
+        let summary = execution
+            .summary_production(
+                journal,
+                None,
+                operation,
+                0,
+                (source, instruction),
+                &mut phase,
+            )?
+            .into_producer(None)?
+            .await?;
+        Ok(summary)
     }
     /// Summarizes inside the parent's existing execution journal.
     pub async fn summarize_in_turn(
@@ -159,22 +165,22 @@ impl StockExecutor {
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
         let ownership = journal.claim_execution(input.operation_id, None)?;
-        let phase = &mut DispatchPhase::new();
         let execution = StockExecution::ordinary(self);
+        let mut phase = DispatchPhase::new();
         execution.validate_turn_input(journal, input).await?;
-        let result = execution
-            .summarize(
+        let summary = execution
+            .summary_production(
                 journal,
                 Some(input),
                 input.operation_id,
                 step,
                 (source, instruction),
-                phase,
-            )
-            .await
-            .map(|(summary, _)| summary)?;
+                &mut phase,
+            )?
+            .into_producer(None)?
+            .await?;
         ownership.release();
-        Ok(result)
+        Ok(summary)
     }
     /// Executes a retained/reconciled/admitted model step through the stock engine.
     pub async fn model_step(

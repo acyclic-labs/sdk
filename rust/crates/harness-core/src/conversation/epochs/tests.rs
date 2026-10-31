@@ -114,6 +114,7 @@ struct Reference {
     items: Vec<bool>,
     swaps: Vec<usize>,
     job: Option<(protocol::SummaryId, usize, Option<Completion>)>,
+    attempt: u64,
 }
 
 #[cfg(feature = "filesystem")]
@@ -166,6 +167,18 @@ impl Reference {
         true
     }
 
+    fn retry_failed(&mut self, id: protocol::SummaryId, end: usize) -> bool {
+        let Some((prior, through, Some(Completion::Failed))) = self.job else {
+            return false;
+        };
+        if id == prior || end < through || end > self.items.len() {
+            return false;
+        }
+        self.job = Some((id, end, None));
+        self.attempt += 1;
+        true
+    }
+
     fn swap(&mut self, id: protocol::SummaryId, expected: u64) -> bool {
         let Some((key, end, Some(Completion::Ready))) = self.job else {
             return false;
@@ -178,6 +191,7 @@ impl Reference {
         }
         self.swaps.push(end);
         self.job = None;
+        self.attempt = 0;
         true
     }
 }
@@ -186,7 +200,7 @@ proptest::proptest! {
     #[cfg(feature = "filesystem")]
     #[test]
     fn epoch_reducer_matches_materialized_history_at_every_commit_cut(
-        schedule in proptest::collection::vec((0_u8..6, 0_u8..8, proptest::bool::ANY), 1..128)
+        schedule in proptest::collection::vec((0_u8..7, 0_u8..8, proptest::bool::ANY), 1..128)
     ) {
         tokio::runtime::Builder::new_current_thread()
             .enable_all().build().unwrap()
@@ -241,6 +255,14 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
         (2, 0, false),
         (4, 0, true),
         (5, 0, false),
+        (0, 0, false),
+        (0, 0, false),
+        (1, 4, false),
+        (3, 0, false),
+        (6, 4, true),
+        (6, 4, false),
+        (2, 0, false),
+        (5, 2, false),
     ];
     for (operation, argument, crash_before_commit) in prefix.into_iter().chain(schedule) {
         let head = reference.items.len() as u64;
@@ -267,7 +289,10 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
             let mut candidate = durable.clone();
             let mut expected = reference.clone();
             let id = if operation == 1 {
-                candidate.epoch().key.digest_through(u64::from(argument))
+                candidate
+                    .epoch()
+                    .key
+                    .attempt_digest(u64::from(argument), reference.attempt)
             } else {
                 candidate
                     .state()
@@ -292,6 +317,16 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
                         expected.complete(id, result),
                     )
                 }
+                6 => {
+                    let id = candidate
+                        .epoch()
+                        .key
+                        .attempt_digest(u64::from(argument), reference.attempt + 1);
+                    (
+                        candidate.retry_failed(u64::from(argument), head).is_ok(),
+                        expected.retry_failed(id, usize::from(argument)),
+                    )
+                }
                 _ => {
                     let mut next = candidate.epoch().clone();
                     next.key.through = candidate
@@ -313,7 +348,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
                 let request = snapshot_request(&candidate, path.clone(), &io);
                 if crash_before_commit {
                     interrupted[match operation {
-                        1 => 0,
+                        1 | 6 => 0,
                         2 | 3 => 1,
                         _ => 2,
                     }] = true;
@@ -576,6 +611,309 @@ fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
     let mut lost = State::default();
     assert!(lost.prepare([6; 32], 11, 12).is_ok());
     assert_eq!(state.prepare([6; 32], 11, 12), Err(Refusal::Busy));
+}
+
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn background_summary_custody_preserves_one_producer_and_crash_recovery() -> crate::Result<()>
+{
+    use crate::{
+        AgentId, OperationId,
+        context::{
+            CompactionPolicy, Context, ContextPipeline, ModelContextCapacity, ModelTokenCount,
+        },
+        executor::{StockExecutor, SummaryProduction},
+        filesystem::MemoryHarnessStorage,
+        model::{Model, ModelContent, ModelEvent, ModelMessage, ModelRole},
+        test_support::{
+            ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
+        },
+        tool::ToolRegistry,
+    };
+    use futures::FutureExt as _;
+    use std::sync::Arc;
+
+    // The real conditional store includes failure/replacement at both sides
+    // of commit and checks coverage independently after every restored step.
+    replay_snapshot_schedule(Vec::new()).await;
+    let budget = protocol::Budget::new(10_000, 2_000).unwrap();
+    assert_eq!(budget.pressure(4_799), protocol::Pressure::Below);
+    assert_eq!(budget.pressure(4_800), protocol::Pressure::Soft);
+    assert_eq!(budget.pressure(7_999), protocol::Pressure::Soft);
+    assert_eq!(budget.pressure(8_000), protocol::Pressure::Hard);
+    // The former unreserved boundary admits an input that cannot leave output
+    // headroom. Its decision differs from the production budget.
+    assert!(8_001 < 10_000);
+    assert!(!fits(8_001, 2_000, 10_000));
+    let genesis = Epoch {
+        header: [1; 32],
+        profile: [2; 32],
+        summary: None,
+        key: SummaryKey {
+            source: StreamPath::new("account/agent/conversation").unwrap(),
+            through: 0,
+            renderer: 1,
+            model: [3; 32],
+        },
+    };
+    let mut snapshot = Snapshot::genesis(genesis.clone()).unwrap();
+    let Admission::Produce {
+        summary,
+        foreground: false,
+    } = snapshot.admit(budget.pressure(4_800), 2, 3).unwrap()
+    else {
+        panic!("soft pressure did not prepare one background summary")
+    };
+    assert_eq!(snapshot.epoch(), &genesis);
+    assert_eq!(
+        snapshot.admit(budget.pressure(7_999), 3, 3).unwrap(),
+        Admission::Unchanged
+    );
+    assert_eq!(
+        snapshot.admit(budget.pressure(8_000), 3, 3).unwrap(),
+        Admission::Await(summary)
+    );
+    let body = super::super::tests::file(AgentId::from_bytes([1; 16]), "summary.txt")?;
+    snapshot
+        .complete(summary, SummaryOutcome::Ready(body))
+        .unwrap();
+    assert_eq!(
+        snapshot.admit(budget.pressure(7_999), 3, 3).unwrap(),
+        Admission::Unchanged
+    );
+    assert_eq!(snapshot.epoch(), &genesis);
+    assert_eq!(
+        snapshot.admit(budget.pressure(8_000), 3, 3).unwrap(),
+        Admission::Swap(summary)
+    );
+    let mut failed = Snapshot::genesis(genesis).unwrap();
+    let original = failed.prepare(2, 3).unwrap();
+    failed.complete(original, SummaryOutcome::Failed).unwrap();
+    assert_eq!(
+        failed.admit(budget.pressure(7_999), 3, 3).unwrap(),
+        Admission::Unchanged
+    );
+    let Admission::Produce {
+        summary: replacement,
+        foreground: true,
+    } = failed.admit(budget.pressure(8_000), 3, 3).unwrap()
+    else {
+        panic!("failed background summary did not prepare a foreground replacement")
+    };
+    assert_ne!(replacement, original);
+    assert!(failed.complete(original, SummaryOutcome::Failed).is_err());
+    assert_eq!(
+        failed.admit(budget.pressure(8_000), 3, 3).unwrap(),
+        Admission::Await(replacement)
+    );
+    for completion in [None, Some(Completion::Ready), Some(Completion::Failed)] {
+        let mut state = State::default();
+        state.prepare([1; 32], 2, 3).unwrap();
+        if let Some(completion) = completion {
+            state.complete([1; 32], completion).unwrap();
+        }
+        let before = state;
+        assert_eq!(
+            state.retry_failed([1; 32], [2; 32], 3, 3).is_ok(),
+            completion == Some(Completion::Failed)
+        );
+        if completion != Some(Completion::Failed) {
+            assert_eq!(state, before);
+        }
+    }
+
+    for case in 0..4 {
+        let storage = MemoryHarnessStorage::new(AgentId::from_bytes([31; 16]), 1_000_000).await?;
+        let journal = storage.journal();
+        let turns = match case {
+            2 => vec![ScriptedTurn::Events(vec![ScriptedEvent::Pending {}])],
+            3 => vec![
+                ScriptedTurn::Events(vec![]),
+                ScriptedTurn::Text("fallback".into()),
+            ],
+            _ => vec![ScriptedTurn::Text("summary".into())],
+        };
+        let mut provider = ScriptedModelProvider::new(turns)
+            .with_context_capacity(ModelContextCapacity {
+                context_tokens: 8_192,
+                output_tokens: Some(1_024),
+            })
+            .with_token_counter(|request| {
+                Ok(ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    10,
+                    vec![0; request.request().messages.len()],
+                ))
+            });
+        if case == 2 {
+            provider = provider.with_reconciliations([ScriptedReconciliation {
+                orphan: false,
+                observed: vec![],
+                continuation: Some(vec![
+                    ModelEvent::MessageCompleted {
+                        text: "resumed".into(),
+                    },
+                    ModelEvent::Completed {
+                        metadata: serde_json::Value::Null,
+                    },
+                ]),
+            }]);
+        }
+        let (dispatched, dispatch_event) = tokio::sync::oneshot::channel();
+        if case == 2 {
+            let dispatched = std::sync::Mutex::new(Some(dispatched));
+            provider = provider.with_dispatch_observer(move |_| {
+                dispatched
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("only the original summary dispatch is admitted")
+                    .send(())
+                    .expect("the hard-budget test still owns the dispatch event");
+            });
+        }
+        let provider = Arc::new(provider);
+        let executor = StockExecutor::new(
+            Model::new("test".into(), "summary".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_compaction_policy(CompactionPolicy::Disabled);
+        let source = || Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("original admitted source".into()),
+            }],
+            ..Default::default()
+        };
+        let instruction = || ModelContent::Text("Summarize the admitted source".into());
+        let operation = OperationId::new();
+        let SummaryProduction::Owned {
+            producer,
+            observation,
+        } = executor.summary_production(
+            journal.as_ref(),
+            operation,
+            source(),
+            instruction(),
+            None,
+        )?
+        else {
+            panic!("first producer was not admitted")
+        };
+        let SummaryProduction::Observed(competing) = executor.summary_production(
+            journal.as_ref(),
+            operation,
+            source(),
+            instruction(),
+            None,
+        )?
+        else {
+            panic!("duplicate summary producer was admitted")
+        };
+        assert_eq!(provider.requests().len(), 0);
+        match case {
+            0 => {
+                drop(producer);
+                assert_eq!(
+                    observation.terminated().await,
+                    acyclic_fs::OperationTermination::ProducerDropped
+                );
+                assert_eq!(
+                    competing.terminated().await,
+                    acyclic_fs::OperationTermination::ProducerDropped
+                );
+                assert_eq!(provider.requests().len(), 0);
+            }
+            1 => {
+                let summary = producer.await?;
+                assert_eq!(
+                    observation.terminated().await,
+                    acyclic_fs::OperationTermination::Released
+                );
+                assert_eq!(
+                    journal.load(&summary.output, None)?.await?.as_ref(),
+                    b"summary"
+                );
+                let SummaryProduction::Owned { producer, .. } = executor.summary_production(
+                    journal.as_ref(),
+                    operation,
+                    source(),
+                    instruction(),
+                    None,
+                )?
+                else {
+                    panic!("completed summary could not replay")
+                };
+                assert_eq!(producer.await?, summary);
+                assert_eq!(provider.requests().len(), 1);
+            }
+            2 => {
+                let mut producer = Box::pin(producer);
+                tokio::select! {
+                    result = &mut producer => panic!("slow summary terminated before dispatch: {result:?}"),
+                    dispatched = dispatch_event => dispatched.expect("summary dispatch producer was dropped"),
+                }
+                let mut hard_wait = Box::pin(competing.terminated());
+                assert!(hard_wait.as_mut().now_or_never().is_none());
+                assert_eq!(provider.requests().len(), 1);
+                drop(producer);
+                assert_eq!(
+                    hard_wait.await,
+                    acyclic_fs::OperationTermination::ProducerDropped
+                );
+                let SummaryProduction::Owned { producer, .. } = executor.summary_production(
+                    journal.as_ref(),
+                    operation,
+                    source(),
+                    instruction(),
+                    None,
+                )?
+                else {
+                    panic!("crashed summary could not resume")
+                };
+                let summary = producer.await?;
+                assert_eq!(
+                    journal.load(&summary.output, None)?.await?.as_ref(),
+                    b"resumed"
+                );
+                assert_eq!(
+                    provider.requests().len(),
+                    1,
+                    "restore dispatched another producer"
+                );
+                assert_eq!(provider.reconciliations().len(), 1);
+            }
+            _ => {
+                assert!(
+                    matches!(producer.await, Err(crate::Error::Indeterminate(id)) if id == operation)
+                );
+                assert_eq!(
+                    observation.terminated().await,
+                    acyclic_fs::OperationTermination::ProducerDropped
+                );
+                let fallback = OperationId::new();
+                let SummaryProduction::Owned { producer, .. } = executor.summary_production(
+                    journal.as_ref(),
+                    fallback,
+                    source(),
+                    instruction(),
+                    None,
+                )?
+                else {
+                    panic!("fresh foreground attempt was refused")
+                };
+                let summary = producer.await?;
+                assert_eq!(
+                    journal.load(&summary.output, None)?.await?.as_ref(),
+                    b"fallback"
+                );
+                assert_eq!(provider.requests().len(), 2);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "filesystem")]
