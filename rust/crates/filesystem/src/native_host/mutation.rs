@@ -434,8 +434,7 @@ pub(crate) fn order_file_held<W: NativeHostWork>(
     #[cfg(windows)] file: &impl std::os::windows::io::AsHandle,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    let ordered = retry_io(
-        work,
+    let ordered = work.attempt_io(
         WorkCounters {
             durability_operations: 1,
             ..WorkCounters::UNCHARGED
