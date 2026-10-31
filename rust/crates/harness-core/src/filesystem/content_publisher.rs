@@ -74,6 +74,75 @@ impl<A, O> FilesystemContentPublisher<A, O> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher
     for FilesystemContentPublisher<A, O>
 {
+    fn observe_changes<'a>(
+        &'a self,
+        operation: OperationId,
+        maximum: u64,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (Option<Vec<FileRef>>, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(access.io, || async move {
+            let key = changes_key(operation, access.io)?;
+            let files = self
+                .host
+                .observe_changes(&self.volume, &self.grant, &key, maximum, access)?
+                .await?;
+            let owned = files.as_ref().map_or(Ok(0), |files| {
+                files.iter().try_fold(
+                    files.capacity() as u64 * std::mem::size_of::<FileRef>() as u64,
+                    |total, file| {
+                        total
+                            .checked_add(file.logical_owned_bytes()?)
+                            .ok_or_else(|| {
+                                stock_boundary(
+                                    access.io,
+                                    crate::wire::ErrorCode::Invalid,
+                                    "conditional publication ownership overflow",
+                                )
+                            })
+                    },
+                )
+            })?;
+            let hold = access.io.map(|io| io.guard_owned(owned)).transpose()?;
+            Ok((files, hold))
+        })
+    }
+    fn stage_changes<'a>(
+        &'a self,
+        operation: OperationId,
+        changes: &'a [crate::conversation::ContentChange<'a>],
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (Vec<FileRef>, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(access.io, || async move {
+            let key = changes_key(operation, access.io)?;
+            let files = self
+                .host
+                .put_changes(
+                    &self.volume,
+                    &self.grant,
+                    changes,
+                    &key,
+                    self.maximum_bytes,
+                    access,
+                )?
+                .await?;
+            let owned = files.iter().try_fold(
+                files.capacity() as u64 * std::mem::size_of::<FileRef>() as u64,
+                |total, file| {
+                    total
+                        .checked_add(file.logical_owned_bytes()?)
+                        .ok_or_else(|| {
+                            stock_boundary(
+                                access.io,
+                                crate::wire::ErrorCode::Invalid,
+                                "conditional publication ownership overflow",
+                            )
+                        })
+                },
+            )?;
+            let hold = access.io.map(|io| io.guard_owned(owned)).transpose()?;
+            Ok((files, hold))
+        })
+    }
     fn volume(&self) -> &VolumeRef {
         &self.volume
     }
@@ -264,14 +333,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     "source belongs to another writer volume",
                 ));
             }
-            let version = source.version();
-            if version.len() != 64 || !version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "file version is not a Filesystem generation",
-                ));
-            }
         }
         let owned_generation = source
             .map(|source| self.host.file_generation(source, io))
@@ -318,6 +379,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(generation_hold);
         Ok(file)
     }
+}
+
+fn changes_key(operation: OperationId, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
+    crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(format_args!("filesystem-changes:{operation}"), work)
+    })
+    .map(IdempotencyKey)
 }
 
 pub(super) fn once_key(

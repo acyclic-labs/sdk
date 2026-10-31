@@ -127,7 +127,17 @@ impl FileTool {
                     io,
                 );
             }
-            Self::Write => {
+            Self::Insert => {
+                let input = decode::<InsertFileInput>(&invocation.arguments, work)?;
+                return self.path_source(
+                    scope,
+                    &input.0.path,
+                    input.0.version.as_deref(),
+                    work,
+                    io,
+                );
+            }
+            Self::Write | Self::Create => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 self.public_path(&input.0.path, io)?;
                 if input.0.path.len() > scope.limits().path_bytes {

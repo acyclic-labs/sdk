@@ -15,7 +15,25 @@ impl FileTool {
         ) = match self {
             Self::Read => return crate::tools::catalog::READ.bind_with_projection(mode),
             Self::Write => return crate::tools::catalog::WRITE.bind_with_projection(mode),
+            Self::Create => (
+                "create_file",
+                "conditional-file-1",
+                "Create a UTF-8 file only while its path is absent",
+                schema::input::<WriteFileInput>()?,
+                schema::output::<FileResult>()?,
+                FileProjection::model_schema(mode)?,
+                FileProjection::Publication(mode),
+            ),
             Self::Edit => return crate::tools::catalog::EDIT.bind_with_projection(mode),
+            Self::Insert => (
+                "insert_lines",
+                "portable-insert-1",
+                "Insert UTF-8 lines after one line boundary of the authorized source in one compare-and-publish",
+                schema::input::<InsertFileInput>()?,
+                schema::output::<FileResult>()?,
+                FileProjection::model_schema(mode)?,
+                FileProjection::Publication(mode),
+            ),
             Self::Patch { .. } => (
                 "acyclic.patch_file",
                 "portable-patch-4",
@@ -46,7 +64,7 @@ impl FileTool {
         };
         definition.validate(&mut None)?;
         Ok(Tool {
-            hook_names: if matches!(self, Self::Patch { .. }) {
+            hook_names: if matches!(self, Self::Patch { .. } | Self::Insert) {
                 &["Edit"]
             } else {
                 &[]

@@ -3,7 +3,7 @@ use super::*;
 // A token transports the original reference; it is never an authority or an
 // index into mutable process state. Its decoded reference goes through the
 // same grant and immutable-content checks as every other content read.
-pub(super) fn decode_version(
+pub(crate) fn decode_version(
     path: &str,
     version: &str,
     work: crate::NativeWork<'_>,
@@ -37,7 +37,7 @@ pub(super) fn decode_version(
     Ok((file, None))
 }
 
-pub(super) fn encode_version(
+pub(crate) fn encode_version(
     file: &FileRef,
     work: crate::NativeWork<'_>,
 ) -> Result<(String, crate::NativeCustody)> {

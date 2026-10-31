@@ -41,6 +41,13 @@ record!(
     self.new_text.capacity()
 );
 record!(
+    InsertFileInput,
+    self,
+    self.path.capacity(),
+    self.version.as_ref().map_or(0, String::capacity),
+    self.new_text.capacity()
+);
+record!(
     PatchFileInput,
     self,
     self.file.logical_owned_bytes()?,

@@ -219,9 +219,71 @@ pub(crate) fn exact_replace(
     Ok(output)
 }
 
+/// Inserts at a line boundary, preserving source bytes and publishing once.
+/// Work depends on this source/input only, never on prior calls or agents.
+pub(crate) fn insert_lines(
+    source: &str,
+    after: u64,
+    inserted: &str,
+    maximum_bytes: u64,
+    work: &mut NativeCustody,
+) -> Result<String> {
+    if maximum_bytes == 0 || source.len() as u64 > maximum_bytes {
+        return Err(invalid(
+            work,
+            "line insertion source exceeds its byte allowance",
+        ));
+    }
+    let mut offset = 0;
+    let mut lines = source.split_inclusive('\n');
+    for _ in 0..after {
+        let line = lines
+            .next()
+            .ok_or_else(|| invalid(work, "insert_line exceeds the source"))?;
+        charge(work, 0, line.len() as u64)?;
+        offset += line.len();
+    }
+    let prefix_newline = offset > 0 && !source[..offset].ends_with('\n');
+    let suffix_newline = !inserted.ends_with('\n');
+    let size = source
+        .len()
+        .checked_add(inserted.len())
+        .and_then(|length| length.checked_add(usize::from(prefix_newline)))
+        .and_then(|length| length.checked_add(usize::from(suffix_newline)))
+        .filter(|length| *length as u64 <= maximum_bytes)
+        .ok_or_else(|| invalid(work, "line insertion exceeds its byte allowance"))?;
+    let mut output = String::new();
+    reserve_string(work, &mut output, size)?;
+    charge(work, size as u64, 0)?;
+    output.push_str(&source[..offset]);
+    if prefix_newline {
+        output.push('\n');
+    }
+    output.push_str(inserted);
+    if suffix_newline {
+        output.push('\n');
+    }
+    output.push_str(&source[offset..]);
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_insert_keeps_original_boundaries_and_refuses_missing_line() -> Result<()> {
+        let mut work = None;
+        assert_eq!(
+            insert_lines("a\nb\n", 1, "🦀", 32, &mut work)?,
+            "a\n🦀\nb\n"
+        );
+        assert_eq!(insert_lines("a", 1, "b", 4, &mut work)?, "a\nb\n");
+        assert_eq!(insert_lines("a\n", 0, "b\n", 4, &mut work)?, "b\na\n");
+        assert!(insert_lines("a\n", 2, "b", 32, &mut work).is_err());
+        assert!(insert_lines("a", 1, "b", 3, &mut work).is_err());
+        Ok(())
+    }
 
     #[test]
     fn exact_edit_preserves_utf8_and_rejects_overlapping_matches() -> Result<()> {
