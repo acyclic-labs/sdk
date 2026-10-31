@@ -42,7 +42,7 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 }
 
 #[test]
-fn exported_parent_is_the_original_registry_edge_without_retaining_its_owner()
+fn exported_evidence_retains_original_parent_and_native_field_contract()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Export, Outcome, Sink};
     use std::sync::{Arc, mpsc};
@@ -110,6 +110,7 @@ fn exported_parent_is_the_original_registry_edge_without_retaining_its_owner()
     assert_eq!(abandoned.sample().outcome, Outcome::Incomplete);
     assert_eq!(abandoned.sample().parent_id, Some(&owner));
     assert_eq!(failed.sample().outcome, Outcome::Err);
+    assert_eq!(failed.sample().durability, None);
     assert_eq!(failed.sample().parent_id, Some(&owner));
     assert_ne!(failed.sample().parent_id, Some(&unrelated));
     // Borrowed sinks preserve the same edge when preparing credited output.
@@ -123,6 +124,72 @@ fn exported_parent_is_the_original_registry_edge_without_retaining_its_owner()
     );
     assert!(closed.contains(&unrelated), "worker retained its caller");
     assert!(closed.contains(failed.sample().span_id));
+
+    // Exercise the producer's field contract through the real registry and
+    // credited sink. This checks projection, not an additional native hook.
+    use acyclic_observability::{DurabilityAttempt, DurabilityRequest, DurabilitySyscall};
+    let native = std::fs::File::open("").expect_err("an empty path cannot open a file");
+    let code = native.raw_os_error().ok_or("native error code absent")?;
+    let (fields, mut field_output) = Export::channel(Arc::new(Semaphore::new(1)), false);
+    let field_dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(fields)));
+    for (requested, syscall, expected) in [
+        ("full", "fsync", Some(DurabilitySyscall::Fsync)),
+        ("full", "fdatasync", Some(DurabilitySyscall::Fdatasync)),
+        ("full", "F_FULLFSYNC", Some(DurabilitySyscall::FullFsync)),
+        (
+            "barrier",
+            "F_BARRIERFSYNC",
+            Some(DurabilitySyscall::BarrierFsync),
+        ),
+        (
+            "full",
+            "FlushFileBuffers",
+            Some(DurabilitySyscall::FlushFileBuffers),
+        ),
+        ("full", "syncfs", Some(DurabilitySyscall::Syncfs)),
+        ("unrecognized", "unrecognized", None),
+    ] {
+        tracing::dispatcher::with_default(&field_dispatch, || {
+            let span = tracing::info_span!(
+                "acyclic.runtime.durability",
+                requested,
+                syscall,
+                descriptor = 0_u64,
+                error.os = tracing::field::Empty,
+                outcome = tracing::field::Empty,
+            );
+            span.record("error.os", code);
+            // A later generic/overwritten error must not replace original evidence.
+            span.record("error.os", i64::from(code) + 1);
+            span.record("outcome", "err");
+        });
+        let record = ready(field_output.recv())?.ok_or("typed attempt sample absent")?;
+        let attempt = record.sample().durability.ok_or("attempt fields absent")?;
+        assert_eq!(attempt.syscall, expected);
+        assert_eq!(attempt.descriptor, Some(0), "zero is a present opaque ID");
+        assert_eq!(attempt.os_error, Some(code), "first native code was lost");
+        assert_eq!(
+            attempt.requested,
+            match requested {
+                "full" => Some(DurabilityRequest::Full),
+                "barrier" => Some(DurabilityRequest::Barrier),
+                _ => None,
+            }
+        );
+    }
+    tracing::dispatcher::with_default(&field_dispatch, || {
+        drop(tracing::info_span!(
+            "acyclic.runtime.durability",
+            error.os = i64::MAX,
+            outcome = "err",
+        ));
+    });
+    let absent = ready(field_output.recv())?.ok_or("unknown attempt sample absent")?;
+    assert_eq!(
+        absent.sample().durability,
+        Some(DurabilityAttempt::default())
+    );
     Ok(())
 }
 
