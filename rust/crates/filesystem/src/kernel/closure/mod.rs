@@ -200,6 +200,7 @@ pub(crate) struct CachedProof {
 
 /// A publication proof whose reuse waits on its own append outcome.
 pub(crate) type PendingProof = Unpublished<RetainedArc<CachedProof>, CachedProofSlot>;
+pub(crate) type PublishedProof = published::Published<RetainedArc<CachedProof>>;
 type CachedProofSlot = RetainedArc<ProofSlot<RetainedArc<CachedProof>>>;
 
 /// Proves the complete immutable object closure and namespace/file-table consistency.

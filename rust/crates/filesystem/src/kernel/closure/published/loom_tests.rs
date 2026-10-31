@@ -117,7 +117,7 @@ fn commit(world: &World, append: Append, broken: Broken) {
         store.history.push(G1);
         store.holds = vec![G1];
         drop(store);
-        pending.publish(&outcome(1, false));
+        let _ = pending.publish(&outcome(1, false));
     }
     world.store.lock().unwrap().holds.clear();
 }
@@ -172,7 +172,7 @@ fn model(append: Append, retire: bool, broken: Broken) {
                 ..Store::default()
             }),
         });
-        Unpublished::new(
+        let _ = Unpublished::new(
             Arc::clone(&world.slot),
             CollectionEpoch::read(Some(&world.epochs)),
             Arc::new(Proved {
@@ -252,7 +252,7 @@ fn ordered_publications<const ORDERED: bool>(retry: bool) {
         let new = ticket(2);
         let publish = move |ticket: Unpublished<Arc<u64>>, sequence, retry| {
             if ORDERED {
-                ticket.publish(&outcome(sequence, retry));
+                let _ = ticket.publish(&outcome(sequence, retry));
             } else {
                 ticket.install::<false, true>(Sequence::new(sequence));
             }
@@ -290,10 +290,13 @@ fn epoch_refresh<const REFRESH: bool>() {
         let epochs = Epochs::default();
         let slot = Arc::new(ProofSlot::default());
         let old_epoch = CollectionEpoch::read(Some(&epochs));
-        Unpublished::new(slot.clone(), old_epoch, Arc::new(0)).publish(&outcome(1, false));
+        let held = Unpublished::new(slot.clone(), old_epoch, Arc::new(0))
+            .publish(&outcome(1, false))
+            .unwrap();
         let delayed = Unpublished::new(slot.clone(), old_epoch, Arc::new(0));
         epochs.begin();
         assert!(slot.current(Some(&epochs)).is_none());
+        assert!(held.current(Some(&epochs)).is_none());
         let fresh = Unpublished::new(
             slot.clone(),
             CollectionEpoch::read(Some(&epochs)),
@@ -303,18 +306,19 @@ fn epoch_refresh<const REFRESH: bool>() {
         let old = loom::thread::spawn(move || delayed.publish(&outcome(1, false)));
         let retry = loom::thread::spawn(move || {
             if REFRESH {
-                fresh.publish(&outcome(1, true));
+                let _ = fresh.publish(&outcome(1, true));
             } else {
                 fresh.install::<true, false>(Sequence::new(1));
             }
         });
-        old.join().unwrap();
+        let held = old.join().unwrap().unwrap();
+        assert!(held.current(Some(&epochs)).is_none());
         retry.join().unwrap();
         let current = slot
             .current(Some(&epochs))
             .expect("retry lost the fresh epoch proof");
         assert!(Arc::ptr_eq(&current, &expected));
-        Unpublished::new(
+        let _ = Unpublished::new(
             slot.clone(),
             CollectionEpoch::read(Some(&epochs)),
             Arc::new(2),

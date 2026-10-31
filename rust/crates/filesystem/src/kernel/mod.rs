@@ -228,7 +228,9 @@ pub use publication::{
     PublicationOwner, PublicationReceipt, PublishGenerationRequest, PublishedGeneration,
     decode_published_generation, publish_generation,
 };
-pub(crate) use publication::{PublicationPreconditions, contextual_publication_fingerprint};
+pub(crate) use publication::{
+    PublicationPreconditions, RetainedPublication, contextual_publication_fingerprint,
+};
 pub(crate) use publication::{
     decode_publication_evidence_with_accounting, publish_generation_async_guarded,
 };

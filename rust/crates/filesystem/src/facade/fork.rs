@@ -35,6 +35,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ),
         WorkspaceError,
     > {
+        if !self.same_deployment(&source.workspace.volume.fs) {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let published = source.publication_closure.as_ref().and_then(|slot| {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .published
+                .clone()
+        });
         let config = source.workspace.volume.config;
         accounting.check()?;
         let proven_at = self.inner.objects.collection_sweeps();
@@ -102,7 +111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 generation_root,
                 proven_at,
                 destination_id.volume_id(),
-                Some(source.workspace.volume.id),
+                Some((source.workspace.volume.id, published)),
                 config,
                 accounting,
                 cancellation,
@@ -139,7 +148,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         generation_root: ObjectId,
         proven_at: u64,
         volume_id: VolumeId,
-        fork_of: Option<VolumeId>,
+        fork_of: Option<(VolumeId, Option<crate::kernel::closure::PublishedProof>)>,
         config: VolumeConfig,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,

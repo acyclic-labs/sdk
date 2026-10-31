@@ -8,8 +8,22 @@ pub(super) struct LastCommit {
     pub(super) head: Head,
 }
 
-// Single-use custody from the original authenticated publication.
-pub(crate) type PublicationClosure<A, O> = Arc<Mutex<Option<VerifiedPublication<A, O>>>>;
+pub(crate) type PublicationClosure<A, O> =
+    crate::kernel::allocation::retained::RetainedArc<Mutex<PublicationCustody<A, O>>>;
+
+pub(crate) struct PublicationCustody<A: 'static, O: 'static> {
+    pub(crate) pin: Option<VerifiedPublication<A, O>>,
+    pub(crate) published: Option<crate::kernel::closure::PublishedProof>,
+}
+
+impl<A, O> PublicationCustody<A, O> {
+    fn empty() -> Self {
+        Self {
+            pin: None,
+            published: None,
+        }
+    }
+}
 
 pub(crate) struct VerifiedPublication<A: 'static, O: 'static> {
     pub(super) filesystem: Fs<A, O>,
@@ -61,23 +75,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let checkpoint_root = checkpoint.value;
         let mut work = checkpoint.work;
         let request = self.publication_request(operation_id, expected, checkpoint_root);
-        let custody_bytes = crate::foundation::usize_to_u64(
-            std::mem::size_of::<Mutex<Option<VerifiedPublication<A, O>>>>()
-                + 2 * std::mem::size_of::<usize>(),
+        let mut custody_accounting = KernelAccounting::standalone(
+            remaining(work, budget).map_err(|failure| failure.map_error(E::from))?,
+            cancellation,
         );
-        let prospective = add(
-            work,
-            WorkCounters {
-                allocation_operations: 1,
-                peak_allocation_bytes: custody_bytes,
-                ..WorkCounters::default()
-            },
+        let publication_slot = PublicationClosure::new(
+            Mutex::new(PublicationCustody::empty()),
+            &mut custody_accounting,
         )
-        .map_err(|failure| failure.map_error(E::from))?;
-        remaining(prospective, budget)
-            .map_err(|failure| OperationFailure::new(E::from(failure.error), work))?;
-        let publication_slot = Arc::new(Mutex::new(None));
-        work = prospective;
+        .map_err(|error| OperationFailure::new(E::from(error), work))?;
+        let custody_work = custody_accounting.spent();
+        let custody_bytes = custody_work.peak_allocation_bytes;
+        work = merge_simultaneous_work(work, custody_work, 0, budget)
+            .map_err(|failure| failure.map_error(E::from))?;
         let mut publication_budget =
             remaining(work, budget).map_err(|failure| failure.map_error(E::from))?;
         publication_budget.peak_allocation_bytes -= custody_bytes;
@@ -123,12 +133,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             failure
         })?;
         drop(operation_evidence);
-        work = merge_simultaneous_work(work, publication.work, custody_bytes, budget)
+        work = merge_simultaneous_work(work, publication.receipt.work, custody_bytes, budget)
             .map_err(|failure| failure.map_error(E::from))?;
         let outcome = self
             .apply_publication(
                 operation_id,
-                (publication, KernelOwnedAllocation::Standalone),
+                crate::kernel::RetainedPublication {
+                    receipt: publication.receipt,
+                    published: publication.published,
+                    allocation: KernelOwnedAllocation::Standalone,
+                },
                 proven_at,
                 publication_slot,
                 prepared_roots,
@@ -279,11 +293,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 .await
                 .map_err(E::from)?;
             let request = self.publication_request(operation_id, expected, checkpoint_root);
-            let (publication_slot, mut slot_allocation) =
-                VerifiedPublication::<A, O>::native_slot(original).map_err(E::from)?;
+            let publication_slot = VerifiedPublication::<A, O>::native_slot(original, cancellation)
+                .map_err(E::from)?;
             let proven_at = self.volume.fs.inner.objects.collection_sweeps();
             let mut prepared_roots = None;
-            let mut publication = {
+            let publication = {
                 let mut prepare_roots =
                     |root: &GenerationRoot,
                      proof_guard: &mut crate::NativeAllocation,
@@ -321,15 +335,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 .await?
             };
             drop(operation_evidence);
-            publication
-                .1
-                .absorb(&mut slot_allocation)
-                .map_err(FsError::from)
-                .map_err(E::from)?;
-            let retained = (
-                publication.0,
-                KernelOwnedAllocation::NativeOriginal(publication.1),
-            );
+            let retained = crate::kernel::RetainedPublication {
+                receipt: publication.receipt,
+                published: publication.published,
+                allocation: KernelOwnedAllocation::NativeOriginal(publication.allocation),
+            };
             self.apply_publication(
                 operation_id,
                 retained,
@@ -428,39 +438,45 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(super) fn apply_publication(
         &mut self,
         operation_id: OperationId,
-        mut retained: (PublicationReceipt, KernelOwnedAllocation),
+        mut retained: crate::kernel::RetainedPublication<KernelOwnedAllocation>,
         proven_at: u64,
         publication_slot: PublicationClosure<A, O>,
         mut prepared_roots: Option<PreparedCheckoutRoots>,
     ) -> Result<LivePublicationObservation, FsError> {
-        let generation_id = retained.0.proof.generation_id;
+        let generation_id = retained.receipt.proof.generation_id;
         let checkpoint_root = generation_id.object_id();
         self.publication_closure = if matches!(
-            retained.0.outcome,
+            retained.receipt.outcome,
             AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_)
         ) {
             *publication_slot
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(VerifiedPublication {
-                filesystem: self.volume.fs.clone(),
-                generation_root: checkpoint_root,
-                volume_id: retained.0.proof.root.volume_id,
-                limits: closure_limits(self.volume.config),
-                objects: std::mem::take(&mut retained.0.proof.objects),
-                proven_at,
-                _allocation: std::mem::replace(&mut retained.1, KernelOwnedAllocation::Standalone),
-            });
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = PublicationCustody {
+                published: retained.published.take(),
+                pin: Some(VerifiedPublication {
+                    filesystem: self.volume.fs.clone(),
+                    generation_root: checkpoint_root,
+                    volume_id: retained.receipt.proof.root.volume_id,
+                    limits: closure_limits(self.volume.config),
+                    objects: std::mem::take(&mut retained.receipt.proof.objects),
+                    proven_at,
+                    _allocation: std::mem::replace(
+                        &mut retained.allocation,
+                        KernelOwnedAllocation::Standalone,
+                    ),
+                }),
+            };
             Some(publication_slot)
         } else {
             None
         };
-        let outcome = checkout_commit_outcome(&retained.0);
+        let outcome = checkout_commit_outcome(&retained.receipt);
         if !matches!(
             outcome,
             LivePublicationObservation::Committed { .. }
                 | LivePublicationObservation::AlreadyCommitted { .. }
         ) {
-            drop(retained.0.proof);
+            drop(retained.receipt.proof);
             return Ok(outcome);
         }
         if let LivePublicationObservation::Committed { head, .. }
@@ -468,7 +484,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         {
             self.install_root_replacement(
                 checkpoint_root,
-                retained.0.proof.root,
+                retained.receipt.proof.root,
                 prepared_roots.take().ok_or(FsError::InvalidDiff)?,
             )?;
             self.generation_root = checkpoint_root;

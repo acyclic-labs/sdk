@@ -4,12 +4,22 @@ use super::*;
 use crate::WorkCounters;
 use crate::kernel::allocation::KernelAccounting;
 
+#[derive(Clone, Copy)]
+enum ForkSource {
+    Head,
+    Unheld,
+    Held,
+    Pinned,
+    WrongGeneration,
+    #[cfg(not(target_arch = "wasm32"))]
+    NativePinned,
+}
+
 /// The work to prove a fork of `files` settled files plus one more commit,
-/// forked from the head, whose proof is published, or from the generation
-/// before it, which the slot no longer holds, so its proof walks the closure.
+/// using the latest slot, the original held proof, or a full closure walk.
 async fn fork_proof_work(
     files: u8,
-    from_head: bool,
+    source_kind: ForkSource,
 ) -> Result<WorkCounters, Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
     let fs = Fs::memory();
@@ -19,12 +29,86 @@ async fn fork_proof_work(
             .write_text(&format!("/{file}"), &"x".repeat(5_000 + usize::from(file)))
             .await?;
     }
-    let older = workspace.head(B, &cancel).await?.value;
-    workspace.write_text("/tip", "tip").await?;
-    let source = if from_head {
-        workspace.head(B, &cancel).await?.value
+    let mut transaction = workspace
+        .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
+        .await?
+        .value;
+    transaction.write_text("/retained", "original").await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let original = matches!(source_kind, ForkSource::NativePinned)
+        .then(|| crate::NativeMaterializationWork::new(B, &cancel))
+        .transpose()
+        .map_err(|(error, _)| error)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let baseline = original.as_ref().map(|work| work.live_allocation_bytes());
+    let commit_ordinary = async |transaction: &mut crate::Transaction<_, _>| {
+        transaction
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        },
+                    )
+                },
+            )
+            .await
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let committed = if let Some(original) = &original {
+        transaction
+            .commit_with_native_work::<crate::WorkspaceError, _, _>(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                original,
+                &cancel,
+                &mut |_| std::future::ready(Ok(())),
+            )
+            .await?
     } else {
-        older
+        commit_ordinary(&mut transaction).await?.value
+    };
+    #[cfg(target_arch = "wasm32")]
+    let committed = commit_ordinary(&mut transaction).await?.value;
+    let crate::TransactionCommit::Committed(mut older) = committed else {
+        return Err("the source must be published".into());
+    };
+    workspace.write_text("/tip", "tip").await?;
+    let source = match source_kind {
+        ForkSource::Head => workspace.head(B, &cancel).await?.value,
+        ForkSource::Unheld => {
+            // Original implementation: only the mutable latest slot survived.
+            older.publication_closure = None;
+            older
+        }
+        ForkSource::Pinned => {
+            older.pin("source-proof-pin", B, &cancel).await?;
+            let custody = older.publication_closure.as_ref().unwrap().lock().unwrap();
+            assert!(custody.pin.is_none());
+            assert!(custody.published.is_some());
+            drop(custody);
+            older
+        }
+        ForkSource::WrongGeneration => {
+            let mut tip = workspace.head(B, &cancel).await?.value;
+            tip.publication_closure = older.publication_closure.clone();
+            // Remove the valid latest proof so only a wrongly bound witness remains.
+            let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
+            drop(discarded);
+            tip
+        }
+        ForkSource::Held => older,
+        #[cfg(not(target_arch = "wasm32"))]
+        ForkSource::NativePinned => {
+            let original = original.as_ref().unwrap();
+            older.pin("source-proof-pin", original, &cancel).await?;
+            older
+        }
     };
     let name = crate::WorkspaceName::new("fork-proof-child", &B, &cancel)?.value;
     let mut accounting = KernelAccounting::standalone(B, &cancel);
@@ -32,7 +116,7 @@ async fn fork_proof_work(
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
     admitted?;
     let start = accounting.spent();
-    let (proof, _, pending, _) = fs
+    let (proof, source_object, pending, filtered) = fs
         .materialize_forked_generation_root(
             &source,
             destination,
@@ -41,12 +125,22 @@ async fn fork_proof_work(
             &cancel,
         )
         .await?;
+    assert_eq!(source_object, source.id.object_id());
+    assert!(!filtered);
     assert!(
         pending.is_some(),
         "the fork's proof must yield a ticket for its own volume"
     );
     drop((proof, pending));
     let end = accounting.spent();
+    drop(source);
+    drop(transaction);
+    drop(workspace);
+    drop(fs);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = &original {
+        assert_eq!(Some(original.live_allocation_bytes()), baseline);
+    }
     Ok(WorkCounters {
         object_probes: end.object_probes - start.object_probes,
         backend_read_operations: end.backend_read_operations - start.backend_read_operations,
@@ -59,18 +153,43 @@ async fn fork_proof_work(
 #[tokio::test]
 async fn a_fork_extends_its_published_source_proof() -> Result<(), Box<dyn std::error::Error>> {
     let (few, many) = (
-        fork_proof_work(4, true).await?,
-        fork_proof_work(32, true).await?,
+        fork_proof_work(4, ForkSource::Head).await?,
+        fork_proof_work(32, ForkSource::Head).await?,
     );
     // Negative control: a source whose proof is not cached walks its closure.
     let (few_walked, many_walked) = (
-        fork_proof_work(4, false).await?,
-        fork_proof_work(32, false).await?,
+        fork_proof_work(4, ForkSource::Unheld).await?,
+        fork_proof_work(32, ForkSource::Unheld).await?,
     );
     assert_eq!(few, many, "the fork's proof grew with its source's closure");
     assert!(
         many_walked.object_bytes_read > few_walked.object_bytes_read,
         "the walk must grow with the closure: {few_walked:?} vs {many_walked:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_held_generation_keeps_its_original_proof_after_publication_and_pin()
+-> Result<(), Box<dyn std::error::Error>> {
+    let few = fork_proof_work(4, ForkSource::Held).await?;
+    let many = fork_proof_work(32, ForkSource::Held).await?;
+    let pinned = fork_proof_work(32, ForkSource::Pinned).await?;
+    let few_walked = fork_proof_work(4, ForkSource::Unheld).await?;
+    let many_walked = fork_proof_work(32, ForkSource::Unheld).await?;
+    let wrong = fork_proof_work(32, ForkSource::WrongGeneration).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(many, fork_proof_work(32, ForkSource::NativePinned).await?);
+    assert_eq!(few, many, "held proof work grew with the source closure");
+    assert_eq!(many, pinned, "pin consumed the original reusable summary");
+    assert!(many_walked.object_bytes_read > few_walked.object_bytes_read);
+    assert!(many_walked.object_bytes_read > many.object_bytes_read);
+    assert!(
+        wrong.object_bytes_read > many.object_bytes_read,
+        "a witness of another generation must not vouch for the source"
+    );
+    eprintln!(
+        "held4={few:?} held32={many:?} unheld4={few_walked:?} unheld32={many_walked:?} wrong={wrong:?}"
     );
     Ok(())
 }

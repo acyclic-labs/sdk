@@ -129,6 +129,23 @@ pub struct PublicationReceipt {
     pub work: WorkCounters,
 }
 
+/// Private handback of the same authenticated proof and its original funding.
+pub(crate) struct RetainedPublication<A> {
+    pub(crate) receipt: PublicationReceipt,
+    pub(crate) published: Option<crate::kernel::closure::PublishedProof>,
+    pub(crate) allocation: A,
+}
+
+impl<A: std::fmt::Debug> std::fmt::Debug for RetainedPublication<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetainedPublication")
+            .field("receipt", &self.receipt)
+            .field("published", &self.published.is_some())
+            .field("allocation", &self.allocation)
+            .finish()
+    }
+}
+
 /// Publication failure retaining every unit of work spent before rejection.
 pub type PublicationFailure = OperationFailure<PublicationError>;
 
