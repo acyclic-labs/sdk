@@ -172,60 +172,33 @@ impl Fixture {
         };
         // Use the same publication owner as session creation. Concatenating
         // independent root requests duplicates their shared activation stream.
-        let mut first_request: Option<CommitRequest> = None;
+        let mut first_request = None;
         let mut publishing = FuturesUnordered::new();
         for index in 0..agents {
-            let agent = id(index)?;
-            let expected = AgentPath::root(&agent);
-            let fresh = vec![fixture.volume(&agent)?];
-            let prepared = Box::pin(fixture.bound.prepare_root(
-                &IntentId::try_from(format!("population-{index}").as_str())?,
-                RootRequest {
-                    agent,
-                    fresh,
-                    retained: Vec::new(),
-                    brief: None,
-                    policy: None,
-                },
-            ))
-            .await?;
-            if index == 0 && agents > 1 {
-                first_request = Some(prepared.request().clone());
-            } else if let Some(mut invalid) = first_request.take() {
-                invalid
-                    .conditions
-                    .extend(prepared.request().conditions.iter().cloned());
-                invalid
-                    .mutations
-                    .extend(prepared.request().mutations.iter().cloned());
-                if acyclic_stream::request::validate_commit(&mut invalid)
-                    != Err(acyclic_stream::StreamError::InvalidArgument)
-                {
-                    return Err("root composition oracle accepted concatenated publications".into());
-                }
-                emit(serde_json::json!({
-                    "schema": 1, "kind": "negative_control",
-                    "control": "concatenated real root publications",
-                    "agents": agents, "result": "typed invalid argument before submission",
-                }))?;
-            }
-            let fixture = &fixture;
-            publishing.push(async move {
-                let outcome = Box::pin(fixture.bound.submit_root(prepared)).await?;
-                require_root(&outcome, &expected)
-            });
+            publishing.push(fixture.publish_root(index, agents > 1 && index < 2));
             if publishing.len() == setup_credit {
-                publishing
+                let request = publishing
                     .try_next()
                     .await?
                     .ok_or("root publication credit lost its producer")?;
+                check_root_composition(&mut first_request, request, agents)?;
             }
         }
-        // Each original submission retains its own intent, sealed request and
-        // holds. Concurrent submissions can share the provider's group sync;
-        // there is no combined root request or replacement idempotency key.
-        while publishing.try_next().await?.is_some() {}
+        // Credit covers preparation too: sealing can itself await durable
+        // object publication. Each original lifecycle retains its own intent,
+        // request, holds and receipt while the provider shares group sync.
+        while let Some(request) = publishing.try_next().await? {
+            check_root_composition(&mut first_request, request, agents)?;
+        }
         drop(publishing);
+        if first_request.is_some() {
+            return Err("root composition control lost its second original request".into());
+        }
+        emit(serde_json::json!({
+            "schema": 1, "kind": "setup_phase", "phase": "root-publications-complete",
+            "agents": agents, "elapsed_seconds": start.elapsed().as_secs_f64(),
+            "setup_credit": setup_credit,
+        }))?;
         let runtime = fixture.bound.agents().runtime();
         // Registration queues initial replay. Prove that the idle oracle
         // refuses this real unsettled population before consuming that work.
@@ -249,6 +222,56 @@ impl Fixture {
         )?;
         Ok(fixture)
     }
+
+    async fn publish_root(
+        &self,
+        index: usize,
+        retain_request: bool,
+    ) -> Result<Option<CommitRequest>> {
+        let agent = id(index)?;
+        let expected = AgentPath::root(&agent);
+        let prepared = Box::pin(self.bound.prepare_root(
+            &IntentId::try_from(format!("population-{index}").as_str())?,
+            RootRequest {
+                fresh: vec![self.volume(&agent)?],
+                agent,
+                retained: Vec::new(),
+                brief: None,
+                policy: None,
+            },
+        ))
+        .await?;
+        let request = retain_request.then(|| prepared.request().clone());
+        let outcome = Box::pin(self.bound.submit_root(prepared)).await?;
+        require_root(&outcome, &expected)?;
+        Ok(request)
+    }
+}
+
+fn check_root_composition(
+    first: &mut Option<CommitRequest>,
+    next: Option<CommitRequest>,
+    agents: usize,
+) -> Result {
+    let Some(next) = next else {
+        return Ok(());
+    };
+    let Some(mut invalid) = first.take() else {
+        *first = Some(next);
+        return Ok(());
+    };
+    invalid.conditions.extend(next.conditions);
+    invalid.mutations.extend(next.mutations);
+    if acyclic_stream::request::validate_commit(&mut invalid)
+        != Err(acyclic_stream::StreamError::InvalidArgument)
+    {
+        return Err("root composition oracle accepted concatenated publications".into());
+    }
+    emit(serde_json::json!({
+        "schema": 1, "kind": "negative_control",
+        "control": "concatenated real root publications",
+        "agents": agents, "result": "typed invalid argument before submission",
+    }))
 }
 
 pub(super) fn require_root(outcome: &RootSubmission, expected: &AgentPath) -> Result {
