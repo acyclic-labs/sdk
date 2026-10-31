@@ -240,7 +240,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
             capture::OutputRetention::Collect,
         )
         .await?
-        .0
+        .0?
         .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
         assert!(output.success);
         assert_eq!(
@@ -270,7 +270,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
         capture::OutputRetention::Collect,
     )
     .await?
-    .0
+    .0?
     .ok_or_else(|| Error::Storage("tool search capture was indeterminate".into()))?;
     assert!(!output.success);
     assert!(output.stdout.is_empty());
@@ -296,7 +296,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
         capture::OutputRetention::Collect,
     )
     .await?
-    .0
+    .0?
     .ok_or_else(|| Error::Storage("negative control was indeterminate".into()))?;
     assert!(!output.success);
     assert_eq!(output.stderr, b"ambient-startup");

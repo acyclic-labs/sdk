@@ -55,6 +55,27 @@ impl ExecutionNetwork {
 #[derive(Clone, Debug)]
 pub struct ExecutionGrant(Arc<Grant>);
 
+/// A definitive refusal before guest execution. The ordinary tool result
+/// renderer can consume the reason without repeating the failure prefix.
+#[derive(Debug)]
+pub struct ExecutionRefusal(String);
+
+impl ExecutionRefusal {
+    /// Native enforcement or grant validation reason, without presentation.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ExecutionRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "tool execution failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for ExecutionRefusal {}
+
 #[derive(Debug)]
 struct Grant {
     workspace: BoundPath,
@@ -238,7 +259,10 @@ fn canonical(path: &Path) -> io::Result<PathBuf> {
 }
 
 pub(crate) fn failure(error: io::Error) -> io::Error {
-    if error.to_string().starts_with("tool execution failed: ") {
+    if error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+    {
         return error;
     }
     refused(error)
@@ -247,7 +271,7 @@ pub(crate) fn failure(error: io::Error) -> io::Error {
 fn refused(reason: impl std::fmt::Display) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        format!("tool execution failed: {reason}"),
+        ExecutionRefusal(reason.to_string()),
     )
 }
 
