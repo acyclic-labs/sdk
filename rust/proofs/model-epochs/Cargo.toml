@@ -1,0 +1,8 @@
+[package]
+name = "model-epoch-proofs"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Prove the production kernels without translating the asynchronous runtime.
+[workspace]
