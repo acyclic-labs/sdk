@@ -180,6 +180,35 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     let saved = load_json::<crate::tool::RecordedInvocation>(&*journal, reference, None).await?;
     assert_eq!(saved.0.target, None);
     assert_eq!(saved.0.filesystem, Some(original.binding_identity()));
+    for filesystem in [Some(replacement.clone()), None, Some(foreign.clone())] {
+        let changed = base
+            .clone()
+            .with_task_context(&bind(filesystem)?, operation)?;
+        assert!(
+            matches!(StockExecution::ordinary(&changed).settle_tool_call(&*journal, operation, 0, invocation.clone(), 0, &mut Vec::new(), &mut Vec::new()).await, Err(Error::Indeterminate(id)) if id == operation)
+        );
+    }
+    assert!(matches!(
+        StockExecution::ordinary(&bound)
+            .settle_tool_call(
+                &*journal,
+                operation,
+                0,
+                invocation.clone(),
+                0,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .await?,
+        ExecutionProgress::Ready(())
+    ));
+    let (_, records) = StockExecution::ordinary(&bound)
+        .tool_records(&*journal, operation, 0, "status")
+        .await?;
+    assert!(matches!(
+        RecordedCall::classify(&records).expect("valid claim"),
+        RecordedCall::Completed { .. }
+    ));
 
     // A committed start without its terminal reply cannot select a different
     // current volume, or gain redispatch permission when its binding is lost.

@@ -95,7 +95,11 @@ impl StockExecution<'_> {
             ),
             None => None,
         };
-        let target = if matches!(recorded, RecordedCall::Started(_) | RecordedCall::Unstarted) {
+        let target = if matches!(recorded, RecordedCall::Started(_) | RecordedCall::Unstarted)
+            || original
+                .as_ref()
+                .is_some_and(|record| record.0.filesystem.is_some())
+        {
             self.call_target(&invocation, original.as_ref().map(|record| &record.0))?
         } else {
             Ok(None)
