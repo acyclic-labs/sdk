@@ -163,6 +163,7 @@ impl Registry {
             files: self.files.clone(),
             estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(config.adapter)),
             model,
+            profile: None,
             config,
             capacity,
             key,

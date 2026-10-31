@@ -44,6 +44,39 @@ pub struct BoundTools<'a> {
 }
 
 impl<'a> AgentProfile<'a> {
+    /// Pins provider-facing settings to the original selected model and hard
+    /// capacities. Only the parsed profile can construct this sealed projection.
+    pub fn bind_model(
+        &self,
+        model: &crate::model::Model,
+        capacity: crate::context::ModelContextCapacity,
+    ) -> Result<crate::model::ModelProfileBinding> {
+        let selected = self
+            .prefix()
+            .key
+            .strip_prefix(&model.provider)
+            .and_then(|suffix| suffix.strip_prefix('/'));
+        if selected != Some(model.name.as_str()) || capacity != self.prefix().capacity.model {
+            return Err(invalid(
+                "profile differs from the selected model or hard capacity",
+            ));
+        }
+        Ok(crate::model::ModelProfileBinding {
+            digest: self.digest(),
+            prefix: self.prefix_digest(),
+            reasoning: self.prefix().reasoning,
+            cache: self.prefix().cache,
+            max_output_tokens: self.overlay().max_output_tokens,
+            capacity: crate::context::ModelContextCapacity {
+                context_tokens: self.prefix().capacity.budget_tokens,
+                output_tokens: capacity
+                    .output_tokens
+                    .map(|hard| hard.min(self.prefix().capacity.budget_tokens)),
+            },
+            overlay_effort: self.overlay().effort,
+        })
+    }
+
     /// Resolves every declaration once, preserving profile order and role
     /// restrictions independently. A missing native variant is refused; a
     /// similarly named function or another revision is never substituted.

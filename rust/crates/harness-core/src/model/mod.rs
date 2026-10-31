@@ -21,6 +21,7 @@ mod media;
 pub use image::image_media_type;
 mod prefix;
 mod preparation;
+mod profile;
 mod provider;
 mod reasoning;
 mod request;
@@ -55,6 +56,7 @@ pub(crate) use preparation::{
     charge_items, clone_content, clone_file, clone_messages, clone_model, clone_tool_definition,
     clone_value, hash_bytes, vec_with_capacity,
 };
+pub use profile::ModelProfileBinding;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use provider::NativeModelStream;
 pub use provider::{ModelDispatch, ModelEvent, ModelProvider};
