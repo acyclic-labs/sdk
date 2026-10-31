@@ -1237,3 +1237,106 @@ fn original_turn_interrupt_wakes_every_checkpoint_and_refuses_ready_completion()
         Ok(())
     })
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn native_platform_derivation_retains_original_custody_work_and_stop() -> Result<()> {
+    block_on(async {
+        let (root, caller) = fixture()?;
+        let (source_context, source_owner) = lifetime(&root, &caller)?;
+        let source = Arc::new(root.admit(caller.clone(), source_context)?);
+        let (context, _owner) = lifetime(&root, &caller)?;
+        let verifier = AuthorityVerifier::from_public(
+            root.id.clone(),
+            root.audience.clone(),
+            root.public_workload_trust()?,
+            root.verifier(&mut None)?.public_checkpoint_key(),
+            root.trust_changes(),
+        )?;
+        let port = AdmittedAuthority::from_platform(
+            verifier,
+            source.public_scope()?,
+            context,
+            source.clone(),
+            root.trust_changes(),
+        )?;
+        let runtime = RuntimeAuthority::admitted(port, OperationId::from_bytes([205; 16]));
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(65_536, 32 * 1024 * 1024),
+            &cancellation,
+        )
+        .map_err(|(cause, _)| Error::from(cause))?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
+        let grants = Capabilities::new(["read"]);
+        let issued = runtime
+            .issue_with_work(
+                None,
+                "native-child",
+                &grants,
+                None,
+                &mut Some(&mut io.history_io()),
+            )
+            .await?;
+        assert_eq!(issued.id(), "native-child");
+        assert_eq!(issued.capabilities(), &grants);
+        assert_eq!(issued.parent_proof, Some(*caller.proof));
+        let public = runtime.verifier(&mut Some(&mut io.history_io()))?;
+        public.verify(&issued, &mut Some(&mut io.history_io()))?;
+        assert!(
+            workload::verify(
+                &public,
+                &public.audience,
+                &issued,
+                public.public.now(),
+                &mut Some(&mut io.history_io())
+            )?
+            .is_sealed()
+        );
+        assert!(original.receipt().bytes_encoded > 0);
+        assert!(original.receipt().allocation_operations > 0);
+        // The same original native path cannot widen the platform caller.
+        assert!(
+            runtime
+                .issue_with_work(
+                    None,
+                    "widened",
+                    &Capabilities::new(["write"]),
+                    None,
+                    &mut Some(&mut io.history_io())
+                )
+                .await
+                .is_err()
+        );
+        // Losing the original custody producer ends the next request in a
+        // typed refusal; it cannot derive from the retained public snapshot.
+        drop(source_owner);
+        assert!(matches!(
+            runtime
+                .issue_with_work(
+                    None,
+                    "closed",
+                    &grants,
+                    None,
+                    &mut Some(&mut io.history_io())
+                )
+                .await,
+            Err(Error::Cancelled)
+        ));
+        // The native operation's own event fences even a live issuer.
+        cancellation.cancel();
+        assert!(
+            runtime
+                .issue_with_work(
+                    None,
+                    "cancelled",
+                    &grants,
+                    None,
+                    &mut Some(&mut io.history_io())
+                )
+                .await
+                .is_err()
+        );
+        Ok(())
+    })
+}

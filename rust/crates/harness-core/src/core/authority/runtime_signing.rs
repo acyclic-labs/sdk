@@ -123,11 +123,19 @@ impl AdmissionPort {
         }
     }
     pub(super) fn check(&self, scope: &Scope) -> Result<()> {
+        self.check_with_work(scope, &mut None)
+    }
+
+    pub(super) fn check_with_work(
+        &self,
+        scope: &Scope,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
         if let Self::Platform(owner, ..) = self {
             owner
                 .upgrade()
                 .ok_or_else(|| Error::Unauthorized("platform authority owner is closed".into()))?
-                .check_scope(scope)?;
+                .check_scope_with_work(scope, work)?;
         }
         Ok(())
     }

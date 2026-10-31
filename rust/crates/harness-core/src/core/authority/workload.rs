@@ -407,7 +407,7 @@ pub(super) fn verify(
     if scope.issuer != verifier.id {
         return Err(unauthorized("foreign issuer"));
     }
-    verifier.admission.check(scope)?;
+    verifier.admission.check_with_work(scope, work)?;
     let capability = {
         let trust = verifier.public.trust.read().map_err(unauthorized)?;
         let authenticated = authenticate(&verifier.public, trust.as_ref(), scope, timestamp, work)?;
@@ -421,7 +421,7 @@ pub(super) fn verify(
         )?
     };
     // A foreign owner is never invoked while holding the public trust lock.
-    verifier.admission.check(scope)?;
+    verifier.admission.check_with_work(scope, work)?;
     Ok(capability)
 }
 pub(super) fn verify_trusted(
