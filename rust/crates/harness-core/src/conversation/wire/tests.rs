@@ -124,6 +124,76 @@ async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -
         );
         assert_eq!(source.is_ok(), position == 1);
     }
+    // Generated provenance DTOs exercise the original decoder; they are not
+    // evidence of filesystem authorization or publication completion.
+    let provider = crate::resources::ProviderRef::new(
+        "test".into(),
+        "filesystem".into(),
+        "1".into(),
+        &mut None,
+    )?;
+    let source = crate::context::PinnedContextPath {
+        generation: crate::resources::GenerationRef::new(&provider, &[1], None, None)?.0,
+        root: crate::context::ContextRoot {
+            volume: crate::conversation::VolumeRef::new(
+                provider,
+                "v".into(),
+                crate::conversation::VolumeClass::Project,
+                crate::conversation::VolumeOwner::Project("test".into()),
+                &mut None,
+            )?,
+            directory: "skills".into(),
+        },
+        path: "skills/inspect/SKILL.md".into(),
+    };
+    let context = crate::conversation::envelope::Envelope::new(
+        intent,
+        [7; 32],
+        crate::conversation::envelope::Payload::Context {
+            position: crate::conversation::envelope::SourcePosition::from_record(
+                &acyclic_stream::StreamPath::new("context/changes")?,
+                1,
+                [3; 32],
+                &io,
+            )?,
+            change: crate::conversation::envelope::ContextChange::Removed {
+                source: source.clone(),
+            },
+        },
+        &io,
+    )?;
+    let context_bytes = context.encode(&io, 65_536)?;
+    let (restored, restored_hold) =
+        crate::conversation::envelope::Envelope::decode(&context_bytes, &io)?;
+    let crate::conversation::envelope::Payload::Context {
+        change: crate::conversation::envelope::ContextChange::Removed { source: retained },
+        ..
+    } = restored.payload()
+    else {
+        panic!("context envelope")
+    };
+    assert_eq!(retained, &source);
+    drop(restored);
+    drop(restored_hold);
+    let outside_root = std::str::from_utf8(&context_bytes)
+        .unwrap()
+        .replace("skills/inspect/SKILL.md", "other/inspect/SKILL.md");
+    assert!(crate::conversation::envelope::Envelope::decode(outside_root.as_bytes(), &io).is_err());
+    // The actual generic journal entry point must not bypass the invariant.
+    let mut invalid: serde_json::Value = serde_json::from_str(&outside_root).unwrap();
+    invalid.sort_all_objects();
+    let invalid = serde_json::to_vec(&invalid).unwrap();
+    assert!(
+        crate::executor::decode_json::<crate::conversation::envelope::Envelope>(
+            &invalid,
+            Some(&io),
+        )
+        .is_err()
+    );
+    assert!(
+        crate::executor::decode_json::<crate::conversation::envelope::Envelope>(&invalid, None,)
+            .is_err()
+    );
     let reference = crate::executor::stage_json(
         journal.as_ref(),
         intent,

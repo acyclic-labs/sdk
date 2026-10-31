@@ -140,12 +140,38 @@ pub enum Payload {
 /// Recovery uses the existing journal's intent/result association; there is no
 /// secondary index, cursor, publication key or history search here.
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "EnvelopeFields")]
+#[heap_layout(as = EnvelopeFields)]
 pub struct Envelope {
     version: Version,
     intent: OperationId,
     profile: [u8; 32],
     payload: Payload,
+}
+
+#[derive(Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct EnvelopeFields {
+    version: Version,
+    intent: OperationId,
+    profile: [u8; 32],
+    payload: Payload,
+}
+
+impl TryFrom<EnvelopeFields> for Envelope {
+    type Error = &'static str;
+    fn try_from(fields: EnvelopeFields) -> std::result::Result<Self, Self::Error> {
+        let envelope = Self {
+            version: fields.version,
+            intent: fields.intent,
+            profile: fields.profile,
+            payload: fields.payload,
+        };
+        envelope
+            .validate_context(&mut None)
+            .map_err(|_| "invalid conversation context payload")?;
+        Ok(envelope)
+    }
 }
 
 impl Envelope {
@@ -168,7 +194,14 @@ impl Envelope {
     }
 
     fn validate(&self, io: &PreparationIo) -> Result<()> {
-        crate::executor::with_history_io(Some(io), |work| match &self.payload {
+        crate::executor::with_history_io(Some(io), |work| self.validate_context(work))
+    }
+
+    fn validate_context(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        match &self.payload {
             Payload::Context {
                 change: ContextChange::Skill { metadata },
                 ..
@@ -178,7 +211,7 @@ impl Envelope {
                 ..
             } => source.validate(work),
             Payload::Wire { .. } => Ok(()),
-        })
+        }
     }
 
     /// Original operation identity retained across acknowledgement loss/replay.
@@ -201,7 +234,6 @@ impl Envelope {
         io: &PreparationIo,
         maximum_bytes: u64,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        self.validate(io)?;
         io.encode(self, maximum_bytes, false)
     }
 
@@ -211,13 +243,11 @@ impl Envelope {
         bytes: &[u8],
         io: &'a PreparationIo,
     ) -> Result<(Self, super::ContentHold<'a>)> {
-        let decoded = io.decode(
+        io.decode(
             std::marker::PhantomData::<Self>,
             bytes,
             crate::wire::ErrorCode::Storage,
-        )?;
-        decoded.0.validate(io)?;
-        Ok(decoded)
+        )
     }
 }
 
