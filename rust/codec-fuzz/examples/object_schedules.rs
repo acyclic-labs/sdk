@@ -7,14 +7,18 @@ use std::{collections::BTreeMap, error::Error};
 fn replay() -> Result<(), Box<dyn Error>> {
     let inputs: Vec<_> = std::env::args_os().skip(1).collect();
     if inputs.first().is_some_and(|input| input == "--seed") {
-        let [_, name] = inputs.as_slice() else {
-            return Err("seed selection needs one name; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
-        };
-        let (_, bytes) = seeds()
-            .into_iter()
-            .find(|(candidate, _)| name == candidate.as_str())
-            .ok_or("unknown writer seed; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0")?;
-        return replay_inputs(std::iter::once(Ok(bytes)));
+        let names = &inputs[1..];
+        if names.is_empty() {
+            return Err("seed selection needs names; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
+        }
+        let producers = seeds();
+        return replay_inputs(names.iter().map(|name| {
+            producers
+                .iter()
+                .find(|(candidate, _)| name == candidate.as_str())
+                .map(|(_, bytes)| bytes.clone())
+                .ok_or_else(|| "unknown writer seed; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into())
+        }));
     }
     if inputs.is_empty() {
         return Err("missing input files; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
