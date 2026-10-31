@@ -14,7 +14,7 @@ import { schedule } from "./process.mjs";
 test('installed host admission launches package entries and binds their actual closure',async()=>{
  const directory=dirname(fileURLToPath(import.meta.url)),scope=new Processes();
  const cases=['codex','claude-code','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));
- let entry,dependency,original;
+ let entry,dependency,retained;
  try {
   for(const {inputs:[{host}]} of cases) {
    const native=await nativeHost(host,{});
@@ -26,10 +26,12 @@ test('installed host admission launches package entries and binds their actual c
   const env={E2E_PI:entry,E2E_CODEX:(await nativeHost('codex',{})).entry};
   const before=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
   assert.ok(Object.values(before.hosts).every(host=>host.closure),'every override must bind its dependency tree');
-  // This is Pi's real imported module, not an invented external transcript.
-  const imported=(await readFile(entry,'utf8')).match(/(?:from\s*|import\s*\(\s*)["'](\.[^"']+\.[cm]?js)["']/);
-  assert.ok(imported,'actual Pi entry must retain its relative module import');
-  dependency=join(dirname(entry),imported[1]);original=await readFile(dependency);
+  // The pinned Pi 1.1.0 dist/bundle/cli.js loads this real module through
+  // createRequire(import.meta.url)("./cli-runtime.js"). Replace the directory
+  // entry rather than modifying an inode shared with another installation.
+  dependency=join(dirname(entry),'cli-runtime.js');
+  const original=await readFile(dependency);
+  retained=dependency+'.retained';await rename(dependency,retained);
   await writeFile(dependency,Buffer.concat([original,Buffer.from('\n')]));
   const changed=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
   assert.deepEqual(changed.hosts,before.hosts,'the executable entries did not change');
@@ -46,7 +48,7 @@ test('installed host admission launches package entries and binds their actual c
    capture(){assert.fail('unsupported Pi produced a process result');}}),
    error=>error.code==='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER');
  } finally {
-  if(original)await writeFile(dependency,original);
+  if(retained) {await rm(dependency,{force:true});await rename(retained,dependency);}
   await scope.close();
  }
 });
