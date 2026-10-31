@@ -356,11 +356,11 @@ fn parse_response<'a>(
                 let Some(frame) = frame else { break; };
                 work.remaining()?;
                 let frame = frame?;
-                let (bytes, nodes) = shape(frame.data.as_bytes());
+                let (bytes, nodes) = shape(frame.data().as_bytes());
                 let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                 parser.allocation.absorb(&mut admission)?;
-                let events = model_diagnostic(stream::parse(&mut parser.state, adapter, &frame.data), &mut parser.allocation)?;
-                let terminal = parser.state.terminal && (frame.data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
+                let events = model_diagnostic(stream::parse(&mut parser.state, adapter, frame.data()), &mut parser.allocation)?;
+                let terminal = parser.state.terminal && (frame.data() == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
                 drop(frame);
                 let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
                 let retained = events.iter().try_fold(parser.state.logical_owned_bytes()?.checked_add(slots).ok_or_else(|| invalid("provider retained capacity overflow"))?, |bytes, event| {

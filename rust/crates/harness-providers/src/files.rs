@@ -158,18 +158,12 @@ pub(crate) async fn resolve(
             }
         }
     }
-    let mut remaining = files.maximum_bytes;
     let mut text = Vec::new();
     for message in &request.messages {
         for (file, policy) in message.content.file_parts() {
             if matches!(policy, FileProjectionPolicy::Reference) {
                 continue;
             }
-            charge(
-                &mut remaining,
-                projected_bytes(file, policy)?,
-                "aggregate byte",
-            )?;
             let reader = files.reader.as_ref().ok_or_else(|| {
                 Error::Unsupported("model file byte resolution is unavailable".into())
             })?;
