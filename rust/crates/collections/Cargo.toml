@@ -9,6 +9,7 @@ publish.workspace = true
 description = "Caller-funded bounded collections shared by Acyclic primitives"
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 
 [lints]

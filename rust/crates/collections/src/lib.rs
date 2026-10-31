@@ -4,6 +4,9 @@
 //! at most eight branches per key byte and one leaf, independent of entry count.
 //! Key widths share insertion, accounting, lookup and constant-space retirement.
 
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
+
 mod arc;
 pub mod page;
 pub use arc::arc_allocation_bytes;

@@ -33,17 +33,29 @@ struct Work {
     maximum_claims: Option<u64>,
     cancelled: bool,
     live: Rc<Cell<u64>>,
+    observe_retirement: bool,
+    early_refund: Rc<Cell<bool>>,
 }
 
 struct Allocation {
     bytes: u64,
     live: Rc<Cell<u64>>,
+    observe_retirement: bool,
+    early_refund: Rc<Cell<bool>>,
 }
 
 impl Drop for Allocation {
     fn drop(&mut self) {
-        self.live
-            .set(self.live.get().checked_sub(self.bytes).unwrap());
+        let remaining = self.live.get().checked_sub(self.bytes).unwrap();
+        if self.observe_retirement {
+            let physical = acyclic_test_support::current_allocations()
+                .expect("retirement is inside its original measurement")
+                .bytes_current;
+            if physical > remaining as i64 {
+                self.early_refund.set(true);
+            }
+        }
+        self.live.set(remaining);
     }
 }
 
@@ -78,7 +90,50 @@ impl IndexWork for Work {
         Ok(Allocation {
             bytes,
             live: Rc::clone(&self.live),
+            observe_retirement: self.observe_retirement,
+            early_refund: Rc::clone(&self.early_refund),
         })
+    }
+}
+
+#[test]
+fn original_credit_covers_physical_backing_through_extraction_and_retirement() {
+    for population in [1_u64, 4, 32, 256] {
+        let mut work = Work {
+            observe_retirement: true,
+            ..Work::default()
+        };
+        let measured = acyclic_test_support::measure(|| {
+            let mut table = FixedIndex::default();
+            for value in 0..population {
+                table
+                    .get_or_try_insert_with(value.to_be_bytes(), &mut work, |_| Ok(value))
+                    .expect("original node admission succeeds");
+            }
+            assert_eq!(
+                acyclic_test_support::current_allocations()
+                    .expect("original measurement")
+                    .bytes_current,
+                work.live.get() as i64
+            );
+            work.cancelled = true;
+            for value in (0..population).step_by(2) {
+                let entry = table
+                    .remove_if(value.to_be_bytes(), |observed| *observed == value)
+                    .expect("original leaf remains removable after cancellation");
+                assert_eq!(*entry.value(), value);
+                drop(entry);
+            }
+            drop(table);
+        });
+        assert_eq!(measured.count_total, population * 2 - 1);
+        assert_eq!(measured.count_current, 0);
+        assert_eq!(measured.bytes_current, 0);
+        assert_eq!(work.live.get(), 0);
+        assert!(
+            !work.early_refund.get(),
+            "physical node backing outlived its original credit"
+        );
     }
 }
 
