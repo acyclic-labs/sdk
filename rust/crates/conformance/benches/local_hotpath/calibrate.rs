@@ -9,6 +9,10 @@ use std::{
     time::Instant,
 };
 
+const CALL_BATCH: u32 = 4096;
+const COPY_BATCH: u32 = 4096;
+const HASH_BATCH: u32 = 64;
+
 pub(super) struct Floors {
     flush: f64,
     wake: f64,
@@ -39,7 +43,12 @@ impl Floors {
     }
 }
 
-fn measured(name: &str, values: Vec<f64>, bytes: Option<u32>) -> Result<f64> {
+fn measured(
+    name: &str,
+    values: Vec<f64>,
+    bytes: Option<u32>,
+    operations_per_observation: u32,
+) -> Result<f64> {
     let quantiles = Quantiles::new(&mut values.clone())?;
     if name != "C_timer" && quantiles.p50_ns == 0.0 {
         return Err(format!(
@@ -50,6 +59,12 @@ fn measured(name: &str, values: Vec<f64>, bytes: Option<u32>) -> Result<f64> {
     emit(serde_json::json!({
         "schema": 1, "kind": "calibration", "primitive": name,
         "quantiles": quantiles, "bytes": bytes, "raw_ns": values,
+        "operations_per_observation": operations_per_observation,
+        "quantile_scope": if operations_per_observation == 1 {
+            "single primitive events"
+        } else {
+            "per-operation batch averages; p99 is not an individual-operation tail"
+        },
         "bytes_per_ns": bytes.map(|bytes| f64::from(bytes) / quantiles.p50_ns),
     }))?;
     Ok(quantiles.p50_ns)
@@ -95,20 +110,20 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
             return Err("warm read calibration changed bytes".into());
         }
         let start = Instant::now();
-        for _ in 0..4096 {
+        for _ in 0..COPY_BATCH {
             black_box(&mut destination).copy_from_slice(black_box(&source));
         }
-        copy.push(ns(start.elapsed()) / 4096.0);
+        copy.push(ns(start.elapsed()) / f64::from(COPY_BATCH));
         let start = Instant::now();
-        for _ in 0..64 {
+        for _ in 0..HASH_BATCH {
             black_box(blake3::hash(black_box(&source)));
         }
-        hash.push(ns(start.elapsed()) / 64.0);
+        hash.push(ns(start.elapsed()) / f64::from(HASH_BATCH));
         let start = Instant::now();
-        for value in 0..4096 {
+        for value in 0..u64::from(CALL_BATCH) {
             black_box(call(black_box(value)));
         }
-        calls.push(ns(start.elapsed()) / 4096.0);
+        calls.push(ns(start.elapsed()) / f64::from(CALL_BATCH));
     }
     if wake(1, true).is_ok() {
         return Err("dropped wake producer was accepted as delivery".into());
@@ -130,7 +145,7 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
         sync_parent(&path, Durability::Full)?;
         creation.push(ns(start.elapsed()));
     }
-    measured("F_create_write_flush_directory", creation, Some(1024))?;
+    measured("F_create_write_flush_directory", creation, Some(1024), 1)?;
     let timer_quantiles = Quantiles::new(&mut timer.clone())?;
     let minimum_positive_timer_ns = timer
         .iter()
@@ -138,7 +153,7 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
         .filter(|value| *value > 0.0)
         .min_by(f64::total_cmp)
         .ok_or("all timer-only samples were below timestamp resolution")?;
-    measured("C_timer", timer, None)?;
+    measured("C_timer", timer, None, 1)?;
     emit(serde_json::json!({
         "schema": 1, "kind": "negative_control",
         "control": "timer-only observation without product work",
@@ -147,12 +162,12 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
     Ok(Floors {
         timer: timer_quantiles,
         minimum_positive_timer_ns,
-        flush: measured("F_flush", flush, None)?,
-        wake: measured("W_wake", wake, None)?,
-        call: measured("C_call", calls, None)?,
-        copy_per_byte: measured("B_copy", copy, Some(1024))? / 1024.0,
-        hash_per_byte: measured("B_hash", hash, Some(1024))? / 1024.0,
-        read: measured("R_sys", read, Some(1024))?,
+        flush: measured("F_flush", flush, None, 1)?,
+        wake: measured("W_wake", wake, None, 1)?,
+        call: measured("C_call", calls, None, CALL_BATCH)?,
+        copy_per_byte: measured("B_copy", copy, Some(1024), COPY_BATCH)? / 1024.0,
+        hash_per_byte: measured("B_hash", hash, Some(1024), HASH_BATCH)? / 1024.0,
+        read: measured("R_sys", read, Some(1024), 1)?,
     })
 }
 
