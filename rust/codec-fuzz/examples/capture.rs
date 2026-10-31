@@ -173,6 +173,32 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
+    #[cfg(feature = "storage-schedules")]
+    for (name, bytes) in acyclic_codec_fuzz::object_schedule::seeds() {
+        save(
+            "object_schedule",
+            &name,
+            &bytes,
+            "Manifest::encode and complete GenerationId::to_bytes with explicit mutation/flush, fault, original-site selector and torn-prefix configuration; original LocalMedium operation and Schedule oracle",
+            &mut manifest,
+        )?;
+    }
+    #[cfg(not(feature = "storage-schedules"))]
+    {
+        let previous = match std::fs::read_to_string("corpus/SOURCES.tsv") {
+            Ok(previous) => previous,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(format!("load retained physical corpus provenance failed: {error}; recovery: cargo run --example capture").into()),
+        };
+        // A syntax-only capture cannot replace physical schedule evidence.
+        for line in previous
+            .lines()
+            .filter(|line| line.starts_with("object_schedule/"))
+        {
+            manifest.push_str(line);
+            manifest.push('\n');
+        }
+    }
     capture_semantic(&mut manifest)?;
     save(
         "harness_codecs",
