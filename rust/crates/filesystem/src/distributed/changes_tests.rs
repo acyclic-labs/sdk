@@ -35,7 +35,7 @@ async fn proposal_normalization_reuses_receipt_owned_publication_roots() -> Test
             .provider
             .read(ReadRequest {
                 key: Some(acyclic_stream::ReadKeySeek {
-                    key: Bytes::from_owner(key),
+                    key,
                     before: head
                         .sequence
                         .get()
