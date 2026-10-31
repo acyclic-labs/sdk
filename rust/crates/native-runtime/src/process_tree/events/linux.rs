@@ -153,17 +153,24 @@ impl Poller {
             let token = event.u64;
             if token == WAKE {
                 let mut counter = 0_u64;
-                // SAFETY: an eight-byte read into an owned counter drains the eventfd.
-                let drained = unsafe {
-                    libc::read(
-                        self.wake.as_raw_fd(),
-                        (&raw mut counter).cast(),
-                        size_of::<u64>(),
-                    )
+                let drained = loop {
+                    // SAFETY: an eight-byte read into an owned counter drains the eventfd.
+                    let drained = unsafe {
+                        libc::read(
+                            self.wake.as_raw_fd(),
+                            (&raw mut counter).cast(),
+                            size_of::<u64>(),
+                        )
+                    };
+                    if drained >= 0 {
+                        break drained;
+                    }
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                    // Resume this syscall before advancing the original batch.
                 };
-                if drained < 0 {
-                    return Err(io::Error::last_os_error());
-                }
                 if drained != 8 {
                     return Err(io::ErrorKind::UnexpectedEof.into());
                 }
