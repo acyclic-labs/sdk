@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::{IdempotencyKey, MemoryStream, NativeStreamProvider as _, OwnedBytes};
+use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -101,8 +101,8 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
         let result_bytes = allocation.bytes();
         assert!(result_bytes > 0);
         let pointer = match &outcome {
-            CommitOutcome::Committed(receipt) => receipt.appends.as_ptr(),
-            CommitOutcome::Conflict(_) => std::ptr::null(),
+            CommitOutcome::Committed(receipt) => receipt.appends.as_ptr() as usize,
+            CommitOutcome::Conflict(conflicts) => conflicts.as_ptr() as usize,
         };
         let prepared = store.prepare_native_settlement(
             commit,
@@ -116,7 +116,17 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
         match prepared {
             Ok(prepared) => {
                 assert_eq!(prepared.request(), &exact_request);
-                assert_eq!(prepared.receipt().appends.as_ptr(), pointer);
+                match prepared.outcome() {
+                    CommitOutcome::Committed(receipt) => {
+                        assert_ne!(decision, "conflict");
+                        assert_eq!(receipt.appends.as_ptr() as usize, pointer);
+                    }
+                    CommitOutcome::Conflict(conflicts) => {
+                        assert_eq!(decision, "conflict");
+                        assert!(!conflicts.is_empty());
+                        assert_eq!(conflicts.as_ptr() as usize, pointer);
+                    }
+                }
                 assert!(futures::poll!(collecting.as_mut()).is_pending());
                 let result = if decision == "foreign" {
                     let other = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
@@ -131,11 +141,20 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
                     assert_eq!(commit.request(), &exact_request);
                     assert!(futures::poll!(collecting.as_mut()).is_pending());
                     drop(commit);
+                } else if decision == "conflict" {
+                    let FilesystemCommitOutcome::Rejected(conflicts) = result else {
+                        return Err("original conditional decision was discarded".into());
+                    };
+                    assert_eq!(conflicts.as_ptr() as usize, pointer);
+                    let retained = original.live_allocation_bytes();
+                    assert!(retained >= baseline + result_bytes);
+                    drop(conflicts);
+                    assert!(original.live_allocation_bytes() <= retained - result_bytes);
                 } else {
                     let FilesystemCommitOutcome::Committed(receipt) = result else {
                         return Err("original committed receipt was discarded".into());
                     };
-                    assert_eq!(receipt.appends.as_ptr(), pointer);
+                    assert_eq!(receipt.appends.as_ptr() as usize, pointer);
                     assert!(original.live_allocation_bytes() >= baseline + result_bytes);
                     let retained = original.live_allocation_bytes();
                     drop(receipt);
@@ -146,13 +165,6 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
                 assert_eq!(commit.request(), &exact_request);
                 assert!(futures::poll!(collecting.as_mut()).is_pending());
                 drop(commit);
-            }
-            Err(FilesystemCommitOutcome::Rejected(conflicts)) if decision == "conflict" => {
-                assert!(!conflicts.is_empty());
-                let retained = original.live_allocation_bytes();
-                assert!(retained >= baseline + result_bytes);
-                drop(conflicts);
-                assert!(original.live_allocation_bytes() <= retained - result_bytes);
             }
             _ => return Err("unexpected native settlement decision".into()),
         }

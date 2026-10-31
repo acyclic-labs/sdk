@@ -246,7 +246,7 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     );
     assert_eq!(
         cut.confirm_composed(&validated, 0, &records, &observation, &checkpoint)?,
-        committed
+        Some(committed)
     );
     let acyclic_fs::FilesystemCommitOutcome::Committed(result) = store
         .finish_settlement(validated)
@@ -265,7 +265,7 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         .map_err(|_| invalid(None))?;
     assert_eq!(
         cut.confirm_composed(&validated, 0, &records, &observation, &checkpoint)?,
-        committed
+        Some(committed)
     );
     drop(validated);
     let mut racing = original;
@@ -275,9 +275,16 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         .seal(&mut racing, &mut fs_work)
         .map_err(|_| invalid(None))?;
     let loser = provider.commit(racing.request().clone()).await?;
+    let loser = store
+        .prepare_settlement(racing, loser)
+        .map_err(|_| invalid(None))?;
+    assert_eq!(
+        cut.confirm_composed(&loser, 0, &records, &observation, &checkpoint)?,
+        None
+    );
     assert!(matches!(
-        store.prepare_settlement(racing, loser),
-        Err(acyclic_fs::FilesystemCommitOutcome::Rejected(_))
+        store.finish_settlement(loser).map_err(|_| invalid(None))?,
+        acyclic_fs::FilesystemCommitOutcome::Rejected(_)
     ));
     drop(quota);
     Ok(())

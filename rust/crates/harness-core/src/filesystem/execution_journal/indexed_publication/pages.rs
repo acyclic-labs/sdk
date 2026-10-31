@@ -363,9 +363,9 @@ impl Cut<'_> {
         records: &[OwnedBytes],
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
-    ) -> Result<acyclic_stream::CommitId> {
-        self.confirm_receipt(
-            prepared.receipt(),
+    ) -> Result<Option<acyclic_stream::CommitId>> {
+        self.confirm_members(
+            prepared.outcome(),
             pages_tail,
             records,
             observation,

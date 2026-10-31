@@ -9,7 +9,6 @@ mod tests;
 /// Borrow the value while processing it. The value is destroyed before the
 /// original provider allocation retires; extracting an unfunded result is not
 /// supported.
-#[must_use]
 pub struct FilesystemCommitResult<T> {
     value: T,
     _allocation: super::super::io::ProviderAllocation,
@@ -29,7 +28,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for FilesystemCommitResult<T> {
     }
 }
 
-/// An original sealed request and its completely validated committed receipt.
+/// An original sealed request and its retained provider decision.
 ///
 /// This retains construction capacity, publication holds and provider result
 /// capacity while the caller confirms its semantic members. Only
@@ -39,7 +38,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for FilesystemCommitResult<T> {
 #[must_use]
 pub struct PreparedFilesystemCommit {
     commit: FilesystemCommit,
-    receipt: FilesystemCommitResult<acyclic_stream::CommitReceipt>,
+    outcome: FilesystemCommitResult<CommitOutcome>,
 }
 
 impl PreparedFilesystemCommit {
@@ -48,9 +47,10 @@ impl PreparedFilesystemCommit {
         self.commit.request()
     }
 
-    /// The original complete receipt, without copying or releasing its funding.
-    pub fn receipt(&self) -> &acyclic_stream::CommitReceipt {
-        &self.receipt
+    /// The original decision, without copying or releasing its funding.
+    /// Committed receipts have passed complete canonical request validation.
+    pub fn outcome(&self) -> &CommitOutcome {
+        &self.outcome
     }
 }
 
@@ -58,8 +58,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     /// Validates a caller-submitted portable result before semantic confirmation.
     ///
     /// Every canonical append/fork and range is checked once. A conditional
-    /// loser returns `Rejected`; any refusal returns the unchanged `Unknown`
-    /// request. Neither path advances a cache or marks a publication hold.
+    /// loser remains available for semantic confirmation; any refusal returns
+    /// the unchanged `Unknown` request. Neither path advances a cache or marks
+    /// a publication hold.
     pub fn prepare_settlement(
         &self,
         commit: FilesystemCommit,
@@ -95,27 +96,19 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             drop(allocation);
             return Err(FilesystemCommitOutcome::Unknown { commit, error });
         }
-        match outcome {
-            CommitOutcome::Committed(envelope) => {
-                let receipt = FilesystemCommitResult {
-                    value: envelope,
-                    _allocation: allocation,
-                };
-                if let Err(error) = receipt.validate_request(commit.request()) {
-                    return Err(FilesystemCommitOutcome::Unknown {
-                        commit,
-                        error: map_stream_error(error),
-                    });
-                }
-                Ok(PreparedFilesystemCommit { commit, receipt })
-            }
-            CommitOutcome::Conflict(conflicts) => {
-                Err(FilesystemCommitOutcome::Rejected(FilesystemCommitResult {
-                    value: conflicts,
-                    _allocation: allocation,
-                }))
+        let outcome = FilesystemCommitResult {
+            value: outcome,
+            _allocation: allocation,
+        };
+        if let CommitOutcome::Committed(receipt) = &*outcome {
+            if let Err(error) = receipt.validate_request(commit.request()) {
+                return Err(FilesystemCommitOutcome::Unknown {
+                    commit,
+                    error: map_stream_error(error),
+                });
             }
         }
+        Ok(PreparedFilesystemCommit { commit, outcome })
     }
 
     /// Completes the filesystem side after the caller confirms its own members.
@@ -134,11 +127,25 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         prepared: PreparedFilesystemCommit,
         refresh: impl FnOnce(RecordedCommit, acyclic_stream::CommitId),
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        let PreparedFilesystemCommit { commit, receipt } = prepared;
+        let PreparedFilesystemCommit { commit, outcome } = prepared;
         if let Err(error) = commit.check_owner(self.operation_claims().owner_identity()) {
             return Ok(FilesystemCommitOutcome::Unknown { commit, error });
         }
-        refresh(commit.recorded(), receipt.commit_id);
-        Ok(FilesystemCommitOutcome::Committed(receipt))
+        let FilesystemCommitResult { value, _allocation } = outcome;
+        Ok(match value {
+            CommitOutcome::Committed(receipt) => {
+                refresh(commit.recorded(), receipt.commit_id);
+                FilesystemCommitOutcome::Committed(FilesystemCommitResult {
+                    value: receipt,
+                    _allocation,
+                })
+            }
+            CommitOutcome::Conflict(conflicts) => {
+                FilesystemCommitOutcome::Rejected(FilesystemCommitResult {
+                    value: conflicts,
+                    _allocation,
+                })
+            }
+        })
     }
 }
