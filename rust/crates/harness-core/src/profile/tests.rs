@@ -230,7 +230,8 @@ proptest! {
         prop_assert!(AgentOverride::parse(retired, &approvals).is_err());
         prop_assert!(ProjectLayer::parse(retired).is_err());
         prop_assert!(ModelFiles::parse(retired, MODEL).is_err());
-        prop_assert!(ModelFiles::parse(family, &format!("---\nversion: 1\nkey: test/model\nwatermark_tokens: {budget}\n---\n")).is_err());
+        let retired_model = format!("---\nversion: 1\nkey: test/model\nwatermark_tokens: {budget}\n---\n");
+        prop_assert!(ModelFiles::parse(family, &retired_model).is_err());
         let oversized_role = RoleFile::parse(&WORKER.replacen("version: 1", &format!("version: 1\nmax_output_tokens: {}", output+1), 1)).unwrap();
         prop_assert!(resolve(&model, &oversized_role, &project, &agent).is_err());
     }
