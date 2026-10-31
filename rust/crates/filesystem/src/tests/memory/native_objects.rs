@@ -12,7 +12,8 @@ const BUDGET: WorkBudget = WorkBudget {
     backend_write_operations: 32,
     allocation_operations: 32,
     peak_allocation_bytes: 131_072,
-    items_examined: 128,
+    // Every original operation can traverse the complete canonical key.
+    items_examined: 128 * (24 * ObjectId::ENCODED_LEN as u64 + 4),
     items_returned: 128,
     ..WorkCounters::UNCHARGED
 };

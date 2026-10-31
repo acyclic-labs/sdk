@@ -4,10 +4,11 @@ use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::codec::ReadAllocationStep;
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::file_read::{ReadOwned, reserve_decoded_items};
-use super::types::{Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError};
+use super::types::{Extent, ExtentChild, ExtentItems, ExtentKind, ExtentPage, ExtentPageError};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 
 const DOMAIN: &[u8; 8] = b"ACYFSEXT";
+/// A child ends at the next child's first offset; v1 has one strict layout.
 const VERSION: u16 = 1;
 const LEAF_TAG: u8 = 1;
 const INTERNAL_TAG: u8 = 2;
@@ -16,12 +17,21 @@ const INTERNAL_TAG: u8 = 2;
 pub fn encode_extent_page<E: From<CanonicalDecodeError>>(
     page: &ExtentPage,
     maximum_items: u32,
+    observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E> {
+    encode_extent_items(page.items(), maximum_items, observe, allocation_error)
+}
+
+pub(crate) fn encode_extent_items<E: From<CanonicalDecodeError>>(
+    page: ExtentItems<'_>,
+    maximum_items: u32,
     mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
 ) -> Result<Vec<u8>, E> {
     use super::codec::{EncodeAllocationStep, EncodeWorkStep};
     observe(EncodeWorkStep::Check)?;
-    let encoded_length = extent_page_encoded_length(page, maximum_items)?;
+    let encoded_length = extent_items_encoded_length(page, maximum_items)?;
     observe(EncodeWorkStep::Admit(crate::WorkCounters {
         bytes_encoded: encoded_length as u64,
         ..crate::WorkCounters::UNCHARGED
@@ -39,7 +49,7 @@ pub fn encode_extent_page<E: From<CanonicalDecodeError>>(
         allocation_error,
     )?;
     match page {
-        ExtentPage::Leaf(extents) => {
+        ExtentItems::Leaf(extents) => {
             encoder.u8(LEAF_TAG);
             encoder.u32(count(extents.len())?);
             for extent in extents {
@@ -59,12 +69,11 @@ pub fn encode_extent_page<E: From<CanonicalDecodeError>>(
                 }
             }
         }
-        ExtentPage::Internal(children) => {
+        ExtentItems::Internal(children) => {
             encoder.u8(INTERNAL_TAG);
             encoder.u32(count(children.len())?);
             for child in children {
-                encoder.u64(child.first_offset);
-                encoder.u64(child.end_offset);
+                encoder.u64(child.first);
                 encoder.object(child.page);
             }
         }
@@ -80,32 +89,46 @@ pub(crate) fn extent_page_encoded_length(
     page: &ExtentPage,
     maximum_items: u32,
 ) -> Result<usize, CanonicalDecodeError> {
+    extent_items_encoded_length(page.items(), maximum_items)
+}
+
+fn extent_items_encoded_length(
+    page: ExtentItems<'_>,
+    maximum_items: u32,
+) -> Result<usize, CanonicalDecodeError> {
     page.validate(maximum_items).map_err(invariant)?;
     let mut bytes = DOMAIN
         .len()
         .checked_add(2 + 1 + 4)
         .ok_or(CanonicalDecodeError::LengthOverflow)?;
     match page {
-        ExtentPage::Leaf(extents) => {
+        ExtentItems::Leaf(extents) => {
             for extent in extents {
-                let item_bytes = match extent.kind {
-                    ExtentKind::Hole | ExtentKind::AllocatedZero => 8 + 8 + 1,
-                    ExtentKind::Content { object, .. } => 8 + 8 + 1 + object.encoded_len() + 8,
-                };
                 bytes = bytes
-                    .checked_add(item_bytes)
+                    .checked_add(extent_encoded_length(extent))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
             }
         }
-        ExtentPage::Internal(children) => {
+        ExtentItems::Internal(children) => {
             for child in children {
                 bytes = bytes
-                    .checked_add(16 + child.page.encoded_len())
+                    .checked_add(extent_child_encoded_length(child.page))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
             }
         }
     }
     Ok(bytes)
+}
+
+pub(crate) fn extent_encoded_length(extent: &Extent) -> usize {
+    match extent.kind {
+        ExtentKind::Hole | ExtentKind::AllocatedZero => 8 + 8 + 1,
+        ExtentKind::Content { object, .. } => 8 + 8 + 1 + object.encoded_len() + 8,
+    }
+}
+
+pub(crate) fn extent_child_encoded_length(page: ObjectId) -> usize {
+    8 + page.encoded_len()
 }
 
 pub(crate) fn decode_extent_page_with_accounting(
@@ -135,6 +158,64 @@ pub(crate) fn decode_extent_page_with_accounting(
         crate::foundation::usize_to_u64(bytes),
         owner.custody,
     ))
+}
+
+/// Reads only canonical framing and scalar references; no page allocation.
+pub(crate) fn decode_extent_page_shape(
+    bytes: &[u8],
+    limits: DecodeLimits,
+) -> Result<super::codec::DecodedPageShape, CanonicalDecodeError> {
+    use super::codec::{DecodedPageKind, DecodedPageShape};
+    let mut observe = |_| Ok::<_, CanonicalDecodeError>(());
+    let mut decoder = Decoder::new(
+        bytes,
+        DOMAIN,
+        VERSION,
+        limits.maximum_object_bytes,
+        &mut observe,
+    )?;
+    let (tag, count) = decoder.page_header(limits.maximum_page_items, &mut observe)?;
+    let kind = match tag {
+        LEAF_TAG => {
+            for _ in 0..count {
+                decoder.u64(&mut observe)?;
+                decoder.u64(&mut observe)?;
+                match decoder.u8(&mut observe)? {
+                    1 | 2 => {}
+                    3 => {
+                        decoder.object(ObjectKind::Blob, &mut observe)?;
+                        decoder.u64(&mut observe)?;
+                    }
+                    tag => {
+                        return Err(CanonicalDecodeError::UnknownTag {
+                            field: "extent_kind",
+                            tag,
+                        });
+                    }
+                }
+            }
+            DecodedPageKind::Leaf
+        }
+        INTERNAL_TAG => {
+            for _ in 0..count {
+                decoder.u64(&mut observe)?;
+                decoder.object(ObjectKind::ExtentPage, &mut observe)?;
+            }
+            DecodedPageKind::Internal
+        }
+        tag => {
+            return Err(CanonicalDecodeError::UnknownTag {
+                field: "extent_page",
+                tag,
+            });
+        }
+    };
+    decoder.finish()?;
+    Ok(DecodedPageShape {
+        kind,
+        items: usize::try_from(count).map_err(|_| CanonicalDecodeError::LengthOverflow)?,
+        nested_bytes: 0,
+    })
 }
 
 /// Decodes one canonical page with physical allocation observation.
@@ -184,8 +265,7 @@ pub fn decode_extent_page<E: From<CanonicalDecodeError>>(
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 children.push(ExtentChild {
-                    first_offset: decoder.u64(observe)?,
-                    end_offset: decoder.u64(observe)?,
+                    first: decoder.u64(observe)?,
                     page: decoder.object(ObjectKind::ExtentPage, observe)?,
                 });
                 observe(ReadAllocationStep::Item)?;

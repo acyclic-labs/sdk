@@ -307,7 +307,7 @@ pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObj
     }
     persistent_btree::apply_with_accounting::<S, AttributeFormat, AttributeMutation>(
         store,
-        root,
+        (root, None),
         mutations,
         maximum_mutations,
         limits,

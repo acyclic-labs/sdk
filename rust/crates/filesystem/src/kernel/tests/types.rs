@@ -228,35 +228,24 @@ fn extent_page_validation_rejects_every_malformed_shape() {
             ExtentPageError::EmptyInternalPage,
         ),
         (
-            ExtentPage::Internal(vec![ExtentChild {
-                first_offset: 1,
-                end_offset: 1,
-                page: page(ObjectKind::ExtentPage),
-            }]),
+            ExtentPage::Internal(vec![
+                ExtentChild {
+                    first: 1,
+                    page: page(ObjectKind::ExtentPage),
+                },
+                ExtentChild {
+                    first: 1,
+                    page: page(ObjectKind::ExtentPage),
+                },
+            ]),
             ExtentPageError::InvalidChildRange,
         ),
         (
             ExtentPage::Internal(vec![ExtentChild {
-                first_offset: 0,
-                end_offset: 1,
+                first: 0,
                 page: page(ObjectKind::Blob),
             }]),
             ExtentPageError::WrongChildKind,
-        ),
-        (
-            ExtentPage::Internal(vec![
-                ExtentChild {
-                    first_offset: 0,
-                    end_offset: 1,
-                    page: page(ObjectKind::ExtentPage),
-                },
-                ExtentChild {
-                    first_offset: 2,
-                    end_offset: 3,
-                    page: page(ObjectKind::ExtentPage),
-                },
-            ]),
-            ExtentPageError::NonContiguous,
         ),
     ];
     for (page, error) in cases {

@@ -103,6 +103,48 @@ pub(crate) trait Mutation<F: Format> {
         current: Option<&F::Value>,
     ) -> Result<Option<&'a F::Value>, Self::Error>;
     fn map_error(error: Error<Self::Error>) -> crate::FsError;
+
+    /// Whether this format's mutations rewrite key ranges through
+    /// [`Self::rewrite_range`] rather than replacing single keys.
+    const RANGED: bool = false;
+
+    /// The last key this mutation reaches, inclusive, or `None` for every
+    /// key after its own. Every page holding a reached key is visited.
+    fn last(&self) -> Option<&F::Key> {
+        Some(self.key())
+    }
+
+    /// The first key of a suffix this mutation removes entirely. Pages wholly
+    /// inside that suffix are dropped without being read.
+    fn removes_from(&self) -> Option<&F::Key> {
+        None
+    }
+
+    /// For ranged formats: rewrites one leaf holding `entries`, which tile
+    /// `[lower, upper)`, under the mutations routed to it. Items carried in
+    /// from the left come first in `output`, so neighbours across a page
+    /// boundary can join. Each step admits original work before rewriting. `output` has room for
+    /// every carried item, every entry, and three per mutation.
+    /// Bounds are the routing lower/upper keys and the original root's optional
+    /// exclusive end. That final end validates input without clipping growth.
+    fn rewrite_range(
+        _carried: &[F::Value],
+        _entries: &[F::Value],
+        _mutations: &[(usize, &Self)],
+        _bounds: (Option<&F::Key>, Option<&F::Key>, Option<&F::Key>),
+        _output: &mut Vec<F::Value>,
+        _accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError>
+    where
+        Self: Sized,
+    {
+        Err(Self::map_error(Error::MutationContract))
+    }
+}
+
+/// Whether a mutation reaching `last` reaches `key` too.
+pub(super) fn reaches<K: Ord>(last: Option<&K>, key: &K) -> bool {
+    last.is_none_or(|last| last >= key)
 }
 
 #[derive(Debug, Error)]
@@ -328,16 +370,18 @@ pub(super) const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
 
 pub(crate) use acyclic_collections::page::stable_hash;
 
+#[cfg(test)]
 pub(crate) struct PageChunks<'a, T, L, H> {
     inner: acyclic_collections::page::PageChunks<'a, T, L, H, PAGE_HEADER_BYTES, TARGET_PAGE_BYTES>,
 }
 
+#[cfg(test)]
 impl<'a, T, L, H> PageChunks<'a, T, L, H>
 where
     L: Fn(&T) -> Result<usize, CanonicalDecodeError>,
     H: Fn(&T) -> u64,
 {
-    pub(crate) fn new<E: std::error::Error>(
+    pub(super) fn new<E: std::error::Error>(
         items: &'a [T],
         limits: DecodeLimits,
         level: u16,

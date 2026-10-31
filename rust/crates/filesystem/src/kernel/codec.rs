@@ -317,7 +317,11 @@ impl<'a> Decoder<'a> {
         observe(ReadAllocationStep::Copied(2))?;
         let version = u16::from_le_bytes(version_bytes);
         if !supported_versions.contains(&version) {
-            return Err(CanonicalDecodeError::UnsupportedVersion(version).into());
+            return Err(CanonicalDecodeError::UnsupportedVersion {
+                found: version,
+                expected: supported_versions.iter().copied().max().unwrap_or(0),
+            }
+            .into());
         }
         Ok((
             Self {
@@ -533,9 +537,14 @@ pub enum CanonicalDecodeError {
     /// Object belongs to another canonical domain.
     #[error("canonical object domain is invalid")]
     WrongDomain,
-    /// Object format version is unsupported.
-    #[error("unsupported canonical object version {0}")]
-    UnsupportedVersion(u16),
+    /// Object format version is unsupported; there is no migration path.
+    #[error("canonical object format version {found} is unsupported; expected {expected}")]
+    UnsupportedVersion {
+        /// Version stored in the object header.
+        found: u16,
+        /// Newest version this reader decodes.
+        expected: u16,
+    },
     /// Object ended before a declared field was complete.
     #[error("canonical object is truncated")]
     Truncated,

@@ -649,14 +649,16 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     }
                 }
                 ExtentPage::Internal(children) => {
-                    if children.first().map(|child| child.first_offset) != Some(first)
-                        || children.last().map(|child| child.end_offset) != Some(end)
+                    if children.first().map(|child| child.first) != Some(first)
+                        || children.last().is_none_or(|child| child.first >= end)
                     {
                         return Err(ClosureError::RoutingBoundsMismatch.into());
                     }
-                    for child in children.iter().rev() {
+                    for (index, child) in children.iter().enumerate().rev() {
                         self.examine(1)?;
-                        pending.push((child.page, child.first_offset, child.end_offset, false))?;
+                        // A child ends where its successor begins, or where its parent ends.
+                        let child_end = children.get(index + 1).map_or(end, |next| next.first);
+                        pending.push((child.page, child.first, child_end, false))?;
                     }
                 }
             }

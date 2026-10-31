@@ -613,7 +613,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
             .map(|_| ()),
         ] {
             assert!(
-                matches!(result, Err(CanonicalDecodeError::UnsupportedVersion(actual)) if actual == version)
+                matches!(result, Err(CanonicalDecodeError::UnsupportedVersion { found: actual, .. }) if actual == version)
             );
         }
     }
