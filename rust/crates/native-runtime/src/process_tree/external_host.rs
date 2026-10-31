@@ -13,6 +13,8 @@ use std::process::ExitStatus;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod receipt;
+
 struct State {
     tree: ProcessTree,
     cancelled: bool,
@@ -115,6 +117,8 @@ pub enum ProcessHostPhase {
 /// input is not the selected root's stdin.
 #[derive(Clone, Copy, Debug)]
 pub struct ProcessHostPartialProgress {
+    /// Original completed lease acquisition, or zero when no lease was requested.
+    pub lease_wait: Option<Duration>,
     /// Return from the original custody-bound spawn.
     pub root_admitted: Option<Duration>,
     /// Successful return from the original non-reaping root wait.
@@ -133,6 +137,7 @@ pub struct ProcessHostPartialProgress {
 impl ProcessHostPartialProgress {
     fn new() -> Self {
         Self {
+            lease_wait: None,
             root_admitted: None,
             root_exit_observed: None,
             root_status: None,
@@ -149,6 +154,9 @@ impl ProcessHostPartialProgress {
 pub struct ProcessHostFailure {
     /// The original error, including its native error code and source.
     pub error: io::Error,
+    /// Failure publishing the same terminal receipt after an earlier failure.
+    /// The original operation error above remains authoritative.
+    pub receipt_error: Option<io::Error>,
     /// The original operation that failed.
     pub phase: ProcessHostPhase,
     /// Only observations already supplied by their original producers.
@@ -157,7 +165,11 @@ pub struct ProcessHostFailure {
 
 impl std::fmt::Display for ProcessHostFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "process host {:?}: {}", self.phase, self.error)
+        write!(formatter, "process host {:?}: {}", self.phase, self.error)?;
+        if let Some(error) = &self.receipt_error {
+            write!(formatter, "; terminal receipt publication: {error}")?;
+        }
+        Ok(())
     }
 }
 
@@ -186,6 +198,7 @@ struct Invocation {
     custody: Option<PathBuf>,
     lease: Option<PathBuf>,
     completion: Option<PathBuf>,
+    invocation: Option<String>,
 }
 
 impl Invocation {
@@ -195,9 +208,21 @@ impl Invocation {
         let mut custody = None;
         let mut lease = None;
         let mut completion = None;
+        let mut invocation = None;
         while let Some(argument) = arguments.next() {
             if argument == "--inherit-input" && !inherit_input {
                 inherit_input = true;
+            } else if argument == "--invocation" && invocation.is_none() {
+                let value = arguments.next().ok_or_else(invalid_arguments)?;
+                let value = value.into_string().map_err(|_| invalid_arguments())?;
+                if value.is_empty()
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                {
+                    return Err(invalid_arguments());
+                }
+                invocation = Some(value);
             } else if argument == "--custody" || argument == "--completion" || argument == "--lease"
             {
                 let path = arguments.next().ok_or_else(invalid_arguments)?;
@@ -215,7 +240,9 @@ impl Invocation {
                     return Err(invalid_arguments());
                 }
             } else if Path::new(&argument).is_absolute() {
-                if custody.is_some() && lease.is_some() {
+                if (custody.is_some() && lease.is_some())
+                    || (invocation.is_some() && completion.is_none())
+                {
                     return Err(invalid_arguments());
                 }
                 return Ok(Self {
@@ -225,6 +252,7 @@ impl Invocation {
                     custody,
                     lease,
                     completion,
+                    invocation,
                 });
             } else {
                 return Err(invalid_arguments());
@@ -237,7 +265,7 @@ impl Invocation {
 fn invalid_arguments() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "step=process-host-arguments; recovery=acyclic-process-host [--lease ABSOLUTE_ROOT | --custody ABSOLUTE_DIRECTORY] [--completion ABSOLUTE_FILE] [--inherit-input] ABSOLUTE_EXECUTABLE ARGS",
+        "step=process-host-arguments; recovery=acyclic-process-host [--lease ABSOLUTE_ROOT | --custody ABSOLUTE_DIRECTORY] [--completion ABSOLUTE_FILE [--invocation OPAQUE_ID]] [--inherit-input] ABSOLUTE_EXECUTABLE ARGS",
     )
 }
 
@@ -322,12 +350,24 @@ impl Drop for Directory {
 /// `--lease ABSOLUTE_ROOT` instead uses the shared native file-lock owner and
 /// fences its durable custody before any child launch. It is mutually exclusive
 /// with `--custody`. Lease wait is reported separately from retirement work.
+/// `--invocation OPAQUE_ID` requires `--completion` and explicitly selects the
+/// v3 receipt, bound to that caller-supplied nonsecret identifier. It retains
+/// original phase observations and failure metadata; unobserved retirement is
+/// never certified. Without this option, the exact v2 receipt remains unchanged.
 ///
 /// This is an executable entry point: the caller must exit after it returns.
 /// The control reader can still be blocked on stdin after a normal command
 /// exit, and belongs to that process rather than a reusable runtime service.
 pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) -> io::Result<i32> {
-    run_host(arguments, [], &mut []).map(|(code, _, _, _)| code)
+    let invocation = Invocation::parse(arguments)?;
+    if invocation.invocation.is_some() {
+        return observed_host(Ok(invocation), Instant::now())
+            .map(|completion| completion.exit_code)
+            .map_err(|failure| io::Error::new(failure.error.kind(), failure));
+    }
+    run_host(invocation, [], &mut [])
+        .map(|(code, _, _, _)| code)
+        .map_err(|(error, _)| error)
 }
 
 /// Runs the same host owner and returns its original physical observations.
@@ -340,12 +380,24 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
 pub fn run_external_process_host_with_progress(
     arguments: impl IntoIterator<Item = OsString>,
 ) -> Result<ProcessHostCompletion, ProcessHostFailure> {
+    let origin = Instant::now();
+    observed_host(Invocation::parse(arguments), origin)
+}
+
+fn observed_host(
+    invocation: io::Result<Invocation>,
+    origin: Instant,
+) -> Result<ProcessHostCompletion, ProcessHostFailure> {
     let mut observations = [ProcessHostPartialProgress::new()];
+    let result = invocation
+        .map_err(|error| (error, None))
+        .and_then(|invocation| run_host(invocation, [origin], &mut observations));
     let (exit_code, root_status, cancelled, progress) =
-        run_host(arguments, [Instant::now()], &mut observations).map_err(|error| {
+        result.map_err(|(error, receipt_error)| {
             let [progress] = observations;
             ProcessHostFailure {
                 error,
+                receipt_error,
                 phase: progress.phase,
                 progress,
             }
@@ -359,170 +411,207 @@ pub fn run_external_process_host_with_progress(
 }
 
 fn run_host<const OBSERVATIONS: usize>(
-    arguments: impl IntoIterator<Item = OsString>,
+    mut invocation: Invocation,
     origins: [Instant; OBSERVATIONS],
     observations: &mut [ProcessHostPartialProgress; OBSERVATIONS],
-) -> io::Result<(i32, ExitStatus, bool, Option<ProcessHostProgress>)> {
+) -> Result<(i32, ExitStatus, bool, Option<ProcessHostProgress>), (io::Error, Option<io::Error>)> {
     let origin = origins.first().copied();
-    let invocation = Invocation::parse(arguments)?;
+    let binding = invocation.invocation.take();
     observe(observations, |progress| {
         progress.phase = ProcessHostPhase::ReceiptReservation
     });
-    let mut completion = Completion::open(invocation.completion.as_deref())?;
-    observe(observations, |progress| {
-        progress.phase = ProcessHostPhase::CustodyAdmission
-    });
-    let lease = invocation
-        .lease
-        .as_deref()
-        .map(ProcessCustodyLease::acquire)
-        .transpose()?;
-    let directory = (invocation.custody.is_none() && lease.is_none())
-        .then(Directory::create)
-        .transpose()?;
-    let custody = invocation
-        .custody
-        .as_deref()
-        .or_else(|| directory.as_ref().map(|directory| directory.0.as_path()))
-        .map(ProcessCustody::acquire)
-        .transpose()?;
-    let custody = lease
-        .as_ref()
-        .map(ProcessCustodyLease::custody)
-        .or(custody.as_deref())
-        .ok_or_else(invalid_arguments)?;
-    let mut command = ProcessCommand::new(invocation.executable);
-    command
-        .args(invocation.arguments)
-        .stdin(if invocation.inherit_input {
-            ProcessStdio::inherit()
-        } else {
-            ProcessStdio::null()
-        })
-        .stdout(ProcessStdio::inherit())
-        .stderr(ProcessStdio::inherit());
-    observe(observations, |progress| {
-        progress.phase = ProcessHostPhase::RootAdmission
-    });
-    let mut tree = ProcessTree::spawn_in_custody(&mut command, custody)?;
-    let root_admitted = origin.map(|origin| origin.elapsed());
-    observe(observations, |progress| {
-        progress.root_admitted = root_admitted
-    });
-    // The sole waiter owns the actual Child. Cancellation only asks the same
-    // tree's containment owner to terminate; it never substitutes PID polling.
-    let child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
-    tree.cleanup_on_drop = false;
-    let shared = Arc::new(Shared::<OBSERVATIONS> {
-        state: Mutex::new(State {
-            tree,
-            cancelled: false,
-            failure: None,
-        }),
-        control: std::array::from_fn(|_| OnceLock::new()),
-    });
-    if !invocation.inherit_input {
+    let mut completion =
+        Completion::open(invocation.completion.as_deref()).map_err(|error| (error, None))?;
+    // Keep the original lease until the same completion sink has settled,
+    // including when physical admission or retirement returned an error.
+    let mut lease = None;
+    let result = (|| -> io::Result<_> {
         observe(observations, |progress| {
-            progress.phase = ProcessHostPhase::ControlAdmission
+            progress.phase = ProcessHostPhase::CustodyAdmission
         });
-        let control = Arc::clone(&shared);
-        let started = std::thread::Builder::new()
-            .name("process-host-control".into())
-            .spawn(move || {
-                let input = io::stdin().read(&mut [0]);
-                if let Some(origin) = origin {
-                    let outcome = match &input {
-                        Ok(0) => ProcessHostControl::Eof,
-                        Ok(_) => ProcessHostControl::Input,
-                        Err(error) => ProcessHostControl::Failed {
-                            kind: error.kind(),
-                            raw_os_error: error.raw_os_error(),
-                        },
-                    };
-                    if let Some(slot) = control.control.first() {
-                        let _ = slot.set(ProcessHostControlObservation {
-                            elapsed: origin.elapsed(),
-                            outcome,
-                        });
+        lease = invocation
+            .lease
+            .as_deref()
+            .map(ProcessCustodyLease::acquire)
+            .transpose()?;
+        observe(observations, |progress| {
+            progress.lease_wait = Some(
+                lease
+                    .as_ref()
+                    .map_or(Duration::ZERO, ProcessCustodyLease::waited),
+            );
+        });
+        let directory = (invocation.custody.is_none() && lease.is_none())
+            .then(Directory::create)
+            .transpose()?;
+        let custody = invocation
+            .custody
+            .as_deref()
+            .or_else(|| directory.as_ref().map(|directory| directory.0.as_path()))
+            .map(ProcessCustody::acquire)
+            .transpose()?;
+        let custody = lease
+            .as_ref()
+            .map(ProcessCustodyLease::custody)
+            .or(custody.as_deref())
+            .ok_or_else(invalid_arguments)?;
+        let mut command = ProcessCommand::new(invocation.executable);
+        command
+            .args(invocation.arguments)
+            .stdin(if invocation.inherit_input {
+                ProcessStdio::inherit()
+            } else {
+                ProcessStdio::null()
+            })
+            .stdout(ProcessStdio::inherit())
+            .stderr(ProcessStdio::inherit());
+        observe(observations, |progress| {
+            progress.phase = ProcessHostPhase::RootAdmission
+        });
+        let mut tree = ProcessTree::spawn_in_custody(&mut command, custody)?;
+        let root_admitted = origin.map(|origin| origin.elapsed());
+        observe(observations, |progress| {
+            progress.root_admitted = root_admitted
+        });
+        // The sole waiter owns the actual Child. Cancellation only asks the same
+        // tree's containment owner to terminate; it never substitutes PID polling.
+        let child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
+        tree.cleanup_on_drop = false;
+        let shared = Arc::new(Shared::<OBSERVATIONS> {
+            state: Mutex::new(State {
+                tree,
+                cancelled: false,
+                failure: None,
+            }),
+            control: std::array::from_fn(|_| OnceLock::new()),
+        });
+        if !invocation.inherit_input {
+            observe(observations, |progress| {
+                progress.phase = ProcessHostPhase::ControlAdmission
+            });
+            let control = Arc::clone(&shared);
+            let started = std::thread::Builder::new()
+                .name("process-host-control".into())
+                .spawn(move || {
+                    let input = io::stdin().read(&mut [0]);
+                    if let Some(origin) = origin {
+                        let outcome = match &input {
+                            Ok(0) => ProcessHostControl::Eof,
+                            Ok(_) => ProcessHostControl::Input,
+                            Err(error) => ProcessHostControl::Failed {
+                                kind: error.kind(),
+                                raw_os_error: error.raw_os_error(),
+                            },
+                        };
+                        if let Some(slot) = control.control.first() {
+                            let _ = slot.set(ProcessHostControlObservation {
+                                elapsed: origin.elapsed(),
+                                outcome,
+                            });
+                        }
                     }
-                }
-                let mut state = control
+                    let mut state = control
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.cancelled = true;
+                    state.failure = state
+                        .tree
+                        .terminate_descendants()
+                        .err()
+                        .or_else(|| input.err());
+                });
+            if let Err(admission) = started {
+                let mut state = shared
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state.cancelled = true;
-                state.failure = state
-                    .tree
-                    .terminate_descendants()
-                    .err()
-                    .or_else(|| input.err());
-            });
-        if let Err(admission) = started {
-            let mut state = shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            return Err(reject_control_admission(&mut state.tree, child, admission));
+                return Err(reject_control_admission(&mut state.tree, child, admission));
+            }
         }
-    }
-    observe(observations, |progress| {
-        progress.phase = ProcessHostPhase::RootExit
-    });
-    let waited = super::platform::wait_without_reaping(&child);
-    let root_exit_observed = waited
-        .as_ref()
-        .ok()
-        .and(origin)
-        .map(|origin| origin.elapsed());
-    observe(observations, |progress| {
-        progress.root_exit_observed = root_exit_observed
-    });
-    let mut state = shared
-        .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    observe(observations, |progress| {
-        progress.cancelled = state.cancelled;
-        progress.control = shared.control.first().and_then(OnceLock::get).copied();
-    });
-    if waited.is_ok() {
         observe(observations, |progress| {
-            progress.phase = ProcessHostPhase::Retirement
+            progress.phase = ProcessHostPhase::RootExit
         });
-    }
-    let status = retire_after_observation(&mut state.tree, child, waited, |status| {
-        observe(observations, |progress| progress.root_status = Some(status));
-    })?;
-    let retired = origin.map(|origin| origin.elapsed());
-    observe(observations, |progress| progress.retired = retired);
-    if let Some(failure) = state.failure.take() {
-        observe(observations, |progress| {
-            progress.phase = ProcessHostPhase::Control
-        });
-        return Err(failure);
-    }
-    let code = if state.cancelled {
-        124
-    } else {
-        exit_code(status)
-    };
-    observe(observations, |progress| {
-        progress.phase = ProcessHostPhase::ReceiptPublication
-    });
-    completion.retired(
-        code,
-        state.cancelled,
-        lease
+        let waited = super::platform::wait_without_reaping(&child);
+        let root_exit_observed = waited
             .as_ref()
-            .map_or(std::time::Duration::ZERO, ProcessCustodyLease::waited),
-    )?;
-    let progress = origin.map(|_| ProcessHostProgress {
-        root_admitted: root_admitted.expect("admitted on the original clock"),
-        root_exit_observed: root_exit_observed.expect("observed on the original clock"),
-        retired: retired.expect("retired on the original clock"),
-        control: shared.control.first().and_then(OnceLock::get).copied(),
-    });
-    Ok((code, status, state.cancelled, progress))
+            .ok()
+            .and(origin)
+            .map(|origin| origin.elapsed());
+        observe(observations, |progress| {
+            progress.root_exit_observed = root_exit_observed
+        });
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        observe(observations, |progress| {
+            progress.cancelled = state.cancelled;
+            progress.control = shared.control.first().and_then(OnceLock::get).copied();
+        });
+        if waited.is_ok() {
+            observe(observations, |progress| {
+                progress.phase = ProcessHostPhase::Retirement
+            });
+        }
+        let status = retire_after_observation(&mut state.tree, child, waited, |status| {
+            observe(observations, |progress| progress.root_status = Some(status));
+        })?;
+        let retired = origin.map(|origin| origin.elapsed());
+        observe(observations, |progress| progress.retired = retired);
+        if let Some(failure) = state.failure.take() {
+            observe(observations, |progress| {
+                progress.phase = ProcessHostPhase::Control
+            });
+            return Err(failure);
+        }
+        let code = if state.cancelled {
+            124
+        } else {
+            exit_code(status)
+        };
+        observe(observations, |progress| {
+            progress.phase = ProcessHostPhase::ReceiptPublication
+        });
+        let progress = origin.map(|_| ProcessHostProgress {
+            root_admitted: root_admitted.expect("admitted on the original clock"),
+            root_exit_observed: root_exit_observed.expect("observed on the original clock"),
+            retired: retired.expect("retired on the original clock"),
+            control: shared.control.first().and_then(OnceLock::get).copied(),
+        });
+        Ok((code, status, state.cancelled, progress))
+    })();
+    let publication = if let Some(binding) = &binding {
+        match observations.first() {
+            Some(progress) => completion.terminal(
+                binding,
+                result.as_ref().map_or(125, |(code, _, _, _)| *code),
+                progress,
+                result.as_ref().err(),
+            ),
+            None => Err(io::Error::from(io::ErrorKind::InvalidInput)),
+        }
+    } else if let Ok((code, _, cancelled, _)) = &result {
+        completion.retired(
+            *code,
+            *cancelled,
+            lease
+                .as_ref()
+                .map_or(Duration::ZERO, ProcessCustodyLease::waited),
+        )
+    } else {
+        Ok(())
+    };
+    match (result, publication) {
+        (Err(error), publication) => Err((error, publication.err())),
+        (Ok(_), Err(error)) => {
+            observe(observations, |progress| {
+                progress.phase = ProcessHostPhase::ReceiptPublication
+            });
+            Err((error, None))
+        }
+        (Ok(result), Ok(())) => Ok(result),
+    }
 }
 
 fn reject_control_admission(
@@ -581,6 +670,8 @@ mod tests {
     const ROOT_TEST: &str = "process_tree::external_host::tests::host_phase_root_fixture";
     const PHASE_ROOT: &str = "ACYCLIC_HOST_PHASE_ROOT";
     const PHASE_MODE: &str = "ACYCLIC_HOST_PHASE_MODE";
+    const PHASE_RECEIPT: &str = "ACYCLIC_HOST_PHASE_RECEIPT";
+    const PHASE_BINDING: &str = "0123456789abcdef0123456789abcdef";
 
     #[test]
     fn host_phase_root_fixture() {
@@ -615,16 +706,22 @@ mod tests {
                 // std's stdin wrapper does not turn this error into EOF.
                 assert_eq!(unsafe { libc::dup2(directory.as_raw_fd(), 0) }, 0);
             }
-            let result = run_external_process_host_with_progress([
+            let mut arguments = vec![
                 "--custody".into(),
                 root.join("custody").into_os_string(),
                 "--completion".into(),
                 root.join("completion.json").into_os_string(),
+            ];
+            if std::env::var(PHASE_RECEIPT).as_deref() == Ok("3") {
+                arguments.extend(["--invocation".into(), PHASE_BINDING.into()]);
+            }
+            arguments.extend([
                 std::env::current_exe().unwrap().into_os_string(),
                 "--exact".into(),
                 ROOT_TEST.into(),
                 "--nocapture".into(),
             ]);
+            let result = run_external_process_host_with_progress(arguments);
             if let Err(failure) = result {
                 let progress = failure.progress;
                 std::fs::write(
@@ -684,6 +781,10 @@ mod tests {
         let absent = tempfile::tempdir().unwrap();
         let failure = run_external_process_host_with_progress([
             "--inherit-input".into(),
+            "--completion".into(),
+            absent.path().join("failed.json").into_os_string(),
+            "--invocation".into(),
+            PHASE_BINDING.into(),
             "--custody".into(),
             absent.path().join("custody").into_os_string(),
             absent.path().join("absent-program").into_os_string(),
@@ -696,121 +797,193 @@ mod tests {
         assert!(failure.progress.root_exit_observed.is_none());
         assert!(failure.progress.root_status.is_none());
         assert!(failure.progress.retired.is_none());
-        for mode in ["exit", "input", "eof"]
-            .into_iter()
-            .chain(cfg!(unix).then_some("failed"))
-        {
-            let root = tempfile::tempdir().unwrap();
-            let file = std::fs::OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(root.path().join("blocked.lock"))
+        assert!(failure.receipt_error.is_none());
+        let refused: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(absent.path().join("failed.json")).unwrap())
                 .unwrap();
-            let _held = crate::FileLock::acquire(file, crate::FileLockMode::Exclusive).unwrap();
-            let mut command = Command::new(std::env::current_exe().unwrap());
-            command
-                .args(["--exact", HOST_TEST, "--nocapture"])
-                .env(PHASE_ROOT, root.path())
-                .env(PHASE_MODE, mode)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit());
-            let mut owner = ProcessTree::spawn(&mut command).unwrap();
-            let child = owner.child.as_mut().unwrap();
-            let mut control = child.stdin.take();
-            let output = child.stdout.take().unwrap();
-            let mut output = io::BufReader::new(output);
-            let ready = mode == "failed"
-                || output.by_ref().lines().any(|line| {
-                    line.expect("read original root readiness")
-                        .ends_with("phase-root-ready")
-                });
-            assert!(ready, "original root exited before signalling readiness");
-            match mode {
-                "input" => control.as_mut().unwrap().write_all(b"x").unwrap(),
-                "eof" => drop(control.take()),
-                _ => {}
-            }
-            super::super::platform::wait_without_reaping(owner.child.as_ref().unwrap()).unwrap();
-            let status = owner.try_wait(None).unwrap().unwrap();
-            owner.terminate(None).unwrap();
-            drop(control);
-            assert_eq!(
-                status.code(),
-                Some(if mode == "failed" { 125 } else { 124 })
-            );
-            assert!(owner.is_reaped());
-            let observation: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(root.path().join("observations.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(observation["cancelled"], mode != "exit");
-            let admitted = observation["admitted"].as_f64().unwrap();
-            let exited = observation["exit_observed"].as_f64().unwrap();
-            let retired = observation["retired"].as_f64().unwrap();
-            assert!(admitted <= exited && exited <= retired);
-            if mode == "failed" {
-                assert_eq!(observation["failed"], true);
-                assert_eq!(observation["phase"], "Control");
-                #[cfg(unix)]
-                {
-                    let expected = std::fs::File::open(root.path())
-                        .unwrap()
-                        .read(&mut [0])
-                        .unwrap_err();
-                    assert_eq!(
-                        observation["raw_os_error"].as_i64(),
-                        expected.raw_os_error().map(i64::from)
-                    );
+        assert_eq!(refused["schema"], "acyclic.process-custody-completion.v3");
+        assert_eq!(refused["invocation"], PHASE_BINDING);
+        assert_eq!(refused["failure"]["phase"], "root-admission");
+        assert_eq!(
+            refused["failure"]["error"]["raw_os_error"].as_i64(),
+            failure.error.raw_os_error().map(i64::from)
+        );
+        assert_eq!(refused["process_tree_retired"], false);
+        assert!(refused["root_status"].is_null());
+        assert!(refused["phases"]["root_admitted_seconds"].is_null());
+        assert!(refused["phases"]["retired_seconds"].is_null());
+        let mut unavailable = Completion(Some(
+            std::fs::File::open(absent.path().join("failed.json")).unwrap(),
+        ));
+        let publication = unavailable
+            .terminal(PHASE_BINDING, 125, &failure.progress, Some(&failure.error))
+            .unwrap_err();
+        let direct = std::fs::File::open(absent.path().join("failed.json"))
+            .unwrap()
+            .write_all(b"refused write")
+            .unwrap_err();
+        assert_eq!(publication.raw_os_error(), direct.raw_os_error());
+        assert_eq!(failure.phase, ProcessHostPhase::RootAdmission);
+        assert!(failure.progress.retired.is_none());
+        for version in ["2", "3"] {
+            for mode in ["exit", "input", "eof"]
+                .into_iter()
+                .chain(cfg!(unix).then_some("failed"))
+            {
+                let root = tempfile::tempdir().unwrap();
+                let file = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .read(true)
+                    .write(true)
+                    .open(root.path().join("blocked.lock"))
+                    .unwrap();
+                let _held = crate::FileLock::acquire(file, crate::FileLockMode::Exclusive).unwrap();
+                let mut command = ProcessCommand::new(std::env::current_exe().unwrap());
+                command
+                    .args(["--exact", HOST_TEST, "--nocapture"])
+                    .env(PHASE_ROOT, root.path())
+                    .env(PHASE_MODE, mode)
+                    .env(PHASE_RECEIPT, version)
+                    .stdin(ProcessStdio::piped())
+                    .stdout(ProcessStdio::piped())
+                    .stderr(ProcessStdio::inherit());
+                let mut owner = ProcessTree::spawn(&mut command).unwrap();
+                let child = owner.child.as_mut().unwrap();
+                let mut control = child.stdin.take();
+                let output = child.stdout.take().unwrap();
+                let mut output = io::BufReader::new(output);
+                let ready = mode == "failed"
+                    || output.by_ref().lines().any(|line| {
+                        line.expect("read original root readiness")
+                            .ends_with("phase-root-ready")
+                    });
+                assert!(ready, "original root exited before signalling readiness");
+                match mode {
+                    "input" => control.as_mut().unwrap().write_all(b"x").unwrap(),
+                    "eof" => drop(control.take()),
+                    _ => {}
                 }
-                assert_eq!(observation["control_failed"], true);
-                assert_eq!(observation["root_status_observed"], true);
-                assert_ne!(observation["root_code"], 124);
-                assert!(
-                    std::fs::read(root.path().join("completion.json"))
-                        .unwrap()
-                        .is_empty()
+                super::super::platform::wait_without_reaping(owner.child.as_ref().unwrap())
+                    .unwrap();
+                let status = owner.try_wait(None).unwrap().unwrap();
+                owner.terminate(None).unwrap();
+                drop(control);
+                assert_eq!(
+                    status.code(),
+                    Some(if mode == "failed" { 125 } else { 124 })
                 );
+                assert!(owner.is_reaped());
+                let observation: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(root.path().join("observations.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(observation["cancelled"], mode != "exit");
+                let admitted = observation["admitted"].as_f64().unwrap();
+                let exited = observation["exit_observed"].as_f64().unwrap();
+                let retired = observation["retired"].as_f64().unwrap();
+                assert!(admitted <= exited && exited <= retired);
+                if version == "3" {
+                    let receipt: serde_json::Value = serde_json::from_slice(
+                        &std::fs::read(root.path().join("completion.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(receipt["schema"], "acyclic.process-custody-completion.v3");
+                    assert_eq!(receipt["invocation"], PHASE_BINDING);
+                    assert_eq!(receipt["platform"], std::env::consts::OS);
+                    assert_eq!(
+                        receipt["host_exit_code"],
+                        if mode == "failed" { 125 } else { 124 }
+                    );
+                    assert_eq!(receipt["cancelled"], mode != "exit");
+                    assert_eq!(receipt["root_status"]["code"], observation["root_code"]);
+                    assert!(receipt["root_status"]["native"].is_number());
+                    assert_eq!(receipt["process_tree_retired"], true);
+                    assert_eq!(
+                        receipt["phases"]["root_admitted_seconds"],
+                        observation["admitted"]
+                    );
+                    assert_eq!(
+                        receipt["phases"]["root_exit_observed_seconds"],
+                        observation["exit_observed"]
+                    );
+                    assert_eq!(receipt["phases"]["retired_seconds"], observation["retired"]);
+                    if mode == "failed" {
+                        assert_eq!(receipt["failure"]["phase"], "control");
+                        assert_eq!(
+                            receipt["failure"]["error"]["raw_os_error"],
+                            observation["raw_os_error"]
+                        );
+                    } else {
+                        assert!(receipt["failure"].is_null());
+                    }
+                    println!("host-receipt-capture:{receipt}");
+                }
+                if mode == "failed" {
+                    assert_eq!(observation["failed"], true);
+                    assert_eq!(observation["phase"], "Control");
+                    #[cfg(unix)]
+                    {
+                        let expected = std::fs::File::open(root.path())
+                            .unwrap()
+                            .read(&mut [0])
+                            .unwrap_err();
+                        assert_eq!(
+                            observation["raw_os_error"].as_i64(),
+                            expected.raw_os_error().map(i64::from)
+                        );
+                    }
+                    assert_eq!(observation["control_failed"], true);
+                    assert_eq!(observation["root_status_observed"], true);
+                    assert_ne!(observation["root_code"], 124);
+                    if version == "2" {
+                        assert!(
+                            std::fs::read(root.path().join("completion.json"))
+                                .unwrap()
+                                .is_empty()
+                        );
+                    }
+                    assert_eq!(
+                        std::fs::read_dir(root.path().join("custody"))
+                            .unwrap()
+                            .count(),
+                        0
+                    );
+                    continue;
+                }
+                assert_eq!(observation["exit_code"], 124);
+                if mode == "exit" {
+                    assert_eq!(observation["root_code"], 124);
+                    assert!(observation["control"].is_null());
+                } else {
+                    assert_ne!(
+                        observation["root_code"], 124,
+                        "host cancellation must not invent the root status"
+                    );
+                    assert_eq!(observation["control"]["outcome"], mode);
+                    let control = observation["control"]["elapsed"].as_f64().unwrap();
+                    assert!(admitted <= control && control <= retired);
+                }
                 assert_eq!(
                     std::fs::read_dir(root.path().join("custody"))
                         .unwrap()
                         .count(),
                     0
                 );
-                continue;
+                if version == "2" {
+                    let receipt: serde_json::Value = serde_json::from_slice(
+                        &std::fs::read(root.path().join("completion.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(receipt["schema"], "acyclic.process-custody-completion.v2");
+                    assert_eq!(
+                        receipt.as_object().unwrap().len(),
+                        5,
+                        "the original receipt field set stays exact"
+                    );
+                    assert_eq!(receipt["cancelled"], mode != "exit");
+                    assert_eq!(receipt["process_tree_retired"], true);
+                }
             }
-            assert_eq!(observation["exit_code"], 124);
-            if mode == "exit" {
-                assert_eq!(observation["root_code"], 124);
-                assert!(observation["control"].is_null());
-            } else {
-                assert_ne!(
-                    observation["root_code"], 124,
-                    "host cancellation must not invent the root status"
-                );
-                assert_eq!(observation["control"]["outcome"], mode);
-                let control = observation["control"]["elapsed"].as_f64().unwrap();
-                assert!(admitted <= control && control <= retired);
-            }
-            assert_eq!(
-                std::fs::read_dir(root.path().join("custody"))
-                    .unwrap()
-                    .count(),
-                0
-            );
-            let receipt: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(root.path().join("completion.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(receipt["schema"], "acyclic.process-custody-completion.v2");
-            assert_eq!(
-                receipt.as_object().unwrap().len(),
-                5,
-                "the original receipt field set stays exact"
-            );
-            assert_eq!(receipt["cancelled"], mode != "exit");
-            assert_eq!(receipt["process_tree_retired"], true);
         }
     }
 
