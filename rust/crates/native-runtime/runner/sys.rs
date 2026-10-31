@@ -350,6 +350,18 @@ pub fn unblock(signal: i32) {
     };
 }
 
+/// Restores the launching thread's complete kernel signal mask before exec.
+pub fn set_signal_mask(set: u64) -> Result<(), Errno> {
+    // SAFETY: a readable kernel-sized set, SIG_SETMASK and no old-set output.
+    unsafe {
+        call(
+            number::RT_SIGPROCMASK,
+            [2, (&raw const set).addr(), 0, 8, 0, 0],
+        )
+    }
+    .map(drop)
+}
+
 pub fn exit(code: i32) -> ! {
     loop {
         // SAFETY: ends this process.
