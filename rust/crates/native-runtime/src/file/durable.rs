@@ -53,7 +53,20 @@ fn flush_file_policy(file: &File, _data_only: bool) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
+pub(super) fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if data_only {
+        use std::os::fd::AsFd as _;
+        return crate::held_sync::sync_data_descriptor_once(file.as_fd());
+    }
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    {
+        use std::os::fd::AsFd as _;
+        #[cfg(target_vendor = "apple")]
+        let _ = data_only;
+        crate::sync_descriptor_once(file.as_fd())
+    }
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
     if data_only {
         file.sync_data()
     } else {

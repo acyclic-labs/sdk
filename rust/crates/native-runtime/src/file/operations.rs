@@ -132,7 +132,7 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
                         #[cfg(windows)]
                         return sync_file_unsequenced(file, durability);
                         #[cfg(not(windows))]
-                        file.sync_data()
+                        super::durable::flush_file_policy(file, true)
                     }
                     Durability::Barrier => barrier_sync(file),
                 }

@@ -36,11 +36,26 @@ pub fn sync_descriptor_once(
         let failed = unsafe {
             windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(descriptor.as_raw_handle())
         } == 0;
-        if failed {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
+        flush_result(failed)
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(
+    unsafe_code,
+    reason = "one data flush on the caller's borrowed descriptor"
+)]
+pub(crate) fn sync_data_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
+    // SAFETY: the borrowed descriptor stays open for this one data flush.
+    flush_result(unsafe { libc::fdatasync(descriptor.as_raw_fd()) } == -1)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn flush_result(failed: bool) -> io::Result<()> {
+    if failed {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 

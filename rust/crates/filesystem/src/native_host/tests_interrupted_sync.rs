@@ -7,6 +7,7 @@ use std::cell::Cell;
 thread_local! {
     static INTERRUPTIONS: Cell<u32> = const { Cell::new(0) };
     static CALLS: Cell<u32> = const { Cell::new(0) };
+    static DATA_CALLS: Cell<u32> = const { Cell::new(0) };
     static RESIZE_INTERRUPTION: Cell<bool> = const { Cell::new(false) };
     static RESIZE_CALLS: Cell<u32> = const { Cell::new(0) };
 }
@@ -16,6 +17,15 @@ thread_local! {
 /// every call otherwise reaches the kernel's fsync unchanged.
 #[unsafe(no_mangle)]
 extern "C" fn fsync(descriptor: libc::c_int) -> libc::c_int {
+    if interrupt_flush() {
+        return -1;
+    }
+    // SAFETY: the raw syscall acts only on the caller's descriptor.
+    let result = unsafe { libc::syscall(libc::SYS_fsync, descriptor) };
+    libc::c_int::try_from(result).unwrap_or(-1)
+}
+
+fn interrupt_flush() -> bool {
     let _ = CALLS.try_with(|calls| calls.set(calls.get() + 1));
     let interrupted = INTERRUPTIONS
         .try_with(|left| {
@@ -27,10 +37,18 @@ extern "C" fn fsync(descriptor: libc::c_int) -> libc::c_int {
     if interrupted {
         // SAFETY: errno is this thread's own slot.
         unsafe { *libc::__errno_location() = libc::EINTR };
+    }
+    interrupted
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fdatasync(descriptor: libc::c_int) -> libc::c_int {
+    let _ = DATA_CALLS.try_with(|calls| calls.set(calls.get() + 1));
+    if interrupt_flush() {
         return -1;
     }
-    // SAFETY: the raw syscall acts only on the caller's descriptor.
-    let result = unsafe { libc::syscall(libc::SYS_fsync, descriptor) };
+    // SAFETY: the raw data-only flush acts on the caller's descriptor.
+    let result = unsafe { libc::syscall(libc::SYS_fdatasync, descriptor) };
     libc::c_int::try_from(result).unwrap_or(-1)
 }
 
@@ -48,6 +66,7 @@ fn interrupted_twice(sync: impl FnOnce(&mut DemandWork)) -> (u64, u32, u32) {
     let mut work = DemandWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
     INTERRUPTIONS.set(2);
     CALLS.set(0);
+    DATA_CALLS.set(0);
     sync(&mut work);
     let calls = CALLS.get();
     (work.work.durability_operations, calls, INTERRUPTIONS.get())
@@ -56,31 +75,40 @@ fn interrupted_twice(sync: impl FnOnce(&mut DemandWork)) -> (u64, u32, u32) {
 #[test]
 fn interrupted_held_flush_returns_after_the_original_native_call() {
     let file = tempfile::tempfile().unwrap();
-    for flush in [0, 1] {
+    for flush in [0, 1, 2, 3, 4] {
+        let operation = |work: &mut DemandWork| match flush {
+            0 => sync_file_held(&file, work),
+            _ => work.attempt_io(
+                WorkCounters {
+                    durability_operations: 1,
+                    ..WorkCounters::UNCHARGED
+                },
+                || match flush {
+                    1 => acyclic_native_runtime::sync_file(
+                        &file,
+                        acyclic_native_runtime::Durability::Full,
+                        None,
+                    ),
+                    2 => acyclic_native_runtime::flush_file_all(&file),
+                    3 => acyclic_native_runtime::flush_file_data(&file),
+                    _ => acyclic_native_runtime::sync_data(
+                        &file,
+                        acyclic_native_runtime::Durability::Full,
+                    ),
+                },
+            ),
+        };
         let (attempts, calls, remaining) = interrupted_twice(|work| {
-            let error = match flush {
-                0 => sync_file_held(&file, work),
-                _ => work.attempt_io(
-                    WorkCounters {
-                        durability_operations: 1,
-                        ..WorkCounters::UNCHARGED
-                    },
-                    || {
-                        acyclic_native_runtime::sync_file(
-                            &file,
-                            acyclic_native_runtime::Durability::Full,
-                            None,
-                        )
-                    },
-                ),
-            }
-            .unwrap_err();
+            let error = operation(work).unwrap_err();
             assert!(
                 matches!(error, DemandError::Io(error) if error.kind() == io::ErrorKind::Interrupted)
             );
         });
         assert_eq!((attempts, calls, remaining), (1, 1, 1));
-        sync_file_held(&file, &mut ordinary_work()).unwrap();
+        assert_eq!(DATA_CALLS.get(), u32::from(flush >= 3));
+        operation(&mut ordinary_work()).unwrap();
+        assert_eq!(CALLS.get(), 2);
+        assert_eq!(DATA_CALLS.get(), 2 * u32::from(flush >= 3));
     }
 }
 
