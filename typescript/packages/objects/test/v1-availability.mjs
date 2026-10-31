@@ -43,9 +43,16 @@ test("Objects availability owns opening, catch-up, cursor validation and cancell
   const body = new Uint8Array([19, 23, 29]);
   const digest = await blobDigest(body);
   await t.test("memory retains a change before the first wait", async () => {
-    const selected = await memory.availability(digest);
+    const originalOpen = memory.open;
+    let binaryCalls = 0;
+    memory.open = function (...args) { binaryCalls++; return originalOpen.apply(this, args); };
+    let selected;
+    try { selected = await memory.availability(digest); }
+    finally { memory.open = originalOpen; }
     const initial = selected.cursor();
     try {
+      // Routing memory back through the binary transport is the cost control.
+      assert.equal(binaryCalls, 0);
       await memory.put(body);
       const changed = await selected.changed();
       assert.deepEqual(changed.incarnation, initial.incarnation);
