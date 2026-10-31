@@ -88,10 +88,12 @@ impl SessionWork {
             .code
             .lock()
             .map_err(|_| self.io.invalid("session interpreter admission is poisoned"))?;
-        if code.is_none() {
-            *code = Some(crate::code_mode::CodeRuntime::shared(work)?);
+        if let Some(runtime) = code.as_ref() {
+            return Ok(Arc::clone(runtime));
         }
-        Ok(Arc::clone(code.as_ref().unwrap()))
+        let runtime = crate::code_mode::CodeRuntime::shared(work)?;
+        *code = Some(Arc::clone(&runtime));
+        Ok(runtime)
     }
 
     /// Selects the original slot by the complete actor identity. Each index

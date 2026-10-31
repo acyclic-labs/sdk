@@ -263,10 +263,18 @@ impl TurnExecutors for StockExecutors {
     fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
         match self.session.set(Arc::clone(session)) {
             Ok(()) => Ok(()),
-            Err(session) if Arc::ptr_eq(self.session.get().unwrap(), &session) => Ok(()),
-            Err(_) => Err(Error::Invalid(
-                "executor belongs to another serving session".into(),
-            )),
+            Err(session)
+                if self
+                    .session
+                    .get()
+                    .is_some_and(|original| Arc::ptr_eq(original, &session)) =>
+            {
+                Ok(())
+            }
+            Err(_) => Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "executor belongs to another serving session",
+            }),
         }
     }
 
