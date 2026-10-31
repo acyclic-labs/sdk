@@ -119,7 +119,7 @@ mod tests {
         let deny = r#"{"verdict":"deny","reason":"final decision"}"#;
         for mode in 0..3 {
             let native = mode == 2;
-            for case in 0..if native { 1 } else { 8 } {
+            for case in 0..if mode == 0 { 8 } else { 1 } {
                 let storage = MemoryHarnessStorage::new(AgentId::new(), 1_000_000).await?;
                 let journal = storage.journal();
                 let mut events = vec![ScriptedEvent::Event(ModelEvent::Content {
@@ -230,17 +230,30 @@ mod tests {
                     limits,
                 )
                 .await;
-                if native {
-                    assert!(matches!(
-                        first,
-                        Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Unsupported,
-                            ..
-                        })
-                    ));
+                if mode != 0 {
+                    let error = first.expect_err("provider has no funded accounting admission");
+                    if native {
+                        assert!(matches!(
+                            error,
+                            Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Unsupported,
+                                reason: "inference provider has no native admission",
+                            }
+                        ));
+                    } else {
+                        assert!(
+                            matches!(
+                                &error,
+                                Error::Unsupported(reason)
+                                    if reason == "stock model capacity requires original native work"
+                            ),
+                            "{error:?}"
+                        );
+                    }
+                    drop(error);
                     assert_eq!(provider.request_count(), 0);
                     assert_eq!(counts.load(Ordering::SeqCst), 0);
-                    assert_eq!(io.as_ref().expect("native IO").owned_bytes()?, 0);
+                    assert_eq!(io.as_ref().expect("funded IO").owned_bytes()?, 0);
                     continue;
                 }
                 let observation = observed.lock().expect("observation lock").take();
