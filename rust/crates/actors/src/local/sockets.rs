@@ -13,6 +13,10 @@
 //! hibernated actor holding sockets owns no task, timer or heap; auto-response
 //! answers keepalives without delivering anything.
 //!
+//! Every durable socket operation is one keyed request retried, identically,
+//! while its outcome is unknown, so a dropped acknowledgement neither loses a
+//! Close nor forgets an Open that did commit.
+//!
 //! Recovery is O(open sockets): the ledger is a current segment of Opened and
 //! Closed entries, compacted once it holds more than twice the open set, and
 //! `epochs` names the segments that can still hold open sockets.
@@ -28,15 +32,14 @@ use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::runtime::Executor;
 use acyclic_stream::session::{CallAuthorization, SocketChannel, SocketInbound, SocketProvider};
 use acyclic_stream::{
-    AppendRecord, BoxProviderFuture, BoxProviderStream, CommitCondition, CommitMutation,
-    CommitOutcome, IdempotencyKey, ReadRequest, RevisionCut, StreamError, StreamPath,
-    StreamProvider,
+    AppendRecord, BoxProviderStream, CommitCondition, CommitMutation, CommitOutcome,
+    IdempotencyKey, ReadRequest, RevisionCut, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
 use prost::Message as _;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -46,6 +49,9 @@ const PAGE: u32 = 256;
 /// Ledger entries tolerated above twice the open set before compaction, so
 /// compaction work stays amortized O(1) per open or close.
 const SLACK: usize = 256;
+/// Longest pause between retries of a request whose outcome is unknown; it
+/// paces transport recovery and bounds no work.
+const BACKOFF_CEILING_MS: u32 = 1_000;
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct EpochWire {
@@ -171,9 +177,37 @@ fn append(
     }
 }
 
-/// Commit `effects` once; `false` means a condition failed.
+/// Pacing for retries of one keyed request whose outcome is unknown.
+struct Undecided {
+    delay: u32,
+}
+
+impl Undecided {
+    const fn new() -> Self {
+        Self { delay: 1 }
+    }
+
+    /// Wait before retrying the identical request when `error` leaves its
+    /// outcome unknown, as [`Store::submit`] classifies it; any other error
+    /// is a decided failure and is returned.
+    async fn retry(&mut self, executor: &dyn Executor, error: Error) -> Result<(), Error> {
+        if !matches!(
+            error,
+            Error::Stream(StreamError::Unavailable | StreamError::InvalidResponse)
+        ) {
+            return Err(error);
+        }
+        executor.sleep(self.delay).await;
+        self.delay = self.delay.saturating_mul(2).min(BACKOFF_CEILING_MS);
+        Ok(())
+    }
+}
+
+/// Commit `effects` until the outcome is decided; `false` means a condition
+/// failed. The key makes every retry return the original outcome.
 async fn commit<P: StreamProvider + ?Sized>(
     store: &Store<P>,
+    executor: &dyn Executor,
     key: IdempotencyKey,
     effects: Vec<Effect>,
 ) -> Result<bool, Error> {
@@ -181,10 +215,14 @@ async fn commit<P: StreamProvider + ?Sized>(
     for effect in effects {
         publication.join(effect)?;
     }
-    Ok(matches!(
-        store.provider().commit(publication.into_request()?).await?,
-        CommitOutcome::Committed(_)
-    ))
+    let request = publication.into_request()?;
+    let mut undecided = Undecided::new();
+    loop {
+        match store.provider().commit(request.clone()).await {
+            Ok(outcome) => return Ok(matches!(outcome, CommitOutcome::Committed(_))),
+            Err(error) => undecided.retry(executor, error.into()).await?,
+        }
+    }
 }
 
 /// Commit the one Close of `connection`: record 1 of its socket stream, the
@@ -193,6 +231,7 @@ async fn commit<P: StreamProvider + ?Sized>(
 /// current ledger segment; recovery omits it because it retires the segment.
 pub(crate) async fn commit_close<P: StreamProvider + ?Sized>(
     store: &Store<P>,
+    executor: &dyn Executor,
     layout: &Layout,
     connection: &str,
     target: &Target,
@@ -228,7 +267,7 @@ pub(crate) async fn commit_close<P: StreamProvider + ?Sized>(
             Vec::new(),
         ));
     }
-    commit(store, key, effects).await
+    commit(store, executor, key, effects).await
 }
 
 /// Commit one peer message, the `ordinal`th of `connection`. A message racing
@@ -236,6 +275,7 @@ pub(crate) async fn commit_close<P: StreamProvider + ?Sized>(
 /// its Close; `false` reports that loss.
 pub(crate) async fn commit_message<P: StreamProvider + ?Sized>(
     store: &Store<P>,
+    executor: &dyn Executor,
     layout: &Layout,
     connection: &str,
     target: &Target,
@@ -245,6 +285,7 @@ pub(crate) async fn commit_message<P: StreamProvider + ?Sized>(
     let record = input_record(connection, &SocketInput::Message(payload))?;
     commit(
         store,
+        executor,
         layout.key(&[connection.as_bytes(), b"message", &ordinal.to_be_bytes()])?,
         vec![
             append(
@@ -327,6 +368,14 @@ struct Ledger {
     epochs: u64,
 }
 
+/// What an attempted open commit decided.
+enum Opened {
+    Committed(super::InvocationTicket),
+    /// A decided failure that may follow the commit, so the open may have
+    /// reached the actor.
+    Unsettled,
+}
+
 enum Phase {
     /// Admitted; the open commit has not started.
     Unborn,
@@ -350,6 +399,28 @@ struct Entry {
     outbound: mpsc::Sender<Bytes>,
     final_frame: Option<oneshot::Sender<Bytes>>,
     messages: u64,
+    /// Peer events accepted from the session, applied in order by one drain
+    /// task that exists only while this queue is non-empty.
+    inbound: VecDeque<PeerEvent>,
+    draining: bool,
+    /// Dropped with the entry, which abandons a wait for the open's verdict.
+    _abandon: oneshot::Sender<()>,
+}
+
+/// One peer event awaiting its turn.
+enum PeerEvent {
+    Message(SocketPayload),
+    Close(Close),
+}
+
+/// What a drain does next, decided under the table lock.
+enum Step {
+    Commit {
+        target: Target,
+        ordinal: u64,
+        payload: SocketPayload,
+    },
+    Close(Close),
 }
 
 #[derive(Default)]
@@ -401,14 +472,6 @@ impl<P: StreamProvider + ?Sized + 'static> Clone for Sockets<P> {
     }
 }
 
-fn stream_error(error: Error) -> StreamError {
-    match error {
-        Error::Stream(error) => error,
-        Error::Conflict => StreamError::AlreadyExists,
-        _ => StreamError::InvalidArgument,
-    }
-}
-
 fn host_error(reason: &str) -> GuestError {
     GuestError::Handler(reason.into())
 }
@@ -417,6 +480,8 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
     /// Open the socket host of `store`'s runtime. Every socket a previous
     /// incarnation left open receives Close(Runtime, 1012) first, in work
     /// proportional to those sockets, and that incarnation can open no more.
+    /// Of hosts opening concurrently, at most one succeeds; the others fail
+    /// with [`Error::Conflict`].
     pub async fn open(
         store: Store<P>,
         executor: Arc<dyn Executor>,
@@ -441,6 +506,9 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
             _ => return Err(invalid("socket epochs history is incomplete")),
         };
         let incarnation = segment + 1;
+        // Each ownership attempt has its own keys: a concurrent host fencing
+        // the same tail conflicts instead of replaying this attempt's result.
+        let attempt = uuid::Uuid::new_v4();
         let epoch = |from| -> AppendRecord {
             EpochWire {
                 version: 1,
@@ -454,7 +522,8 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
         // `Tail{epochs}` and now fails, so the survivors below are final.
         let fenced = commit(
             &store,
-            layout.key(&[b"fence", &incarnation.to_be_bytes()])?,
+            &*executor,
+            layout.key(&[b"fence", &incarnation.to_be_bytes(), attempt.as_bytes()])?,
             vec![append(
                 epochs.clone(),
                 vec![epoch(from)],
@@ -474,11 +543,13 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
             fold(&store, &layout, index, &mut live, &mut closed).await?;
         }
         let recovered = Close::new(1012, "runtime recovered", SocketCloseInitiator::Runtime);
-        let (store_ref, layout_ref, recovered_ref) = (&store, &layout, &recovered);
+        let (store_ref, executor_ref, layout_ref, recovered_ref) =
+            (&store, &*executor, &layout, &recovered);
         let mut closing =
             futures::stream::iter(live.into_iter().map(|(connection, target)| async move {
                 commit_close(
                     store_ref,
+                    executor_ref,
                     layout_ref,
                     &connection,
                     &target,
@@ -494,7 +565,8 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
         drop(closing);
         let settled = commit(
             &store,
-            layout.key(&[b"recovered", &incarnation.to_be_bytes()])?,
+            &*executor,
+            layout.key(&[b"recovered", &incarnation.to_be_bytes(), attempt.as_bytes()])?,
             vec![append(
                 epochs.clone(),
                 vec![epoch(incarnation)],
@@ -615,10 +687,12 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         };
         if let Some(target) = target {
             let ledger = self.ledger.read().await;
-            // A failed commit leaves the socket in the ledger, so the next
-            // recovery closes it; the peer still receives its close now.
+            // An unknown outcome is retried until decided. Only a decided
+            // failure leaves the socket in the ledger, so the next recovery
+            // closes it; the peer still receives its close now.
             if let Ok(true) = commit_close(
                 &self.store,
+                &*self.executor,
                 &self.layout,
                 &connection,
                 &target,
@@ -691,8 +765,9 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 )],
             ))
         };
+        let executor = &*self.executor;
         let (key, effects) = allocate(ledger.segment, ledger.epochs, b"allocate")?;
-        if !commit(&self.store, key, effects).await? {
+        if !commit(&self.store, executor, key, effects).await? {
             return Err(Error::Conflict);
         }
         ledger.epochs += 1;
@@ -720,6 +795,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         for (page, chunk) in records.chunks(PAGE as usize).enumerate() {
             let written = commit(
                 &self.store,
+                executor,
                 self.layout.key(&[
                     b"compact",
                     &next.to_be_bytes(),
@@ -740,7 +816,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             }
         }
         let (key, effects) = allocate(next, ledger.epochs, b"compacted")?;
-        if !commit(&self.store, key, effects).await? {
+        if !commit(&self.store, executor, key, effects).await? {
             return Err(Error::Conflict);
         }
         ledger.epochs += 1;
@@ -752,12 +828,14 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
 
     /// Commit the Open with its socket stream and ledger entry, then wait for
     /// the actor's verdict. Runs on the executor, so a peer that goes away
-    /// cannot cancel a commit midway.
+    /// cannot cancel a commit midway; the verdict wait ends when the socket
+    /// does.
     async fn opening(
         self: Arc<Self>,
         connection: String,
         open: SocketOpen,
         verdict: oneshot::Sender<SocketFrame>,
+        abandoned: oneshot::Receiver<()>,
     ) {
         {
             let mut table = self.lock();
@@ -771,9 +849,12 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 _ => return,
             }
         }
-        let ticket = match self.commit_open(&connection, &open).await {
-            Ok(Some(ticket)) => ticket,
+        let (ticket, unsettled) = match self.commit_open(&connection, &open).await {
+            Ok(Opened::Committed(ticket)) => (Some(ticket), false),
+            Ok(Opened::Unsettled) => (None, true),
             outcome => {
+                // Refused by a condition, or never attempted: nothing
+                // reached the actor.
                 self.lock().remove(&connection);
                 let (status, reason) = match outcome {
                     Err(Error::Invalid(reason)) => (404, reason),
@@ -786,6 +867,10 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 return;
             }
         };
+        // Committed, or attempted with a decided failure that may follow the
+        // commit: either way the socket now owes its one Close. Closing an
+        // open that never committed fails its `Tail{socket, 1}` and does
+        // nothing.
         let pending = {
             let mut table = self.lock();
             let Some(entry) = table.sockets.get_mut(&connection) else {
@@ -795,23 +880,44 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 return;
             };
             *committed = true;
-            let pending = pending.take();
+            let pending = pending.take().or_else(|| {
+                unsettled.then(|| {
+                    Close::new(
+                        1011,
+                        "socket open did not settle",
+                        SocketCloseInitiator::Runtime,
+                    )
+                })
+            });
             if pending.is_some() {
                 entry.phase = Phase::Closing;
             }
             pending
         };
         if let Some(close) = pending {
-            drop(verdict);
+            if unsettled {
+                let _peer_gone = verdict.send(SocketFrame::Rejected {
+                    status: 503,
+                    reason: "socket open did not settle".into(),
+                });
+            } else {
+                drop(verdict);
+            }
             self.finish_close(connection, close).await;
             return;
         }
-        let reply = self
-            .store
-            .wait_invocation(ticket)
-            .await
+        let Some(ticket) = ticket else {
+            return;
+        };
+        let wait = Box::pin(self.store.wait_invocation(ticket));
+        let reply = match futures::future::select(wait, abandoned).await {
+            futures::future::Either::Left((reply, _)) => reply,
+            // The socket ended first, and its Close is already committed.
+            futures::future::Either::Right(_) => return,
+        };
+        let reply = reply
             .map_err(|_| host_error("socket verdict is unavailable"))
-            .and_then(|reply| crate::sockets::socket_verdict(reply.response()));
+            .and_then(|reply| crate::sockets::socket_verdict(reply.response(), &open));
         let (frame, close) = match reply {
             Ok(GuestEventResult::SocketAccept {
                 subprotocol,
@@ -855,120 +961,221 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         let _peer_gone = verdict.send(frame);
     }
 
-    async fn commit_open(
-        &self,
-        connection: &str,
-        open: &SocketOpen,
-    ) -> Result<Option<super::InvocationTicket>, Error> {
+    /// Commit the Open, retrying it identically while its outcome is
+    /// unknown. `Err` means it was never attempted or a condition refused it.
+    async fn commit_open(&self, connection: &str, open: &SocketOpen) -> Result<Opened, Error> {
         let invocation = open_invocation(connection, open)?;
         let socket = self.layout.socket(connection)?;
+        // Held across retries, so every attempt carries the same conditions.
         let ledger = self.ledger.read().await;
         let epochs = self.layout.epochs()?;
         let segment = self.layout.segment(ledger.segment)?;
         let actor: Bytes = open.actor.encode().into();
         let mut inbox = None;
-        let ticket = self
-            .store
-            .enqueue_joined(&invocation, |input| {
-                inbox = Some(input.clone());
-                let opened = OpenedWire {
-                    connection: connection.into(),
-                    actor,
-                    inbox: input.as_str().into(),
-                };
-                Ok(vec![
-                    append(
-                        socket.clone(),
-                        vec![opened.encode_to_vec().into()],
-                        vec![
-                            CommitCondition::Absent { path: socket },
-                            CommitCondition::Tail {
-                                path: epochs,
-                                expected: ledger.epochs,
-                            },
-                        ],
-                    ),
-                    append(
-                        segment,
-                        vec![ledger_record(LedgerKind::Opened(opened))],
-                        Vec::new(),
-                    ),
-                ])
-            })
-            .await;
-        let ticket = match ticket {
-            Ok(ticket) => ticket,
-            Err(Error::Conflict) => return Ok(None),
-            Err(error) => return Err(error),
+        let mut undecided = Undecided::new();
+        let outcome = loop {
+            let attempt = self
+                .store
+                .enqueue_joined(&invocation, |input| {
+                    inbox = Some(input.clone());
+                    let opened = OpenedWire {
+                        connection: connection.into(),
+                        actor: actor.clone(),
+                        inbox: input.as_str().into(),
+                    };
+                    Ok(vec![
+                        append(
+                            socket.clone(),
+                            vec![opened.encode_to_vec().into()],
+                            vec![
+                                CommitCondition::Absent {
+                                    path: socket.clone(),
+                                },
+                                CommitCondition::Tail {
+                                    path: epochs.clone(),
+                                    expected: ledger.epochs,
+                                },
+                            ],
+                        ),
+                        append(
+                            segment.clone(),
+                            vec![ledger_record(LedgerKind::Opened(opened))],
+                            Vec::new(),
+                        ),
+                    ])
+                })
+                .await;
+            match attempt {
+                Ok(ticket) => break Ok(ticket),
+                Err(error) => {
+                    if let Err(error) = undecided.retry(&*self.executor, error).await {
+                        break Err(error);
+                    }
+                }
+            }
+        };
+        let opened = match (outcome, inbox) {
+            (Ok(ticket), Some(inbox)) => (Opened::Committed(ticket), inbox),
+            // `enqueue_joined` builds the request before committing, so
+            // without an inbox nothing was attempted.
+            (Ok(_), None) => return Err(Error::Invalid("socket open has no inbox")),
+            // Never attempted, or refused by a condition: nothing reached
+            // the actor.
+            (Err(error), None) | (Err(error @ Error::Conflict), Some(_)) => return Err(error),
+            (Err(_), Some(inbox)) => (Opened::Unsettled, inbox),
         };
         self.live.fetch_add(1, Ordering::AcqRel);
         self.written.fetch_add(1, Ordering::AcqRel);
         if let Some(entry) = self.lock().sockets.get_mut(connection) {
-            entry.inbox = inbox;
+            entry.inbox = Some(opened.1);
         }
         drop(ledger);
-        Ok(Some(ticket))
+        Ok(opened.0)
     }
 
-    async fn message(
+    /// Accept one peer message without I/O: answer a keepalive in place, or
+    /// queue the message behind the socket's earlier peer events.
+    fn message(
         self: &Arc<Self>,
         connection: &str,
         payload: SocketPayload,
     ) -> Result<(), StreamError> {
         let now = self.clock.now_unix_ms();
-        let (target, ordinal) = {
-            let mut table = self.lock();
-            let Table { sockets, auto, .. } = &mut *table;
-            let Some(entry) = sockets.get_mut(connection) else {
-                return Ok(());
-            };
-            match entry.phase {
-                Phase::Open => {}
-                Phase::Closing => return Ok(()),
-                // A peer sends only after Accepted.
-                Phase::Unborn | Phase::Opening { .. } => return Err(StreamError::InvalidArgument),
-            }
-            if let SocketPayload::Text { text } = &payload
-                && let Some(pair) = auto.get(&entry.actor)
-                && pair.request == *text
-            {
-                entry.answered_at = Some(now);
-                let frame = SocketFrame::Message(SocketPayload::Text {
-                    text: pair.response.clone(),
-                })
-                .encode();
-                if entry.outbound.try_send(frame).is_err() {
-                    drop(table);
-                    self.begin_close(
-                        connection,
-                        Close::new(1013, "outbound backpressure", SocketCloseInitiator::Runtime),
-                    );
-                }
-                return Ok(());
-            }
-            entry.messages += 1;
-            let Some(inbox) = entry.inbox.clone() else {
-                return Err(StreamError::InvalidArgument);
-            };
-            (
-                Target {
-                    actor: entry.actor.clone(),
-                    inbox,
-                },
-                entry.messages,
-            )
+        let mut table = self.lock();
+        let Table { sockets, auto, .. } = &mut *table;
+        let Some(entry) = sockets.get_mut(connection) else {
+            return Ok(());
         };
-        commit_message(
-            &self.store,
-            &self.layout,
-            connection,
-            &target,
-            ordinal,
-            payload,
-        )
-        .await
-        .map(|_| ())
-        .map_err(stream_error)
+        match entry.phase {
+            Phase::Open => {}
+            Phase::Closing => return Ok(()),
+            // A peer sends only after Accepted.
+            Phase::Unborn | Phase::Opening { .. } => return Err(StreamError::InvalidArgument),
+        }
+        if let SocketPayload::Text { text } = &payload
+            && let Some(pair) = auto.get(&entry.actor)
+            && pair.request == *text
+        {
+            entry.answered_at = Some(now);
+            let frame = SocketFrame::Message(SocketPayload::Text {
+                text: pair.response.clone(),
+            })
+            .encode();
+            if entry.outbound.try_send(frame).is_err() {
+                drop(table);
+                self.begin_close(
+                    connection,
+                    Close::new(1013, "outbound backpressure", SocketCloseInitiator::Runtime),
+                );
+            }
+            return Ok(());
+        }
+        // A peer that outruns its socket's commits is closed, as one that
+        // stops reading is, never buffered without end.
+        if entry.inbound.len() >= acyclic_stream::MAX_ITEMS {
+            drop(table);
+            self.begin_close(
+                connection,
+                Close::new(1013, "inbound backpressure", SocketCloseInitiator::Runtime),
+            );
+            return Ok(());
+        }
+        entry.inbound.push_back(PeerEvent::Message(payload));
+        let start = !std::mem::replace(&mut entry.draining, true);
+        drop(table);
+        if start {
+            self.executor
+                .spawn(Box::pin(Arc::clone(self).drain(connection.to_owned())));
+        }
+        Ok(())
+    }
+
+    /// The peer's close follows every message it sent before it.
+    fn peer_close(self: &Arc<Self>, connection: &str, close: Close) {
+        {
+            let mut table = self.lock();
+            if let Some(entry) = table.sockets.get_mut(connection)
+                && entry.draining
+            {
+                entry.inbound.push_back(PeerEvent::Close(close));
+                return;
+            }
+        }
+        self.begin_close(connection, close);
+    }
+
+    /// Apply `connection`'s queued peer events in order, then exit.
+    async fn drain(self: Arc<Self>, connection: String) {
+        loop {
+            match self.next_peer_event(&connection) {
+                None => return,
+                Some(Step::Close(close)) => {
+                    if self.claim_close(&connection, &close) {
+                        self.finish_close(connection, close).await;
+                    }
+                    return;
+                }
+                Some(Step::Commit {
+                    target,
+                    ordinal,
+                    payload,
+                }) => {
+                    let committed = commit_message(
+                        &self.store,
+                        &*self.executor,
+                        &self.layout,
+                        &connection,
+                        &target,
+                        ordinal,
+                        payload,
+                    )
+                    .await;
+                    if committed.is_err() {
+                        self.begin_close(
+                            &connection,
+                            Close::new(
+                                1011,
+                                "socket message did not commit",
+                                SocketCloseInitiator::Runtime,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Take the next queued peer event, or end the drain: `None` clears the
+    /// draining flag, so the next accepted event starts a new drain.
+    fn next_peer_event(&self, connection: &str) -> Option<Step> {
+        let mut table = self.lock();
+        let entry = table.sockets.get_mut(connection)?;
+        let event = if matches!(entry.phase, Phase::Open) {
+            entry.inbound.pop_front()
+        } else {
+            // Closing drops what is left: it would lose on the socket's
+            // `Tail{socket, 1}` anyway.
+            None
+        };
+        let step = match (event, entry.inbox.clone()) {
+            (Some(PeerEvent::Message(payload)), Some(inbox)) => {
+                entry.messages += 1;
+                return Some(Step::Commit {
+                    target: Target {
+                        actor: entry.actor.clone(),
+                        inbox,
+                    },
+                    ordinal: entry.messages,
+                    payload,
+                });
+            }
+            (Some(PeerEvent::Close(close)), _) => Some(Step::Close(close)),
+            // An open socket always has its inbox.
+            (Some(PeerEvent::Message(_)) | None, _) => None,
+        };
+        entry.inbound.clear();
+        entry.draining = false;
+        step
     }
 
     /// Run `apply` on `actor`'s socket.
@@ -992,6 +1199,7 @@ enum Outbound {
         open: SocketOpen,
         frames: mpsc::Receiver<Bytes>,
         last: oneshot::Receiver<Bytes>,
+        abandoned: oneshot::Receiver<()>,
     },
     Open {
         frames: mpsc::Receiver<Bytes>,
@@ -1014,10 +1222,11 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                         open,
                         frames,
                         last,
+                        abandoned,
                     } => {
                         let (sender, verdict) = oneshot::channel();
                         shared.executor.spawn(Box::pin(
-                            Arc::clone(&shared).opening(connection, open, sender),
+                            Arc::clone(&shared).opening(connection, open, sender, abandoned),
                         ));
                         match verdict.await {
                             Ok(frame @ SocketFrame::Accepted { .. }) => Some((
@@ -1062,30 +1271,26 @@ struct Inbound<P: StreamProvider + ?Sized + 'static> {
 }
 
 impl<P: StreamProvider + ?Sized + 'static> SocketInbound for Inbound<P> {
-    fn receive(&self, frame: Bytes) -> BoxProviderFuture<'static, Result<(), StreamError>> {
-        let shared = Arc::clone(&self.shared);
-        let connection = self.connection.clone();
-        Box::pin(async move {
-            match SocketFrame::decode(&frame).map_err(|_| StreamError::InvalidArgument)? {
-                SocketFrame::Message(payload) => shared.message(&connection, payload).await,
-                SocketFrame::Close { code, reason, .. } => {
-                    shared.begin_close(
-                        &connection,
-                        Close::new(code, &reason, SocketCloseInitiator::Peer),
-                    );
-                    Ok(())
-                }
-                SocketFrame::Accepted { .. } | SocketFrame::Rejected { .. } => {
-                    Err(StreamError::InvalidArgument)
-                }
+    fn receive(&self, frame: Bytes) -> Result<(), StreamError> {
+        match SocketFrame::decode(&frame).map_err(|_| StreamError::InvalidArgument)? {
+            SocketFrame::Message(payload) => self.shared.message(&self.connection, payload),
+            SocketFrame::Close { code, reason, .. } => {
+                self.shared.peer_close(
+                    &self.connection,
+                    Close::new(code, &reason, SocketCloseInitiator::Peer),
+                );
+                Ok(())
             }
-        })
+            SocketFrame::Accepted { .. } | SocketFrame::Rejected { .. } => {
+                Err(StreamError::InvalidArgument)
+            }
+        }
     }
 }
 
 impl<P: StreamProvider + ?Sized + 'static> Drop for Inbound<P> {
     fn drop(&mut self) {
-        self.shared.begin_close(
+        self.shared.peer_close(
             &self.connection,
             Close::new(1006, "peer went away", SocketCloseInitiator::Peer),
         );
@@ -1121,6 +1326,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketProvider for Sockets<P> {
         );
         let (outbound, frames) = mpsc::channel(acyclic_stream::MAX_ITEMS);
         let (final_frame, last) = oneshot::channel();
+        let (abandon, abandoned) = oneshot::channel();
         {
             let mut table = shared.lock();
             table
@@ -1140,6 +1346,9 @@ impl<P: StreamProvider + ?Sized + 'static> SocketProvider for Sockets<P> {
                     outbound,
                     final_frame: Some(final_frame),
                     messages: 0,
+                    inbound: VecDeque::new(),
+                    draining: false,
+                    _abandon: abandon,
                 },
             );
         }
@@ -1149,6 +1358,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketProvider for Sockets<P> {
                 open,
                 frames,
                 last,
+                abandoned,
             }),
             inbound: Box::new(Inbound {
                 shared: Arc::clone(shared),

@@ -2,6 +2,7 @@
 //! message commits on Stream's loom-instrumented commit locks. Run with
 //! `RUSTFLAGS="--cfg loom"` and the `model-checking` feature.
 use super::*;
+use acyclic_stream::runtime::PlatformExecutor;
 use acyclic_stream::{MemoryStream, StreamProviderExt as _};
 use futures::TryStreamExt as _;
 
@@ -49,6 +50,7 @@ fn race(broken: bool) -> Result {
     // The committed Open: socket record 0 and its inbox invocation.
     assert!(block_on(commit(
         &store,
+        &PlatformExecutor,
         layout.key(&[b"open"])?,
         vec![
             append(
@@ -72,6 +74,7 @@ fn race(broken: bool) -> Result {
         move || {
             block_on(commit_close(
                 &store,
+                &PlatformExecutor,
                 &layout,
                 "1-0",
                 &target,
@@ -83,6 +86,7 @@ fn race(broken: bool) -> Result {
     });
     block_on(commit_message(
         &store,
+        &PlatformExecutor,
         &layout,
         "1-0",
         &target,
@@ -93,6 +97,7 @@ fn race(broken: bool) -> Result {
     ))?;
     block_on(commit_close(
         &store,
+        &PlatformExecutor,
         &layout,
         "1-0",
         &target,

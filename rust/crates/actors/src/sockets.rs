@@ -496,9 +496,23 @@ pub fn socket_reply(result: &GuestEventResult) -> Result<Bytes, GuestError> {
         .map_err(|error| GuestError::Encode(error.to_string()))
 }
 
-/// The actor's validated answer to a socket Open.
-pub fn socket_verdict(reply: &[u8]) -> Result<GuestEventResult, GuestError> {
-    serde_json::from_slice(reply).map_err(|error| GuestError::Decode(error.to_string()))
+/// The actor's validated answer to `open`. An accept may select only a
+/// subprotocol the peer offered, or none.
+pub fn socket_verdict(reply: &[u8], open: &SocketOpen) -> Result<GuestEventResult, GuestError> {
+    let result: GuestEventResult =
+        serde_json::from_slice(reply).map_err(|error| GuestError::Decode(error.to_string()))?;
+    result.validate()?;
+    if let GuestEventResult::SocketAccept {
+        subprotocol: Some(selected),
+        ..
+    } = &result
+        && !open.subprotocols.contains(selected)
+    {
+        return Err(GuestError::Handler(
+            "socket accept selected a subprotocol the peer did not offer".into(),
+        ));
+    }
+    Ok(result)
 }
 
 fn invalid() -> GuestError {
@@ -556,6 +570,31 @@ mod tests {
         let mut trailing = open.encode().to_vec();
         trailing.extend_from_slice(&open.encode());
         assert!(SocketOpen::decode(&trailing).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_verdict_selects_only_an_offered_subprotocol() -> Result<(), GuestError> {
+        let open = SocketOpen {
+            actor: ActorReference::new(b"account", b"targets", b"laptop").map_err(|_| invalid())?,
+            subscription: "sockets".into(),
+            app_channel: None,
+            subprotocols: vec!["v1".into()],
+            headers: Vec::new(),
+            resume_after: 0,
+            reconnected: false,
+        };
+        let accept = |subprotocol: Option<&str>| {
+            socket_reply(&GuestEventResult::SocketAccept {
+                subprotocol: subprotocol.map(Into::into),
+                attachment: Bytes::new(),
+                tags: Vec::new(),
+            })
+        };
+        assert!(socket_verdict(&accept(Some("v1"))?, &open).is_ok());
+        assert!(socket_verdict(&accept(None)?, &open).is_ok());
+        // Negative control: a protocol the peer never offered.
+        assert!(socket_verdict(&accept(Some("v2"))?, &open).is_err());
         Ok(())
     }
 }
