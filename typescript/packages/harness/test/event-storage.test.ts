@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { SqliteEventStorage, type SqliteStorage, type SqlValue } from "../src/cloudflare-storage.js";
+import { materializeActorState } from "../../actors/src/state-binding.js";
+import { ActorStateStorage } from "../src/actor-state-storage.js";
 import { WakeIndex } from "../src/event-storage.js";
 
 function storage(database: Database, domain: string) {
@@ -82,4 +84,54 @@ test("an explicit finite wake capacity preserves replay and refuses only new pla
     expect(await wakes.register("other", ["other/state", "other/inbox"])).toEqual({ refused: "capacity" });
     expect(await wakes.register("other", ["same", "same"])).toEqual({ refused: "invalid_argument" });
   } finally { database.close(); }
+});
+
+test("host metadata, wake rows and journal frames commit as one actor state packet", async () => {
+  const retained: Uint8Array[] = [], commits: { writes: { key: string }[]; deletions: string[]; journalFrom: string; journal: Uint8Array[]; alarm: unknown }[] = [];
+  const binding = materializeActorState({
+    seed: { metadata: [], journalTail: "0" },
+    async commit(request) { commits.push(request); retained.push(...request.journal); },
+    async readJournal(from, limit) { return retained.slice(Number(from), Number(from) + limit); },
+    fence() {},
+  });
+  const state = new ActorStateStorage(binding);
+  const wakes = state.domain("wakes");
+  const journal = state.journal(changes => wakes.put("changed", JSON.stringify(changes)));
+  expect(await journal.configure(Uint8Array.of(1), 64, Uint8Array.of(2))).toEqual(Uint8Array.of(2));
+  const frame = new Uint8Array(18);
+  expect(await journal.append(0, () => [frame], [["inbox", false]])).toBe(1);
+  expect(commits).toHaveLength(2);
+  expect(commits[1]!.journalFrom).toBe("0");
+  expect(commits[1]!.journal).toEqual([frame]);
+  expect(commits[1]!.writes.map(write => write.key)).toEqual(["journal/bytes", "wakes/changed"]);
+  expect(wakes.get("changed")).toBe(JSON.stringify([["inbox", false]]));
+  const [header, ...frames] = await journal.read(0, 8);
+  expect(new DataView(header!.buffer).getBigUint64(0, true)).toBe(1n);
+  expect(new DataView(header!.buffer).getBigUint64(8, true)).toBe(18n);
+  expect(frames).toEqual([frame]);
+  // A stale index admits nothing and reports the current head.
+  expect(await journal.append(0, () => { throw new Error("admitted at a stale index"); }, [])).toBe(1);
+  await expect(journal.configure(Uint8Array.of(9), 64, Uint8Array.of(2))).rejects.toThrow("configuration differs");
+  // Metadata insertion order must not change the prefix page or its strict cursor.
+  for (const name of ["page/c", "outside", "page/a", "page/b"]) wakes.put(name, name);
+  state.domain("other").put("page/a", "foreign");
+  await wakes.flush();
+  expect(wakes.entries("page/", "", 2)).toEqual([["page/a", "page/a"], ["page/b", "page/b"]]);
+  expect(wakes.entries("page/", "page/b", 2)).toEqual([["page/c", "page/c"]]);
+  expect(() => wakes.entries("", "", 0)).toThrow("page size");
+  wakes.delete("page/b");
+  expect(() => wakes.transaction(() => {
+    wakes.delete("page/a");
+    wakes.put("page/b", "refused");
+    throw new Error("refused metadata transaction");
+  })).toThrow("refused metadata transaction");
+  await wakes.flush();
+  expect(commits.at(-1)!.deletions).toEqual(["wakes/page/b"]);
+  expect(new ActorStateStorage(binding).domain("wakes").entries("page/", "", 2)).toEqual([
+    ["page/a", "page/a"], ["page/c", "page/c"],
+  ]);
+  // A reopened adapter keeps every domain's deadline: one domain's alarm cannot drop another's.
+  await wakes.alarm(100);
+  await new ActorStateStorage(binding).domain("actor").alarm(200);
+  expect(commits.at(-1)).toMatchObject({ alarm: { type: "set", deadline: "100" } });
 });
