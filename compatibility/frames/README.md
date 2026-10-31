@@ -36,3 +36,20 @@ The `external/` rows retain real MCP server stdout. Their paths refer to
 package provenance under `rust/codec-fuzz/captures/`. The shared replay example
 checks their hashes, golden bytes and actual decoder oracles alongside SDK
 outputs. SDK encoder capture preserves these external baselines.
+
+To capture protocol descriptors, run this command from the repository root:
+
+```sh
+cargo run --locked -p acyclic-proto-build --example capture_descriptors
+```
+
+The existing shared compiler writes every family to
+`target/compatibility-descriptors/`, preserving the retained baselines for review.
+Compare those files with `compatibility/descriptors/` before adopting an
+intentional schema change. Source comments and retained options participate in
+descriptor identity. After updating the reviewed descriptors and their manifest
+digests, run the owning equality control:
+
+```sh
+cargo test --locked -p acyclic-proto-build --lib every_compiled_descriptor_is_byte_identical_to_its_wire_baseline
+```

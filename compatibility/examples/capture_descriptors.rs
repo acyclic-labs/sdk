@@ -1,3 +1,4 @@
+//! Capture current wire identities with the same compiler used by crate builds.
 use std::path::Path;
 
 fn capture() -> Result<(), Box<dyn std::error::Error>> {
