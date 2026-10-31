@@ -161,7 +161,8 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             ActorLimits::new(1000, 1024 * 1024, 1024 * 1024)?,
         )?),
         Arc::new(SystemClock),
-    );
+    )
+    .claiming(&actor);
     let (failures, mut failed) = tokio::sync::mpsc::unbounded_channel();
     let runtime_failures = failures.clone();
     let _runtime = Task(tokio::spawn(async move {
