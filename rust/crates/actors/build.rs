@@ -9,5 +9,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var_os("OUT_DIR").ok_or_else(|| std::io::Error::other("OUT_DIR is not set"))?;
     codegen::generate(out_dir)?;
     println!("cargo:rerun-if-changed=proto");
+    println!(
+        "cargo:rerun-if-changed={}",
+        acyclic_proto_build::shared_protocols().display()
+    );
     Ok(())
 }

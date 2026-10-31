@@ -189,52 +189,126 @@ fn contracts_retain_their_platform_lifecycle_and_offline_state() {
 }
 
 #[test]
-fn fork_machine_admissions_are_checked_against_the_source_contract()
+fn fork_admissions_are_created_admissions_checked_against_their_provenance()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let source = MachineId::parse("00000000-0000-0000-0000-000000000051")?;
     let child = MachineId::parse("00000000-0000-0000-0000-000000000052")?;
     let other = MachineId::parse("00000000-0000-0000-0000-000000000053")?;
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000054")?;
-    let admission = |capabilities: &[wire::Capability],
-                     fidelity: wire::ForkFidelity,
-                     children: Vec<MachineId>| wire::ForkMachineAdmission {
-        source: Some(encode_machine(source)),
-        children: children.into_iter().map(encode_machine).collect(),
-        operation: Some(wire::OperationId {
-            value: operation.as_bytes().to_vec(),
-        }),
-        contract: Some(wire_contract(capabilities)),
+    let stray = OperationId::parse("00000000-0000-0000-0000-000000000055")?;
+    let checkpoint = CheckpointId::parse("00000000-0000-0000-0000-000000000056")?;
+    let wire_operation = |value: OperationId| wire::OperationId {
+        value: value.as_bytes().to_vec(),
+    };
+    let live_source = |fidelity: wire::ForkFidelity| wire::Provenance {
+        source: Some(wire::provenance::Source::MachineId(encode_machine(source))),
         fidelity: fidelity as i32,
+    };
+    let entry = |machine: MachineId,
+                 operation: OperationId,
+                 contract: wire::MachineContract,
+                 provenance: Option<wire::Provenance>| wire::MachineAdmission {
+        machine: Some(encode_machine(machine)),
+        operation: Some(wire_operation(operation)),
+        contract: Some(contract),
+        provenance,
+    };
+    let admissions = |machines: Vec<wire::MachineAdmission>| wire::MachineAdmissions {
+        operation: Some(wire_operation(operation)),
+        machines,
     };
     let live = [wire::Capability::LiveFork, wire::Capability::DiskFork];
     let disk = [wire::Capability::DiskFork];
+    let live_fork = |capabilities: &[wire::Capability],
+                     fidelity: wire::ForkFidelity,
+                     children: &[MachineId]| {
+        admissions(
+            children
+                .iter()
+                .map(|child| {
+                    entry(
+                        *child,
+                        operation,
+                        wire_contract(capabilities),
+                        Some(live_source(fidelity)),
+                    )
+                })
+                .collect(),
+        )
+    };
+    let mut resumed = wire_contract(&[]);
+    resumed.image = Some(encode_image(&Image::Checkpoint(checkpoint))?);
+    let checkpoint_source = wire::Provenance {
+        source: Some(wire::provenance::Source::CheckpointId(encode_checkpoint(
+            checkpoint,
+        ))),
+        fidelity: wire::ForkFidelity::MemoryAndDisk as i32,
+    };
 
-    let (_, fidelity, children, _) = decode_fork_machine_admission(&admission(
+    let admitted = decode_fork_admissions(&live_fork(
         &live,
         wire::ForkFidelity::MemoryAndDisk,
-        vec![child, other],
+        &[child, other],
     ))?;
-    assert_eq!(fidelity, ForkFidelity::MemoryAndDisk);
-    assert_eq!(children, vec![child, other]);
+    assert_eq!(admitted.operation, operation);
     assert_eq!(
-        decode_fork_machine_admission(&admission(
-            &disk,
-            wire::ForkFidelity::DiskOnly,
-            vec![child]
-        ))?
-        .1,
+        admitted.provenance,
+        Provenance {
+            source: ForkSource::Machine(source),
+            fidelity: ForkFidelity::MemoryAndDisk,
+        }
+    );
+    assert_eq!(
+        admitted
+            .children
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        vec![child, other]
+    );
+    assert_eq!(
+        decode_fork_admissions(&live_fork(&disk, wire::ForkFidelity::DiskOnly, &[child]))?
+            .provenance
+            .fidelity,
         ForkFidelity::DiskOnly
     );
+    assert_eq!(
+        decode_fork_admissions(&admissions(vec![entry(
+            child,
+            operation,
+            resumed.clone(),
+            Some(checkpoint_source.clone()),
+        )]))?
+        .provenance
+        .source,
+        ForkSource::Checkpoint(checkpoint)
+    );
     for rejected in [
-        admission(&disk, wire::ForkFidelity::MemoryAndDisk, vec![child]),
-        admission(&live, wire::ForkFidelity::DiskOnly, vec![child]),
-        admission(&[], wire::ForkFidelity::DiskOnly, vec![child]),
-        admission(&live, wire::ForkFidelity::Unspecified, vec![child]),
-        admission(&live, wire::ForkFidelity::MemoryAndDisk, Vec::new()),
-        admission(&live, wire::ForkFidelity::MemoryAndDisk, vec![child, child]),
-        admission(&live, wire::ForkFidelity::MemoryAndDisk, vec![source]),
+        live_fork(&disk, wire::ForkFidelity::MemoryAndDisk, &[child]),
+        live_fork(&live, wire::ForkFidelity::DiskOnly, &[child]),
+        live_fork(&[], wire::ForkFidelity::DiskOnly, &[child]),
+        live_fork(&live, wire::ForkFidelity::Unspecified, &[child]),
+        live_fork(&live, wire::ForkFidelity::MemoryAndDisk, &[]),
+        live_fork(&live, wire::ForkFidelity::MemoryAndDisk, &[child, child]),
+        live_fork(&live, wire::ForkFidelity::MemoryAndDisk, &[source]),
+        // A child without provenance is a created admission, not a fork.
+        admissions(vec![entry(child, operation, wire_contract(&live), None)]),
+        // Every child shares the reply's one operation.
+        admissions(vec![entry(
+            child,
+            stray,
+            wire_contract(&live),
+            Some(live_source(wire::ForkFidelity::MemoryAndDisk)),
+        )]),
+        // A checkpoint child's image is that checkpoint on every read.
+        admissions(vec![entry(
+            child,
+            operation,
+            wire_contract(&[]),
+            Some(checkpoint_source.clone()),
+        )]),
     ] {
-        assert!(decode_fork_machine_admission(&rejected).is_err());
+        assert!(decode_fork_admissions(&rejected).is_err());
     }
     Ok(())
 }

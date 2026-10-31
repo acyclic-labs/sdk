@@ -1,5 +1,6 @@
 import { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "./binding-fetch.js";
 import { ActorReference, actorLocationHint } from "@acyclic-labs/auth/addressing";
+import { awaitSignal } from "@acyclic-labs/auth/credential";
 import type { ActorsClient, ActorsCallOptions } from "./client.js";
 import type * as Semantic from "./generated/semantic/actors/readonly.js";
 
@@ -8,7 +9,12 @@ const decoder = new TextDecoder();
 const randomId = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
 export type LocationHint = "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc" | "afr" | "me";
 export interface ActorGetOptions { readonly locationHint?: LocationHint; }
-export type ActorInvocationTransport = Pick<ActorsClient, "invokeActor">;
+/** A client transport also forks; a host binding that only invokes cannot. */
+export type ActorInvocationTransport = Pick<ActorsClient, "invokeActor"> & Partial<Pick<ActorsClient, "forkActor">>;
+export interface ActorForkOptions extends ActorsCallOptions {
+  /** Retry identity; a retry of an unchanged fork commits once. Defaults to a fresh key. */
+  readonly idempotencyKey?: string;
+}
 
 /** Plain ID scoped to its namespace. A saved reference carries no transport. */
 export class NamespaceActorId {
@@ -56,6 +62,12 @@ export class ActorNamespaceBinding {
   }
   getByName(name: string, options: ActorGetOptions = {}): ActorStub { return this.get(this.idFromName(name), options); }
 }
+type PendingCall = {
+  previous: PendingCall | undefined;
+  next: PendingCall | undefined;
+  release: (() => void) | undefined;
+  linked: boolean;
+};
 /** Ordered calls on one stub; a failed call permanently breaks that stub. */
 export class ActorStub {
   readonly #id: NamespaceActorId;
@@ -63,6 +75,8 @@ export class ActorStub {
   readonly #binding: string;
   readonly #hint: LocationHint | undefined;
   #tail: Promise<void> = Promise.resolve();
+  #pendingHead: PendingCall | undefined;
+  #pendingTail: PendingCall | undefined;
   #broken = false;
   readonly #session = randomId();
   #sequence = 0n;
@@ -79,12 +93,48 @@ export class ActorStub {
   get id(): NamespaceActorId { return this.#id; }
   get name(): string | undefined { return this.#id.name; }
   get reference(): ActorReference { return this.#id.reference; }
+  #appendPending(release?: () => void): PendingCall {
+    const node: PendingCall = { previous: this.#pendingTail, next: undefined, release, linked: true };
+    if (this.#pendingTail) this.#pendingTail.next = node;
+    else this.#pendingHead = node;
+    this.#pendingTail = node;
+    return node;
+  }
+  #unlinkPending(node: PendingCall): void {
+    if (!node.linked) return;
+    if (node.previous) node.previous.next = node.next;
+    else this.#pendingHead = node.next;
+    if (node.next) node.next.previous = node.previous;
+    else this.#pendingTail = node.previous;
+    node.previous = undefined; node.next = undefined; node.linked = false;
+  }
+  #releasePending(): void {
+    // A marker releases after all its predecessors, independently of later calls.
+    // Only actual waiters are visited; completed call nodes never accumulate.
+    while (this.#pendingHead?.release) {
+      const release = this.#pendingHead.release;
+      const marker = this.#pendingHead;
+      this.#unlinkPending(marker);
+      release();
+    }
+  }
+  #finishPending(node: PendingCall): void {
+    this.#unlinkPending(node);
+    this.#releasePending();
+  }
+  #waitPending(signal: AbortSignal): Promise<void> {
+    let marker!: PendingCall;
+    const settled = new Promise<void>(resolve => { marker = this.#appendPending(resolve); });
+    this.#releasePending();
+    return awaitSignal(settled, signal, () => this.#finishPending(marker));
+  }
   #call(request: (signal: AbortSignal) => Promise<Semantic.InvokeActorRequest>, options?: ActorsCallOptions): Promise<Semantic.InvokeActorResponse> {
     if (this.#broken) return Promise.reject(new Error("actor stub is broken; obtain a new stub"));
     const signal = options?.signal ? AbortSignal.any([options.signal, this.#lifetime.signal]) : this.#lifetime.signal;
     const cancelled = () => { this.#break(signal.reason); };
     signal.addEventListener("abort",cancelled,{once:true});
     if (signal.aborted) cancelled();
+    const pending = this.#appendPending();
     const admitted = this.#tail.then(async () => {
       if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
       const input = await request(signal);
@@ -96,10 +146,14 @@ export class ActorStub {
       return {response};
     });
     this.#tail = admitted.then(() => undefined, error => { this.#break(error); });
-    return Promise.race([admitted.then(({response}) => response),this.#failure]).then(response => {
+    const result = Promise.race([admitted.then(({response}) => response),this.#failure]).then(response => {
       if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
       return response;
-    }, error => { this.#break(error); throw error; }).finally(() => {signal.removeEventListener("abort",cancelled);});
+    }, error => { this.#break(error); throw error; }).finally(() => {
+      signal.removeEventListener("abort",cancelled);
+      this.#finishPending(pending);
+    });
+    return result;
   }
   #break(error: unknown): void {
     if (this.#broken) return;
@@ -122,6 +176,31 @@ export class ActorStub {
     void body.catch(() => undefined);
     const result = await this.#call(async () => this.#request(request.method, request.url, await body, Array.from(request.headers, ([name, value]) => ({ name, value }))), {...options,signal});
     return bindingResponse(result,request.method);
+  }
+  /**
+   * Fork this actor into `child`, in the same namespace, as one server commit:
+   * the child starts from this actor's committed state after every call this
+   * stub already made, without copying it. `subscriptions` binds the child's
+   * own inputs under exactly this actor's subscription ids. The result is a
+   * plain reference; obtain a stub for it from the namespace binding.
+   */
+  async fork(child: NamespaceActorId, subscriptions: readonly Semantic.SubscriptionSpec[], options: ActorForkOptions = {}): Promise<ActorReference> {
+    if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
+    const fork = this.#transport.forkActor;
+    if (fork === undefined) throw new TypeError("this binding's transport cannot fork actors");
+    const reference = this.reference;
+    const target = child.reference;
+    if (!target.equals(new ActorReference(reference.account, reference.namespace, target.id))) throw new TypeError("fork child is outside this actor's namespace");
+    if (target.equals(reference)) throw new TypeError("an actor cannot fork into itself");
+    const { idempotencyKey = randomId(), ...callOptions } = options;
+    const signal = callOptions.signal ? AbortSignal.any([callOptions.signal, this.#lifetime.signal]) : this.#lifetime.signal;
+    await this.#waitPending(signal);
+    if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
+    signal.throwIfAborted();
+    await fork.call(this.#transport, { actorId: this.#id.toString() as Semantic.ActorId, childActorId: child.toString() as Semantic.ActorId,
+      namespace: decoder.decode(reference.namespace) as Semantic.ActorNamespace, accountId: reference.account,
+      subscriptions: [...subscriptions], idempotencyKey }, {...callOptions,signal});
+    return target;
   }
   /** Named RPC payload bytes use the same namespace binding, never a public HTTP credential. */
   async rpc(method: string, payload: Uint8Array, options?: ActorsCallOptions): Promise<Uint8Array> {

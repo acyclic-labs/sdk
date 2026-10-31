@@ -3,26 +3,14 @@ modules:
   - path: compatibility/proto
   - path: rust/crates/auth/proto
   - path: rust/crates/objects/proto
-    excludes:
-      - rust/crates/objects/proto/validation
   - path: rust/crates/machines/proto
-    excludes:
-      - rust/crates/machines/proto/validation
   - path: rust/crates/actors/proto
-    excludes:
-      - rust/crates/actors/proto/validation
   - path: rust/crates/filesystem-wire/proto
     excludes:
-      - rust/crates/filesystem-wire/proto/validation
       - rust/crates/filesystem-wire/proto/protocol
   - path: rust/crates/inference/proto
-    excludes:
-      - rust/crates/inference/proto/validation
   - path: rust/crates/harness-core/proto
   - path: rust/crates/stream/proto
-    excludes:
-      - rust/crates/stream/proto/validation
-  - path: rust/crates/contract-derive/proto
 lint:
   use:
     - STANDARD

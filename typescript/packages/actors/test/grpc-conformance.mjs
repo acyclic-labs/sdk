@@ -36,7 +36,7 @@ const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
 function responseInitializer(method) {
   if (["DeployNamespace", "DeployWorker", "UpdateNamespace"].includes(method.name)) return { deployment: {name: "example", codeSha256: new Uint8Array(32).fill(1), revision: 1n} };
   if (["InvokeActor", "InvokeWorker"].includes(method.name)) return { status: 201, headers: [{ name: "location", value: "/result" }] };
-  if (["InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor"].includes(method.name)) return { actor: { actorId: "actor-a", homeRegion: "eu", codeSha256: new Uint8Array(32).fill(1), state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
+  if (["InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor", "ForkActor"].includes(method.name)) return { actor: { actorId: "actor-a", homeRegion: "eu", codeSha256: new Uint8Array(32).fill(1), state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
 
   return {};
 }
@@ -52,6 +52,12 @@ function inspectActorRequest(method, request) {
   if (method.name === "CheckpointActor") {
     assert.equal(request.actorId, "actor-a");
     assert.equal(request.idempotencyKey, "checkpoint-a");
+  }
+  if (method.name === "ForkActor") {
+    assert.equal(request.actorId, "actor-a");
+    assert.equal(request.childActorId, "actor-a-child");
+    assert.equal(request.subscriptions[0].streamPath, "events/child");
+    assert.equal(request.idempotencyKey, "fork-a");
   }
   if (method.name === "DeleteAll") {
     assert.equal(request.actorId, "actor-a");
@@ -108,6 +114,7 @@ if (process.argv.includes("--client")) {
         idempotencyKey: "subscribe-a",
       });
       if (method.name === "CheckpointActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "checkpoint-a" });
+      if (method.name === "ForkActor") Object.assign(initializer, { actorId: "actor-a", childActorId: "actor-a-child", subscriptions: [{ subscriptionId: "input", streamPath: "events/child", start: { start: { case: "currentHead", value: true } } }], idempotencyKey: "fork-a" });
       if (method.name === "InvokeWorker") Object.assign(initializer, { workerName: "example", method: "POST", url: "/invoke", headers: [{name:"content-type",value:"application/json"}], body: new Uint8Array([1]) });
       if (method.name === "DeleteWorker") Object.assign(initializer, { workerName: "example", idempotencyKey: "delete-worker" });
       if (method.name === "DeleteAll") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "delete-a" });

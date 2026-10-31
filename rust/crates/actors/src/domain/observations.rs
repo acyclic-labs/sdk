@@ -186,6 +186,7 @@ actor_response_type!(AddSubscriptionResponse, AddSubscriptionResponse);
 actor_response_type!(RemoveSubscriptionResponse, RemoveSubscriptionResponse);
 actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
 actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
+actor_response_type!(ForkActorResponse, ForkActorResponse);
 
 /// Versioned code/config deployment observation, with no actor instance.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]

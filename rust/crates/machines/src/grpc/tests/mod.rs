@@ -58,8 +58,8 @@ macro_rules! operation_service {
 operation_service! {
     (qualify_image, QualifyImageRequest, ImageQualification),
     (checkpoint, CheckpointMachineRequest, CheckpointAdmission),
-    (fork, ForkCheckpointRequest, ForkAdmission),
-    (fork_machine, ForkMachineRequest, ForkMachineAdmission),
+    (fork, ForkCheckpointRequest, MachineAdmissions),
+    (fork_machine, ForkMachineRequest, MachineAdmissions),
     (inspect_checkpoint, InspectCheckpointRequest, CheckpointState),
     (list_machines, ListMachinesRequest, MachinePage),
     (events, EventsRequest, EventPage),

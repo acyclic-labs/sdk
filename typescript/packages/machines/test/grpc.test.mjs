@@ -27,7 +27,7 @@ after(async () => {
 
 const caCertificate = readFileSync(new URL("./fixtures/server.pem", import.meta.url), "utf8");
 const key = readFileSync(new URL("./fixtures/server-key.pem", import.meta.url), "utf8");
-const protocol = { major: 1, minor: 4 };
+const protocol = { major: 1, minor: 5 };
 const identity = value => ({ value: new Uint8Array(16).fill(value) });
 const machine = identity(1);
 const operation = identity(2);

@@ -40,7 +40,7 @@ try {
   await invalidArgument(() => new ActorsClient({ ...options, token: "bad\nheader" }).transport);
   const client = new ActorsClient(options);
   assert.equal(await client.transport, mode === "native" ? "grpc" : "grpc-web");
-  for (const operation of ["deployNamespace", "updateNamespace", "inspectActor", "addSubscription", "removeSubscription", "resumeSubscription", "checkpointActor", "invokeActor", "deleteAll"]) {
+  for (const operation of ["deployNamespace", "updateNamespace", "inspectActor", "addSubscription", "removeSubscription", "resumeSubscription", "checkpointActor", "forkActor", "invokeActor", "deleteAll"]) {
     await invalidArgument(() => client[operation]({}));
   }
   if (mode === "native") {

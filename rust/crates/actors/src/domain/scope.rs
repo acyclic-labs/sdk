@@ -191,6 +191,46 @@ impl CheckpointActorRequest {
     }
 }
 
+impl ForkActorRequest {
+    /// Exact namespace of both the parent and the child.
+    pub fn namespace(&self) -> &str {
+        self.namespace.as_ref().map_or(
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE,
+            ActorNamespace::as_str,
+        )
+    }
+    /// The parent's complete address; legacy callers supply their account.
+    pub fn reference(
+        &self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ActorReference, crate::addressing::IdentityError> {
+        self.address(account, &self.actor_id)
+    }
+    /// The child's complete address, in the parent's account and namespace.
+    pub fn child_reference(
+        &self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ActorReference, crate::addressing::IdentityError> {
+        self.address(account, &self.child_actor_id)
+    }
+    fn address(
+        &self,
+        account: &[u8],
+        id: &ActorId,
+    ) -> Result<crate::addressing::ActorReference, crate::addressing::IdentityError> {
+        let account = if self.account_id.is_empty() {
+            account
+        } else {
+            &self.account_id
+        };
+        crate::addressing::ActorReference::new(
+            account,
+            self.namespace().as_bytes(),
+            id.as_str().as_bytes(),
+        )
+    }
+}
+
 impl DeleteAllRequest {
     /// Exact namespace, resolving only the absent legacy field.
     pub fn namespace(&self) -> &str {

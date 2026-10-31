@@ -30,6 +30,8 @@
         ResumeSubscriptionResponseProto,
         CheckpointActorRequestProto,
         CheckpointActorResponseProto,
+        ForkActorRequestProto,
+        ForkActorResponseProto,
         DeleteAllRequestProto,
         DeleteAllResponseProto,
         HeaderProto,
@@ -100,6 +102,11 @@ pub enum ActorsService {
     CheckpointActor {
         request: CheckpointActorRequestProto,
         response: CheckpointActorResponseProto,
+    },
+    #[wire(auth(action = "actors/fork", extractor = "actors.fork"))]
+    ForkActor {
+        request: ForkActorRequestProto,
+        response: ForkActorResponseProto,
     },
     #[wire(auth(action = "actors/invoke", extractor = "actors.invoke"))]
     InvokeActor {

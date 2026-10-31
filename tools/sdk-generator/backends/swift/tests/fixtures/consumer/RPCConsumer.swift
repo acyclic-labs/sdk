@@ -33,7 +33,7 @@ struct RPCSchema: Sendable {
       }
     }
     self.messages = messages; self.enums = enums; self.methods = methods
-    try rpcRequire(methods.count == 23, "Rust descriptor method inventory differs")
+    try rpcRequire(methods.count == 24, "Rust descriptor method inventory differs")
   }
   func check<I: SwiftProtobuf.Message, O: SwiftProtobuf.Message>(
     _ path: String, input: I.Type, output: O.Type, streaming: Bool, descriptor: MethodDescriptor
@@ -151,6 +151,11 @@ struct Probe0: Acyclic_Actors_V1_ActorsService.SimpleServiceProtocol {
  try rpcRequire(request == schema.seeded(Acyclic_Actors_V1_CheckpointActorRequest.self, tag: 1), "native request payload differs: acyclic.actors.v1.ActorsService/CheckpointActor")
  return try schema.seeded(Acyclic_Actors_V1_CheckpointActorResponse.self, tag: 2)
  }
+ func forkActor(request: Acyclic_Actors_V1_ForkActorRequest, context: ServerContext) async throws -> Acyclic_Actors_V1_ForkActorResponse {
+ try rpcRequire(context.descriptor.fullyQualifiedMethod == "acyclic.actors.v1.ActorsService/ForkActor", "actual server method path differs")
+ try rpcRequire(request == schema.seeded(Acyclic_Actors_V1_ForkActorRequest.self, tag: 1), "native request payload differs: acyclic.actors.v1.ActorsService/ForkActor")
+ return try schema.seeded(Acyclic_Actors_V1_ForkActorResponse.self, tag: 2)
+ }
  func invokeActor(request: Acyclic_Actors_V1_InvokeActorRequest, context: ServerContext) async throws -> Acyclic_Actors_V1_InvokeActorResponse {
  try rpcRequire(context.descriptor.fullyQualifiedMethod == "acyclic.actors.v1.ActorsService/InvokeActor", "actual server method path differs")
  try rpcRequire(request == schema.seeded(Acyclic_Actors_V1_InvokeActorRequest.self, tag: 1), "native request payload differs: acyclic.actors.v1.ActorsService/InvokeActor")
@@ -236,9 +241,10 @@ try schema.check("acyclic.actors.v1.ActorsService/AddSubscription", input: Acycl
 try schema.check("acyclic.actors.v1.ActorsService/RemoveSubscription", input: Acyclic_Actors_V1_RemoveSubscriptionRequest.self, output: Acyclic_Actors_V1_RemoveSubscriptionResponse.self, streaming: false, descriptor: Acyclic_Actors_V1_ActorsService.Method.RemoveSubscription.descriptor)
 try schema.check("acyclic.actors.v1.ActorsService/ResumeSubscription", input: Acyclic_Actors_V1_ResumeSubscriptionRequest.self, output: Acyclic_Actors_V1_ResumeSubscriptionResponse.self, streaming: false, descriptor: Acyclic_Actors_V1_ActorsService.Method.ResumeSubscription.descriptor)
 try schema.check("acyclic.actors.v1.ActorsService/CheckpointActor", input: Acyclic_Actors_V1_CheckpointActorRequest.self, output: Acyclic_Actors_V1_CheckpointActorResponse.self, streaming: false, descriptor: Acyclic_Actors_V1_ActorsService.Method.CheckpointActor.descriptor)
+try schema.check("acyclic.actors.v1.ActorsService/ForkActor", input: Acyclic_Actors_V1_ForkActorRequest.self, output: Acyclic_Actors_V1_ForkActorResponse.self, streaming: false, descriptor: Acyclic_Actors_V1_ActorsService.Method.ForkActor.descriptor)
 try schema.check("acyclic.actors.v1.ActorsService/InvokeActor", input: Acyclic_Actors_V1_InvokeActorRequest.self, output: Acyclic_Actors_V1_InvokeActorResponse.self, streaming: false, descriptor: Acyclic_Actors_V1_ActorsService.Method.InvokeActor.descriptor)
 try schema.check("acyclic.actors.v1.ActorsService/DeleteAll", input: Acyclic_Actors_V1_DeleteAllRequest.self, output: Acyclic_Actors_V1_DeleteAllResponse.self, streaming: false, descriptor: Acyclic_Actors_V1_ActorsService.Method.DeleteAll.descriptor)
-try rpcRequire(Set(Acyclic_Actors_V1_ActorsService.Method.descriptors.map(\.fullyQualifiedMethod)) == Set(["acyclic.actors.v1.ActorsService/DeleteWorker", "acyclic.actors.v1.ActorsService/InvokeWorker", "acyclic.actors.v1.ActorsService/DeployNamespace", "acyclic.actors.v1.ActorsService/DeployWorker", "acyclic.actors.v1.ActorsService/UpdateNamespace", "acyclic.actors.v1.ActorsService/InspectActor", "acyclic.actors.v1.ActorsService/AddSubscription", "acyclic.actors.v1.ActorsService/RemoveSubscription", "acyclic.actors.v1.ActorsService/ResumeSubscription", "acyclic.actors.v1.ActorsService/CheckpointActor", "acyclic.actors.v1.ActorsService/InvokeActor", "acyclic.actors.v1.ActorsService/DeleteAll"]), "generated service method inventory differs")
+try rpcRequire(Set(Acyclic_Actors_V1_ActorsService.Method.descriptors.map(\.fullyQualifiedMethod)) == Set(["acyclic.actors.v1.ActorsService/DeleteWorker", "acyclic.actors.v1.ActorsService/InvokeWorker", "acyclic.actors.v1.ActorsService/DeployNamespace", "acyclic.actors.v1.ActorsService/DeployWorker", "acyclic.actors.v1.ActorsService/UpdateNamespace", "acyclic.actors.v1.ActorsService/InspectActor", "acyclic.actors.v1.ActorsService/AddSubscription", "acyclic.actors.v1.ActorsService/RemoveSubscription", "acyclic.actors.v1.ActorsService/ResumeSubscription", "acyclic.actors.v1.ActorsService/CheckpointActor", "acyclic.actors.v1.ActorsService/ForkActor", "acyclic.actors.v1.ActorsService/InvokeActor", "acyclic.actors.v1.ActorsService/DeleteAll"]), "generated service method inventory differs")
 try schema.check("acyclic.stream.v1.StreamService/InspectIdempotency", input: Acyclic_Stream_V1_InspectIdempotencyRequest.self, output: Acyclic_Stream_V1_InspectIdempotencyResponse.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.InspectIdempotency.descriptor)
 try schema.check("acyclic.stream.v1.StreamService/Append", input: Acyclic_Stream_V1_AppendRequest.self, output: Acyclic_Stream_V1_AppendResponse.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.Append.descriptor)
 try schema.check("acyclic.stream.v1.StreamService/Tail", input: Acyclic_Stream_V1_TailRequest.self, output: Acyclic_Stream_V1_TailResponse.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.Tail.descriptor)
@@ -275,6 +281,8 @@ let actorResult8: Acyclic_Actors_V1_ResumeSubscriptionResponse = try await api0.
 try rpcRequire(actorResult8 == schema.seeded(Acyclic_Actors_V1_ResumeSubscriptionResponse.self, tag: 2), "native response payload differs: acyclic.actors.v1.ActorsService/ResumeSubscription")
 let actorResult9: Acyclic_Actors_V1_CheckpointActorResponse = try await api0.checkpointActor(request: .init(message: schema.seeded(Acyclic_Actors_V1_CheckpointActorRequest.self, tag: 1)))
 try rpcRequire(actorResult9 == schema.seeded(Acyclic_Actors_V1_CheckpointActorResponse.self, tag: 2), "native response payload differs: acyclic.actors.v1.ActorsService/CheckpointActor")
+let actorResult12: Acyclic_Actors_V1_ForkActorResponse = try await api0.forkActor(request: .init(message: schema.seeded(Acyclic_Actors_V1_ForkActorRequest.self, tag: 1)))
+try rpcRequire(actorResult12 == schema.seeded(Acyclic_Actors_V1_ForkActorResponse.self, tag: 2), "native response payload differs: acyclic.actors.v1.ActorsService/ForkActor")
 let actorResult10: Acyclic_Actors_V1_InvokeActorResponse = try await api0.invokeActor(request: .init(message: schema.seeded(Acyclic_Actors_V1_InvokeActorRequest.self, tag: 1)))
 try rpcRequire(actorResult10 == schema.seeded(Acyclic_Actors_V1_InvokeActorResponse.self, tag: 2), "native response payload differs: acyclic.actors.v1.ActorsService/InvokeActor")
 let actorResult11: Acyclic_Actors_V1_DeleteAllResponse = try await api0.deleteAll(request: .init(message: schema.seeded(Acyclic_Actors_V1_DeleteAllRequest.self, tag: 1)))
@@ -319,4 +327,4 @@ try rpcRequire(result27 == schema.seeded(Acyclic_Stream_V1_CommittedEnvelope.sel
 }
 let schema = try RPCSchema(Array(CommandLine.arguments.dropFirst()))
 try await runRPCControls(schema)
-print("PASS Swift 23 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads")
+print("PASS Swift 24 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads")
