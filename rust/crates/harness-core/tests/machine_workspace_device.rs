@@ -86,15 +86,15 @@ async fn status(
 async fn terminal(
     provider: &MemoryStream,
     path: StreamPath,
-    release: &mut tokio::net::TcpStream,
+    after_output: impl AsyncFnOnce() -> Result,
 ) -> Result<serde_json::Value> {
-    use tokio::io::AsyncWriteExt as _;
     let mut request = FollowRequest::new(path, 0);
     request.when_absent = acyclic_stream::WhenAbsent::Wait;
     let mut events = provider.follow(request).await?;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut chunks = 0;
+    let mut after_output = Some(after_output);
     while let Some(event) = events.next().await {
         if let FollowUpdate::Record(record) = event? {
             let value: serde_json::Value = serde_json::from_slice(&record.value)?;
@@ -113,7 +113,10 @@ async fn terminal(
                 if chunks == 1 {
                     // The real process cannot exit until its output has crossed
                     // the socket and original operation publication boundary.
-                    release.write_all(b"continue\n").await?;
+                    after_output
+                        .take()
+                        .ok_or("output gate was already consumed")?()
+                    .await?;
                 }
                 continue;
             }
@@ -247,8 +250,8 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             .to_str()
             .ok_or("marker path is not UTF-8")?
             .replace('\'', "''");
-        let release = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
-        let port = release.local_addr()?.port();
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
         let command = if cfg!(windows) {
             format!(
                 "$peer = [Net.Sockets.TcpClient]::new('127.0.0.1', {port}); [IO.File]::AppendAllText('{path}', 'x'); [Console]::Out.Write('out'); [Console]::Error.Write('err'); $null = $peer.GetStream().ReadByte(); $peer.Dispose(); exit 7"
@@ -263,6 +266,7 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             op,
             call_id: "original-call".into(),
             agent: agent.clone(),
+            volume: workspace.selected_volume().clone(),
             actor: *blake3::hash(&actor.encode()).as_bytes(),
             target: "desktop".into(),
             session: session.clone(),
@@ -270,39 +274,47 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             deadline_epoch_ms: None,
             arguments: serde_json::json!({"command": command, "target": "desktop"}),
         };
-        let grant = owner
-            .issuer(&mut None)?
-            .issue(
-                &scope,
-                run.grant_id()?,
-                &Capabilities::new(["tool:call:shell"]),
-            )?
-            .seal(&owner.verifier(&mut None)?)?;
-        let bytes = serde_json::to_vec(&Run {
-            v: 1,
-            command: run,
-            grant,
-        })?;
-        let request = CommitRequest {
-            deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: vec![
-                CommitMutation::Append {
-                    path: paths.queue("desktop")?,
-                    records: vec![AppendRecord::from(bytes)],
-                },
-                Store::new(provider.clone(), StreamPath::new("harness/actors")?)
-                    .activation(&actor)
-                    .mutation,
-            ],
-            idempotency_key: IdempotencyKey::new(b"original-device-dispatch".to_vec())?,
+        let dispatch = |command: RunCommand, key: &[u8]| -> Result<CommitRequest> {
+            let grant = owner
+                .issuer(&mut None)?
+                .issue(
+                    &scope,
+                    command.grant_id()?,
+                    &Capabilities::new(["tool:call:shell"]),
+                )?
+                .seal(&owner.verifier(&mut None)?)?;
+            let bytes = serde_json::to_vec(&Run {
+                v: 1,
+                command,
+                grant,
+            })?;
+            Ok(CommitRequest {
+                deadline_unix_millis: None,
+                conditions: Vec::new(),
+                mutations: vec![
+                    CommitMutation::Append {
+                        path: paths.queue("desktop")?,
+                        records: vec![AppendRecord::from(bytes)],
+                    },
+                    Store::new(provider.clone(), StreamPath::new("harness/actors")?)
+                        .activation(&actor)
+                        .mutation,
+                ],
+                idempotency_key: IdempotencyKey::new(key.to_vec())?,
+            })
         };
+        let request = dispatch(run.clone(), b"original-device-dispatch")?;
         assert!(matches!(
             provider.commit(request.clone()).await?,
             CommitOutcome::Committed(_)
         ));
-        let (mut release, _) = release.accept().await?;
-        let result = terminal(&provider, paths.run("desktop", op)?, &mut release).await?;
+        let (mut release, _) = listener.accept().await?;
+        let result = terminal(&provider, paths.run("desktop", op)?, async || {
+            use tokio::io::AsyncWriteExt as _;
+            release.write_all(b"continue\n").await?;
+            Ok(())
+        })
+        .await?;
         assert_eq!(result["exit"]["result"]["stdout"], "out");
         assert_eq!(result["exit"]["result"]["stderr"], "err");
         assert_eq!(result["exit"]["result"]["exit_code"], 7);
@@ -313,12 +325,69 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
         ));
         assert_eq!(std::fs::read(&marker_path)?, b"x");
         assert_eq!(provider.tail(paths.queue("desktop")?).await?, 1);
+
+        // Even another authorized project cannot replace the original mounted
+        // selection. The real command is harmless but would leave evidence.
+        let mut foreign_run = run.clone();
+        foreign_run.op = OperationId::new();
+        foreign_run.volume = acyclic_harness_core::conversation::VolumeRef::new(
+            run.volume.provider().clone(),
+            "other-project".into(),
+            acyclic_harness_core::conversation::VolumeClass::Project,
+            acyclic_harness_core::conversation::VolumeOwner::Project("other-project".into()),
+            &mut None,
+        )?;
+        foreign_run.arguments["command"] = if cfg!(windows) {
+            format!("[IO.File]::AppendAllText('{path}', 'wrong-volume')")
+        } else {
+            format!("printf wrong-volume >> '{path}'")
+        }
+        .into();
+        let foreign_op = foreign_run.op;
+        provider
+            .commit(dispatch(foreign_run, b"foreign-volume")?)
+            .await?;
+        let refusal = terminal(&provider, paths.run("desktop", foreign_op)?, async || {
+            Err("foreign volume reached the process output boundary".into())
+        })
+        .await?;
+        assert!(
+            refusal.get("refused").is_some(),
+            "foreign volume ran: {refusal}"
+        );
+        assert_eq!(std::fs::read(&marker_path)?, b"x");
+
         let foreign = AgentPath::root(&AgentId::from_bytes([42; 16]));
         assert!(lifecycle.close(&foreign).await.is_err());
         owner.verifier(&mut None)?.verify(&scope, &mut None)?;
         lifecycle.pause(&agent).await?;
         owner.verifier(&mut None)?.verify(&scope, &mut None)?;
-        lifecycle.close(&agent).await?;
+
+        // Archive while the same real child is blocked. Its original trust
+        // event interrupts the command, and native custody closes the child's
+        // held descriptor; revocation is not an assertion that it already died.
+        let mut active = run.clone();
+        active.op = OperationId::new();
+        let active_op = active.op;
+        provider
+            .commit(dispatch(active, b"archive-active-command")?)
+            .await?;
+        let (mut held, _) = listener.accept().await?;
+        let lost = terminal(&provider, paths.run("desktop", active_op)?, async || {
+            lifecycle.close(&agent).await?;
+            Ok(())
+        })
+        .await?;
+        assert!(
+            lost.get("lost").is_some(),
+            "interrupted command settled as {lost}"
+        );
+        use tokio::io::AsyncReadExt as _;
+        assert_eq!(
+            held.read_u8().await.unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(std::fs::read(&marker_path)?, b"xx");
         assert!(
             owner
                 .verifier(&mut None)?

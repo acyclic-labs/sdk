@@ -129,6 +129,8 @@ pub struct RunCommand {
     pub call_id: String,
     /// Original agent whose grant admitted this call.
     pub agent: AgentPath,
+    /// Original project selection, including a child's retained fork identity.
+    pub volume: crate::conversation::VolumeRef,
     /// Digest of the original account/tree/device Actor reference.
     pub actor: [u8; 32],
     /// The device's name.
