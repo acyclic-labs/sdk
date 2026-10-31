@@ -2130,10 +2130,9 @@ mod reader_tests {
         assert!(reader.restore(&snapshot).is_err());
         reader.cache.observe_origin(
             &grandchild,
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: child.clone(),
-                forked_at: 1,
-                commit_id: CommitId::from_bytes([3; 32]),
+                inherited: ForkCut { forked_at: 1, commit_id: CommitId::from_bytes([3; 32]) },
             }),
         );
         let want = |reader: &mut Reader, key| {

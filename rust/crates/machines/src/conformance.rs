@@ -722,7 +722,7 @@ async fn live_fork(
         return Err("suspended fork returned the wrong outcome".into());
     };
     if provenance.source != crate::ForkSource::Machine(machine.id)
-        || provenance.fidelity != expected
+        || provenance.inherited != expected
     {
         return Err("suspended fork substituted its source or declared fidelity".into());
     }

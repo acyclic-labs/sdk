@@ -1588,10 +1588,9 @@ mod tests {
         let mut evicted = RecordCache::new(64 * 1024, 2);
         evicted.observe_origin(
             &child,
-            Some(ForkOrigin {
+            Some(Provenance {
                 source: source.clone(),
-                forked_at: 1,
-                commit_id: CommitId::from_bytes([5; 32]),
+                inherited: ForkCut { forked_at: 1, commit_id: CommitId::from_bytes([5; 32]) },
             }),
         );
         evicted.observe_origin(&source, None);
@@ -1610,10 +1609,9 @@ mod tests {
         for (path, source) in [(&child, &source), (&source, &child)] {
             cyclic.observe_origin(
                 path,
-                Some(ForkOrigin {
+                Some(Provenance {
                     source: source.clone(),
-                    forked_at: 1,
-                    commit_id: CommitId::from_bytes([6; 32]),
+                    inherited: ForkCut { forked_at: 1, commit_id: CommitId::from_bytes([6; 32]) },
                 }),
             );
         }

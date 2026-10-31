@@ -1341,7 +1341,10 @@ mod tests {
                 panic!("one child");
             };
             assert_eq!(child.origin.as_ref().unwrap().inherited.forked_at, 0);
-            assert_eq!(child.origin.as_ref().unwrap().commit_id, fork.commit_id);
+            assert_eq!(
+                child.origin.as_ref().unwrap().inherited.commit_id,
+                fork.commit_id
+            );
             assert_eq!(child.tail.as_ref().unwrap().value.as_ref(), b"second");
 
             let mut reader = Reader::new(super::super::ReaderPolicy::default()).unwrap();
