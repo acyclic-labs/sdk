@@ -100,10 +100,9 @@ impl Cut<'_> {
             let committed = match &outcome {
                 CommitOutcome::Conflict(_) => Ok(false),
                 CommitOutcome::Committed(receipt) => {
-                    if receipt.appends.len() != 1
-                        || !receipt.forks.is_empty()
-                        || !confirms(receipt, self.pages, expected, batch)
-                    {
+                    let valid = matches!(receipt.appends.as_slice(), [append]
+                        if confirms(append, self.pages, expected, batch));
+                    if !valid || !receipt.forks.is_empty() {
                         Err(Error::Indeterminate(self.operation))
                     } else {
                         Ok(true)
@@ -178,22 +177,23 @@ impl Cut<'_> {
         match outcome {
             CommitOutcome::Conflict(_) => Ok(false),
             CommitOutcome::Committed(receipt) => {
-                if receipt.appends.len() != 3
-                    || !receipt.forks.is_empty()
-                    || !confirms(
-                        receipt,
-                        self.execution,
-                        self.execution_tail,
-                        std::slice::from_ref(observation),
-                    )
-                    || !confirms(
-                        receipt,
-                        self.head,
-                        self.head_tail,
-                        std::slice::from_ref(checkpoint),
-                    )
-                    || !confirms(receipt, self.pages, pages_tail, records)
-                {
+                let valid = match receipt.appends.as_slice() {
+                    [execution, head, pages] => {
+                        confirms(
+                            execution,
+                            self.execution,
+                            self.execution_tail,
+                            std::slice::from_ref(observation),
+                        ) && confirms(
+                            head,
+                            self.head,
+                            self.head_tail,
+                            std::slice::from_ref(checkpoint),
+                        ) && confirms(pages, self.pages, pages_tail, records)
+                    }
+                    _ => false,
+                };
+                if !valid || !receipt.forks.is_empty() {
                     return Err(Error::Indeterminate(self.operation));
                 }
                 Ok(true)
