@@ -182,7 +182,6 @@ async fn stock(broken: bool) -> Result<()> {
         acyclic_harness_core::context::ThresholdCompaction {
             response_reserve_tokens: 1024,
             recent_tokens: 2048,
-            retention: Default::default(),
         },
     );
     let objects = acyclic_objects::MemoryObjects::memory();

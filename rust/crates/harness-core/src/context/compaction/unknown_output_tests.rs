@@ -12,7 +12,6 @@ proptest! {
         let policy = ThresholdCompaction {
             response_reserve_tokens: output,
             recent_tokens: 1,
-            retention: CompactionRetention::default(),
         };
         prop_assert!(ThresholdCompaction::for_capacity(capacity, 0).is_err());
         prop_assert!(policy.validate(capacity, None).is_err());
