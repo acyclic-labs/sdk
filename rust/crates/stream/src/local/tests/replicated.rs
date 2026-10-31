@@ -2,6 +2,7 @@ use super::super::*;
 use crate::replicated::{
     AppendIf, CommandJournal, JournalFrame, JournalPage, ReplicaClock, Replicated,
 };
+use crate::{AppendReceipt, CommitCondition, CommitMutation, WriteOutcome};
 use std::sync::atomic::Ordering;
 
 struct Advancing {
