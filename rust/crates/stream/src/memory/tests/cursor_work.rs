@@ -178,7 +178,7 @@ proptest! {
                 let mut cursor = HistoryCursor::at(start);
                 let mut old_cursor = BaselineCursor::at(start);
                 if old { baseline(&mut old_cursor, stream.history.as_ref(), stream.tail); }
-                else { cursor.sync(stream.history.as_ref(), stream.tail); }
+                else { cursor.sync(stream); }
                 let first: Vec<_> = std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor)).map(record_bytes).take(cut).collect();
                 drop(state);
                 let appended = provider.append(AppendRequest {
@@ -188,7 +188,7 @@ proptest! {
                 let state = provider.state.read().await;
                 let stream = state.paths.get(&path).unwrap();
                 if old { baseline(&mut old_cursor, stream.history.as_ref(), stream.tail); }
-                else { cursor.sync(stream.history.as_ref(), stream.tail); }
+                else { cursor.sync(stream); }
                 let rest: Vec<_> = std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor)).map(record_bytes).collect();
                 (appends, forks, appended, first, rest, if old { old_cursor.next } else { cursor.position() })
         });
@@ -214,7 +214,7 @@ fn pinned_cursor_open_is_constant_space_and_eager_control_grows() {
                 if old {
                     baseline(&mut old_cursor, stream.history.as_ref(), stream.tail);
                 } else {
-                    cursor.sync(stream.history.as_ref(), stream.tail);
+                    cursor.sync(stream);
                 }
             }));
             counts.push(HISTORY_VISITS.with(std::cell::Cell::get));
@@ -275,7 +275,7 @@ fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
             if old {
                 baseline(&mut old_cursor, stream.history.as_ref(), stream.tail);
             } else {
-                cursor.sync(stream.history.as_ref(), stream.tail);
+                cursor.sync(stream);
             }
             while read(old, &mut old_cursor, &mut cursor).is_some() {}
         }
@@ -293,7 +293,7 @@ fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
             if old {
                 baseline(&mut old_cursor, stream.history.as_ref(), stream.tail);
             } else {
-                cursor.sync(stream.history.as_ref(), stream.tail);
+                cursor.sync(stream);
             }
         });
         measured.push((
@@ -398,7 +398,7 @@ proptest! {
             let mut baseline_cursor = BaselineCursor::at(start);
             baseline(&mut baseline_cursor, snapshot.history.as_ref(), snapshot.tail);
             let expected: Vec<_> = std::iter::from_fn(|| baseline_cursor.next_record()).map(record_bytes).collect();
-            let mut pinned = PinnedHistory::new(snapshot.history, snapshot.tail);
+            let mut pinned = PinnedHistory::new(&snapshot, snapshot.tail);
             let mut after = start;
             let mut actual = Vec::new();
             while let Some(window) = crate::pages::PageSource::next_page(&mut pinned, after, budget).await.unwrap() {
@@ -416,13 +416,13 @@ proptest! {
     }
 }
 
-/// What following a chain cost: history nodes visited, pages that sought from
-/// the root, the longest retained path and the peak live allocation.
+/// Actual batch probes, fixed-width comparison work, indexed seeks and the
+/// peak live allocation while following the original provider's records.
 #[derive(Debug)]
 struct FollowCost {
     visits: usize,
     seeks: usize,
-    path: usize,
+    comparisons: usize,
     bytes: u64,
 }
 
@@ -460,11 +460,11 @@ fn follow_chain(depth: usize) -> (Vec<(u64, String)>, FollowCost) {
     let tip = state.paths.get(&hop(depth - 1)).unwrap();
     let mut cursor = HistoryCursor::at(0);
     let mut records = Vec::with_capacity(depth);
-    for counter in [&HISTORY_VISITS, &HISTORY_SEEKS, &HISTORY_PATH_PEAK] {
+    for counter in [&HISTORY_VISITS, &HISTORY_SEEKS, &HISTORY_METADATA_READS] {
         counter.with(|count| count.set(0));
     }
     let allocations = acyclic_test_support::measure(|| {
-        cursor.sync(tip.history.as_ref(), tip.tail);
+        cursor.sync(tip);
         while let Some(record) = futures::FutureExt::now_or_never(cursor.next_record())
             .expect("memory pages are immediately ready")
             .unwrap()
@@ -483,7 +483,7 @@ fn follow_chain(depth: usize) -> (Vec<(u64, String)>, FollowCost) {
     let cost = FollowCost {
         visits: HISTORY_VISITS.with(std::cell::Cell::get),
         seeks: HISTORY_SEEKS.with(std::cell::Cell::get),
-        path: HISTORY_PATH_PEAK.with(std::cell::Cell::get),
+        comparisons: HISTORY_METADATA_READS.with(std::cell::Cell::get),
         bytes: allocations.bytes_max,
     };
     (records, cost)
@@ -500,28 +500,13 @@ fn a_deep_fork_chain_follows_each_origin_with_flat_work_per_record() {
             assert_eq!(*origin, format!("chain/{sequence}"));
         }
         println!("fork chain depth={depth} {cost:?}");
-        // One seek from the tip; the chain holds a batch and a fork cut per
-        // record, each visited once more or less, plus that seek's path.
-        let nodes = 2 * depth;
-        let levels = nodes.ilog2() as usize + 1;
-        assert!(
-            cost.visits <= 2 * nodes + 8 * levels,
-            "{} visits for {depth} records",
-            cost.visits
-        );
-        assert_eq!(cost.seeks, 1, "a page restarted from the root");
-        // Skew-binary links reach any ancestor in about 2 log2 n steps.
-        assert!(
-            cost.path <= 2 * levels + 8,
-            "path {} at depth {depth}",
-            cost.path
-        );
+        assert_eq!(cost.visits, depth);
+        assert_eq!(cost.seeks, depth - 1);
+        // Each u64 seek has at most 64 branch decisions and one leaf.
+        // The shared index accounts key-byte comparisons as well as nodes.
+        assert!(cost.comparisons <= (depth - 1) * 65 * 58);
+        assert_eq!(cost.bytes, 0, "a page allocated an ancestry path");
         per_depth.push(cost);
     }
-    // Memory grows only by the retained path, logarithmic in depth.
-    let entry = std::mem::size_of::<(Arc<History>, u64)>() as u64;
-    assert!(
-        per_depth[1].bytes <= per_depth[0].bytes + 2 * entry * per_depth[1].path as u64,
-        "follow memory grew with depth: {per_depth:?}"
-    );
+    assert_eq!(per_depth[0].bytes, per_depth[1].bytes);
 }

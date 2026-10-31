@@ -91,7 +91,7 @@ impl HistoryCursor {
             .position()
             .checked_sub(1)
             .ok_or(StreamError::InvalidArgument)?;
-        let mut pinned = PinnedHistory::new(path.history.clone(), path.tail);
+        let mut pinned = PinnedHistory::new(path, path.tail);
         let previous = crate::pages::PageSource::next_page(&mut pinned, from, 1).await?;
         if previous
             .and_then(|window| window.records.records.get(window.start).cloned())
@@ -103,7 +103,7 @@ impl HistoryCursor {
     }
     pub(crate) fn at(next: u64) -> Self {
         Self {
-            records: Self::pinned(PinnedHistory::new(None, next), next),
+            records: Self::pinned(PinnedHistory::empty(next), next),
             awaiting_creation: false,
             registration: None,
         }
@@ -113,7 +113,7 @@ impl HistoryCursor {
             .expect("the stream replay page is nonzero")
     }
     fn new(path: &PathState, tail: u64, next: u64) -> Self {
-        let mut records = Self::pinned(PinnedHistory::new(path.history.clone(), tail), next);
+        let mut records = Self::pinned(PinnedHistory::new(path, tail), next);
         if let Some(page) = path.prefix_window(next, tail) {
             records.seed_page(page);
         }
@@ -123,7 +123,9 @@ impl HistoryCursor {
             registration: None,
         }
     }
-    fn sync(&mut self, root: Option<&Arc<History>>, tail: u64) {
+    fn sync(&mut self, path: &PathState) {
+        let root = path.history.as_ref();
+        let tail = path.tail;
         let history = self.records.source();
         let same = match (&history.root, root) {
             (Some(old), Some(current)) => Arc::ptr_eq(old, current),
@@ -136,11 +138,7 @@ impl HistoryCursor {
         let appended = matches!((&history.root, root.map(AsRef::as_ref)),
             (Some(old), Some(History::Batch { parent: Some(parent), .. })) if Arc::ptr_eq(old, parent));
         let keep_page = appended && tail >= history.tail;
-        let pinned = if keep_page {
-            self.records.source_mut().appended(root.cloned(), tail)
-        } else {
-            PinnedHistory::new(root.cloned(), tail)
-        };
+        let pinned = PinnedHistory::new(path, tail);
         self.records.repin(pinned, keep_page);
     }
     async fn next_record(&mut self) -> Result<Option<Record>, StreamError> {
@@ -168,7 +166,7 @@ impl FiniteRead {
             |key| key.before.min(path.tail),
         );
         Self {
-            history: PinnedHistory::new(path.history.clone(), tail),
+            history: PinnedHistory::new(path, tail),
             window: request
                 .key
                 .is_none()
@@ -182,7 +180,7 @@ impl FiniteRead {
 
     fn peek<E>(
         &mut self,
-        mut examine: impl FnMut() -> Result<(), E>,
+        mut examine: impl FnMut(u64) -> Result<(), E>,
         invalid: impl Fn() -> E,
     ) -> Result<Option<&Record>, E> {
         if self.remaining == 0 || self.next >= self.history.tail {
@@ -199,7 +197,7 @@ impl FiniteRead {
                 };
                 let Some(sequence) =
                     root.keys()
-                        .seek(&key.key, self.next, self.history.tail, &mut examine)?
+                        .seek(&key.key, self.next, self.history.tail, &mut || examine(1))?
                 else {
                     return Ok(None);
                 };
@@ -248,7 +246,7 @@ impl Iterator for FiniteRead {
     type Item = Result<Record, StreamError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable) {
+        match self.peek(|_| Ok::<_, StreamError>(()), || StreamError::Unavailable) {
             Ok(Some(_)) => Some(self.take_record().ok_or(StreamError::Unavailable)),
             result => {
                 let error = result.err();

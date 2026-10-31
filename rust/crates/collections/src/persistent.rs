@@ -1,5 +1,5 @@
 //! Immutable prefix views over the shared fixed-width branch coordinates.
-use super::{Bit, IndexWork, arc_allocation_bytes, difference, high};
+use super::{Bit, IndexReadWork, IndexWork, arc_allocation_bytes, difference, high};
 use std::sync::Arc;
 
 /// A caller-funded immutable ordered index. Cloning or taking a prefix shares
@@ -10,6 +10,17 @@ use std::sync::Arc;
 pub struct PersistentIndex<V, A, const N: usize = 8> {
     root: Option<Node<V, A, N>>,
     before: Option<[u8; N]>,
+}
+
+/// One borrowed value and the exact inherited exclusive cut under which it
+/// was found. A range value must respect this cut even after a later insertion.
+pub struct PersistentPosition<'a, V, const N: usize> {
+    /// The original retained key at or below the query.
+    pub key: &'a [u8; N],
+    /// The original immutable value, borrowed without a copy.
+    pub value: &'a V,
+    /// The effective exclusive prefix cut on the path to this value.
+    pub before: Option<[u8; N]>,
 }
 
 struct Node<V, A, const N: usize>(Option<Arc<Body<V, A, N>>>);
@@ -89,14 +100,14 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
         self.root.as_ref().map(Node::body)
     }
 
-    fn visible_body<W: IndexWork<Allocation = A>>(
+    fn visible_body<W: IndexReadWork>(
         &self,
         work: &mut W,
     ) -> Result<Option<&Body<V, A, N>>, W::Error> {
         if self.root.is_none() {
             return Ok(None);
         }
-        work.charge_items(1 + N as u64)?;
+        work.examine(1 + N as u64)?;
         Ok(self
             .body()
             .filter(|body| self.before.is_none_or(|before| body.minimum < before)))
@@ -140,27 +151,33 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
 
     /// Borrows the greatest retained key at or below `key`. Checks the original
     /// admission even on an empty view. It allocates and copies no values.
-    pub fn predecessor<W: IndexWork<Allocation = A>>(
+    pub fn predecessor<W: IndexReadWork>(
         &self,
         key: [u8; N],
         work: &mut W,
-    ) -> Result<Option<(&[u8; N], &V)>, W::Error> {
-        work.check()?;
+    ) -> Result<Option<PersistentPosition<'_, V, N>>, W::Error> {
+        work.validate()?;
         let mut cursor = self;
         let mut before = self.before;
         loop {
             let Some(body) = cursor.visible_body(work)? else {
                 return Ok(None);
             };
-            work.charge_items(2 * N as u64)?;
+            work.examine(2 * N as u64)?;
             if body.minimum > key || before.is_some_and(|before| body.minimum >= before) {
                 return Ok(None);
             }
             match &body.kind {
-                Kind::Leaf(value) => return Ok(Some((&body.minimum, value))),
+                Kind::Leaf(value) => {
+                    return Ok(Some(PersistentPosition {
+                        key: &body.minimum,
+                        value,
+                        before,
+                    }));
+                }
                 Kind::Branch { low, high, .. } => {
                     let upper = high.visible_body(work)?;
-                    work.charge_items(3 * N as u64)?;
+                    work.examine(3 * N as u64)?;
                     cursor = if upper.is_some_and(|upper| {
                         upper.minimum <= key && before.is_none_or(|before| upper.minimum < before)
                     }) {

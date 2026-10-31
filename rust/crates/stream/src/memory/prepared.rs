@@ -82,7 +82,11 @@ impl MemoryStream {
         // Header keys arrive with the body. Reserve the worst-case AVL insertion
         // paths now, while original ingress admission is still available. The
         // pinned parent cannot grow while this completion is pending.
-        let parent_height = match plan.histories.first().map(Arc::as_ref) {
+        let parent_height = match plan
+            .histories
+            .first()
+            .map(|prepared| prepared.history.as_ref())
+        {
             Some(History::Batch { parent, .. }) => parent
                 .as_ref()
                 .map_or(0, |parent| parent.keys().height() as usize),
@@ -379,7 +383,7 @@ impl PreparedCommit {
                     records,
                     keys,
                     ..
-                } = Arc::get_mut(history).ok_or(StreamError::Unavailable)?
+                } = Arc::get_mut(&mut history.history).ok_or(StreamError::Unavailable)?
                 {
                     *keys = parent
                         .as_ref()
@@ -499,8 +503,8 @@ fn envelope_append_mut(envelope: &mut CommittedEnvelope) -> &mut crate::Committe
     };
     append
 }
-fn history_record(history: &mut Arc<History>) -> Result<&mut Record, StreamError> {
-    let Some(History::Batch { records, .. }) = Arc::get_mut(history) else {
+fn history_record(history: &mut PreparedHistory) -> Result<&mut Record, StreamError> {
+    let Some(History::Batch { records, .. }) = Arc::get_mut(&mut history.history) else {
         return Err(StreamError::Unavailable);
     };
     Arc::get_mut(records)

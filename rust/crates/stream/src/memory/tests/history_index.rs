@@ -63,7 +63,9 @@ async fn point_read(
         .ok_or(StreamError::Unavailable)???;
     assert_eq!(record.value(), expected);
     assert!(output.value_mut().next().await.is_none());
-    assert!(meter.examined.load(Ordering::SeqCst) <= 64);
+    // The position index charges key-byte comparisons as well as node visits;
+    // the original namespace/open/output add four examinations.
+    assert!(meter.examined.load(Ordering::SeqCst) <= 4 + 65 * 58);
     drop(record);
     drop(output);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
@@ -171,7 +173,7 @@ async fn assert_records(
 }
 
 #[tokio::test]
-async fn jumps_preserve_nested_fork_cuts_inside_batches_and_recovery() -> TestResult<()> {
+async fn indexed_ranges_preserve_nested_fork_cuts_inside_batches_and_recovery() -> TestResult<()> {
     let provider = MemoryStream::default();
     let mut source = path("indexed/source")?;
     let mut expected = (0..23)
@@ -212,47 +214,137 @@ async fn jumps_preserve_nested_fork_cuts_inside_batches_and_recovery() -> TestRe
 }
 
 #[tokio::test]
-async fn deriving_a_jump_is_constant_work_admitted_before_any_read() -> TestResult<()> {
+async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> TestResult<()> {
     let provider = MemoryStream::default();
-    let path = path("indexed/admission")?;
-    for _ in 0..15 {
-        append_batch(&provider, &path, vec![Bytes::from_static(b"value")]).await?;
+    let original = path("indexed/admission")?;
+    let values: Vec<_> = (0..23)
+        .map(|i| Bytes::from(format!("original-{i}")))
+        .collect();
+    append_batch(&provider, &original, values.clone()).await?;
+    let mut selected = original.clone();
+    let mut costs = Vec::new();
+    for depth in 1..=256 {
+        let destination = path(&format!("indexed/cut-{depth}"))?;
+        provider
+            .fork(ForkRequest {
+                source: selected,
+                destination: destination.clone(),
+                at_tail: Some(3),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        selected = destination;
+        if [1, 32, 256].contains(&depth) {
+            let captured = provider
+                .state
+                .read()
+                .await
+                .paths
+                .get(&selected)
+                .cloned()
+                .unwrap();
+            let mut pinned = PinnedHistory::new(&captured, captured.tail);
+            let mut items = 0;
+            let mut window = None;
+            let allocation = acyclic_test_support::measure(|| {
+                window = pinned
+                    .page(2, 64, |count| {
+                        items += count;
+                        Ok::<_, StreamError>(())
+                    })
+                    .unwrap();
+            });
+            let window = window.unwrap();
+            assert_eq!(window.end - window.start, 1);
+            assert_eq!(window.records.records[window.start].value, values[2]);
+            assert_eq!(window.records.records[window.start].origin, original);
+            assert_eq!(allocation.count_total, 0);
+            assert!(items <= 1 + 65 * 58);
+            costs.push(items);
+            assert_eq!(linear_visits(&provider, &selected, 3).await, depth + 1);
+        }
     }
-    let state = provider.state.read().await;
-    let root = state
+    assert!(costs.windows(2).all(|pair| pair[0] == pair[1]));
+    let captured = provider
+        .state
+        .read()
+        .await
         .paths
-        .get(&path)
-        .and_then(|path| path.history.as_ref())
-        .ok_or(StreamError::NotFound)?;
-    let references = Arc::strong_count(root);
-    let mut visits = 0;
+        .get(&selected)
+        .cloned()
+        .unwrap();
+    let mut pinned = PinnedHistory::new(&captured, captured.tail);
     HISTORY_METADATA_READS.with(|count| count.set(0));
-    let jump = HistoryJump::new(Some(root), 15, || {
-        assert_eq!(
-            HISTORY_METADATA_READS.with(std::cell::Cell::get),
-            0,
-            "history metadata read before admission"
-        );
-        visits += 1;
-        Ok(())
-    })?;
-    // One admission and three link reads, at any depth: the parent's, its
-    // jump's and that jump's target's.
-    assert_eq!(visits, 1);
-    assert!(HISTORY_METADATA_READS.with(std::cell::Cell::get) <= 3);
-    // Depths 0..=14 hold two equal 7-deep spans, so depth 15 skips to 0.
-    assert_eq!(jump.depth, 15);
-    assert_eq!(
-        jump.target.as_ref().map(|target| target.jump().depth),
-        Some(0)
-    );
-    drop(jump);
-    HISTORY_METADATA_READS.with(|count| count.set(0));
-    let refused = HistoryJump::new(Some(root), 15, || Err(StreamError::Capacity));
+    let refused = pinned.page(2, 64, |_| Err(StreamError::Capacity));
     assert!(matches!(refused, Err(StreamError::Capacity)));
     assert_eq!(HISTORY_METADATA_READS.with(std::cell::Cell::get), 0);
-    assert_eq!(Arc::strong_count(root), references);
+
+    // The fork cut falls inside the original batch. Growing the selected path
+    // cannot reveal that batch's discarded suffix through the inherited leaf.
+    let suffix: Vec<_> = (0..17)
+        .map(|i| Bytes::from(format!("selected-{i}")))
+        .collect();
+    append_batch(&provider, &selected, suffix.clone()).await?;
+    append_batch(&provider, &selected, vec![Bytes::from_static(b"later")]).await?;
+    let mut expected = values[..3].to_vec();
+    expected.extend(suffix);
+    expected.push(Bytes::from_static(b"later"));
+    assert_records(&provider, &selected, &expected).await?;
+    let old = pinned.page(0, 64, |_| Ok::<_, StreamError>(()))?.unwrap();
+    assert_eq!(old.end - old.start, 3);
+    assert!(pinned.page(3, 64, |_| Ok::<_, StreamError>(()))?.is_none());
+
+    let state = provider.state.read().await;
+    let selected_state = state.paths.get(&selected).unwrap();
+    let History::Batch { records, .. } = selected_state.history.as_deref().unwrap() else {
+        unreachable!()
+    };
+    for allowance in 0..=3 {
+        let meter = Arc::new(Meter::default());
+        let work = Work::new(meter.original())?;
+        let admitted = provider.with_context(work);
+        let held = meter.held.load(Ordering::SeqCst);
+        meter.limit.store(
+            meter.allocations.load(Ordering::SeqCst) + allowance,
+            Ordering::SeqCst,
+        );
+        let next = selected_state.ranges.insert(
+            20_u64.to_be_bytes(),
+            Arc::clone(records),
+            &mut HistoryIndexWork(&admitted),
+        );
+        if allowance == 0 {
+            assert!(next.is_err());
+        }
+        drop(next);
+        assert_eq!(meter.held.load(Ordering::SeqCst), held);
+        drop(admitted);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+    }
+
+    // The same production preparation still binds the current batch uniquely.
+    let mutations = [CommitMutation::Append {
+        path: selected.clone(),
+        records: vec![Bytes::from_static(b"prepared").into()],
+    }];
+    let (facts, _facts) = provider.facts(&state, &mutations, CommitId::default(), 0)?;
+    let (mut histories, _histories) = provider.histories(&state, &facts)?;
+    bind_histories(&mut histories, CommitId::from_bytes([7; 32]), 42)?;
+    let History::Batch { records, .. } = histories[0].history.as_ref() else {
+        unreachable!()
+    };
+    assert_eq!(Arc::strong_count(records), 1);
+    assert_eq!(records.records[0].committed_at_micros, 42);
     drop(state);
-    assert_eq!(provider.tail(path).await?, 15);
+    let restored = MemoryStream::default();
+    restored
+        .install_state(&provider.encode_state().await)
+        .await?;
+    assert_records(&restored, &selected, &expected).await?;
+    println!(
+        "cold inherited position depth=[1,32,256] comparison_work={costs:?}; ancestry visits=[2,33,257]; page allocations=0"
+    );
     Ok(())
 }

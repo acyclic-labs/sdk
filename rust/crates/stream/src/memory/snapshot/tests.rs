@@ -1,4 +1,3 @@
-use super::super::HistoryJump;
 use super::*;
 use crate::StreamProviderExt as _;
 use crate::{AppendRequest, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
@@ -759,7 +758,6 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
         .clone();
     corrupted.history = Some(Arc::new(History::Prefix {
         keys: Default::default(),
-        jump: HistoryJump::new(future.as_ref(), 1, || Ok(()))?,
         source: future,
         tail: 1,
         _allocation: Default::default(),

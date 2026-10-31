@@ -46,7 +46,7 @@ impl MemoryStream {
         if let Some(anchor) = anchor {
             cursor.check_anchor(path, *anchor).await?;
         }
-        cursor.sync(path.history.as_ref(), path.tail);
+        cursor.sync(path);
         let mut skipped = None;
         for _ in 0..crate::REPLAY_PAGE {
             let Some(record) = cursor.peek_record().await? else {

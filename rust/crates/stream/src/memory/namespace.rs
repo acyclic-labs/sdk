@@ -66,6 +66,7 @@ impl MemoryStream {
         let mut builder = NamespaceBuilder::new(&claim);
         let blank = || PathState {
             history: None,
+            ranges: HistoryRanges::default(),
             prefix: [None, None],
             tail: 0,
         };

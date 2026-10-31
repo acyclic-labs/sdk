@@ -48,7 +48,7 @@ fn persistent_histories_preserve_prefixes_bounded_paths_and_original_custody()
                             let actual = history
                                 .predecessor(query.to_be_bytes(), &mut work)
                                 .map_err(TestCaseError::fail)?
-                                .map(|(key, value)| (u64::from_be_bytes(*key), *value));
+                                .map(|entry| (u64::from_be_bytes(*entry.key), *entry.value));
                             prop_assert_eq!(
                                 actual,
                                 expected.range(..=query).next_back().map(|(k, v)| (*k, *v))
@@ -102,13 +102,13 @@ fn persistent_histories_preserve_prefixes_bounded_paths_and_original_custody()
                 assert_eq!(
                     history
                         .predecessor(u64::MAX.to_be_bytes(), &mut work)?
-                        .map(|(_, v)| *v),
+                        .map(|entry| *entry.value),
                     Some(127)
                 );
                 assert_eq!(
                     original
                         .predecessor(u64::MAX.to_be_bytes(), &mut work)?
-                        .map(|(_, v)| *v),
+                        .map(|entry| *entry.value),
                     Some(255)
                 );
             }
