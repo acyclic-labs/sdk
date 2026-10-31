@@ -11,6 +11,7 @@
 //! observer reports as [`super::Event::Turn`] whose input [`checkpoint`] names:
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
+mod usage;
 use crate::{
     Error, Result,
     agent::{
@@ -343,6 +344,13 @@ impl Conversation {
         )
         .await?;
         String::from_utf8(bytes).map_err(failed)
+    }
+
+    /// Exports the tree's committed model-call usage as JSONL, one original
+    /// call at a time. Pages and child traversal are bounded; only the pending
+    /// call and the active traversal path are retained. Call after settlement.
+    pub async fn write_usage_jsonl(&self, output: &mut dyn std::io::Write) -> Result<()> {
+        usage::write_tree(&self.connection, self.agent(), output).await
     }
 
     /// The prompt and answer text of a settled turn.

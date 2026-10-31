@@ -125,9 +125,12 @@ async fn run(
     // A server is this machine's harness alone: refuse every client mode
     // before any of them starts.
     if matches!(args.command, Some(Command::Serve(_)))
-        && (args.prompt.is_some() || args.endpoint.is_some() || args.host_workspace)
+        && (args.prompt.is_some()
+            || args.endpoint.is_some()
+            || args.host_workspace
+            || args.usage_jsonl.is_some())
     {
-        return Err("serve takes no prompt, endpoint or host workspace".into());
+        return Err("serve takes no prompt, endpoint, host workspace or usage export".into());
     }
     if args.host_workspace {
         let directory = args
@@ -234,13 +237,59 @@ async fn drive(
         .operation
         .clone()
         .unwrap_or_else(|| OperationId::new().to_string());
-    let mut output = std::io::stdout().lock();
-    if let Some(prompt) = &args.prompt {
-        return phase(|| headless::prompt(&conversation, &operation, prompt, &mut output)).await;
+    if interactive {
+        if args.usage_jsonl.is_some() {
+            return Err("--usage-jsonl requires -p or --input-format jsonl".into());
+        }
+        return phase(|| view::run(conversation, args.inline, args.resume)).await;
     }
-    if !interactive {
-        return phase(|| headless::jsonl(&conversation, &operation, &mut output)).await;
+    use std::io::Write as _;
+    let usage_stdout = args
+        .usage_jsonl
+        .as_ref()
+        .is_some_and(|path| path.as_os_str() == "-");
+    // Admit the explicit output before sending any model work. The snapshot
+    // replaces an earlier export, so replaying a prompt never appends duplicates.
+    let mut usage: Option<Box<dyn std::io::Write>> = args
+        .usage_jsonl
+        .as_ref()
+        .map(|path| {
+            if usage_stdout {
+                Ok(Box::new(std::io::stdout().lock()) as Box<dyn std::io::Write>)
+            } else {
+                std::fs::File::create(path)
+                    .map(|file| Box::new(std::io::BufWriter::new(file)) as Box<dyn std::io::Write>)
+            }
+        })
+        .transpose()?;
+    let mut output: Box<dyn std::io::Write> = if usage_stdout {
+        Box::new(std::io::stderr().lock())
+    } else {
+        Box::new(std::io::stdout().lock())
+    };
+    let result = if let Some(prompt) = &args.prompt {
+        phase(|| headless::prompt(&conversation, &operation, prompt, &mut output)).await
+    } else {
+        phase(|| headless::jsonl(&conversation, &operation, &mut output)).await
+    };
+    if let Some(usage) = &mut usage {
+        // A refused/failed run can still have committed admissions. Exporting
+        // them never changes its result into success or fabricates completion.
+        let exported = conversation
+            .write_usage_jsonl(usage.as_mut())
+            .await
+            .and_then(|()| {
+                usage
+                    .flush()
+                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
+            });
+        if let Err(error) = exported {
+            if result.is_err() {
+                eprintln!("graphcoder: usage export failed: {error}");
+            } else {
+                return Err(error.into());
+            }
+        }
     }
-    drop(output);
-    phase(|| view::run(conversation, args.inline, args.resume)).await
+    result
 }

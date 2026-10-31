@@ -242,6 +242,16 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
     },
+    /// A bounded projection of an original input's committed call admissions and
+    /// completions, read through its agent's original private grant.
+    Usage {
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Original inbox sequence, initially zero (skips inherited inputs).
+        input: u64,
+        /// Original exclusive journal continuation, initially zero.
+        after: u64,
+    },
     /// Read one bounded range of a file the agent's turns produced, through
     /// the host's authorized reader of that agent's volumes.
     Read {
@@ -357,6 +367,7 @@ impl AgentCommand {
             | Self::Decide { agent, .. }
             | Self::Reply { agent, .. }
             | Self::Settlement { agent }
+            | Self::Usage { agent, .. }
             | Self::Read { agent, .. }
             | Self::Stage { agent, .. }
             | Self::Staged { agent, .. } => Some(agent),
@@ -380,6 +391,7 @@ impl AgentCommand {
             Self::Decide { .. } => "decide",
             Self::Reply { .. } => "reply",
             Self::Settlement { .. } => "settlement",
+            Self::Usage { .. } => "usage",
             Self::Read { .. } => "read",
             Self::Stage { .. } => "stage",
             Self::Staged { .. } => "staged",

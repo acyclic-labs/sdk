@@ -69,6 +69,7 @@ impl ModelTokenUsage {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModelCallUsage<'a> {
     pub version: u32,
+    pub completed: bool,
     pub dispatch: crate::model::ModelDispatch,
     pub purpose: ModelPurpose,
     pub provider: &'a str,
@@ -83,12 +84,15 @@ pub(crate) struct ModelCallUsage<'a> {
 
 /// Durable per-call usage view. The journal's terminal observation is the
 /// commit authority; an unreferenced staged file is never a completed call.
-#[derive(Debug, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelUsageRecord {
     /// Record format, currently one; older layouts are not migrated.
     pub version: u32,
+    /// A terminal provider event was committed. False preserves an admitted
+    /// call whose completion was not observed; its counters stay unknown.
+    pub completed: bool,
     /// Original call identity, separate from provider-controlled metadata.
     pub dispatch: crate::model::ModelDispatch,
     /// Response or context-summary call.
@@ -122,6 +126,7 @@ pub(crate) fn validate(
         ));
     };
     if record.version != 1
+        || !record.completed
         || record.dispatch.step != step
         || record.purpose != purpose
         || record.dispatch.operation_id != purpose.attempt_operation(operation, io)?
@@ -137,6 +142,81 @@ pub(crate) fn validate(
         ));
     }
     Ok(())
+}
+
+/// One bounded page of the original journal's model-call observations.
+/// A nonterminal row is replaced only by its exact completed dispatch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct ModelUsagePage {
+    /// Admissions and completions in their original commit order.
+    pub items: Vec<ModelUsageRecord>,
+    /// Exclusive journal continuation, including pages with no model calls.
+    pub next: Option<u64>,
+}
+
+/// Projects one fixed-size journal page, without scanning prior calls or
+/// uncommitted staged artifacts. A caller exports a settled turn by consuming
+/// its pages once, retaining only the one currently admitted call.
+pub async fn usage_page(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    agent_path: &str,
+    after: u64,
+) -> Result<ModelUsagePage> {
+    const PAGE: u32 = 32;
+    let records = journal.replay(operation, after, PAGE, None)?.await?;
+    let next = if records.len() == PAGE as usize {
+        Some(
+            after
+                .checked_add(u64::from(PAGE))
+                .ok_or_else(|| Error::Invalid("usage journal continuation overflows".into()))?,
+        )
+    } else {
+        None
+    };
+    let mut items = Vec::new();
+    for record in records {
+        match record.event {
+            ExecutionEvent::ModelStarted {
+                step,
+                purpose,
+                request_digest,
+                request,
+            } => {
+                let model = super::transcript::usage_model(journal, &request).await?;
+                items.push(ModelUsageRecord {
+                    version: 1,
+                    completed: false,
+                    dispatch: crate::model::ModelDispatch {
+                        operation_id: purpose.attempt_operation(operation, None)?,
+                        step,
+                        request_digest,
+                    },
+                    purpose,
+                    provider: model.provider,
+                    model: model.name,
+                    agent_path: Some(agent_path.to_owned()),
+                    tokens: ModelTokenUsage::default(),
+                    latency_ns: None,
+                });
+            }
+            ExecutionEvent::Model {
+                usage: Some(file), ..
+            }
+            | ExecutionEvent::ModelInline {
+                usage: Some(file), ..
+            } => {
+                items.push(
+                    serde_json::from_slice(&journal.load(&file, None)?.await?).map_err(|_| {
+                        Error::Storage("committed usage record is malformed".into())
+                    })?,
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(ModelUsagePage { items, next })
 }
 
 pub(super) struct CallClock {
