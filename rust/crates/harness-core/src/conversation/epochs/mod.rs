@@ -67,7 +67,10 @@ impl Epoch {
 
     /// Refuses silent loss and summaries of items outside the inherited source.
     /// File authority and body verification remain the shared file reader's job.
-    pub fn validate(&self, common_prefix: u64) -> Result<(), InvalidEpoch> {
+    pub fn validate(&self, source: &StreamPath, common_prefix: u64) -> Result<(), InvalidEpoch> {
+        if &self.key.source != source {
+            return Err(InvalidEpoch::Source);
+        }
         if !inherited(self.cursor(), common_prefix) {
             return Err(InvalidEpoch::OutsidePrefix);
         }
@@ -90,6 +93,9 @@ pub enum EpochRecord {
 /// A malformed or inapplicable epoch cannot become a model view.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum InvalidEpoch {
+    /// A cursor from another stream cannot describe this conversation's past.
+    #[error("epoch summary names a different source stream")]
+    Source,
     /// The summary reaches beyond the fork's inherited prefix.
     #[error("epoch summary exceeds the common source prefix")]
     OutsidePrefix,
