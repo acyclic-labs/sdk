@@ -64,6 +64,7 @@ pub(super) async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std:
                 kind: FileKind::Directory,
                 link_count: 1,
                 metadata,
+                bindings: None,
                 payload: FilePayload::Directory { entries: tree },
             }]),
             limits.maximum_page_items,

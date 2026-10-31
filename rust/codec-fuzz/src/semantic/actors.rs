@@ -55,7 +55,10 @@ pub(super) fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, d::D
     );
     seed!(
         SecretSelection,
-        d::SecretSelection::new("credential".into(), "secrets:/codec/key".into())?
+        d::SecretSelection::new(
+            "credential".into(),
+            acyclic_auth::secrets::SecretRef::new("codec".into(), "key".into(), 1)?,
+        )?
     );
     let egress = d::EgressRule::new("example.com".into(), 443)?;
     seed!(EgressRule, egress.clone());
