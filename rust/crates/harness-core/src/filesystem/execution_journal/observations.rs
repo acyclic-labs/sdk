@@ -69,9 +69,10 @@ pub(super) mod codec_fuzz {
         let ordinary = decode_observation(bytes, None);
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::NativeMaterializationBudget::UNBOUNDED,
-                acyclic_fs::NativeCancellationToken::default(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
             )
             .expect("unbounded decoder work");
             let baseline = work.live_allocation_bytes();
