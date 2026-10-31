@@ -81,23 +81,28 @@ pub(super) fn await_recovery_worker(
     Ok(())
 }
 
+pub(super) const RECLAIM_CHILD_READY: &str = "acyclic-reclaim-ready";
+
 #[test]
 pub(super) fn destination_reclaim_child_waits_for_external_release()
 -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{Read as _, Write as _};
     let Some(destination) = std::env::var_os("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION") else {
         return Ok(());
     };
-    let ready = std::env::var_os("ACYCLIC_FS_RECLAIM_CHILD_READY")
-        .ok_or("reclaim child readiness path is absent")?;
-    let release = std::env::var_os("ACYCLIC_FS_RECLAIM_CHILD_RELEASE")
-        .ok_or("reclaim child release path is absent")?;
-    std::fs::write(ready, b"ready")?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !Path::new(&release).is_file() {
-        if Instant::now() >= deadline {
-            return Err("reclaim child release timed out".into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
+    {
+        let mut output = std::io::stdout().lock();
+        writeln!(output, "\n{RECLAIM_CHILD_READY}")?;
+        output.flush()?;
+    }
+    let mut release = [0];
+    std::io::stdin().read_exact(&mut release)?;
+    if release != [1] {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "reclaim child received an invalid release",
+        )
+        .into());
     }
     reclaim_native_mount_destination_fence(Path::new(&destination))?;
     Ok(())
