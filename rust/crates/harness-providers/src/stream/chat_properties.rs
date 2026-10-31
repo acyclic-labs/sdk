@@ -39,7 +39,10 @@ proptest! {
 
         // Null is absence; a present malformed scalar must still refuse.
         for malformed in [json!(true), json!(7), json!([]), json!({})] {
-            prop_assert!(parse_delta(&mut State::new(4096), json!({"reasoning_content":malformed})).is_err());
+            prop_assert!(
+                parse_delta(&mut State::new(4096), json!({"reasoning_content":malformed})).is_err(),
+                "present malformed reasoning must refuse"
+            );
         }
     }
 }
