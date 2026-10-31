@@ -4,7 +4,7 @@ use crate::executor::stock_boundary;
 use crate::{
     IdempotencyKey, OperationId, Result,
     conversation::{
-        BoundedContentFuture, ContentGrant, ContentHold, ContentPublisher, FileRef,
+        BoundedContentFuture, ContentChanges, ContentGrant, ContentHold, ContentPublisher, FileRef,
         VolumeOperation, VolumeRef,
     },
     core::{AuthorityVerifier, Scope},
@@ -74,12 +74,20 @@ impl<A, O> FilesystemContentPublisher<A, O> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher
     for FilesystemContentPublisher<A, O>
 {
-    fn observe_changes<'a>(
+    fn observe_changes<'a, 'io: 'a>(
         &'a self,
+        volume: &'a VolumeRef,
         operation: OperationId,
         maximum: u64,
-        access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (Option<Vec<FileRef>>, Option<ContentHold<'a>>)>> {
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (Option<ContentChanges>, Option<ContentHold<'io>>)>> {
+        if volume != &self.volume {
+            return Err(stock_boundary(
+                access.io,
+                crate::wire::ErrorCode::Unauthorized,
+                "conditional publication differs from bound volume",
+            ));
+        }
         BoundedContentFuture::new(access.io, || async move {
             let key = changes_key(operation, access.io)?;
             let files = self
@@ -87,8 +95,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                 .observe_changes(&self.volume, &self.grant, &key, maximum, access)?
                 .await?;
             let owned = files.as_ref().map_or(Ok(0), |files| {
-                files.iter().try_fold(
-                    files.capacity() as u64 * std::mem::size_of::<FileRef>() as u64,
+                files.files.iter().try_fold(
+                    files
+                        .generation
+                        .logical_owned_bytes()?
+                        .checked_add(
+                            files.files.capacity() as u64 * std::mem::size_of::<FileRef>() as u64,
+                        )
+                        .ok_or_else(|| {
+                            stock_boundary(
+                                access.io,
+                                crate::wire::ErrorCode::Invalid,
+                                "conditional publication ownership overflow",
+                            )
+                        })?,
                     |total, file| {
                         total
                             .checked_add(file.logical_owned_bytes()?)
@@ -106,12 +126,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
             Ok((files, hold))
         })
     }
-    fn stage_changes<'a>(
+    fn stage_changes<'a, 'io: 'a>(
         &'a self,
+        volume: &'a VolumeRef,
         operation: OperationId,
         changes: &'a [crate::conversation::ContentChange<'a>],
-        access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (Vec<FileRef>, Option<ContentHold<'a>>)>> {
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (ContentChanges, Option<ContentHold<'io>>)>> {
+        if volume != &self.volume {
+            return Err(stock_boundary(
+                access.io,
+                crate::wire::ErrorCode::Unauthorized,
+                "conditional publication differs from bound volume",
+            ));
+        }
         BoundedContentFuture::new(access.io, || async move {
             let key = changes_key(operation, access.io)?;
             let files = self
@@ -125,8 +153,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     access,
                 )?
                 .await?;
-            let owned = files.iter().try_fold(
-                files.capacity() as u64 * std::mem::size_of::<FileRef>() as u64,
+            let owned = files.files.iter().try_fold(
+                files
+                    .generation
+                    .logical_owned_bytes()?
+                    .checked_add(
+                        files.files.capacity() as u64 * std::mem::size_of::<FileRef>() as u64,
+                    )
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            access.io,
+                            crate::wire::ErrorCode::Invalid,
+                            "conditional publication ownership overflow",
+                        )
+                    })?,
                 |total, file| {
                     total
                         .checked_add(file.logical_owned_bytes()?)

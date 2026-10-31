@@ -523,13 +523,8 @@ impl ToolContext {
             .task()
             .content_binding(Some(volume))
             .ok_or_else(|| Error::Unsupported("conditional content writer is not bound".into()))?;
-        let writer =
-            super::content_write::bound_content_writer(Some(content), self.effective_scope(), io)?;
-        if writer.volume() != volume {
-            return Err(Error::Unauthorized(
-                "conditional writer differs from selected volume".into(),
-            ));
-        }
+        let writer = super::content_write::content_writer(Some(content), io)?;
+        super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
         for change in changes {
             crate::executor::with_history_io(io, |work| {
                 crate::conversation::validate_content_path(change.path(), work)?;
@@ -569,6 +564,7 @@ impl ToolContext {
         writer.supports_stage(io)?;
         let (files, hold) = writer
             .stage_changes(
+                volume,
                 operation,
                 changes,
                 ContentAccess {
@@ -577,6 +573,7 @@ impl ToolContext {
                 },
             )?
             .await?;
+        let (files, hold) = files.into_files(hold)?;
         let mut outputs = files.iter();
         for change in changes {
             let (bytes, media, display) = match change {
@@ -642,8 +639,8 @@ impl ToolContext {
             .task()
             .content_binding(Some(volume))
             .ok_or_else(|| Error::Unsupported("conditional content writer is not bound".into()))?;
-        let writer =
-            super::content_write::bound_content_writer(Some(content), self.effective_scope(), io)?;
+        let writer = super::content_write::content_writer(Some(content), io)?;
+        super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
         #[cfg(feature = "filesystem")]
         let maximum = io
             .map(|io| io.remaining().map(|work| work.bytes_encoded))
@@ -653,6 +650,7 @@ impl ToolContext {
         let maximum = u64::MAX;
         let (files, hold) = writer
             .observe_changes(
+                volume,
                 operation,
                 maximum,
                 crate::conversation::ContentAccess {
@@ -661,6 +659,13 @@ impl ToolContext {
                 },
             )?
             .await?;
+        let (files, hold) = match files {
+            Some(files) => {
+                let (files, hold) = files.into_files(hold)?;
+                (Some(files), hold)
+            }
+            None => (None, hold),
+        };
         if let Some(files) = &files {
             for file in files {
                 crate::executor::with_history_io(io, |work| {

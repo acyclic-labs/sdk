@@ -417,7 +417,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         serde_json::from_value(edit_result.value["file"].clone()).map_err(storage)?;
     assert!(
         run(
-            full_context,
+            full_context.clone(),
             crate::tool::files::edit()?,
             serde_json::json!({"path": path, "version": token,
             "old_text": "first", "new_text": "stale"})
@@ -489,6 +489,79 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         .stage_at(OperationId::new(), &changed, b"edited", None, None)?
         .await?;
     assert_eq!(edited.volume(), harness.scratch());
+    // The trained tool reaches the same atomic publication for a mounted volume.
+    let (patched, _) = run(full_context, crate::tools::variants::apply_patch()?,
+        serde_json::json!({"patch": "*** Begin Patch\n*** Add File: .volumes/scratch/added\n+added\n*** Update File: .volumes/scratch/note\n@@\n-edited\n+patched\n*** End Patch\n"})).await?;
+    assert_eq!(patched.value["files"].as_array().unwrap().len(), 2);
+    let patched_files: Vec<FileRef> =
+        serde_json::from_value(patched.value["files"].clone()).map_err(storage)?;
+    assert!(
+        patched_files
+            .iter()
+            .all(|file| file.volume() == harness.scratch())
+    );
+    assert_eq!(patched_files[0].version(), patched_files[1].version());
+    use crate::conversation::{ContentAccess, ContentChange};
+    let stale = [
+        ContentChange::CreateAbsent {
+            path: "must-stay-absent",
+            bytes: b"partial",
+            media_type: "text/plain",
+            display_name: "partial",
+        },
+        ContentChange::DeleteExpected { source: &edited },
+    ];
+    assert!(
+        publisher
+            .stage_changes(
+                harness.scratch(),
+                OperationId::new(),
+                &stale,
+                ContentAccess::default()
+            )?
+            .await
+            .is_err()
+    );
+    // Delete-only batches retain their exact cut even with no returned FileRef.
+    let deleted = [ContentChange::DeleteExpected {
+        source: &patched_files[0],
+    }];
+    let delete_operation = OperationId::new();
+    let (deletion, _) = publisher
+        .stage_changes(
+            harness.scratch(),
+            delete_operation,
+            &deleted,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(deletion.files.is_empty());
+    let (later, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            ".volumes/scratch/later",
+            b"later",
+            "text/plain",
+            "later",
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        publisher
+            .observe_changes(
+                harness.scratch(),
+                delete_operation,
+                4096,
+                ContentAccess::default()
+            )?
+            .await?
+            .0,
+        Some(deletion)
+    );
+    let (restored, _) = publisher
+        .stage_at(OperationId::new(), &patched_files[1], b"edited", None, None)?
+        .await?;
+    assert_eq!(restored.volume(), later.volume());
     // Auxiliary volumes exist physically only while a native command owns its
     // projection. Publication must persist their bytes without leaving a mount.
     let mounts = &harness
@@ -501,6 +574,17 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         assert_eq!(
             std::fs::read(directory.path().join(".volumes/scratch/note")).map_err(storage)?,
             b"edited"
+        );
+        assert!(!directory.path().join(".volumes/scratch/added").exists());
+        assert!(
+            !directory
+                .path()
+                .join(".volumes/scratch/must-stay-absent")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join(".volumes/scratch/later")).map_err(storage)?,
+            b"later"
         );
         Ok(((), claims))
     })
@@ -529,7 +613,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     // The former implementation selected the project writer. This deliberately
     // bypasses routing and must fail the same history-attribution oracle.
     publisher
-        .writer_for(&harness.project, view.workspace())?
+        .writer_for(&harness.project, view.workspace(), None)?
         .stage_once(
             OperationId::new(),
             ".volumes/scratch/control",

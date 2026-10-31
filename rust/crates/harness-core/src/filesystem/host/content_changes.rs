@@ -1,7 +1,7 @@
 //! Conditional file changes share the existing authored transaction, successful
 //! operation index, protected publication receipt and commit authorization.
 use super::*;
-use crate::conversation::{ContentAccess, ContentChange};
+use crate::conversation::{ContentAccess, ContentChange, ContentChanges};
 use acyclic_fs::access::Action;
 
 #[derive(Serialize)]
@@ -94,11 +94,11 @@ mod tests {
             .await?;
         let changes = [
             ContentChange::UpdateExpected {
-                source: &original[0],
+                source: &original.files[0],
                 bytes: b"new",
             },
             ContentChange::DeleteExpected {
-                source: &original[1],
+                source: &original.files[1],
             },
             ContentChange::CreateAbsent {
                 path: "c",
@@ -111,8 +111,8 @@ mod tests {
         let published = host
             .put_changes(&volume, &write, &changes, &key, 4096, access)?
             .await?;
-        assert_eq!(published.len(), 2);
-        assert_eq!(published[0].version(), published[1].version());
+        assert_eq!(published.files.len(), 2);
+        assert_eq!(published.files[0].version(), published.files[1].version());
         assert_eq!(
             host.read_private_path(&volume, &read, "a", None, 4096, access)
                 .await?
@@ -140,7 +140,7 @@ mod tests {
                 display_name: "partial",
             },
             ContentChange::UpdateExpected {
-                source: &original[0],
+                source: &original.files[0],
                 bytes: b"stale",
             },
         ];
@@ -241,7 +241,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         key: &'a IdempotencyKey,
         maximum_receipt_bytes: u64,
         access: ContentAccess<'a, 'a>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Vec<FileRef>>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<ContentChanges>>> {
         grant.require(volume, VolumeOperation::Write, access.io)?;
         crate::conversation::BoundedContentFuture::new(access.io, || async move {
             let ordinary;
@@ -329,7 +329,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         key: &'a IdempotencyKey,
         maximum_bytes: u64,
         access: ContentAccess<'a, 'a>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<FileRef>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ContentChanges>> {
         let ContentAccess { ceiling, io } = access;
         grant.require(volume, VolumeOperation::Write, io)?;
         if volume.provider() != &self.provider || changes.is_empty() {
@@ -647,7 +647,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         originals: impl Iterator<Item = FileRef>,
         capacity: usize,
         io: &PreparationIo,
-    ) -> Result<Vec<FileRef>> {
+    ) -> Result<ContentChanges> {
         let generation_ref = self.generation_ref_id(generation.id(), Some(io))?;
         let version = bounded_io::hex_key(generation_ref.as_resource().key(), Some(io))?;
         let mut files = crate::model::vec_with_capacity(capacity, Some(io))?;
@@ -658,6 +658,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
             files.push(self.seal_publication(file, Some(io))?);
         }
-        Ok(files)
+        Ok(ContentChanges {
+            generation: generation_ref,
+            files,
+        })
     }
 }

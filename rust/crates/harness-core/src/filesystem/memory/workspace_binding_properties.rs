@@ -72,7 +72,9 @@ async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
             super::super::bounded_io::content_workspace(&right.host.provider, &right.volume, None)
                 .unwrap();
         let foreign = right.host.open(&reference, None).await.unwrap();
-        left.host.for_workspace(&left.volume, foreign).unwrap()
+        left.host
+            .for_workspace(&left.volume, foreign, None)
+            .unwrap()
     } else {
         left.host.clone()
     };

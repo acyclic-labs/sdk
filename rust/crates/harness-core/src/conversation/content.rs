@@ -354,18 +354,52 @@ impl ContentChange<'_> {
     }
 }
 
+/// The original atomic publication cut, including a batch containing only deletes.
+#[derive(Debug, Eq, PartialEq)]
+pub struct ContentChanges {
+    /// Exact committed generation; never inferred from a later head.
+    pub generation: GenerationRef,
+    /// Created and replaced files at that cut, in request order.
+    pub files: Vec<FileRef>,
+}
+
+impl ContentChanges {
+    /// Releases generation metadata only after its publication consumer settles.
+    pub(crate) fn into_files<'a>(
+        self,
+        mut hold: Option<ContentHold<'a>>,
+    ) -> Result<(Vec<FileRef>, Option<ContentHold<'a>>)> {
+        let Self { generation, files } = self;
+        #[cfg(feature = "filesystem")]
+        let generation_bytes = crate::filesystem::UploadRecord::logical_owned_bytes(&generation)?;
+        drop(generation);
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold.as_mut() {
+            let bytes = hold
+                .bytes()
+                .checked_sub(generation_bytes)
+                .ok_or_else(|| Error::Storage("conditional generation custody underflow".into()))?;
+            hold.substitute(bytes)?;
+        }
+        #[cfg(not(feature = "filesystem"))]
+        let _ = &mut hold;
+        Ok((files, hold))
+    }
+}
+
 /// Owner-bound, bounded publication on the caller's existing ledger.
 /// A supplied caller ceiling only restricts the authenticated writer. Filesystem
 /// providers intersect it with persisted policy through their shared decision.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Observes only the successful request at its original publication cut.
     /// Callers authenticate the original complete invocation before recovery.
-    fn observe_changes<'a>(
+    fn observe_changes<'a, 'io: 'a>(
         &'a self,
+        _volume: &'a VolumeRef,
         _operation_id: OperationId,
         _maximum_receipt_bytes: u64,
-        access: ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (Option<Vec<FileRef>>, Option<ContentHold<'a>>)>> {
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (Option<ContentChanges>, Option<ContentHold<'io>>)>> {
         Err(content_error(
             access.io,
             crate::wire::ErrorCode::Unsupported,
@@ -375,12 +409,13 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Atomically publishes conditional changes under one original operation.
     /// The operation receipt binds the complete ordered request. A replay
     /// returns its original files; a changed request refuses before publication.
-    fn stage_changes<'a>(
+    fn stage_changes<'a, 'io: 'a>(
         &'a self,
+        _volume: &'a VolumeRef,
         _operation_id: OperationId,
         _changes: &'a [ContentChange<'a>],
-        access: ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (Vec<FileRef>, Option<ContentHold<'a>>)>> {
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (ContentChanges, Option<ContentHold<'io>>)>> {
         Err(content_error(
             access.io,
             crate::wire::ErrorCode::Unsupported,
