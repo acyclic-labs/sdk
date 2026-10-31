@@ -222,14 +222,17 @@ mod tests {
         for length in [u64::from(u32::MAX), usize::MAX as u64, u64::MAX] {
             frame[..8].copy_from_slice(&length.to_le_bytes());
             assert!(!format.is_valid(&frame), "declared {length}");
-            assert!(
-                format
-                    .read(frame.as_slice(), frame.len() as u64)
-                    .unwrap()
-                    .is_none()
-            );
+            let read = format.read(frame.as_slice(), frame.len() as u64);
+            if format.frame_bytes(length).is_none() {
+                assert_eq!(read.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+            } else {
+                assert!(read.unwrap().is_none());
+            }
             if length == u64::MAX {
-                assert!(format.read(frame.as_slice(), u64::MAX).unwrap().is_none());
+                assert_eq!(
+                    format.read(frame.as_slice(), u64::MAX).unwrap_err().kind(),
+                    std::io::ErrorKind::InvalidData
+                );
             }
         }
     }
