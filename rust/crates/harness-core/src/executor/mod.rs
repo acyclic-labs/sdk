@@ -51,9 +51,9 @@ mod code_mode;
 mod compaction;
 mod composition;
 #[cfg(feature = "filesystem")]
-pub use code_mode::{CODE_REVISION, call_tool, code_tool};
-#[cfg(feature = "filesystem")]
 pub(crate) use code_mode::filesystem_skill_marker_bytes;
+#[cfg(feature = "filesystem")]
+pub use code_mode::{CODE_REVISION, call_tool, code_tool};
 mod content;
 mod dispatch;
 mod live_reply;

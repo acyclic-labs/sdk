@@ -28,10 +28,10 @@ mod cancellation;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod codex_dispatch_tests;
-mod counting;
-mod credentials;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod configured;
+mod counting;
+mod credentials;
 mod deadline;
 mod diagnostic;
 mod dispatch;

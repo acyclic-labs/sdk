@@ -24,9 +24,9 @@ pub(crate) use input::input as turn_input;
 pub mod kernel;
 mod layout;
 mod lifecycle;
-pub use lifecycle::{AgentComposer, AgentLifecycle, CLOSE};
 #[cfg(feature = "filesystem")]
 pub(crate) use layout::stream_parts_with_io;
+pub use lifecycle::{AgentComposer, AgentLifecycle, CLOSE};
 mod lower;
 mod machine;
 pub(crate) mod records;
