@@ -29,7 +29,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
     let mut all = client
         .subscribe(subscription("events", wire::SessionDelivery::All))
         .await?;
-    let record = all.next().await.ok_or("missing data")??;
+    let record = all.next().await.ok_or("missing data")??.into_wire();
     let Some(Body::Data(data)) = record.body else {
         return Err("expected data".into());
     };
@@ -67,7 +67,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         .await?
         .ok_or("missing watermark")??;
     assert!(matches!(
-        mark.body,
+        mark.wire().body,
         Some(Body::Watermark(wire::SessionWatermark {
             accepted: 1,
             durable: 1,
@@ -111,7 +111,7 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
         let frame = tokio::time::timeout(Duration::from_secs(1), latest.next())
             .await?
             .ok_or("missing status")??;
-        let Some(Body::Data(data)) = frame.body else {
+        let Some(Body::Data(data)) = frame.into_wire().body else {
             return Err("expected status".into());
         };
         let next = data.after.ok_or("missing cursor")?.next;

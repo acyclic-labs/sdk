@@ -130,7 +130,7 @@ fn fill(view: &mut StreamView) {
             })),
             ..Default::default()
         };
-        view.apply(&frame, sequence + 1).unwrap();
+        view.apply(&frame.into(), sequence + 1).unwrap();
     }
     assert_eq!(view.records().len(), 4);
 }

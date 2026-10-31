@@ -599,8 +599,7 @@ impl Client {
     pub async fn subscribe(
         &self,
         subscription: wire::SessionSubscription,
-    ) -> Result<BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError>
-    {
+    ) -> Result<BoxProviderStream<'static, Result<Frame, StreamError>>, StreamError> {
         self.subscribe_with_ack(subscription, true).await
     }
 
@@ -608,13 +607,11 @@ impl Client {
         &self,
         subscription: wire::SessionSubscription,
         acknowledge: bool,
-    ) -> Result<BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError>
-    {
+    ) -> Result<BoxProviderStream<'static, Result<Frame, StreamError>>, StreamError> {
         let (kind, resume, filter, credential) = subscription_parts(subscription)?;
         Ok(super::runtime::boxed(
             self.open_subscription(kind, resume, acknowledge, true, filter, credential)
-                .await?
-                .map(|item| item.map(Frame::into_wire)),
+                .await?,
         ))
     }
 

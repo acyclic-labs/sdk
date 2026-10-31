@@ -66,7 +66,8 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
     // Admission completes while the stream is absent. Creation must wake the
     // same subscription; no viewport replacement or second open is involved.
     let follow = pool.subscribe(subscription(&path, 0, 0, false)).await?;
-    append(&memory, path.clone(), vec!["created".into()]).await?;
+    let payload = acyclic_stream::OwnedBytes::from(b"created".to_vec());
+    append(&memory, path.clone(), vec![payload.clone().into()]).await?;
     let forked = StreamPath::new("reader/inherited-conversation")?;
     memory
         .fork(acyclic_stream::ForkRequest {
@@ -79,10 +80,12 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
         .await?;
     let inherited = pool.subscribe(subscription(&forked, 0, 0, false)).await?;
     let mut own_charge = 0;
-    for (followed, mut source) in [(path.clone(), follow), (forked, inherited)] {
+    let backings = crate::reader::backing::BackingPool::default();
+    let mut retained = Vec::new();
+    for (followed, mut source) in [(path.clone(), follow), (forked.clone(), inherited)] {
         let frame = loop {
             let frame = source.next().await.ok_or("creation interest ended")??;
-            match frame.body.as_ref() {
+            match frame.wire().body.as_ref() {
                 Some(wire::session_frame::Body::Data(wire::SessionData {
                     item: Some(wire::session_data::Item::Record(record)),
                     ..
@@ -107,8 +110,33 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
             0,
             false,
             Some(followed.clone()),
+            backings.clone(),
         );
         view.apply(&frame, 1)?;
+        assert_eq!(
+            view.record(0).ok_or("missing row")?.value.as_ptr(),
+            payload.as_slice().as_ptr(),
+            "qualified view copied the original payload"
+        );
+        let mut wire_only = StreamView::new(
+            crate::StreamViewPolicy::default(),
+            0,
+            0,
+            false,
+            Some(followed.clone()),
+            Default::default(),
+        );
+        let raw = frame.into_wire().into();
+        wire_only.apply(&raw, 1)?;
+        assert_ne!(
+            wire_only
+                .record(0)
+                .ok_or("missing wire row")?
+                .value
+                .as_ptr(),
+            payload.as_slice().as_ptr(),
+            "wire-only view retained uncharged backing"
+        );
         if followed == path {
             own_charge = view.retained_bytes();
         } else {
@@ -123,9 +151,10 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
                 0,
                 false,
                 Some(followed),
+                Default::default(),
             );
             assert!(matches!(
-                bounded.apply(&frame, 1),
+                bounded.apply(&raw, 1),
                 Err(StreamError::LimitExceeded)
             ));
             assert_eq!(bounded.next_sequence(), 0);
@@ -133,7 +162,104 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
             assert_eq!(bounded.retained_bytes(), 0);
             assert_eq!(bounded.records().len(), 0);
         }
+        retained.push(view);
     }
+    assert_eq!(
+        backings.bytes(),
+        payload.retained_capacity().ok_or("missing capacity")?,
+        "shared rows charged the same allocation twice"
+    );
+    let old = retained[0]
+        .record(0)
+        .ok_or("missing old row")?
+        .value
+        .clone();
+    drop(retained);
+    assert_eq!(
+        backings.bytes(),
+        payload.len(),
+        "old row escaped residency accounting"
+    );
+    drop(old);
+    assert_eq!(backings.bytes(), 0);
+
+    let mut observed = WireSession::new(pool.clone(), DemandPolicy::default());
+    observed.replace_streams([path.clone(), forked.clone()].into_iter().map(|path| {
+        let request = subscription(&path, 0, 0, false);
+        (path, request)
+    }))?;
+    for path in [&path, &forked] {
+        loop {
+            let frame = poll_fn(|cx| observed.poll_stream(path, cx))
+                .await?
+                .ok_or("view interest ended")?;
+            if matches!(frame.body, Some(wire::session_frame::Body::Data(_))) {
+                break;
+            }
+        }
+        assert_eq!(
+            observed
+                .view(path)
+                .ok_or("missing observed view")?
+                .record(0)
+                .ok_or("missing observed row")?
+                .value
+                .as_ptr(),
+            payload.as_slice().as_ptr()
+        );
+    }
+    let own = observed.view(&path).ok_or("missing own view")?;
+    let inherited = observed.view(&forked).ok_or("missing fork view")?;
+    assert_eq!(
+        observed.retained_bytes(),
+        own.retained_bytes() + inherited.retained_bytes() - payload.len(),
+        "session double-counted shared backing"
+    );
+    let clone = own.record(0).ok_or("missing clone row")?.value.clone();
+    observed.replace_streams(std::iter::empty())?;
+    assert_eq!(
+        observed.retained_bytes(),
+        payload.len(),
+        "deselection forgot cloned payload custody"
+    );
+    drop(clone);
+    assert_eq!(observed.retained_bytes(), 0);
+
+    // A real committed tiny slice of a much larger owner must detach at the
+    // retention boundary, while its full frame keeps the original owner.
+    let giant = acyclic_stream::OwnedBytes::from(vec![b'x'; 64 * 1024]);
+    let tiny = giant.slice(0..7);
+    let mut source = pool.subscribe(subscription(&path, 1, 0, false)).await?;
+    append(&memory, path.clone(), vec![tiny.clone().into()]).await?;
+    let frame = loop {
+        let frame = source.next().await.ok_or("tiny interest ended")??;
+        if matches!(frame.wire().body, Some(wire::session_frame::Body::Data(_))) {
+            break frame;
+        }
+    };
+    let mut tiny_view = StreamView::new(
+        crate::StreamViewPolicy::new(1, 1024)?,
+        1,
+        0,
+        false,
+        Some(path),
+        backings.clone(),
+    );
+    tiny_view
+        .apply(&frame, 1)
+        .expect("tiny slice failed display admission");
+    assert_ne!(
+        tiny_view
+            .record(0)
+            .ok_or("missing tiny row")?
+            .value
+            .as_ptr(),
+        tiny.as_slice().as_ptr(),
+        "tiny view pinned a giant allocation"
+    );
+    assert_eq!(backings.bytes(), 7, "tiny view charged a giant allocation");
+    drop(tiny_view);
+    assert_eq!(backings.bytes(), 0);
     Ok(())
 }
 
@@ -229,12 +355,13 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
             0,
             true,
             Some(indexed.clone()),
+            Default::default(),
         );
         let mut one_charge = 0;
         for delivered in 1..=130 {
             let frame = loop {
                 let frame = source.next().await.ok_or("indexed status ended")??;
-                match frame.body.as_ref() {
+                match frame.wire().body.as_ref() {
                     Some(wire::session_frame::Body::Data(_)) => break frame,
                     Some(wire::session_frame::Body::Closed(_)) => {
                         return Err("indexed status closed".into());

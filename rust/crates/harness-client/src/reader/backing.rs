@@ -49,7 +49,7 @@ pub struct RecordBytes {
 }
 
 impl RecordBytes {
-    pub(super) fn backing(&self) -> &OwnedBytesBacking {
+    pub(crate) fn backing(&self) -> &OwnedBytesBacking {
         &self.charge.backing
     }
 }
@@ -82,14 +82,14 @@ impl PartialEq for RecordBytes {
 impl Eq for RecordBytes {}
 
 #[derive(Clone, Default)]
-pub(super) struct BackingPool(Arc<Mutex<State>>);
+pub(crate) struct BackingPool(Arc<Mutex<State>>);
 
 impl BackingPool {
-    pub(super) fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         locked(&self.0).bytes
     }
 
-    pub(super) fn retain(&self, mut value: OwnedBytes, budget: usize) -> RecordBytes {
+    pub(crate) fn retain(&self, mut value: OwnedBytes, budget: usize) -> RecordBytes {
         // Unknown transport capacity cannot be charged from its visible length.
         // A small slice must also not pin an allocation larger than the entire
         // cache budget, even when an older view still holds that allocation.

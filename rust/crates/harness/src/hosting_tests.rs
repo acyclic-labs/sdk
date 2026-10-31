@@ -276,7 +276,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
     let mut follow = connected.subscribe(subscription).await?;
     let observed = tokio::time::timeout(std::time::Duration::from_secs(8), async {
         while let Some(update) = follow.next().await {
-            if let Some(session_wire::session_frame::Body::Data(data)) = update?.body
+            if let Some(session_wire::session_frame::Body::Data(data)) = update?.into_wire().body
                 && let Some(session_wire::session_data::Item::Record(record)) = data.item
             {
                 let changes = acyclic_stream::decode_changes(&record.value)?;
