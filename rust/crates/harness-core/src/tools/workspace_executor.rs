@@ -103,7 +103,7 @@ impl ToolExecutor for WorkspaceExecutor {
             self.authorize(None, Some(&context), &invocation, None)?;
             let executor = workspace(&context, None)?.clone();
             let limits = super::bounds::limits(&context);
-            if let Err(error) = super::bounds::operands(self.name, &invocation.arguments, limits) {
+            if let Err(error) = super::bounds::operands(&invocation.arguments, limits.1) {
                 return Ok(super::rejected_input(error));
             }
             let result = executor.execute(invocation, Some(context)).await?;
