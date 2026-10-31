@@ -470,25 +470,11 @@ impl AuthorityRoot {
     }
 
     /// Revokes this workload and every descendant at this runtime's public trust boundary.
+    /// Repeating the same authenticated target does not publish another revision.
+    /// Its own revocation is exempted only for this operation; current issuer,
+    /// ancestor revocations, audience, claims and expiry still have to validate.
     pub fn revoke_workload(&self, scope: &Scope) -> Result<()> {
-        self.verifier(&mut None)?.verify(scope, &mut None)?;
-        let mut trust = self
-            .runtime
-            .public
-            .trust
-            .write()
-            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?;
-        let revision = self
-            .runtime
-            .revision
-            .borrow()
-            .checked_add(1)
-            .ok_or_else(|| Error::Storage("runtime trust revision overflow".into()))?;
-        std::sync::Arc::make_mut(&mut trust)
-            .revoked_block_ids
-            .insert(*scope.proof);
-        self.runtime.revision.send_replace(revision);
-        Ok(())
+        workload::revoke(self, scope)
     }
 
     /// Establishes a root scope at the trusted runtime bootstrap boundary.

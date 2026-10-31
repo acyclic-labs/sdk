@@ -10,7 +10,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use prost::Message;
 mod admission;
 mod retained;
+mod revocation;
 use retained::RetainedAuthentication;
+pub(super) use revocation::revoke;
 
 pub(super) struct AuthenticatedWorkload {
     capability: std::sync::Arc<VerifiedCapability>,
