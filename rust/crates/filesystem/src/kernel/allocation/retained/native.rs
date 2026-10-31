@@ -29,7 +29,7 @@ impl NativeAccounting {
         let (allocations, counters, budget, stop) = accounting
             .standalone_parts()
             .ok_or(crate::FsError::AccountingHandoffActive)?;
-        let mut state = crate::DemandWork::new(budget, stop);
+        let mut state = crate::demand::DemandWork::new(budget, stop);
         let (owned, owned_counters, _, _) = state.allocation_parts();
         *owned = allocations.handoff(counters, budget)?;
         *owned_counters = *counters;
