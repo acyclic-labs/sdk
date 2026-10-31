@@ -321,6 +321,13 @@ impl SkillPublicationSource {
         limits: ContextDiscoveryLimits,
         session: &PreparationIo,
     ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if session.original_native_work().is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "retained skill metadata parser has no native allocation admission",
+            });
+        }
         if self.failed {
             return Err(StreamError::Unavailable.into());
         }

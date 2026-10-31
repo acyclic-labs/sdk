@@ -189,6 +189,29 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         acyclic_fs::performance::work_budget(4_000_000, 4_000_000),
         &cancel,
     )?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let work = acyclic_fs::NativeMaterializationWork::new(session.remaining()?, &cancel)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let native = PreparationIo::from_native_work(&work)?;
+        let before = native.remaining()?;
+        assert!(matches!(
+            source
+                .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &native)
+                .await,
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "retained skill metadata parser has no native allocation admission",
+            })
+        ));
+        assert_eq!(
+            native.remaining()?.object_bytes_read,
+            before.object_bytes_read
+        );
+        assert_eq!(native.owned_bytes()?, 0);
+        assert_eq!(source.accepted(), cursor);
+        assert!(source.pending()?.is_none());
+    }
     source
         .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
         .await?;
