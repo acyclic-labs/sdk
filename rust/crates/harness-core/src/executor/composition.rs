@@ -1,6 +1,15 @@
 use super::*;
 
 impl StockExecutor {
+    #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+    pub(crate) fn with_session(
+        mut self,
+        session: Option<Arc<crate::filesystem::SessionWork>>,
+    ) -> Self {
+        self.code_session = session;
+        self
+    }
+
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
@@ -17,6 +26,10 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
+            #[cfg(feature = "filesystem")]
+            profile: None,
+            #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+            code_session: None,
             max_output_tokens: None,
             provider,
             context,
@@ -35,6 +48,54 @@ impl StockExecutor {
             reconciliation_only: false,
             live_reply: None,
         }
+    }
+
+    /// Binds the actor's immutable profile to this original executor. Role
+    /// availability is checked in the same dispatch policy as approvals.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_profile(
+        mut self,
+        profiles: Arc<crate::profile::Profiles>,
+        pin: crate::agent::AgentProfilePin,
+    ) -> Result<Self> {
+        let key = format!("{}/{}", self.model.provider, self.model.name);
+        let resolved = profiles.for_model(&pin, &key)?;
+        self.max_output_tokens = resolved.overlay().max_output_tokens;
+        if !matches!(
+            self.compaction,
+            Some(crate::context::CompactionPolicy::Disabled)
+        ) {
+            let mut capacity = resolved
+                .bind_model(&self.model, resolved.prefix().capacity.model)?
+                .capacity();
+            let provider = self.provider.context_capacity(&self.model)?;
+            provider.validate()?;
+            capacity.context_tokens = capacity.context_tokens.min(provider.context_tokens);
+            capacity.output_tokens = capacity
+                .output_tokens
+                .into_iter()
+                .chain(provider.output_tokens)
+                .min()
+                .map(|output| output.min(capacity.context_tokens));
+            let output = capacity.output_reservation(self.max_output_tokens)?;
+            let mut policy = crate::context::ThresholdCompaction::for_watermark(
+                capacity,
+                resolved.prefix().capacity.watermark_tokens,
+                output,
+            )?;
+            if let Some(crate::context::CompactionPolicy::Threshold(selected)) = &self.compaction {
+                policy.recent_tokens = policy.recent_tokens.min(selected.recent_tokens);
+            }
+            self.compaction = Some(crate::context::CompactionPolicy::Threshold(policy));
+        }
+        self = self.with_context_stage(Arc::new(crate::context::SourceStage::new(
+            "profile-instructions",
+            blake3::Hash::from(resolved.digest()).to_hex().to_string(),
+            profiles.instruction_source(&pin.role, &key)?,
+            crate::context::ContextPlacement::Prepend,
+        )))?;
+        self.profile = Some((profiles, pin, key));
+        Ok(self)
     }
 
     /// Stages each model dispatch's text while it streams; see [`LiveReply`].

@@ -19,6 +19,9 @@ pub enum ToolDeclaration<'a, P> {
     },
     /// Provider-owned web search, without a client function or executor.
     WebSearch,
+    /// Responses shell actions executed by the host's original local runtime.
+    /// This declares neither an OpenAI-hosted container nor a client function.
+    Shell,
 }
 
 /// A declaration list admitted once and serialized in its original order.
@@ -34,17 +37,21 @@ impl<'a, P> ToolDeclarations<'a, P> {
     /// parser and durable conversation owner must retain server items too.
     ///
     /// # Errors
-    /// Chat Completions cannot represent this native search declaration;
-    /// Repeated search declarations and Anthropic name collisions are refused.
+    /// Native shell is supported only by Responses. Chat Completions cannot
+    /// represent native search. Repeated native declarations and conflicting
+    /// client function names are refused before visiting any input schema.
     pub fn new(
         family: Family,
         declarations: Vec<ToolDeclaration<'a, P>>,
     ) -> Result<Self, RenderError> {
         let mut search = false;
         let mut search_function = false;
+        let mut shell = false;
+        let mut shell_function = false;
         for declaration in &declarations {
             if let ToolDeclaration::Function { name, .. } = declaration {
                 search_function |= name == "web_search";
+                shell_function |= name == "shell";
             }
             if matches!(declaration, ToolDeclaration::WebSearch) {
                 if family == Family::Chat || search {
@@ -54,10 +61,23 @@ impl<'a, P> ToolDeclarations<'a, P> {
                 }
                 search = true;
             }
+            if matches!(declaration, ToolDeclaration::Shell) {
+                if family != Family::Responses || shell {
+                    return Err(RenderError::InvalidItem(
+                        "unsupported or repeated native shell declaration",
+                    ));
+                }
+                shell = true;
+            }
         }
         if family == Family::Anthropic && search && search_function {
             return Err(RenderError::InvalidItem(
                 "native web search collides with a client function name",
+            ));
+        }
+        if shell && shell_function {
+            return Err(RenderError::InvalidItem(
+                "native shell collides with a client function name",
             ));
         }
         Ok(Self {
@@ -128,6 +148,15 @@ impl<P: Serialize> Serialize for Declaration<'_, '_, P> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         match self.tool {
+            ToolDeclaration::Shell => {
+                #[derive(Serialize)]
+                struct Local {
+                    #[serde(rename = "type")]
+                    kind: &'static str,
+                }
+                map.serialize_entry("type", "shell")?;
+                map.serialize_entry("environment", &Local { kind: "local" })?;
+            }
             ToolDeclaration::WebSearch => match self.family {
                 Family::Responses => map.serialize_entry("type", "web_search")?,
                 Family::Anthropic => {

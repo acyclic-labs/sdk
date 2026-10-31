@@ -61,7 +61,7 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         )
         .await
         .map_err(storage)?;
-    let mounted = root
+    let mut mounted = root
         .mount_task_view(
             view,
             &*task,
@@ -72,6 +72,63 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
             ),
         )
         .await?;
+    // Compile an additional task policy through the original mount admission.
+    // File creation and deletion here are permitted independently of writes.
+    use acyclic_fs::access::{Action, Capability, Context, Effect, Principal, PrincipalKind};
+    let principal = Principal {
+        kind: PrincipalKind::Agent,
+        id: "owner".into(),
+        lineage: vec!["owner".into()],
+        groups: Default::default(),
+        roles: Default::default(),
+        tags: Default::default(),
+        attributes: Default::default(),
+    };
+    let view = |original: &crate::workspace::VolumeView<
+        Option<Arc<crate::local::workspace::MountedVolume>>,
+    >| {
+        let mut policy = (*original.policy).clone();
+        for (path, actions) in [
+            ("action-only", vec![Action::Write]),
+            ("no-delete", vec![Action::Write, Action::Delete]),
+            ("no-create", vec![Action::Create]),
+        ] {
+            let mut deny = policy.layers[0][0].clone();
+            deny.id = path.into();
+            deny.effect = Effect::Deny;
+            deny.actions = actions.into_iter().collect();
+            deny.resource.path = path.into();
+            policy.layers[0].push(deny);
+        }
+        crate::workspace::VolumeView {
+            name: original.name.clone(),
+            agent: original.agent.clone(),
+            volume: original.volume.clone(),
+            lineage: original.lineage.clone(),
+            generation: original.generation,
+            head: original.head,
+            config: original.config,
+            policy: Arc::new(policy),
+            source: original.source.clone(),
+        }
+    };
+    let mounts = Arc::new(crate::workspace::compose(
+        mounted.path.clone(),
+        &principal,
+        &Capability::whole_volume(None, &Action::ALL),
+        Context {
+            now: 0,
+            approvals: 0,
+        },
+        view(&mounted.mounts.named(None)?.1.view),
+        mounted
+            .mounts
+            .mounts()
+            .filter(|(path, _)| !path.is_empty())
+            .map(|(_, mount)| view(&mount.view)),
+    )?);
+    Arc::get_mut(&mut mounted).unwrap().mounts = Arc::clone(&mounts);
+    lock_owned(StateArc::clone(&mounted.state)).await.mounts = mounts;
     let tools = Arc::new(
         CheckoutTools::new(
             Arc::clone(&mounted),
@@ -88,6 +145,191 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         &harness.project,
         &harness.verifier,
         harness.limits.file_bytes,
+    );
+    use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult};
+    let create = [ContentChange::CreateAbsent {
+        path: "action-only",
+        bytes: b"created",
+        media_type: "text/plain",
+        display_name: "action-only",
+    }];
+    let operation = OperationId::new();
+    let (created, _) = publisher
+        .stage_changes(
+            &harness.project,
+            operation,
+            &create,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(matches!(
+        &created.members[0],
+        ContentChangeResult::Created(_)
+    ));
+    let encoding_work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            bytes_encoded: 64 * 1024,
+            allocation_operations: 1024,
+            peak_allocation_bytes: 1024 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &stop,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (encoded, _custody) = crate::tool::value(&created, 4096, Some(&encoding_work))?;
+    assert_eq!(encoded.as_array().unwrap().len(), 1);
+    assert_eq!(encoded[0]["path"], "action-only");
+    assert_eq!(
+        publisher
+            .observe_changes(&harness.project, operation, 4096, ContentAccess::default())?
+            .await?
+            .0,
+        Some(created)
+    );
+    let (created, _) = publisher
+        .stage_changes(
+            &harness.project,
+            operation,
+            &create,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        std::fs::read(mounted.path.join("action-only")).map_err(storage)?,
+        b"created"
+    );
+    let update = [ContentChange::UpdateExpected {
+        source: created.members[0].file().unwrap(),
+        bytes: b"forbidden",
+    }];
+    assert!(
+        publisher
+            .stage_changes(
+                &harness.project,
+                OperationId::new(),
+                &update,
+                ContentAccess::default()
+            )?
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(mounted.path.join("action-only")).map_err(storage)?,
+        b"created"
+    );
+    let deletion = [ContentChange::DeleteExpected {
+        source: created.members[0].file().unwrap(),
+    }];
+    let operation = OperationId::new();
+    let (deleted, _) = publisher
+        .stage_changes(
+            &harness.project,
+            operation,
+            &deletion,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        &deleted.members,
+        &[ContentChangeResult::Deleted("action-only".into())]
+    );
+    assert_eq!(
+        publisher
+            .observe_changes(&harness.project, operation, 4096, ContentAccess::default())?
+            .await?
+            .0,
+        Some(deleted)
+    );
+    assert!(!mounted.path.join("action-only").exists());
+    let denied = [ContentChange::CreateAbsent {
+        path: "no-create",
+        bytes: b"denied",
+        media_type: "text/plain",
+        display_name: "no-create",
+    }];
+    assert!(
+        publisher
+            .stage_changes(
+                &harness.project,
+                OperationId::new(),
+                &denied,
+                ContentAccess::default()
+            )?
+            .await
+            .is_err()
+    );
+    assert!(!mounted.path.join("no-create").exists());
+    let retained = [ContentChange::CreateAbsent {
+        path: "no-delete",
+        bytes: b"retained",
+        media_type: "text/plain",
+        display_name: "no-delete",
+    }];
+    let (retained, _) = publisher
+        .stage_changes(
+            &harness.project,
+            OperationId::new(),
+            &retained,
+            ContentAccess::default(),
+        )?
+        .await?;
+    let deletion = [ContentChange::DeleteExpected {
+        source: retained.members[0].file().unwrap(),
+    }];
+    assert!(
+        publisher
+            .stage_changes(
+                &harness.project,
+                OperationId::new(),
+                &deletion,
+                ContentAccess::default()
+            )?
+            .await
+            .is_err()
+    );
+    // The storage writer can author a deletion under its own wider authority.
+    // Recovery through this mounted task must still apply its Delete decision.
+    let operation = OperationId::new();
+    publisher
+        .writer_for(&harness.project, mounted.view().workspace(), None)?
+        .stage_changes(
+            &harness.project,
+            operation,
+            &deletion,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(
+        publisher
+            .observe_changes(&harness.project, operation, 4096, ContentAccess::default())?
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(mounted.path.join("no-delete")).map_err(storage)?,
+        b"retained"
+    );
+    let operation = OperationId::new();
+    publisher
+        .writer_for(&harness.project, mounted.view().workspace(), None)?
+        .stage_changes(
+            &harness.project,
+            operation,
+            &[ContentChange::CreateAbsent {
+                path: "no-delete",
+                bytes: b"retained",
+                media_type: "text/plain",
+                display_name: "no-delete",
+            }],
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(
+        publisher
+            .observe_changes(&harness.project, operation, 4096, ContentAccess::default())?
+            .await?
+            .0
+            .is_some()
     );
     publisher
         .stage_once(
@@ -329,6 +571,15 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             .execute(invocation.clone(), Some(context))
             .await?;
         let projected = tool.projection.project(&invocation, &result, None)?.0;
+        assert!(
+            crate::executor::compile_json_schema(
+                &tool.definition.projection_schema,
+                "mounted tool projection",
+                &mut None,
+            )?
+            .is_valid(&projected),
+            "successful mounted tool result must satisfy its declared projection"
+        );
         Ok::<_, Error>((result, projected))
     };
     let path = ".volumes/scratch/note";
@@ -417,7 +668,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         serde_json::from_value(edit_result.value["file"].clone()).map_err(storage)?;
     assert!(
         run(
-            full_context,
+            full_context.clone(),
             crate::tool::files::edit()?,
             serde_json::json!({"path": path, "version": token,
             "old_text": "first", "new_text": "stale"})
@@ -489,6 +740,109 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         .stage_at(OperationId::new(), &changed, b"edited", None, None)?
         .await?;
     assert_eq!(edited.volume(), harness.scratch());
+    // The trained tool reaches the same atomic publication for a mounted volume.
+    let (patched, _) = run(full_context, crate::tools::variants::apply_patch()?,
+        serde_json::json!({"patch": "*** Begin Patch\n*** Add File: .volumes/scratch/added\n+added\n*** Update File: .volumes/scratch/note\n@@\n-edited\n+patched\n*** End Patch\n"})).await?;
+    assert_eq!(patched.value["files"].as_array().unwrap().len(), 2);
+    let patched_files: Vec<FileRef> =
+        serde_json::from_value(patched.value["files"].clone()).map_err(storage)?;
+    assert!(
+        patched_files
+            .iter()
+            .all(|file| file.volume() == harness.scratch())
+    );
+    assert_eq!(patched_files[0].version(), patched_files[1].version());
+    use crate::conversation::{ContentAccess, ContentChange};
+    let stale = [
+        ContentChange::CreateAbsent {
+            path: "must-stay-absent",
+            bytes: b"partial",
+            media_type: "text/plain",
+            display_name: "partial",
+        },
+        ContentChange::DeleteExpected { source: &edited },
+    ];
+    assert!(
+        publisher
+            .stage_changes(
+                harness.scratch(),
+                OperationId::new(),
+                &stale,
+                ContentAccess::default()
+            )?
+            .await
+            .is_err()
+    );
+    // Delete-only batches retain their exact cut even with no returned FileRef.
+    let deleted = [ContentChange::DeleteExpected {
+        source: &patched_files[0],
+    }];
+    let without_delete = Capabilities::new([
+        harness
+            .scratch()
+            .capability(VolumeOperation::Write, &mut None)?,
+        acyclic_fs::access::Capability::whole_volume(
+            None,
+            &[
+                acyclic_fs::access::Action::Create,
+                acyclic_fs::access::Action::Write,
+                acyclic_fs::access::Action::MergeInto,
+            ],
+        )
+        .to_scope_label()
+        .map_err(storage)?,
+    ]);
+    assert!(
+        publisher
+            .stage_changes(
+                harness.scratch(),
+                OperationId::new(),
+                &deleted,
+                ContentAccess {
+                    ceiling: Some(&without_delete),
+                    io: None,
+                },
+            )?
+            .await
+            .is_err(),
+        "a caller's explicit content ceiling must still refuse deletion"
+    );
+    let delete_operation = OperationId::new();
+    let (deletion, _) = publisher
+        .stage_changes(
+            harness.scratch(),
+            delete_operation,
+            &deleted,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(deletion.files().next().is_none());
+    let (later, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            ".volumes/scratch/later",
+            b"later",
+            "text/plain",
+            "later",
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        publisher
+            .observe_changes(
+                harness.scratch(),
+                delete_operation,
+                4096,
+                ContentAccess::default()
+            )?
+            .await?
+            .0,
+        Some(deletion)
+    );
+    let (restored, _) = publisher
+        .stage_at(OperationId::new(), &patched_files[1], b"edited", None, None)?
+        .await?;
+    assert_eq!(restored.volume(), later.volume());
     // Auxiliary volumes exist physically only while a native command owns its
     // projection. Publication must persist their bytes without leaving a mount.
     let mounts = &harness
@@ -501,6 +855,17 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         assert_eq!(
             std::fs::read(directory.path().join(".volumes/scratch/note")).map_err(storage)?,
             b"edited"
+        );
+        assert!(!directory.path().join(".volumes/scratch/added").exists());
+        assert!(
+            !directory
+                .path()
+                .join(".volumes/scratch/must-stay-absent")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join(".volumes/scratch/later")).map_err(storage)?,
+            b"later"
         );
         Ok(((), claims))
     })
@@ -529,7 +894,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     // The former implementation selected the project writer. This deliberately
     // bypasses routing and must fail the same history-attribution oracle.
     publisher
-        .writer_for(&harness.project, view.workspace())?
+        .writer_for(&harness.project, view.workspace(), None)?
         .stage_once(
             OperationId::new(),
             ".volumes/scratch/control",

@@ -118,6 +118,93 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "code-mode")]
+#[tokio::test]
+async fn served_shared_interpreter_uses_original_session_and_journaled_file_calls() -> Result<()> {
+    use crate::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
+    use crate::test_support::{PromptOutcome, ScriptedEvent, ScriptedTurn};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "code-write".into(),
+                "code".into(),
+                serde_json::json!({"code": "return await write({path: 'code.txt', content: 'admitted'});"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .tool(crate::executor::code_tool()?),
+        )
+        .await?,
+    );
+    harness.agents().await?;
+    let completion = harness.agents.get().unwrap().runtime.completion();
+    let outcome = tokio::select! {
+        result = crate::test_support::prompt_settled(&harness, "code", "write through code") => result?,
+        failure = completion => return Err(Error::Storage(format!("code serving producer ended: {failure:?}"))),
+    };
+    let PromptOutcome::Settled(_, output) = outcome else {
+        return Err(Error::Conflict(format!("code turn failed: {outcome:?}")));
+    };
+    assert_eq!(output.text, "done");
+    let request = provider
+        .request(1)
+        .ok_or_else(|| Error::NotFound("code result request".into()))?;
+    let value = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            ModelContentPart::ToolResult {
+                name,
+                content: ToolResultContent::Json { value },
+                ..
+            } if name == "code" => Some(value.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            Error::NotFound(format!("successful code result: {:?}", request.messages))
+        })?;
+    let file = serde_json::from_value::<crate::tool::files::FileResult>(value)
+        .map_err(agent)?
+        .file;
+    assert_eq!(file.path(), "code.txt");
+    assert_eq!(
+        &*harness
+            .client_reader()?
+            .read(&file, 1024, None, None)?
+            .await?,
+        b"admitted"
+    );
+    let requests = provider.request_count();
+    conversation(&harness)
+        .await?
+        .send("code", "write through code")
+        .await?;
+    assert_eq!(provider.request_count(), requests);
+    let session = Arc::clone(harness.agents.get().unwrap().runtime.session());
+    let retained = session.agent(&harness.agents().await?.1.id())?;
+    let stopped = retained
+        .preparation()?
+        .original_native_work()
+        .unwrap()
+        .cancellation_wait()?;
+    drop(harness);
+    // The serving task owns cancellation. Retained handles cannot prolong it.
+    stopped.await;
+    assert!(retained.preparation().is_err());
+    Ok(())
+}
+
 /// The model's real channel owns progress; dropping it must close the same
 /// Session that carries the local commands and follows, retaining queued input.
 #[tokio::test]
@@ -161,45 +248,106 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         }
     }
 
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+    {
         let directory = tempfile::tempdir().map_err(agent)?;
         let project = volume(directory.path()).await?;
         let (entered, entering) = oneshot::channel();
         let (producer, result) = oneshot::channel();
-        let harness = Arc::new(LocalHarness::open(
-            volume_config(directory.path(), project, Arc::new(ClosingModel {
-                counts: text(),
-                gate: Mutex::new(Some((entered, result))),
-            }))?.compaction(crate::context::CompactionPolicy::Disabled),
-        ).await?);
+        let harness = Arc::new(
+            LocalHarness::open(
+                volume_config(
+                    directory.path(),
+                    project,
+                    Arc::new(ClosingModel {
+                        counts: text(),
+                        gate: Mutex::new(Some((entered, result))),
+                    }),
+                )?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+            )
+            .await?,
+        );
         let connection = harness.connect().await?;
         let client = Conversation::open(connection.clone())?;
         let mut events = client.observe(0).await?;
         let inbox = client.send("lost-producer", "hello").await?;
-        entering.await.map_err(agent)?;
+        let hosted = harness.agents.get().unwrap();
+        tokio::select! {
+            entered = entering => entered.map_err(agent)?,
+            stopped = hosted.runtime.completion() => {
+                stopped?;
+                return Err(Error::Storage("runtime stopped before model dispatch".into()));
+            }
+        }
+        let retained = hosted.runtime.session().agent(&hosted.root().id())?;
+        retained.preparation()?;
         let waiting = async {
             loop {
                 match events.next().await? {
-                    super::super::Event::Turn(_) => return Err::<(), _>(Error::Conflict("unsettled model produced a turn".into())),
+                    super::super::Event::Turn(_) => {
+                        return Err::<(), _>(Error::Conflict(
+                            "unsettled model produced a turn".into(),
+                        ));
+                    }
                     super::super::Event::Status(_) | super::super::Event::Output => {}
                 }
             }
         };
         tokio::pin!(waiting);
-        assert!(futures::poll!(&mut waiting).is_pending(), "live producer must retain the wait");
+        assert!(
+            futures::poll!(&mut waiting).is_pending(),
+            "live producer must retain the wait"
+        );
         drop(producer);
         // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
         let observed = waiting.await;
-        assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");
+        assert!(
+            matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+            "observation lost the runtime cause: {observed:?}"
+        );
         let hosted = harness.agents.get().unwrap();
-        assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
-        assert!(harness.agent_stream.as_ref().unwrap().failure().is_none(), "the Session's runtime failure must not be invented as a provider failure");
-        assert!(matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "commands must retain the same runtime cause");
-        assert_eq!(hosted.agents().reply(hosted.root(), &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?, inbox).await.map_err(agent)?, crate::agent::Reply::Pending, "failed input stays recoverable");
-        assert!(records(&**hosted.agents().provider(), hosted.root().conversation().map_err(agent)?).await?.is_empty());
-        assert!(matches!(harness.connect().await, Err(Error::Storage(_))), "late clients observe the already closed runtime");
+        assert!(
+            matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed"))
+        );
+        assert!(
+            retained.preparation().is_err(),
+            "runtime closure must cancel retained context work before publishing its lifetime event"
+        );
+        assert!(
+            harness.agent_stream.as_ref().unwrap().failure().is_none(),
+            "the Session's runtime failure must not be invented as a provider failure"
+        );
+        assert!(
+            matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+            "commands must retain the same runtime cause"
+        );
+        assert_eq!(
+            hosted
+                .agents()
+                .reply(
+                    hosted.root(),
+                    &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
+                    inbox
+                )
+                .await
+                .map_err(agent)?,
+            crate::agent::Reply::Pending,
+            "failed input stays recoverable"
+        );
+        assert!(
+            records(
+                &**hosted.agents().provider(),
+                hosted.root().conversation().map_err(agent)?
+            )
+            .await?
+            .is_empty()
+        );
+        assert!(
+            matches!(harness.connect().await, Err(Error::Storage(_))),
+            "late clients observe the already closed runtime"
+        );
         Ok(())
-    }).await.map_err(|_| Error::Conflict("closed local runtime retained a Session wait".into()))?
+    }
 }
 
 /// The names directly under `path` on `volume`.

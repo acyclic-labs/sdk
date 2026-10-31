@@ -556,6 +556,193 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
 }
 
 #[tokio::test]
+async fn advisor_send_keeps_the_authorized_plan_snapshot_on_replay() -> Result<()> {
+    use crate::{
+        agent::{AgentPath, AgentState, ForkAdopted, TurnEffect, TurnEffects},
+        filesystem::agent_effects::FilesystemTurnEffects,
+        runtime::{Bindings, ToolContext},
+        tool::ToolRegistry,
+    };
+
+    let storage = MemoryHarnessStorage::new(AgentId::from_bytes([74; 16]), 4_096).await?;
+    let plan = storage
+        .stage(
+            OperationId::new(),
+            "plan.md",
+            b"original plan",
+            "text/markdown",
+            "plan",
+        )
+        .await?;
+    let version =
+        serde_json::to_string(&plan).map_err(|error| Error::Invalid(error.to_string()))?;
+    storage
+        .stage(
+            OperationId::new(),
+            "plan.md",
+            b"later plan",
+            "text/markdown",
+            "plan",
+        )
+        .await?;
+    storage
+        .stage(
+            OperationId::new(),
+            "binary.md",
+            &[0xff],
+            "text/markdown",
+            "binary",
+        )
+        .await?;
+
+    let limits = Limits {
+        file_bytes: 4_096,
+        render_bytes: 4_096,
+        ..Limits::default()
+    };
+    let content = storage.content_bindings();
+    let mut bindings = Bindings::local();
+    bindings.scope = RuntimeScope::new(
+        Capabilities::new([
+            storage.read_capability.clone(),
+            storage.write_capability.clone(),
+            "tool:call:send".into(),
+        ]),
+        limits,
+    )?;
+    bindings.content = Some(content.clone());
+    let task = bindings
+        .build()?
+        .agent_context(&Capabilities::default(), content)?;
+    let path = AgentPath::root(&crate::agent::AgentId::from_bytes([74; 16]));
+    let advisor = crate::tools::spawned_child(&path, "advisor")
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut state = AgentState::adopted(
+        path.clone(),
+        &ForkAdopted {
+            agent: path.id(),
+            parent: None,
+            profile: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: Vec::new(),
+            brief: None,
+            policy: None,
+        },
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    state.open_children.insert(advisor.clone());
+    let grant = ContentGrant::verify(
+        &storage.issuer.verifier(&mut None)?,
+        &storage.scope,
+        &storage.volume,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
+    let files = Arc::new(AgentInternalFiles::new(
+        storage.host.clone(),
+        storage.volume.clone(),
+        grant,
+    ));
+    let effects = Arc::new(FilesystemTurnEffects::new(
+        files,
+        storage.stream.clone(),
+        path,
+        (OperationId::new(), 0),
+        4_096,
+    ));
+    let mut registry = ToolRegistry::default();
+    crate::tools::bind_agent_tools(
+        &mut registry,
+        &state,
+        (effects.clone(), None),
+        storage.publisher.clone(),
+        4_096,
+        (&["send".into()], None),
+    )?;
+    let tool = registry
+        .get("send", None, None)?
+        .ok_or_else(|| Error::NotFound("send tool".into()))?;
+    let invocation = |path: &str, version: Option<&str>| ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "advisor-plan".into(),
+        name: "send".into(),
+        arguments: json!({"agent":"advisor", "message":"Review this plan", "file":{"path":path,"version":version}}),
+    };
+    let context = |task: &crate::runtime::TaskContext, call: &ToolInvocation| {
+        ToolContext::new(Arc::new(task.clone()), call.operation_id, &call.call_id)
+    };
+    let original = invocation("plan.md", Some(&version));
+    let denied = task.scoped(
+        Capabilities::new([storage.write_capability.clone(), "tool:call:send".into()]),
+        limits,
+    )?;
+    assert_eq!(
+        tool.executor
+            .execute(original.clone(), Some(context(&denied, &original)?))
+            .await
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    for refused in [
+        invocation("binary.md", None),
+        invocation("other.md", Some(&version)),
+    ] {
+        assert!(
+            tool.executor
+                .execute(refused.clone(), Some(context(&task, &refused)?))
+                .await
+                .is_err()
+        );
+    }
+    assert!(effects.recorded().await?.is_empty());
+    let result = tool
+        .executor
+        .execute(original.clone(), Some(context(&task, &original)?))
+        .await?;
+    let recorded = effects.recorded().await?;
+    assert_eq!(recorded.len(), 1);
+    let TurnEffect::Send { to, body, .. } = &recorded[0] else {
+        return Err(Error::Storage(
+            "plan delivery recorded another effect".into(),
+        ));
+    };
+    assert_eq!(to, &advisor);
+    let expected = format!(
+        "Review this plan\n\nSnapshot version: {version}\nPlan snapshot: plan.md\n\noriginal plan"
+    );
+    assert_eq!(
+        task.read_file(body, None).await?.as_ref(),
+        expected.as_bytes()
+    );
+
+    task.stage_file(
+        None,
+        OperationId::new(),
+        "plan.md",
+        b"newest plan",
+        "text/markdown",
+        "plan",
+    )
+    .await?;
+    assert_eq!(
+        tool.executor
+            .reconcile(original.clone(), Some(context(&task, &original)?))
+            .await?,
+        Some(result)
+    );
+    assert_eq!(effects.recorded().await?, recorded);
+    assert_eq!(
+        task.read_file(body, None).await?.as_ref(),
+        expected.as_bytes()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn context_files_stage_and_resolve_only_with_owner_bound_grants() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::from_bytes([91; 16]), 4_096).await?;
     run_admitted_file_case(&storage, Limits::default(), |context| async move {

@@ -107,9 +107,6 @@ pub async fn open<B: Backend + ?Sized>(
         &mut None,
     )?;
     let preset = Preset {
-        tools: Vec::new(),
-        web_tools: false,
-        max_children: None,
         approval_policy: policy,
     };
     let effects = Arc::new(AtomicUsize::new(0));
@@ -117,6 +114,7 @@ pub async fn open<B: Backend + ?Sized>(
     tools.register(
         (
             Tool {
+                skill_source: None,
                 hook_names: &[],
                 definition: tool_definition(),
                 executor: Arc::new(Echo(effects.clone())),
@@ -175,6 +173,7 @@ pub async fn open<B: Backend + ?Sized>(
         Arc::new(Owner),
         &IntentId::try_from("root")?,
         RootRequest {
+            profile: None,
             agent: crate::conformance::fixtures::adopted().agent,
             fresh: vec![crate::conformance::roots::volume(
                 PRIVATE_VOLUME,

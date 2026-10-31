@@ -329,7 +329,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
 -> Result<()> {
     let (directory, harness, publisher) = fixture().await?;
     let view = harness.workspace.as_ref().unwrap().view();
-    let writer = publisher.writer_for(&harness.project, view.workspace())?;
+    let writer = publisher.writer_for(&harness.project, view.workspace(), None)?;
     let operation = OperationId::new();
     // Crash boundary: the actual volume write commits, but no native
     // preparation journal or checkout edit has happened.
@@ -732,9 +732,11 @@ fn checkout_publication_preserves_caller_ceilings() {
                                     PublicationPermit::Unrestricted,
                                 )?
                                 .await?;
-                            let host = harness
-                                .files
-                                .for_workspace(&harness.project, view.workspace().clone())?;
+                            let host = harness.files.for_workspace(
+                                &harness.project,
+                                view.workspace().clone(),
+                                None,
+                            )?;
                             let grant = crate::conversation::ContentGrant::verify_directory_read(
                                 &harness.verifier,
                                 &harness.signed,

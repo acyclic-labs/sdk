@@ -64,6 +64,7 @@ required-features = ["filesystem"]
 consumer-features = [["filesystem"], ["filesystem-local", "test-support"], ["filesystem-local", "native-execution"], { features = ["browser"], target = "wasm32-unknown-unknown" }]
 
 [features]
+code-mode = ["acyclic-harness-core/code-mode"]
 conformance = ["hosting", "oidc", "acyclic-fs/conformance", "dep:acyclic-objects", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/session", "acyclic-stream/test-support", "dep:ed25519-dalek", "dep:jsonwebtoken"]
 oidc = ["filesystem", "acyclic-harness-core/oidc"]
 oidc-http = ["oidc", "acyclic-harness-core/oidc-http"]

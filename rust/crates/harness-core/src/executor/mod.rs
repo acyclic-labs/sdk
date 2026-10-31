@@ -44,9 +44,16 @@ mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
 use accounting::*;
+pub(crate) use accounting::{stock_context_capacity, stock_count_tokens};
 mod binding;
+#[cfg(feature = "filesystem")]
+mod code_mode;
 mod compaction;
 mod composition;
+#[cfg(feature = "filesystem")]
+pub(crate) use code_mode::filesystem_skill_marker_bytes;
+#[cfg(feature = "filesystem")]
+pub use code_mode::{CODE_REVISION, call_tool, code_tool};
 mod content;
 mod dispatch;
 mod live_reply;
@@ -534,6 +541,14 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    #[cfg(feature = "filesystem")]
+    profile: Option<(
+        Arc<crate::profile::Profiles>,
+        crate::agent::AgentProfilePin,
+        String,
+    )>,
+    #[cfg(all(feature = "code-mode", not(target_arch = "wasm32")))]
+    code_session: Option<Arc<crate::filesystem::SessionWork>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,

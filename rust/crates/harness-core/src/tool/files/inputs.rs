@@ -51,6 +51,23 @@ pub struct EditFileInput {
     pub new_text: String,
 }
 
+/// Insert complete lines after a zero-based boundary in one pinned source.
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct InsertFileInput {
+    /// Public path relative to the selected project volume.
+    pub path: String,
+    /// Original immutable source, when a prior version was selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Zero inserts before the first line; otherwise insert after this line.
+    pub insert_line: u64,
+    /// Exact UTF-8 inserted lines.
+    pub new_text: String,
+}
+
 /// Explicit single-file V4A update arguments.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(

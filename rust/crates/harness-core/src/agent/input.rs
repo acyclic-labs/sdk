@@ -8,7 +8,7 @@ use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
 
 /// Input queued for the turn, in inbox order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]

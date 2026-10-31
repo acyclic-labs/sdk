@@ -1,37 +1,9 @@
 use super::*;
 
-pub(super) fn decode_tool_version(
-    context: Option<&ToolContext>,
-    path: &str,
-    version: &str,
-    work: crate::NativeWork<'_>,
-) -> Result<(FileRef, crate::NativeCustody)> {
-    let Some(context) = context else {
-        return decode_version(path, version, work);
-    };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let owned_io = work
-        .map(crate::executor::PreparationIo::from_native_work)
-        .transpose()?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let io = owned_io.as_ref();
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let io = None;
-    let (volume, relative) = context.tool_path_selection(path, io)?;
-    let (file, custody) = decode_version(&relative, version, work)?;
-    if file.volume() != volume {
-        return Err(super::executor::rejection(
-            work,
-            "file version belongs to another selected volume",
-        ));
-    }
-    Ok((file, custody))
-}
-
 // A token transports the original reference; it is never an authority or an
 // index into mutable process state. Its decoded reference goes through the
 // same grant and immutable-content checks as every other content read.
-pub(super) fn decode_version(
+pub(crate) fn decode_version(
     path: &str,
     version: &str,
     work: crate::NativeWork<'_>,
@@ -65,7 +37,7 @@ pub(super) fn decode_version(
     Ok((file, None))
 }
 
-pub(super) fn encode_version(
+pub(crate) fn encode_version(
     file: &FileRef,
     work: crate::NativeWork<'_>,
 ) -> Result<(String, crate::NativeCustody)> {

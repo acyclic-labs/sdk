@@ -34,6 +34,7 @@ pub async fn spawned<P: acyclic_harness_core::store::JournalProvider + ?Sized>(
 /// Initial root used by creation, exact replay, spawn and restart scenarios.
 pub fn adopted() -> ForkAdopted {
     ForkAdopted {
+        profile: None,
         agent: AgentId::from_bytes([1; 16]),
         parent: None,
         forked_at: 0,
@@ -84,6 +85,7 @@ impl TurnDriver for Driver {
             let mut outs = vec![Out::Conversation(id.as_str().as_bytes().to_vec())];
             if matches!(id.as_str(), "spawn" | "respawn") {
                 outs.push(Out::Spawn {
+                    profile: None,
                     intent: IntentId::try_from("child")?,
                     brief: match id.as_str() {
                         "respawn" => Some(

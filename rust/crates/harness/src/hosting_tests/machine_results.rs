@@ -165,15 +165,7 @@ impl TurnExecutors for NativeTurns {
             let tools =
                 crate::preset::Preset::graphcoder().tools(|name| name == "shell", Vec::new())?;
             StockExecutors::new(
-                (
-                    Model::new(
-                        "test".into(),
-                        "text".into(),
-                        "1".into(),
-                        serde_json::Value::Null,
-                    )?,
-                    model,
-                ),
+                (Model::new("test".into(), "text".into(), "1".into())?, model),
                 tools,
                 (limits, CompactionPolicy::Disabled),
                 Arc::new(Tasks(bindings)),
@@ -225,6 +217,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
         Arc::new(Owner::default()),
         &IntentId::try_from("machine-results")?,
         RootRequest {
+            profile: None,
             agent: id,
             fresh,
             retained: Vec::new(),

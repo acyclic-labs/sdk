@@ -40,23 +40,26 @@ pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
 impl Opening {
     async fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
-        // Settings resolve once, before the model and approvers they select.
+        // Native settings supply hooks, MCP and search; profiles already bind models.
         #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let (config, settings_configuration) = {
             let mut config = config;
             if config.without_user_settings {
                 config.settings = None;
-                (config.resolve(None, true)?, None)
-            } else if config.model.is_none() && config.models.is_none() {
+                (config, None)
+            } else if config.model.is_none() {
                 (config, None)
             } else {
+                #[cfg(feature = "search-http")]
                 let injected = config.settings.is_some();
                 let settings = settings::configuration(
                     &config.project,
                     config.settings.take(),
                     config.hermetic,
                 )?;
-                (config.resolve(Some(&settings), injected)?, Some(settings))
+                #[cfg(feature = "search-http")]
+                let config = config.bind_search(&settings, injected)?;
+                (config, Some(settings))
             }
         };
         if config.approval_issuer.is_some() {
@@ -431,6 +434,7 @@ impl Opening {
             preset: self.preset,
             approval_models: self.config.approval_models,
             agent: self.config.model,
+            profiles: self.config.profiles,
             served: self.config.served,
             active_directory: self.config.active_directory,
             skill_cache: context::skills::cache(),
@@ -560,21 +564,29 @@ impl PrivateVolumes {
 }
 
 fn configure_tools(
-    preset: &crate::preset::Preset,
+    _preset: &crate::preset::Preset,
     config: &mut LocalHarnessConfig,
 ) -> Result<ToolRegistry> {
-    let tools = preset.tools(
+    let mut tools = ToolRegistry::default();
+    crate::tools::bind_defaults(
+        &mut tools,
+        &mut Vec::new(),
+        None,
+        &config.default_tools,
+        true,
         |_| cfg!(any(test, feature = "native-execution")),
-        std::mem::take(&mut config.tools),
     )?;
+    for tool in std::mem::take(&mut config.tools) {
+        tools.register((tool, None), &mut None, None)?;
+    }
     #[cfg(feature = "search-http")]
-    if config.model.is_none() && preset.web_tools {
+    if config.model.is_none() && config.web_tools {
         return Err(Error::Invalid(
             "native host coordination cannot register web tools".into(),
         ));
     }
     #[cfg(feature = "search-http")]
-    let tools = if preset.web_tools {
+    let tools = if config.web_tools {
         let mut tools = tools;
         web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
         tools

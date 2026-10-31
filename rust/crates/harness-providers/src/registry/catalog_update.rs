@@ -66,7 +66,9 @@ impl Registry {
                 let entry = entry
                     .filter(|entry| entry.models.contains_key(name))
                     .ok_or_else(|| invalid("catalog default_model is absent from its models"))?;
-                let credential = if entry.authentication.secret_reference().is_some() {
+                let credential = if entry.authentication == Authentication::Anonymous
+                    || entry.authentication.secret_reference().is_some()
+                {
                     Credential::Missing
                 } else {
                     self.observe(&mut observed, provider)?

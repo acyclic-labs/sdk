@@ -18,6 +18,8 @@ pub use declaration::{
     ContextDiscovery, ContextDiscoveryLimits, ContextDiscoveryPolicy, ContextReloadPolicy,
     ContextRoot, InstructionScope, PinnedContextPath,
 };
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod callable;
 mod skills;
 #[doc(hidden)]
 pub use skills::discover_skills;

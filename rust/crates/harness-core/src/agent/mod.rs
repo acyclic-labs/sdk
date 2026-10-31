@@ -24,6 +24,8 @@ pub(crate) use input::input as turn_input;
 pub mod kernel;
 mod layout;
 mod lifecycle;
+#[cfg(feature = "filesystem")]
+pub(crate) use layout::stream_parts_with_io;
 pub use lifecycle::{AgentComposer, AgentLifecycle, CLOSE};
 mod lower;
 mod machine;
@@ -31,6 +33,8 @@ pub(crate) mod records;
 mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
+#[cfg(feature = "filesystem")]
+pub(crate) use settled::{answer_with_io, settled_with_io};
 mod slots;
 mod targets;
 pub use targets::{
@@ -64,11 +68,11 @@ pub use machine::{
     step,
 };
 pub use records::{
-    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
-    ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId,
-    MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase,
-    RECORD_VERSION, Sender, SpawnRequest, StatusRecord, UnsupportedRecordVersion, VolumeBinding,
-    decode_record,
+    AgentOutcome, AgentProfilePin, AgentRecord, Approval, ApprovalRequested, ChildDone,
+    ChildSettled, Closed, ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord,
+    IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase,
+    RECORD_VERSION, Sender, SpawnContext, SpawnProfiles, SpawnRequest, StatusRecord,
+    UnsupportedRecordVersion, VolumeBinding, decode_record,
 };
 pub use reply::{Reply, reply};
 

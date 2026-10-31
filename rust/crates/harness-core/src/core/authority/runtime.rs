@@ -103,7 +103,7 @@ impl RuntimeAuthority {
                 authority,
                 operation,
             } => {
-                authority.check()?;
+                authority.check_scope_with_work(&authority.caller.scope, work)?;
                 let mut verifier = authority.caller.verifier.copy(work)?;
                 verifier.admission =
                     runtime_signing::AdmissionPort::platform(authority, *operation);
@@ -129,6 +129,28 @@ impl RuntimeAuthority {
         }
     }
 
+    /// The same audience join under the original invocation's work admission.
+    pub(crate) fn with_audience_with_work(
+        &self,
+        audience: Authority,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        match &self.custody {
+            Custody::Native(root) => Ok(Self::from(root.with_audience_with_work(audience, work)?)),
+            Custody::Platform { authority, .. } => {
+                authority.check()?;
+                if authority.caller().0 != &audience {
+                    return Err(crate::store::guarded_boundary(
+                        work,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "platform authority belongs to another audience",
+                    ));
+                }
+                Ok(self.clone())
+            }
+        }
+    }
+
     /// Issue only at the trusted runtime boundary. The platform producer checks
     /// the actual resource or acting agent before returning sealed evidence.
     pub async fn issue(
@@ -138,15 +160,60 @@ impl RuntimeAuthority {
         capabilities: &Capabilities,
         agent: Option<AgentId>,
     ) -> Result<Scope> {
+        self.issue_with_work(parent, id, capabilities, agent, &mut None)
+            .await
+    }
+
+    /// Issues the original attestation with the original codec/work ledger.
+    pub(crate) async fn issue_with_work(
+        &self,
+        parent: Option<&Scope>,
+        id: &str,
+        capabilities: &Capabilities,
+        agent: Option<AgentId>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Scope> {
         match &self.custody {
             Custody::Native(root) => match parent {
-                Some(parent) => root.issue_derived(parent, id, capabilities, agent, &mut None),
-                None => root.bootstrap_scope(id, capabilities, agent, &mut None),
+                Some(parent) => root.issue_derived(parent, id, capabilities, agent, work),
+                None => root.bootstrap_scope(id, capabilities, agent, work),
             },
             Custody::Platform {
                 authority,
                 operation,
             } => {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(original) = work.as_deref().and_then(HistoryIo::original_native_work) {
+                    let io = crate::filesystem::PreparationIo::from_native_work(original)?;
+                    let issued = authority
+                        .derive_request_with_io(
+                            &authority.context,
+                            *operation,
+                            parent.unwrap_or(authority.caller().1),
+                            id,
+                            ScopeDerivation::Narrow {
+                                capabilities,
+                                agent,
+                            },
+                            Some(&io),
+                        )
+                        .await?;
+                    let custody = io.take_native_custody(io.owned_bytes()?)?;
+                    work.as_deref_mut()
+                        .ok_or_else(|| crate::Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Invalid,
+                            reason: "original derivation observer was lost",
+                        })?
+                        .absorb_native_custody(custody)?;
+                    return Ok(issued);
+                }
+                if work.is_some() {
+                    return Err(crate::store::guarded_boundary(
+                        work,
+                        crate::wire::ErrorCode::Unsupported,
+                        "authority derivation requires its original native work owner",
+                    ));
+                }
                 authority
                     .derive(
                         &authority.context,

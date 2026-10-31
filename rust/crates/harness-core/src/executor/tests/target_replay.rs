@@ -72,6 +72,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
             tools.register(
                 (
                     crate::tool::Tool {
+                        skill_source: None,
                         hook_names: &[],
                         definition: crate::tool::ToolDefinition {
                             name: "shell".into(),

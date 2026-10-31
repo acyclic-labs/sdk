@@ -43,6 +43,7 @@ impl ToolExecutor for Echo {
 fn example_tool() -> Tool {
     let schema = json!({"type":"object"});
     Tool {
+        skill_source: None,
         hook_names: &[],
         definition: ToolDefinition {
             name: "example.echo".into(),

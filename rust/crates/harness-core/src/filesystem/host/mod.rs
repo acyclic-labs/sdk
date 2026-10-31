@@ -84,28 +84,61 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         volume: &VolumeRef,
         workspace: Workspace<A, O>,
+        io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
-        if self._native_custody.is_some() || volume.provider() != &self.provider {
-            return Err(Error::Unauthorized(
-                "workspace binding requires ordinary project authority".into(),
+        if volume.provider() != &self.provider {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "workspace binding requires the original filesystem provider",
             ));
         }
-        Ok(Arc::new(Self {
-            filesystem: self.filesystem.clone(),
-            provider: self.provider.clone(),
-            publication_domain: Arc::clone(&self.publication_domain),
-            workspace_binding: Some((
-                workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?,
-                workspace,
-            )),
-            #[cfg(test)]
-            publication_pause: self.publication_pause.clone(),
-            #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
-            native_skills: self.native_skills.clone(),
-            #[cfg(feature = "filesystem-local")]
-            project_family: self.project_family.clone(),
-            _native_custody: None,
-        }))
+        if let Some(original) = &self._native_custody {
+            let work = io
+                .and_then(PreparationIo::original_native_work)
+                .ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "workspace binding requires original allocation custody",
+                    )
+                })?;
+            if !original.work().shares_allocation_context(work) {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "workspace binding belongs to another allocation owner",
+                ));
+            }
+        }
+        let reference = bounded_io::content_workspace(&self.provider, volume, io)?;
+        crate::executor::with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            quota.adopt(reference.logical_owned_bytes()?)?;
+            let provider = crate::core::copy_provider(&self.provider, &mut quota)?;
+            if quota.work().is_some() {
+                quota.retain(
+                    (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64,
+                )?;
+                quota
+                    .observer()?
+                    .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+            }
+            let _native_custody = quota.into_custody()?;
+            Ok(Arc::new(Self {
+                filesystem: self.filesystem.clone(),
+                provider,
+                publication_domain: Arc::clone(&self.publication_domain),
+                workspace_binding: Some((reference, workspace)),
+                #[cfg(test)]
+                publication_pause: self.publication_pause.clone(),
+                #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+                native_skills: self.native_skills.clone(),
+                #[cfg(feature = "filesystem-local")]
+                project_family: self.project_family.clone(),
+                _native_custody,
+            }))
+        })
     }
 }
 
@@ -161,6 +194,7 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 mod content;
+mod content_changes;
 mod publication;
 pub(in crate::filesystem) use publication::{PublicationLookup, PublicationPurpose};
 mod directory;
@@ -184,6 +218,7 @@ pub(in crate::filesystem) use publication::{
     content_metadata_matches, decode_content_metadata, recover_internal_upload_receipt,
 };
 pub(in crate::filesystem) use reads::read_generation;
+pub(in crate::filesystem) use workspaces::FilePublication;
 
 use crate::executor::stock_boundary;
 

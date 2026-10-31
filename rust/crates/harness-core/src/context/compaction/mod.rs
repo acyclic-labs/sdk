@@ -26,7 +26,6 @@ impl Default for ThresholdCompaction {
 
 impl ThresholdCompaction {
     /// Reserves the selected output capacity before splitting remaining input.
-    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "filesystem-local")))]
     #[doc(hidden)]
     pub fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
@@ -43,6 +42,43 @@ impl ThresholdCompaction {
         policy.response_reserve_tokens = output;
         policy.recent_tokens = policy.recent_tokens.min(usable / 2);
         policy.validate(capacity, None)?;
+        Ok(policy)
+    }
+
+    /// Plans retained input around the exact admitted output reservation.
+    pub(crate) fn for_reservation(
+        capacity: ModelContextCapacity,
+        fixed_tokens: u32,
+        output_tokens: u32,
+    ) -> Result<Self> {
+        let output_tokens = capacity.output_reservation(Some(output_tokens))?;
+        Self::for_capacity(
+            ModelContextCapacity {
+                output_tokens: Some(output_tokens),
+                ..capacity
+            },
+            fixed_tokens,
+        )
+    }
+
+    /// Plans input headroom at the selected watermark while retaining the
+    /// original output reservation. A narrower provider capacity can require
+    /// preparation earlier, never later than the selected watermark.
+    pub(crate) fn for_watermark(
+        capacity: ModelContextCapacity,
+        watermark_tokens: u32,
+        output_tokens: u32,
+    ) -> Result<Self> {
+        let mut policy = Self::for_reservation(capacity, 0, output_tokens)?;
+        let watermark = watermark_tokens.min(capacity.context_tokens - output_tokens);
+        if watermark < 2 {
+            return Err(Error::Invalid(
+                "compaction watermark leaves no retained input capacity".into(),
+            ));
+        }
+        policy.response_reserve_tokens = capacity.context_tokens - watermark;
+        policy.recent_tokens = policy.recent_tokens.min(watermark / 2);
+        policy.validate(capacity, Some(output_tokens))?;
         Ok(policy)
     }
 

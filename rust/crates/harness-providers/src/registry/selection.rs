@@ -86,7 +86,9 @@ impl Registry {
         provider: &str,
         config: &ProviderSpec,
     ) -> Result<Credential> {
-        if config.authentication.secret_reference().is_some() {
+        if config.authentication == Authentication::Anonymous
+            || config.authentication.secret_reference().is_some()
+        {
             return Ok(Credential::Missing);
         }
         self.selection

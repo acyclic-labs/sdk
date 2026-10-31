@@ -4,7 +4,7 @@ use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Output, Stdio},
     sync::{Arc, Mutex},
 };
 
@@ -53,8 +53,8 @@ async fn model(directory: &Path) -> Model {
             .unwrap();
     });
     let catalog = directory.join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
-        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+    std::fs::write(&catalog, serde_json::to_vec(&json!({"default_model":"graphcoder-qual/tiny","graphcoder-qual":{
+        "adapter":"responses","authentication":"anonymous","base_url":format!("http://{address}"),
         "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
@@ -113,7 +113,54 @@ fn fixture() -> Fixture {
 /// Runs the binary through the shared native capture, exit and physical-close
 /// owner, retaining the original outer deadline without readiness polling.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
-    let mut command = Command::new(build_metadata::EXECUTABLE);
+    std::fs::create_dir_all(fixture.workspace.join(".harness")).unwrap();
+    std::fs::copy(catalog, fixture.workspace.join(".harness/providers.json")).unwrap();
+    let profiles = fixture.workspace.join(".harness/models/graphcoder-qual");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("_family.md"),
+        "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\ncache: automatic\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        profiles.join("tiny.md"),
+        "---\nversion: 1\nkey: graphcoder-qual/tiny\n---\n",
+    )
+    .unwrap();
+    let roles = fixture.workspace.join(".harness/roles");
+    std::fs::create_dir_all(&roles).unwrap();
+    for (name, source) in [
+        (
+            "orchestrator",
+            include_str!("../../../../../harness-core/src/profile/roles/orchestrator.md"),
+        ),
+        (
+            "advisor",
+            include_str!("../../../../../harness-core/src/profile/roles/advisor.md"),
+        ),
+        (
+            "worker",
+            include_str!("../../../../../harness-core/src/profile/roles/worker.md"),
+        ),
+        (
+            "reviewer",
+            include_str!("../../../../../harness-core/src/profile/roles/reviewer.md"),
+        ),
+    ] {
+        let source = source
+            .lines()
+            .map(|line| {
+                if line.starts_with("model:") {
+                    "model: graphcoder-qual/tiny"
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(roles.join(format!("{name}.md")), source).unwrap();
+    }
+    let mut command = std::process::Command::new(build_metadata::EXECUTABLE);
     fixture.custody.configure(&mut command);
     command
         .env("CODEX_HOME", fixture.settings.join(".codex"))
@@ -128,11 +175,6 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .current_dir(&fixture.workspace)
         .arg("--workspace")
         .arg(&fixture.workspace)
-        .arg("--settings-root")
-        .arg(&fixture.settings)
-        .arg("--catalog")
-        .arg(catalog)
-        .args(["--model", "graphcoder-qual/tiny"])
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -195,6 +237,11 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     };
     assert_eq!(succeeded(&run("first").await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
+    assert_eq!(
+        model.requests.lock().unwrap()[0]["max_output_tokens"],
+        1024,
+        "an absent role reservation uses the selected model's verified output capacity"
+    );
     // The same operation names the same message: a second process prints the
     // settled answer without generating again.
     assert_eq!(succeeded(&run("first").await), "fixture answer\n");

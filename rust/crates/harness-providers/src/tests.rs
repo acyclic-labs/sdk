@@ -303,6 +303,7 @@ pub(super) fn provider_with(
             revision: "1".into(),
         },
         profile: None,
+        selection_capacity: None,
         config: Arc::new(ProviderSpec {
             adapter,
             authentication: Authentication::ApiKey,

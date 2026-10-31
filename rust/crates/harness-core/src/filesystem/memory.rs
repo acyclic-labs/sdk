@@ -68,7 +68,7 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     let host = {
         let reference = super::bounded_io::content_workspace(&host.provider, &volume, None)?;
         let workspace = host.open(&reference, None).await?;
-        host.for_workspace(&volume, workspace)?
+        host.for_workspace(&volume, workspace, None)?
     };
     Ok((host, volume))
 }
@@ -161,6 +161,7 @@ impl<
             observed: tokio::sync::Mutex::new(BTreeMap::new()),
         });
         Ok(Tool {
+            skill_source: None,
             hook_names: &[],
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),

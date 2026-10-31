@@ -44,6 +44,7 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
             harness.files.for_workspace(
                 &harness.project,
                 publisher.tools.workspace.view().workspace().clone(),
+                None,
             )?,
             &harness.verifier,
             &harness.signed,
@@ -124,6 +125,7 @@ fn captured_publication_evidence_cannot_cross_a_same_length_rewrite() -> Result<
     let writer = publisher.writer_for(
         &harness.project,
         publisher.tools.workspace.view().workspace(),
+        None,
     )?;
     let forged = FileRef::new(
         first.volume().clone(),
@@ -146,6 +148,7 @@ fn captured_publication_evidence_cannot_cross_a_same_length_rewrite() -> Result<
         harness.files.for_workspace(
             &harness.project,
             publisher.tools.workspace.view().workspace().clone(),
+            None,
         )?,
         &harness.verifier,
         &harness.signed,

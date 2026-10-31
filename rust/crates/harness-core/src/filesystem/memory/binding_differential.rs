@@ -49,7 +49,7 @@ async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> 
         let workspace =
             super::super::bounded_io::content_workspace(&host.provider, &volume, None).unwrap();
         let opened = host.open(&workspace, None).await.unwrap();
-        host = host.for_workspace(&volume, opened).unwrap();
+        host = host.for_workspace(&volume, opened, None).unwrap();
     }
     if !old && unbound {
         // Restore the removed opens through the actual original host path.

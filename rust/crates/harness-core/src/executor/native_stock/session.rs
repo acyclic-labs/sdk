@@ -112,6 +112,16 @@ impl<'a> StockExecution<'a> {
         })
     }
 
+    pub(in crate::executor) fn has_profile(&self) -> bool {
+        #[cfg(feature = "filesystem")]
+        {
+            self.stock.profile.is_some()
+        }
+        #[cfg(not(feature = "filesystem"))]
+        {
+            false
+        }
+    }
     pub(in crate::executor) fn output_tokens(&self) -> Option<u32> {
         self.summary
             .as_ref()

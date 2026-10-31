@@ -21,15 +21,38 @@ impl StockExecution<'_> {
             started,
         ))
         .await?;
-        let execution = self
-            .observe_tool_cancellation(
+        #[cfg(feature = "filesystem")]
+        let profile = self
+            .profile_dispatch(journal, invocation, tool, context.as_ref())
+            .await;
+        #[cfg(feature = "filesystem")]
+        let mut _profile_credit = None;
+        #[cfg(feature = "filesystem")]
+        let handled = match profile {
+            Ok(Some(crate::executor::code_mode::ProfileDispatch::Progress(progress))) => {
+                return Ok(ToolInvocationOutcome::Progress(progress));
+            }
+            Ok(Some(crate::executor::code_mode::ProfileDispatch::Settled(result, credit))) => {
+                _profile_credit = credit;
+                Some(Ok(Some(result)))
+            }
+            Err(error) => Some(Err(error)),
+            Ok(None) => None,
+        };
+        #[cfg(not(feature = "filesystem"))]
+        let handled = None;
+        let execution = if let Some(result) = handled {
+            result
+        } else {
+            self.observe_tool_cancellation(
                 journal,
                 identity,
                 &invocation.call_id,
                 tool.executor.cancellable_on_drop(),
                 self.call_tool_executor(tool, context, invocation, claimed),
             )
-            .await?;
+            .await?
+        };
         #[cfg(feature = "test-support")]
         tracing::trace!(
             target: "acyclic_harness::tool_return",

@@ -81,11 +81,20 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         if let Out::Spawn {
             intent,
             brief,
+            profile,
             volumes,
         } = out
         {
             let mut adopted = adoption(state, volumes, cursor, prior_conversation);
             adopted.brief.clone_from(brief);
+            adopted.profile.clone_from(profile);
+            if profile
+                .as_ref()
+                .is_some_and(|pin| pin.context == super::SpawnContext::Fresh)
+            {
+                adopted.conversation_tail = 0;
+                adopted.checkpoint = None;
+            }
             let spawn = commit::spawn(path, intent, cursor, adopted)?;
             builder.created.insert(spawn.child.inbox()?);
             for condition in spawn.request.conditions {
@@ -186,6 +195,7 @@ pub(super) fn adoption(
     ForkAdopted {
         agent: state.path.id(),
         parent: None,
+        profile: state.profile.clone(),
         forked_at: cursor,
         conversation_tail,
         // The checkpoint inherited at the cut, never one this step appends.

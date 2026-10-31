@@ -4,6 +4,7 @@ use crate::conversation::{
     BoundedContentFuture, ContentHold, ContentIo, ContentPublisher, FileRef,
 };
 
+mod batch;
 mod observed;
 
 type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
@@ -80,14 +81,15 @@ impl CheckoutPublisher {
         &self,
         volume: &VolumeRef,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+        io: Option<&ContentIo>,
     ) -> Result<Arc<Publisher>> {
         Publisher::new(
-            self.files.for_workspace(volume, workspace.clone())?,
+            self.files.for_workspace(volume, workspace.clone(), io)?,
             volume,
             &self.verifier,
             &self.tools.signed,
             self.maximum,
-            None,
+            io,
         )
     }
 
@@ -128,7 +130,7 @@ impl CheckoutPublisher {
             let workspace = mount.view.source.as_ref()
                 .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
             access::require_volume_access(workspace, &mount.view.volume, &self.tools.signed, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
-            let writer = self.writer_for(&mount.view.volume, workspace)?;
+            let writer = self.writer_for(&mount.view.volume, workspace, None)?;
             // Recover the original committed generation before capture: a
             // missing physical publication must not become a deletion.
             let original = match &publication {
@@ -239,6 +241,53 @@ impl CheckoutPublisher {
 }
 
 impl ContentPublisher for CheckoutPublisher {
+    fn stage_changes<'a, 'io: 'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        operation: OperationId,
+        changes: &'a [crate::conversation::ContentChange<'a>],
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::ContentChanges,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    > {
+        self.publish_changes(
+            volume,
+            operation,
+            Some(changes),
+            self.maximum,
+            access,
+            |receipt| {
+                receipt.ok_or_else(|| {
+                    Error::Storage("conditional publication returned no receipt".into())
+                })
+            },
+        )
+    }
+
+    fn observe_changes<'a, 'io: 'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        operation: OperationId,
+        maximum: u64,
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                Option<crate::conversation::ContentChanges>,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    > {
+        self.publish_changes(volume, operation, None, maximum, access, Ok)
+    }
+
     fn volume(&self) -> &VolumeRef {
         &self.volume
     }
@@ -250,11 +299,17 @@ impl ContentPublisher for CheckoutPublisher {
         io: Option<&ContentIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         self.supports_stage(io)?;
-        let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
-        mount.check(
+        let work = io.and_then(ContentIo::original_native_work);
+        let (mount, relative) = self
+            .tools
+            .workspace
+            .mounts
+            .file_with_work(volume, path, work)?;
+        mount.check_with_work(
             acyclic_fs::access::Action::Write,
             &relative,
             self.tools.clock.now_unix_millis() / 1000,
+            work,
         )?;
         Ok((&mount.view.volume, relative))
     }
@@ -405,7 +460,7 @@ impl ContentPublisher for CheckoutPublisher {
                         Err(error) => return Err(error),
                     }
                     let file = self
-                        .writer_for(&mount.view.volume, workspace)?
+                        .writer_for(&mount.view.volume, workspace, None)?
                         .observe_staged_once(
                             operation,
                             replacement,

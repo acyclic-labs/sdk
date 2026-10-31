@@ -72,6 +72,35 @@ struct WorkspaceExecutor {
 }
 
 impl ToolExecutor for WorkspaceExecutor {
+    fn prepare_shell_script(
+        &self,
+        source: &str,
+        input: &serde_json::Value,
+        context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<super::ShellInput> {
+        if self.name != "shell" {
+            return Err(boundary(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "script projection requires shell; recovery: select the admitted shell tool",
+            ));
+        }
+        let context = context.ok_or_else(|| {
+            boundary(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "script projection lacks its task; recovery: retain the original tool context",
+            )
+        })?;
+        context
+            .task()
+            .harness
+            .target(None)?
+            .executor
+            .prepare_shell_script(source, input, Some(context), work)
+    }
+
     fn authorize(
         &self,
         scope: Option<&RuntimeScope>,
@@ -123,7 +152,7 @@ impl ToolExecutor for WorkspaceExecutor {
             self.authorize(None, Some(&context), &invocation, None)?;
             let target = target(&context, &invocation, None)?;
             let limits = super::bounds::limits(&context);
-            if let Err(error) = super::bounds::operands(self.name, &invocation.arguments, limits) {
+            if let Err(error) = super::bounds::operands(&invocation.arguments, limits.1) {
                 return Ok(super::rejected_input(error));
             }
             let result = target.executor.execute(invocation, Some(context)).await?;

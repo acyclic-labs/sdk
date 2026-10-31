@@ -22,6 +22,9 @@ pub(crate) fn stock_boundary(
 }
 
 pub(crate) fn stock_string_copy(value: &str, io: Option<&PreparationIo>) -> Result<String> {
+    if io.is_none() {
+        return Ok(value.to_owned());
+    }
     let mut copied = String::new();
     stock_string_push(&mut copied, value, u64::MAX, "stock text size overflow", io)?;
     Ok(copied)

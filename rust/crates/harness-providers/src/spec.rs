@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum Authentication {
+    /// Never read or attach credentials, including when a key is available.
+    Anonymous,
     /// A provider API key is required.
     ApiKey,
     /// Prefer an API key, otherwise reuse native Codex CLI credentials on the built-in Responses route.

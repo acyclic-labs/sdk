@@ -257,6 +257,7 @@ impl WasmAgentRegistry {
             .register(
                 (
                     Tool {
+                        skill_source: None,
                         hook_names: &[],
                         definition,
                         executor: host.clone(),
@@ -544,6 +545,7 @@ impl WasmAgents {
             .create(
                 &IntentId::try_from(intent).map_err(agent_error)?,
                 ForkAdopted {
+                    profile: None,
                     agent: id,
                     parent: None,
                     forked_at: 0,
