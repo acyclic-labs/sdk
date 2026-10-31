@@ -14,6 +14,8 @@ mod custody;
 mod namespace;
 mod native_allocation;
 mod positional;
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+mod positional_interrupted;
 mod prepared_order;
 mod range;
 mod source;
