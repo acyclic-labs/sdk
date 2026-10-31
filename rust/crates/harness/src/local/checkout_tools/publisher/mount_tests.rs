@@ -84,7 +84,9 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         tags: Default::default(),
         attributes: Default::default(),
     };
-    let view = |original: &crate::workspace::VolumeView<_>| {
+    let view = |original: &crate::workspace::VolumeView<
+        Option<Arc<crate::local::workspace::MountedVolume>>,
+    >| {
         let mut policy = (*original.policy).clone();
         for (path, actions) in [
             ("action-only", vec![Action::Write]),
