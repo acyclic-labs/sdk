@@ -327,23 +327,27 @@ proptest! {
         }));
         let mut answer = String::new();
         append(parsed, &mut request, &mut answer);
-        // A foreign exchange needs a restricted alias. It must not claim an
-        // opaque native ID in the generated-alias namespace.
-        request.messages.push(ModelMessage {
-            role: ModelRole::Assistant,
-            content: ModelContent::Part(ModelContentPart::ToolCall(
-                acyclic_harness_core::model::ToolCall::new(
-                    "foreign/call".into(), "read_file".into(), json!({"file_path":"c"}),
-                ),
-            )),
-        });
-        request.messages.push(ModelMessage {
-            role: ModelRole::Tool,
-            content: ModelContent::Part(ModelContentPart::ToolResult {
-                call_id: "foreign/call".into(), name: "read_file".into(),
-                content: ToolResultContent::Json {value:json!({"ok":true})},
-            }),
-        });
+        // Foreign exchanges retain their canonical opaque IDs. Appending a
+        // lexically earlier ID must not rename any prior native/foreign call.
+        let mut exchange_prefix = Vec::new();
+        for (index, (id, path)) in [("foreign/call", "c"), ("earlier/call", "d")].into_iter().enumerate() {
+            request.messages.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::ToolCall(
+                    acyclic_harness_core::model::ToolCall::new(
+                        id.into(), "read_file".into(), json!({"file_path":path}),
+                    ),
+                )),
+            });
+            request.messages.push(ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: id.into(), name: "read_file".into(),
+                    content: ToolResultContent::Json {value:json!({"ok":true})},
+                }),
+            });
+            if index == 0 { exchange_prefix = encode(&request); }
+        }
         finish(&mut request, &answer);
         let continued = encode(&request);
         let body: Value = serde_json::from_slice(&continued).unwrap();
@@ -357,6 +361,7 @@ proptest! {
         // an append. Static tools, system instruction and prior contents retain
         // their positions and bytes, so implicit caching sees the same prefix.
         prop_assert!(continued.starts_with(&prefix[..prefix.len()-2]));
+        prop_assert!(continued.starts_with(&exchange_prefix[..exchange_prefix.len()-2]));
         let mut changed = request.clone();
         changed.tools[0].description.push('!');
         prop_assert!(!encode(&changed).starts_with(&prefix[..prefix.len()-2]));
