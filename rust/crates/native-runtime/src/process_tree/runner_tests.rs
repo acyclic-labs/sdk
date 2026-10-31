@@ -483,6 +483,32 @@ fn truncate_probe() {
 /// NoNewPrivs or the seccomp status fields, even on the same thread.
 fn landlock_owner() {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    // Query the native ABI before changing this helper's policy. Older or
+    // disabled kernels still run every other launch-admission control.
+    // SAFETY: VERSION queries no attributes and takes no output pointer.
+    let abi = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<u8>(),
+            0,
+            1,
+        )
+    };
+    if abi < 0 {
+        let error = std::io::Error::last_os_error();
+        if matches!(
+            error.raw_os_error(),
+            Some(libc::ENOSYS | libc::EOPNOTSUPP | libc::EPERM)
+        ) {
+            eprintln!("Landlock truncate control NotRun: ABI query refused: {error}");
+            return;
+        }
+        panic!("Landlock ABI query failed: {error}");
+    }
+    if abi < 3 {
+        eprintln!("Landlock truncate control NotRun: ABI {abi} lacks truncate support");
+        return;
+    }
     let (root, custody) = custody();
     let path = root.path().join("protected");
     fs::write(&path, b"original bytes").expect("protected file");
@@ -586,6 +612,7 @@ fn landlock_owner() {
         "custodied launch bypassed the current Landlock domain"
     );
     assert_eq!(fs::read(&path).expect("original bytes"), b"original bytes");
+    eprintln!("actual Landlock ABI {abi} truncate transition qualified");
     retire_runner();
 }
 
