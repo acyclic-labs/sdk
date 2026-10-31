@@ -117,7 +117,61 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         assert_eq!(lock(&bridge.shared.waiters).registered, 0);
         assert!(!lock(&bridge.watching).watched);
     }
-    drop(owner);
+    // Exercise caller cleanup, not just delivery: the rejecting owner has
+    // already removed the input when request_operation withdraws it again.
+    let operation = OperationId::new();
+    let leaf = OsString::from(format!("{operation}.json"));
+    let (changed, changes) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        if projection_changed(&event) {
+            let _ = changed.send(event);
+        }
+    })
+    .map_err(storage)?;
+    watcher
+        .watch(&requests, RecursiveMode::NonRecursive)
+        .map_err(storage)?;
+    let registry = Mutex::<Registry>::default();
+    let (completed, completion) = mpsc::sync_channel(1);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let _ = completed.send(request_operation(
+                &registry,
+                &bridge.workspace,
+                operation,
+                HostAction::Open {
+                    host: "codex".into(),
+                    session: "rejected-caller-cleanup".into(),
+                },
+            ));
+        });
+        let observation = (|| {
+            loop {
+                let event = changes
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(storage)?;
+                let event = event.map_err(storage)?;
+                if event
+                    .paths
+                    .iter()
+                    .any(|path| path.file_name() == Some(&leaf))
+                {
+                    break;
+                }
+            }
+            served.observe(&requests, uuid::Uuid::new_v4(), &leaf)?;
+            assert!(served.start().is_empty());
+            assert!(!lock(&bridge.shared.waiters).gone);
+            completion
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(storage)
+        })();
+        // Even a failed assertion guard must release the original owner so
+        // the scoped caller can finish; it must not leave a joining thread.
+        drop(owner);
+        observation
+    })?;
+    assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
     Ok(())
 }
 

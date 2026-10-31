@@ -925,7 +925,10 @@ async fn serve_requests(
 
 fn remove_projection(path: &Path) -> Result<()> {
     let (parent, leaf) = projection_parent(path)?;
-    parent.remove_file(&leaf).map_err(native_file_error)
+    match parent.remove_file(&leaf).map_err(native_file_error) {
+        Ok(()) | Err(Error::NotFound(_)) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn regular_bytes(path: &Path) -> Result<Vec<u8>> {
