@@ -4,6 +4,7 @@ use super::*;
 #[path = "publication_batch.rs"]
 mod batch;
 mod commit;
+pub(super) use commit::PreparedPublication;
 
 type WorkspaceOperation<'a, T, E = WorkspaceError> = crate::conversation::BoundedContentFuture<
     'a,

@@ -1,5 +1,16 @@
 use super::*;
 
+/// The original private candidate and the authority/work used to prepare it.
+/// Dropping this value publishes nothing; only its consuming commit can expose
+/// the generation. Neither the work context nor authorization can be replaced
+/// between staging and the final publication check.
+#[must_use]
+pub(in crate::filesystem::host) struct PreparedPublication<'a, A: 'static, O: 'static> {
+    transaction: acyclic_fs::Transaction<A, O>,
+    io: &'a PreparationIo,
+    publication: FilePublication<'a>,
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(in crate::filesystem) fn apply_generation<'a>(
         &'a self,
@@ -88,13 +99,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &PreparationIo,
         publication: FilePublication<'_>,
     ) -> Result<Generation<A, O>> {
-        let expected = match publication {
-            FilePublication::Replace(expected) => expected,
-            FilePublication::Authorized(..) => None,
-        };
-        let mut transaction = if matches!(publication, FilePublication::Replace(_)) {
+        self.prepare_selected_operation(workspace, mutations, operation, io, publication)
+            .await?
+            .commit(None)
+            .await
+    }
+
+    pub(super) async fn prepare_generation<'a>(
+        &self,
+        reference: &WorkspaceRef,
+        mutations: &[WorkspaceMutation],
+        key: &IdempotencyKey,
+        io: &'a PreparationIo,
+        publication: FilePublication<'a>,
+    ) -> Result<PreparedPublication<'a, A, O>> {
+        let workspace = self.open(reference, Some(io)).await?;
+        let operation = bounded_io::operation_key(key, Some(io))?;
+        self.prepare_selected_operation(&workspace, mutations, operation, io, publication)
+            .await
+    }
+
+    async fn prepare_selected_operation<'a>(
+        &self,
+        workspace: &Workspace<A, O>,
+        mutations: &[WorkspaceMutation],
+        operation: FilesystemKey,
+        io: &'a PreparationIo,
+        publication: FilePublication<'a>,
+    ) -> Result<PreparedPublication<'a, A, O>> {
+        let mut transaction = if let FilePublication::Replace(expected) = publication {
             let pinned = match expected {
-                Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
+                Some(reference) => self.generation(workspace, reference, Some(io)).await?,
                 None => io.sdk(workspace.head(io, io.cancellation()).await)?,
             };
             io.sdk(
@@ -121,7 +156,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             pause().await;
         }
         Self::publish_mutations(&mut transaction, mutations, io).await?;
-        Self::commit_publication(transaction, io, publication).await
+        Ok(PreparedPublication::new(transaction, io, publication))
     }
     async fn publish_mutations(
         transaction: &mut acyclic_fs::Transaction<A, O>,
@@ -163,25 +198,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?
         .await
     }
+}
 
-    async fn commit_publication(
+impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> PreparedPublication<'a, A, O> {
+    pub(in crate::filesystem::host) fn new(
         transaction: acyclic_fs::Transaction<A, O>,
-        io: &PreparationIo,
-        publication: FilePublication<'_>,
-    ) -> Result<Generation<A, O>> {
-        Self::commit_contextual_publication(transaction, io, publication, None).await
+        io: &'a PreparationIo,
+        publication: FilePublication<'a>,
+    ) -> Self {
+        Self {
+            transaction,
+            io,
+            publication,
+        }
     }
 
-    pub(in crate::filesystem::host) async fn commit_contextual_publication(
-        mut transaction: acyclic_fs::Transaction<A, O>,
-        io: &PreparationIo,
-        publication: FilePublication<'_>,
+    pub(in crate::filesystem::host) async fn commit(
+        self,
         context: Option<(
             acyclic_fs::Digest,
             acyclic_stream::OwnedBytes,
             acyclic_fs::PublicationPermit,
         )>,
     ) -> Result<Generation<A, O>> {
+        let Self {
+            mut transaction,
+            io,
+            publication,
+        } = self;
         let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
             let commit = 'commit: {
                 #[cfg(not(target_arch = "wasm32"))]

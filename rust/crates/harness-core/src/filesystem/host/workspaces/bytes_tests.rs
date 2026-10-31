@@ -347,22 +347,46 @@ async fn removal_and_replacement_share_the_original_publication() -> Result<()> 
             .await;
         assert!(matches!(stale, Err(error) if error.code() == crate::wire::ErrorCode::Conflict));
 
-        // A cancelled original work context terminates without publication.
-        cancellation.cancel();
         let mutations = [WorkspaceMutation::Remove {
             path: "/schedules/next".into(),
         }];
         if let Some(io) = &io {
-            let refused = match host.apply_generation(
-                &reference,
-                Some(&replacement),
-                &mutations,
-                IdempotencyKey::new("cancelled-removal")?,
-                Some(io),
-            ) {
-                Ok(operation) => operation.await,
-                Err(error) => Err(error),
-            };
+            let key = IdempotencyKey::new("discarded-removal")?;
+            let prepared = crate::conversation::BoundedContentFuture::new(Some(io), || {
+                host.prepare_generation(
+                    &reference,
+                    &mutations,
+                    &key,
+                    io,
+                    FilePublication::Replace(Some(&replacement)),
+                )
+            })?
+            .await?;
+            assert_eq!(
+                host.resolve(&reference, Some(io)).await?.generation,
+                replacement
+            );
+            drop(prepared);
+            assert_eq!(
+                host.resolve(&reference, Some(io)).await?.generation,
+                replacement
+            );
+
+            // Cancelling the original work after staging still terminates the
+            // retained commit without exposing its private removal.
+            let key = IdempotencyKey::new("cancelled-removal")?;
+            let prepared = crate::conversation::BoundedContentFuture::new(Some(io), || {
+                host.prepare_generation(
+                    &reference,
+                    &mutations,
+                    &key,
+                    io,
+                    FilePublication::Replace(Some(&replacement)),
+                )
+            })?
+            .await?;
+            cancellation.cancel();
+            let refused = prepared.commit(None).await;
             assert!(
                 matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Cancelled)
             );

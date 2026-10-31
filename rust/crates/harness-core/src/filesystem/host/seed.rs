@@ -64,16 +64,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // Stable evidence also records an operation when every file existed.
         // Its identity deliberately excludes the current embedded asset bytes.
         const DOMAIN: &[u8] = b"acyclic harness seed once v1";
-        let generation = Self::commit_contextual_publication(
+        let generation = workspaces::PreparedPublication::new(
             transaction,
             &io,
             workspaces::FilePublication::Replace(None),
-            Some((
-                acyclic_fs::Digest::from_bytes(*blake3::hash(DOMAIN).as_bytes()),
-                acyclic_stream::OwnedBytes::from_static(DOMAIN),
-                acyclic_fs::PublicationPermit::Unrestricted,
-            )),
         )
+        .commit(Some((
+            acyclic_fs::Digest::from_bytes(*blake3::hash(DOMAIN).as_bytes()),
+            acyclic_stream::OwnedBytes::from_static(DOMAIN),
+            acyclic_fs::PublicationPermit::Unrestricted,
+        )))
         .await?;
         self.generation_ref_id(generation.id(), Some(&io))
     }
