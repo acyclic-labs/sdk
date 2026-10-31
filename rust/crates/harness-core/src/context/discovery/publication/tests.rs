@@ -6,7 +6,7 @@ use crate::{
     resources::ProviderRef,
 };
 use acyclic_auth::{contract::*, testing as signed};
-use acyclic_fs::{CancellationToken, EmbeddedCapabilities, Fs, MemoryObjectStore, WorkBudget};
+use acyclic_fs::{CancellationToken, EmbeddedCapabilities, Fs, WorkBudget};
 use acyclic_stream::session::{ResourceFollowRequest, ResourceProvider as _};
 use acyclic_stream::{MemoryStream, StreamProviderExt as _};
 use futures::FutureExt as _;
@@ -21,7 +21,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let streams = Arc::new(MemoryStream::default());
     let fs = Fs::new(
         acyclic_fs::distributed::StreamAuthorityStore::new(streams.clone()),
-        MemoryObjectStore::default(),
+        acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
         EmbeddedCapabilities::MEMORY,
     );
     let provider = ProviderRef::new("source".into(), "filesystem".into(), "1".into(), &mut None)?;
@@ -95,7 +95,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         preceding: None,
     };
     let request = ResourceFollowRequest {
-        resource,
+        resource: resource.clone(),
         from: cursor.next,
         preceding: None,
         filter: Default::default(),
@@ -104,6 +104,34 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let subscription = host.change_provider(streams.clone())?.follow(request)?;
     let mut source = SkillPublicationSource::new(
         subscription,
+        vec![ContextRoot {
+            volume: volume.clone(),
+            directory: "skills".into(),
+        }],
+        workspace.id().volume_id(),
+        workspace.volume_config(),
+        cursor,
+    )?;
+    let hidden = host
+        .change_provider(streams.clone())?
+        .follow(ResourceFollowRequest {
+            resource: resource.clone(),
+            from: cursor.next,
+            preceding: None,
+            filter: acyclic_stream::FollowFilter::new(acyclic_stream::wire::SessionFilter {
+                attributes: vec![acyclic_stream::wire::AttributeMatch {
+                    name: "unselected".into(),
+                    any_of: vec![b"selected".as_slice().into()],
+                }],
+                ..Default::default()
+            })?,
+            authorization: acyclic_stream::session::testing::resource_authorization(
+                &credential,
+                &resource,
+            )?,
+        })?;
+    let mut hidden = SkillPublicationSource::new(
+        hidden,
         vec![ContextRoot {
             volume: volume.clone(),
             directory: "skills".into(),
@@ -143,7 +171,10 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         .await?;
     let pending = source.pending()?.ok_or("no pending publication")?;
     assert_eq!(pending.from(), cursor);
-    assert_eq!(pending.cursor().next, pending.member_end());
+    assert_eq!(
+        pending.cursor().next,
+        pending.member().ok_or("missing member")?.end()
+    );
     assert_eq!(
         source.accepted(),
         cursor,
@@ -160,6 +191,18 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let retained = metadata.clone();
     let ready = pending.cursor();
     let checkpoint = pending.encode_checkpoint(&session)?;
+    hidden
+        .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
+        .await?;
+    let filtered = hidden.pending()?.ok_or("filtered progress lost")?;
+    assert!(
+        filtered.member().is_none(),
+        "hidden metadata was fabricated"
+    );
+    assert!(filtered.changes().is_empty());
+    assert_eq!(filtered.cursor(), ready);
+    assert_eq!(hidden.accepted(), cursor);
+    assert_ne!(filtered.encode_checkpoint(&session)?, checkpoint);
     workspace
         .write_text("/skills/check/SKILL.md", "malformed replacement")
         .await?;

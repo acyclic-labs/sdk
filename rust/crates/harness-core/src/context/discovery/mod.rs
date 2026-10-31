@@ -44,7 +44,8 @@ mod publication;
 mod source;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use publication::{
-    SkillPublicationChange, SkillPublicationCut, SkillPublicationSource, SourceCursor,
+    SkillPublicationChange, SkillPublicationCut, SkillPublicationMember, SkillPublicationSource,
+    SourceCursor,
 };
 #[doc(hidden)]
 pub use source::{

@@ -28,20 +28,40 @@ pub enum SkillPublicationChange {
     Removed(PinnedContextPath),
 }
 
-struct Member {
+/// One filesystem member identified by its original authenticated producer.
+pub struct SkillPublicationMember {
     context: PublicationContext,
     origin: StreamPath,
     commit: CommitId,
     end: u64,
 }
 
-/// A complete original filesystem member awaiting the journal's confirmed cut.
+impl SkillPublicationMember {
+    /// Producer-authenticated exclusive end, independent of commit tail.
+    pub fn end(&self) -> u64 {
+        self.end
+    }
+    /// Original appending stream, including an ancestor when following a fork.
+    pub fn origin(&self) -> &StreamPath {
+        &self.origin
+    }
+    /// Original append identity; this is not a completion witness.
+    pub fn commit(&self) -> CommitId {
+        self.commit
+    }
+    /// Exact producer generation and authority sequence; neither grants authority.
+    pub fn publication(&self) -> PublicationContext {
+        self.context
+    }
+}
+
+/// An original authorized follow cut awaiting the journal's confirmed admission.
 /// No caller-supplied completion flag or mutable filesystem head is involved.
 pub struct SkillPublicationCut {
     from: SourceCursor,
     cursor: SourceCursor,
     executing_volume: VolumeId,
-    member: Member,
+    member: Option<SkillPublicationMember>,
     changes: Vec<SkillPublicationChange>,
     // Dropped after the payload. This is the original preparation's ownership,
     // transferred once; retries retain it without recharging or copying.
@@ -75,17 +95,10 @@ impl SkillPublicationCut {
     pub fn cursor(&self) -> SourceCursor {
         self.cursor
     }
-    /// Producer-authenticated exclusive end of this member, independent of commit tail.
-    pub fn member_end(&self) -> u64 {
-        self.member.end
-    }
-    /// Original appending stream, including an ancestor when following a fork.
-    pub fn origin(&self) -> &StreamPath {
-        &self.member.origin
-    }
-    /// Exact producer generation and authority sequence; neither grants authority.
-    pub fn publication(&self) -> PublicationContext {
-        self.member.context
+    /// Completed visible member, if any. Fully filtered progress has no member
+    /// metadata and must never be projected into a fabricated context update.
+    pub fn member(&self) -> Option<&SkillPublicationMember> {
+        self.member.as_ref()
     }
     /// Metadata to contribute through the single conversation admission path.
     pub fn changes(&self) -> &[SkillPublicationChange] {
@@ -95,18 +108,31 @@ impl SkillPublicationCut {
     /// Encodes the producer checkpoint for the original journal owner to fence
     /// and contribute. This method cannot choose a destination or submit it.
     pub fn encode_checkpoint(&self, io: &PreparationIo) -> Result<acyclic_stream::OwnedBytes> {
+        let generation = self
+            .member
+            .as_ref()
+            .map(|member| member.context.generation.to_bytes());
+        let member = self
+            .member
+            .as_ref()
+            .zip(generation.as_ref())
+            .map(|(member, generation)| {
+                (
+                    member.origin.as_str(),
+                    member.commit.as_bytes(),
+                    member.end,
+                    member.context.volume.into_bytes(),
+                    generation.as_ref(),
+                    member.context.authority_sequence.get(),
+                )
+            });
         io.encode(
             &(
                 1_u32,
                 self.from,
                 self.cursor,
-                self.member.origin.as_str(),
-                self.member.commit.as_bytes(),
-                self.member.end,
                 self.executing_volume.into_bytes(),
-                self.member.context.volume.into_bytes(),
-                self.member.context.generation.to_bytes(),
-                self.member.context.authority_sequence.get(),
+                member,
             ),
             io.remaining()?.bytes_encoded,
             true,
@@ -130,7 +156,7 @@ pub struct SkillPublicationSource {
         acyclic_stream::BoxProviderFuture<'static, std::result::Result<FollowStream, StreamError>>,
     >,
     records: Option<FollowStream>,
-    member: Option<Member>,
+    member: Option<SkillPublicationMember>,
     changes: Vec<SkillPublicationChange>,
     pending: Option<SkillPublicationCut>,
     failed: bool,
@@ -280,16 +306,17 @@ impl SkillPublicationSource {
                     };
                 }
             }
-            if self
-                .member
-                .as_ref()
-                .is_some_and(|member| self.observed.next >= member.end)
+            if self.observed.next > self.accepted.next
+                && self
+                    .member
+                    .as_ref()
+                    .is_none_or(|member| self.observed.next >= member.end)
             {
                 self.pending = Some(SkillPublicationCut {
                     from: self.accepted,
                     cursor: self.observed,
                     executing_volume: self.volume,
-                    member: self.member.take().ok_or(StreamError::InvalidArgument)?,
+                    member: self.member.take(),
                     changes: std::mem::take(&mut self.changes),
                     _custody: None,
                 });
@@ -325,7 +352,7 @@ impl SkillPublicationSource {
                 return Err(StreamError::InvalidArgument.into());
             }
         } else {
-            self.member = Some(Member {
+            self.member = Some(SkillPublicationMember {
                 context,
                 origin: record.origin,
                 commit: record.commit_id,
