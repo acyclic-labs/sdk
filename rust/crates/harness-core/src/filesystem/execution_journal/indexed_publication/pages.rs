@@ -6,7 +6,7 @@ mod retained;
 #[cfg(test)]
 mod tests;
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) use retained::{NativeCut, Publication};
+pub(super) use retained::Publication;
 
 pub(super) struct Cut<'a> {
     pub(super) operation: OperationId,
