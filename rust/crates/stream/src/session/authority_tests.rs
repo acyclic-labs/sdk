@@ -3,7 +3,7 @@ use acyclic_auth::contract::*;
 use acyclic_auth::testing as signed;
 use acyclic_auth::verify;
 use std::sync::{
-    RwLock,
+    Mutex, RwLock,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -47,8 +47,11 @@ impl AuthorityState for State {
     fn expires_at(&self, deadline: u64) -> crate::BoxProviderFuture<'_, ()> {
         let mut changed = self.revision.subscribe();
         Box::pin(async move {
-            while self.clock.load(Ordering::SeqCst) < deadline {
+            loop {
                 let _ = changed.borrow_and_update();
+                if self.clock.load(Ordering::SeqCst) >= deadline {
+                    break;
+                }
                 if changed.changed().await.is_err() {
                     break;
                 }
@@ -365,12 +368,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                 live_session(provider.clone(), state.clone(), bytes.clone(), &path).unwrap();
             let mut opened = false;
             for _ in 0..3 {
-                let message =
-                    tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .unwrap();
+                let message = output.next().await.unwrap().unwrap();
                 opened |= matches!(message.wire().body, Some(Body::Opened(_)));
             }
             assert!(opened);
@@ -385,11 +383,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                 )))
                 .unwrap();
             append(b"positive control").await;
-            let permitted = tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+            let permitted = output.next().await.unwrap().unwrap();
             assert!(
                 matches!(permitted.wire().body, Some(Body::Data(_))),
                 "unrevoked follow must deliver"
@@ -397,13 +391,11 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
             if queued {
                 append(b"must remain private").await;
             }
-            assert!(futures::poll!(output.next()).is_pending());
+            if !queued {
+                assert!(futures::poll!(output.next()).is_pending());
+            }
             invalidate_session(reason, &state, &bytes, &sender);
-            let closed = tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+            let closed = output.next().await.unwrap().unwrap();
             assert_eq!(closed.wire().channel_id, 1);
             let Some(Body::Closed(closed)) = closed.into_wire().body else {
                 panic!("disclosed data after {reason}, queued={queued}");
@@ -754,6 +746,7 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
 /// dependency being unreachable.
 struct Gateway {
     verified: AtomicU64,
+    dependency: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
 }
 
 /// What the gateway admits: invoking one actor, until its expiry.
@@ -775,11 +768,41 @@ impl CredentialVerifier for Gateway {
 }
 
 impl Gateway {
+    async fn register(
+        &self,
+        auth: &Authority,
+        slots: &mut Slots,
+        slot: u32,
+        credential: &[u8],
+        available: bool,
+    ) {
+        let (producer, dependency) = futures::channel::oneshot::channel();
+        assert!(
+            self.dependency
+                .lock()
+                .unwrap()
+                .replace(dependency)
+                .is_none()
+        );
+        let mut registration = std::pin::pin!(auth.register(slots, slot, credential, 4));
+        assert!(futures::poll!(registration.as_mut()).is_pending());
+        if available {
+            producer.send(()).unwrap();
+        } else {
+            drop(producer);
+        }
+        registration.await.unwrap();
+    }
+
     async fn admit(&self, credential: &[u8]) -> Result<Arc<dyn Admission>, VerifyError> {
         self.verified.fetch_add(1, Ordering::SeqCst);
-        // The verdict waits on a dependency: the session is suspended here,
-        // holding no slot.
-        tokio::task::yield_now().await;
+        let dependency = self
+            .dependency
+            .lock()
+            .map_err(|_| VerifyError::Unavailable)?
+            .take()
+            .ok_or(VerifyError::Unavailable)?;
+        dependency.await.map_err(|_| VerifyError::Unavailable)?;
         let text = std::str::from_utf8(credential).map_err(|_| VerifyError::Malformed)?;
         if text.starts_with("gateway-down:") {
             return Err(VerifyError::Unavailable);
@@ -863,36 +886,57 @@ async fn a_hosts_own_verifier_is_the_only_one_and_its_admission_is_call_authorit
     let state = State::new();
     let gateway = Arc::new(Gateway {
         verified: AtomicU64::new(0),
+        dependency: Mutex::new(None),
     });
     let auth = Arc::new(authority(state.clone()).verified_by(gateway.clone()));
     let mut slots = Slots::default();
     // The stock envelope is not this session's format: the host's verifier
     // alone admits credentials.
-    auth.register(&mut slots, 1, &token("agents", |_| {}), 4)
-        .await
-        .unwrap();
+    gateway
+        .register(&auth, &mut slots, 1, &token("agents", |_| {}), true)
+        .await;
     assert!(
         auth.bind_call(&slots, 1, "actors:/agents/server".into(), 1)
             .is_err()
     );
-    auth.register(&mut slots, 0, b"gateway:alice:actors:/agents/server", 4)
-        .await
-        .unwrap();
+    gateway
+        .register(
+            &auth,
+            &mut slots,
+            0,
+            b"gateway:alice:actors:/agents/server",
+            true,
+        )
+        .await;
     assert_eq!(gateway.verified.load(Ordering::SeqCst), 2);
     // An unreachable dependency admits nothing, and refuses retryably: not
     // as a verdict on the credential.
-    auth.register(
-        &mut slots,
-        2,
-        b"gateway-down:alice:actors:/agents/server",
-        4,
-    )
-    .await
-    .unwrap();
+    gateway
+        .register(
+            &auth,
+            &mut slots,
+            2,
+            b"gateway-down:alice:actors:/agents/server",
+            true,
+        )
+        .await;
     let refused = auth
         .bind_call(&slots, 2, "actors:/agents/server".into(), 1)
         .err();
     assert_eq!(refused, Some(Rejection::Unavailable));
+    gateway
+        .register(
+            &auth,
+            &mut slots,
+            3,
+            b"gateway:alice:actors:/agents/server",
+            false,
+        )
+        .await;
+    assert!(matches!(
+        auth.bind_call(&slots, 3, "actors:/agents/server".into(), 1),
+        Err(Rejection::Unavailable)
+    ));
     assert_eq!(
         StreamError::from_session_close(Rejection::Unavailable.code()),
         StreamError::Unavailable
