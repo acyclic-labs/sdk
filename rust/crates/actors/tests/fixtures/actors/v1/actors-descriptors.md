@@ -99,6 +99,6 @@ were combined by hand.
 
 The 2026-10-31 live-update capture, based on main `909744ee57`, adds the v1
 publication upload and deployment envelope fields. The Rust metadata exporter
-and its maintained-proto comparison passed on bb2. The independent pinned Buf
-build and canonicalizer above also ran there. Rust bytes were copied only to
+and its maintained-proto comparison passed. The independent pinned Buf build
+and canonicalizer above also passed. Rust bytes were copied only to
 the two Rust paths; Buf bytes were copied only to `actors-buf-v1.bin`.
