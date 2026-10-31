@@ -35,7 +35,9 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
         subscriptions: vec![crate::wire::SubscriptionSpec {
             subscription_id: "inbox".into(),
             stream_path: input.as_str().into(),
-            start: Some(crate::wire::subscription_spec::Start::CurrentHead(true)),
+            start: Some(crate::wire::SubscriptionStart {
+                start: Some(crate::wire::subscription_start::Start::CurrentHead(true)),
+            }),
             placement_anchor: false,
         }],
         idempotency_key: "original-fork".into(),
