@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
 import * as childProcess from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isAbsolute, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { mock, test } from "bun:test";
+import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
+import {stagePiExtension} from './package.mjs';
 
 // Run this file in its own Bun process: only the harness request boundary is
 // stubbed. The child and its failed-spawn/pipe event ordering are native Node APIs.
 const native = { ...childProcess };
 
-test("Pi failed spawn closes custody and shutdown without an exit event", async () => {
+test("installed Pi failed spawn closes custody and shutdown without adjacent assets or an exit event", async () => {
   const directory = mkdtempSync(join(import.meta.dir, ".pi-bridge-"));
+  const packageDirectory = hostFixtureDirectory('pi-package-');
   const missing = join(directory, "absent-native-bridge");
   let closed: Promise<void> | undefined;
   let child: childProcess.ChildProcess | undefined;
@@ -18,23 +21,49 @@ test("Pi failed spawn closes custody and shutdown without an exit event", async 
   let spawns = 0;
   const hooks = new Map<string, (...args: any[]) => Promise<void>>();
   const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
-  mock.module("node:child_process", () => ({ ...native,
-    execFile: (_program: string, _args: string[], _options: unknown, callback: Function) => {
-      queueMicrotask(() => callback(null, JSON.stringify({ task: "fixture-task", cwd: directory })));
-      return { stdin: { end() {} } };
-    },
-    spawn: () => {
-      spawns++;
-      child = native.spawn(missing, [], { stdio: "pipe", windowsHide: true });
-      child.on("exit", () => exits++);
-      closed = new Promise(resolve => child!.once("close", () => resolve()));
-      return child;
-    },
-  }));
   try {
-    const path = join(directory, "index.ts");
-    writeFileSync(path, readFileSync(new URL("../../pi/index.ts", import.meta.url)));
-    const { default: acyclic } = await import(pathToFileURL(path).href);
+    const recovery = "ACYCLIC_TEST_BINARY=/absolute/acyclic bun test --test-name-pattern 'installed Pi failed spawn' plugin/tests/hosts/pi-bridge.test.ts";
+    const binary = process.env.ACYCLIC_TEST_BINARY;
+    assert(binary && isAbsolute(binary), `step=admit Pi installer executable; recovery=${recovery}`);
+    const path = join(directory, "acyclic.ts");
+    const assembled = join(packageDirectory, "package");
+    const packageRoot = join(assembled, "plugin");
+    const packaged = native.spawnSync(process.execPath, [fileURLToPath(new URL("../../scripts/package.mjs", import.meta.url)),
+      "--binary", binary, "--out", assembled], {encoding: "utf8", windowsHide: true});
+    assert.equal(packaged.status, 0, `step=assemble installed Pi package: ${packaged.stderr}; recovery=${recovery}`);
+    const client = join(packageRoot, "shared/mcp-client.mjs");
+    const clientBytes = readFileSync(client);
+    rmSync(client);
+    const install = () => native.spawnSync(binary, ["install", "pi", "--plugin-root", packageRoot, "--settings", path],
+      {encoding: "utf8", windowsHide: true});
+    // A missing closure member must refuse before replacing the owned file.
+    const previous = "// Acyclic native workspace shim\n";
+    writeFileSync(path, previous);
+    const refusedInstall = install();
+    assert.equal(refusedInstall.error, undefined, `step=launch Pi installer; recovery=${recovery}`);
+    assert.notEqual(refusedInstall.status, 0);
+    assert.match(refusedInstall.stderr, /step=admit Pi coordination asset/);
+    assert.equal(readFileSync(path, "utf8"), previous);
+    writeFileSync(client, clientBytes);
+    const installed = install();
+    assert.equal(installed.status, 0, `step=install complete Pi extension: ${installed.stderr}; recovery=${recovery}`);
+    // Only the single published extension survives. Its import and real native
+    // failed-spawn lifecycle below must work without the source package.
+    rmSync(assembled, {recursive: true});
+    mock.module("node:child_process", () => ({ ...native,
+      execFile: (_program: string, _args: string[], _options: unknown, callback: Function) => {
+        queueMicrotask(() => callback(null, JSON.stringify({ task: "fixture-task", cwd: directory })));
+        return { stdin: { end() {} } };
+      },
+      spawn: () => {
+        spawns++;
+        child = native.spawn(missing, [], { stdio: "pipe", windowsHide: true });
+        child.on("exit", () => exits++);
+        closed = new Promise(resolve => child!.once("close", () => resolve()));
+        return child;
+      },
+    }));
+      const { default: acyclic } = await import(pathToFileURL(path).href);
     acyclic({ on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool: (tool: any) => tools.set(tool.name, tool) });
     const ctx = { cwd: directory, sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
@@ -65,6 +94,7 @@ test("Pi failed spawn closes custody and shutdown without an exit event", async 
   } finally {
     mock.restore();
     rmSync(directory, { recursive: true, force: true });
+    rmSync(packageDirectory, { recursive: true, force: true });
   }
 });
 
@@ -87,8 +117,7 @@ test("Pi boundaries leave managed capture to the physical process owner", async 
     }),
   }));
   try {
-    const path = join(directory, "index.ts");
-    writeFileSync(path, readFileSync(new URL("../../pi/index.ts", import.meta.url)));
+    const path = await stagePiExtension(directory);
     const { default: acyclic } = await import(pathToFileURL(path).href);
     acyclic({on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool() {}});

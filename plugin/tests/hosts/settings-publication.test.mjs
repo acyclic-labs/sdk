@@ -69,6 +69,8 @@ for (const host of ["claude-code", "pi"]) for (const selection of ["settings arg
         `step=private settings publication; recovery=${recovery}`);
       if (host === "pi") {
         assert.equal(installed, readFileSync(join(packageRoot, "pi/index.ts"), "utf8")
+          .replace('import { McpClient } from "../shared/mcp-client.mjs";',
+            () => readFileSync(join(packageRoot, "shared/mcp-client.mjs"), "utf8"))
           .replaceAll('"__ACYCLIC_EXECUTABLE__"', JSON.stringify(toNamespacedPath(realpathSync(binary)))));
       } else {
         const document = JSON.parse(installed);

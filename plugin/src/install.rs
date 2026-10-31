@@ -114,7 +114,28 @@ fn install_pi(args: &[String], package: &Path, executable: &Path, install: bool)
         return Err("refusing to replace an extension not owned by Acyclic".into());
     }
     if install {
-        let source = fs::read_to_string(package.join("pi/index.ts"))?;
+        let recovery = serde_json::to_string(&(
+            executable,
+            "install",
+            "pi",
+            "--plugin-root",
+            package,
+            "--settings",
+            &path,
+        ))?;
+        let source = fs::read_to_string(package.join("pi/index.ts")).map_err(|error| {
+            format!("step=admit Pi extension asset: {error}; recovery argv: {recovery}")
+        })?;
+        let client =
+            fs::read_to_string(package.join("shared/mcp-client.mjs")).map_err(|error| {
+                format!("step=admit Pi coordination asset: {error}; recovery argv: {recovery}")
+            })?;
+        let (before, after) = source
+            .split_once("import { McpClient } from \"../shared/mcp-client.mjs\";")
+            .ok_or_else(|| format!("step=compose Pi extension: missing coordination import; recovery argv: {recovery}"))?;
+        // Pi loads one owned extension. Embed the canonical transport before
+        // the original atomic publication, without installing another path.
+        let source = format!("{before}{client}{after}");
         let source = source.replace(
             "\"__ACYCLIC_EXECUTABLE__\"",
             &serde_json::to_string(&executable)?,
