@@ -224,6 +224,7 @@ struct Link {
 }
 struct Pool {
     credentials: BTreeMap<u32, Bytes>,
+    credential_bytes: usize,
     connections: super::Connections,
     executor: std::sync::Arc<dyn crate::runtime::Executor>,
     identity: Bytes,
@@ -323,6 +324,7 @@ impl Client {
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
             credentials: BTreeMap::new(),
+            credential_bytes: 0,
             connections: connections.clone(),
             executor: executor.clone(),
             identity: crate::new_identity_bytes(),
