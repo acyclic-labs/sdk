@@ -17,11 +17,16 @@ pub(super) struct Floors {
     hash_per_byte: f64,
     read: f64,
     timer: Quantiles,
+    minimum_positive_timer_ns: f64,
 }
 
 impl Floors {
     pub(super) fn timer(&self) -> Quantiles {
         self.timer
+    }
+
+    pub(super) fn minimum_positive_timer_ns(&self) -> f64 {
+        self.minimum_positive_timer_ns
     }
 
     pub(super) fn compose(&self, terms: Terms) -> f64 {
@@ -36,6 +41,12 @@ impl Floors {
 
 fn measured(name: &str, values: Vec<f64>, bytes: Option<u32>) -> Result<f64> {
     let quantiles = Quantiles::new(&mut values.clone())?;
+    if name != "C_timer" && quantiles.p50_ns == 0.0 {
+        return Err(format!(
+            "{name} median is below timestamp resolution; no positive floor measured"
+        )
+        .into());
+    }
     emit(serde_json::json!({
         "schema": 1, "kind": "calibration", "primitive": name,
         "quantiles": quantiles, "bytes": bytes, "raw_ns": values,
@@ -121,6 +132,12 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
     }
     measured("F_create_write_flush_directory", creation, Some(1024))?;
     let timer_quantiles = Quantiles::new(&mut timer.clone())?;
+    let minimum_positive_timer_ns = timer
+        .iter()
+        .copied()
+        .filter(|value| *value > 0.0)
+        .min_by(f64::total_cmp)
+        .ok_or("all timer-only samples were below timestamp resolution")?;
     measured("C_timer", timer, None)?;
     emit(serde_json::json!({
         "schema": 1, "kind": "negative_control",
@@ -129,6 +146,7 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
     }))?;
     Ok(Floors {
         timer: timer_quantiles,
+        minimum_positive_timer_ns,
         flush: measured("F_flush", flush, None)?,
         wake: measured("W_wake", wake, None)?,
         call: measured("C_call", calls, None)?,

@@ -118,3 +118,6 @@ The native floor report also retains a timer-only observation control. Ratios
 include sampler cost; rows flag targets below the measured timestamp resolution.
 The control never inflates the semantic floor or subtracts quantiles, and its
 timestamp pair excludes the additional cost of async polling and observers.
+Zero-duration samples are retained when both timestamps occupy the same clock
+tick. Resolution flags also use the smallest positive timer-only observation;
+an entirely unresolved timer or a zero-median semantic floor refuses calibration.
