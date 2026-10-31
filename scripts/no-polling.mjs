@@ -4,7 +4,8 @@ import ts from 'typescript-parser';
 // This is a conservative source rule, not a liveness proof. Loops require an
 // exact finite-work or producer-event disposition. In particular, changing a
 // helper's spelling does not exempt the loop or its underlying timer reference.
-const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|Sleep(?:Ex)?|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_timeout|park_timeout|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil)$/;
+const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|Sleep(?:Ex)?|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_timeout|park_timeout|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/;
+const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b');
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const loop = new Set(['for', 'while', 'loop', 'do']);
 const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
@@ -185,7 +186,7 @@ export function pollingUnit(file, source) {
   const kind = t.kind === 'indirection' ? 'indirect-timer-or-call'
    : t.kind === 'word' && loop.has(t.value) ? 'loop'
    : t.kind === 'word' && forbidden.has(t.value) ? 'timer-or-readiness'
-   : t.kind === 'literal' && (/\b(?:sleep|usleep|nanosleep|setTimeout|setInterval|Bun\.sleep|retry|backoff)\b/.test(t.value) || policyName.test(t.value)) ? 'embedded-timer-or-retry'
+   : t.kind === 'literal' && (embeddedTemporal.test(t.value) || policyName.test(t.value)) ? 'embedded-timer-or-retry'
    : undefined;
   if (!kind) continue;
   const fingerprint = createHash('sha256').update(JSON.stringify([kind, i, unit])).digest('hex');
