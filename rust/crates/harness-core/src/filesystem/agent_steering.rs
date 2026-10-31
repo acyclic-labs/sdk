@@ -39,6 +39,7 @@ pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
     pub admission: TurnAdmission,
     pub agent: AgentState,
     pub inbox: u64,
+    pub cursor: u64,
     pub files: Arc<AgentInternalFiles<A, O>>,
     pub writer: Arc<dyn ContentPublisher>,
     admitted: Mutex<Admitted>,
@@ -62,6 +63,7 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
         admission: TurnAdmission,
         agent: AgentState,
         inbox: u64,
+        cursor: u64,
         files: Arc<AgentInternalFiles<A, O>>,
         writer: Arc<dyn ContentPublisher>,
     ) -> Self {
@@ -72,6 +74,7 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
             admission,
             agent,
             inbox,
+            cursor,
             files,
             writer,
             admitted: Mutex::default(),
@@ -121,7 +124,8 @@ where
         }
         let selection = crate::agent::select_boundary(
             &*self.stream,
-            &self.agent.path,
+            &self.agent,
+            self.cursor,
             from,
             self.inbox,
             frozen.map(|cut| cut.through),
@@ -139,6 +143,16 @@ where
         for input in inputs {
             let content = crate::agent::model_input(&input.input).map_err(agent_error)?;
             let external = content.file_refs().cloned().collect::<Vec<_>>();
+            // The original inbox read already authorized the event. JSON in a
+            // Notice grants no file authority, so it needs no file verifier,
+            // derived grant or private-volume publication.
+            if external.is_empty() {
+                messages.push(ModelMessage {
+                    role: ModelRole::User,
+                    content,
+                });
+                continue;
+            }
             let authority = AdmittedAgent::verify(
                 &self.issuer,
                 &self.admission,

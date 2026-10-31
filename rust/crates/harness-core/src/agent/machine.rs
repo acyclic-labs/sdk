@@ -162,6 +162,23 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
+    /// Whether an inbox input remains unread, queued, or is the running turn.
+    /// `cursor` is the original actor delivery's exclusive inbox cursor. The
+    /// bounded input window and existing overflow exceptions are the authority;
+    /// an out-of-order approval/hook already removed by the driver is consumed.
+    #[must_use]
+    pub fn input_pending(&self, cursor: u64, sequence: u64) -> bool {
+        sequence >= cursor
+            || self.queued.iter().any(|queued| queued.inbox == sequence)
+            || self
+                .overflow
+                .is_some_and(|first| sequence >= first && !self.taken.contains(&sequence))
+            || self
+                .turn
+                .as_ref()
+                .is_some_and(|turn| turn.inbox == sequence)
+    }
+
     /// Exclusive inbox prefix with no remaining turn or queued work, at the
     /// actor's original consumed cursor. Consumption alone may checkpoint a
     /// paused turn or move later inputs into the retained window. Fixed

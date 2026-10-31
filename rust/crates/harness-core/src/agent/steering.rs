@@ -1,6 +1,6 @@
 //! Inbox observations at model boundaries. They do not race or drop tool futures.
 
-use super::{AgentPath, AgentRecord as _, Error, InboxRecord, Queued, turn_input};
+use super::{AgentRecord as _, AgentState, Error, InboxRecord, Queued, turn_input};
 use acyclic_stream::{ReadRequest, StreamProvider};
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -31,9 +31,12 @@ pub struct BoundaryCut {
 
 /// Read one window at an actual model boundary. A later arrival belongs to a
 /// later boundary. Cancel/archive are barriers and remain explicit interrupts.
+/// `agent` and `cursor` are the original actor delivery's admitted state and
+/// exclusive inbox cursor, after any awaited response was taken from its queue.
 pub async fn select_boundary<P: StreamProvider + ?Sized>(
     provider: &P,
-    agent: &AgentPath,
+    agent: &AgentState,
+    cursor: u64,
     from: u64,
     initial: u64,
     until: Option<u64>,
@@ -60,7 +63,7 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
     let records = provider
         .read(ReadRequest {
             key: None,
-            path: agent.inbox()?,
+            path: agent.path.inbox()?,
             from,
             limit,
             at_least: Default::default(),
@@ -87,7 +90,10 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
                 // Inputs that keep their own turn are queue barriers. Passing
                 // one would let a later steering message settle before an
                 // earlier turn, destroying the inbox/conversation ordering.
-                if record.sequence > initial && turn_input(record.sequence, other).is_some() {
+                if record.sequence > initial
+                    && agent.input_pending(cursor, record.sequence)
+                    && turn_input(record.sequence, other).is_some()
+                {
                     break;
                 }
                 None

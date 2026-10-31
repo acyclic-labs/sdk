@@ -172,7 +172,8 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
         });
         submit(&provider, send(&path, &user(), &record)?).await?;
     }
-    let selected = select_boundary(&provider, &path, 2, 1, Some(3)).await?;
+    let mut state = AgentState::adopted(path.clone(), &super::adopted(id(11))).expect("adopts");
+    let selected = select_boundary(&provider, &state, 0, 2, 1, Some(3)).await?;
     assert_eq!(selected.inputs.len(), 1);
     let mut settled = ConversationEntry::decode(&entry(1, message("initial")?)?)?;
     settled.steering = Some(SteeringTranscript {
@@ -185,7 +186,6 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
         vec![settled.encode()?, entry(3, message("after")?)?],
     )
     .await?;
-    let mut state = AgentState::adopted(path, &super::adopted(id(11))).expect("adopts");
     state.queued.push_back(Queued {
         inbox: 2,
         input: message("steered")?,

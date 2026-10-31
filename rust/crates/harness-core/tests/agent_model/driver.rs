@@ -187,6 +187,7 @@ impl TurnHost for Host {
         _: &'a AgentState,
         _: OperationId,
         _: u64,
+        _: u64,
         _: &'a acyclic_harness_core::model::ModelContent,
         _: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
@@ -221,11 +222,12 @@ impl TurnHost for Announcing {
         agent: &'a AgentState,
         turn: OperationId,
         inbox: u64,
+        cursor: u64,
         input: &'a acyclic_harness_core::model::ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
         Box::pin(async move {
-            let mut open = self.0.open(agent, turn, inbox, input, stop).await?;
+            let mut open = self.0.open(agent, turn, inbox, cursor, input, stop).await?;
             let announced = self
                 .1
                 .lock()

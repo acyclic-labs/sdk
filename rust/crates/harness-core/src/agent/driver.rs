@@ -162,11 +162,14 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
     /// Opens `turn` for `agent`, whose model-visible input is `input`.
+    /// `cursor` is this original actor delivery's exclusive inbox cursor;
+    /// together with the retained queue it distinguishes consumed responses.
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,
         turn: OperationId,
         inbox: u64,
+        cursor: u64,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>>;
@@ -178,10 +181,11 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
         agent: &'a AgentState,
         turn: OperationId,
         inbox: u64,
+        cursor: u64,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>> {
-        (**self).open(agent, turn, inbox, input, stop)
+        (**self).open(agent, turn, inbox, cursor, input, stop)
     }
 }
 
@@ -616,7 +620,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     fn step<'a>(
         &'a self,
         agent: &'a AgentState,
-        _cursor: u64,
+        cursor: u64,
         input: Option<Queued>,
         cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
@@ -653,7 +657,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let stop = cancellation;
             let open = self
                 .host
-                .open(agent, turn, inbox, &content, stop.clone())
+                .open(agent, turn, inbox, cursor, &content, stop.clone())
                 .await
                 .map_err(host_error)?;
             if matches!(

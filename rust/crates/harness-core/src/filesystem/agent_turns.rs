@@ -1259,6 +1259,7 @@ where
         agent: &'a AgentState,
         turn: OperationId,
         inbox: u64,
+        cursor: u64,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
@@ -1371,6 +1372,7 @@ where
                     self.admission.clone(),
                     agent.clone(),
                     inbox,
+                    cursor,
                     Arc::clone(&files),
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())

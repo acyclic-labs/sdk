@@ -279,6 +279,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             &state,
             operation,
             0,
+            1,
             &ModelContent::Text("initial".into()),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -1660,13 +1661,14 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             agent: &'a AgentState,
             turn: OperationId,
             inbox: u64,
+            cursor: u64,
             input: &'a ModelContent,
             cancellation: acyclic_actors::guest::CancellationToken,
         ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
             Box::pin(async move {
                 let mut open = self
                     .original
-                    .open(agent, turn, inbox, input, cancellation)
+                    .open(agent, turn, inbox, cursor, input, cancellation)
                     .await?;
                 open.goal = open.goal.map(|original| {
                     Arc::new(EditedGoal {

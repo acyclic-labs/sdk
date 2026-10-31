@@ -113,21 +113,11 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
             )),
         };
     }
-    let queued = state.queued.iter().any(|queued| queued.inbox == inbox);
-    let unread = state
-        .overflow
-        .is_some_and(|first| inbox >= first && !state.taken.contains(&inbox));
-    Ok(
-        if inbox >= cursor
-            || queued
-            || unread
-            || state.turn.as_ref().is_some_and(|turn| turn.inbox == inbox)
-        {
-            Reply::Pending
-        } else {
-            Reply::Dropped
-        },
-    )
+    Ok(if state.input_pending(cursor, inbox) {
+        Reply::Pending
+    } else {
+        Reply::Dropped
+    })
 }
 
 /// Committed conversation entry `sequence`.
