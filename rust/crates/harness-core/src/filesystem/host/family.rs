@@ -120,9 +120,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(self)
     }
 
-    pub(in crate::filesystem) fn with_project_families<
-        S: WorkspaceLineageStore + GitCompatStore + Clone + 'static,
-    >(
+    /// Binds stream-backed project selection and ancestry before sharing.
+    /// Ordinary provider reads and writes follow each root's selected descendant;
+    /// the root still supplies the original project authorization boundary.
+    pub fn with_project_families<S: WorkspaceLineageStore + GitCompatStore + Clone + 'static>(
         mut self: Arc<Self>,
         store: S,
     ) -> Result<Arc<Self>> {
