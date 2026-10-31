@@ -16,9 +16,9 @@
 //! its own with a conditional replace, then refuses when the blob has an `i/`
 //! key. One of the two always sees the other's flag.
 //!
-//! Destructive work is fenced by the exact bytes it observed, never by a
-//! clock or by re-reading shared state. Each put writes a fresh version into
-//! its envelope, and that version names its payload `p/<aa>/<digest>.<v>`
+//! Destructive work is fenced by its original observed provider version,
+//! never by a clock or by re-reading shared state. Each put writes a fresh
+//! version into its envelope, and that version names its payload `p/<aa>/<digest>.<v>`
 //! and its outbound index keys `e<digest>.<v>`. A deleter removes only the
 //! envelope still holding its own mark, then that version's payload and keys,
 //! so a deleter delayed across any number of collections and re-puts matches
@@ -57,6 +57,7 @@ use crate::{
     MediumError, MemoryMedium, Object, Page, Put, Released, Retained, RootId, Usage, Verified,
     wire::ErrorCode,
 };
+use crate::{Observation, Observed};
 use acyclic_stream::{AppliedRevisions, OwnedBytes, Revision};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -556,7 +557,7 @@ impl<M: Medium> Account<M> {
         let key = self.incarnation_key();
         let account = AppliedRevisions::storage_scope("objects", self.prefix.as_bytes());
         loop {
-            let Some(record) = self.medium.read(&key, None).await.map_err(medium)? else {
+            let Some(record) = self.medium.observe(key.clone()).await.map_err(medium)? else {
                 let incarnation = u128::from_be_bytes(version()?);
                 let record = incarnation_record(incarnation, 1);
                 if self.medium.create(&key, record).await.map_err(medium)? {
@@ -565,12 +566,15 @@ impl<M: Medium> Account<M> {
                 }
                 continue;
             };
-            let (incarnation, run) = match decode_incarnation(&record) {
+            let (incarnation, run) = match decode_incarnation(&record.bytes) {
                 Ok(claimed) => claimed,
                 // Torn before its flush: neither its run nor any earlier one
                 // can be told apart, so the account starts a new incarnation.
                 Err(_) if self.medium.volatile() => {
-                    self.medium.remove_if(&key, &record).await.map_err(medium)?;
+                    self.medium
+                        .remove_if(record.observation)
+                        .await
+                        .map_err(medium)?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -579,9 +583,10 @@ impl<M: Medium> Account<M> {
             let claimed = incarnation_record(incarnation, run);
             if self
                 .medium
-                .replace(&key, &record, claimed)
+                .replace(record.observation, claimed)
                 .await
                 .map_err(medium)?
+                .is_some()
             {
                 // A run claimed twice would reuse its revisions.
                 self.medium.flush(&[key]).await.map_err(medium)?;
@@ -876,11 +881,7 @@ impl<M: Medium> Account<M> {
                     condemned: fence,
                     ..envelope
                 };
-                return match self
-                    .medium
-                    .replace(&key, &observed, stamped.encode().into())
-                    .await
-                {
+                return match self.medium.replace(observed, stamped.encode().into()).await {
                     Ok(_) | Err(MediumError::Ambiguous(_)) => Ok(Delete::Referenced),
                     Err(error) => Err(medium(error)),
                 };
@@ -893,7 +894,7 @@ impl<M: Medium> Account<M> {
         if self.any(&self.index_prefix(&digest)).await? {
             // A kept blob outlives a mark its deleter left behind.
             if envelope.dying.is_some() && fence.is_some() {
-                self.revive(&key, &observed, envelope).await?;
+                self.revive(observed, envelope).await?;
             }
             return Ok(Delete::Referenced);
         }
@@ -902,19 +903,19 @@ impl<M: Medium> Account<M> {
             ..envelope.clone()
         }
         .encode();
-        if !self
+        let Some(marked) = self
             .medium
-            .replace(&key, &observed, marked.clone().into())
+            .replace(observed, marked.into())
             .await
             .map_err(moved)?
-        {
+        else {
             return Err(ErrorCode::OutcomeUnknown.into());
-        }
+        };
         if self.any(&self.index_prefix(&digest)).await? {
-            self.revive(&key, &marked, envelope).await?;
+            self.revive(marked, envelope).await?;
             return Ok(Delete::Referenced);
         }
-        if !self.medium.remove_if(&key, &marked).await.map_err(moved)? {
+        if !self.medium.remove_if(marked).await.map_err(moved)? {
             return Err(ErrorCode::OutcomeUnknown.into());
         }
         self.untrack(&digest, &envelope.version);
@@ -933,13 +934,13 @@ impl<M: Medium> Account<M> {
 
     /// Clears the mark `marked` from a kept blob, unless another actor
     /// already moved it; an unknown outcome is left for collection.
-    async fn revive(&self, key: &str, marked: &[u8], envelope: Envelope) -> Result<(), Error> {
+    async fn revive(&self, marked: Observation<'_>, envelope: Envelope) -> Result<(), Error> {
         let live = Envelope {
             dying: None,
             condemned: 0,
             ..envelope
         };
-        match self.medium.replace(key, marked, live.encode().into()).await {
+        match self.medium.replace(marked, live.encode().into()).await {
             Ok(_) | Err(MediumError::Ambiguous(_)) => Ok(()),
             Err(error) => Err(medium(error)),
         }
@@ -984,22 +985,21 @@ impl<M: Medium> Account<M> {
         }
     }
 
-    /// The envelope with the exact bytes a conditional write must match;
-    /// none for one a crash tore.
+    /// The envelope with its original conditional fact; none for a torn value.
     async fn stored_envelope(
         &self,
         digest: &Digest,
-    ) -> Result<Option<(OwnedBytes, Envelope)>, Error> {
+    ) -> Result<Option<(Observation<'_>, Envelope)>, Error> {
         let Some(bytes) = self
             .medium
-            .read(&self.envelope_key(digest), None)
+            .observe(self.envelope_key(digest))
             .await
             .map_err(medium)?
         else {
             return Ok(None);
         };
-        match Envelope::decode(&bytes) {
-            Ok(envelope) => Ok(Some((bytes, envelope))),
+        match Envelope::decode(&bytes.bytes) {
+            Ok(envelope) => Ok(Some((bytes.observation, envelope))),
             Err(_) if self.medium.volatile() => Ok(None),
             Err(error) => Err(error),
         }
@@ -1007,11 +1007,13 @@ impl<M: Medium> Account<M> {
 
     /// Removes the envelope at `key` if a crash tore it.
     async fn clear_torn(&self, key: &str) -> Result<(), Error> {
-        let Some(bytes) = self.medium.read(key, None).await.map_err(medium)? else {
+        let Some(Observed { bytes, observation }) =
+            self.medium.observe(key.to_owned()).await.map_err(medium)?
+        else {
             return Ok(());
         };
         if self.medium.volatile() && Envelope::decode(&bytes).is_err() {
-            self.medium.remove_if(key, &bytes).await.map_err(medium)?;
+            self.medium.remove_if(observation).await.map_err(medium)?;
         }
         Ok(())
     }
@@ -1081,14 +1083,10 @@ impl<M: Medium> Account<M> {
                     condemned: 0,
                     ..existing
                 };
-                match self
-                    .medium
-                    .replace(&key, &observed, live.encode().into())
-                    .await
-                {
-                    Ok(true) => {}
+                match self.medium.replace(observed, live.encode().into()).await {
+                    Ok(Some(_)) => {}
                     // Moved since: the next pass decides.
-                    Ok(false) | Err(MediumError::Ambiguous(_)) => continue,
+                    Ok(None) | Err(MediumError::Ambiguous(_)) => continue,
                     Err(error) => return Err(medium(error)),
                 }
                 self.track(&digest, &live);
@@ -1153,8 +1151,11 @@ impl<M: Medium> Account<M> {
             if self.complete(digest, envelope).await? {
                 return Ok(Some(false));
             }
-            if let Some(torn) = self.medium.read(&key, None).await.map_err(medium)? {
-                self.medium.remove_if(&key, &torn).await.map_err(medium)?;
+            if let Some(torn) = self.medium.observe(key.clone()).await.map_err(medium)? {
+                self.medium
+                    .remove_if(torn.observation)
+                    .await
+                    .map_err(medium)?;
             }
         }
     }
@@ -1287,13 +1288,15 @@ impl<M: Medium> Account<M> {
     /// acknowledged it, so a torn batch is removed as never written; its
     /// index keys only pin.
     async fn batch(&self, key: &str) -> Result<Option<Vec<Digest>>, Error> {
-        let Some(bytes) = self.medium.read(key, None).await.map_err(medium)? else {
+        let Some(Observed { bytes, observation }) =
+            self.medium.observe(key.to_owned()).await.map_err(medium)?
+        else {
             return Ok(None);
         };
         match decode_batch(&bytes) {
             Ok(batch) => Ok(Some(batch)),
             Err(_) if self.medium.volatile() => {
-                self.medium.remove_if(key, &bytes).await.map_err(medium)?;
+                self.medium.remove_if(observation).await.map_err(medium)?;
                 Ok(Some(Vec::new()))
             }
             Err(error) => Err(error),
@@ -1703,7 +1706,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                         Ok(Some((observed, envelope))) => {
                             pending.extend(envelope.references.iter().copied());
                             if envelope.dying.is_some() {
-                                marks.push((digest, observed, envelope));
+                                marks.push((observed, envelope));
                             }
                         }
                         // A retained reference to nothing protects nothing.
@@ -1712,19 +1715,21 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     }
                 }
                 // A kept blob outlives any deleter's mark.
-                for (digest, observed, envelope) in marks {
-                    self.revive(&self.envelope_key(&digest), &observed, envelope)
-                        .await?;
+                for (observed, envelope) in marks {
+                    self.revive(observed, envelope).await?;
                 }
                 // Only a pass that can sweep advances the epoch: marking first never
                 // keeps less, since every sweep still consults the inbound index.
                 // Losing the claim to a crash only repeats the epoch, which keeps more.
                 let observed = self
                     .medium
-                    .read(&self.epoch_key(), None)
+                    .observe(self.epoch_key())
                     .await
                     .map_err(medium)?;
-                let fence = match observed.as_deref().map(<[u8; 8]>::try_from) {
+                let fence = match observed
+                    .as_ref()
+                    .map(|observed| <[u8; 8]>::try_from(observed.bytes.as_ref()))
+                {
                     Some(Ok(bytes)) => u64::from_be_bytes(bytes),
                     Some(Err(_)) if !self.medium.volatile() => return Err(corrupt()),
                     // Torn by a crash, or never claimed.
@@ -1733,12 +1738,12 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 let epoch = fence.checked_add(1).ok_or_else(corrupt)?;
                 let advanced = OwnedBytes::from(epoch.to_be_bytes().to_vec());
                 // One collector wins each epoch, across processes.
-                let claimed = match &observed {
-                    Some(observed) => {
-                        self.medium
-                            .replace(&self.epoch_key(), observed, advanced)
-                            .await
-                    }
+                let claimed = match observed {
+                    Some(observed) => self
+                        .medium
+                        .replace(observed.observation, advanced)
+                        .await
+                        .map(|accepted| accepted.is_some()),
                     None => self.medium.create(&self.epoch_key(), advanced).await,
                 };
                 match claimed {

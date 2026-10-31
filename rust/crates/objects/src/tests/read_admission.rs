@@ -35,11 +35,19 @@ impl Medium for Applied {
         self.refuse()
     }
 
-    async fn replace(&self, _: &str, _: &[u8], _: OwnedBytes) -> Result<bool, MediumError> {
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        self.inner.observe(key).await
+    }
+
+    async fn replace<'a>(
+        &'a self,
+        _: Observation<'a>,
+        _: OwnedBytes,
+    ) -> Result<Option<Observation<'a>>, MediumError> {
         self.refuse()
     }
 
-    async fn remove_if(&self, _: &str, _: &[u8]) -> Result<bool, MediumError> {
+    async fn remove_if(&self, _: Observation<'_>) -> Result<bool, MediumError> {
         self.refuse()
     }
 

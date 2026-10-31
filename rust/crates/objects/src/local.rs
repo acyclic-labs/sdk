@@ -17,7 +17,9 @@
 //! reclaimed in amortised constant work per dead byte.
 //! A failed compaction does not refuse the mutation already visible in the
 //! log. It stops later writes and makes flush uncertain until the root reopens.
-use crate::{Medium, MediumError, Store};
+use crate::{
+    Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion, Store,
+};
 use acyclic_native_runtime::{LogFrame, PersistenceKey, spawn_persistence};
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
@@ -152,6 +154,8 @@ struct Slot {
     value: u64,
     /// The value's bytes.
     length: u64,
+    /// Original mutation identity, unchanged by compaction.
+    sequence: u64,
 }
 
 /// The log and its index, under the one lock that orders every write.
@@ -169,6 +173,7 @@ struct Log {
 /// What every accepted write holds: the root closes, everything flushed, the
 /// marker removed and the lock released, only once the last lets go.
 struct Shared {
+    source: ObservationSource,
     root: PathBuf,
     durability: LocalDurability,
     log: Mutex<Log>,
@@ -279,16 +284,21 @@ impl Shared {
     fn append(&self, log: &mut Log, frame: &[u8]) -> Result<u64, MediumError> {
         self.usable().map_err(failed)?;
         let start = log.end;
+        let written = log.written.checked_add(1).ok_or_else(|| {
+            failed(std::io::Error::other(
+                "local mutation sequence exhausted; recovery: reopen the medium",
+            ))
+        })?;
         self.stop_on_error(acyclic_native_runtime::persistence_syscall(|| {
             acyclic_native_runtime::write_all_at(&log.file, start, frame, None)
         }))
         .map_err(MediumError::Ambiguous)?;
         log.end += frame.len() as u64;
-        log.written += 1;
+        log.written = written;
         Ok(start)
     }
 
-    fn put(&self, log: &mut Log, key: &str, value: &[u8]) -> Result<(), MediumError> {
+    fn put(&self, log: &mut Log, key: &str, value: &[u8]) -> Result<u64, MediumError> {
         let frame = encode(PUT, key, value).map_err(failed)?;
         let start = self.append(log, &frame)?;
         let slot = Slot {
@@ -296,13 +306,14 @@ impl Shared {
             bytes: frame.len() as u64,
             value: start + value_offset(key),
             length: value.len() as u64,
+            sequence: log.written,
         };
         log.live += slot.bytes;
         if let Some(old) = log.index.insert(key.to_owned(), slot) {
             log.live -= old.bytes;
             self.compact_if_due(log);
         }
-        Ok(())
+        Ok(slot.sequence)
     }
 
     fn remove(&self, log: &mut Log, key: &str) -> Result<bool, MediumError> {
@@ -438,6 +449,7 @@ fn replay(
                 bytes,
                 value: end + LOG_FRAME.prefix_bytes() as u64 + value.start as u64,
                 length: value.len() as u64,
+                sequence: 0,
             };
             live += bytes;
             index.insert(key.to_owned(), slot)
@@ -450,6 +462,40 @@ fn replay(
         end += bytes;
     }
     Ok((end, index, live, true))
+}
+
+impl LocalMedium {
+    async fn read_value(
+        &self,
+        key: String,
+        range: Option<Range<u64>>,
+    ) -> Result<Option<(OwnedBytes, u64, String)>, MediumError> {
+        let shared = Arc::clone(&self.shared);
+        blocking(self, "read", key.as_ptr() as usize, move || {
+            let (file, slot) = {
+                let log = shared.log();
+                let Some(&slot) = log.index.get(&key) else {
+                    return Ok(None);
+                };
+                (Arc::clone(&log.file), slot)
+            };
+            let range = range.unwrap_or(0..slot.length);
+            if range.start > range.end || range.end > slot.length {
+                return Err(std::io::ErrorKind::InvalidInput.into());
+            }
+            let count = usize::try_from(range.end - range.start)
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+            let mut bytes = vec![0; count];
+            // A log a compaction replaced stays readable through its handle.
+            acyclic_native_runtime::persistence_syscall(|| {
+                read_exact_at(&file, slot.value + range.start, &mut bytes)
+            })?;
+            Ok(Some((OwnedBytes::from(bytes), slot.sequence, key)))
+        })
+        .await
+        .and_then(std::convert::identity)
+        .map_err(failed)
+    }
 }
 
 impl LocalMedium {
@@ -577,6 +623,7 @@ fn open_root(
     }
     directory(&root)?;
     Ok(Shared {
+        source: ObservationSource::new(),
         root,
         durability,
         log: Mutex::new(Log {
@@ -624,31 +671,23 @@ impl Medium for LocalMedium {
         key: &str,
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
-        let (shared, key) = (Arc::clone(&self.shared), key.to_owned());
-        blocking(self, "read", key.as_ptr() as usize, move || {
-            let (file, slot) = {
-                let log = shared.log();
-                let Some(&slot) = log.index.get(&key) else {
-                    return Ok(None);
-                };
-                (Arc::clone(&log.file), slot)
-            };
-            let range = range.unwrap_or(0..slot.length);
-            if range.start > range.end || range.end > slot.length {
-                return Err(std::io::ErrorKind::InvalidInput.into());
-            }
-            let count = usize::try_from(range.end - range.start)
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
-            let mut bytes = vec![0; count];
-            // A log a compaction replaced stays readable through its handle.
-            acyclic_native_runtime::persistence_syscall(|| {
-                read_exact_at(&file, slot.value + range.start, &mut bytes)
-            })?;
-            Ok(Some(OwnedBytes::from(bytes)))
-        })
-        .await
-        .and_then(std::convert::identity)
-        .map_err(failed)
+        Ok(self
+            .read_value(key.to_owned(), range)
+            .await?
+            .map(|(bytes, _, _)| bytes))
+    }
+
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        Ok(self
+            .read_value(key, None)
+            .await?
+            .map(|(bytes, sequence, key)| Observed {
+                bytes,
+                observation: self
+                    .shared
+                    .source
+                    .issue(key, ObservedVersion::Sequence(sequence)),
+            }))
     }
 
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
@@ -660,30 +699,50 @@ impl Medium for LocalMedium {
         .map_err(MediumError::Ambiguous)?
     }
 
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
         bytes: OwnedBytes,
-    ) -> Result<bool, MediumError> {
-        let (shared, key, expected) = (Arc::clone(&self.shared), key.to_owned(), expected.to_vec());
-        blocking(self, "replace", key.as_ptr() as usize, move || {
+    ) -> Result<Option<Observation<'a>>, MediumError> {
+        let ObservedVersion::Sequence(sequence) = self.shared.source.version(&observed)? else {
+            return Err(failed(std::io::ErrorKind::InvalidInput.into()));
+        };
+        let sequence = *sequence;
+        let (shared, key) = (Arc::clone(&self.shared), observed.into_key());
+        let accepted = blocking(self, "replace", key.as_ptr() as usize, move || {
             let mut log = shared.log();
-            if !holds(&log, &key, &expected).map_err(failed)? {
-                return Ok(false);
+            if !log
+                .index
+                .get(&key)
+                .is_some_and(|slot| slot.sequence == sequence)
+            {
+                return Ok(None);
             }
-            shared.put(&mut log, &key, &bytes)?;
-            Ok(true)
+            let sequence = shared.put(&mut log, &key, &bytes)?;
+            Ok(Some((key, sequence)))
         })
         .await
-        .map_err(MediumError::Ambiguous)?
+        .map_err(MediumError::Ambiguous)??;
+        Ok(accepted.map(|(key, sequence)| {
+            self.shared
+                .source
+                .issue(key, ObservedVersion::Sequence(sequence))
+        }))
     }
 
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        let (shared, key, expected) = (Arc::clone(&self.shared), key.to_owned(), expected.to_vec());
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
+        let ObservedVersion::Sequence(sequence) = self.shared.source.version(&observed)? else {
+            return Err(failed(std::io::ErrorKind::InvalidInput.into()));
+        };
+        let sequence = *sequence;
+        let (shared, key) = (Arc::clone(&self.shared), observed.into_key());
         blocking(self, "remove-if", key.as_ptr() as usize, move || {
             let mut log = shared.log();
-            if !holds(&log, &key, &expected).map_err(failed)? {
+            if !log
+                .index
+                .get(&key)
+                .is_some_and(|slot| slot.sequence == sequence)
+            {
                 return Ok(false);
             }
             shared.remove(&mut log, &key)
@@ -749,17 +808,14 @@ impl Medium for LocalMedium {
     }
 }
 
-/// Whether `key` currently holds exactly `expected`.
-fn holds(log: &Log, key: &str, expected: &[u8]) -> std::io::Result<bool> {
-    let Some(slot) = log.index.get(key) else {
-        return Ok(false);
-    };
-    if slot.length != expected.len() as u64 {
-        return Ok(false);
-    }
-    let mut current = vec![0; expected.len()];
-    read_exact_at(&log.file, slot.value, &mut current)?;
-    Ok(current == expected)
+#[cfg(test)]
+async fn observation<'a>(medium: &'a LocalMedium, key: &str) -> Observation<'a> {
+    medium
+        .observe(key.to_owned())
+        .await
+        .unwrap()
+        .unwrap()
+        .observation
 }
 
 impl std::fmt::Debug for LocalMedium {
@@ -790,6 +846,80 @@ mod isolation_tests {
     }
 
     #[tokio::test]
+    async fn original_observations_survive_compaction_and_refuse_stale_or_foreign_mutation() {
+        let memory = crate::MemoryMedium::default();
+        crate::conformance::verify_medium(&memory, "observations")
+            .await
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
+            .await
+            .unwrap();
+        crate::conformance::verify_medium(&medium, "observations")
+            .await
+            .unwrap();
+        assert_eq!(medium.counts(), (0, 0));
+        assert!(medium.create("kept", bytes(b"unchanged")).await.unwrap());
+        let kept = observation(&medium, "kept").await;
+        let stale = observation(&medium, "kept").await;
+        assert!(
+            medium
+                .create("hot", vec![7; COMPACTION_CHUNK as usize].into())
+                .await
+                .unwrap()
+        );
+        let accepted = medium
+            .replace(observation(&medium, "hot").await, bytes(b"small"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            medium.counts().0,
+            1,
+            "actual compaction must move the kept record"
+        );
+        // Compaction and unrelated mutations do not invalidate the original
+        // per-key fact. Another handle of this same opened source accepts it.
+        let alias = LocalMedium {
+            shared: Arc::clone(&medium.shared),
+        };
+        let successor = alias
+            .replace(kept, bytes(b"updated"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!medium.remove_if(stale).await.unwrap());
+        assert!(medium.remove_if(successor).await.unwrap());
+        assert!(medium.remove_if(accepted).await.unwrap());
+        // Recreating the same bytes still receives a fresh local mutation
+        // identity; a fact from the previous incarnation cannot remove it.
+        assert!(medium.create("reused", bytes(b"same")).await.unwrap());
+        let before = observation(&medium, "reused").await;
+        assert!(medium.remove("reused").await.unwrap());
+        assert!(medium.create("reused", bytes(b"same")).await.unwrap());
+        assert!(!medium.remove_if(before).await.unwrap());
+        let before = medium.counts();
+        let other_root = tempfile::tempdir().unwrap();
+        let other = LocalMedium::open(other_root.path(), LocalObjectsLimits::default(), None)
+            .await
+            .unwrap();
+        assert!(other.create("reused", bytes(b"same")).await.unwrap());
+        assert!(
+            matches!(medium.replace(observation(&other, "reused").await, bytes(b"wrong")).await,
+            Err(MediumError::Failed(error)) if error.kind() == std::io::ErrorKind::InvalidInput)
+        );
+        assert_eq!(
+            medium.counts(),
+            before,
+            "foreign refusal adds no physical write or barrier"
+        );
+        assert_eq!(
+            medium.read("reused", None).await.unwrap().unwrap().as_ref(),
+            b"same"
+        );
+    }
+
+    #[tokio::test]
     async fn a_write_creates_no_file_and_a_flush_syncs_the_log_once() {
         let root = tempfile::tempdir().unwrap();
         let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
@@ -800,9 +930,10 @@ mod isolation_tests {
             assert!(medium.create(&key, bytes(b"value")).await.unwrap());
             assert!(
                 medium
-                    .replace(&key, b"value", bytes(b"next"))
+                    .replace(observation(&medium, &key).await, bytes(b"next"))
                     .await
                     .unwrap()
+                    .is_some()
             );
         }
         assert!(medium.remove("k/0").await.unwrap());
@@ -841,15 +972,21 @@ mod isolation_tests {
         ));
         assert!(
             medium
-                .replace("a/x", b"one", bytes(b"three"))
+                .replace(observation(&medium, "a/x").await, bytes(b"three"))
                 .await
                 .unwrap()
+                .is_some()
         );
         states.push((
             std::fs::metadata(&log).unwrap().len(),
             contents(&medium).await,
         ));
-        assert!(medium.remove_if("b/y", b"two").await.unwrap());
+        assert!(
+            medium
+                .remove_if(observation(&medium, "b/y").await)
+                .await
+                .unwrap()
+        );
         states.push((
             std::fs::metadata(&log).unwrap().len(),
             contents(&medium).await,
@@ -971,11 +1108,14 @@ mod isolation_tests {
         assert!(medium.create("k/kept", bytes(b"kept")).await.unwrap());
         let rounds = 20;
         for round in 1..=rounds {
+            let observed = medium.observe("k/key".to_owned()).await.unwrap().unwrap();
+            assert_eq!(observed.bytes.as_ref(), value(round - 1));
             assert!(
                 medium
-                    .replace("k/key", &value(round - 1), bytes(&value(round)))
+                    .replace(observed.observation, bytes(&value(round)))
                     .await
                     .unwrap()
+                    .is_some()
             );
         }
         // One compaction replaced the log: it holds the live frames and what
@@ -1023,11 +1163,16 @@ mod isolation_tests {
                     .as_ref(),
                 b"before"
             );
+            let stale = observation(&store, "values/a").await;
             assert!(
                 store
-                    .replace("values/a", b"before", OwnedBytes::from(b"after".to_vec()))
+                    .replace(
+                        observation(&store, "values/a").await,
+                        OwnedBytes::from(b"after".to_vec())
+                    )
                     .await
                     .unwrap()
+                    .is_some()
             );
             assert_eq!(
                 store
@@ -1040,11 +1185,17 @@ mod isolation_tests {
             );
             assert!(
                 !store
-                    .replace("values/a", b"before", OwnedBytes::from(b"wrong".to_vec()))
+                    .replace(stale, OwnedBytes::from(b"wrong".to_vec()))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                store
+                    .remove_if(observation(&store, "values/a").await)
                     .await
                     .unwrap()
             );
-            assert!(store.remove_if("values/a", b"after").await.unwrap());
             // Dropping the sole input producer terminates the blocked read.
             drop(release);
             assert!(input.await.unwrap().is_err());

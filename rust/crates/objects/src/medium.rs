@@ -1,4 +1,5 @@
 //! The physical key/value medium beneath the one blob engine.
+use crate::{Observation, ObservationSource, Observed, ObservedVersion};
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -35,20 +36,21 @@ pub trait Medium: acyclic_stream::ProviderPlatform + 'static {
     ) -> Result<Option<OwnedBytes>, MediumError>;
     /// Removes `key`, reporting whether it existed.
     async fn remove(&self, key: &str) -> Result<bool, MediumError>;
-    /// Replaces `key` with `bytes` only while it holds exactly `expected`,
-    /// atomically against every other conditional write and removal.
-    /// `Ok(false)` leaves the key untouched. Unflushed, a crash leaves the
-    /// old value or the new one, whole: a committed key is rewritten in place.
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
+    /// Reads complete bytes and their original key-bound provider version.
+    /// Absence supplies no conditional fact.
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError>;
+    /// Replaces the observed key only while its provider version still matches,
+    /// atomically against every other write and removal. A successful write
+    /// returns its own successor fact without another read. No durability
+    /// barrier is added; a crash before flush leaves the old or new value whole.
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
         bytes: OwnedBytes,
-    ) -> Result<bool, MediumError>;
-    /// Removes `key` only while it holds exactly `expected`, atomically against
-    /// every other conditional write and removal. The engine writes bytes
-    /// unique to each write, so a stale remover never matches a later value.
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError>;
+    ) -> Result<Option<Observation<'a>>, MediumError>;
+    /// Removes only the original observed key while its provider version matches.
+    /// A stale version returns false; another source is refused before effect.
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError>;
     /// Lists up to `limit` keys under `prefix` strictly after `after`, in
     /// ascending byte order, with their stored sizes.
     async fn list(
@@ -89,14 +91,37 @@ pub trait Medium: acyclic_stream::ProviderPlatform + 'static {
 /// total byte budget.
 #[derive(Clone, Default)]
 pub struct MemoryMedium {
-    keys: Arc<RwLock<Keys>>,
+    shared: Arc<Shared>,
     budget: Option<u64>,
 }
 
 #[derive(Default)]
+struct Shared {
+    keys: RwLock<Keys>,
+    source: ObservationSource,
+}
+
+#[derive(Default)]
 struct Keys {
-    keys: BTreeMap<String, OwnedBytes>,
+    keys: BTreeMap<String, Value>,
+    sequence: u64,
     bytes: u64,
+}
+
+struct Value {
+    bytes: OwnedBytes,
+    sequence: u64,
+}
+
+impl Keys {
+    fn next(&mut self) -> Result<u64, MediumError> {
+        self.sequence = self.sequence.checked_add(1).ok_or_else(|| {
+            MediumError::Failed(std::io::Error::other(
+                "medium mutation sequence exhausted; recovery: open a new medium",
+            ))
+        })?;
+        Ok(self.sequence)
+    }
 }
 
 impl MemoryMedium {
@@ -104,23 +129,29 @@ impl MemoryMedium {
     #[must_use]
     pub fn bounded(budget: u64) -> Self {
         Self {
-            keys: Arc::default(),
+            shared: Arc::default(),
             budget: Some(budget),
         }
     }
 
     fn keys(&self) -> std::sync::RwLockReadGuard<'_, Keys> {
-        self.keys.read().unwrap_or_else(PoisonError::into_inner)
+        self.shared
+            .keys
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, Keys> {
-        self.keys.write().unwrap_or_else(PoisonError::into_inner)
+        self.shared
+            .keys
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The stored total after `added` bytes replace `freed` ones, or the
     /// quota refusal; checked under the write lock so it is exact.
-    fn admit(&self, keys: &Keys, added: usize, freed: usize) -> Result<u64, MediumError> {
-        let total = keys.bytes - freed as u64 + added as u64;
+    fn admit(&self, stored: u64, added: usize, freed: usize) -> Result<u64, MediumError> {
+        let total = stored - freed as u64 + added as u64;
         if self.budget.is_some_and(|budget| total > budget) {
             return Err(MediumError::Failed(
                 std::io::ErrorKind::QuotaExceeded.into(),
@@ -138,8 +169,10 @@ impl Medium for MemoryMedium {
         if keys.keys.contains_key(key) {
             return Ok(false);
         }
-        keys.bytes = self.admit(&keys, bytes.len(), 0)?;
-        keys.keys.insert(key.to_owned(), bytes);
+        let total = self.admit(keys.bytes, bytes.len(), 0)?;
+        let sequence = keys.next()?;
+        keys.bytes = total;
+        keys.keys.insert(key.to_owned(), Value { bytes, sequence });
         Ok(true)
     }
 
@@ -149,9 +182,10 @@ impl Medium for MemoryMedium {
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
         let keys = self.keys();
-        let Some(bytes) = keys.keys.get(key) else {
+        let Some(value) = keys.keys.get(key) else {
             return Ok(None);
         };
+        let bytes = &value.bytes;
         let Some(range) = range else {
             return Ok(Some(bytes.clone()));
         };
@@ -170,41 +204,74 @@ impl Medium for MemoryMedium {
         let Some(bytes) = keys.keys.remove(key) else {
             return Ok(false);
         };
-        keys.bytes -= bytes.len() as u64;
+        keys.bytes -= bytes.bytes.len() as u64;
         Ok(true)
     }
 
-    async fn replace(
-        &self,
-        key: &str,
-        expected: &[u8],
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        let keys = self.keys();
+        Ok(keys.keys.get(&key).map(|value| Observed {
+            bytes: value.bytes.clone(),
+            observation: self
+                .shared
+                .source
+                .issue(key, ObservedVersion::Sequence(value.sequence)),
+        }))
+    }
+
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
         bytes: OwnedBytes,
-    ) -> Result<bool, MediumError> {
-        let mut keys = self.write();
-        if !keys
-            .keys
-            .get(key)
-            .is_some_and(|current| current.as_ref() == expected)
-        {
-            return Ok(false);
-        }
-        keys.bytes = self.admit(&keys, bytes.len(), expected.len())?;
-        keys.keys.insert(key.to_owned(), bytes);
-        Ok(true)
+    ) -> Result<Option<Observation<'a>>, MediumError> {
+        let ObservedVersion::Sequence(sequence) = self.shared.source.version(&observed)? else {
+            return Err(MediumError::Failed(std::io::ErrorKind::InvalidInput.into()));
+        };
+        let mut locked = self.write();
+        let Keys {
+            keys,
+            bytes: stored,
+            sequence: counter,
+        } = &mut *locked;
+        let Some(current) = keys
+            .get_mut(observed.key())
+            .filter(|value| value.sequence == *sequence)
+        else {
+            return Ok(None);
+        };
+        let total = self.admit(*stored, bytes.len(), current.bytes.len())?;
+        let sequence = counter.checked_add(1).ok_or_else(|| {
+            MediumError::Failed(std::io::Error::other(
+                "medium mutation sequence exhausted; recovery: open a new medium",
+            ))
+        })?;
+        *counter = sequence;
+        *stored = total;
+        *current = Value { bytes, sequence };
+        let key = observed.into_key();
+        Ok(Some(
+            self.shared
+                .source
+                .issue(key, ObservedVersion::Sequence(sequence)),
+        ))
     }
 
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
+        let ObservedVersion::Sequence(sequence) = self.shared.source.version(&observed)? else {
+            return Err(MediumError::Failed(std::io::ErrorKind::InvalidInput.into()));
+        };
         let mut keys = self.write();
-        if keys
+        let Some(value) = keys
             .keys
-            .get(key)
-            .is_some_and(|current| current.as_ref() == expected)
-        {
-            keys.keys.remove(key);
-            keys.bytes -= expected.len() as u64;
-            return Ok(true);
-        }
-        Ok(false)
+            .get(observed.key())
+            .filter(|value| value.sequence == *sequence)
+        else {
+            return Ok(false);
+        };
+        let length = value.bytes.len() as u64;
+        keys.bytes -= length;
+        keys.keys.remove(observed.key());
+        Ok(true)
     }
 
     async fn list(
@@ -224,7 +291,7 @@ impl Medium for MemoryMedium {
             .range::<str, _>((start, Bound::Unbounded))
             .take_while(|(key, _)| key.starts_with(prefix))
             .take(limit)
-            .map(|(key, bytes)| (key.clone(), bytes.len() as u64))
+            .map(|(key, value)| (key.clone(), value.bytes.len() as u64))
             .collect())
     }
 
