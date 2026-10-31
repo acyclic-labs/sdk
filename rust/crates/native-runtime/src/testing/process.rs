@@ -2,14 +2,12 @@
 use super::*;
 use crate::ProcessCommand;
 use crate::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
-use std::{io, process::Output, time::Duration};
+use std::{io, process::Output};
 
 /// Original capture arguments, after command and ownership validation.
 pub struct ProcessCapture<'a> {
     /// Fully composed executable, arguments, environment and working directory.
-    pub command: &'a ProcessCommand,
-    /// Original monotonic deadline allowance.
-    pub timeout: Duration,
+use std::{io, process::Output};
     /// Shared stdout and stderr bound.
     pub maximum: usize,
     /// Original literal input or exchange allowance.
@@ -96,7 +94,7 @@ mod tests {
             let command = ProcessCommand::new("must-not-spawn");
             let capture = || ProcessCapture {
                 command: &command,
-                timeout: Duration::from_millis(10),
+                schedule: crate::CaptureSchedule::unbounded(),
                 maximum: 8,
                 input: None,
             };
