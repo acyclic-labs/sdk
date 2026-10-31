@@ -23,10 +23,10 @@ use futures::StreamExt as _;
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::io::Read as _;
-use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError, Weak, mpsc};
 
 #[cfg(all(test, not(loom)))]
 mod tests;
@@ -49,6 +49,10 @@ fn projection_changed(event: &notify::Result<notify::Event>) -> bool {
 
 fn notification_failure(error: &notify::Error) -> String {
     format!("step=observe native workspace files: {error}; recovery=acyclic agents")
+}
+
+fn owner_failure(step: &str, error: &std::io::Error) -> String {
+    format!("step={step}: {error}; recovery=graphcoder --host-workspace")
 }
 
 /// The leaves under `directory` a notification names, or `None` when it
@@ -100,7 +104,7 @@ struct Request {
 /// nested clients keep disposable custody files outside authored child views.
 pub fn workspace_root(cwd: &Path) -> Result<PathBuf> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-    if let Some(bridge) = lock(&REGISTRY).live(&cwd) {
+    if let Some(bridge) = Registry::live(&REGISTRY, &cwd) {
         return Ok(bridge.workspace.clone());
     }
     discover(&cwd).map(|(_, endpoint)| endpoint.workspace)
@@ -156,19 +160,7 @@ struct Shared {
 impl Shared {
     fn note(&self, event: notify::Result<notify::Event>) {
         if let Err(error) = &event {
-            let mut waiters = lock(&self.waiters);
-            if waiters.gone || waiters.failure.is_some() {
-                return;
-            }
-            let failure = notification_failure(error);
-            waiters.failure = Some(failure.clone());
-            for key in waiters.keys.values_mut() {
-                for (operation, waiter) in std::mem::take(&mut key.waiting) {
-                    let _ = waiter.try_send(Delivery::Reply(Err(Error::Storage(format!(
-                        "operation={operation}; {failure}"
-                    )))));
-                }
-            }
+            self.failed(|| notification_failure(error));
             return;
         }
         if !projection_changed(&event) {
@@ -233,6 +225,38 @@ impl Shared {
             }
         }
     }
+
+    fn failed(&self, failure: impl FnOnce() -> String) {
+        let mut waiters = lock(&self.waiters);
+        if waiters.gone || waiters.failure.is_some() {
+            return;
+        }
+        let Waiters {
+            failure: retained,
+            keys,
+            ..
+        } = &mut *waiters;
+        let failure = retained.insert(failure());
+        for key in keys.values_mut() {
+            for (operation, waiter) in std::mem::take(&mut key.waiting) {
+                let _ = waiter.try_send(Delivery::Reply(Err(Error::Storage(format!(
+                    "operation={operation}; {failure}"
+                )))));
+            }
+        }
+    }
+
+    fn owner_finished(&self, outcome: std::io::Result<acyclic_native_runtime::FileLock>) {
+        match outcome {
+            Ok(lock) => {
+                drop(lock);
+                self.gone();
+            }
+            Err(error) => {
+                self.failed(|| owner_failure("observe native workspace owner exit", &error));
+            }
+        }
+    }
 }
 
 /// This process's one connection to one running owner: a watcher over only
@@ -261,13 +285,18 @@ impl Bridge {
         };
         let (lock_file, probe) = (open()?, open()?);
         // A shared lock is free exactly when no owner holds its exclusive one.
-        if acyclic_native_runtime::FileLock::try_acquire(
+        match acyclic_native_runtime::FileLock::try_acquire(
             probe,
             acyclic_native_runtime::FileLockMode::Shared,
-        )
-        .is_ok()
-        {
-            return Err(Error::NotFound(NO_OWNER.into()));
+        ) {
+            Ok(_) => return Err(Error::NotFound(NO_OWNER.into())),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => {
+                return Err(Error::Storage(owner_failure(
+                    "probe native workspace owner",
+                    &error,
+                )));
+            }
         }
         let shared = Arc::new(Shared {
             status: directory.join("status"),
@@ -283,11 +312,10 @@ impl Bridge {
             .name("acyclic-host-files-owner".into())
             .spawn(move || {
                 // Blocks until the owner's exclusive lock is released.
-                drop(acyclic_native_runtime::FileLock::acquire(
+                exited.owner_finished(acyclic_native_runtime::FileLock::acquire(
                     lock_file,
                     acyclic_native_runtime::FileLockMode::Shared,
                 ));
-                exited.gone();
             })
             .map_err(storage)?;
         Ok(Self {
@@ -383,35 +411,45 @@ impl Drop for Waiting {
 /// discovery and connection happen once per owner lifetime, not per request.
 #[derive(Default)]
 struct Registry {
-    located: BTreeMap<PathBuf, PathBuf>,
-    bridges: BTreeMap<PathBuf, Arc<Bridge>>,
+    located: HashMap<PathBuf, Weak<Bridge>>,
+    bridges: HashMap<PathBuf, Connection>,
 }
 
-static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
-    located: BTreeMap::new(),
-    bridges: BTreeMap::new(),
-});
+type Connection = Arc<Mutex<Option<Arc<Bridge>>>>;
+
+static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
 
 impl Registry {
-    fn live(&self, cwd: &Path) -> Option<Arc<Bridge>> {
-        self.located
-            .get(cwd)
-            .and_then(|directory| self.bridges.get(directory))
-            .filter(|bridge| bridge.live())
-            .cloned()
+    fn live(registry: &Mutex<Self>, cwd: &Path) -> Option<Arc<Bridge>> {
+        let bridge = lock(registry).located.get(cwd)?.upgrade()?;
+        bridge.live().then_some(bridge)
     }
 
-    fn bridge(&mut self, cwd: &Path) -> Result<Arc<Bridge>> {
-        if let Some(bridge) = self.live(cwd) {
+    fn bridge(
+        registry: &Mutex<Self>,
+        cwd: &Path,
+        open: impl FnOnce(&Path, Endpoint) -> Result<Bridge>,
+    ) -> Result<Arc<Bridge>> {
+        if let Some(bridge) = Self::live(registry, cwd) {
             return Ok(bridge);
         }
         let (directory, endpoint) = discover(cwd)?;
-        self.located.insert(cwd.to_path_buf(), directory.clone());
-        if let Some(bridge) = self.bridges.get(&directory).filter(|bridge| bridge.live()) {
-            return Ok(Arc::clone(bridge));
-        }
-        let bridge = Arc::new(Bridge::open(&directory, endpoint)?);
-        self.bridges.insert(directory, Arc::clone(&bridge));
+        let connection = Arc::clone(lock(registry).bridges.entry(directory.clone()).or_default());
+        // Only callers connecting to this owner wait behind its native opens.
+        // Discovery, watcher registration and owner-exit observation never hold
+        // the registry; the connection guard releases on either result.
+        let mut connected = lock(&connection);
+        let bridge = match connected.as_ref().filter(|bridge| bridge.live()) {
+            Some(bridge) => Arc::clone(bridge),
+            None => {
+                let bridge = Arc::new(open(&directory, endpoint)?);
+                *connected = Some(Arc::clone(&bridge));
+                bridge
+            }
+        };
+        lock(registry)
+            .located
+            .insert(cwd.to_path_buf(), Arc::downgrade(&bridge));
         Ok(bridge)
     }
 }
@@ -419,8 +457,12 @@ impl Registry {
 /// Contacts an existing harness. Does not select state, acquire a lifecycle
 /// lock, publish an executable identity, or start any service or agent.
 pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
+    request_with(&REGISTRY, cwd, action)
+}
+
+fn request_with(registry: &Mutex<Registry>, cwd: &Path, action: HostAction) -> Result<Value> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-    let bridge = lock(&REGISTRY).bridge(&cwd)?;
+    let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
     let operation = OperationId::new();
     let key = status_key(&action);
     let request = Request {

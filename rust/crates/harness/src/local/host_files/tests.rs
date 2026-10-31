@@ -58,6 +58,7 @@ fn projection_reads_cannot_wake_either_endpoint() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn workspace_projection_uses_shared_results_without_client_state() -> Result<()> {
+    let registry = Arc::new(Mutex::<Registry>::default());
     let checkout = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let (changed, mut changes) = tokio::sync::mpsc::unbounded_channel();
@@ -127,7 +128,92 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         outside
     };
     let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
+    let other_checkout = tempfile::tempdir().map_err(storage)?;
+    watcher
+        .watch(other_checkout.path(), RecursiveMode::Recursive)
+        .map_err(storage)?;
+    let other_local = Arc::new(
+        LocalHarness::open(
+            LocalHarnessConfig::native_host(other_checkout.path())
+                .state_directory(state.path().join("other-owner")),
+        )
+        .await?,
+    );
+    let mut other_owner = tokio::spawn(Box::pin(serve(Arc::clone(&other_local))));
+    let other_descriptor = other_checkout.path().join(DIRECTORY).join("owner.json");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !other_descriptor.is_file() {
+            projection_event(&mut changes, &mut other_owner).await?;
+        }
+        Ok::<_, Error>(())
+    })
+    .await
+    .map_err(storage)??;
+    watcher.unwatch(other_checkout.path()).map_err(storage)?;
+    let other_cwd = std::fs::canonicalize(other_checkout.path()).map_err(storage)?;
+    let opening_registry = Arc::clone(&registry);
+    let opening_cwd = cwd.clone();
+    let connected = tokio::task::spawn_blocking(move || {
+        std::thread::scope(|scope| -> Result<_> {
+            let registry = &opening_registry;
+            let cwd = &opening_cwd;
+            // Dropping the sole release producer also ends the paused open,
+            // so a failed assertion cannot leave the scoped thread waiting.
+            let (release, resume) = mpsc::sync_channel(1);
+            let (started, opening) = mpsc::sync_channel(1);
+            let first = scope.spawn(move || {
+                Registry::bridge(registry, cwd, |directory, endpoint| {
+                    started.send(()).map_err(storage)?;
+                    resume.recv().map_err(storage)?;
+                    Bridge::open(directory, endpoint)
+                })
+            });
+            opening.recv().map_err(storage)?;
+            assert!(
+                registry.try_lock().is_ok(),
+                "native connection setup must not hold the registry for unrelated owners"
+            );
+            let connection = lock(registry).bridges[&cwd.join(DIRECTORY)].clone();
+            assert!(
+                connection.try_lock().is_err(),
+                "the connecting owner must retain its single initialization slot"
+            );
+            let (started, overlapping) = mpsc::sync_channel(1);
+            let second = scope.spawn(move || {
+                started.send(()).map_err(storage)?;
+                Registry::bridge(registry, cwd, |_, _| {
+                    panic!("an overlapping connection must reuse the first native open")
+                })
+            });
+            overlapping.recv().map_err(storage)?;
+            let other = Registry::bridge(registry, &other_cwd, Bridge::open)?;
+            assert_eq!(other.workspace, other_cwd);
+            release.send(()).map_err(storage)?;
+            let first = first.join().expect("the first native open must settle")?;
+            let second = second
+                .join()
+                .expect("the overlapping connection must settle")?;
+            assert!(Arc::ptr_eq(&first, &second));
+            Ok(first)
+        })
+    })
+    .await
+    .map_err(storage)??;
+    other_owner.abort();
+    assert!(other_owner.await.unwrap_err().is_cancelled());
+    Arc::try_unwrap(other_local)
+        .map_err(|_| Error::Conflict("other workspace owner retained after shutdown".into()))?
+        .disconnect()
+        .await?;
+    assert!(Arc::ptr_eq(
+        &Registry::bridge(&registry, &cwd, |_, _| {
+            panic!("a warm connection must not repeat native setup")
+        })?,
+        &connected,
+    ));
+    let requests_registry = Arc::clone(&registry);
     let result = tokio::task::spawn_blocking(move || {
+        let request = |cwd: &Path, action| request_with(&requests_registry, cwd, action);
         let result = request(
             &cwd,
             HostAction::Open {
@@ -153,6 +239,12 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         })?;
         let child = PathBuf::from(spawned["cwd"].as_str().unwrap());
         assert_eq!(workspace_root(&child)?, cwd);
+        assert!(Arc::ptr_eq(
+            &Registry::bridge(&requests_registry, &child, |_, _| {
+                panic!("another directory of the same owner must reuse its connection")
+            })?,
+            &connected,
+        ));
         assert!(!child.join(DIRECTORY).join("owner.json").exists());
         assert_eq!(spawned["pending"], 1, "the first prompt is pending");
         // Spawning the same reference again names the same child.
@@ -310,13 +402,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     .await
     .map_err(storage)??;
     // Every registration retired, and with the last of each key its watch.
-    let directory = std::fs::canonicalize(checkout.path())
-        .map_err(storage)?
-        .join(DIRECTORY);
-    let bridge = lock(&REGISTRY)
-        .bridges
-        .get(&directory)
-        .cloned()
+    let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
+    let bridge = Registry::live(&registry, &cwd)
         .ok_or_else(|| Error::Conflict("client bridge absent".into()))?;
     assert!(lock(&bridge.shared.waiters).keys.is_empty());
     assert!(
@@ -368,12 +455,11 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .note(Err(notify::Error::io(std::io::Error::from(
             std::io::ErrorKind::PermissionDenied,
         ))));
-    let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
     assert!(
-        Arc::ptr_eq(&lock(&REGISTRY).bridge(&cwd)?, &bridge),
+        Arc::ptr_eq(&Registry::bridge(&registry, &cwd, Bridge::open)?, &bridge),
         "a failed live connection must not reopen its notification source"
     );
-    assert!(matches!(request(&cwd, HostAction::Agents {
+    assert!(matches!(request_with(&registry, &cwd, HostAction::Agents {
         task: serde_json::from_value(result["task"].clone()).map_err(storage)?,
     }), Err(Error::Storage(ref error)) if error == &failure));
     assert_eq!(
@@ -387,6 +473,38 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         !owner.is_finished(),
         "client failure must not kill the workspace owner"
     );
+    // The owner is still alive: failure of its native exit observation must
+    // retain that cause rather than falsely declaring the owner gone.
+    let (directory, endpoint) = discover(&cwd)?;
+    let observed = Arc::new(Bridge::open(&directory, endpoint)?);
+    let (delivery, response) = mpsc::sync_channel(1);
+    let waiting = observed.wait(WORKSPACE, OperationId::new(), delivery)?;
+    observed
+        .shared
+        .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
+    let first = match response.try_recv().expect("owner observer must settle") {
+        Delivery::Reply(Err(Error::Storage(error))) => error,
+        _ => panic!("owner observation failure must preserve its native cause"),
+    };
+    let failure = lock(&observed.shared.waiters)
+        .failure
+        .clone()
+        .expect("owner observation failure remains available");
+    assert_eq!(first, format!("operation={}; {failure}", waiting.operation));
+    assert!(failure.contains("step=observe native workspace owner exit:"));
+    assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
+    assert!(!lock(&observed.shared.waiters).gone);
+    drop(waiting);
+    observed
+        .shared
+        .owner_finished(Err(std::io::ErrorKind::PermissionDenied.into()));
+    let (late, _) = mpsc::sync_channel(1);
+    assert!(matches!(
+        observed.wait(WORKSPACE, OperationId::new(), late),
+        Err(Error::Storage(error)) if error == failure
+    ));
+    assert!(lock(&observed.shared.waiters).keys.is_empty());
+    assert!(lock(&observed.watching).watched.is_empty());
     let (producer, mut ended) = tokio::sync::mpsc::unbounded_channel();
     drop(producer);
     assert!(matches!(
