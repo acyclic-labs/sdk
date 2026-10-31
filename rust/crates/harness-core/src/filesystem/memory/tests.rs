@@ -58,8 +58,8 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         .map_err(|error| Error::Invalid(error.to_string()))?
         .len() as u64;
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes,
+        file_bytes: Some(4_096),
+        render_bytes: Some(render_bytes),
         ..Limits::default()
     };
     let tool = crate::tools::defaults()?
@@ -99,7 +99,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             assert!(matches!(
                 content.validate_limits(
                     Limits {
-                        render_bytes: render_bytes - 1,
+                        render_bytes: Some(render_bytes - 1),
                         ..limits
                     },
                     &mut None
@@ -115,7 +115,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             let narrowed = task.scoped(
                 task.scope().grants().clone(),
                 Limits {
-                    render_bytes: 4,
+                    render_bytes: Some(4),
                     ..limits
                 },
             )?;
@@ -155,8 +155,8 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
 async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes: 4_096,
+        file_bytes: Some(4_096),
+        render_bytes: Some(4_096),
         ..Limits::default()
     };
     let tool = crate::tools::defaults()?
@@ -288,8 +288,8 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
             == Some("one.txt")
     }));
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes: 1_024,
+        file_bytes: Some(4_096),
+        render_bytes: Some(1_024),
         ..Limits::default()
     };
     let tool = storage.list_files_tool(limits)?;
@@ -360,8 +360,8 @@ async fn local_private_volume_identity_is_unique_per_conversation() -> Result<()
 async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes: 4_096,
+        file_bytes: Some(4_096),
+        render_bytes: Some(4_096),
         ..Limits::default()
     };
     let mut tools = crate::tools::defaults()?;
@@ -467,8 +467,8 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         )
         .await?;
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes: 4_096,
+        file_bytes: Some(4_096),
+        render_bytes: Some(4_096),
         ..Limits::default()
     };
     let read_capability = storage.read_capability.clone();

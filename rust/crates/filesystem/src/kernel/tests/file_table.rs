@@ -323,10 +323,7 @@ fn batch_error_and_authenticated_child_bound_mapping_is_total() {
         map_batch_error(BatchError::Empty),
         FileRecordReadError::EmptyBatch
     ));
-    assert!(matches!(
-        map_batch_error(BatchError::TooManyQueries),
-        FileRecordReadError::TooManyQueries
-    ));
+
     assert!(matches!(
         map_batch_error(BatchError::WrongRootKind),
         FileRecordReadError::WrongRootKind
@@ -769,7 +766,6 @@ async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
             &store,
             root,
             &file_ids,
-            1,
             DecodeLimits::default(),
             budget,
             &cancellation,
@@ -803,7 +799,6 @@ async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
         &store,
         root,
         &file_ids,
-        1,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -834,7 +829,6 @@ async fn file_record_batch_shares_frontiers_and_preserves_order()
             FileId::from_bytes([2; 16]),
             FileId::from_bytes([3; 16]),
         ],
-        4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -920,7 +914,6 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
         &store,
         root,
         &[],
-        4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -930,23 +923,6 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
     .ok_or("empty file lookup batch unexpectedly succeeded")?;
     assert!(matches!(empty.error, FileRecordReadError::EmptyBatch));
     assert_eq!(empty.work.backend_read_operations, 0);
-    let excessive = lookup_file_records(
-        &store,
-        root,
-        &[FileId::from_bytes([1; 16]), FileId::from_bytes([2; 16])],
-        1,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("excessive file lookup batch unexpectedly succeeded")?;
-    assert!(matches!(
-        excessive.error,
-        FileRecordReadError::TooManyQueries
-    ));
-    assert_eq!(excessive.work.backend_read_operations, 0);
 
     let leaf = put_memory_page(&store, &FileTablePage::Leaf(vec![fifo_record(1)]), 8).await?;
     let forged = put_memory_page(

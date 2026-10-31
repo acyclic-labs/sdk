@@ -22,8 +22,6 @@ pub(crate) enum Error {
     Cancelled,
     #[error("batch lookup is empty")]
     Empty,
-    #[error("batch lookup exceeds its admitted query bound")]
-    TooManyQueries,
     #[error("batch lookup root has the wrong object kind")]
     WrongRootKind,
     #[error("batch lookup limits are invalid")]
@@ -68,7 +66,6 @@ pub(crate) async fn lookup_async<S, F>(
     store: &S,
     root: ObjectId,
     keys: &[F::Key],
-    maximum_queries: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -82,7 +79,6 @@ where
         store,
         root,
         keys,
-        maximum_queries,
         limits,
         &mut accounting,
         cancellation,
@@ -106,7 +102,6 @@ pub(crate) async fn lookup_async_with_accounting<S, F>(
     store: &S,
     root: ObjectId,
     keys: &[F::Key],
-    maximum_queries: u32,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -123,7 +118,7 @@ where
     F: Format,
 {
     accounting.check()?;
-    let mut machine = Machine::<F>::new(root, keys, maximum_queries, limits, accounting)?;
+    let mut machine = Machine::<F>::new(root, keys, limits, accounting)?;
     let result = async {
         while !machine.requests.value.is_empty() {
             cancellation.check()?;
@@ -221,7 +216,6 @@ impl<'a, F: Format> Machine<'a, F> {
     fn new(
         root: ObjectId,
         keys: &'a [F::Key],
-        maximum_queries: u32,
         limits: DecodeLimits,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
@@ -231,9 +225,6 @@ impl<'a, F: Format> Machine<'a, F> {
         if keys.is_empty() {
             return Err(query_error(Error::Empty));
         }
-        if maximum_queries == 0 || u32::try_from(keys.len()).unwrap_or(u32::MAX) > maximum_queries {
-            return Err(query_error(Error::TooManyQueries));
-        }
         if !limits.page_limits_valid(1) {
             return Err(query_error(Error::InvalidLimits));
         }
@@ -241,11 +232,7 @@ impl<'a, F: Format> Machine<'a, F> {
             .len()
             .checked_mul(usize::from(limits.maximum_page_height))
             .and_then(|count| count.checked_add(1))
-            .ok_or_else(|| query_error(Error::InvalidLimits))?
-            .min(
-                usize::try_from(limits.maximum_visited_pages)
-                    .map_err(|_| query_error(Error::InvalidLimits))?,
-            );
+            .ok_or_else(|| query_error(Error::InvalidLimits))?;
         let requests = Owned::allocate(0, accounting)?;
         let mut ordered = Owned::allocate(keys.len(), accounting)?;
         let initialized: Result<(), crate::FsError> = (|| {
@@ -289,7 +276,7 @@ impl<'a, F: Format> Machine<'a, F> {
                 return Err(error);
             }
         };
-        let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting);
+        let visited = VisitedObjectSet::new_with_accounting(accounting);
         let visited = match visited {
             Ok(visited) => visited,
             Err(error) => {

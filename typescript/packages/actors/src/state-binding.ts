@@ -27,6 +27,7 @@ export interface ActorStateBinding {
 export interface ActorStateTransaction {
   get(key: string): Uint8Array | undefined;
   put(key: string, value: Uint8Array): void;
+  delete(key: string): void;
   entries(): Iterable<readonly [string, Uint8Array]>;
   /** Exact retained plus staged frame count. */
   readonly journalTail: bigint;
@@ -68,7 +69,7 @@ export function materializeActorState(host: ActorStateHost): ActorStateBinding {
   const metadata = new Map(host.seed.metadata.map(({key, value}) => [key, copy(value)]));
   // durable: acknowledged journal cut. staged: the cut after every dispatched packet.
   let durable = position(BigInt(host.seed.journalTail)), staged = durable;
-  let writes = new Map<string, Uint8Array>();
+  let writes = new Map<string, Uint8Array | null>();
   let journal: Uint8Array[] = [];
   let alarm: import("./generated/guest.js").ActorStateAlarm = {type:"keep"};
   let pending = false, fenced = false;
@@ -82,7 +83,7 @@ export function materializeActorState(host: ActorStateHost): ActorStateBinding {
       let live = true;
       const scoped = () => { usable(); if (!live) throw new Error("actor state transaction expired"); };
       // Roll back only this callback's writes, preserving the earlier pending group.
-      const undo: [string, Uint8Array | undefined, Uint8Array | undefined][] = [];
+      const undo: [string, Uint8Array | undefined, Uint8Array | null | undefined][] = [];
       const journalLength = journal.length, previousAlarm = alarm, wasPending = pending;
       let accepted = false;
       const state: ActorStateTransaction = Object.freeze({
@@ -92,6 +93,12 @@ export function materializeActorState(host: ActorStateHost): ActorStateBinding {
           const retained = copy(value);
           undo.push([key,metadata.get(key),writes.get(key)]);
           metadata.set(key,retained); writes.set(key,retained); pending = true;
+        },
+        delete(key: string) {
+          scoped(); if (typeof key !== "string") throw new TypeError("actor state key must be a string");
+          if (!metadata.has(key)) return;
+          undo.push([key,metadata.get(key),writes.get(key)]);
+          metadata.delete(key); writes.set(key,null); pending = true;
         },
         *entries() { scoped(); for (const [key,value] of metadata) { scoped(); yield [key,copy(value)] as const; } },
         get journalTail() { scoped(); return staged + BigInt(journal.length); },
@@ -130,7 +137,11 @@ export function materializeActorState(host: ActorStateHost): ActorStateBinding {
       usable();
       if (activeTransaction) throw new Error("flush inside actor state transaction");
       if (pending) {
-        const request = {writes:Array.from(writes, ([key,value]) => ({key,value})), journalFrom:staged.toString(), journal, alarm};
+        const assignments: {key: string; value: Uint8Array}[] = [], deletions: string[] = [];
+        for (const [key,value] of writes) {
+          if (value === null) deletions.push(key); else assignments.push({key,value});
+        }
+        const request = {writes:assignments, deletions, journalFrom:staged.toString(), journal, alarm};
         const appended = BigInt(journal.length), previous = committing;
         staged += appended; writes = new Map(); journal = []; alarm = {type:"keep"}; pending = false;
         // A packet dispatches only after its predecessor is durable; a failed

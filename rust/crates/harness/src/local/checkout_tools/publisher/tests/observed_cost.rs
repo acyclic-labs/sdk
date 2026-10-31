@@ -58,7 +58,7 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
     let view = publisher.tools.workspace.view();
     let writer = publisher.writer_for(&harness.project, view.workspace())?;
     let staged = writer
-        .observe_staged_once(operation, None, publisher.maximum, Default::default())?
+        .observe_staged_once(operation, publisher.maximum, Default::default())?
         .await?
         .0
         .ok_or_else(|| Error::NotFound("staged publication".into()))?;
@@ -204,7 +204,7 @@ async fn differing_captured_bytes_keep_the_original_publication_reference() -> R
     let view = publisher.tools.workspace.view();
     let writer = publisher.writer_for(&harness.project, view.workspace())?;
     let staged = writer
-        .observe_staged_once(operation, None, publisher.maximum, Default::default())?
+        .observe_staged_once(operation, publisher.maximum, Default::default())?
         .await?
         .0
         .ok_or_else(|| Error::NotFound("pending publication".into()))?;

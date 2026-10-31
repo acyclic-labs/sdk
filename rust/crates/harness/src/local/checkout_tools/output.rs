@@ -1,14 +1,8 @@
 //! Tool output is staged on the agent's private volume while the command runs.
 use super::*;
 use acyclic_native_runtime::ProcessOutput;
-use std::time::Duration;
-use tokio::sync::{Mutex, Notify, oneshot};
 
 mod writer;
-
-/// The native contract's bound on one host control check.
-pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
-const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Waits, from a native capture worker, for one output publication. It
 /// completes when the volume answers, never on a wall-clock deadline.
@@ -20,12 +14,8 @@ pub(super) fn await_publication<T, F: std::future::Future<Output = std::io::Resu
 }
 
 pub(super) struct Output {
-    writer: Arc<Mutex<writer::Writer>>,
-    ready: Arc<Notify>,
-    stop: Option<oneshot::Sender<()>>,
-    timer: Option<tokio::task::JoinHandle<()>>,
+    writer: Option<writer::Writer>,
     runtime: tokio::runtime::Handle,
-    finished: bool,
     pub(super) health: Health,
 }
 
@@ -85,81 +75,49 @@ impl Health {
 
 impl Output {
     pub(super) async fn open(context: &ToolContext, request: Vec<u8>) -> Result<Self> {
-        let writer = writer::Writer::open(context, request).await?;
-        let writer = Arc::new(Mutex::new(writer));
-        let ready = Arc::new(Notify::new());
-        let health = Health::default();
-        let (stop, stopped) = oneshot::channel();
-        let timer = tokio::spawn(flush_ready(
-            writer.clone(),
-            ready.clone(),
-            health.clone(),
-            stopped,
-        ));
         Ok(Self {
-            writer,
-            ready,
-            stop: Some(stop),
-            timer: Some(timer),
+            writer: Some(writer::Writer::open(context, request).await?),
             runtime: tokio::runtime::Handle::current(),
-            finished: false,
-            health,
+            health: Health::default(),
         })
     }
 
-    // Native capture invokes this callback on its blocking I/O worker. Most
-    // chunks only copy into the bounded buffer; full batches publish immediately.
+    // The native capture worker publishes every observed chunk before accepting
+    // more output. Publication supplies backpressure without a timer or queue.
     pub(super) fn observe(&mut self, chunk: ProcessOutput<'_>) -> std::io::Result<()> {
         self.health.check()?;
-        let mut writer = self.writer.blocking_lock();
-        self.health.check()?;
-        let was_empty = !writer.pending();
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or(std::io::ErrorKind::NotConnected)?;
         if let Err(cause) = writer.observe(chunk) {
             self.health.fail(&cause);
             return Err(cause);
-        }
-        if was_empty && writer.pending() {
-            self.ready.notify_one();
         }
         Ok(())
     }
 
     pub(super) async fn finish(&mut self, result: &ToolResult) -> Result<()> {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
-        if let Some(timer) = self.timer.take() {
-            timer.await.map_err(storage)?;
-        }
-        // Joining the timer closes its last failure publication. A command
-        // that ended before its wake was consumed cannot publish success.
         self.health.check().map_err(storage)?;
-        self.writer.lock().await.finish(result).await?;
-        self.finished = true;
+        self.writer
+            .as_mut()
+            .ok_or_else(|| Error::Storage("tool output is closed".into()))?
+            .finish(result)
+            .await?;
+        self.writer.take();
         Ok(())
     }
 }
 
 impl Drop for Output {
     fn drop(&mut self) {
-        if self.finished {
+        let Some(mut writer) = self.writer.take() else {
             return;
-        }
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
-        let timer = self.timer.take();
-        let writer = Arc::clone(&self.writer);
+        };
         // Capture owns Output until the physical worker has drained and reaped
-        // its process tree. If the awaiting caller disappears, that worker's
-        // final drop still stages the accepted bytes.
+        // its process tree. If publication was interrupted, retain its pending
+        // bytes through the existing cleanup task.
         self.runtime.spawn(async move {
-            if let Some(timer) = timer
-                && let Err(cause) = timer.await
-            {
-                tracing::error!(?cause, "tool output timer cleanup failed");
-            }
-            let mut writer = writer.lock().await;
             let result = async {
                 writer.flush(false).await?;
                 writer.flush(true).await
@@ -172,35 +130,90 @@ impl Drop for Output {
     }
 }
 
-async fn flush_ready(
-    writer: Arc<Mutex<writer::Writer>>,
-    ready: Arc<Notify>,
-    health: Health,
-    mut stopped: oneshot::Receiver<()>,
-) {
-    loop {
-        tokio::select! {
-            biased;
-            _ = &mut stopped => return,
-            () = ready.notified() => {},
-        }
-        if !writer.lock().await.pending() {
-            continue;
-        }
-        tokio::select! {
-            biased;
-            _ = &mut stopped => return,
-            () = tokio::time::sleep(OUTPUT_FLUSH_INTERVAL) => {},
-        }
-        let mut writer = writer.lock().await;
-        let result = async {
-            writer.flush(false).await?;
-            writer.flush(true).await
-        }
-        .await;
-        if let Err(cause) = result {
-            health.fail(cause);
-            return;
-        }
+#[cfg(all(test, not(loom)))]
+#[tokio::test]
+async fn observed_output_is_published_before_callback_returns() -> Result<()> {
+    use crate::conversation::Limits;
+    use crate::filesystem::MemoryHarnessStorage;
+    use crate::runtime::{Bindings, RuntimeScope};
+
+    let files = MemoryHarnessStorage::new(crate::AgentId::new(), 1024).await?;
+    let mut bindings = Bindings::local();
+    bindings.scope = RuntimeScope::new(
+        files.owner_scope().capabilities().clone(),
+        Limits {
+            file_bytes: Some(1024),
+            ..Limits::default()
+        },
+    )?;
+    let task = bindings.build()?.agent_context(
+        &crate::Capabilities::new(Vec::<String>::new()),
+        files.content_bindings(),
+    )?;
+    let context = ToolContext::new(Arc::new(task), OperationId::new(), "output")?;
+    let directory = format!("tools/{}/{}", context.turn_id(), context.operation_id());
+    let mut output = Output::open(&context, b"{}".to_vec()).await?;
+    let (mut output, body) = tokio::task::spawn_blocking(move || {
+        let body: Vec<_> = (0..2500).map(|index| index as u8).collect();
+        output
+            .observe(ProcessOutput::Stdout(&body))
+            .map_err(storage)?;
+        output
+            .observe(ProcessOutput::Stderr(b"diagnostic"))
+            .map_err(storage)?;
+        Ok::<_, Error>((output, body))
+    })
+    .await
+    .map_err(storage)??;
+    // No finish, scheduler yield, timer advance or follow is needed for these
+    // exact bytes, including the partial final chunk, to be committed.
+    let mut observed = Vec::new();
+    for sequence in 0..3 {
+        let (_, bytes) = files
+            .read_delegated_path(
+                files.owner_scope(),
+                "tools",
+                &format!("{directory}/stdout/{sequence:016x}"),
+                None,
+            )
+            .await?;
+        observed.extend_from_slice(&bytes);
     }
+    assert_eq!(observed, body);
+    let (_, stderr) = files
+        .read_delegated_path(
+            files.owner_scope(),
+            "tools",
+            &format!("{directory}/stderr/0000000000000000"),
+            None,
+        )
+        .await?;
+    assert_eq!(stderr.as_ref(), b"diagnostic");
+    let (_, before) = files
+        .list_private_directory(&directory, None, None, 16)
+        .await?;
+    assert!(
+        !before
+            .entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"result.json")
+    );
+    output
+        .finish(&ToolResult {
+            value: serde_json::json!({"success": true}),
+        })
+        .await?;
+    let (_, result) = files
+        .read_delegated_path(
+            files.owner_scope(),
+            "tools",
+            &format!("{directory}/result.json"),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&result).map_err(storage)?,
+        serde_json::json!({"success": true})
+    );
+    Ok(())
 }

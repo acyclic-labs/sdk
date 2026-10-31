@@ -58,8 +58,8 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
         Ok(())
     };
     let bounds = JsonBounds {
-        maximum_bytes: 65536,
-        maximum_items: 65536,
+        maximum_bytes: Some(65536),
+        maximum_items: Some(65536),
         maximum_depth: 256,
     };
     let mut actual = if canonical {
@@ -179,8 +179,8 @@ fn index_scan_examines_exactly_its_admitted_items() {
     let document = br#"{"a":7,"z":["a",["b\"]"],[],true]}"#;
     let items = lexical_items(document);
     let bounds = JsonBounds {
-        maximum_bytes: 65536,
-        maximum_items: 65536,
+        maximum_bytes: Some(65536),
+        maximum_items: Some(65536),
         maximum_depth: 256,
     };
     for (funded, reason) in [
@@ -238,8 +238,8 @@ mod allocation_prefixes {
             output = json_bytes_bounded(
                 value,
                 JsonBounds {
-                    maximum_bytes: 65536,
-                    maximum_items: 65536,
+                    maximum_bytes: Some(65536),
+                    maximum_items: Some(65536),
                     maximum_depth: 256,
                 },
                 Some(crate::wire::ErrorCode::Invalid),

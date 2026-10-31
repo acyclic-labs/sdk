@@ -1,7 +1,7 @@
 /** Where forks come from. acyclic gives O(1) overlay mounts and a three-way merge on promote.
  *  Without acyclic, plain git worktrees do the same job with a copy per fork and a patch on promote,
  *  so the rest of the acyclic sdk is optional. */
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "./generated/process-capture.mjs";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -33,9 +33,9 @@ export class AcyclicForker implements Forker {
 }
 
 function git(cwd: string, args: string[], allowFail = false): string {
-  const p = spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
+  const p = captureCommand("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   if (p.error) throw p.error;
-  if (p.status !== 0 && !allowFail) throw new Error(`git ${args.join(" ")} failed: ${(p.stderr || p.stdout).trim().slice(0, 300)}`);
+  if (p.status !== 0 && !allowFail) throw new Error(`git ${args.join(" ")} failed: ${(p.stderr || p.stdout).trim()}`);
   return p.stdout;
 }
 
@@ -97,10 +97,10 @@ export class GitForker implements Forker {
       const path = join(this.root, id);
       git(this.repo, ["worktree", "add", "--detach", "-q", path, head]);
       if (dirty.trim()) {
-        const p = spawnSync("git", ["apply", "--allow-empty", "-"], { cwd: path, input: dirty, encoding: "utf8" });
+        const p = captureCommand("git", ["apply", "--allow-empty", "-"], { cwd: path, input: dirty, encoding: "utf8" });
         if (p.status !== 0) throw new Error(`could not carry uncommitted changes into fork: ${p.stderr}`);
       }
-      for (const f of untracked) { spawnSync("mkdir", ["-p", join(path, f, "..")]); spawnSync("cp", ["-R", join(this.repo, f), join(path, f)]); }
+      for (const f of untracked) { captureCommand("mkdir", ["-p", join(path, f, "..")]); captureCommand("cp", ["-R", join(this.repo, f), join(path, f)]); }
       forks.push({ id, path, base: head.slice(0, 12), label: LABELS[i] ?? String(i) });
     }
     return forks;

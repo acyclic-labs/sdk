@@ -17,7 +17,7 @@ impl Observation {
             generation = Empty
         ))
     }
-    pub(super) fn session(attempt: u32) -> Self {
+    pub(super) fn session(attempt: u64) -> Self {
         Self {
             operation: OperationSpan::new_root(tracing::info_span!(
             parent: None,

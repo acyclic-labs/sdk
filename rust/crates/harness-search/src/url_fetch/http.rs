@@ -1,21 +1,16 @@
-use super::{
-    FetchProvider, FetchRequest, FetchResponse, MAXIMUM_URL_BYTES, rejection, validate_url_text,
-};
+use super::{FetchProvider, FetchRequest, FetchResponse, rejection, validate_url_text};
 use crate::http::transport_error;
 use crate::tool::edit::{allocation, charge, reserve_string};
 use crate::{Error, NativeCustody, NativeWork, Result};
 use acyclic_stream::BoxProviderFuture;
 use reqwest::Url;
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc};
 
 #[cfg(all(test, feature = "filesystem"))]
 mod native_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transport;
-
-const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
-const MAXIMUM_REDIRECTS: usize = 5;
 
 /// Direct GET adapter. No keys, cookies, proxy credentials, or search provider are used.
 pub struct HttpFetch {
@@ -41,13 +36,7 @@ impl HttpFetch {
         request: &FetchRequest,
         work: NativeWork<'_>,
     ) -> Result<(FetchResponse, NativeCustody)> {
-        // The deadline covers the entire redirect chain, not thirty seconds per hop.
-        await_io(
-            tokio::time::timeout(Duration::from_secs(30), self.retrieve(request, work)),
-            work,
-        )
-        .await?
-        .map_err(|_| transport_error(work, "fetch HTTP request timed out"))?
+        await_io(self.retrieve(request, work), work).await?
     }
 
     async fn retrieve(
@@ -63,7 +52,13 @@ impl HttpFetch {
                 .is_ok_and(|ip| !public_address(ip))
                 || host.eq_ignore_ascii_case("localhost")
         });
-        for redirects in 0..=MAXIMUM_REDIRECTS {
+        let mut redirected = false;
+        // Declare custody before its collection so the physical URLs/table
+        // retire before their original-ledger owners on every return path.
+        let mut previous_held = allocation(work, 0)?;
+        let mut table_held = allocation(work, 0)?;
+        let mut previous = HashSet::new();
+        loop {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = work {
                 work.admit(acyclic_fs::WorkCounters {
@@ -80,7 +75,7 @@ impl HttpFetch {
             let response = transport::send(
                 &endpoint,
                 &self.tls,
-                redirects > 0 && (!explicitly_local || endpoint.origin() != original_origin),
+                redirected && (!explicitly_local || endpoint.origin() != original_origin),
                 work,
                 &mut failure,
             )
@@ -90,15 +85,13 @@ impl HttpFetch {
             }
             match response? {
                 transport::Response::Redirect(location, _location_held) => {
-                    if redirects == MAXIMUM_REDIRECTS {
-                        return Err(rejection(work, "fetch redirect limit exceeded"));
-                    }
-                    let next_held = url_allocation(endpoint.as_str().len() + location.len(), work)?;
-                    charge(
-                        &next_held,
-                        (endpoint.as_str().len() + location.len()) as u64,
-                        location.len() as u64,
-                    )?;
+                    let length = endpoint
+                        .as_str()
+                        .len()
+                        .checked_add(location.len())
+                        .ok_or_else(|| crate::error(work, "fetch redirect size overflow"))?;
+                    let next_held = url_allocation(length, work)?;
+                    charge(&next_held, length as u64, location.len() as u64)?;
                     let next = endpoint
                         .join(&location)
                         .map_err(|_| rejection(work, "invalid fetch redirect URL"))?;
@@ -109,6 +102,33 @@ impl HttpFetch {
                     if endpoint.scheme() == "https" && next.scheme() != "https" {
                         return Err(rejection(work, "fetch redirect cannot downgrade HTTPS"));
                     }
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    if let Some(work) = work {
+                        let hashed = endpoint
+                            .as_str()
+                            .len()
+                            .checked_add(next.as_str().len())
+                            .ok_or_else(|| {
+                                crate::error(Some(work), "fetch redirect size overflow")
+                            })?;
+                        work.charge(acyclic_fs::WorkCounters {
+                            bytes_hashed: hashed as u64,
+                            items_examined: 2,
+                            ..Default::default()
+                        })?;
+                    }
+                    if next == endpoint || previous.contains(&next) {
+                        return Err(rejection(work, "fetch redirect cycle"));
+                    }
+                    reserve_redirect(&mut previous, &mut table_held, work)?;
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    if let (Some(previous), Some(current)) =
+                        (&mut previous_held, &mut endpoint_held)
+                    {
+                        previous.absorb(current)?;
+                    }
+                    previous.insert(endpoint);
+                    redirected = true;
                     endpoint = next;
                     endpoint_held = next_held;
                 }
@@ -137,13 +157,52 @@ impl HttpFetch {
                         output.absorb(input)?;
                         output.resize(super::response_bytes(&response)?)?;
                     }
-                    let _ = (&mut held, &endpoint_held);
+                    let _ = (&mut held, &endpoint_held, &mut previous_held);
                     return Ok((response, output_held));
                 }
             }
         }
-        Err(rejection(work, "fetch redirect limit exceeded"))
     }
+}
+
+/// Admit the replacement hash table before its allocator runs. Retained URL
+/// buffers move from the current endpoint into `previous` without cloning.
+fn reserve_redirect(
+    previous: &mut HashSet<Url>,
+    table_held: &mut NativeCustody,
+    work: NativeWork<'_>,
+) -> Result<()> {
+    if previous.len() < previous.capacity() {
+        return Ok(());
+    }
+    // The standard table rounds to power-of-two buckets. Four buckets per
+    // entry cover rounding and spare load; include the control tail/alignment.
+    let bytes = previous
+        .len()
+        .checked_add(1)
+        .and_then(|entries| entries.checked_mul(4))
+        .and_then(|buckets| buckets.checked_mul(std::mem::size_of::<Url>() + 1))
+        .and_then(|bytes| bytes.checked_add(64))
+        .ok_or_else(|| crate::error(work, "fetch redirect ownership overflow"))?;
+    let replacement = allocation(work, bytes)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        let hashed = previous.iter().try_fold(0u64, |bytes, url| {
+            bytes
+                .checked_add(url.as_str().len() as u64)
+                .ok_or_else(|| crate::error(Some(work), "fetch redirect size overflow"))
+        })?;
+        work.charge(acyclic_fs::WorkCounters {
+            allocation_operations: 1,
+            bytes_hashed: hashed,
+            items_examined: previous.len() as u64,
+            ..Default::default()
+        })?;
+    }
+    previous.try_reserve(1).map_err(Error::Allocation)?;
+    // try_reserve retired the old backing table before its credit is released.
+    *table_held = replacement;
+    Ok(())
 }
 
 fn copy_text(text: &str, held: &mut NativeCustody) -> Result<String> {
@@ -156,7 +215,11 @@ fn copy_text(text: &str, held: &mut NativeCustody) -> Result<String> {
 
 fn url_allocation(length: usize, work: NativeWork<'_>) -> Result<NativeCustody> {
     // Fund the URL serializer's old/replacement text and host representation while parsing.
-    let held = allocation(work, length * 4 + std::mem::size_of::<Url>() + 128)?;
+    let bytes = length
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(std::mem::size_of::<Url>() + 128))
+        .ok_or_else(|| crate::error(work, "fetch URL ownership overflow"))?;
+    let held = allocation(work, bytes)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
@@ -195,7 +258,6 @@ fn validate_endpoint(endpoint: &Url, work: NativeWork<'_>) -> Result<()> {
         || !endpoint.username().is_empty()
         || endpoint.password().is_some()
         || endpoint.fragment().is_some()
-        || endpoint.as_str().len() > MAXIMUM_URL_BYTES
     {
         return Err(rejection(work, "invalid fetch URL"));
     }

@@ -140,7 +140,7 @@ impl Decoder {
 
 pub(crate) fn frames<'a>(
     mut body: BoxProviderStream<'a, Result<Bytes>>,
-    maximum: usize,
+    maximum: Option<usize>,
     mut decoder: Decoder,
 ) -> impl Stream<Item = Result<Frame>> + acyclic_stream::ProviderTask + 'a {
     async_stream::try_stream! {
@@ -152,7 +152,7 @@ pub(crate) fn frames<'a>(
                 decoder.cr = byte == b'\r';
                 if byte != b'\n' && byte != b'\r' {
                     decoder.bytes = decoder.bytes.checked_add(1).ok_or_else(|| decoder.failure("SSE size overflow"))?;
-                    if decoder.bytes > maximum { Err(decoder.failure("SSE event exceeds configured byte limit"))?; }
+                    if maximum.is_some_and(|maximum| decoder.bytes > maximum) { Err(decoder.failure("SSE event exceeds configured byte limit"))?; }
                     decoder.line_byte(byte)?;
                 } else if decoder.line.is_empty() {
                     decoder.bytes = 0;
@@ -175,7 +175,9 @@ pub(crate) fn frames<'a>(
 
 pub(crate) fn decode<'a>(
     body: BoxProviderStream<'a, Result<Bytes>>,
-    maximum: usize,
+    maximum: impl Into<Option<usize>>,
 ) -> BoxProviderStream<'a, Result<String>> {
-    Box::pin(frames(body, maximum, Decoder::default()).map(|frame| frame.map(|frame| frame.data)))
+    Box::pin(
+        frames(body, maximum.into(), Decoder::default()).map(|frame| frame.map(|frame| frame.data)),
+    )
 }

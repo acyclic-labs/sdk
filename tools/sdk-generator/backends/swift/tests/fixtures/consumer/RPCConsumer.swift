@@ -185,6 +185,11 @@ struct Probe2: Acyclic_Stream_V1_StreamService.SimpleServiceProtocol {
  try rpcRequire(request == schema.seeded(Acyclic_Stream_V1_TailRequest.self, tag: 1), "native request payload differs: acyclic.stream.v1.StreamService/Tail")
  return try schema.seeded(Acyclic_Stream_V1_TailResponse.self, tag: 2)
  }
+ func head(request: Acyclic_Stream_V1_HeadRequest, context: ServerContext) async throws -> Acyclic_Stream_V1_PathHead {
+ try rpcRequire(context.descriptor.fullyQualifiedMethod == "acyclic.stream.v1.StreamService/Head", "actual server method path differs")
+ try rpcRequire(request == schema.seeded(Acyclic_Stream_V1_HeadRequest.self, tag: 1), "native request payload differs: acyclic.stream.v1.StreamService/Head")
+ return try schema.seeded(Acyclic_Stream_V1_PathHead.self, tag: 2)
+ }
  func fork(request: Acyclic_Stream_V1_ForkRequest, context: ServerContext) async throws -> Acyclic_Stream_V1_ForkReceipt {
  try rpcRequire(context.descriptor.fullyQualifiedMethod == "acyclic.stream.v1.StreamService/Fork", "actual server method path differs")
  try rpcRequire(request == schema.seeded(Acyclic_Stream_V1_ForkRequest.self, tag: 1), "native request payload differs: acyclic.stream.v1.StreamService/Fork")
@@ -195,23 +200,6 @@ struct Probe2: Acyclic_Stream_V1_StreamService.SimpleServiceProtocol {
  try rpcRequire(request == schema.seeded(Acyclic_Stream_V1_ReadRequest.self, tag: 1), "native request payload differs: acyclic.stream.v1.StreamService/Read")
  try await response.write(schema.seeded(Acyclic_Stream_V1_ReadResponse.self, tag: 2))
  try await response.write(schema.seeded(Acyclic_Stream_V1_ReadResponse.self, tag: 3))
- }
- func follow(request: Acyclic_Stream_V1_FollowRequest, response: RPCWriter<Acyclic_Stream_V1_ReadResponse>, context: ServerContext) async throws {
- try rpcRequire(context.descriptor.fullyQualifiedMethod == "acyclic.stream.v1.StreamService/Follow", "actual server method path differs")
- try rpcRequire(request == schema.seeded(Acyclic_Stream_V1_FollowRequest.self, tag: 1), "native request payload differs: acyclic.stream.v1.StreamService/Follow")
- try await response.write(schema.seeded(Acyclic_Stream_V1_ReadResponse.self, tag: 2))
- try await response.write(schema.seeded(Acyclic_Stream_V1_ReadResponse.self, tag: 3))
- }
- func acknowledgeDelivery(request: Acyclic_Stream_V1_AcknowledgeDeliveryRequest, context: ServerContext) async throws -> Acyclic_Stream_V1_AcknowledgeDeliveryResponse {
- try rpcRequire(context.descriptor.fullyQualifiedMethod == "acyclic.stream.v1.StreamService/AcknowledgeDelivery", "actual server method path differs")
- try rpcRequire(request == schema.seeded(Acyclic_Stream_V1_AcknowledgeDeliveryRequest.self, tag: 1), "native request payload differs: acyclic.stream.v1.StreamService/AcknowledgeDelivery")
- return try schema.seeded(Acyclic_Stream_V1_AcknowledgeDeliveryResponse.self, tag: 2)
- }
- func children(request: Acyclic_Stream_V1_ChildrenRequest, response: RPCWriter<Acyclic_Stream_V1_ChildrenResponse>, context: ServerContext) async throws {
- try rpcRequire(context.descriptor.fullyQualifiedMethod == "acyclic.stream.v1.StreamService/Children", "actual server method path differs")
- try rpcRequire(request == schema.seeded(Acyclic_Stream_V1_ChildrenRequest.self, tag: 1), "native request payload differs: acyclic.stream.v1.StreamService/Children")
- try await response.write(schema.seeded(Acyclic_Stream_V1_ChildrenResponse.self, tag: 2))
- try await response.write(schema.seeded(Acyclic_Stream_V1_ChildrenResponse.self, tag: 3))
  }
  func childrenPage(request: Acyclic_Stream_V1_ChildrenPageRequest, context: ServerContext) async throws -> Acyclic_Stream_V1_ChildrenPageResponse {
  try rpcRequire(context.descriptor.fullyQualifiedMethod == "acyclic.stream.v1.StreamService/ChildrenPage", "actual server method path differs")
@@ -248,15 +236,13 @@ try rpcRequire(Set(Acyclic_Actors_V1_ActorsService.Method.descriptors.map(\.full
 try schema.check("acyclic.stream.v1.StreamService/InspectIdempotency", input: Acyclic_Stream_V1_InspectIdempotencyRequest.self, output: Acyclic_Stream_V1_InspectIdempotencyResponse.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.InspectIdempotency.descriptor)
 try schema.check("acyclic.stream.v1.StreamService/Append", input: Acyclic_Stream_V1_AppendRequest.self, output: Acyclic_Stream_V1_AppendResponse.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.Append.descriptor)
 try schema.check("acyclic.stream.v1.StreamService/Tail", input: Acyclic_Stream_V1_TailRequest.self, output: Acyclic_Stream_V1_TailResponse.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.Tail.descriptor)
+try schema.check("acyclic.stream.v1.StreamService/Head", input: Acyclic_Stream_V1_HeadRequest.self, output: Acyclic_Stream_V1_PathHead.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.Head.descriptor)
 try schema.check("acyclic.stream.v1.StreamService/Fork", input: Acyclic_Stream_V1_ForkRequest.self, output: Acyclic_Stream_V1_ForkReceipt.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.Fork.descriptor)
 try schema.check("acyclic.stream.v1.StreamService/Read", input: Acyclic_Stream_V1_ReadRequest.self, output: Acyclic_Stream_V1_ReadResponse.self, streaming: true, descriptor: Acyclic_Stream_V1_StreamService.Method.Read.descriptor)
-try schema.check("acyclic.stream.v1.StreamService/Follow", input: Acyclic_Stream_V1_FollowRequest.self, output: Acyclic_Stream_V1_ReadResponse.self, streaming: true, descriptor: Acyclic_Stream_V1_StreamService.Method.Follow.descriptor)
-try schema.check("acyclic.stream.v1.StreamService/AcknowledgeDelivery", input: Acyclic_Stream_V1_AcknowledgeDeliveryRequest.self, output: Acyclic_Stream_V1_AcknowledgeDeliveryResponse.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.AcknowledgeDelivery.descriptor)
-try schema.check("acyclic.stream.v1.StreamService/Children", input: Acyclic_Stream_V1_ChildrenRequest.self, output: Acyclic_Stream_V1_ChildrenResponse.self, streaming: true, descriptor: Acyclic_Stream_V1_StreamService.Method.Children.descriptor)
 try schema.check("acyclic.stream.v1.StreamService/ChildrenPage", input: Acyclic_Stream_V1_ChildrenPageRequest.self, output: Acyclic_Stream_V1_ChildrenPageResponse.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.ChildrenPage.descriptor)
 try schema.check("acyclic.stream.v1.StreamService/Commit", input: Acyclic_Stream_V1_CommitRequest.self, output: Acyclic_Stream_V1_CommitResponse.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.Commit.descriptor)
 try schema.check("acyclic.stream.v1.StreamService/ReadCommit", input: Acyclic_Stream_V1_ReadCommitRequest.self, output: Acyclic_Stream_V1_CommittedEnvelope.self, streaming: false, descriptor: Acyclic_Stream_V1_StreamService.Method.ReadCommit.descriptor)
-try rpcRequire(Set(Acyclic_Stream_V1_StreamService.Method.descriptors.map(\.fullyQualifiedMethod)) == Set(["acyclic.stream.v1.StreamService/InspectIdempotency", "acyclic.stream.v1.StreamService/Append", "acyclic.stream.v1.StreamService/Tail", "acyclic.stream.v1.StreamService/Fork", "acyclic.stream.v1.StreamService/Read", "acyclic.stream.v1.StreamService/Follow", "acyclic.stream.v1.StreamService/AcknowledgeDelivery", "acyclic.stream.v1.StreamService/Children", "acyclic.stream.v1.StreamService/ChildrenPage", "acyclic.stream.v1.StreamService/Commit", "acyclic.stream.v1.StreamService/ReadCommit"]), "generated service method inventory differs")
+try rpcRequire(Set(Acyclic_Stream_V1_StreamService.Method.descriptors.map(\.fullyQualifiedMethod)) == Set(["acyclic.stream.v1.StreamService/InspectIdempotency", "acyclic.stream.v1.StreamService/Append", "acyclic.stream.v1.StreamService/Tail", "acyclic.stream.v1.StreamService/Head", "acyclic.stream.v1.StreamService/Fork", "acyclic.stream.v1.StreamService/Read", "acyclic.stream.v1.StreamService/ChildrenPage", "acyclic.stream.v1.StreamService/Commit", "acyclic.stream.v1.StreamService/ReadCommit"]), "generated service method inventory differs")
 let transport = InProcessTransport()
 try await withGRPCServer(transport: transport.server, services: [Probe0(schema: schema), Probe2(schema: schema)]) { _ in
 try await withGRPCClient(transport: transport.client) { client in
@@ -294,6 +280,8 @@ let result19: Acyclic_Stream_V1_AppendResponse = try await api2.append(request: 
 try rpcRequire(result19 == schema.seeded(Acyclic_Stream_V1_AppendResponse.self, tag: 2), "native response payload differs: acyclic.stream.v1.StreamService/Append")
 let result20: Acyclic_Stream_V1_TailResponse = try await api2.tail(request: .init(message: schema.seeded(Acyclic_Stream_V1_TailRequest.self, tag: 1)))
 try rpcRequire(result20 == schema.seeded(Acyclic_Stream_V1_TailResponse.self, tag: 2), "native response payload differs: acyclic.stream.v1.StreamService/Tail")
+let headResult: Acyclic_Stream_V1_PathHead = try await api2.head(request: .init(message: schema.seeded(Acyclic_Stream_V1_HeadRequest.self, tag: 1)))
+try rpcRequire(headResult == schema.seeded(Acyclic_Stream_V1_PathHead.self, tag: 2), "native response payload differs: acyclic.stream.v1.StreamService/Head")
 let result21: Acyclic_Stream_V1_ForkReceipt = try await api2.fork(request: .init(message: schema.seeded(Acyclic_Stream_V1_ForkRequest.self, tag: 1)))
 try rpcRequire(result21 == schema.seeded(Acyclic_Stream_V1_ForkReceipt.self, tag: 2), "native response payload differs: acyclic.stream.v1.StreamService/Fork")
 let result22 = try await api2.read(request: .init(message: schema.seeded(Acyclic_Stream_V1_ReadRequest.self, tag: 1))) { response in
@@ -302,24 +290,10 @@ let result22 = try await api2.read(request: .init(message: schema.seeded(Acyclic
  return messages
 }
 try rpcRequire(result22 == [schema.seeded(Acyclic_Stream_V1_ReadResponse.self, tag: 2), schema.seeded(Acyclic_Stream_V1_ReadResponse.self, tag: 3)], "native streaming response payload differs: acyclic.stream.v1.StreamService/Read")
-let result23 = try await api2.follow(request: .init(message: schema.seeded(Acyclic_Stream_V1_FollowRequest.self, tag: 1))) { response in
- var messages: [Acyclic_Stream_V1_ReadResponse] = []
- for try await message in response.messages { messages.append(message) }
- return messages
-}
-try rpcRequire(result23 == [schema.seeded(Acyclic_Stream_V1_ReadResponse.self, tag: 2), schema.seeded(Acyclic_Stream_V1_ReadResponse.self, tag: 3)], "native streaming response payload differs: acyclic.stream.v1.StreamService/Follow")
-let result24 = try await api2.children(request: .init(message: schema.seeded(Acyclic_Stream_V1_ChildrenRequest.self, tag: 1))) { response in
- var messages: [Acyclic_Stream_V1_ChildrenResponse] = []
- for try await message in response.messages { messages.append(message) }
- return messages
-}
-try rpcRequire(result24 == [schema.seeded(Acyclic_Stream_V1_ChildrenResponse.self, tag: 2), schema.seeded(Acyclic_Stream_V1_ChildrenResponse.self, tag: 3)], "native streaming response payload differs: acyclic.stream.v1.StreamService/Children")
 let result25: Acyclic_Stream_V1_ChildrenPageResponse = try await api2.childrenPage(request: .init(message: schema.seeded(Acyclic_Stream_V1_ChildrenPageRequest.self, tag: 1)))
 try rpcRequire(result25 == schema.seeded(Acyclic_Stream_V1_ChildrenPageResponse.self, tag: 2), "native response payload differs: acyclic.stream.v1.StreamService/ChildrenPage")
 let result26: Acyclic_Stream_V1_CommitResponse = try await api2.commit(request: .init(message: schema.seeded(Acyclic_Stream_V1_CommitRequest.self, tag: 1)))
 try rpcRequire(result26 == schema.seeded(Acyclic_Stream_V1_CommitResponse.self, tag: 2), "native response payload differs: acyclic.stream.v1.StreamService/Commit")
-let acknowledged: Acyclic_Stream_V1_AcknowledgeDeliveryResponse = try await api2.acknowledgeDelivery(request: .init(message: schema.seeded(Acyclic_Stream_V1_AcknowledgeDeliveryRequest.self, tag: 1)))
-try rpcRequire(acknowledged == schema.seeded(Acyclic_Stream_V1_AcknowledgeDeliveryResponse.self, tag: 2), "native response payload differs: acyclic.stream.v1.StreamService/AcknowledgeDelivery")
 let result27: Acyclic_Stream_V1_CommittedEnvelope = try await api2.readCommit(request: .init(message: schema.seeded(Acyclic_Stream_V1_ReadCommitRequest.self, tag: 1)))
 try rpcRequire(result27 == schema.seeded(Acyclic_Stream_V1_CommittedEnvelope.self, tag: 2), "native response payload differs: acyclic.stream.v1.StreamService/ReadCommit")
 }

@@ -122,13 +122,6 @@ fn record<'a, T: PreparationRecord>(
     bytes: &[u8],
     code: crate::wire::ErrorCode,
 ) -> Result<(T, DecodeReservation<'a>)> {
-    if bytes.len() as u64 > acyclic_fs::access::MAXIMUM_POLICY_RECORD_BYTES {
-        return Err(stock_boundary(
-            Some(io),
-            code,
-            "filesystem access record exceeds bounds",
-        ));
-    }
     io.decode(PhantomData::<T>, bytes, code)
 }
 

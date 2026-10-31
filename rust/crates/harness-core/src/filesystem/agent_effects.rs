@@ -19,7 +19,7 @@ pub(in crate::filesystem) struct FilesystemTurnEffects<P: ?Sized, A: 'static, O:
     stream: Arc<P>,
     agent: AgentPath,
     directory: String,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
@@ -28,14 +28,14 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
         stream: Arc<P>,
         agent: AgentPath,
         (turn, segment): (OperationId, u32),
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
     ) -> Self {
         Self {
             files,
             stream,
             agent,
             directory: format!("effects/v3/{turn}/{segment}"),
-            maximum_bytes,
+            maximum_bytes: maximum_bytes.into(),
         }
     }
 }
@@ -171,7 +171,6 @@ mod tests {
             &scope,
             &volume,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         let files = Arc::new(AgentInternalFiles::new(host, volume.clone(), write));
@@ -250,7 +249,11 @@ mod tests {
         let saved = br#"{"spawn":{"brief":"review the diff","intent":"first"}}"#;
         assert_eq!(
             files
-                .create(&format!("{}/0000000001-a.json", old.directory), saved, 4096)
+                .create(
+                    &format!("{}/0000000001-a.json", old.directory),
+                    saved,
+                    Some(4096),
+                )
                 .await?,
             None
         );

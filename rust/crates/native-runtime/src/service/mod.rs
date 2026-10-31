@@ -10,6 +10,25 @@ pub const SERVICE_READY_ARGUMENT: &str = "--signal-ready";
 #[derive(Debug)]
 pub struct ServiceReadiness(File);
 
+impl From<File> for ServiceReadiness {
+    fn from(file: File) -> Self {
+        Self(file)
+    }
+}
+
+/// Transfers the original output pipe without duplicating its handle. The
+/// caller retains the child and its physical retirement responsibility.
+impl From<std::process::ChildStdout> for ServiceReadiness {
+    fn from(stdout: std::process::ChildStdout) -> Self {
+        #[cfg(unix)]
+        use std::os::fd::OwnedFd as Handle;
+        #[cfg(windows)]
+        use std::os::windows::io::OwnedHandle as Handle;
+
+        Self::from(File::from(Handle::from(stdout)))
+    }
+}
+
 /// How a started service left its readiness channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceStartOutcome {
@@ -22,8 +41,6 @@ pub enum ServiceStartOutcome {
     Failed(String),
 }
 
-/// The bytes a failure report may carry; a longer reason is truncated.
-const MAXIMUM_FAILURE_BYTES: u64 = 4096;
 const READY_FRAME: u8 = b'\n';
 const FAILURE_FRAME: u8 = b'!';
 
@@ -46,10 +63,7 @@ impl ServiceReadiness {
                     Ok(_) if frame[0] == FAILURE_FRAME => {
                         let mut reason = Vec::new();
                         // The failing service closes the channel as it exits.
-                        match (&mut self.0)
-                            .take(MAXIMUM_FAILURE_BYTES)
-                            .read_to_end(&mut reason)
-                        {
+                        match self.0.read_to_end(&mut reason) {
                             Ok(_) => {}
                             Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
                             Err(error) => break Err(error),
@@ -58,7 +72,13 @@ impl ServiceReadiness {
                             String::from_utf8_lossy(&reason).into_owned(),
                         ));
                     }
-                    Ok(_) => break Ok(ServiceStartOutcome::Ready),
+                    Ok(_) if frame[0] == READY_FRAME => break Ok(ServiceStartOutcome::Ready),
+                    Ok(_) => {
+                        break Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid service readiness frame",
+                        ));
+                    }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
                         break Ok(ServiceStartOutcome::Exited);
@@ -79,26 +99,39 @@ impl ServiceReadiness {
 pub struct ServiceReadySignal(File);
 
 impl ServiceReadySignal {
+    /// Takes the selected startup output and redirects later standard output
+    /// to discard. Signal only after the original service listener is bound.
+    /// A missing output handle supplies no readiness channel.
+    pub fn take_stdout() -> io::Result<Option<Self>> {
+        #[cfg(windows)]
+        {
+            windows::take_standard_output().map(|file| file.map(Self))
+        }
+        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+        {
+            take_standard_output().map(|file| Some(Self(file)))
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+        {
+            Ok(None)
+        }
+    }
+
     /// Tells a connected starter that the service answers requests, and closes the channel.
     /// A starter that has already exited does not prevent the service from running.
-    pub fn signal(self) -> io::Result<()> {
+    pub fn signal(mut self) -> io::Result<()> {
         self.send(&[READY_FRAME])
     }
 
     /// Tells a connected starter why the service cannot start, and closes the
     /// channel, so the starter reports the cause instead of waiting for a
     /// service that will never answer.
-    pub fn fail(self, reason: &str) -> io::Result<()> {
-        let mut frame = vec![FAILURE_FRAME];
-        frame.extend(
-            reason
-                .bytes()
-                .take(usize::try_from(MAXIMUM_FAILURE_BYTES).unwrap_or(usize::MAX)),
-        );
-        self.send(&frame)
+    pub fn fail(mut self, reason: &str) -> io::Result<()> {
+        self.send(&[FAILURE_FRAME])?;
+        self.send(reason.as_bytes())
     }
 
-    fn send(mut self, frame: &[u8]) -> io::Result<()> {
+    fn send(&mut self, frame: &[u8]) -> io::Result<()> {
         match io::Write::write_all(&mut self.0, frame) {
             Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
             result => result,
@@ -109,23 +142,12 @@ impl ServiceReadySignal {
 /// Takes the readiness channel and redirects subsequent standard output to discard.
 pub fn take_service_ready_signal() -> io::Result<Option<ServiceReadySignal>> {
     if !std::env::args_os()
-        .skip(2)
+        .skip(1)
         .any(|argument| argument == SERVICE_READY_ARGUMENT)
     {
         return Ok(None);
     }
-    #[cfg(windows)]
-    {
-        windows::take_standard_output().map(|file| file.map(ServiceReadySignal))
-    }
-    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    {
-        take_standard_output().map(|file| Some(ServiceReadySignal(file)))
-    }
-    #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    {
-        Ok(None)
-    }
+    ServiceReadySignal::take_stdout()
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
@@ -157,7 +179,7 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
         let spawn = || {
             #[cfg(windows)]
             {
-                windows::spawn_service_process(executable).map(ServiceReadiness)
+                windows::spawn_service_process(executable).map(ServiceReadiness::from)
             }
             #[cfg(unix)]
             {
@@ -175,9 +197,7 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
                     .stdout
                     .take()
                     .ok_or_else(|| io::Error::other("service readiness channel is missing"))?;
-                Ok(ServiceReadiness(File::from(std::os::fd::OwnedFd::from(
-                    readiness,
-                ))))
+                Ok(ServiceReadiness::from(readiness))
             }
         };
         operation.finish(spawn())

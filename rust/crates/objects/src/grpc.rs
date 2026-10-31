@@ -24,8 +24,6 @@ pub const MINIMUM_REVISION: &str = "acyclic-min-revision-bin";
 /// Response metadata: the revision committing a write or serving a read.
 pub const REVISION: &str = "acyclic-revision-bin";
 
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// Client configuration or connection failure.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
@@ -47,7 +45,7 @@ pub struct GrpcObjects {
     channel: Channel,
     credential: CredentialProvider,
     context: Option<acyclic_auth::operation::Context>,
-    transfer_timeout: std::time::Duration,
+    transfer_timeout: Option<std::time::Duration>,
     revisions: Arc<RevisionTracker>,
 }
 
@@ -88,7 +86,7 @@ impl GrpcObjects {
         if timeout.is_zero() || timeout > MAX_DEADLINE {
             return Err(ConnectError::InvalidConfiguration);
         }
-        self.transfer_timeout = timeout;
+        self.transfer_timeout = Some(timeout);
         Ok(self)
     }
 
@@ -133,11 +131,7 @@ impl GrpcObjects {
     ) -> Result<Self, ConnectError> {
         let identity = identity
             .map(|(certificate, key)| {
-                if certificate.is_empty()
-                    || certificate.len() > crate::MAX_PEM_BYTES
-                    || key.is_empty()
-                    || key.len() > crate::MAX_PEM_BYTES
-                {
+                if certificate.is_empty() || key.is_empty() {
                     return Err(ConnectError::InvalidConfiguration);
                 }
                 Ok(Identity::from_pem(certificate, key))
@@ -155,15 +149,14 @@ impl GrpcObjects {
             return Err(ConnectError::InvalidConfiguration);
         }
         let peer = if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > crate::MAX_PEM_BYTES {
+            if ca.is_empty() {
                 return Err(ConnectError::InvalidConfiguration);
             }
             acyclic_auth::channel::PeerTrust::PrivateCa(ca)
         } else {
             acyclic_auth::channel::PeerTrust::Platform
         };
-        // Every request carries its own deadline; the channel adds none.
-        let endpoint = endpoint.connect_timeout(std::time::Duration::from_secs(10));
+        // Only the caller's selected operation budget supplies a deadline.
         let channel = acyclic_auth::channel::connect(endpoint, peer, identity)
             .await
             .map_err(|error| match error {
@@ -188,7 +181,7 @@ impl GrpcObjects {
             channel,
             credential,
             context: None,
-            transfer_timeout: REQUEST_TIMEOUT,
+            transfer_timeout: None,
             revisions: Arc::default(),
         }
     }
@@ -419,7 +412,7 @@ impl Blobs for GrpcObjects {
                 wire::PutManifestRequest {
                     manifest: Some(convert::manifest(&manifest)),
                 },
-                REQUEST_TIMEOUT
+                None
             )?;
             Ok(convert::verified_put(&reply.0, digest, length)?.committed_at(reply.1))
         })
@@ -457,7 +450,7 @@ impl Blobs for GrpcObjects {
                 wire::HeadBlobRequest {
                     digest: Some(digest.into()),
                 },
-                REQUEST_TIMEOUT,
+                None,
                 read
             )?;
             let mut head = convert::headed(&reply.0, digest)?;
@@ -475,7 +468,7 @@ impl Blobs for GrpcObjects {
                 wire::DeleteBlobRequest {
                     digest: Some(digest.into()),
                 },
-                REQUEST_TIMEOUT
+                None
             )?;
             Ok(Deletion {
                 outcome: convert::delete(&reply.0)?,
@@ -494,7 +487,7 @@ impl Blobs for GrpcObjects {
                     after: after.map(Into::into),
                     limit,
                 },
-                REQUEST_TIMEOUT,
+                None,
                 read
             )?;
             let mut page = convert::listed(&reply.0, after, limit)?;
@@ -518,7 +511,7 @@ impl Blobs for GrpcObjects {
                     root: root.as_bytes().to_vec(),
                     references: convert::wire_digests(&references),
                 },
-                REQUEST_TIMEOUT
+                None
             )?;
             let mut retained = convert::retained(&reply.0);
             retained.revision = reply.1;
@@ -535,7 +528,7 @@ impl Blobs for GrpcObjects {
                 wire::ReleaseRequest {
                     root: root.as_bytes().to_vec(),
                 },
-                REQUEST_TIMEOUT
+                None
             )?;
             Ok(crate::Released {
                 existed: reply.0.existed,
@@ -562,7 +555,7 @@ impl Blobs for GrpcObjects {
 
     async fn usage(&self) -> Result<Usage, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let reply = call!(self, usage, wire::UsageRequest {}, REQUEST_TIMEOUT)?;
+            let reply = call!(self, usage, wire::UsageRequest {}, None)?;
             Ok(convert::usage(&reply.0))
         })
         .await

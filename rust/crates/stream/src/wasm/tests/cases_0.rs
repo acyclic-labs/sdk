@@ -141,13 +141,13 @@ fn request_validation_uses_wire_decoding_and_domain_limits() {
     };
     assert_eq!(
         validate_request("children_page", &invalid_limit.encode_to_vec()),
-        "limit_exceeded"
+        "invalid_argument"
     );
     assert_eq!(validate_request("unknown", &[]), "invalid_argument");
 }
 
 #[test]
-fn fork_validation_rejects_same_paths_and_oversized_payloads() {
+fn fork_validation_rejects_same_paths() {
     let same = wire::ForkRequest {
         exclude: Vec::new(),
         source: "events".to_owned(),
@@ -158,18 +158,6 @@ fn fork_validation_rejects_same_paths_and_oversized_payloads() {
     assert_eq!(
         validate_request("fork", &same.encode_to_vec()),
         "invalid_argument"
-    );
-
-    let oversized = wire::ForkRequest {
-        exclude: Vec::new(),
-        source: "a".repeat(crate::MAX_PATH_BYTES + 1),
-        destination: "b".to_owned(),
-        at_tail: None,
-        idempotency_key: bytes::Bytes::new(),
-    };
-    assert_eq!(
-        validate_request("fork", &oversized.encode_to_vec()),
-        "invalid_path"
     );
 }
 

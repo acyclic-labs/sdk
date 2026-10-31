@@ -11,8 +11,13 @@ impl StockExecution<'_> {
             .stock
             .limits
             .model_events_per_step
-            .saturating_add(self.stock.limits.tool_calls_per_step.saturating_mul(3))
-            .saturating_add(4);
+            .zip(self.stock.limits.tool_calls_per_step)
+            .map(|(events, calls)| {
+                events
+                    .get()
+                    .saturating_add(calls.get().saturating_mul(3))
+                    .saturating_add(4)
+            });
         let (_, records) = self
             .step_records(
                 journal,
@@ -69,7 +74,10 @@ impl StockExecution<'_> {
             operation_id,
             step,
             false,
-            self.stock.limits.model_events_per_step.saturating_add(3),
+            self.stock
+                .limits
+                .model_events_per_step
+                .map(|maximum| maximum.get().saturating_add(3)),
             |event| {
                 matches!(event,
                 ExecutionEvent::ModelStarted { step: event_step, purpose: event_purpose, .. }
@@ -92,7 +100,7 @@ impl StockExecution<'_> {
         step: u32,
         call_id: &str,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
-        self.step_records(journal, operation_id, step, false, 3, |event| {
+        self.step_records(journal, operation_id, step, false, Some(3), |event| {
             matches!(event,
             ExecutionEvent::ToolStarted { step: event_step, call_id: existing, .. }
             | ExecutionEvent::ToolCompleted { step: event_step, call_id: existing, .. }

@@ -57,13 +57,6 @@ fn indexed_header_order_is_canonical_and_unique() -> Result<(), StreamError> {
             Err(StreamError::InvalidArgument)
         );
     }
-    assert_eq!(
-        RecordHeaders::new(
-            vec![vec![0; crate::MAX_RECORD_KEY_BYTES + 1].into()],
-            vec![]
-        ),
-        Err(StreamError::LimitExceeded)
-    );
     let attribute = Attribute {
         name: "topic".into(),
         value: b"x".as_slice().into(),

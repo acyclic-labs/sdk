@@ -62,7 +62,7 @@ pub async fn plan_agent_merge(
     let changes = base
         .diff_to(
             &head,
-            u32::MAX,
+            None,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -70,7 +70,7 @@ pub async fn plan_agent_merge(
         .map_err(|failure| Error::from(failure.error))?
         .value
         .0
-        .changed_paths(u32::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .changed_paths(None, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map_err(|failure| Error::from(failure.error))?
         .value
@@ -129,7 +129,7 @@ pub async fn record_agent_publication(
         let ignore_text = match published
             .read(
                 "/.gitignore",
-                1024 * 1024,
+                None,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )

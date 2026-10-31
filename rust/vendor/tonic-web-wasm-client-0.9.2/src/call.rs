@@ -31,7 +31,8 @@ pub async fn call(
         &response,
         options
             .response_limits
-            .map(|limits| limits.header_list_bytes() as usize),
+            .and_then(|limits| limits.header_list_bytes())
+            .map(|maximum| maximum as usize),
     )?;
 
     let content_type = content_type.ok_or(Error::MissingContentTypeHeader)?;

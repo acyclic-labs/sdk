@@ -130,6 +130,15 @@ pub struct StockExecutors {
 }
 
 impl Preset {
+    /// The limits shared by this preset's executor, task scope and turn host.
+    #[must_use]
+    pub fn execution_limits(&self, mut limits: Limits) -> Limits {
+        if let Some(steps) = self.max_steps {
+            limits.model_steps = Some(steps);
+        }
+        limits
+    }
+
     /// This preset's stock turns over `model` served by `provider`, with
     /// `tools` (the host's registry of this preset's tools) under `limits`,
     /// `compaction` and `context`. The preset's agent tools apply; `limits`

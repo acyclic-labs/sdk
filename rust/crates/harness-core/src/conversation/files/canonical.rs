@@ -95,11 +95,7 @@ mod tests {
         file: &FileRef,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        crate::executor::json::canonical_json_digest(
-            file,
-            crate::store::default_projection_read_limits().maximum_bytes,
-            work,
-        )
+        crate::executor::json::canonical_json_digest(file, None, work)
     }
 
     #[test]
@@ -114,7 +110,7 @@ mod tests {
                 acyclic_test_support::measure(|| previous = Some(old_digest(&file, &mut None)));
             let mut current = None;
             let new = acyclic_test_support::measure(|| {
-                current = Some(file.identity_digest(u64::MAX, &mut None))
+                current = Some(file.identity_digest(None, &mut None))
             });
             let previous = previous.unwrap()?;
             assert_eq!(current.unwrap()?, previous);
@@ -174,7 +170,10 @@ mod tests {
             assert_eq!(original.receipt().bytes_hashed, bytes);
             assert_eq!(original.receipt().bytes_copied, budget.bytes_copied);
             cancellation.cancel();
-            assert!(file.identity_digest(65_536, &mut Some(&mut io)).is_err());
+            assert!(
+                file.identity_digest(Some(65_536), &mut Some(&mut io))
+                    .is_err()
+            );
             assert!(file.read_capability(&mut Some(&mut io)).is_err());
 
             let cancellation = CancellationToken::new();
@@ -184,7 +183,10 @@ mod tests {
             let mut io = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(&denied)?,
             );
-            assert!(file.identity_digest(65_536, &mut Some(&mut io)).is_err());
+            assert!(
+                file.identity_digest(Some(65_536), &mut Some(&mut io))
+                    .is_err()
+            );
             assert_eq!(denied.receipt().bytes_hashed, 0);
         }
         Ok(())

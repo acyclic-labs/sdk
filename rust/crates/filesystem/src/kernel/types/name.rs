@@ -84,13 +84,9 @@ impl LogicalName {
         self.bytes.capacity() as u64
     }
 
-    /// Validates a bounded name in its declared host representation.
-    pub fn new(
-        encoding: NameEncoding,
-        bytes: Vec<u8>,
-        maximum_bytes: u32,
-    ) -> Result<Self, TreePageError> {
-        Self::validate_bytes(encoding, &bytes, maximum_bytes)?;
+    /// Validates a name in its declared host representation.
+    pub fn new(encoding: NameEncoding, bytes: Vec<u8>) -> Result<Self, TreePageError> {
+        Self::validate_bytes(encoding, &bytes)?;
         Ok(Self { encoding, bytes })
     }
 
@@ -100,11 +96,10 @@ impl LogicalName {
 
     pub(crate) fn try_clone<E: From<CanonicalDecodeError>>(
         &self,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self, E> {
         let bytes = crate::kernel::codec::copy_bytes(&self.bytes, 1, steps)?;
-        Self::new(self.encoding, bytes, maximum_bytes).map_err(|error| {
+        Self::new(self.encoding, bytes).map_err(|error| {
             E::from(CanonicalDecodeError::Invariant(
                 crate::kernel::codec::CanonicalInvariant::Name(error),
             ))
@@ -118,24 +113,16 @@ impl LogicalName {
     ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
         let mut owned = OriginalReadAccounting::new(accounting)?;
         cancellation.check()?;
-        let maximum_bytes = u32::try_from(self.bytes.len())
-            .map_err(|_| NamespacePathError::Name(TreePageError::NameTooLarge))?;
         owned.observe(ReadAllocationStep::CheckCopy(self.bytes.len() as u64))?;
-        let result = self.try_clone(maximum_bytes, &mut |step| owned.observe(step));
+        let result = self.try_clone(&mut |step| owned.observe(step));
         finish_owned(owned, result)
     }
 
-    fn validate_bytes(
-        encoding: NameEncoding,
-        bytes: &[u8],
-        maximum_bytes: u32,
-    ) -> Result<(), TreePageError> {
+    fn validate_bytes(encoding: NameEncoding, bytes: &[u8]) -> Result<(), TreePageError> {
         if bytes.is_empty() {
             return Err(TreePageError::EmptyName);
         }
-        if u32::try_from(bytes.len()).unwrap_or(u32::MAX) > maximum_bytes {
-            return Err(TreePageError::NameTooLarge);
-        }
+        u32::try_from(bytes.len()).map_err(|_| TreePageError::NameLengthOverflow)?;
         match encoding {
             NameEncoding::Utf8 => {
                 let value = std::str::from_utf8(bytes).map_err(|_| TreePageError::InvalidName)?;
@@ -166,10 +153,9 @@ impl LogicalName {
     pub(crate) fn validate_unicode(
         encoding: NameEncoding,
         value: &str,
-        maximum_bytes: u32,
     ) -> Result<usize, TreePageError> {
         if encoding != NameEncoding::WindowsUtf16Le {
-            Self::validate_bytes(encoding, value.as_bytes(), maximum_bytes)?;
+            Self::validate_bytes(encoding, value.as_bytes())?;
             return Ok(value.len());
         }
         if value.is_empty() {
@@ -179,10 +165,8 @@ impl LogicalName {
             .encode_utf16()
             .count()
             .checked_mul(2)
-            .ok_or(TreePageError::NameTooLarge)?;
-        if u32::try_from(length).unwrap_or(u32::MAX) > maximum_bytes {
-            return Err(TreePageError::NameTooLarge);
-        }
+            .ok_or(TreePageError::NameLengthOverflow)?;
+        u32::try_from(length).map_err(|_| TreePageError::NameLengthOverflow)?;
         if value == "." || value == ".." || value.encode_utf16().any(invalid_windows_name_unit) {
             return Err(TreePageError::InvalidName);
         }

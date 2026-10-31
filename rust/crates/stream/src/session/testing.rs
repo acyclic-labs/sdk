@@ -80,13 +80,7 @@ pub fn credential_with_grants(grants: Vec<ResourceGrant>) -> Bytes {
 pub(in crate::session) fn slots() -> Slots {
     let auth = authority();
     let mut slots = Slots::default();
-    auth.register(
-        &mut slots,
-        0,
-        &credential(),
-        super::Limits::default().channels,
-    )
-    .unwrap();
+    auth.register(&mut slots, 0, &credential()).unwrap();
     slots
 }
 #[cfg(test)]
@@ -111,7 +105,7 @@ pub fn resource_authorization(
 ) -> Result<ResourceAuthorization, StreamError> {
     let authority = authority();
     let mut slots = Slots::default();
-    authority.register(&mut slots, 0, credential, super::Limits::default().channels)?;
+    authority.register(&mut slots, 0, credential)?;
     authority
         .bind_resource(&slots, 0, resource.into(), Default::default(), 1)
         .map(|(_, _, authorization)| authorization)

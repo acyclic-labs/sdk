@@ -17,10 +17,7 @@ type Failure = Box<dyn std::error::Error>;
 /// Stdin's lines, read off the coordination runtime's blocking slot: an open
 /// stdin's read may never return.
 fn stdin_lines() -> std::io::Result<AsyncLines<acyclic_native_runtime::Stdin>> {
-    Ok(AsyncLines::new(
-        acyclic_native_runtime::stdin()?,
-        usize::MAX,
-    ))
+    Ok(AsyncLines::new(acyclic_native_runtime::stdin()?, None))
 }
 
 /// Send `prompt` as message `operation` and print its answer; rerunning the

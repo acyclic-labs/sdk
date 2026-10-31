@@ -174,7 +174,7 @@ fn input(count: usize, text: &str) -> TurnInput {
             },
             messages,
         }),
-        max_steps: 1,
+        max_steps: Some(1),
     }
 }
 
@@ -278,7 +278,7 @@ proptest! {
                         operation_id: input.operation_id,
                 step: 0,
                 source_messages: 2,
-                source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
+                source_digest: crate::executor::json::canonical_json_digest(&prefix, None, &mut None)?,
                 output,
             };
             let (retained, proof) = crate::context::compact_projection(

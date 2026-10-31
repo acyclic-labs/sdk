@@ -45,6 +45,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         while after < head {
             let count = (head.get() - after.get()).min(128) as u32;
             let mut authority = authority_work(accounting, cancellation)?;
+            let maximum_payload_bytes = authority.accounting().remaining()?.authority_bytes_read;
             let page = self
                 .volume
                 .fs
@@ -55,7 +56,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     after,
                     ReplayLimit {
                         records: count,
-                        payload_bytes: u64::from(count) * MAXIMUM_VOLUME_EVENT_BYTES,
+                        payload_bytes: maximum_payload_bytes,
                     },
                     &mut authority,
                 )

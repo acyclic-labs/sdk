@@ -6,7 +6,7 @@ fn input() -> TurnInput {
         operation_id: OperationId::new(),
         input: ModelContent::Text("live attempt".into()),
         selected_context: None,
-        max_steps: 4,
+        max_steps: Some(4),
     }
 }
 

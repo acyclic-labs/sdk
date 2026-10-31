@@ -11,7 +11,6 @@ fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
         value.as_bytes().to_vec(),
-        255,
     )?)
 }
 
@@ -266,7 +265,6 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
         &store,
         root,
         &queries,
-        4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -293,8 +291,7 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
 }
 
 #[tokio::test]
-async fn batch_cancellation_and_query_admission_precede_backend_work()
--> Result<(), Box<dyn std::error::Error>> {
+async fn batch_cancellation_precedes_backend_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put_page(&store, &TreePage::Leaf(Vec::new()), 16).await?;
     let queries = vec![name("a")?, name("b")?];
@@ -304,7 +301,6 @@ async fn batch_cancellation_and_query_admission_precede_backend_work()
         &store,
         root,
         &queries,
-        2,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -315,20 +311,6 @@ async fn batch_cancellation_and_query_admission_precede_backend_work()
     assert!(matches!(failure.error, TreeReadError::Cancelled));
     assert_eq!(*failure.work, WorkCounters::default());
 
-    let failure = lookup_tree_entries(
-        &store,
-        root,
-        &queries,
-        1,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("oversized query batch unexpectedly succeeded")?;
-    assert!(matches!(failure.error, TreeReadError::TooManyQueries));
-    assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
 }
 
@@ -344,10 +326,7 @@ fn batch_error_translation_is_total() {
         map_batch_error(BatchError::Empty),
         TreeReadError::EmptyBatch
     ));
-    assert!(matches!(
-        map_batch_error(BatchError::TooManyQueries),
-        TreeReadError::TooManyQueries
-    ));
+
     assert!(matches!(
         map_batch_error(BatchError::WrongRootKind),
         TreeReadError::WrongRootKind

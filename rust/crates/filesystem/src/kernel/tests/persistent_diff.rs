@@ -19,7 +19,6 @@ fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
         value.as_bytes().to_vec(),
-        255,
     )?)
 }
 
@@ -598,8 +597,6 @@ async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_valu
         ObjectCacheOptions {
             maximum_entries: 8,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
         },
     )?;
     let cancellation = CancellationToken::new();
@@ -627,7 +624,7 @@ async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_valu
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
     assert_eq!(warm.work.page_reads, 4);
-    // Only the two result names and their sorted-map routing key are copied.
+    // Only the two result names and their retained routing key are copied.
     assert_eq!(warm.work.bytes_copied, 3);
     assert_eq!(store.stats()?.decoded_hits, 4);
     Ok(())
@@ -651,11 +648,9 @@ mod model {
 
     const LIMITS: DecodeLimits = DecodeLimits {
         maximum_object_bytes: 64 * 1024,
-        maximum_name_bytes: 255,
         maximum_page_items: 4,
         maximum_page_bytes: 64 * 1024,
         maximum_page_height: 16,
-        maximum_visited_pages: 4_096,
     };
 
     fn key(byte: u8) -> String {
@@ -697,7 +692,6 @@ mod model {
             store,
             root,
             mutations,
-            256,
             LIMITS,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),

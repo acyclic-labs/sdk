@@ -1,6 +1,6 @@
+import { captureCommand } from "./process-capture.mjs";
 import { verifyPackageProvenance, verifyQualificationReceipt } from "./harness-conformance-evidence.mjs";
 import { harnessCaseMarkers, registerCases, requireExecutedCase } from "./harness-conformance-cases.mjs";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
@@ -19,7 +19,7 @@ const receiptPath = resolve(receiptArgument);
 // All source identity, vector reads and tools observe the runner checkout.
 process.chdir(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 const command = (executable, args, input) => {
-  const result = spawnSync(executable, args, { encoding: "utf8", input });
+  const result = captureCommand(executable, args, { encoding: "utf8", input });
   if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
   return result.stdout.trim();
 };

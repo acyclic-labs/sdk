@@ -65,6 +65,13 @@ pub(crate) enum Drag {
     Scrollbar,
 }
 
+#[derive(Clone, Debug)]
+struct PendingChord {
+    text: String,
+    at: u64,
+    fallback: Vec<(DecodedKey, u64)>,
+}
+
 /// Prompt controller over typed input events. IME commits always insert text,
 /// regardless of size; terminal protocol handling belongs to `term`.
 #[derive(Clone, Debug, Default)]
@@ -94,7 +101,7 @@ pub struct PromptInput {
     pub keymap: InputKeymap,
     /// Completion results folded from the host's current file-query snapshots.
     pub completion: CompletionMenu,
-    pending_chord: Option<(String, u64, Option<DecodedKey>)>,
+    pending_chord: Option<PendingChord>,
     last_interrupt: Option<u64>,
     search: Option<Search>,
     editing: Option<MessageEdit>,
@@ -114,9 +121,13 @@ impl PromptInput {
         let pending = self.pending_chord.take();
         self.keymap = keymap;
         self.last_interrupt = None;
-        if let Some((_, at, Some(DecodedKey::Text(text)))) = pending {
-            // There is no pending chord left to flush into a host effect.
-            let _ = self.committed_text(text.encode_utf8(&mut [0; 4]), at);
+        if let Some(pending) = pending {
+            for (decoded, at) in pending.fallback {
+                if let DecodedKey::Text(text) = decoded {
+                    // There is no pending chord left to flush into a host effect.
+                    let _ = self.committed_text(text.encode_utf8(&mut [0; 4]), at);
+                }
+            }
         }
     }
 
@@ -253,8 +264,8 @@ impl PromptInput {
 
     /// Flush a timed-out Ctrl+X prefix, preserving ordinary cut semantics.
     pub(crate) fn chord_timeout(&mut self, now_ms: u64) -> Vec<InputEffect> {
-        if self.pending_chord.as_ref().is_some_and(|(_, at, _)| {
-            now_ms.saturating_sub(*at) >= self.editor.settings().chord_timeout_ms as u64
+        if self.pending_chord.as_ref().is_some_and(|pending| {
+            now_ms.saturating_sub(pending.at) >= self.editor.settings().chord_timeout_ms as u64
         }) {
             self.flush_chord()
         } else {
@@ -263,13 +274,13 @@ impl PromptInput {
     }
 
     pub(crate) fn flush_chord(&mut self) -> Vec<InputEffect> {
-        self.pending_chord
-            .take()
-            .map_or_else(Vec::new, |(_, at, decoded)| {
-                decoded.map_or_else(Vec::new, |decoded| {
-                    self.apply_decoded(decoded, at, self.input_width)
-                })
-            })
+        let mut effects = Vec::new();
+        if let Some(pending) = self.pending_chord.take() {
+            for (decoded, at) in pending.fallback {
+                effects.extend(self.apply_decoded(decoded, at, self.input_width));
+            }
+        }
+        effects
     }
 
     /// Process a crossterm key. Page keys and application escape routing remain
@@ -281,31 +292,44 @@ impl PromptInput {
         }
         let mut effects = self.chord_timeout(now_ms);
         if key.kind == KeyEventKind::Repeat
-            && self.pending_chord.as_ref().is_some_and(|(prefix, _, _)| {
-                event_chord(key).is_some_and(|chord| chord.as_str() == prefix)
+            && self.pending_chord.as_ref().is_some_and(|pending| {
+                event_chord(key)
+                    .is_some_and(|chord| pending.text.rsplit(' ').next() == Some(chord.as_str()))
             })
         {
             return effects;
         }
         let decoded = decode_key(key, &self.keymap);
-        if let Some((prefix, _, _)) = self.pending_chord.as_ref() {
-            let chord = event_chord(key).map(|chord| format!("{prefix} {chord}"));
+        if let Some(mut pending) = self.pending_chord.take() {
             if key.kind == KeyEventKind::Press
-                && let Some(binding) = chord
-                    .as_deref()
-                    .and_then(|chord| self.keymap.resolve(chord))
+                && let Some(chord) = event_chord(key)
             {
-                self.pending_chord = None;
-                effects.extend(self.apply_decoded(
-                    DecodedKey::Action {
-                        action: binding.action,
-                        select: false,
-                    },
-                    now_ms,
-                    width,
-                ));
-                return effects;
+                pending.text.push(' ');
+                pending.text.push_str(&chord);
+                let binding =
+                    self.keymap
+                        .resolve(&pending.text)
+                        .map(|binding| DecodedKey::Action {
+                            action: binding.action,
+                            select: false,
+                        });
+                if self.keymap.has_prefix(&pending.text) {
+                    if let Some(binding) = binding {
+                        pending.fallback.clear();
+                        pending.fallback.push((binding, now_ms));
+                    } else if let Some(decoded) = decoded {
+                        pending.fallback.push((decoded, now_ms));
+                    }
+                    pending.at = now_ms;
+                    self.pending_chord = Some(pending);
+                    return effects;
+                }
+                if let Some(binding) = binding {
+                    effects.extend(self.apply_decoded(binding, now_ms, width));
+                    return effects;
+                }
             }
+            self.pending_chord = Some(pending);
             effects.extend(self.flush_chord());
         }
         if key.kind == KeyEventKind::Press
@@ -321,7 +345,14 @@ impl PromptInput {
         {
             self.last_interrupt = None;
             self.last_activity = now_ms;
-            self.pending_chord = Some((chord.as_str().to_owned(), now_ms, decoded));
+            self.pending_chord = Some(PendingChord {
+                text: chord.as_str().to_owned(),
+                at: now_ms,
+                fallback: decoded
+                    .into_iter()
+                    .map(|decoded| (decoded, now_ms))
+                    .collect(),
+            });
             return effects;
         }
         if let Some(decoded) = decoded {

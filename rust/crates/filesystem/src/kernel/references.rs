@@ -12,10 +12,8 @@ pub(crate) fn visit_object_references(
     let limits = DecodeLimits {
         maximum_object_bytes: bytes.len() as u64,
         maximum_page_bytes: length,
-        maximum_name_bytes: length,
         maximum_page_items: length,
         maximum_page_height: u16::MAX,
-        maximum_visited_pages: length,
     };
     macro_rules! decode {
         ($decoder:path, $body:expr) => {{

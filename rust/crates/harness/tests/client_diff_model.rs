@@ -19,7 +19,7 @@ impl ContentResidencyVerifier for Content {
         _prefix: &'a str,
         _path: &'a str,
         _generation: Option<&'a acyclic_harness::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
@@ -38,7 +38,7 @@ impl ContentResidencyVerifier for Content {
 
         assert!(io.is_none());
         assert!(ceiling.is_none());
-        assert!(self.bytes.len() as u64 <= maximum_bytes);
+        assert!(maximum_bytes.is_none_or(|maximum| self.bytes.len() as u64 <= maximum));
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async {
             Ok((self.file.clone(), self.bytes.clone(), None))
         })

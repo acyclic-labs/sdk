@@ -191,9 +191,11 @@ impl SkillPublicationCut {
                 self.executing_volume.into_bytes(),
                 member,
             ),
-            io.remaining()?
-                .bytes_encoded
-                .min(acyclic_stream::MAX_RECORD_BYTES as u64),
+            Some(
+                io.remaining()?
+                    .bytes_encoded
+                    .min(acyclic_stream::MAX_RECORD_BYTES as u64),
+            ),
             true,
         )
     }
@@ -500,18 +502,28 @@ impl SkillPublicationSource {
                 };
                 // This is the existing bounded selected metadata budget, not a
                 // limit on the followed source, agents, or retained history.
-                if self.changes.len() >= limits.entries as usize {
+                if limits
+                    .entries
+                    .is_some_and(|maximum| self.changes.len() as u64 >= maximum)
+                {
                     return Err(Error::Invalid(
                         "publication metadata exceeds admitted discovery work".into(),
                     ));
                 }
                 let capacity = if self.changes.len() == self.changes.capacity() {
-                    self.changes
+                    let capacity = self
+                        .changes
                         .capacity()
                         .checked_mul(2)
                         .ok_or(StreamError::OutOfRange)?
-                        .max(1)
-                        .min(limits.entries as usize)
+                        .max(1);
+                    match limits
+                        .entries
+                        .and_then(|maximum| usize::try_from(maximum).ok())
+                    {
+                        Some(maximum) => capacity.min(maximum),
+                        None => capacity,
+                    }
                 } else {
                     self.changes.capacity()
                 };
@@ -579,7 +591,7 @@ fn content_path(
             crate::executor::stock_string_push(
                 &mut result,
                 part,
-                u64::MAX,
+                None,
                 "context path size overflow",
                 Some(io),
             )?;

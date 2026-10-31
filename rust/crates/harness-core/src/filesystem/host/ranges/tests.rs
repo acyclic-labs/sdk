@@ -66,7 +66,6 @@ fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<ContentGrant>
             &scope,
             volume,
             operation,
-            u64::MAX,
             &mut None,
         )?
     };
@@ -94,7 +93,7 @@ async fn ordinary(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
             &grant(volume, VolumeOperation::Read)?,
             "ordinary",
             Some(&generation),
-            body.len() as u64,
+            Some(body.len() as u64),
             crate::conversation::ContentAccess::default(),
         )
         .await?;
@@ -218,14 +217,17 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
     let denied = host.read_pinned_range(&file, range, Some(&io)).await;
     // Authenticating an immutable blob requires its complete selected chunk.
     // This deliberately insufficient allowance must fail on the original ledger.
-    assert!(matches!(
-        denied,
-        Err(Error::NativeWorkspace { source, .. }) if matches!(source.as_ref(),
-            acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::BudgetExceeded {
-                counter: "bytes_hashed", maximum: 65536, ..
-            })
-        )
-    ));
+    assert!(
+        matches!(
+            &denied,
+            Err(Error::NativeWorkspace { source, .. }) if matches!(source.as_ref(),
+                acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "bytes_hashed", maximum: 65536, ..
+                })
+            )
+        ),
+        "authentication returned another result: {denied:?}"
+    );
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
             source_bytes_read: 64 * 1024,
@@ -326,7 +328,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
             &read,
             "ordinary",
             None,
-            u64::MAX,
+            Some(u64::MAX),
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&io),
@@ -421,5 +423,79 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
         b"xxxxxxxxxxxxxxxx"
     );
     assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn upload_receipt_recovery_uses_bounded_live_memory() -> Result<()> {
+    let body = vec![b'x'; 4 * 1024 * 1024 + 17];
+    let (host, file) = published(&body).await?;
+    let write = grant(file.volume(), VolumeOperation::Write)?;
+    let stop = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 1024 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &stop,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let key = IdempotencyKey::new("publish")?;
+    let access = crate::conversation::ContentAccess {
+        ceiling: None,
+        io: Some(&io),
+    };
+    assert_eq!(
+        host.put_content(
+            file.volume(),
+            &write,
+            file.path(),
+            &body,
+            "text/plain",
+            file.display_name(),
+            u64::MAX,
+            &key,
+            None,
+            access,
+        )
+        .await?,
+        file
+    );
+    let mut changed = body.clone();
+    *changed.last_mut().unwrap() = b'y';
+    let conflict = host
+        .put_content(
+            file.volume(),
+            &write,
+            file.path(),
+            &changed,
+            "text/plain",
+            file.display_name(),
+            u64::MAX,
+            &key,
+            None,
+            access,
+        )
+        .await;
+    assert!(matches!(conflict, Err(error) if error.code() == crate::wire::ErrorCode::Conflict));
+    assert_eq!(
+        host.content_for_operation(file.volume(), &write, &key, file.path(), u64::MAX, access)
+            .await?,
+        Some(file.clone())
+    );
+    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
+    // An explicitly chosen content allowance still refuses the same complete file.
+    let denied = host
+        .content_for_operation(file.volume(), &write, &key, file.path(), 4096, access)
+        .await;
+    assert!(matches!(denied, Err(error) if error.code() == crate::wire::ErrorCode::Invalid));
+    stop.cancel();
+    assert!(
+        host.content_for_operation(file.volume(), &write, &key, file.path(), u64::MAX, access)
+            .await
+            .is_err()
+    );
     Ok(())
 }

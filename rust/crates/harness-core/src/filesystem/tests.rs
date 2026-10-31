@@ -197,20 +197,12 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let read = ContentGrant::verify(
-        &verifier,
-        &scope,
-        &volume,
-        VolumeOperation::Read,
-        u64::MAX,
-        &mut None,
-    )?;
+    let read = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read, &mut None)?;
     let write = ContentGrant::verify(
         &verifier,
         &scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let first = host
@@ -401,7 +393,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages",
             "messages/first.txt",
             Some(&listed_generation),
-            16,
+            None,
             crate::conversation::ContentAccess::default(),
         )?
         .await?;
@@ -413,7 +405,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages",
             "messages/first.txt",
             Some(&listed_generation),
-            u64::MAX,
+            None,
             crate::conversation::ContentAccess::default(),
         )?
         .await
@@ -468,7 +460,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages",
             "messages/first.txt",
             Some(&listed_generation),
-            u64::MAX,
+            None,
             crate::conversation::ContentAccess::default(),
         )?
         .await
@@ -504,7 +496,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             &delegated,
             "messages/first.txt",
             None,
-            16,
+            Some(16),
             crate::conversation::ContentAccess::default(),
         )
         .await?;
@@ -549,7 +541,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 "messages",
                 "messages/empty.txt",
                 Some(&listed_generation),
-                u64::MAX,
+                None,
                 crate::conversation::ContentAccess::default()
             )?
             .await
@@ -595,15 +587,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         &mut None,
     )?;
     assert!(
-        ContentGrant::verify(
-            &verifier,
-            &scope,
-            &other,
-            VolumeOperation::Read,
-            u64::MAX,
-            &mut None
-        )
-        .is_err()
+        ContentGrant::verify(&verifier, &scope, &other, VolumeOperation::Read, &mut None).is_err()
     );
     Ok(())
 }

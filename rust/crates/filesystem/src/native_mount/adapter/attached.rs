@@ -5,7 +5,6 @@ struct CheckoutAttachedFile<A: 'static, O: 'static> {
     runtime: CallbackRuntime,
     cancellation: CancellationToken,
     profile: FilesystemProfile,
-    limits: VolumeLimits,
     _native_allocation: crate::NativeAllocation,
     native_callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
 }
@@ -46,7 +45,7 @@ where
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.mutation_attribute_name(name, self.profile, self.limits)?;
+        let name = inputs.mutation_attribute_name(name, self.profile)?;
         let mut candidate = self
             .checkout
             .file_candidate(
@@ -373,7 +372,7 @@ where
             let cancellation = work.cancellation();
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
-            let name = inputs.attribute_name(name, self.profile, self.limits)?;
+            let name = inputs.attribute_name(name, self.profile)?;
             let mut checkout = self.observer(work).await?;
             let value = checkout
                 .read_named_attribute(self.file_id, &name, work, cancellation)
@@ -396,7 +395,7 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let cursor = cursor
-                .map(|bytes| inputs.attribute_name(bytes, self.profile, self.limits))
+                .map(|bytes| inputs.attribute_name(bytes, self.profile))
                 .transpose()?;
             let mut checkout = self.observer(work).await?;
             let mut accounting =

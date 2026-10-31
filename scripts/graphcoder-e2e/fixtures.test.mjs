@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { seed, expand } from "./fixtures.mjs";
 
@@ -40,14 +45,19 @@ test("unsafe fixture paths fail before their I/O begins", async () => {
   }
 });
 
-test("large byte fixtures remain compact and bounded", async () => {
-  let actual;
-  await seed("fixture", { large: { repeat: "x", count: 1_048_576 } }, {
-    mkdir: async () => {}, writeFile: async (_, bytes) => { actual = bytes; },
-  });
-  assert.equal(actual.length, 1_048_576);
-  assert.ok(actual.every(byte => byte === 120));
-  await assert.rejects(seed("fixture", { large: { repeat: "x", count: Infinity } }, {
-    mkdir: async () => {}, writeFile: () => assert.fail("unbounded bytes reached I/O"),
-  }), /bounded byte count/);
+test("repeated byte fixtures stream complete files beyond the former ceiling", async t => {
+  const root = await mkdtemp(join(tmpdir(), "graphcoder-fixtures-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const count of [0, 4 * 1024 * 1024 + 17]) {
+    await seed(root, { large: { repeat: "x", count } });
+    const file = join(root, "large");
+    assert.equal((await stat(file)).size, count);
+    const actual = createHash("sha256");
+    for await (const chunk of createReadStream(file)) actual.update(chunk);
+    assert.equal(actual.digest("hex"), createHash("sha256").update(Buffer.alloc(count, "x")).digest("hex"));
+  }
+  for (const count of [Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(seed(root, { invalid: { repeat: "x", count } }), /nonnegative safe integer byte count/);
+  }
+  await assert.rejects(stat(join(root, "invalid")), { code: "ENOENT" });
 });

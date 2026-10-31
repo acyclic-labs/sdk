@@ -234,13 +234,10 @@ pub(super) fn decode_fork_admissions(
     value: &wire::MachineAdmissions,
 ) -> Result<ForkAdmitted, ProviderError> {
     let operation = decode_operation(value.operation.as_ref())?;
-    let Some(first) = value.machines.first().filter(|_| {
-        u32::try_from(value.machines.len()).is_ok_and(|count| count <= MAX_FORK_CHILDREN)
-    }) else {
-        return Err(ProviderError::Rejected(
-            "fork child set is outside the public bound".into(),
-        ));
-    };
+    let first = value
+        .machines
+        .first()
+        .ok_or_else(|| ProviderError::Rejected("fork returned no child admissions".into()))?;
     let provenance = decode_provenance(first.provenance.as_ref())?;
     let mut seen = BTreeSet::new();
     let mut children = Vec::with_capacity(value.machines.len());

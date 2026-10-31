@@ -1,48 +1,34 @@
 use super::*;
 use crate::async_storage::{AsyncObjectStore, object_error};
 
-/// Bounded in-memory immutable object store.
+/// In-memory immutable objects with an optional caller-selected size policy.
+#[derive(Default)]
 pub struct MemoryObjectStore {
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
     pub(super) objects: RwLock<MemoryObjectState>,
 }
 
+#[derive(Default)]
 pub(super) struct MemoryObjectState {
-    pub(super) objects: Vec<(ObjectId, OwnedBytes)>,
-    table_custody: KernelOwnedAllocation,
-}
-
-impl Default for MemoryObjectState {
-    fn default() -> Self {
-        Self {
-            objects: Vec::new(),
-            table_custody: KernelOwnedAllocation::Standalone,
-        }
-    }
+    pub(super) objects:
+        crate::kernel::allocation::fixed_index::FixedIndex<OwnedBytes, { ObjectId::ENCODED_LEN }>,
 }
 
 impl MemoryObjectState {
-    fn get(&self, id: &ObjectId) -> Option<&OwnedBytes> {
-        self.objects
-            .binary_search_by_key(id, |(id, _)| *id)
-            .ok()
-            .map(|index| &self.objects[index].1)
-    }
-}
-
-impl Default for MemoryObjectStore {
-    fn default() -> Self {
-        Self {
-            maximum_object_bytes: DEFAULT_MAX_OBJECT_BYTES,
-            objects: RwLock::new(MemoryObjectState::default()),
-        }
+    fn get(
+        &self,
+        id: &ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<&OwnedBytes>, FsError> {
+        self.objects.get(id.index_key(), accounting)
     }
 }
 
 impl MemoryObjectStore {
-    /// Creates a bounded memory object store.
-    pub fn new(maximum_object_bytes: u64) -> Result<Self, ObjectStoreError> {
-        if maximum_object_bytes == 0 {
+    /// Creates a memory object store with an optional positive byte policy.
+    pub fn new(maximum_object_bytes: impl Into<Option<u64>>) -> Result<Self, ObjectStoreError> {
+        let maximum_object_bytes = maximum_object_bytes.into();
+        if maximum_object_bytes == Some(0) {
             return Err(ObjectStoreError::TooLarge {
                 observed: 0,
                 maximum: 0,
@@ -66,10 +52,13 @@ impl MemoryObjectStore {
                 ..WorkCounters::UNCHARGED
             };
             // Size admission also applies to already hashed objects in insert.
-            if write.bytes.len() as u64 > self.maximum_object_bytes {
+            if let Some(maximum) = self
+                .maximum_object_bytes
+                .filter(|maximum| write.bytes.len() as u64 > *maximum)
+            {
                 return Err(ObjectStoreError::TooLarge {
                     observed: write.bytes.len() as u64,
-                    maximum: self.maximum_object_bytes,
+                    maximum,
                 }
                 .into());
             }
@@ -93,10 +82,13 @@ impl MemoryObjectStore {
         }
         accounting.check()?;
         for write in writes {
-            if write.bytes.len() as u64 > self.maximum_object_bytes {
+            if let Some(maximum) = self
+                .maximum_object_bytes
+                .filter(|maximum| write.bytes.len() as u64 > *maximum)
+            {
                 return Err(ObjectStoreError::TooLarge {
                     observed: write.bytes.len() as u64,
-                    maximum: self.maximum_object_bytes,
+                    maximum,
                 }
                 .into());
             }
@@ -105,109 +97,82 @@ impl MemoryObjectStore {
             .objects
             .write()
             .map_err(|_| ObjectStoreError::Corrupt)?;
-        let mut missing = 0_usize;
-        let mut written = 0_u64;
-        for (index, write) in writes.iter().enumerate() {
-            accounting.charge(WorkCounters {
-                object_probes: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
-            if let Some(existing) = state.get(&write.object_id) {
-                if existing != &write.bytes {
-                    return Err(ObjectStoreError::Corrupt.into());
-                }
-                continue;
-            }
-            let mut duplicate = false;
-            for earlier in &writes[..index] {
+        // The shared funded identity primitive verifies duplicates without
+        // rescanning the batch. Temporary nodes retire before storage grows.
+        let mut batch = if writes.len() > 1 {
+            Some(crate::kernel::allocation::fixed_index::FixedIndex::<
+                &OwnedBytes,
+                { ObjectId::ENCODED_LEN },
+            >::default())
+        } else {
+            None
+        };
+        let prepared = (|| {
+            let mut written = 0_u64;
+            for write in writes {
                 accounting.charge(WorkCounters {
-                    items_examined: 1,
+                    object_probes: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                if earlier.object_id == write.object_id {
-                    if earlier.bytes != write.bytes {
+                if batch.is_some() {
+                    if let Some(existing) = state.get(&write.object_id, accounting)? {
+                        if existing != &write.bytes {
+                            return Err(ObjectStoreError::Corrupt.into());
+                        }
+                        continue;
+                    }
+                }
+                if let Some(batch) = &mut batch {
+                    let mut inserted = false;
+                    let previous = batch.get_or_try_insert_with(
+                        write.object_id.index_key(),
+                        accounting,
+                        |_| {
+                            inserted = true;
+                            Ok(&write.bytes)
+                        },
+                    )?;
+                    if *previous != &write.bytes {
                         return Err(ObjectStoreError::Corrupt.into());
                     }
-                    duplicate = true;
-                    break;
+                    if !inserted {
+                        continue;
+                    }
                 }
-            }
-            if !duplicate {
-                missing = missing.checked_add(1).ok_or(WorkError::Overflow)?;
                 written = written
                     .checked_add(write.bytes.len() as u64)
                     .ok_or(WorkError::Overflow)?;
             }
-        }
-        let needed = state
-            .objects
-            .len()
-            .checked_add(missing)
-            .ok_or(WorkError::Overflow)?;
-        let replacement = if needed > state.objects.capacity() {
-            let capacity = needed.max(
-                state
-                    .objects
-                    .capacity()
-                    .checked_mul(2)
-                    .ok_or(WorkError::Overflow)?,
-            );
-            Some(allocate(capacity, accounting, |error| {
-                ObjectStoreError::MemoryTableAllocationFailed(error).into()
-            })?)
-        } else {
-            None
-        };
-        let copy = WorkCounters {
-            bytes_copied: if replacement.is_some() {
-                state
-                    .objects
-                    .len()
-                    .checked_mul(size_of::<(ObjectId, OwnedBytes)>())
-                    .and_then(|bytes| u64::try_from(bytes).ok())
-                    .ok_or(WorkError::Overflow)?
-            } else {
-                0
-            },
-            ..WorkCounters::UNCHARGED
-        };
+            Ok::<_, FsError>(written)
+        })();
+        drop(batch);
+        let written = prepared?;
         accounting.admit(WorkCounters {
             backend_write_operations: 1,
-            object_bytes_written: written,
-            ..copy
+            object_bytes_written: if writes.len() > 1 { written } else { 0 },
+            ..WorkCounters::UNCHARGED
         })?;
         accounting.record_completed(WorkCounters {
             backend_write_operations: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        if let Some((mut table, custody)) = replacement {
-            table.append(&mut state.objects);
-            drop(std::mem::replace(&mut state.objects, table));
-            state.table_custody = custody;
-        }
-        accounting.record_completed(copy)?;
         for entry in writes {
-            if let Err(index) = state
-                .objects
-                .binary_search_by_key(&entry.object_id, |(id, _)| *id)
-            {
-                let shifted = state
-                    .objects
-                    .len()
-                    .checked_sub(index)
-                    .and_then(|count| count.checked_mul(size_of::<(ObjectId, OwnedBytes)>()))
-                    .and_then(|bytes| u64::try_from(bytes).ok())
-                    .ok_or(WorkError::Overflow)?;
-                let delta = WorkCounters {
-                    bytes_copied: shifted,
-                    object_bytes_written: entry.bytes.len() as u64,
-                    ..WorkCounters::UNCHARGED
-                };
-                accounting.admit(delta)?;
-                state
-                    .objects
-                    .insert(index, (entry.object_id, entry.bytes.clone()));
-                accounting.record_completed(delta)?;
+            let stored = state.objects.get_or_try_insert_with(
+                entry.object_id.index_key(),
+                accounting,
+                |accounting| {
+                    let delta = WorkCounters {
+                        object_bytes_written: entry.bytes.len() as u64,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    accounting.admit(delta)?;
+                    let bytes = entry.bytes.clone();
+                    accounting.record_completed(delta)?;
+                    Ok(bytes)
+                },
+            )?;
+            if stored != &entry.bytes {
+                return Err(ObjectStoreError::Corrupt.into());
             }
         }
         accounting.check()
@@ -234,7 +199,9 @@ impl MemoryObjectStore {
         maximum_bytes: u64,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<ObjectRead, FsError> {
-        let bytes = state.get(&object_id).ok_or(ObjectStoreError::Missing)?;
+        let bytes = state
+            .get(&object_id, accounting)?
+            .ok_or(ObjectStoreError::Missing)?;
         let length = bytes.len() as u64;
         if length > maximum_bytes {
             return Err(ObjectStoreError::TooLarge {

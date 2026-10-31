@@ -44,7 +44,7 @@ impl<'a, C: Serialize> CheckoutApproval<'a, C> {
             crate::store::HistoryWork::new(super::super::PreparationIo::from_native_work(work)?);
         crate::executor::json::canonical_json_digest(
             self,
-            work.budget().bytes_encoded,
+            Some(work.budget().bytes_encoded),
             &mut Some(&mut io),
         )
     }

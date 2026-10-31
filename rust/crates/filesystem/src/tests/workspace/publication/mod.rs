@@ -350,7 +350,6 @@ async fn close_local(
         .local_root_release_barrier()
         .ok_or("local root has no release barrier")?;
     drop(fs);
-    // The last provider's release signals the barrier.
-    tokio::task::spawn_blocking(move || released.wait()).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), released.released()).await?;
     Ok(())
 }

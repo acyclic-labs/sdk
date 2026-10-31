@@ -161,17 +161,6 @@ pub fn typescript() -> String {
     let mut output = format!(
         "// Generated from acyclic_actors::guest. Do not edit.\nexport const GUEST_ABI_VERSION = {GUEST_ABI_VERSION} as const;\n"
     );
-    for (name, value) in [
-        ("WEB_SOCKET_TAG_COUNT", WEB_SOCKET_TAG_COUNT),
-        ("WEB_SOCKET_TAG_CHARACTERS", WEB_SOCKET_TAG_CHARACTERS),
-        ("WEB_SOCKET_ATTACHMENT_BYTES", WEB_SOCKET_ATTACHMENT_BYTES),
-        (
-            "WEB_SOCKET_AUTO_RESPONSE_CHARACTERS",
-            WEB_SOCKET_AUTO_RESPONSE_CHARACTERS,
-        ),
-    ] {
-        output.push_str(&format!("export const {name} = {value} as const;\n"));
-    }
     macro_rules! declarations {
         ($($ty:ty),+ $(,)?) => {$(
             output.push_str("export ");

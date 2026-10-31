@@ -1,4 +1,4 @@
-//! Bounded immutable namespace selection.
+//! Funded immutable namespace selection with ordered prefix traversal.
 
 use super::*;
 use crate::kernel::{
@@ -12,27 +12,42 @@ use crate::workspace::{
     workspace_vec_bytes,
 };
 
-fn selection_prefix(
-    path: &[LogicalName],
-    prefix: &[LogicalName],
+/// A contiguous group of sorted paths sharing one directory prefix.
+#[derive(Clone, Copy)]
+struct SelectionDirectory {
+    start: usize,
+    end: usize,
+    depth: usize,
+}
+
+fn sort_selection(
+    paths: &mut [Owned<NamespacePath>],
     accounting: &mut KernelAccounting<'_>,
-) -> Result<bool, WorkspaceError> {
-    accounting.charge(WorkCounters {
-        items_examined: 1 + path.len().min(prefix.len()) as u64,
-        ..WorkCounters::UNCHARGED
-    })?;
-    Ok(path.starts_with(prefix))
+) -> Result<(), FsError> {
+    crate::kernel::sort::heap_sort(
+        paths,
+        accounting,
+        |left, right, accounting| {
+            accounting.charge_items(1 + left.value.depth().min(right.value.depth()) as u64)?;
+            Ok(left.value.components().cmp(right.value.components()))
+        },
+        |paths, left, right, accounting| {
+            accounting.charge(WorkCounters {
+                bytes_copied: (2 * size_of::<Owned<NamespacePath>>()) as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            paths.swap(left, right);
+            Ok(())
+        },
+        |accounting| accounting.check(),
+    )
 }
 
 pub(super) fn selection_push<T>(
     values: &mut Owned<Vec<T>>,
     value: T,
-    maximum: usize,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), WorkspaceError> {
-    if values.value.len() >= maximum {
-        return Err(WorkspaceError::JoinLimit);
-    }
     let copies = if values.value.len() == values.value.capacity() {
         values.value.len() + 1
     } else {
@@ -44,7 +59,7 @@ pub(super) fn selection_push<T>(
             .ok_or(WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
     })?;
-    values.ensure_for_push(maximum, accounting)?;
+    values.ensure_for_push(usize::MAX, accounting)?;
     values.value.push(value);
     Ok(())
 }
@@ -108,10 +123,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .transpose()?;
         let result = async {
             let config = source.workspace.volume.config;
-            let maximum = config.limits.maximum_mutations_per_batch as usize;
-            if paths.value.len() > maximum {
-                return Err(WorkspaceError::JoinLimit);
-            }
             // Validate the entire input before allocating parsed paths, including root selections.
             for path in &paths.value {
                 NamespacePath::validate_in_profile_with_accounting(
@@ -126,6 +137,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 paths.retire(accounting)?;
                 return Ok(root.file_table);
             }
+            let limits = DecodeLimits::for_volume(config);
             let mut selected = Owned::<Vec<Owned<NamespacePath>>>::allocate(0, accounting)?;
             for path in &paths.value {
                 let (path, allocation) =
@@ -134,14 +146,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 selection_push(
                     &mut selected,
                     Owned::new(path, allocation, bytes),
-                    maximum,
                     accounting,
                 )?;
             }
             paths.retire(accounting)?;
-            if maximum == 0 {
-                return Err(WorkspaceError::JoinLimit);
-            }
+            sort_selection(&mut selected.value, accounting)?;
             let mut checkout = source
                 .workspace
                 .open_checkout(
@@ -151,152 +160,156 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     cancellation,
                 )
                 .await?;
+            let empty = checkout
+                .value
+                .stage_empty_tree_with_accounting(accounting, cancellation)
+                .await?;
+            let mut pending = Owned::<Vec<SelectionDirectory>>::allocate(0, accounting)?;
+            selection_push(
+                &mut pending,
+                SelectionDirectory {
+                    start: 0,
+                    end: selected.value.len(),
+                    depth: 0,
+                },
+                accounting,
+            )?;
             let mut overrides = Owned::<Vec<FileRecord>>::allocate(0, accounting)?;
-            let mut directory_count = 0;
-            // Root is always pruned; other prefixes are visited once, outside selected subtrees.
-            for index in 0..=selected.value.len() {
-                let depth_limit = selected
-                    .value
-                    .get(index)
-                    .map_or(1, |path| path.value.depth());
-                for depth in 0..depth_limit {
-                    if depth == 0 && index != selected.value.len() {
-                        continue;
-                    }
-                    let components = selected
+            while let Some(directory) = pending.value.pop() {
+                accounting.charge_items(1)?;
+                let (directory_path, guard) = if directory.depth == 0 {
+                    (
+                        NamespacePath::new(Vec::new(), config.limits)?,
+                        accounting.claim_owned(0, 0)?,
+                    )
+                } else {
+                    selected
                         .value
-                        .get(index)
-                        .map_or(&[][..], |path| path.value.components());
-                    let prefix = components.get(..depth).ok_or(WorkspaceError::JoinLimit)?;
-                    if depth != 0 {
-                        let mut skip = false;
-                        for (prior_index, prior) in selected.value.iter().enumerate() {
-                            skip |= selection_prefix(prefix, prior.value.components(), accounting)?
-                                || (prior_index < index
-                                    && prior.value.depth() > depth
-                                    && selection_prefix(prior.value.components(), prefix, accounting)?);
-                        }
-                        if skip {
-                            continue;
-                        }
-                    }
-                    directory_count += 1;
-                    if directory_count > maximum {
-                        return Err(WorkspaceError::JoinLimit);
-                    }
-                    let (directory, allocation) = if depth == 0 {
-                        (
-                            NamespacePath::new(Vec::new(), config.limits)?,
-                            accounting.claim_owned(0, 0)?,
-                        )
-                    } else {
-                        selected.value.get(index).ok_or(WorkspaceError::JoinLimit)?.value.prefix_with_accounting(
-                            depth,
+                        .get(directory.start)
+                        .ok_or(FsError::InvalidDiff)?
+                        .value
+                        .prefix_with_accounting(
+                            directory.depth,
                             config.limits,
                             accounting,
                             cancellation,
                         )?
-                    };
-                    let bytes = directory.retained_bytes();
-                    let directory = Owned::new(directory, allocation, bytes);
-                    let lookup = {
-                        let (lookup, _allocation) = checkout
-                        .value
-                        .lookup_no_follow_with_accounting(&directory.value, accounting, cancellation, false)
-                        .await?;
-                        lookup
-                    };
-                    let original = lookup.record.ok_or(WorkspaceError::NotFound)?;
-                    if original.kind != FileKind::Directory {
-                        return Err(WorkspaceError::NotDirectory);
-                    }
-                    let mut mutations = Owned::<Vec<TreeMutation>>::allocate(0, accounting)?;
-                    for path in &selected.value {
-                        if path.value.depth() <= depth
-                            || !selection_prefix(path.value.components(), prefix, accounting)?
-                        {
-                            continue;
-                        }
-                        let name = path.value.components().get(depth).ok_or(WorkspaceError::JoinLimit)?;
-                        let mut duplicate = false;
-                        for mutation in &mutations.value {
-                            accounting.charge(WorkCounters {
-                                items_examined: 1,
-                                ..WorkCounters::UNCHARGED
-                            })?;
-                            if matches!(mutation, TreeMutation::Insert(entry) if &entry.name == name) {
-                                duplicate = true;
-                                break;
-                            }
-                        }
-                        if duplicate {
-                            continue;
-                        }
-                        let (child, allocation) = path.value.prefix_with_accounting(
-                            depth + 1,
-                            config.limits,
-                            accounting,
-                            cancellation,
-                        )?;
-                        let bytes = child.retained_bytes();
-                        let child = Owned::new(child, allocation, bytes);
-                        let lookup = {
-                            let (lookup, _allocation) = checkout
-                            .value
-                            .lookup_no_follow_with_accounting(&child.value, accounting, cancellation, false)
-                            .await?;
-                            lookup
-                        };
-                        child.retire(accounting)?;
-                        let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
-                        let (name, mut allocation) =
-                            name.clone_with_accounting(accounting, cancellation)?;
-                        let bytes = name.retained_bytes() as u64;
-                        // Retain the name guard before any fallible vector growth.
-                        mutations.allocation.absorb(&mut allocation)?;
-                        mutations.bytes = mutations
-                            .bytes
-                            .checked_add(bytes)
-                            .ok_or(WorkError::Overflow)?;
-                        selection_push(
-                            &mut mutations,
-                            TreeMutation::Insert(TreeEntry {
-                                name,
-                                file_id: record.file_id,
-                                kind: record.kind,
-                            }),
-                            maximum,
-                            accounting,
-                        )?;
-                    }
-                    directory.retire(accounting)?;
-                    let empty = checkout
-                        .value
-                        .stage_empty_tree_with_accounting(accounting, cancellation)
-                        .await?;
-                    let entries = if mutations.value.is_empty() {
-                        empty
-                    } else {
-                        apply_tree_mutations_with_accounting(
-                            &self.inner.objects,
-                            empty,
-                            &mutations.value,
-                            u32::try_from(maximum).map_err(|_| WorkspaceError::JoinLimit)?,
-                            DecodeLimits::for_volume(config),
-                            accounting,
-                            cancellation,
-                        )
-                        .await?
-                        .value
-                    };
-                    mutations.retire(accounting)?;
-                    let record = FileRecord {
-                        payload: FilePayload::Directory { entries },
-                        ..original
-                    };
-                    selection_push(&mut overrides, record, maximum, accounting)?;
+                };
+                let bytes = directory_path.retained_bytes();
+                let directory_path = Owned::new(directory_path, guard, bytes);
+                let (lookup, guard) = checkout
+                    .value
+                    .lookup_no_follow_with_accounting(
+                        &directory_path.value,
+                        accounting,
+                        cancellation,
+                        false,
+                    )
+                    .await?;
+                let lookup = Owned::new(lookup, guard, 0);
+                let record = lookup.value.record.ok_or(WorkspaceError::NotFound)?;
+                lookup.retire(accounting)?;
+                directory_path.retire(accounting)?;
+                if record.kind != FileKind::Directory {
+                    return Err(WorkspaceError::NotDirectory);
                 }
+                let mut mutations = Owned::<Vec<TreeMutation>>::allocate(0, accounting)?;
+                let mut start = directory.start;
+                while start < directory.end {
+                    accounting.charge_items(1)?;
+                    let path = &selected.value.get(start).ok_or(FsError::InvalidDiff)?.value;
+                    let name = path
+                        .components()
+                        .get(directory.depth)
+                        .ok_or(FsError::InvalidDiff)?;
+                    let mut end = start + 1;
+                    while end < directory.end {
+                        accounting.charge_items(1)?;
+                        let next = selected.value.get(end).ok_or(FsError::InvalidDiff)?;
+                        if next.value.components().get(directory.depth) != Some(name) {
+                            break;
+                        }
+                        end += 1;
+                    }
+                    let (child_path, guard) = path.prefix_with_accounting(
+                        directory.depth + 1,
+                        config.limits,
+                        accounting,
+                        cancellation,
+                    )?;
+                    let bytes = child_path.retained_bytes();
+                    let child_path = Owned::new(child_path, guard, bytes);
+                    let (lookup, guard) = checkout
+                        .value
+                        .lookup_no_follow_with_accounting(
+                            &child_path.value,
+                            accounting,
+                            cancellation,
+                            false,
+                        )
+                        .await?;
+                    let lookup = Owned::new(lookup, guard, 0);
+                    let child = lookup.value.record.ok_or(WorkspaceError::NotFound)?;
+                    lookup.retire(accounting)?;
+                    child_path.retire(accounting)?;
+                    let explicit = path.depth() == directory.depth + 1;
+                    if !explicit {
+                        if child.kind != FileKind::Directory {
+                            return Err(WorkspaceError::NotDirectory);
+                        }
+                        selection_push(
+                            &mut pending,
+                            SelectionDirectory {
+                                start,
+                                end,
+                                depth: directory.depth + 1,
+                            },
+                            accounting,
+                        )?;
+                    }
+                    let (name, mut guard) = name.clone_with_accounting(accounting, cancellation)?;
+                    let bytes = name.retained_bytes() as u64;
+                    mutations.allocation.absorb(&mut guard)?;
+                    mutations.bytes = mutations
+                        .bytes
+                        .checked_add(bytes)
+                        .ok_or(WorkError::Overflow)?;
+                    selection_push(
+                        &mut mutations,
+                        TreeMutation::Insert(TreeEntry {
+                            name,
+                            file_id: child.file_id,
+                            kind: child.kind,
+                        }),
+                        accounting,
+                    )?;
+                    start = end;
+                }
+                let entries = if mutations.value.is_empty() {
+                    empty
+                } else {
+                    apply_tree_mutations_with_accounting(
+                        &self.inner.objects,
+                        empty,
+                        &mutations.value,
+                        limits,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?
+                    .value
+                };
+                mutations.retire(accounting)?;
+                selection_push(
+                    &mut overrides,
+                    FileRecord {
+                        payload: FilePayload::Directory { entries },
+                        ..record
+                    },
+                    accounting,
+                )?;
             }
+            pending.retire(accounting)?;
             checkout.retire(accounting)?;
             for path in selected.value.drain(..) {
                 path.retire(accounting)?;
@@ -306,7 +319,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 root,
                 overrides,
                 DecodeLimits::for_volume(config),
-                maximum,
                 accounting,
                 cancellation,
             )
@@ -320,46 +332,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     async fn select_fork_file_table(
         &self,
         root: &GenerationRoot,
-        overrides: Owned<Vec<FileRecord>>,
+        mut overrides: Owned<Vec<FileRecord>>,
         limits: DecodeLimits,
-        maximum: usize,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, WorkspaceError> {
+        crate::kernel::sort_by_with_accounting(&mut overrides.value, accounting, |left, right| {
+            left.file_id.cmp(&right.file_id)
+        })?;
+        let mut index = crate::kernel::allocation::fixed_index::FixedIndex::<usize>::default();
         let mut pending = Owned::<Vec<FileId>>::allocate(0, accounting)?;
-        selection_push(&mut pending, root.root_file_id, maximum, accounting)?;
+        selection_push(&mut pending, root.root_file_id, accounting)?;
         let mut records = Owned::<Vec<FileRecord>>::allocate(0, accounting)?;
         while let Some(id) = pending.value.pop() {
-            let position = crate::kernel::binary_search_with_accounting(
-                &records.value,
-                accounting,
-                |entry| entry.file_id.cmp(&id),
-            )?;
-            let position = match position {
-                Ok(position) => {
-                    let record = records
-                        .value
-                        .get_mut(position)
-                        .ok_or(WorkspaceError::JoinLimit)?;
-                    record.link_count = record
-                        .link_count
-                        .checked_add(1)
-                        .ok_or(WorkspaceError::JoinLimit)?;
-                    continue;
-                }
-                Err(position) => position,
-            };
-            let mut record = None;
-            for entry in &overrides.value {
+            if let Some(position) = index.get(id.into_bytes(), accounting)?.copied() {
                 accounting.charge(WorkCounters {
-                    items_examined: 1,
+                    bytes_copied: size_of::<u64>() as u64,
                     ..WorkCounters::UNCHARGED
                 })?;
-                if entry.file_id == id {
-                    record = Some(*entry);
-                    break;
-                }
+                let record = records
+                    .value
+                    .get_mut(position)
+                    .ok_or(FsError::InvalidDiff)?;
+                record.link_count = record
+                    .link_count
+                    .checked_add(1)
+                    .ok_or(WorkError::Overflow)?;
+                continue;
             }
+            let record = crate::kernel::binary_search_with_accounting(
+                &overrides.value,
+                accounting,
+                |entry| entry.file_id.cmp(&id),
+            )?
+            .ok()
+            .map(|position| overrides.value[position]);
             let mut record = if let Some(record) = record {
                 record
             } else {
@@ -379,16 +386,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 record.ok_or(WorkspaceError::NotFound)?
             };
             record.link_count = 1;
-            selection_push(&mut records, record, maximum, accounting)?;
-            accounting.charge(WorkCounters {
-                bytes_copied: ((records.value.len() - position) * size_of::<FileRecord>()) as u64,
-                ..WorkCounters::UNCHARGED
-            })?;
-            records
-                .value
-                .get_mut(position..)
-                .ok_or(WorkspaceError::JoinLimit)?
-                .rotate_right(1);
+            let position = records.value.len();
+            selection_push(&mut records, record, accounting)?;
+            index.get_or_try_insert_with(id.into_bytes(), accounting, |_| Ok(position))?;
             if let FilePayload::Directory { entries } = record.payload {
                 let mut cursor: Option<Owned<LogicalName>> = None;
                 loop {
@@ -416,16 +416,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         },
                     )?;
                     for entry in &page.value.entries {
-                        selection_push(&mut pending, entry.file_id, maximum, accounting)?;
+                        selection_push(&mut pending, entry.file_id, accounting)?;
                     }
                     let has_more = page.value.has_more;
                     let next = if has_more {
-                        let name = page
-                            .value
-                            .entries
-                            .pop()
-                            .ok_or(WorkspaceError::JoinLimit)?
-                            .name;
+                        let name = page.value.entries.pop().ok_or(FsError::InvalidDiff)?.name;
                         let bytes = name.retained_bytes() as u64;
                         let allocation =
                             crate::kernel::split_allocation(&mut page.allocation, bytes)?;
@@ -446,13 +441,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             }
         }
         pending.retire(accounting)?;
+        drop(index);
         overrides.retire(accounting)?;
         let mut mutations = Owned::<Vec<FileTableMutation>>::allocate(0, accounting)?;
         for record in &records.value {
             selection_push(
                 &mut mutations,
                 FileTableMutation::Insert(*record),
-                maximum,
                 accounting,
             )?;
         }
@@ -477,7 +472,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &self.inner.objects,
             empty,
             &mutations.value,
-            u32::try_from(maximum).map_err(|_| WorkspaceError::JoinLimit)?,
             limits,
             accounting,
             cancellation,

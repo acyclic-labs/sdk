@@ -42,8 +42,14 @@ async fn stopped_http_put_hashes_no_bytes_and_never_calls_credentials() -> TestR
 }
 
 #[tokio::test(start_paused = true)]
-async fn original_context_owns_http_body_progress_and_clones() -> TestResult {
-    for completion in ["deadline", "cancel", "producer-loss", "unchanged"] {
+async fn http_body_progress_obeys_only_the_original_optional_context() -> TestResult {
+    for completion in [
+        "deadline",
+        "cancel",
+        "producer-loss",
+        "unchanged",
+        "unbounded",
+    ] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}/", listener.local_addr()?);
         let (entered, started) = oneshot::channel();
@@ -73,8 +79,11 @@ async fn original_context_owns_http_body_progress_and_clones() -> TestResult {
         });
         let (expire, expired) = oneshot::channel();
         let (cancel, cancelled) = oneshot::channel();
-        let objects =
-            HttpObjects::new(&endpoint, "fixture", 4096, None)?.with_context(Context::new(
+        let objects = HttpObjects::new(&endpoint, "fixture", 4096, None)?;
+        let objects = if completion == "unbounded" {
+            objects
+        } else {
+            objects.with_context(Context::new(
                 u64::MAX,
                 async {
                     let _ = expired.await;
@@ -82,7 +91,8 @@ async fn original_context_owns_http_body_progress_and_clones() -> TestResult {
                 async {
                     let _ = cancelled.await;
                 },
-            ));
+            ))
+        };
         let mut request = Box::pin(objects.usage());
         futures::select! {
             result = request.as_mut().fuse() => panic!("response body still held: {result:?}"),
@@ -119,7 +129,7 @@ async fn original_context_owns_http_body_progress_and_clones() -> TestResult {
             );
             release.send(()).unwrap();
         } else {
-            // A caller-owned budget cannot inherit the old 30-second timer.
+            // Neither an absent nor a caller-owned budget inherits a timer.
             tokio::time::advance(std::time::Duration::from_secs(31)).await;
             assert!(request.as_mut().now_or_never().is_none());
             release.send(()).unwrap();

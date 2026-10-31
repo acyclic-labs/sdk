@@ -1,12 +1,12 @@
 use super::*;
 
-pub(super) fn crash_recovery() -> Result<(), Failure> {
+pub(super) async fn crash_recovery() -> Result<(), Failure> {
     let root = tempfile::tempdir()?;
     let crash_root = root.path().join("child");
     let mount = root.path().join("mount");
     let ready = root.path().join("ready");
     fs::create_dir(&mount)?;
-    let qualification = crash_recovery_inner(&crash_root, &mount, &ready);
+    let qualification = crash_recovery_inner(&crash_root, &mount, &ready).await;
     #[cfg(windows)]
     // The recovered path becomes an ordinary directory after the resumed
     // provider stops. The preserved residue lives under the same temporary
@@ -24,7 +24,11 @@ pub(super) fn crash_recovery() -> Result<(), Failure> {
     }
 }
 
-fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result<(), Failure> {
+async fn crash_recovery_inner(
+    crash_root: &Path,
+    mount: &Path,
+    ready: &Path,
+) -> Result<(), Failure> {
     let mut child = spawn_captured_child(
         Command::new(std::env::current_exe()?)
             .arg("--crash-child")
@@ -33,28 +37,14 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
             .arg(ready),
     )?;
     let deadline = Instant::now() + Duration::from_secs(30);
-    while !ready.exists() && Instant::now() < deadline {
-        if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate(None)?;
-            return Err(
-                format!("crash child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into(),
-            );
-        }
-        if let Some(status) = child.process.try_wait(None)? {
-            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
-            return Err(format!(
-                "crash child exited before readiness ({}): {}{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if !ready.exists() {
-        child.process.terminate(None)?;
-        return Err("crash child did not mount within 30 seconds".into());
+    if let Err(error) = captured_child_ready(&mut child, ready, deadline).await {
+        let cleanup = child.process.terminate(None);
+        let diagnostics = if cleanup.is_ok() {
+            child.write_diagnostics("crash child failed before readiness")
+        } else {
+            Ok(())
+        };
+        return Err(format!("{error}; cleanup={cleanup:?}; diagnostics={diagnostics:?}").into());
     }
     eprintln!("qualification phase: crash child ready; termination starting");
     child.process.terminate(None)?;
@@ -62,8 +52,7 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
     #[cfg(windows)]
     {
         let engine = Fs::local(LocalOptions::new(crash_root.join("store")));
-        let runtime = tokio::runtime::Runtime::new()?;
-        let volume = runtime.block_on(async {
+        let volume = async {
             let engine = engine.await?;
             let workspace = engine
                 .open_workspace(
@@ -74,7 +63,8 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
                 .await
                 .map_err(|failure| failure.error)?;
             Ok::<_, Failure>(workspace.value.id().volume_id())
-        })?;
+        }
+        .await?;
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
@@ -104,8 +94,7 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
             return Err("crash recovery was not idempotent".into());
         }
         fs::create_dir(mount)?;
-        let runtime = tokio::runtime::Runtime::new()?;
-        runtime.block_on(verify_remounted_workspace(crash_root, mount))?;
+        verify_remounted_workspace(crash_root, mount).await?;
         if !preserved.is_dir() {
             return Err("recovered mount discarded the preserved residue".into());
         }
@@ -173,7 +162,9 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Resu
             }
             let _open_hydrated_file = File::open(mount.join("alive.txt"))?;
         }
-        fs::write(ready, b"ready")?;
+        let staged_ready = ready.with_extension("ready-pending");
+        fs::write(&staged_ready, b"ready")?;
+        fs::rename(staged_ready, ready)?;
         std::future::pending::<Result<(), Failure>>().await
     })
 }

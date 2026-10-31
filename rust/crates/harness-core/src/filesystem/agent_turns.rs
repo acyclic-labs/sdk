@@ -31,7 +31,7 @@ use crate::{
     runtime::ContentBindings,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamError, StreamProvider};
+use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
 use std::sync::Arc;
 
@@ -186,7 +186,6 @@ impl<'v> AdmittedAgent<'v> {
                 owner,
                 &private.volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?;
             require_structured_write(scope, owner, &private.volume)?;
@@ -245,7 +244,6 @@ impl<'v> AdmittedAgent<'v> {
                 self.owner,
                 volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?;
             require_structured_write(scope, self.owner, volume)?;
@@ -389,12 +387,12 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
 /// Bounds of one agent turn.
 #[derive(Clone, Copy, Debug)]
 pub struct TurnLimits {
-    /// Journal bytes per turn.
-    pub maximum_bytes: u64,
+    /// Optional caller-selected journal file byte policy per turn.
+    pub maximum_bytes: Option<u64>,
     /// Model and tool steps per turn.
-    pub max_steps: u32,
-    /// Settled turns of history in the model context.
-    pub history_turns: u32,
+    pub max_steps: Option<u32>,
+    /// Optional caller-selected tail of settled turns; None selects the complete history.
+    pub history_turns: Option<u64>,
 }
 
 /// [`TurnHost`] binding every agent to its executor and a journal on its
@@ -680,7 +678,6 @@ where
                 &scope,
                 &private.volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?,
         );
@@ -707,49 +704,62 @@ where
         agent: &AgentState,
     ) -> Result<Vec<ConversationEntry>> {
         let tail = agent.conversation_tail;
-        // Nothing before the latest checkpoint is context: read from it, or
-        // the bounded window when it is further back, plus that one entry
-        // read by its indexed sequence.
-        let window = tail.saturating_sub(u64::from(self.limits.history_turns));
+        // A checkpoint replaces earlier context. An explicit finite history
+        // window may skip it, in which case retain the indexed checkpoint too.
+        let window = self
+            .limits
+            .history_turns
+            .map_or(0, |turns| tail.saturating_sub(turns));
         let from = agent.checkpoint.map_or(window, |at| at.max(window));
         let mut entries = match agent.checkpoint.filter(|at| *at < from) {
-            Some(at) => self.entries(agent, at, 1).await?,
+            Some(at) => self.entries(agent, at, at + 1).await?,
             None => Vec::new(),
         };
-        entries.extend(self.entries(agent, from, tail - from).await?);
+        entries.extend(self.entries(agent, from, tail).await?);
         Ok(entries)
     }
 
-    /// `count` conversation entries of `agent` from sequence `from`.
+    /// Complete indexed range, read through successive transport pages.
     async fn entries(
         &self,
         agent: &AgentState,
         from: u64,
-        count: u64,
+        tail: u64,
     ) -> Result<Vec<ConversationEntry>> {
-        if count == 0 {
-            return Ok(Vec::new());
-        }
         let path = agent.path.conversation().map_err(agent_error)?;
-        let records = match self
-            .stream
-            .read(ReadRequest {
-                key: None,
-                path,
-                from,
-                limit: u32::try_from(count).unwrap_or(u32::MAX),
-                at_least: Default::default(),
-            })
-            .await
-        {
-            Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
-        records
-            .iter()
-            .map(|record| ConversationEntry::decode(&record.value).map_err(agent_error))
-            .collect()
+        let mut history = Vec::new();
+        let mut next = from;
+        while next < tail {
+            let limit = u32::try_from((tail - next).min(128))
+                .map_err(|_| Error::Invalid("conversation page length overflow".into()))?;
+            let mut records = self
+                .stream
+                .read(ReadRequest {
+                    key: None,
+                    path: path.clone(),
+                    from: next,
+                    limit,
+                    at_least: Default::default(),
+                })
+                .await?;
+            let through = next
+                .checked_add(u64::from(limit))
+                .ok_or_else(|| Error::Invalid("conversation page offset overflow".into()))?;
+            while let Some(record) = records.try_next().await? {
+                if record.sequence != next || next >= through {
+                    return Err(Error::Invalid("conversation page is discontinuous".into()));
+                }
+                history.try_reserve(1).map_err(Error::Allocation)?;
+                history.push(ConversationEntry::decode(&record.value).map_err(agent_error)?);
+                next = next
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("conversation offset overflow".into()))?;
+            }
+            if next != through {
+                return Err(Error::Invalid("conversation page is incomplete".into()));
+            }
+        }
+        Ok(history)
     }
 }
 
@@ -1159,7 +1169,7 @@ struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     admission: TurnAdmission,
     agent: AgentPath,
     volumes: Vec<VolumeBinding>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<P, A, O> crate::agent::TurnChildren for FilesystemTurnChildren<P, A, O>
@@ -1212,7 +1222,12 @@ where
                 None,
             )?;
             let bytes = reader
-                .read(&external[0], self.maximum_bytes, None, None)?
+                .read(
+                    &external[0],
+                    external[0].descriptor().byte_length(),
+                    None,
+                    None,
+                )?
                 .await?;
             let output: TurnOutput = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;

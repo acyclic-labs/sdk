@@ -36,7 +36,6 @@ fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
         value.as_bytes().to_vec(),
-        config().limits.maximum_component_bytes,
     )?)
 }
 
@@ -73,7 +72,7 @@ async fn blob(
             chunk_bytes: 64,
             page_items: 8,
             page_bytes: 4096,
-            maximum_blob_bytes: u64::try_from(bytes.len())?,
+            maximum_blob_bytes: Some(u64::try_from(bytes.len())?),
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -126,7 +125,6 @@ async fn stored_bindings(
         store,
         None,
         &edits,
-        u32::try_from(edits.len())?,
         DecodeLimits::for_volume(config()),
         &mut accounting,
         &cancellation,

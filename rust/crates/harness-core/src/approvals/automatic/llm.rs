@@ -84,7 +84,7 @@ pub(super) async fn review_model(
             io,
         )?),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     drop(binding);
     let result = executor.infer(execution.0, &input, io).await?;
@@ -218,9 +218,10 @@ mod tests {
                 };
                 let bound: Arc<dyn ModelProvider> = provider.clone();
                 let model = Model::new("test".into(), "review".into(), "1".into())?;
-                let request = ApprovalRequest::new("original", b"{\"action\":\"exact\"}", 4096)?;
+                let request =
+                    ApprovalRequest::new("original", b"{\"action\":\"exact\"}", Some(4096))?;
                 let limits = Limits {
-                    render_bytes: if case == 7 { 512 } else { 4096 },
+                    render_bytes: Some(if case == 7 { 512 } else { 4096 }),
                     ..Limits::default()
                 };
                 let first = review_model(
@@ -323,8 +324,11 @@ mod tests {
                 );
                 assert_eq!(counts.load(Ordering::SeqCst), if case == 5 { 2 } else { 1 });
                 if case == 0 {
-                    let changed =
-                        ApprovalRequest::new("original", b"{\"action\":\"different\"}", 4096)?;
+                    let changed = ApprovalRequest::new(
+                        "original",
+                        b"{\"action\":\"different\"}",
+                        Some(4096),
+                    )?;
                     assert!(
                         review_model(
                             (journal.as_ref(), io.as_ref()),

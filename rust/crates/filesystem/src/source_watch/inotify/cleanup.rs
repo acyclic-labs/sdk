@@ -248,7 +248,6 @@ impl Shared {
             },
             work,
         )?;
-        let retired_bytes = self.retained_variable_bytes.load(Ordering::Acquire);
         let mut result = Ok(());
         if self.inotify.swap(-1, Ordering::AcqRel) >= 0 {
             let withdrawn = hub::hub().and_then(|hub| {
@@ -281,6 +280,7 @@ impl Shared {
         // routed records this watch will never read with the rest of its
         // retained bytes.
         *self.inbox.lock().unwrap_or_else(PoisonError::into_inner) = hub::Inbox::default();
+        let retired_bytes = self.retained_variable_bytes.load(Ordering::Acquire);
         result = result.and(self.ownership.retire(retired_bytes));
         self.retained_variable_bytes.store(0, Ordering::Release);
         result

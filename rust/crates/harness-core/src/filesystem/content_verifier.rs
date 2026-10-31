@@ -5,7 +5,7 @@ pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
     pub(in crate::filesystem) authority: Arc<crate::core::VerifiedScope>,
     pub(in crate::filesystem) exact_file: Option<FileRef>,
-    pub(in crate::filesystem) maximum_bytes: u64,
+    pub(in crate::filesystem) maximum_bytes: Option<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_metadata: Option<Arc<acyclic_fs::NativeAllocation>>,
 }
@@ -35,10 +35,11 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         host: Arc<FilesystemHost<A, O>>,
         verifier: &AuthorityVerifier,
         scope: &Scope,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
-        if maximum_bytes == 0 {
+        let maximum_bytes = maximum_bytes.into();
+        if maximum_bytes == Some(0) {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -131,7 +132,9 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.verify_exact_file(Some(reference), io)?;
-            if reference.descriptor().byte_length() > self.maximum_bytes
+            if self
+                .maximum_bytes
+                .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
                 || range
                     .offset
                     .checked_add(range.length)
@@ -157,7 +160,7 @@ where
                 .read_selection_with_access(
                     self.authority.scope(),
                     reference,
-                    self.maximum_bytes,
+                    reference.descriptor().byte_length(),
                     self.exact_file.is_some(),
                     ceiling,
                     authority_io,
@@ -209,7 +212,8 @@ where
                 .read_selection_with_access(
                     self.authority.scope(),
                     reference,
-                    maximum_bytes.min(self.maximum_bytes),
+                    self.maximum_bytes
+                        .map_or(maximum_bytes, |maximum| maximum_bytes.min(maximum)),
                     self.exact_file.is_some(),
                     None,
                     io,
@@ -236,7 +240,11 @@ where
 
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.verify_exact_file(None, io)?;
-            if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
+            if maximum_bytes == 0
+                || self
+                    .maximum_bytes
+                    .is_some_and(|maximum| maximum_bytes > maximum)
+            {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
@@ -293,7 +301,7 @@ where
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let after = after
                 .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
+                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })
                 .transpose()?;
@@ -351,7 +359,7 @@ where
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
@@ -390,7 +398,7 @@ where
                     &grant,
                     path,
                     expected_generation,
-                    maximum_bytes.min(self.maximum_bytes),
+                    maximum_bytes.into_iter().chain(self.maximum_bytes).min(),
                     crate::conversation::ContentAccess { ceiling, io },
                 )
                 .await?;
@@ -451,7 +459,8 @@ where
             .read_file_with_access(
                 self.authority.scope(),
                 reference,
-                maximum_bytes.min(self.maximum_bytes),
+                self.maximum_bytes
+                    .map_or(maximum_bytes, |maximum| maximum_bytes.min(maximum)),
                 self.exact_file.is_some(),
                 ceiling,
                 authority_io,
@@ -557,9 +566,18 @@ where
                 &mut Some(&mut observer),
             )?;
             let grant_custody = observer.into_custody()?;
-            if path.len() > context.effective_scope().limits().path_bytes
-                || after
-                    .is_some_and(|name| name.len() > context.effective_scope().limits().path_bytes)
+            if context
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+                || after.is_some_and(|name| {
+                    context
+                        .effective_scope()
+                        .limits()
+                        .path_bytes
+                        .is_some_and(|maximum| name.len() > maximum.get())
+                })
                 || (after.is_some() && expected_generation.is_none())
             {
                 return Err(Error::NativeBoundary {
@@ -587,14 +605,12 @@ where
                 .map_err(Error::from)?;
                 let (bytes, custody) = work.copy_bytes(name.as_bytes()).map_err(Error::from)?;
                 cursor_custody = Some(custody);
-                Some(
-                    LogicalName::new(NameEncoding::Utf8, bytes, u32::MAX).map_err(|_| {
-                        Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Invalid,
-                            reason: "private directory cursor is not a logical child name",
-                        }
-                    })?,
-                )
+                Some(LogicalName::new(NameEncoding::Utf8, bytes).map_err(|_| {
+                    Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "private directory cursor is not a logical child name",
+                    }
+                })?)
             } else {
                 cursor_custody = None;
                 None

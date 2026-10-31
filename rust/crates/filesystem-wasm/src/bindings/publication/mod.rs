@@ -72,7 +72,7 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .checkpoint(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         encode_checkpoint_result(&receipt)
@@ -83,7 +83,7 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .refresh_head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         encode_checkpoint_result(&receipt)
@@ -94,7 +94,7 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .refresh_live(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         encode_checkpoint_result(&receipt)
@@ -117,7 +117,7 @@ impl BrowserCheckout {
                 None,
                 None,
                 permit,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {
                     acyclic_fs::FsResult::Ok(acyclic_fs::OperationReceipt {
@@ -137,9 +137,9 @@ impl BrowserCheckout {
         #[wasm_bindgen(unchecked_param_type = "TransactionOperation[]")] operations: JsValue,
         operation_id: Vec<u8>,
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_attempts: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserLiveTransactionResult>, JsValue> {
-        let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
+        let maximum_conflicts = wasm_optional_u32(&maximum_conflicts)?;
         let maximum_attempts = wasm_u32(&maximum_attempts)?;
 
         let authored = decode_authored_transactions(operations, self.engine.volume_config())?;
@@ -152,7 +152,7 @@ impl BrowserCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -165,9 +165,9 @@ impl BrowserCheckout {
         &mut self,
         operation_id: Vec<u8>,
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_attempts: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserLiveMutationResult>, JsValue> {
-        let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
+        let maximum_conflicts = wasm_optional_u32(&maximum_conflicts)?;
         let maximum_attempts = wasm_u32(&maximum_attempts)?;
 
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
@@ -178,7 +178,7 @@ impl BrowserCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -189,16 +189,16 @@ impl BrowserCheckout {
     #[wasm_bindgen(js_name = rebaseHead)]
     pub async fn rebase_head(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserRebaseResult>, JsValue> {
-        let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
+        let maximum_conflicts = wasm_optional_u32(&maximum_conflicts)?;
 
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
             .rebase_head(
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await

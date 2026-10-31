@@ -107,6 +107,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
     let id = unbounded!(generation, stat("/a"))?.file_id;
     let complete = generation.paths_for_file_ids([id], 16).await?;
     assert_eq!(complete[&id], vec!["/a", "/b"]);
+    assert_eq!(generation.paths_for_file_ids([id], None).await?, complete);
     let bounded = generation.paths_for_file_ids([id], 1).await?;
     assert_eq!(bounded[&id].len(), 1);
     Ok(())

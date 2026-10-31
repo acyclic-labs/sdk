@@ -23,7 +23,7 @@ The Cloud product API uses gRPC. In Node or Bun, import `createMachinesGrpcClien
 
 `machines.readFile` and `writeFile` transfer native binary chunks, at most 65536 bytes each, with `access: { machine, path, offset, deadlineUnixMs }`. Paths are absolute guest paths, offsets and deadlines are bigint, and replies preserve exact bytes, short writes and POSIX errno. Both canonical RPCs are bidirectional streams; generated service clients can retain the same RPC across chunks with the original machine/path/deadline. These scalar helpers send one chunk and close on its native receipt, including when the server keeps its output open. `truncate: true` is allowed only at offset zero. Neither method executes a shell, resets the original deadline or automatically repeats an interrupted write.
 
-`machines.readOutput({ protocol, machine, offset, limit })` reads live guest console bytes. Offsets use `bigint`; `MAX_OUTPUT_READ_BYTES` from the gRPC entry point is 65,536. Continue from the returned `offset + BigInt(data.length)`. A later returned offset exposes discarded console bytes; an empty read means no newer bytes are available now, rather than permanent EOF. The client rejects substituted machine identities, backward offsets, oversized data and offset overflow.
+`machines.readOutput({ protocol, machine, offset, limit })` reads live guest console bytes. Offsets use `bigint`; `MAX_OUTPUT_READ_BYTES` from the gRPC entry point is 65,536. Larger positive read hints return one chunk. Continue from the returned `offset + BigInt(data.length)`. A later returned offset exposes discarded console bytes; an empty read means no newer bytes are available now, rather than permanent EOF. The client rejects substituted machine identities, backward offsets, oversized data and offset overflow.
 
 ```ts
 import { createMachinesGrpcClient } from "@acyclic-labs/machines/grpc";
@@ -52,3 +52,5 @@ try {
 The gRPC transport retains the shared Auth credential request through unary admission and both duplex bodies. Authenticated rejection applies to that exact lease; policy denial and cancellation preserve it. Source events cancel the original HTTP request, and every body pull and delivered frame checks current source validity and absolute expiry. Raw callbacks have no fabricated validity or renewal identity. A refusal never replays a mutation.
 
 [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/machines/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/machines)
+
+`listMachines(provider)` follows all pages by default. `maximum` is an optional caller-selected stopping point; `pageSize` is normalized to the shared physical page width without refusing larger positive hints.

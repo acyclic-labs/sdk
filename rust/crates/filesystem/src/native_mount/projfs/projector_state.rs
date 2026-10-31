@@ -123,6 +123,7 @@ pub(super) struct Projector {
     pub(super) clock: super::super::clock::Clock,
     pub(super) state: Mutex<ProjectorState>,
     pub(super) tree: Mutex<()>,
+    pub(super) progress: tokio::sync::Notify,
     pub(super) paths: KeyedLocks<MountPath>,
     pub(super) changed: Condvar,
     pub(super) worker: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -155,7 +156,6 @@ pub(super) struct ProjectorLifecycle {
 }
 
 pub(super) const HELD_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
-pub(super) const HELD_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Default)]
 pub(super) struct ProjectorState {

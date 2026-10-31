@@ -106,7 +106,6 @@ impl Format for FileTableFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        _maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
         let copied_bytes = std::mem::size_of::<Self::Key>() as u64;
@@ -118,7 +117,6 @@ impl Format for FileTableFormat {
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        _maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         let copied_bytes = std::mem::size_of::<Self::Value>() as u64;
@@ -246,7 +244,6 @@ pub async fn apply_file_table_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     mutations: Vec<FileTableMutation>,
-    maximum_mutations: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &crate::CancellationToken,
@@ -256,7 +253,6 @@ pub async fn apply_file_table_mutations<S: crate::AsyncObjectStore>(
         store,
         root,
         &mutations,
-        maximum_mutations,
         limits,
         &mut accounting,
         cancellation,
@@ -269,7 +265,6 @@ pub(crate) async fn apply_file_table_mutations_with_accounting<S: crate::AsyncOb
     store: &S,
     root: ObjectId,
     mutations: &[FileTableMutation],
-    maximum_mutations: u32,
     limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
@@ -282,7 +277,6 @@ pub(crate) async fn apply_file_table_mutations_with_accounting<S: crate::AsyncOb
         store,
         root,
         mutations,
-        maximum_mutations,
         limits,
         accounting,
         cancellation,
@@ -315,7 +309,6 @@ pub(super) fn project_file_table_error(error: crate::FsError) -> FileTableMutati
 fn map_error(error: persistent_btree::Error<FileTableMutationError>) -> FileTableMutationError {
     match error {
         persistent_btree::Error::Empty => FileTableMutationError::Empty,
-        persistent_btree::Error::TooManyMutations => FileTableMutationError::TooManyMutations,
         persistent_btree::Error::WrongRootKind => FileTableMutationError::WrongRootKind,
         persistent_btree::Error::InvalidLimits => FileTableMutationError::InvalidLimits,
         persistent_btree::Error::PageItemTooLarge => FileTableMutationError::PageItemTooLarge,
@@ -342,9 +335,6 @@ pub enum FileTableMutationError {
     /// Batch contains no mutations.
     #[error("file-table mutation batch is empty")]
     Empty,
-    /// Batch exceeds its bound.
-    #[error("file-table mutation count exceeds its bound")]
-    TooManyMutations,
     /// Root has the wrong object class.
     #[error("file-table mutation root has the wrong kind")]
     WrongRootKind,

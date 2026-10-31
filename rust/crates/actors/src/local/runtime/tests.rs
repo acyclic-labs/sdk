@@ -1612,8 +1612,8 @@ struct Limited {
 }
 impl Limited {
     fn new(
-        timeout_ms: u64,
-        checkpoint_bytes: u64,
+        timeout_ms: impl Into<Option<u64>>,
+        checkpoint_bytes: impl Into<Option<u64>>,
         stall: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
@@ -1679,6 +1679,12 @@ async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult 
     // Control: the same package within its limits publishes.
     let (failures, published) = run_limited(Limited::new(10_000, 1 << 16, false)?).await?;
     assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(published, vec![Bytes::from_static(b"r0")]);
+    let (failures, published) = run_limited(Limited::new(None, None, false)?).await?;
+    assert!(
+        failures.is_empty(),
+        "unbounded policy refused the original transition: {failures:?}"
+    );
     assert_eq!(published, vec![Bytes::from_static(b"r0")]);
     let (failures, published) = run_limited(Limited::new(10_000, 4, false)?).await?;
     assert!(refused(&failures, "checkpoint"), "{failures:?}");

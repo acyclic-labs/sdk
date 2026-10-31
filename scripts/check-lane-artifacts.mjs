@@ -1,9 +1,9 @@
-import {execFileSync} from 'node:child_process';
+import { commandOutput } from "./process-capture.mjs";
 import {laneArtifactViolation} from './lane-artifact-policy.mjs';
 
 const [base, head, ...extra] = process.argv.slice(2);
 if (base === undefined || !head || extra.length) throw new Error('usage: check-lane-artifacts.mjs <base-or-empty> <head>');
-const git = (...args) => execFileSync('git', args, {encoding: 'utf8'});
+const git = (...args) => commandOutput('git', args, {encoding: 'utf8'});
 // Resolve untrusted event inputs as commits before using them as diff arguments.
 const commit = ref => git('rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`).trim();
 const tip = commit(head);

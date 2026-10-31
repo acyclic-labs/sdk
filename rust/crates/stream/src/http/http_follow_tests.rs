@@ -8,8 +8,8 @@
 use super::*;
 use acyclic_grpc_observability::tests::Capture;
 use serde_json::json;
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::{collections::VecDeque, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},

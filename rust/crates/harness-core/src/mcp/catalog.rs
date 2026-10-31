@@ -72,14 +72,12 @@ impl McpCatalog {
                 "harness/mcp-catalog-install/v1",
                 self,
                 previous
-                    .map(|old| {
-                        crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None)
-                    })
+                    .map(|old| crate::executor::json::canonical_json_digest(old, None, &mut None))
                     .transpose()?,
                 maximum_tools,
                 maximum_bytes,
             ),
-            u64::MAX,
+            None,
             &mut None,
         )
     }
@@ -127,13 +125,13 @@ impl McpCatalog {
 
     /// Validates the complete catalog before mutation.
     pub fn validate(&self, maximum_tools: u32, maximum_bytes: u32) -> Result<()> {
-        self.validate_checked(maximum_tools, maximum_bytes, &|| Ok(()))
+        self.validate_checked(Some(maximum_tools), Some(maximum_bytes), &|| Ok(()))
     }
 
     fn validate_checked(
         &self,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: Option<u32>,
+        maximum_bytes: Option<u32>,
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         check()?;
@@ -144,13 +142,15 @@ impl McpCatalog {
                 "MCP server namespace cannot contain a dot".into(),
             ));
         }
-        if maximum_tools == 0
-            || maximum_bytes == 0
-            || self.tools.len() as u64 > u64::from(maximum_tools)
+        if maximum_tools == Some(0)
+            || maximum_bytes == Some(0)
+            || maximum_tools.is_some_and(|maximum| self.tools.len() as u64 > u64::from(maximum))
         {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
-        crate::executor::json::json_byte_length(self, u64::from(maximum_bytes), &mut None)?;
+        if let Some(maximum) = maximum_bytes {
+            crate::executor::json::json_byte_length(self, Some(u64::from(maximum)), &mut None)?;
+        }
         crate::executor::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
         check()?;
         let mut names = BTreeSet::new();
@@ -270,7 +270,7 @@ impl McpCatalog {
             previous,
             transport,
             projection,
-            (maximum_tools, maximum_bytes),
+            (Some(maximum_tools), Some(maximum_bytes)),
             &|| Ok(()),
         )
     }
@@ -281,7 +281,7 @@ impl McpCatalog {
         previous: Option<&Self>,
         transport: &Arc<dyn McpToolTransport>,
         projection: &Arc<dyn ToolProjection>,
-        bounds: (u32, u32),
+        bounds: (Option<u32>, Option<u32>),
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         self.validate_checked(bounds.0, bounds.1, check)?;
@@ -313,9 +313,9 @@ impl McpCatalog {
         next.pin_catalog_revision(
             &prefix,
             previous
-                .map(|old| crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None))
+                .map(|old| crate::executor::json::canonical_json_digest(old, None, &mut None))
                 .transpose()?,
-            crate::executor::json::canonical_json_digest(self, u64::MAX, &mut None)?,
+            crate::executor::json::canonical_json_digest(self, None, &mut None)?,
         )?;
         if let Some(old) = previous {
             for remote in &old.tools {

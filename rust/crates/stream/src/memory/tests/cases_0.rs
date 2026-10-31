@@ -83,7 +83,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
     let records = vec![crate::AppendRecord::from(vec![0_u8; MAX_RECORD_BYTES]); 16];
     let idempotency_key = key(b"size")?;
     let mut low = 1_usize;
-    let mut high = crate::MAX_PATH_BYTES;
+    let mut high = MAX_COMMAND_BYTES;
     while low < high {
         let middle = low + (high - low).div_ceil(2);
         let path = StreamPath::new("x".repeat(middle))?;
@@ -139,32 +139,35 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
             })
             .await?;
     }
-    let mut after = None;
-    let mut revision = None;
-    let mut found = Vec::new();
-    loop {
-        let page = provider
-            .children_page(ChildrenPageRequest {
-                tail_stream: None,
-                parent: Some(path("agents")?),
-                after,
-                hierarchy_version: revision,
-                limit: 127,
-            })
-            .await?;
-        revision = Some(page.hierarchy_version);
-        found.extend(page.children.into_iter().map(|child| child.path));
-        after = page.next_after;
-        if after.is_none() {
-            break;
+    for limit in [127, u32::MAX] {
+        let mut after = None;
+        let mut revision = None;
+        let mut found = Vec::new();
+        loop {
+            let page = provider
+                .children_page(ChildrenPageRequest {
+                    tail_stream: None,
+                    parent: Some(path("agents")?),
+                    after,
+                    hierarchy_version: revision,
+                    limit,
+                })
+                .await?;
+            assert!(page.children.len() <= crate::CHILDREN_PAGE_ITEMS as usize);
+            revision = Some(page.hierarchy_version);
+            found.extend(page.children.into_iter().map(|child| child.path));
+            after = page.next_after;
+            if after.is_none() {
+                break;
+            }
         }
+        assert_eq!(found.len(), 2_049);
+        assert!(
+            found
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left < right))
+        );
     }
-    assert_eq!(found.len(), 2_049);
-    assert!(
-        found
-            .windows(2)
-            .all(|pair| matches!(pair, [left, right] if left < right))
-    );
     Ok(())
 }
 
@@ -377,6 +380,21 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
                 })
                 .await?;
         }
+        let mut read = provider
+            .read(ReadRequest {
+                path: stream.clone(),
+                from: 0,
+                limit: u32::MAX,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?;
+        for expected in 0..count {
+            let record = read.next().await.ok_or(StreamError::Unavailable)??;
+            assert_eq!(record.sequence, expected);
+        }
+        assert!(read.next().await.is_none());
+        drop(read);
         let mut follow = provider
             .follow(crate::FollowRequest::new(stream, 0))
             .map_ok(crate::records_only)
@@ -395,12 +413,12 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
 async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
 -> Result<(), StreamError> {
     let provider = MemoryStream::new(MemoryLimits {
-        paths: 2,
-        path_bytes: 4,
-        records: 1,
-        payload_bytes: 3,
-        commits: 1,
-        idempotency_results: 1,
+        paths: Some(2),
+        path_bytes: Some(4),
+        records: Some(1),
+        payload_bytes: Some(3),
+        commits: Some(1),
+        idempotency_results: Some(1),
     });
     let request = AppendRequest {
         path: path("a/b")?,
@@ -532,11 +550,6 @@ fn permanent_path_validation_rejects_ambiguous_names() {
     ] {
         assert_eq!(StreamPath::new(invalid), Err(StreamError::InvalidPath));
     }
-    assert!(StreamPath::new("a".repeat(crate::MAX_PATH_BYTES)).is_ok());
-    assert_eq!(
-        StreamPath::new("a".repeat(crate::MAX_PATH_BYTES + 1)),
-        Err(StreamError::InvalidPath)
-    );
     assert!(StreamPath::new("runs/run_42/agents/researcher").is_ok());
 }
 
@@ -545,8 +558,8 @@ fn permanent_path_validation_rejects_ambiguous_names() {
 async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), StreamError> {
     let clock = Arc::new(TestClock::default());
     let limits = MemoryLimits {
-        idempotency_results: 1,
-        commits: 1,
+        idempotency_results: Some(1),
+        commits: Some(1),
         ..MemoryLimits::default()
     };
     let provider = MemoryStream::new_with_clock(limits, clock.clone());
@@ -732,8 +745,8 @@ async fn hierarchy_page_starts_after_prefix_siblings() -> Result<(), StreamError
 #[tokio::test]
 async fn commit_counts_an_explicit_parent_once_across_prefix_siblings() -> Result<(), StreamError> {
     let provider = MemoryStream::new(MemoryLimits {
-        paths: 4,
-        path_bytes: 18,
+        paths: Some(4),
+        path_bytes: Some(18),
         ..MemoryLimits::default()
     });
     let names = ["a", "a-/child", "a/child"];

@@ -113,8 +113,6 @@ function recordControl(accounting, value) {
 function speculationOptions() {
   return {
     residency: {
-      maximumActiveOperations: 2,
-      maximumActiveBytes: 1024n * 1024n,
       outcomeWindow: 8,
       trafficWindow: 8,
       speculativeCostBasisPoints: 10_000,
@@ -122,9 +120,6 @@ function speculationOptions() {
       minimumUsefulnessBasisPoints: 1,
     },
     promotion: {
-      maximumActiveOperations: 2,
-      maximumActiveBytes: 1024n * 1024n,
-      maximumActiveCostUnits: 1024n * 1024n,
       maximumResidencyFacts: 4,
       maximumDestinations: 4,
       maximumAcceptedTiers: 4,

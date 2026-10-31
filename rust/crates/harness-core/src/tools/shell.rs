@@ -14,7 +14,7 @@ pub const DESCRIPTION: &str = "Run a command on an execution target, in that tar
 /// spill even when the wire encoding, rather than the raw tail, needs truncation.
 pub fn bounded_result(
     result: crate::tool::ToolResult,
-    maximum: u64,
+    maximum: Option<u64>,
 ) -> Result<crate::tool::ToolResult> {
     super::bounds::result(PLATFORM.name, result, maximum)
 }
@@ -105,10 +105,10 @@ pub struct ShellInput {
     /// Optional directory relative to the task view. Parent traversal is forbidden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// Timeout in milliseconds, from 1 to 300000. Omission uses 300000.
+    /// Optional positive timeout in seconds. Omission waits for exit or cancellation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 300000))]
-    pub timeout_ms: Option<u32>,
+    #[schemars(range(min = 1))]
+    pub timeout: Option<u32>,
     /// Target from the roster, or user:<owner> for that user's home device.
     /// Omission runs on the agent's home target; there is no fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,10 +135,16 @@ impl ShellInput {
         Ok(())
     }
 
-    pub(crate) fn timeout_ms(&self) -> Result<u32> {
-        Some(self.timeout_ms.unwrap_or(300_000))
-            .filter(|timeout| (1..=300_000).contains(timeout))
-            .ok_or_else(|| Error::Invalid("shell timeout_ms must be in 1..=300000; recovery: choose a timeout_ms in that range".into()))
+    pub(crate) fn timeout_ms(&self) -> Result<Option<u64>> {
+        self.timeout
+            .map(|seconds| {
+                if seconds == 0 {
+                    Err(Error::Invalid("shell timeout must be positive".into()))
+                } else {
+                    Ok(u64::from(seconds) * 1000)
+                }
+            })
+            .transpose()
     }
 }
 

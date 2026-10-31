@@ -79,7 +79,7 @@ pub fn preparation_digest<T: Serialize>(value: &T, io: Option<&PreparationIo>) -
     if let Some(io) = io {
         return io.canonical_digest(value);
     }
-    crate::executor::json::canonical_json_digest(value, u64::MAX, &mut None)
+    crate::executor::json::canonical_json_digest(value, None, &mut None)
 }
 
 // Values precede their temporary guards.
@@ -111,7 +111,7 @@ pub fn decode_json<'a, T: PreparationRecord>(
             // The admitted Value already owns normalized JSON data. Sort it in
             // place instead of encoding and decoding a duplicate Value tree.
             parsed.0.sort_all_objects();
-            let canonical = io.encode(&parsed.0, bytes.len() as u64, false)?;
+            let canonical = io.encode(&parsed.0, Some(bytes.len() as u64), false)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
             if canonical.as_ref() != bytes {
                 return Err(stock_boundary(

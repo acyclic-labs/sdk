@@ -15,11 +15,9 @@ pub enum NativePromotionStatus {
     Rejected,
 }
 
-/// Hard policy for native local-residency prediction.
+/// Adaptive policy for native local-residency prediction.
 #[napi(object)]
 pub struct NativeResidencySpeculationOptions {
-    pub maximum_active_operations: NapiU32,
-    pub maximum_active_bytes: BigInt,
     pub outcome_window: NapiU32,
     pub traffic_window: NapiU32,
     pub speculative_cost_basis_points: NapiU32,
@@ -27,15 +25,9 @@ pub struct NativeResidencySpeculationOptions {
     pub minimum_usefulness_basis_points: NapiU32,
 }
 
-/// Hard policy for native cross-location promotion planning.
+/// Adaptive policy for native cross-location promotion planning.
 #[napi(object)]
 pub struct NativePromotionSpeculationOptions {
-    pub maximum_active_operations: NapiU32,
-    pub maximum_active_bytes: BigInt,
-    pub maximum_active_cost_units: BigInt,
-    pub maximum_residency_facts: NapiU32,
-    pub maximum_destinations: NapiU32,
-    pub maximum_accepted_tiers: NapiU32,
     pub outcome_window: NapiU32,
     pub minimum_usefulness_samples: NapiU32,
     pub minimum_usefulness_basis_points: NapiU32,
@@ -179,7 +171,7 @@ impl NativeSpeculation {
             .execute_residency(
                 controller.residency(),
                 permit,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -289,11 +281,6 @@ pub(in crate::bindings) fn native_speculation_options(
 ) -> Result<SpeculationOptions> {
     Ok(SpeculationOptions {
         residency: ResidencySpeculatorOptions {
-            maximum_active_operations: options.residency.maximum_active_operations.into_inner(),
-            maximum_active_bytes: bigint_u64(
-                &options.residency.maximum_active_bytes,
-                "maximumActiveBytes",
-            )?,
             outcome_window: options.residency.outcome_window.into_inner(),
             traffic_window: options.residency.traffic_window.into_inner(),
             speculative_cost_basis_points: u16_from_u32(
@@ -310,18 +297,6 @@ pub(in crate::bindings) fn native_speculation_options(
             )?,
         },
         promotion: PromotionSpeculatorOptions {
-            maximum_active_operations: options.promotion.maximum_active_operations.into_inner(),
-            maximum_active_bytes: bigint_u64(
-                &options.promotion.maximum_active_bytes,
-                "maximumActiveBytes",
-            )?,
-            maximum_active_cost_units: bigint_u64(
-                &options.promotion.maximum_active_cost_units,
-                "maximumActiveCostUnits",
-            )?,
-            maximum_residency_facts: options.promotion.maximum_residency_facts.into_inner(),
-            maximum_destinations: options.promotion.maximum_destinations.into_inner(),
-            maximum_accepted_tiers: options.promotion.maximum_accepted_tiers.into_inner(),
             outcome_window: options.promotion.outcome_window.into_inner(),
             minimum_usefulness_samples: options.promotion.minimum_usefulness_samples.into_inner(),
             minimum_usefulness_basis_points: u16_from_u32(
@@ -426,7 +401,7 @@ pub(in crate::bindings) fn native_residency_metrics_json(
         "wasted": value.wasted.to_string(),
         "rejectedFence": value.rejected_fence.to_string(),
         "rejectedDuplicate": value.rejected_duplicate.to_string(),
-        "rejectedCapacity": value.rejected_capacity.to_string(),
+        "rejectedInvalid": value.rejected_invalid.to_string(),
         "rejectedCost": value.rejected_cost.to_string(),
         "rejectedUsefulness": value.rejected_usefulness.to_string(),
     })
@@ -454,8 +429,6 @@ pub(in crate::bindings) fn native_object_cache_options(
     let converted = ObjectCacheOptions {
         maximum_entries: options.maximum_entries.into_inner(),
         maximum_bytes: bigint_u64(&options.maximum_bytes, "maximumBytes")?,
-        maximum_in_flight: options.maximum_in_flight.into_inner(),
-        maximum_waiters_per_object: options.maximum_waiters_per_object.into_inner(),
     };
     drop(options);
     Ok(converted)

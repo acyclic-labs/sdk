@@ -337,14 +337,14 @@ impl std::error::Error for ProcessCaptureFailure {
 pub(super) fn drain_pipe<T: Read + platform::Pipe>(
     pipe: &mut Option<T>,
     output: &mut Vec<u8>,
-    remaining: &mut usize,
+    remaining: &mut Option<usize>,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<bool> {
     let Some(reader) = pipe.as_mut() else {
         return Ok(false);
     };
-    let maximum = (*remaining).clamp(1, 64 * 1024);
-    let admitted = maximum.min(*remaining);
+    let admitted = remaining.map_or(64 * 1024, |remaining| remaining.min(64 * 1024));
+    let maximum = admitted.max(1);
     // Reserve storage before consuming the pipe. The measured path must never
     // acquire capacity from another live Root claim or allocate during capture.
     if meter.is_some() {
@@ -388,7 +388,9 @@ pub(super) fn drain_pipe<T: Read + platform::Pipe>(
     unsafe {
         output.set_len(before + retained);
     }
-    *remaining -= retained;
+    if let Some(remaining) = remaining {
+        *remaining -= retained;
+    }
     recorded_bytes?;
     let (read, recorded_operation) = transfer?;
     recorded_operation?;

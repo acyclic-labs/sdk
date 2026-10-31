@@ -6,10 +6,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         mut base: Self,
         mut candidate: Self,
         rename: Option<[&NamespacePath; 2]>,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<(Self, Self)>, FsError> {
+        let maximum_changes = maximum_changes.into();
+
         accounting.check()?;
         if self.candidate_base_unchanged(&base) {
             return Ok(Some((base, candidate)));
@@ -56,7 +58,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 ours: &self.root,
                 theirs: &candidate.root,
                 maximum_changes,
-                maximum_conflicts: 1,
+                maximum_conflicts: Some(1),
                 content: crate::kernel::ContentMerge::Extents,
             },
             DecodeLimits::for_volume(self.volume.config),

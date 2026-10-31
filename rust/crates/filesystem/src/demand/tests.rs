@@ -2,7 +2,7 @@ use super::native::NativeDemandSource;
 use super::*;
 use crate::model::{FilesystemProfile, VolumeLimits};
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 async fn lookup_node<D: DemandSource>(
     source: &D,
@@ -63,11 +63,26 @@ async fn native_source(
 }
 
 #[derive(Default)]
-struct RecordedChanges(Mutex<Vec<SourceChange>>, std::sync::atomic::AtomicBool);
+struct RecordedChanges {
+    state: Mutex<RecordedState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct RecordedState {
+    changes: Vec<SourceChange>,
+    lost: bool,
+}
 
 impl SourceChangeSink for RecordedChanges {
     fn delivery_lost(&self) {
-        self.1.store(true, std::sync::atomic::Ordering::Release);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.lost = true;
+        drop(state);
+        self.changed.notify_all();
     }
 
     fn source_changed(
@@ -76,23 +91,18 @@ impl SourceChangeSink for RecordedChanges {
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), DemandError> {
         accounting.check().map_err(DemandError::from)?;
-        if let Ok(mut recorded) = self.0.lock() {
-            recorded.extend_from_slice(changes);
-        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| DemandError::SourceUnavailable)?;
+        state.changes.extend_from_slice(changes);
+        drop(state);
+        self.changed.notify_all();
         Ok(())
     }
 }
 
 impl RecordedChanges {
-    fn take(&self) -> Result<Vec<SourceChange>, Box<dyn Error>> {
-        if self.1.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(DemandError::SourceUnavailable.into());
-        }
-        Ok(std::mem::take(
-            &mut *self.0.lock().map_err(|_| "recording poisoned")?,
-        ))
-    }
-
     fn until(
         &self,
         watch: &dyn SourceWatch,
@@ -102,13 +112,15 @@ impl RecordedChanges {
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         ))?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut changes = self.take()?;
-        while !reported(&changes) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            changes.extend(self.take()?);
+        let state = self.state.lock().map_err(|_| "recording poisoned")?;
+        let mut state = self
+            .changed
+            .wait_while(state, |state| !state.lost && !reported(&state.changes))
+            .map_err(|_| "recording poisoned")?;
+        if state.lost {
+            return Err(DemandError::SourceUnavailable.into());
         }
-        Ok(changes)
+        Ok(std::mem::take(&mut state.changes))
     }
 }
 
@@ -769,11 +781,7 @@ async fn native_lookup_preserves_non_utf8_posix_names() -> Result<(), Box<dyn Er
     use std::os::unix::ffi::OsStringExt;
 
     let raw = vec![b'n', 0xff];
-    let name = LogicalName::new(
-        NameEncoding::PosixBytes,
-        raw.clone(),
-        VolumeLimits::default().maximum_component_bytes,
-    )?;
+    let name = LogicalName::new(NameEncoding::PosixBytes, raw.clone())?;
     assert_lossless_name(
         FilesystemProfile::Posix,
         std::ffi::OsString::from_vec(raw),
@@ -791,11 +799,7 @@ async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Err
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
-    let name = LogicalName::new(
-        NameEncoding::WindowsUtf16Le,
-        raw,
-        VolumeLimits::default().maximum_component_bytes,
-    )?;
+    let name = LogicalName::new(NameEncoding::WindowsUtf16Le, raw)?;
     assert_lossless_name(
         FilesystemProfile::Windows,
         std::ffi::OsString::from("snowman-Ã¢ËœÆ’"),
@@ -816,11 +820,7 @@ async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
-    let name = LogicalName::new(
-        NameEncoding::WindowsUtf16Le,
-        raw,
-        limits.maximum_component_bytes,
-    )?;
+    let name = LogicalName::new(NameEncoding::WindowsUtf16Le, raw)?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join(&host_name), b"data")?;
     let source = NativeDemandSource::open(

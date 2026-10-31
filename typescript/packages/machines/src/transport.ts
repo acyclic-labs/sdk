@@ -1,3 +1,4 @@
+import { pageSize } from "./wasm-runtime.js";
 import { ownedStream } from "./owned-stream.js";
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type CallOptions, type Transport } from "@connectrpc/connect";
@@ -7,7 +8,8 @@ export { createMachinesRpcTransport } from "./rpc-transport.js";
 export const MAX_OUTPUT_READ_BYTES = 65_536;
 const MAX_OFFSET = (1n << 64n) - 1n;
 
-export type MachinesExecRequest = MessageInitShape<typeof wire.ExecStartSchema> & {
+export type MachinesExecRequest = Omit<MessageInitShape<typeof wire.ExecStartSchema>, "timeoutMs" | "$typeName"> & {
+  readonly timeoutMs?: bigint;
   readonly argv: readonly string[];
   readonly stdin?: Uint8Array;
 };
@@ -47,13 +49,13 @@ export function createMachinesClient(transport: Transport) {
         const { argv, stdin = new Uint8Array(), ...admission } = request;
         const query = create(wire.ExecStartSchema, admission);
         if (!argv.length || !argv[0] || argv.some(value => value.includes("\0"))) throw new RangeError("invalid exec argv");
-        if (typeof request.timeoutMs !== "bigint" || request.timeoutMs < 1n || request.timeoutMs > 0xffffffffffffffffn) throw new RangeError("timeoutMs must be a positive uint64 bigint");
+        if (request.timeoutMs !== undefined && (typeof request.timeoutMs !== "bigint" || request.timeoutMs < 1n || request.timeoutMs > 0xffffffffffffffffn)) throw new RangeError("timeoutMs must be a positive uint64 bigint");
         if (query.cwd !== undefined && (!query.cwd || query.cwd.includes("\0"))) throw new RangeError("cwd must be nonempty and NUL-free");
         return ownedStream(async function* (signal) {
           let remaining = query.timeoutMs;
           if (query.expiryUnixMs !== undefined) {
             const expiry = query.expiryUnixMs - BigInt(Date.now());
-            if (expiry < remaining) remaining = expiry;
+            if (remaining === undefined || expiry < remaining) remaining = expiry;
           }
           for await (const frame of machines.exec(execInput(query, argv, stdin), { ...deadlineOptions(remaining, callOptions), signal })) {
             checkIdentity(query.machine, frame.machine, "machine");
@@ -79,7 +81,7 @@ export function createMachinesClient(transport: Transport) {
       async readOutput(request: MessageInitShape<typeof wire.ReadOutputRequestSchema>, callOptions?: CallOptions) {
         const query = create(wire.ReadOutputRequestSchema, request);
         if (query.offset < 0n || query.offset > MAX_OFFSET) throw new RangeError("offset must be uint64");
-        if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > MAX_OUTPUT_READ_BYTES) throw new RangeError("limit must be 1..65536");
+        query.limit = pageSize(query.limit, MAX_OUTPUT_READ_BYTES);
         const result = await machines.readOutput(query, callOptions);
         checkIdentity(query.machine, result.machine, "machine");
         if (result.offset < query.offset || result.data.byteLength > query.limit || result.offset + BigInt(result.data.byteLength) > MAX_OFFSET) throw new ConnectError("invalid console output range", Code.DataLoss);
@@ -139,7 +141,8 @@ function fileOptions(access: wire.FileAccess, options?: CallOptions): CallOption
   return deadlineOptions(access.deadlineUnixMs - BigInt(Date.now()), options);
 }
 
-function deadlineOptions(remaining: bigint, options?: CallOptions): CallOptions {
+function deadlineOptions(remaining: bigint | undefined, options?: CallOptions): CallOptions {
+  if (remaining === undefined) return { ...options, timeoutMs: options?.timeoutMs ?? 0 };
   if (remaining <= 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError("guest deadline expired or not representable by this transport");
   const caller = options?.timeoutMs;
   return { ...options, timeoutMs: Math.min(Number(remaining), caller === undefined || caller === 0 ? Infinity : caller) };

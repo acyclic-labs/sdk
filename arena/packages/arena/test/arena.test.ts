@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Log } from "../src/log.js";
@@ -51,11 +51,31 @@ test("router maps Jev answers to tiers and fan-out", async () => {
   assert.equal(r.tier, "frontier"); assert.equal(r.fanOut, 3); assert.equal(r.kind, "refactor"); assert.deepEqual(r.models, DEFAULT_POLICY.tiers.frontier);
 });
 
-test("renderState includes task, diff, and probe", () => {
+test("rendered state keeps every changed file and complete diff unless excerpts are selected", () => {
   const base = mkdtempSync(join(tmpdir(), "base-")); const fork = mkdtempSync(join(tmpdir(), "fork-"));
-  writeFileSync(join(base, "a.py"), "def add(a, b):\n    return a - b\n"); writeFileSync(join(fork, "a.py"), "def add(a, b):\n    return a + b\n");
-  const s = renderState("fix add", base, [{ fork: { id: "1", path: fork, base: "", label: "A" }, model: "m", changes: [{ status: "M", path: "a.py" }], probe: "1 passed" }], 12, 2000);
-  assert.match(s, /^Task:\nfix add/); assert.match(s, /=== fork A \(m\)/); assert.match(s, /-    return a - b/); assert.match(s, /\+    return a \+ b/); assert.match(s, /1 passed/);
+  try {
+    const tail = "x".repeat(2 * 1024 * 1024) + "complete-diff-tail";
+    writeFileSync(join(base, "a.py"), "def add(a, b):\n    return a - b\n");
+    writeFileSync(join(fork, "a.py"), "def add(a, b):\n    return a + b\n# " + tail + "\n");
+    const changes = [{ status: "M", path: "a.py" }];
+    for (let i = 1; i <= 12; i++) {
+      const path = `extra-${i}.txt`;
+      writeFileSync(join(fork, path), `file-${i}\n`);
+      changes.push({ status: "A", path });
+    }
+    const error = "e".repeat(601) + "complete-worker-error";
+    const reports = [{ fork: { id: "1", path: fork, base: "", label: "A" }, model: "m", changes, probe: "1 passed", worker: { ok: false, error } }];
+    const state = renderState("fix add", base, reports);
+    assert.match(state, /^Task:\nfix add/); assert.match(state, /=== fork A \(m\)/);
+    assert.match(state, /-    return a - b/); assert.match(state, /\+    return a \+ b/); assert.match(state, /1 passed/);
+    assert.ok(state.includes(tail)); assert.ok(state.includes(error));
+    for (const change of changes) assert.ok(state.includes(`+++ b/${change.path}`));
+    const excerpt = renderState("fix add", base, reports, 1, 32);
+    assert.match(excerpt, /12 more/); assert.match(excerpt, /chars\)/);
+    assert.ok(!excerpt.includes(tail)); assert.ok(!excerpt.includes("+++ b/extra-12.txt"));
+  } finally {
+    rmSync(base, { recursive: true, force: true }); rmSync(fork, { recursive: true, force: true });
+  }
 });
 
 test("board aggregates wins, safety, tests, cost, and derives routing", () => {
@@ -85,20 +105,21 @@ test("git worktree forker: fork, diff, promote, drop, without acyclic", () => {
   execSync("git init -q -b main && git -c user.email=a@b -c user.name=t commit -q --allow-empty -m init", { cwd: repo });
   writeFileSync(join(repo, "a.txt"), "one\n");
   execSync("git add a.txt && git -c user.email=a@b -c user.name=t commit -q -m a", { cwd: repo });
-  writeFileSync(join(repo, "a.txt"), "one\ntwo\n");           // uncommitted change must reach the fork
+  const dirty = "one\ntwo\n" + "x".repeat(2 * 1024 * 1024) + "\n";
+  writeFileSync(join(repo, "a.txt"), dirty);                  // the complete uncommitted change must reach the fork
   writeFileSync(join(repo, "arena.jsonl"), "{}\n");                 // the log must never enter a fork
   const fk = new GitForker(repo);
   const [A, B] = fk.fork(2);
   assert.equal(existsSync(join(A!.path, "arena.jsonl")), false);
   writeFileSync(join(repo, "arena.jsonl"), "{}\n{}\n");             // and base-side growth is never a fork change
-  assert.equal(readFileSync(join(A!.path, "a.txt"), "utf8"), "one\ntwo\n");
+  assert.equal(readFileSync(join(A!.path, "a.txt"), "utf8"), dirty);
   writeFileSync(join(A!.path, "b.txt"), "hello\n");
-  writeFileSync(join(A!.path, "a.txt"), "one\ntwo\nthree\n");
+  writeFileSync(join(A!.path, "a.txt"), dirty + "three\n");
   assert.deepEqual(fk.diff(A!).map((c) => `${c.status} ${c.path}`).sort(), ["A b.txt", "M a.txt"]);
   assert.deepEqual(fk.diff(B!), []);
   const out = fk.promote(A!); assert.match(out, /synced 2 file/);
   assert.equal(readFileSync(join(repo, "b.txt"), "utf8"), "hello\n");
-  assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "one\ntwo\nthree\n");
+  assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), dirty + "three\n");
   fk.drop(A!); fk.drop(B!);
   assert.equal(execSync("git worktree list", { cwd: repo, encoding: "utf8" }).trim().split("\n").length, 1);
 });

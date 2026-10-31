@@ -121,7 +121,7 @@ pub(super) async fn generation_descends_from<
     let mut pending = vec![descendant];
     let mut visited = BTreeSet::new();
     while let Some(candidate) = pending.pop() {
-        if !visited.insert(candidate) || visited.len() > 65_536 {
+        if !visited.insert(candidate) {
             continue;
         }
         for parent in workspace

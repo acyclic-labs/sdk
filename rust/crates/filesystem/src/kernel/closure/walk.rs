@@ -39,7 +39,6 @@ pub(crate) struct ProofContext<'a, S> {
 }
 
 struct PublicationOrder<'a> {
-    seen: u64,
     objects: ProofVec<'a, ObjectId>,
     completed: crate::kernel::allocation::fixed_index::FixedIndex<bool, { ObjectId::ENCODED_LEN }>,
 }
@@ -60,7 +59,6 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
 
     pub(crate) fn publication_order(mut self) -> Self {
         self.publication = Some(PublicationOrder {
-            seen: 0,
             objects: ProofVec::new(&self.meter),
             completed: Default::default(),
         });
@@ -104,7 +102,27 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         if let Some(order) = &mut self.publication {
             return std::mem::replace(&mut order.objects, ProofVec::new(&self.meter)).into_parts();
         }
-        let objects = std::mem::replace(&mut self.objects, ProofVec::new(&self.meter));
+        let mut objects = std::mem::replace(&mut self.objects, ProofVec::new(&self.meter));
+        self.meter.with_accounting(|accounting| {
+            crate::kernel::sort::heap_sort(
+                &mut objects.values,
+                accounting,
+                |left, right, accounting| {
+                    accounting.charge_items(1)?;
+                    Ok::<_, crate::FsError>(left.cmp(right))
+                },
+                |values, left, right, accounting| {
+                    let delta = WorkCounters {
+                        bytes_copied: 2 * size_of::<ObjectId>() as u64,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    accounting.admit(delta)?;
+                    values.swap(left, right);
+                    accounting.record_completed(delta)
+                },
+                |accounting| accounting.check(),
+            )
+        })?;
         objects.into_parts()
     }
 
@@ -184,12 +202,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             .and_then(|base| base.current(epochs))
             .filter(|cached| reusable(&root.0, cached, self.limits, authority_root));
         if let Some(previous) = previous {
-            let increment = match self.prove_increment(&root.0, &previous).await {
-                Err(crate::FsError::Closure(
-                    ClosureError::TooManyObjects { .. } | ClosureError::ClosureBytesExceeded { .. },
-                )) => None,
-                result => result?,
-            };
+            let increment = self.prove_increment(&root.0, &previous).await?;
             if let Some((file_count, logical_file_bytes, object_count)) = increment {
                 let objects = self.take_objects()?;
                 let mut output = (
@@ -217,13 +230,6 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         }
         let (records, directories) = self.prove_file_table(root.0.file_table).await?;
         let file_count = usize_to_u64(records.values.len());
-        if file_count > self.limits.maximum_files {
-            return Err(ClosureError::TooManyFiles {
-                observed: file_count,
-                maximum: self.limits.maximum_files,
-            }
-            .into());
-        }
         let mut logical_file_bytes = 0_u128;
         for record in records.values.iter().map(|(_, value)| value) {
             self.examine(1)?;
@@ -238,7 +244,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         }
         if let Some(directories) = directories {
             let record =
-                map_get(&records, &root.0.root_file_id).ok_or(ClosureError::MissingRootFile)?;
+                map_get(&records, &root.0.root_file_id)?.ok_or(ClosureError::MissingRootFile)?;
             if !matches!(record.payload, FilePayload::Directory { .. }) {
                 return Err(ClosureError::RootIsNotDirectory.into());
             }
@@ -290,37 +296,13 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         page: bool,
     ) -> Result<(crate::storage::ObjectRead, ProofGuard), crate::FsError> {
         if let Some(order) = &mut self.publication {
-            let seen = &mut order.seen;
             self.meter.with_accounting(|accounting| {
                 order
                     .completed
-                    .get_or_try_insert_with(object.index_key(), accounting, |_| {
-                        let observed = seen.checked_add(1).ok_or(WorkError::Overflow)?;
-                        if observed > self.limits.maximum_objects {
-                            return Err(ClosureError::TooManyObjects {
-                                observed,
-                                maximum: self.limits.maximum_objects,
-                            }
-                            .into());
-                        }
-                        *seen = observed;
-                        Ok(false)
-                    })
+                    .get_or_try_insert_with(object.index_key(), accounting, |_| Ok(false))
                     .map(|_| ())
             })?;
         } else {
-            let count = usize_to_u64(self.objects.values.len())
-                .checked_add(u64::from(
-                    self.objects.values.binary_search(&object).is_err(),
-                ))
-                .ok_or(WorkError::Overflow)?;
-            if count > self.limits.maximum_objects {
-                return Err(ClosureError::TooManyObjects {
-                    observed: count,
-                    maximum: self.limits.maximum_objects,
-                }
-                .into());
-            }
             set_insert(&mut self.objects, object)?;
         }
         self.meter.charge(WorkCounters {
@@ -335,14 +317,6 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             .object_bytes
             .checked_add(usize_to_u64(read.0.bytes.len()))
             .ok_or(WorkError::Overflow)?;
-        let observed = self.object_bytes;
-        if observed > self.limits.maximum_object_bytes {
-            return Err(ClosureError::ClosureBytesExceeded {
-                observed,
-                maximum: self.limits.maximum_object_bytes,
-            }
-            .into());
-        }
         Ok(read)
     }
 
@@ -421,7 +395,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         root_file_id: FileId,
         records: &ProofVec<'a, (FileId, FileRecord)>,
     ) -> Result<(), crate::FsError> {
-        let root = map_get(records, &root_file_id).ok_or(ClosureError::MissingRootFile)?;
+        let root = map_get(records, &root_file_id)?.ok_or(ClosureError::MissingRootFile)?;
         if !matches!(root.payload, FilePayload::Directory { .. }) {
             return Err(ClosureError::RootIsNotDirectory.into());
         }
@@ -490,7 +464,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     .map(|value| value.is_some())
             })?
         } else {
-            self.objects.values.binary_search(&metadata_id).is_ok()
+            index_get(&self.objects, metadata_id)?.is_some()
         };
         if seen {
             return Ok(());
@@ -536,15 +510,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 validate_ordered_bounds(children.iter().map(|child| &child.first), lower, upper)?;
                 for (index, child) in children.iter().enumerate().rev() {
                     self.examine(1)?;
-                    let child_lower = self
-                        .meter
-                        .clone_key::<F>(&child.first, self.limits.decode.maximum_name_bytes)?;
+                    let child_lower = self.meter.clone_key::<F>(&child.first)?;
                     let upper_key = children.get(index + 1).map(|next| &next.first).or(upper);
                     let child_upper = upper_key
-                        .map(|key| {
-                            self.meter
-                                .clone_key::<F>(key, self.limits.decode.maximum_name_bytes)
-                        })
+                        .map(|key| self.meter.clone_key::<F>(key))
                         .transpose()?;
                     pending.push((child.page, Some(child_lower), child_upper, false))?;
                 }
@@ -593,7 +562,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         Self::require_kind(root, ObjectKind::ExtentPage)?;
         // Reuse only a complete proof in this invocation. The declared length is
         // part of the proof: a shared root cannot authenticate a different span.
-        if let Some(length) = map_get(&self.proven_lengths, &root) {
+        if let Some(length) = map_get(&self.proven_lengths, &root)? {
             return if *length == size {
                 Ok(())
             } else {
@@ -667,7 +636,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
 
     pub(super) async fn prove_blob(&mut self, root: ObjectId) -> Result<u64, crate::FsError> {
         Self::require_kind(root, ObjectKind::Blob)?;
-        if let Some(length) = map_get(&self.proven_lengths, &root) {
+        if let Some(length) = map_get(&self.proven_lengths, &root)? {
             return Ok(*length);
         }
         let mut pending = ProofVec::new(&self.meter);
@@ -804,7 +773,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             }
             fact.visited_directory = true;
             fact.reachable = true;
-            let pages = map_get(directories, &file_id)
+            let pages = map_get(directories, &file_id)?
                 .ok_or(ClosureError::MissingDirectoryTree(file_id))?;
             for entry in Self::tree_entries(pages) {
                 self.examine(1)?;
@@ -814,7 +783,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     .get_mut(index)
                     .ok_or(ClosureError::MissingFileRecord(entry.file_id))?
                     .reachable = true;
-                if map_get(directories, &entry.file_id).is_some() {
+                if map_get(directories, &entry.file_id)?.is_some() {
                     pending.push(index)?;
                 }
             }
@@ -886,12 +855,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         records: &ProofVec<'a, (FileId, FileRecord)>,
         id: FileId,
     ) -> Result<usize, crate::FsError> {
-        self.meter.with_accounting(|accounting| {
-            crate::kernel::binary_search_with_accounting(&records.values, accounting, |record| {
-                record.0.cmp(&id)
-            })?
-            .map_err(|_| ClosureError::MissingFileRecord(id).into())
-        })
+        index_get(records, id)?.ok_or_else(|| ClosureError::MissingFileRecord(id).into())
     }
 
     fn require_kind(object: ObjectId, expected: ObjectKind) -> Result<(), crate::FsError> {

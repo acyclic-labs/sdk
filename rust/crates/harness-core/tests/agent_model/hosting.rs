@@ -176,9 +176,9 @@ fn turns() -> Result<Turns> {
     Ok(Turns {
         executors: Arc::new(Never),
         limits: TurnLimits {
-            maximum_bytes: 64 * 1024,
-            max_steps: 4,
-            history_turns: 8,
+            maximum_bytes: Some(64 * 1024),
+            max_steps: Some(4),
+            history_turns: Some(8),
         },
         actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         clock: Arc::new(SystemClock),
@@ -610,7 +610,8 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     create(&a, 1).await?;
     let foreign = b.agents().actor(&root_b)?;
     assert!(a.agents().runtime().track(foreign).is_err());
-    let runners: Vec<_> = [a.agents(), b.agents()]
+    use futures::StreamExt as _;
+    let mut runners: futures::stream::FuturesUnordered<_> = [a.agents(), b.agents()]
         .into_iter()
         .map(|agents| {
             let agents = Arc::clone(agents);
@@ -620,18 +621,47 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     // The activation log orders b's roots around a's: a reaching its second
     // root has passed b's first two, and b reaching its third has passed a's.
     create(&b2, 3).await?;
-    create(&a2, 4).await?;
-    create(&b2, 5).await?;
+    let last_a = create(&a2, 4).await?;
+    let last_b = create(&b2, 5).await?;
     let resident = |bound: &Bound<MemoryStream, Objects>| bound.agents().runtime().counts().0;
-    for _ in 0..2_000 {
-        if resident(&a) == 2 && resident(&b) == 3 {
-            break;
+    // Arm the committed state streams before observing their checkpoints.
+    // Processing each tree's last adoption proves that its earlier activation
+    // entries were claimed, including when publication precedes this wait.
+    let adoption = async {
+        use futures::TryStreamExt as _;
+        for (bound, agent) in [(&a, &last_a), (&b, &last_b)] {
+            let actor = bound.agents().actor(agent)?;
+            let store = bound.agents().runtime().store();
+            let mut changes = stream
+                .follow(acyclic_stream::FollowRequest::new(store.path(&actor)?, 0))
+                .await?;
+            loop {
+                if store
+                    .load(&actor)
+                    .await?
+                    .state()
+                    .and_then(|state| state.checkpoint())
+                    .is_some()
+                {
+                    break;
+                }
+                changes
+                    .try_next()
+                    .await?
+                    .ok_or("actor state follow ended before adoption")?;
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-    }
-    assert_eq!((resident(&a), resident(&b)), (2, 3));
+        Result::Ok(())
+    };
+    let observed: Result = tokio::select! {
+        observed = adoption => observed,
+        stopped = runners.next() => Err(format!("agent runtime stopped before adoption: {stopped:?}").into()),
+    };
     for runner in runners {
         runner.abort();
+        assert!(runner.await.is_err_and(|error| error.is_cancelled()));
     }
+    observed?;
+    assert_eq!((resident(&a), resident(&b)), (2, 3));
     Ok(())
 }

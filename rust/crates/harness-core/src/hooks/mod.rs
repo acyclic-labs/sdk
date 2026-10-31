@@ -202,17 +202,17 @@ impl Hooks {
         event: HookEvent,
         input: impl Into<HookInput<'a>>,
         registry: &ToolRegistry,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         mut execute: F,
     ) -> Result<HookOutput>
     where
-        F: FnMut(&Arc<HookSpec>, usize) -> Fut,
+        F: FnMut(&Arc<HookSpec>, Option<usize>) -> Fut,
         Fut: Future<Output = Result<(Option<i32>, Vec<u8>, Vec<u8>)>>,
     {
+        let maximum_bytes = maximum_bytes.into();
         let input = input.into();
         let commands = self.commands(event, input, registry)?;
-        let count = commands.clone().count();
-        let quota = capture_quota(maximum_bytes, count);
+        let quota = maximum_bytes.map(|maximum| capture_quota(maximum, commands.clone().count()));
         let mut budget = budget::Budget::new(maximum_bytes)?;
         let results = futures::future::join_all(commands.map(|hook| {
             let execution = execute(hook, quota);
@@ -231,9 +231,7 @@ impl Hooks {
 // A static partition keeps total live capture storage bounded without a lock,
 // scheduling-dependent output truncation, or delaying concurrent hook dispatch.
 fn capture_quota(maximum: u64, count: usize) -> usize {
-    usize::try_from(maximum / (count.max(1) as u64))
-        .unwrap_or(usize::MAX)
-        .min(65_536)
+    usize::try_from(maximum / (count.max(1) as u64)).unwrap_or(usize::MAX)
 }
 
 pub(crate) fn report(event: HookEvent, output: &HookOutput) {

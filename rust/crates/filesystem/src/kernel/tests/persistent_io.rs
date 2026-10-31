@@ -21,7 +21,7 @@ async fn put_tree_page(
     file_byte: u8,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let page = TreePage::Leaf(vec![TreeEntry {
-        name: LogicalName::new(NameEncoding::Utf8, name.to_vec(), 255)?,
+        name: LogicalName::new(NameEncoding::Utf8, name.to_vec())?,
         file_id: FileId::from_bytes([file_byte; 16]),
         kind: FileKind::Regular,
     }]);
@@ -63,8 +63,6 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
         ObjectCacheOptions {
             maximum_entries: 8,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
         },
     )?;
     let cancellation = CancellationToken::new();
@@ -139,7 +137,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
         shared.into_owned_with_accounting(allocation, &mut accounting)?;
     assert!(bytes > 0);
     if let Page::Leaf(entries) = &mut mutable {
-        entries[0].name = LogicalName::new(NameEncoding::Utf8, b"changed".to_vec(), 255)?;
+        entries[0].name = LogicalName::new(NameEncoding::Utf8, b"changed".to_vec())?;
     }
     assert_eq!(only_page_name(&first)?, b"cached");
     drop(mutable);
@@ -224,8 +222,6 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
         ObjectCacheOptions {
             maximum_entries: 8,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
         },
     )?;
     let limits = DecodeLimits::default();
@@ -357,7 +353,7 @@ async fn post_read_budget_failure_releases_every_decoded_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let page = TreePage::Leaf(vec![TreeEntry {
-        name: LogicalName::new(NameEncoding::Utf8, b"name".to_vec(), 255)?,
+        name: LogicalName::new(NameEncoding::Utf8, b"name".to_vec())?,
         file_id: FileId::from_bytes([7; 16]),
         kind: FileKind::Regular,
     }]);
@@ -480,7 +476,7 @@ async fn shape_valid_malformed_tree_page_releases_decoded_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let page = TreePage::Leaf(vec![TreeEntry {
-        name: LogicalName::new(NameEncoding::Utf8, b"shape".to_vec(), 255)?,
+        name: LogicalName::new(NameEncoding::Utf8, b"shape".to_vec())?,
         file_id: FileId::from_bytes([43; 16]),
         kind: FileKind::Regular,
     }]);

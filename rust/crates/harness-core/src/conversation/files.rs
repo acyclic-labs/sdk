@@ -130,9 +130,6 @@ impl FileDescriptor {
         if byte_length > MAX_EXACT_JS_INTEGER {
             return Some("file byte length exceeds cross-language precision");
         }
-        if media_type.len() > MAX_LABEL_BYTES {
-            return Some("media type is invalid");
-        }
         let Some((kind, subtype)) = media_type.split_once('/') else {
             return Some("media type is invalid");
         };
@@ -233,7 +230,7 @@ impl FileRef {
 
     pub(crate) fn identity_digest(
         &self,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<[u8; 32]> {
         crate::executor::json::borrowed_json_digest(
@@ -327,10 +324,7 @@ impl FileRef {
         self.validate(work)?;
         content_label(
             acyclic_fs::access::FILE_READ_PREFIX,
-            self.identity_digest(
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work,
-            )?,
+            self.identity_digest(None, work)?,
             work,
         )
     }

@@ -1,6 +1,6 @@
 //! The one owner of every provider exchange's waits. Each send through a resolved model, the
 //! model request, its token count and a credential refresh alike, goes through [`Bounded`], so
-//! no exchange can wait without a deadline:
+//! each caller-selected deadline applies consistently:
 //! - a total deadline from the send to the body's end;
 //! - an idle deadline on the body, so a silent stream fails even while the total runs.
 //!
@@ -34,7 +34,7 @@ type Work = acyclic_fs::NativeMaterializationWork;
 #[cfg(target_arch = "wasm32")]
 type Work = ();
 
-/// A transport whose every exchange is bounded by `timeouts`.
+/// A transport applying the caller's optional deadlines to every exchange.
 pub(crate) struct Bounded {
     inner: Arc<dyn HttpTransport>,
     timeouts: TimeoutSpec,
@@ -133,22 +133,22 @@ impl HttpTransport for Bounded {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expired {
-    Idle,
-    Total,
+    Idle(u64),
+    Total(u64),
 }
 
 /// The typed timeout of an expired deadline, rendered like every other transport failure.
-fn timeout(native: bool, expired: Expired, timeouts: TimeoutSpec) -> Error {
+fn timeout(native: bool, expired: Expired) -> Error {
     match expired {
-        Expired::Idle => crate::transport_failure(
+        Expired::Idle(millis) => crate::transport_failure(
             native,
             ModelTransportFailure::Timeout,
-            format_args!("no response bytes for {} ms", timeouts.idle_ms),
+            format_args!("no response bytes for {} ms", millis),
         ),
-        Expired::Total => crate::transport_failure(
+        Expired::Total(millis) => crate::transport_failure(
             native,
             ModelTransportFailure::Timeout,
-            format_args!("exchange exceeded {} ms", timeouts.total_ms),
+            format_args!("exchange exceeded {} ms", millis),
         ),
     }
 }
@@ -195,7 +195,7 @@ struct Deadlines {
     timeouts: TimeoutSpec,
     native: bool,
     /// When the exchange must have ended.
-    total: Duration,
+    total: Option<Duration>,
     /// The last progress: the headers, then each chunk.
     progress: Duration,
     wake: Option<Wake>,
@@ -205,7 +205,9 @@ impl Deadlines {
     fn start(transport: Arc<dyn HttpTransport>, timeouts: TimeoutSpec, native: bool) -> Self {
         let now = transport.now();
         Self {
-            total: now.saturating_add(Duration::from_millis(timeouts.total_ms.into())),
+            total: timeouts
+                .total_ms
+                .map(|millis| now.saturating_add(Duration::from_millis(millis))),
             progress: now,
             transport,
             timeouts,
@@ -214,25 +216,26 @@ impl Deadlines {
         }
     }
 
-    fn idle_at(&self) -> Duration {
-        self.progress
-            .saturating_add(Duration::from_millis(self.timeouts.idle_ms.into()))
+    fn idle_at(&self) -> Option<Duration> {
+        self.timeouts
+            .idle_ms
+            .map(|millis| self.progress.saturating_add(Duration::from_millis(millis)))
     }
 
-    /// The deadline the clock has passed, if any; `idle` only once the body is being read.
+    /// The deadline the clock has passed, if any; idle applies only to the body.
     fn expired(&self, idle: bool) -> Option<Expired> {
         let now = self.transport.now();
-        if now > self.total {
-            Some(Expired::Total)
-        } else if idle && now > self.idle_at() {
-            Some(Expired::Idle)
+        if self.total.is_some_and(|total| now > total) {
+            self.timeouts.total_ms.map(Expired::Total)
+        } else if idle && self.idle_at().is_some_and(|due| now > due) {
+            self.timeouts.idle_ms.map(Expired::Idle)
         } else {
             None
         }
     }
 
     fn timeout(&self, expired: Expired) -> Error {
-        timeout(self.native, expired, self.timeouts)
+        timeout(self.native, expired)
     }
 
     /// Waits for a deadline: wakes on the timer, then measures on the clock. A timer that fires
@@ -250,15 +253,18 @@ impl Deadlines {
                 return Poll::Ready(Ok(expired));
             }
             if self.wake.is_none() {
-                let due = if idle {
-                    self.total.min(self.idle_at())
-                } else {
-                    self.total
-                };
+                let due = self
+                    .total
+                    .into_iter()
+                    .chain(idle.then(|| self.idle_at()).flatten())
+                    .min();
+                let Some(due) = due else { return Poll::Pending };
                 // Wake past the deadline, since at the deadline itself it has not expired: a
                 // whole millisecond past, so a timer or clock of millisecond granularity, which
                 // may drop the fraction, still passes it rather than re-arming forever.
-                let wait = due.saturating_sub(self.transport.now()) + Duration::from_millis(1);
+                let wait = due
+                    .saturating_sub(self.transport.now())
+                    .saturating_add(Duration::from_millis(1));
                 self.wake = Some(timer(self.transport.as_ref(), wait, work)?);
             }
             match self.wake.as_mut().map(|wake| wake.poll_unpin(context)) {

@@ -59,11 +59,11 @@ impl Registry {
         self.resolver = Some(resolver);
     }
 
-    /// Binds the owner's bounded content reader used by every adapter.
+    /// Binds the owner's content reader and optional aggregate byte policy.
     pub fn with_content(
         mut self,
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Self {
         self.files = crate::files::Files {
             reader: Some(reader),
@@ -227,7 +227,7 @@ pub(crate) fn validate_url(base: &str) -> Result<url::Url> {
 }
 
 pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
-    if provider.trim().is_empty() || provider.contains('/') || config.max_event_bytes == 0 {
+    if provider.trim().is_empty() || provider.contains('/') || config.max_event_bytes == Some(0) {
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;

@@ -51,7 +51,6 @@ async fn fixture(
         &scope,
         &volume,
         VolumeOperation::Write,
-        4096,
         &mut None,
     )?;
     let grant = |path: String| Grant {

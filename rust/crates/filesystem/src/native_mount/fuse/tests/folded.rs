@@ -31,7 +31,6 @@ pub(super) fn folded_projection(
                         crate::kernel::LogicalName::new(
                             crate::kernel::NameEncoding::Utf8,
                             name.clone(),
-                            config.limits.maximum_component_bytes,
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;

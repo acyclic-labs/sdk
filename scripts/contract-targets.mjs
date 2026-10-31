@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "./process-capture.mjs";
 import { join } from "node:path";
 
 const identity = target => JSON.stringify(target);
@@ -12,8 +12,8 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
     report.phase = phase;
     saveProgress();
     const started = performance.now();
-    const result = spawnSync(executable, args, {
-      cwd: root, encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "inherit"],
+    const result = captureCommand(executable, args, {
+      cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"],
     });
     report[`${phase}_ms`] = performance.now() - started;
     saveProgress();
@@ -87,7 +87,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
 }
 
 export function runContractTarget(root, executable) {
-  const result = spawnSync(executable, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+  const result = captureCommand(executable, [], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Rust contract target ${executable} failed with status ${result.status ?? "unknown"}`);
   return result.stdout;

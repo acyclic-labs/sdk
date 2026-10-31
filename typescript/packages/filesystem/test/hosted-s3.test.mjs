@@ -370,22 +370,34 @@ test("hosted S3 access rejects unsupported and malformed grants before exposure"
   malformed.close();
 });
 
-test("hosted transaction commits respect the negotiated conflict limit", async () => {
-  const handshake = validHandshake();
-  handshake.capabilities.maximumPageItems = 1;
-  const requests = [];
-  const fs = await openHostedFs({
-    endpoint: "https://filesystem.example.test",
-    bearerToken: "token",
-    fetch: fixtureFetch(requests, "s3", undefined, handshake),
-  });
-  const workspace = await fs.createWorkspace("hosted-s3");
-  const transaction = await workspace.beginTransaction(new Uint8Array(16).fill(4));
-  await transaction.createDirectory("/bounded");
-  expect((await transaction.commit()).status).toBe("committed");
-  expect(requests).toHaveLength(1);
-  expect(requests[0].maximumConflicts).toBe(1);
-  fs.close();
+test("hosted transactions preserve complete requests and selected deployment policies", async () => {
+  for (const maximum of [undefined, 64]) {
+    const handshake = validHandshake();
+    handshake.capabilities.maximumPageItems = 1;
+    handshake.capabilities.maximumTransactionMutations = maximum;
+    const requests = [];
+    const fs = await openHostedFs({
+      endpoint: "https://filesystem.example.test",
+      bearerToken: "token",
+      fetch: fixtureFetch(requests, "s3", undefined, handshake),
+    });
+    const workspace = await fs.createWorkspace("hosted-s3");
+    const transaction = await workspace.beginTransaction(new Uint8Array(16).fill(4));
+    const count = maximum ?? 2_049;
+    for (let index = 0; index < count; index++) {
+      await transaction.createDirectory(`/directory-${index}`);
+    }
+    if (maximum !== undefined) {
+      expect(() => transaction.createDirectory("/over-policy")).toThrow("mutation bound");
+    }
+    expect((await transaction.commit()).status).toBe("committed");
+    expect(requests).toHaveLength(1);
+    expect(requests[0].maximumConflicts).toBe(1);
+    expect(requests[0].mutations.map(item => item.mutation.value.path)).toEqual(
+      Array.from({ length: count }, (_, index) => `/directory-${index}`),
+    );
+    fs.close();
+  }
 });
 
 test("hosted transaction rebase rejects an unspecified sparse target", async () => {

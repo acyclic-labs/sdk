@@ -72,12 +72,16 @@ impl StockExecution<'_> {
                 .stock
                 .limits
                 .file_bytes
-                .min(self.stock.tool_scope.limits().file_bytes),
+                .into_iter()
+                .chain(self.stock.tool_scope.limits().file_bytes)
+                .min(),
             render_bytes: self
                 .stock
                 .limits
                 .render_bytes
-                .min(self.stock.tool_scope.limits().render_bytes),
+                .into_iter()
+                .chain(self.stock.tool_scope.limits().render_bytes)
+                .min(),
             ..self.stock.limits
         };
         invocation.validate_recorded(metadata, invocation_limits, self.io)?;

@@ -25,7 +25,7 @@ proptest! {
         let length = serde_json::to_vec(&event).unwrap().len() as u64;
         let maximum = length + offset - 1;
         let mut admission = ModelEventAdmission::default();
-        let limits = Limits { render_bytes:maximum, file_bytes:maximum, ..Limits::default() };
+        let limits = Limits { render_bytes:Some(maximum), file_bytes:Some(maximum), ..Limits::default() };
         let result = admission.observe(&event, limits, None);
         prop_assert_eq!(result.is_ok(), maximum >= length);
         prop_assert_eq!(admission.count, usize::from(result.is_ok()));
@@ -36,8 +36,8 @@ fn block_only_admission_negative_control_accepts_unreadable_envelope() {
     let event = event(b"opaque".to_vec());
     let maximum = serde_json::to_vec(&event).unwrap().len() as u64 - 1;
     let limits = Limits {
-        render_bytes: maximum,
-        file_bytes: maximum,
+        render_bytes: Some(maximum),
+        file_bytes: Some(maximum),
         ..Limits::default()
     };
     let ModelEvent::ReasoningBlock { block } = &event else {

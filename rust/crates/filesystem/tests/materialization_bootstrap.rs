@@ -81,11 +81,7 @@ async fn materialize_in_fresh_process(mode: &str) -> Result<(), Box<dyn std::err
         .await?
         .value;
     let file = NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::Utf8,
-            b"file".to_vec(),
-            config.limits.maximum_component_bytes,
-        )?],
+        vec![LogicalName::new(NameEncoding::Utf8, b"file".to_vec())?],
         config.limits,
     )?;
     checkout

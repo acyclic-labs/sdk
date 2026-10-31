@@ -35,7 +35,7 @@ impl PinnedContextStage {
         crate::contract::validate_component_label(&revision, "context snapshot revision")?;
         validate_reference(&reference, limits, None)?;
         let bytes = reader
-            .read(&reference, limits.render_bytes, None, None)?
+            .read(&reference, reference.descriptor().byte_length(), None, None)?
             .await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         let context: Context = crate::contract::json_from_slice(&bytes)
@@ -69,7 +69,9 @@ fn validate_reference(
 ) -> Result<()> {
     crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
     if reference.descriptor().media_type() != "application/json"
-        || reference.descriptor().byte_length() > limits.render_bytes
+        || limits
+            .render_bytes
+            .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
     {
         return Err(crate::executor::stock_boundary(
             io,
@@ -162,7 +164,11 @@ impl ContextStage for PinnedContextStage {
                 io,
             )?;
             self.reader
-                .verify(&self.reference, limits.render_bytes, io)?
+                .verify(
+                    &self.reference,
+                    self.reference.descriptor().byte_length(),
+                    io,
+                )?
                 .await?;
             super::validate_context_refs(&self.context, self.reader.as_ref(), limits, io).await?;
             Ok(composed)

@@ -77,28 +77,31 @@ impl EnvironmentFacts {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Option<ContextInsertion>> {
-        if context.messages.len() >= limits.context_messages {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| context.messages.len() >= maximum.get())
+        {
             return Ok(None);
         }
         let used = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(context, u64::MAX, work)
+            crate::executor::json::json_byte_length(context, None, work)
         })?;
-        let mut bodies = u64::MAX;
-        crate::model::reserve_instruction_bodies(&context.messages, &mut bodies, io)?;
+        let bodies = crate::model::reserve_instruction_bodies(&context.messages, &mut None, io)?;
         let wrapper = ModelMessage {
             role: ModelRole::System,
             content: ModelContent::Text(String::new()),
         };
         let wrapper = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&wrapper, u64::MAX, work)
+            crate::executor::json::json_byte_length(&wrapper, None, work)
         })?;
         // Empty string quotes are already in wrapper. One separator and at
         // most one extra input-index digit accompany the inserted message.
-        let available = limits
-            .render_bytes
-            .saturating_sub(used)
-            .saturating_sub(u64::MAX - bodies)
-            .saturating_sub(wrapper + 2);
+        let available = limits.render_bytes.map(|maximum| {
+            maximum
+                .saturating_sub(used)
+                .saturating_sub(bodies)
+                .saturating_sub(wrapper + 2)
+        });
         let mut encoded = 0_u64;
         let mut raw = 0_u64;
         self.parts(|part| {
@@ -107,7 +110,7 @@ impl EnvironmentFacts {
             encoded = encoded.saturating_add(json_string_bytes(part));
             Ok(())
         })?;
-        if encoded > available {
+        if available.is_some_and(|available| encoded > available) {
             return Ok(None);
         }
         let mut text = String::new();
@@ -138,7 +141,7 @@ impl EnvironmentFacts {
             crate::executor::stock_string_push(
                 &mut text,
                 part,
-                raw,
+                Some(raw),
                 "environment section exceeds allowance",
                 io,
             )
@@ -237,7 +240,7 @@ mod tests {
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text("current".into()) }],
                 current_input_index: Some(0), ..Default::default()
             };
-            let limits = Limits { render_bytes: budget, context_messages: messages, ..Limits::default() };
+            let limits = Limits { render_bytes: Some(budget), context_messages: std::num::NonZeroUsize::new(messages), ..Limits::default() };
             if let Some(insertion) = facts(cwd).project(&context, limits, None)? {
                 insertion.insert(&mut context, 0, None)?;
                 prop_assert_eq!(context.current_input_index, Some(1));

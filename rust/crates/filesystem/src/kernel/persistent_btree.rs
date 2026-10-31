@@ -274,7 +274,6 @@ pub(crate) async fn apply_with_accounting<S, F, M>(
     store: &S,
     root: ObjectId,
     mutations: &[M],
-    maximum_mutations: u32,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -288,7 +287,6 @@ where
         store,
         Some(root),
         mutations,
-        maximum_mutations,
         limits,
         accounting,
         cancellation,
@@ -300,7 +298,6 @@ pub(crate) async fn apply_optional_root_with_accounting<S, F, M>(
     store: &S,
     root: Option<ObjectId>,
     mutations: &[M],
-    maximum_mutations: u32,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -311,7 +308,7 @@ where
     M: Mutation<F>,
 {
     accounting.check()?;
-    validate::<F, M>(root, mutations, maximum_mutations, limits).map_err(M::map_error)?;
+    validate::<F, M>(root, mutations, limits).map_err(M::map_error)?;
     let copied = WorkCounters {
         bytes_copied: usize_to_u64(
             mutations
@@ -326,20 +323,8 @@ where
     ordered.value.extend(mutations.iter().enumerate());
     accounting.record_completed(copied)?;
     sort_indexed::<F, M>(&mut ordered.value, accounting)?;
-    let maximum_visited = mutations
-        .len()
-        .checked_mul(usize::from(limits.maximum_page_height))
-        .and_then(|value| value.checked_add(1))
-        .ok_or_else(|| M::map_error(Error::InvalidLimits))?
-        .min(
-            usize::try_from(limits.maximum_visited_pages)
-                .map_err(|_| M::map_error(Error::InvalidLimits))?,
-        );
     let visited = if root.is_some() {
-        Some(VisitedObjectSet::new_with_accounting(
-            maximum_visited,
-            accounting,
-        )?)
+        Some(VisitedObjectSet::new_with_accounting(accounting)?)
     } else {
         None
     };
@@ -389,13 +374,7 @@ where
     }
 
     fn clone_key(&mut self, key: &F::Key) -> Result<Owned<F::Key>, crate::FsError> {
-        let (value, allocation) = persistent_io::clone_key::<F>(
-            key,
-            self.limits.maximum_name_bytes,
-            self.accounting,
-            None,
-            0,
-        )?;
+        let (value, allocation) = persistent_io::clone_key::<F>(key, self.accounting, None, 0)?;
         let bytes = F::key_owned_bytes(&value);
         Ok(Owned::new(value, allocation, bytes))
     }
@@ -418,13 +397,7 @@ where
     }
 
     fn clone_value(&mut self, value: &F::Value) -> Result<Owned<Option<F::Value>>, crate::FsError> {
-        let (value, allocation) = persistent_io::clone_value::<F>(
-            value,
-            self.limits.maximum_name_bytes,
-            self.accounting,
-            None,
-            0,
-        )?;
+        let (value, allocation) = persistent_io::clone_value::<F>(value, self.accounting, None, 0)?;
         let bytes = F::value_owned_bytes(&value);
         Ok(Owned::new(Some(value), allocation, bytes))
     }

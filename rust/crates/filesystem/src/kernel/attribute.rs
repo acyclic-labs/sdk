@@ -74,28 +74,21 @@ pub struct AttributeName {
 }
 
 impl AttributeName {
-    /// Validates an exact bounded attribute name.
-    pub fn new(
-        class: AttributeClass,
-        bytes: Vec<u8>,
-        maximum_bytes: u32,
-    ) -> Result<Self, AttributeError> {
-        if bytes.is_empty()
-            || bytes.contains(&0)
-            || u32::try_from(bytes.len()).unwrap_or(u32::MAX) > maximum_bytes
-        {
+    /// Validates an exact attribute name.
+    pub fn new(class: AttributeClass, bytes: Vec<u8>) -> Result<Self, AttributeError> {
+        if bytes.is_empty() || bytes.contains(&0) {
             return Err(AttributeError::InvalidName);
         }
+        u32::try_from(bytes.len()).map_err(|_| AttributeError::InvalidName)?;
         Ok(Self { class, bytes })
     }
 
     pub(crate) fn try_clone<E: From<CanonicalDecodeError>>(
         &self,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self, E> {
         let bytes = super::codec::copy_bytes(&self.bytes, 1, steps)?;
-        Self::new(self.class, bytes, maximum_bytes).map_err(|error| E::from(invariant(error)))
+        Self::new(self.class, bytes).map_err(|error| E::from(invariant(error)))
     }
 
     /// Returns source semantics.
@@ -401,7 +394,7 @@ pub(crate) fn attribute_page_decode_shape(
         1 | 2 => {
             for _ in 0..item_count {
                 decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-                let name_bytes = decoder.skip_bounded_bytes(limits.maximum_name_bytes)?;
+                let name_bytes = decoder.skip_bytes()?;
                 nested_bytes = nested_bytes
                     .checked_add(usize_to_u64(name_bytes))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
@@ -456,7 +449,7 @@ where
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 entries.push(AttributeEntry {
-                    name: decode_name(&mut decoder, limits.maximum_name_bytes, observe)?,
+                    name: decode_name(&mut decoder, observe)?,
                     value_bytes: decoder.u64(observe)?,
                     value: decoder.object(ObjectKind::Blob, observe)?,
                 });
@@ -473,7 +466,7 @@ where
             crate::kernel::file_read::reserve_decoded_items(&mut children, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let first = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;
+                let first = decode_name(&mut decoder, observe)?;
                 let page = decoder.object(ObjectKind::AttributePage, observe)?;
                 children.push(Child { first, page });
                 observe(ReadAllocationStep::Item)?;
@@ -539,12 +532,11 @@ fn encode_name(encoder: &mut Encoder, name: &AttributeName) -> Result<(), Canoni
 
 fn decode_name<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
-    maximum_bytes: u32,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
 ) -> Result<AttributeName, E> {
     let class = AttributeClass::from_tag(decoder.u8(observe)?).map_err(invariant)?;
-    let bytes = decoder.bounded_bytes(maximum_bytes, observe)?;
-    AttributeName::new(class, bytes, maximum_bytes).map_err(|error| invariant(error).into())
+    let bytes = decoder.bytes(observe)?;
+    AttributeName::new(class, bytes).map_err(|error| invariant(error).into())
 }
 
 fn count(value: usize) -> Result<u32, CanonicalDecodeError> {

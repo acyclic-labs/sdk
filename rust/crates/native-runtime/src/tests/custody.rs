@@ -180,6 +180,74 @@ fn ownership_release_waits_for_physical_cleanup_and_retained_fences()
     Ok(())
 }
 
+#[tokio::test]
+async fn release_waits_for_actual_payload_and_fence_cleanup_and_survives_waiter_cancellation() {
+    struct HeldDrop {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl Drop for HeldDrop {
+        fn drop(&mut self) {
+            self.entered.send(()).unwrap();
+            self.release.get_mut().unwrap().recv().unwrap();
+        }
+    }
+    fn held() -> (
+        HeldDrop,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (release, finish) = std::sync::mpsc::channel();
+        (
+            HeldDrop {
+                entered,
+                release: Mutex::new(finish),
+            },
+            observed,
+            release,
+        )
+    }
+    let (owner, owner_entered, finish_owner) = held();
+    let (fence, fence_entered, finish_fence) = held();
+    let anchor = OwnershipAnchor::new(owner);
+    let observed = anchor.release_barrier();
+    let mut cancelled = Box::pin(anchor.release_barrier().released());
+    assert!(
+        cancelled
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    drop(cancelled);
+    let mut waiting = Box::pin(anchor.release_barrier().released());
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    let anchor = OwnershipAnchor::fenced(anchor, fence);
+    let cleanup = std::thread::spawn(move || drop(anchor));
+    owner_entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(
+        !observed.is_released(),
+        "Arc retirement preceded physical payload cleanup"
+    );
+    finish_owner.send(()).unwrap();
+    fence_entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(
+        !observed.is_released(),
+        "release preceded retained fence cleanup"
+    );
+    finish_fence.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .unwrap();
+    cleanup.join().unwrap();
+    observed.wait();
+}
+
 #[cfg(unix)]
 #[test]
 fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Result<()> {

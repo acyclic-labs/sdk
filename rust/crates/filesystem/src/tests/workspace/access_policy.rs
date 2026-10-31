@@ -294,12 +294,11 @@ async fn access_policy_storage_failed_preconditions_leave_the_record_unchanged()
 }
 
 #[tokio::test]
-async fn access_policy_storage_refuses_oversized_records_before_payload_io()
--> Result<(), Box<dyn Error>> {
+async fn access_policy_storage_preserves_explicit_io_budgets() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = unbounded!(fs, create_workspace("policy-bounds"))?;
     let mut checkout = current(&workspace, true).await?;
-    let bytes = vec![b'x'; usize::try_from(crate::access::MAXIMUM_POLICY_RECORD_BYTES)? + 1];
+    let bytes = vec![b'x'; 1_048_577];
     let failure = checkout
         .write_access_policy(
             &bytes,
@@ -312,20 +311,25 @@ async fn access_policy_storage_refuses_oversized_records_before_payload_io()
         )
         .await
         .err()
-        .ok_or("oversized policy was stored")?;
-    assert!(matches!(
-        failure.error,
-        FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange)
-    ));
+        .ok_or("zero-write budget stored policy")?;
+    // Transparent wrappers expose their source's source; use the same typed
+    // normalization as workspace callers rather than walking past the cause.
+    let error = crate::WorkspaceError::from(failure.error);
+    assert!(
+        matches!(
+            error,
+            crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded { .. })
+        ),
+        "finite policy budget lost its typed refusal: {error:?}"
+    );
     assert_eq!(failure.work.backend_write_operations, 0);
     assert!(!checkout.has_pending_mutations());
 
-    // A legacy writer can leave an invalid record; loading must reject its
-    // authenticated length before reading/materializing the payload.
+    // The stored length is authenticated; the original finite read budget
+    // still controls materialization independently of the policy's size.
     let key = crate::kernel::AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         crate::access::POLICY_METADATA_KEY.to_vec(),
-        255,
     )?;
     let root = checkout.root().root_file_id;
     unbounded!(
@@ -342,12 +346,18 @@ async fn access_policy_storage_refuses_oversized_records_before_payload_io()
         )
         .await
         .err()
-        .ok_or("oversized legacy policy was read")?;
-    assert!(matches!(
-        failure.error,
-        FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange)
-    ));
-    assert!(failure.work.object_bytes_read < crate::access::MAXIMUM_POLICY_RECORD_BYTES);
+        .ok_or("finite read budget read complete policy")?;
+    // Transparent wrappers expose their source's source; use the same typed
+    // normalization as workspace callers rather than walking past the cause.
+    let error = crate::WorkspaceError::from(failure.error);
+    assert!(
+        matches!(
+            error,
+            crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded { .. })
+        ),
+        "finite policy budget lost its typed refusal: {error:?}"
+    );
+    assert!(failure.work.object_bytes_read <= 16_384);
     Ok(())
 }
 

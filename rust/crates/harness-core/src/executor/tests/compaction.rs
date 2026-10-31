@@ -140,7 +140,7 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
             operation_id: OperationId::new(),
             input: ModelContent::Text("c".repeat(5_000)),
             selected_context: None,
-            max_steps: 1,
+            max_steps: Some(1),
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "answer");
@@ -203,7 +203,7 @@ async fn compacted_projection_recovers_before_response_admission() -> Result<()>
         operation_id: OperationId::new(),
         input: ModelContent::Text("current".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     StockExecution::ordinary(&executor)
         .ensure_started(&journal, &input)
@@ -253,7 +253,7 @@ async fn impossible_default_capacity_fails_before_turn_admission() -> Result<()>
                     operation_id: OperationId::new(),
                     input: ModelContent::Text("current".into()),
                     selected_context: None,
-                    max_steps: 1
+                    max_steps: Some(1)
                 },
                 &journal
             )
@@ -286,7 +286,7 @@ async fn malformed_provider_accounting_rejects_before_projection_or_model_public
             operation_id: OperationId::new(),
             input: ModelContent::Text("current".into()),
             selected_context: None,
-            max_steps: 1,
+            max_steps: Some(1),
         };
         assert!(matches!(
             executor.execute_progress(input, &journal).await?,
@@ -350,7 +350,7 @@ async fn actual_compacted_accounting_rejects_response_without_repeating_summary(
         operation_id: OperationId::new(),
         input: ModelContent::Text("c".repeat(5_000)),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     for _ in 0..2 {
         assert!(
@@ -435,7 +435,7 @@ async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary(
             operation_id,
             input: ModelContent::Text("c".repeat(5_000)),
             selected_context: None,
-            max_steps: 1,
+            max_steps: Some(1),
         };
         assert!(matches!(executor.execute_progress(input, &journal).await?,
                 ExecutionProgress::PreDispatchFailed(failure) if failure.message().ends_with("mandatory content exceeds selected model capacity")));
@@ -501,7 +501,7 @@ async fn automatic_summary_reconciles_from_captured_context_without_rereading_so
         operation_id: OperationId::new(),
         input: ModelContent::Text("c".repeat(5_000)),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     assert!(executor.execute(input.clone(), &journal).await.is_err());
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
@@ -547,9 +547,9 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
         (vec![message(128)], ModelContent::Text("summary".into()), 64),
     ] {
         let limits = Limits {
-            context_messages: 1,
-            render_bytes: 4_096,
-            file_bytes,
+            context_messages: std::num::NonZeroUsize::new(1),
+            render_bytes: Some(4_096),
+            file_bytes: Some(file_bytes),
             ..Limits::default()
         };
         let executor = base.clone().with_limits(limits);
@@ -703,7 +703,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
         .await?;
     assert_eq!(
         summary.source_digest,
-        crate::executor::json::canonical_json_digest(&source, u64::MAX, &mut None)?
+        crate::executor::json::canonical_json_digest(&source, None, &mut None)?
     );
     assert_eq!(
         journal.load(&summary.output, None)?.await?.as_ref(),
@@ -735,7 +735,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
         operation_id: OperationId::new(),
         input: ModelContent::Text("parent response".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     let source = crate::context::Context {
         messages: vec![ModelMessage {
@@ -800,7 +800,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
     let (_, admissions, _) = replay_execution(
         &journal,
         parent.operation_id,
-        3,
+        Some(3),
         |event| {
             matches!(
                 event,

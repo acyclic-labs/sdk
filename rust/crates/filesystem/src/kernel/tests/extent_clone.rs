@@ -86,8 +86,7 @@ async fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
             destination_root: destination,
             destination_logical_bytes: 16,
             destination_offset: 6,
-            maximum_spans: 3,
-            maximum_mutations: 3,
+            maximum_spans: Some(3),
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
@@ -165,8 +164,7 @@ async fn same_file_overlap_plans_source_before_destination_writes()
             destination_root: root,
             destination_logical_bytes: 8,
             destination_offset: 2,
-            maximum_spans: 2,
-            maximum_mutations: 2,
+            maximum_spans: Some(2),
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
@@ -216,8 +214,7 @@ async fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dy
             destination_root: root,
             destination_logical_bytes: 8,
             destination_offset: 1,
-            maximum_spans: 1,
-            maximum_mutations: 1,
+            maximum_spans: Some(1),
         },
         DecodeLimits {
             maximum_page_items: 1,
@@ -260,8 +257,7 @@ async fn pre_cancelled_clone_performs_zero_work() -> Result<(), Box<dyn std::err
             destination_root: root,
             destination_logical_bytes: 8,
             destination_offset: 1,
-            maximum_spans: 1,
-            maximum_mutations: 1,
+            maximum_spans: Some(1),
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
@@ -297,8 +293,7 @@ fn request_validation_rejects_every_shape_before_work() -> Result<(), Box<dyn st
         destination_root: extent,
         destination_logical_bytes: 1,
         destination_offset: 0,
-        maximum_spans: 1,
-        maximum_mutations: 1,
+        maximum_spans: Some(1),
     };
     let cases = [
         (
@@ -352,16 +347,8 @@ fn request_validation_rejects_every_shape_before_work() -> Result<(), Box<dyn st
         ),
         (
             ExtentCloneRequest {
-                maximum_spans: 0,
-                maximum_mutations: 0,
-                ..valid
-            },
-            ExtentCloneError::InvalidLimits,
-        ),
-        (
-            ExtentCloneRequest {
-                maximum_spans: 2,
-                maximum_mutations: 1,
+                maximum_spans: Some(0),
+
                 ..valid
             },
             ExtentCloneError::InvalidLimits,

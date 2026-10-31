@@ -23,16 +23,17 @@ test("session slots, filters and record headers survive the TypeScript bridge", 
   const first = (await follow.next()).value!;
   expect(first.keys).toEqual(record.keys);
   expect(first.attributes).toEqual(record.attributes);
-  const hello = node.received.find(frame => frame.body.case === "hello")!;
-  if (hello.body.case !== "hello") throw new Error("missing hello");
-  expect(hello.body.value.credentials[2]).toEqual(new Uint8Array([1, 2, 3]));
+  const initial = node.received.find(frame => frame.body.case === "credential")!;
+  if (initial.body.case !== "credential") throw new Error("missing initial credential");
+  expect(initial.body.value.slot).toBe(2);
+  expect(initial.body.value.credential).toEqual(new Uint8Array([1, 2, 3]));
   const interest = node.received.find(frame => frame.body.case === "interest")!;
   if (interest.body.case !== "interest") throw new Error("missing interest");
   expect(interest.body.value.upsert[0]!.credential).toBe(2);
   expect(interest.body.value.upsert[0]!.filter).toEqual(filter);
   await client.registerCredential(2, new Uint8Array([4, 5]));
-  await node.until(() => node.received.some(frame => frame.body.case === "credential"));
-  const renewal = node.received.find(frame => frame.body.case === "credential")!;
+  await node.until(() => node.received.filter(frame => frame.body.case === "credential").length === 2);
+  const renewal = node.received.findLast(frame => frame.body.case === "credential")!;
   if (renewal.body.case !== "credential") throw new Error("missing renewal");
   expect(renewal.body.value.slot).toBe(2);
   expect(renewal.body.value.credential).toEqual(new Uint8Array([4, 5]));
@@ -157,19 +158,26 @@ test("aborting a suspended iterator releases its channel reservation immediately
   expect(node.outstandingFrames).toBe(0);
 });
 
-test("concurrent first follows share a bounded silent-peer handshake", async () => {
+test("concurrent first follows share a silent handshake until cancellation", async () => {
   let connections = 0;
+  let connected!: () => void;
+  const connection = new Promise<void>(resolve => { connected = resolve; });
   const client = new StreamSessions(async () => {
     connections += 1;
-    const incoming = new SessionQueue<SessionFrame>(2);
+    const incoming = new SessionQueue<SessionFrame>();
+    connected();
     return { incoming, async send() {}, close() { incoming.end(); } };
   });
-  const first = client.follow("one", { from: 0n });
-  const second = client.follow("two", { from: 0n });
-  const results = await Promise.allSettled([first.next(), second.next()]);
-  expect(results.every(result => result.status === "rejected" && result.reason.code === "unavailable")).toBe(true);
-  expect(connections).toBe(3);
-}, 4_000);
+  const firstCancel = new AbortController();
+  const secondCancel = new AbortController();
+  const first = client.follow("one", { from: 0n, signal: firstCancel.signal });
+  const second = client.follow("two", { from: 0n, signal: secondCancel.signal });
+  const pending = Promise.all([first.next(), second.next()]);
+  await connection;
+  expect(connections).toBe(1);
+  firstCancel.abort(); secondCancel.abort();
+  expect((await pending).every(result => result.done)).toBe(true);
+});
 
 test("Welcome followed by EOF cannot strand the first subscription", async () => {
   const node = new SessionNode();
@@ -181,7 +189,7 @@ test("Welcome followed by EOF cannot strand the first subscription", async () =>
         transport.close();
       }
     } };
-  });
+  }, true, 10_000);
   const nativeSetTimeout = globalThis.setTimeout;
   const nativeClearTimeout = globalThis.clearTimeout;
   const handle = {};

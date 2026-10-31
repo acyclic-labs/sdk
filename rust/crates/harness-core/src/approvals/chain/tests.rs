@@ -13,7 +13,7 @@ impl ApprovalFiles for Files {
     fn read<'a>(
         &'a self,
         path: &'a str,
-        bound: u64,
+        bound: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
         Box::pin(async move {
             self.0
@@ -31,7 +31,7 @@ impl ApprovalFiles for Files {
         &'a self,
         path: &'a str,
         bytes: Vec<u8>,
-        bound: u64,
+        bound: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
         Box::pin(async move {
             super::super::files::check_bound(bytes.len(), bound)?;
@@ -89,7 +89,7 @@ async fn agent_reviews_escalate_in_order_and_external_files_never_grant_authorit
     };
     let digest = policy.bind()?.identity().digest;
     let bytes = request(ApprovalRoute::Policy);
-    let request = ApprovalRequest::new("request", &bytes, 4096)?;
+    let request = ApprovalRequest::new("request", &bytes, None)?;
     let files = Files::default();
     let parent = AgentId::from_bytes([3; 16]);
     for stage in 0..3 {
@@ -115,7 +115,7 @@ async fn agent_reviews_escalate_in_order_and_external_files_never_grant_authorit
             &files,
             &request.review_path(&expected.principal),
             serde_json::to_vec(&expected).unwrap(),
-            4096,
+            Some(4096),
         )
         .await?;
     }
@@ -158,7 +158,7 @@ async fn human_override_ignores_policy_allow_and_policy_digest_must_match() -> R
     };
     let digest = policy.bind()?.identity().digest;
     let bytes = request(ApprovalRoute::Human);
-    let request = ApprovalRequest::new("request", &bytes, 4096)?;
+    let request = ApprovalRequest::new("request", &bytes, Some(4096))?;
     let files = Files::default();
     assert!(matches!(
         next_stage(&policy, digest, None, &request, &files, 0).await?,
@@ -228,8 +228,8 @@ async fn human_override_ignores_policy_allow_and_policy_digest_must_match() -> R
             .await
             .is_err()
     );
-    assert!(ApprovalRequest::new("../request", &bytes, 4096).is_err());
-    assert!(ApprovalRequest::new("request", &bytes, 1).is_err());
+    assert!(ApprovalRequest::new("../request", &bytes, Some(4096)).is_err());
+    assert!(ApprovalRequest::new("request", &bytes, Some(1)).is_err());
     Ok(())
 }
 
@@ -241,7 +241,7 @@ async fn dispatch_creation_has_one_winner_and_never_replaces_conflicting_bytes()
             &files,
             "approvals/request/reviews/model.json",
             b"dispatch".to_vec(),
-            4096,
+            Some(4096),
         )
     };
     let (first, second) = futures::join!(create(), create());
@@ -251,14 +251,14 @@ async fn dispatch_creation_has_one_winner_and_never_replaces_conflicting_bytes()
             &files,
             "approvals/request/reviews/model.json",
             b"changed".to_vec(),
-            4096
+            Some(4096)
         )
         .await
         .is_err()
     );
     assert_eq!(
         files
-            .read("approvals/request/reviews/model.json", 4096)
+            .read("approvals/request/reviews/model.json", Some(4096))
             .await?,
         Some(b"dispatch".to_vec())
     );
@@ -276,7 +276,7 @@ async fn automatic_and_parent_decisions_require_their_authenticated_role() -> Re
     };
     let digest = policy.bind()?.identity().digest;
     let bytes = request(ApprovalRoute::Policy);
-    let request = ApprovalRequest::new("request", &bytes, 4096)?;
+    let request = ApprovalRequest::new("request", &bytes, Some(4096))?;
     let files = Files::default();
     let NextStage::Review {
         approver, expected, ..

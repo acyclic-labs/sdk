@@ -49,12 +49,14 @@ impl GuestIo {
         request: Request<tonic::Streaming<wire::ExecInput>>,
     ) -> Result<Response<ExecStreamWire>, Status> {
         use wire::exec_input::Input;
+        let has_deadline = request.metadata().contains_key("grpc-timeout");
         let mut input = request.into_inner();
         let Some(Input::Start(start)) = input.message().await?.and_then(|frame| frame.input) else {
             return Err(Status::invalid_argument("missing command admission"));
         };
         let mut command = ReceivedCommand {
             start,
+            has_deadline,
             argv: vec![],
             stdin: vec![],
         };
@@ -117,6 +119,7 @@ type ExecStreamWire = Pin<Box<dyn Stream<Item = Result<wire::ExecOutput, Status>
 #[derive(Clone)]
 struct ReceivedCommand {
     start: wire::ExecStart,
+    has_deadline: bool,
     argv: Vec<String>,
     stdin: Vec<u8>,
 }
@@ -238,11 +241,12 @@ fn frame(machine: MachineId, output: wire::exec_output::Output) -> wire::ExecOut
 }
 
 #[test]
-fn command_bounds_are_checked_before_dispatch() {
+fn invalid_commands_are_rejected_before_dispatch() {
     for (argv, timeout) in [
         (vec![], 1),
         (vec!["".into()], 1),
         (vec!["a\0b".into()], 1),
+        (vec!["printf".into(), "a\0b".into()], 1),
         (vec!["a".into()], 0),
     ] {
         assert!(matches!(
@@ -250,79 +254,80 @@ fn command_bounds_are_checked_before_dispatch() {
             Err(ProviderError::Invalid(_))
         ));
     }
-    let bounded = ExecCommand::new(vec!["é".repeat(2048); 8], 60_000).unwrap();
-    assert_eq!(bounded.argv().len(), 8);
-    assert_eq!(bounded.timeout_ms(), 60_000);
     assert!(ExecCommand::new(vec!["a".into(), "".into()], 1).is_ok());
     // The shell tool's whole u32-second range is representable, never clamped.
     for timeout in [60_001, 120_000, 300_000, u64::from(u32::MAX) * 1_000] {
-        assert_eq!(command(timeout).timeout_ms(), timeout);
+        assert_eq!(command(timeout).timeout_ms(), Some(timeout));
         let Some(wire::ExecInput {
             input: Some(wire::exec_input::Input::Start(start)),
         }) = super::super::input::encode(MachineId::new(), command(timeout)).next()
         else {
             panic!("exec input must start with its admission frame");
         };
-        assert_eq!(start.timeout_ms, timeout);
+        assert_eq!(start.timeout_ms, Some(timeout));
     }
 }
 
 #[tokio::test]
 async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
-    let (machine, io, shutdown, task) = fixture().await;
-    let source = format!(
-        "read -r line; printf '%s' \"$line\"; #{}",
-        "é😀".repeat(16_000)
-    );
-    let mut argv = vec![
-        "bash".into(),
-        "--noprofile".into(),
-        "--norc".into(),
-        "-c".into(),
-        source,
-        String::new(),
-    ];
-    argv.extend(std::iter::repeat_n("argument".into(), 65));
-    let stdin = [0, 255, 10].repeat(50_000);
-    let command = ExecCommand::new(argv.clone(), 300_000)
-        .unwrap()
-        .with_stdin(stdin.clone())
-        .with_cwd("/workspace/sub directory".into())
-        .unwrap()
-        .with_expiry(4_102_444_800_000)
-        .with_output_limit(4);
-    let output = machine.exec(command).await.unwrap();
-    let sender = io.sender();
-    for value in [
-        wire::exec_output::Output::Data(wire::ExecData {
-            stream: wire::ExecStream::Stdout as i32,
-            bytes: vec![0, 255],
-        }),
-        wire::exec_output::Output::Data(wire::ExecData {
-            stream: wire::ExecStream::Stderr as i32,
-            bytes: vec![254, 10],
-        }),
-        wire::exec_output::Output::ExitCode(7),
-    ] {
-        sender.send(Ok(frame(machine.id(), value))).await.unwrap();
+    for maximum in [None, Some(4)] {
+        let (machine, io, shutdown, task) = fixture().await;
+        let source = format!(
+            "read -r line; printf '%s' \"$line\"; #{}",
+            "é😀".repeat(16_000)
+        );
+        let mut argv = vec![
+            "bash".into(),
+            "--noprofile".into(),
+            "--norc".into(),
+            "-c".into(),
+            source,
+            String::new(),
+        ];
+        argv.extend(std::iter::repeat_n("argument".into(), 65));
+        let stdin = [0, 255, 10].repeat(50_000);
+        let mut command = ExecCommand::new(argv.clone(), 300_000)
+            .unwrap()
+            .with_stdin(stdin.clone())
+            .with_cwd("/workspace/sub directory".into())
+            .unwrap()
+            .with_expiry(4_102_444_800_000);
+        if let Some(maximum) = maximum {
+            command = command.with_output_limit(maximum);
+        }
+        let output = machine.exec(command).await.unwrap();
+        let sender = io.sender();
+        for value in [
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stdout as i32,
+                bytes: vec![0, 255],
+            }),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stderr as i32,
+                bytes: vec![254, 10],
+            }),
+            wire::exec_output::Output::ExitCode(7),
+        ] {
+            sender.send(Ok(frame(machine.id(), value))).await.unwrap();
+        }
+        drop(sender);
+        let captured = capture_exec(output, maximum).await.unwrap();
+        assert_eq!(captured.stdout, [0, 255]);
+        assert_eq!(captured.stderr, [254, 10]);
+        assert_eq!(captured.exit_code, Some(7));
+        assert!(captured.stop.is_none());
+        let request = io.commands.lock().unwrap().first().unwrap().clone();
+        assert_eq!(request.argv, argv);
+        assert_eq!(request.stdin, stdin);
+        assert_eq!(
+            request.start.cwd.as_deref(),
+            Some("/workspace/sub directory")
+        );
+        assert_eq!(request.start.expiry_unix_ms, Some(4_102_444_800_000));
+        assert_eq!(request.start.maximum_output_bytes, maximum);
+        assert_eq!(request.start.timeout_ms, Some(300_000));
+        stop(shutdown, task).await;
     }
-    drop(sender);
-    let captured = capture_exec(output, 4).await.unwrap();
-    assert_eq!(captured.stdout, [0, 255]);
-    assert_eq!(captured.stderr, [254, 10]);
-    assert_eq!(captured.exit_code, Some(7));
-    assert!(captured.stop.is_none());
-    let request = io.commands.lock().unwrap().first().unwrap().clone();
-    assert_eq!(request.argv, argv);
-    assert_eq!(request.stdin, stdin);
-    assert_eq!(
-        request.start.cwd.as_deref(),
-        Some("/workspace/sub directory")
-    );
-    assert_eq!(request.start.expiry_unix_ms, Some(4_102_444_800_000));
-    assert_eq!(request.start.maximum_output_bytes, Some(4));
-    assert_eq!(request.start.timeout_ms, 300_000);
-    stop(shutdown, task).await;
 }
 
 #[tokio::test]
@@ -510,7 +515,7 @@ async fn stopped_capture_retains_reason_and_physical_cleanup_receipt() {
         .await
         .unwrap();
     drop(sender);
-    let captured = capture_exec(output, 0).await.unwrap();
+    let captured = capture_exec(output, Some(0)).await.unwrap();
     assert_eq!(captured.exit_code, None);
     assert_eq!(
         captured.stop,
@@ -552,7 +557,7 @@ async fn combined_capture_allowance_refuses_without_draining_or_redispatch() {
         .await
         .unwrap();
     assert!(matches!(
-        capture_exec(output, 1).await,
+        capture_exec(output, Some(1)).await,
         Err(ProviderError::Rejected(_))
     ));
     tokio::time::timeout(Duration::from_secs(1), sender.closed())
@@ -601,7 +606,8 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
         let command = commands.first().unwrap();
         assert_eq!(command.start.machine, Some(encode_machine(machine.id())));
         assert_eq!(command.argv, ["printf", "hello"]);
-        assert_eq!(command.start.timeout_ms, 1);
+        assert_eq!(command.start.timeout_ms, Some(1));
+        assert!(command.has_deadline);
         assert_eq!(command.start.protocol, Some(protocol()));
     }
     drop(output);
@@ -611,7 +617,19 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
 #[tokio::test]
 async fn exec_drop_and_bad_frame_release_only_their_rpc() {
     let (machine, io, shutdown, task) = fixture().await;
-    let active = machine.exec(command(60_000)).await.unwrap();
+    let mut argv = vec!["printf".into(), "é".repeat(4097)];
+    argv.extend(std::iter::repeat_n("a".repeat(512), 65));
+    let active = machine
+        .exec(ExecCommand::new(argv.clone(), None).unwrap())
+        .await
+        .unwrap();
+    {
+        let commands = io.commands.lock().unwrap();
+        let accepted = commands.first().unwrap();
+        assert_eq!(accepted.argv, argv);
+        assert_eq!(accepted.start.timeout_ms, None);
+        assert!(!accepted.has_deadline);
+    }
     let active_sender = io.sender();
     let stopped = machine.exec(command(60_000)).await.unwrap();
     let stopped_sender = io.sender();
@@ -807,7 +825,7 @@ async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
 async fn read_output_preserves_wide_offsets_and_validates_evidence() {
     let (machine, io, shutdown, task) = fixture().await;
     let offset = 9_007_199_254_740_993;
-    for limit in [0, 65_537] {
+    for limit in [0] {
         assert!(matches!(
             machine.read_output(offset, limit).await,
             Err(ProviderError::Invalid(_))
@@ -858,11 +876,36 @@ async fn read_output_preserves_wide_offsets_and_validates_evidence() {
             Err(ProviderError::Rejected(_))
         ));
     }
-    assert!(io.reads.lock().unwrap().iter().all(|read| read.machine
+    let normal_reads = io.reads.lock().unwrap().len();
+    *io.output.lock().unwrap() = wire::MachineOutput {
+        machine: Some(encode_machine(machine.id())),
+        offset,
+        data: vec![1; MAX_OUTPUT_READ_BYTES as usize],
+    };
+    let chunk = machine.read_output(offset, u32::MAX).await.unwrap();
+    assert_eq!(chunk.data.len(), MAX_OUTPUT_READ_BYTES as usize);
+    let next = chunk.offset + chunk.data.len() as u64;
+    *io.output.lock().unwrap() = wire::MachineOutput {
+        machine: Some(encode_machine(machine.id())),
+        offset: next,
+        data: vec![2],
+    };
+    assert_eq!(
+        machine.read_output(next, u32::MAX).await.unwrap().data,
+        vec![2]
+    );
+    let reads = io.reads.lock().unwrap();
+    assert!(reads[..normal_reads].iter().all(|read| read.machine
         == Some(encode_machine(machine.id()))
         && read.offset == offset
         && read.limit == 2
         && read.protocol == Some(protocol())));
+    assert!(
+        reads[normal_reads..]
+            .iter()
+            .all(|read| read.limit == MAX_OUTPUT_READ_BYTES)
+    );
+    drop(reads);
     stop(shutdown, task).await;
 }
 

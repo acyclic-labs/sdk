@@ -1,6 +1,6 @@
 use super::*;
 
-// Frozen main 142c97f68 parser; funding/trace projection is supplied by tests.
+// Independent parser with the shared, funded normalization storage primitive.
 pub(super) fn decode(
     name: &str,
     accounting: &mut KernelAccounting<'_>,
@@ -76,65 +76,84 @@ pub(super) fn decode(
             .ok_or(crate::WorkError::Overflow)?,
         ..crate::WorkCounters::UNCHARGED
     })?;
-    let mut output = [0_u8; MAXIMUM_WORKSPACE_NAME_BYTES];
-    let mut length = 0;
-    let mut normalized = name.nfc();
-    loop {
-        accounting.check()?;
-        let Some(character) = normalized.next() else {
-            break;
-        };
-        let end = length + character.len_utf8();
-        let slot = output
-            .get_mut(length..end)
-            .ok_or(WorkspaceNameError::TooLong)?;
-        let copied = copy_work(character.len_utf8() as u64);
-        if !borrowed {
-            accounting.admit(copied)?;
+    if borrowed {
+        if name.is_empty() {
+            return Err(WorkspaceNameError::Empty.into());
         }
-        character.encode_utf8(slot);
-        length = end;
-        if !borrowed {
-            probe(2, character as u64, character.len_utf8() as u64);
-            accounting.record_completed(copied)?;
+        if matches!(name, "." | "..") {
+            return Err(WorkspaceNameError::Reserved.into());
         }
-    }
-    drop(normalized);
-    let canonical = std::str::from_utf8(output.get(..length).ok_or(WorkspaceNameError::TooLong)?)
-        .map_err(WorkspaceError::engine)?;
-    if canonical.is_empty() {
-        return Err(WorkspaceNameError::Empty.into());
-    }
-    if canonical == "." || canonical == ".." {
-        return Err(WorkspaceNameError::Reserved.into());
-    }
-    for character in canonical.chars() {
-        if !borrowed {
-            accounting.check()?;
-            probe(3, character as u64, 0);
-        }
-        if character.is_control() || matches!(character, '/' | '\\') {
+        if name
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+        {
             return Err(WorkspaceNameError::InvalidCharacter.into());
         }
+        return WorkspaceName::retain(name, accounting, probe);
     }
-    let copied = copy_work(length as u64);
-    accounting.admit(copied)?;
-    let mut owned = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
-    owned.value.extend_from_slice(canonical.as_bytes());
-    probe(4, canonical.len() as u64, 0);
-    accounting.record_completed(copied)?;
-    let name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
-    let control = const {
-        match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
-            String,
-            KernelOwnedAllocation,
-        )>()) {
-            Ok(bytes) => bytes as u64,
-            Err(_) => panic!("workspace name Arc layout overflow"),
+    let mut output = normalize::NameBuffer::new();
+    let result = (|| {
+        let mut length = 0_usize;
+        let mut normalized = name.nfc();
+        loop {
+            accounting.check()?;
+            let Some(character) = normalized.next() else {
+                break;
+            };
+            let end = length
+                .checked_add(character.len_utf8())
+                .ok_or(crate::WorkError::Overflow)?;
+            let slot = output.slot(length, end, accounting)?;
+            let copied = copy_work(character.len_utf8() as u64);
+            if !borrowed {
+                accounting.admit(copied)?;
+            }
+            character.encode_utf8(slot);
+            length = end;
+            if !borrowed {
+                probe(2, character as u64, character.len_utf8() as u64);
+                accounting.record_completed(copied)?;
+            }
         }
-    };
-    owned
-        .allocation
-        .absorb(&mut accounting.claim_owned(control, 1)?)?;
-    Ok(WorkspaceName(Arc::new((name, owned.allocation))))
+        drop(normalized);
+        let canonical =
+            std::str::from_utf8(output.bytes(length)).map_err(WorkspaceError::engine)?;
+        if canonical.is_empty() {
+            return Err(WorkspaceNameError::Empty.into());
+        }
+        if canonical == "." || canonical == ".." {
+            return Err(WorkspaceNameError::Reserved.into());
+        }
+        for character in canonical.chars() {
+            if !borrowed {
+                accounting.check()?;
+                probe(3, character as u64, 0);
+            }
+            if character.is_control() || matches!(character, '/' | '\\') {
+                return Err(WorkspaceNameError::InvalidCharacter.into());
+            }
+        }
+        let copied = copy_work(length as u64);
+        accounting.admit(copied)?;
+        let mut owned = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
+        owned.value.extend_from_slice(canonical.as_bytes());
+        probe(4, canonical.len() as u64, 0);
+        accounting.record_completed(copied)?;
+        let name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
+        let control = const {
+            match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
+                String,
+                KernelOwnedAllocation,
+            )>()) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("workspace name Arc layout overflow"),
+            }
+        };
+        owned
+            .allocation
+            .absorb(&mut accounting.claim_owned(control, 1)?)?;
+        Ok(WorkspaceName(Arc::new((name, owned.allocation))))
+    })();
+    output.retire(accounting)?;
+    result
 }

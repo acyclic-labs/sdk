@@ -267,9 +267,7 @@ impl CallbackRuntime {
         &self,
         create: impl FnOnce() -> F,
     ) -> Result<T, MountSourceError> {
-        self.block_on(|| tokio::time::timeout(CALLBACK_TIMEOUT, create()), None)
-            .map_err(capture_io_error)?
-            .map_err(|_| MountSourceError::Stale)?
+        self.block_on(create, None).map_err(capture_io_error)?
     }
 }
 
@@ -279,12 +277,8 @@ pub(super) fn invoke<T, F: Future<Output = Result<T, MountSourceError>>>(
     create: impl FnOnce() -> F,
 ) -> Result<T, MountSourceError> {
     runtime
-        .block_on(
-            || tokio::time::timeout(CALLBACK_TIMEOUT, create()),
-            Some(work.runtime_meter().as_ref()),
-        )
+        .block_on(create, Some(work.runtime_meter().as_ref()))
         .map_err(|error| MountSourceError::NativeWork(work.runtime_error(error)))?
-        .map_err(|_| MountSourceError::Stale)?
 }
 
 #[cfg(test)]

@@ -55,8 +55,11 @@ impl ApprovalDecisionFile {
     }
 
     /// Decodes a client-written body before its owner admits it.
-    pub fn decode(bytes: &[u8], maximum_bytes: u64) -> Result<Self> {
-        if bytes.len() as u64 > maximum_bytes {
+    pub fn decode(bytes: &[u8], maximum_bytes: impl Into<Option<u64>>) -> Result<Self> {
+        if maximum_bytes
+            .into()
+            .is_some_and(|maximum| bytes.len() as u64 > maximum)
+        {
             return Err(Error::Invalid(
                 "approval decision exceeds its file bound".into(),
             ));
@@ -71,7 +74,6 @@ impl ApprovalDecisionFile {
     pub fn validate(&self) -> Result<()> {
         if self.expected_version == 0
             || self.principal.is_empty()
-            || self.principal.len() > 255
             || self.request_sha256.len() != 64
             || !self
                 .request_sha256

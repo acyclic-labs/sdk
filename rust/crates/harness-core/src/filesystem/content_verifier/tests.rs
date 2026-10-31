@@ -31,7 +31,7 @@ fn native_reader_reuses_immutable_authentication_and_refuses_revocation() -> Res
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 4096, Some(&io))?;
+    let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, None, Some(&io))?;
     let before = work.receipt().bytes_hashed;
     let examined = work.receipt().items_examined;
     for _ in 0..4 {

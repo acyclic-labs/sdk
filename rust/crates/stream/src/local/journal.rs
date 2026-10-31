@@ -175,7 +175,6 @@ impl Journal {
         recovered: &mpsc::Sender<Recovered>,
         span: &tracing::Span,
     ) -> Result<(), LocalStreamError> {
-        let limits = self.limits;
         let mut operations = 0_u64;
         let mut valid_length =
             u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
@@ -195,9 +194,6 @@ impl Journal {
                 .ok_or(LocalStreamError::Corrupt)?;
             let command = decode_command(command).map_err(|_| LocalStreamError::Corrupt)?;
             operations = operations.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
-            if operations > limits.journal_operations {
-                return Err(LocalStreamError::Corrupt);
-            }
             blocking_send(
                 recovered,
                 Recovered::WriteRequest {
@@ -209,9 +205,6 @@ impl Journal {
             valid_length = valid_length
                 .checked_add(frame_bytes(&frame.length))
                 .ok_or(LocalStreamError::Corrupt)?;
-        }
-        if valid_length > limits.journal_bytes {
-            return Err(LocalStreamError::InvalidLimits);
         }
         span.record("frames", operations);
         span.record("bytes", valid_length);
@@ -256,8 +249,8 @@ impl Journal {
 
     fn compaction_due(&self) -> bool {
         self.operations > 0
-            && (self.operations >= self.limits.journal_operations / 2
-                || self.bytes >= self.limits.journal_bytes / 2)
+            && (self.operations >= self.limits.compaction_operations / 2
+                || self.bytes >= self.limits.compaction_bytes / 2)
     }
 
     /// Makes `state`, which holds every frame so far, the snapshot the
@@ -294,18 +287,6 @@ impl Journal {
         // issued, including receipts issued before this provider was reopened.
         self.restart(epoch, work)?;
         Ok(DeviceFlushed)
-    }
-
-    fn admit(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
-        if self.operations >= self.limits.journal_operations
-            || self
-                .bytes
-                .checked_add(frame.encoded.len() as u64)
-                .is_none_or(|value| value > self.limits.journal_bytes)
-        {
-            return Err(LocalStreamError::InvalidLimits);
-        }
-        Ok(())
     }
 
     /// Pins the next offset under the caller's publication fence and batch lease.

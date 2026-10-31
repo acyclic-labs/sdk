@@ -67,7 +67,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             source_root.value.file_table
         };
         let mut parents = Owned::<Vec<GenerationId>>::allocate(1, accounting)?;
-        fork_selection::selection_push(&mut parents, source.id, 1, accounting)?;
+        fork_selection::selection_push(&mut parents, source.id, accounting)?;
         let filtered = file_table != source_root.value.file_table;
         let required_features = source_root.value.continuation_features()
             | if filtered {

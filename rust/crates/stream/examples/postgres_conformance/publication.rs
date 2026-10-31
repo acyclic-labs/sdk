@@ -12,17 +12,27 @@ async fn publish(
     commands: &[Vec<u8>],
     deadlines: &[Option<i64>],
 ) -> Result<Row, tokio_postgres::Error> {
+    let namespace_key = blake3::hash(namespace.as_bytes());
     client
-        .query_one(PUBLISH, &[&namespace, &expected, &commands, &deadlines])
+        .query_one(
+            PUBLISH,
+            &[
+                &namespace_key.as_bytes().as_slice(),
+                &expected,
+                &commands,
+                &deadlines,
+            ],
+        )
         .await
 }
 
 async fn rows(client: &Client, namespace: &str) -> Result<Vec<Row>, tokio_postgres::Error> {
+    let namespace_key = blake3::hash(namespace.as_bytes());
     client
         .query(
             "SELECT revision,at_millis,command FROM acyclic_stream_journal \
              WHERE namespace=$1 ORDER BY revision",
-            &[&namespace],
+            &[&namespace_key.as_bytes().as_slice()],
         )
         .await
 }
@@ -101,13 +111,14 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
     // The function can return a row before PostgreSQL attempts its implicit
     // COMMIT. A deferred trigger supplies a real commit-time failure: consuming
     // that row must never turn the aborted publication into an acknowledgement.
-    client.batch_execute(
+    let failure_namespace = blake3::hash(b"commit-failure-control").to_hex();
+    client.batch_execute(&format!(
         "CREATE FUNCTION publication_commit_failure() RETURNS trigger LANGUAGE plpgsql AS $$
          BEGIN RAISE EXCEPTION USING ERRCODE='PST04', MESSAGE='publication commit control'; END; $$;
          CREATE CONSTRAINT TRIGGER publication_commit_failure AFTER INSERT ON acyclic_stream_journal
          DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
-         WHEN (NEW.namespace = 'commit-failure-control') EXECUTE FUNCTION publication_commit_failure();"
-    ).await?;
+         WHEN (NEW.namespace = decode('{failure_namespace}', 'hex')) EXECUTE FUNCTION publication_commit_failure();"
+    )).await?;
     let error = publish(
         &client,
         "commit-failure-control",

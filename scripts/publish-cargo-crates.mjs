@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { captureCommand } from "./process-capture.mjs";
+import { publicationMain, publicationReceipt, retainPublication, requirePublication } from "./publication-receipt.mjs";
 
 import { createHash } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const order = JSON.parse(readFileSync(join(root, "release", "cargo-crates.json"), "utf8"));
@@ -15,7 +16,7 @@ function fail(message) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options });
+  const result = captureCommand(command, args, { cwd: root, encoding: "utf8", ...options });
   if (result.error) throw result.error;
   return result;
 }
@@ -120,22 +121,17 @@ export function registryArchiveMatches(name, version, observed, checksum, source
   return unchanged.status === 0 ? "equivalent" : null;
 }
 
-async function waitForRegistry(name, version, checksum, sourceSha, item) {
-  for (let attempt = 0; attempt < 90; attempt += 1) {
-    const observed = await registryVersion(name, version);
-    if (observed) {
-      if (observed.yanked) fail(`${name}@${version} is yanked`);
-      if (!registryArchiveMatches(name, version, observed, checksum, sourceSha, item)) {
-        fail(`${name}@${version} exists with different contents`);
-      }
-      return;
-    }
-    await new Promise(resolveDelay => setTimeout(resolveDelay, 2_000));
-  }
-  fail(`${name}@${version} did not become visible on crates.io`);
+export async function reconcileRegistry(name, version, checksum, sourceSha, item, lookup = registryVersion) {
+  const observed = await lookup(name, version);
+  if (observed?.yanked) fail(`${name}@${version} is yanked`);
+  return publicationReceipt(
+    { registry: "crates.io", sourceSha, name, version, expectedDigest: checksum },
+    { digest: observed?.checksum ?? null },
+    () => registryArchiveMatches(name, version, observed, checksum, sourceSha, item),
+  );
 }
 
-async function publish(sourceSha, releaseVersion) {
+async function publish(sourceSha, releaseVersion, reconcileOnly = false) {
   if (!/^[0-9a-f]{40}$/.test(sourceSha)) fail("source commit must be a full lowercase Git SHA-1");
   if (!/^\d+\.\d+\.\d+(?:[+-][0-9A-Za-z.-]+)?$/.test(releaseVersion)) fail("release version is invalid");
   const packages = metadata(releaseVersion);
@@ -143,26 +139,35 @@ async function publish(sourceSha, releaseVersion) {
   if (head.status !== 0 || head.stdout.trim() !== sourceSha) fail("publication source differs from the qualified commit");
   const dirty = run("git", ["status", "--porcelain=v1"]);
   if (dirty.status !== 0 || dirty.stdout !== "") fail("publication source is dirty");
+  const receiptDirectory = join(root, "target", "registry-publication");
+  const retain = receipt => requirePublication(receipt, receiptDirectory,
+    `node scripts/publish-cargo-crates.mjs reconcile ${sourceSha} ${releaseVersion}`);
 
   for (const name of order) {
     const item = packages.get(name);
     const checksum = archiveChecksum(name, releaseVersion, item);
     const observed = await registryVersion(name, releaseVersion);
-    if (observed) {
-      if (observed.yanked) fail(`${name}@${releaseVersion} is yanked`);
-      const match = registryArchiveMatches(name, releaseVersion, observed, checksum, sourceSha, item);
-      if (!match) fail(`${name}@${releaseVersion} exists with different contents`);
-      console.log(`Already published ${match} crate: ${name}@${releaseVersion}`);
+    if (observed || reconcileOnly) {
+      retain(await reconcileRegistry(name, releaseVersion, checksum, sourceSha, item, async () => observed));
+      console.log(`Verified published crate: ${name}@${releaseVersion}`);
       continue;
     }
+    const unconfirmed = submission => publicationReceipt(
+      { registry: "crates.io", sourceSha, name, version: releaseVersion, expectedDigest: checksum },
+      { digest: null, submission },
+    );
+    retainPublication(unconfirmed({ state: "Prepared" }), receiptDirectory);
     const result = run("cargo", ["publish", "--locked", "--no-verify", "--manifest-path", item.manifest_path], { stdio: "inherit" });
+    retainPublication(unconfirmed({ state: "Returned", status: result.status, signal: result.signal }), receiptDirectory);
+    let raced;
     if (result.status !== 0) {
-      const raced = await registryVersion(name, releaseVersion);
+      raced = await registryVersion(name, releaseVersion);
       if (!raced || raced.yanked || !registryArchiveMatches(name, releaseVersion, raced, checksum, sourceSha, item)) {
         fail(`cargo publish failed for ${name}`);
       }
     }
-    await waitForRegistry(name, releaseVersion, checksum, sourceSha, item);
+    retain(await reconcileRegistry(name, releaseVersion, checksum, sourceSha, item,
+      raced ? async () => raced : registryVersion));
     console.log(`Published and verified: ${name}@${releaseVersion}`);
   }
 }
@@ -171,6 +176,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [command, sourceSha, releaseVersion] = process.argv.slice(2);
   if (command === "check" && sourceSha === undefined && releaseVersion === undefined) metadata();
   else if (command === "check" && sourceSha && releaseVersion) metadata(releaseVersion);
-  else if (command === "publish" && sourceSha && releaseVersion) await publish(sourceSha, releaseVersion);
-  else fail("usage: publish-cargo-crates.mjs check [SOURCE_SHA VERSION] | publish SOURCE_SHA VERSION");
+  else if (["publish", "reconcile"].includes(command) && sourceSha && releaseVersion) {
+    await publicationMain(() => publish(sourceSha, releaseVersion, command === "reconcile"));
+  } else fail("usage: publish-cargo-crates.mjs check [SOURCE_SHA VERSION] | publish|reconcile SOURCE_SHA VERSION");
 }

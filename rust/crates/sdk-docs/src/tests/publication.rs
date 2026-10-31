@@ -61,9 +61,11 @@ fn version_index_must_be_a_regular_non_reparse_file() {
     let data = publication_data("1.0.0", 'a');
     let error = write_bundle(&data, &output, false)
         .expect_err("directory at the index path must block publication");
-    assert!(error
-        .to_string()
-        .contains("version index is not a regular file"));
+    assert!(
+        error
+            .to_string()
+            .contains("version index is not a regular file")
+    );
     assert!(output.join("sdk-docs-versions.v1.json").is_dir());
     assert!(!output.join("releases").exists());
     directory.close().expect("test output should be removable");
@@ -169,9 +171,11 @@ fn version_index_rejects_invalid_docs_json_even_when_hash_matches() {
     fs::write(&schema_path, b"{}").expect("corrupt schema sidecar should be writable");
     let error = write_bundle(&data, &output, false)
         .expect_err("corrupt schema sidecar must block publication");
-    assert!(error
-        .to_string()
-        .contains("does not match the pinned schema"));
+    assert!(
+        error
+            .to_string()
+            .contains("does not match the pinned schema")
+    );
     assert_eq!(
         valid,
         fs::read(&data_path).expect("data must remain unchanged")
@@ -280,9 +284,11 @@ fn version_index_rejects_bundle_revision_mismatch() {
     let before = fs::read(&index_path).expect("index should remain readable");
     let error = write_bundle(&data, &output, false)
         .expect_err("bundle revision mismatch must block publication");
-    assert!(error
-        .to_string()
-        .contains("data revision does not match the index"));
+    assert!(
+        error
+            .to_string()
+            .contains("data revision does not match the index")
+    );
     assert_eq!(
         before,
         fs::read(&index_path).expect("index should be unchanged")
@@ -358,12 +364,36 @@ fn version_index_advances_candidates_and_preview_without_rewriting_data() {
         index.preview.as_ref().map(|entry| entry.version.as_str()),
         Some("branch_ABC")
     );
-    assert!(output
-        .join("preview/branch_abc/sdk-docs-data.v1.json")
-        .is_file());
-    assert!(output
-        .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
-        .is_file());
+    assert!(
+        output
+            .join("preview/branch_abc/sdk-docs-data.v1.json")
+            .is_file()
+    );
+    assert!(
+        output
+            .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
+            .is_file()
+    );
+    // Physical version components cannot contain a long logical version.
+    // Publish complete ASCII and Unicode identities through the same catalog,
+    // reopen their exact data files, and reject a same-identity rewrite.
+    for version in ["a".repeat(4_097), "preview:/分支/".repeat(1_025)] {
+        data.version = version;
+        write_bundle(&data, &output, false).expect("long logical version should publish");
+        write_bundle(&data, &output, false).expect("identical publication should replay");
+        let index = load_version_index(&output).expect("long version catalog should reopen");
+        let entry = index.preview.expect("preview should be selected");
+        assert_eq!(entry.version, data.version);
+        let saved = fs::read(output.join(&entry.data_file)).expect("indexed data should exist");
+        let reopened: DocsData = serde_json::from_slice(&saved).expect("data should parse");
+        assert_eq!(reopened.version, data.version);
+        let original = fs::read(&preview_index_path).expect("index should exist");
+        let mut conflicting = data.clone();
+        conflicting.source.revision = "f".repeat(40);
+        assert!(write_bundle(&conflicting, &output, false).is_err());
+        assert_eq!(fs::read(output.join(&entry.data_file)).unwrap(), saved);
+        assert_eq!(fs::read(&preview_index_path).unwrap(), original);
+    }
     directory.close().expect("test output should be removable");
 }
 

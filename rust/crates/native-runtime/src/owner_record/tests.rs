@@ -68,7 +68,7 @@ fn negative_control_a_digestless_reader_accepts_corruption() -> io::Result<()> {
     // the actual platform decoder, including DPAPI on Windows.
     let decoded = protection::unprotect_with_copy(
         record.get(40..).ok_or(io::ErrorKind::InvalidData)?,
-        65_536,
+        Some(65_536),
         |bytes| Ok::<_, io::Error>(bytes.to_vec()),
     )?;
     assert_eq!(decoded, b"synthetic owner");

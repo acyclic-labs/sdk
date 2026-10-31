@@ -20,7 +20,6 @@ pub(super) fn legacy<O>(
         &scope,
         volume,
         operation,
-        65536,
         &mut None,
     )?)
 }
@@ -56,7 +55,6 @@ fn signed(
         &scope,
         volume,
         operation,
-        65536,
         &mut None,
     )?)
 }

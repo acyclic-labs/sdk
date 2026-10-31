@@ -39,7 +39,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         if owner.trim().is_empty() || lease_id.into_bytes() == [0; 16] {
             return Err(OperationWindowError::LeaseIdentityConflict);
         }
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut current = self.snapshot(workspace_id).await?;
             if expire_to_reconcile(
                 &mut current.phase,
@@ -52,6 +52,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 if self.cas(workspace_id, expected, current).await? {
                     return Err(OperationWindowError::Reconciling);
                 }
+                acyclic_stream::runtime::yield_now().await?;
                 continue;
             }
             let pinned_parent = match &mut current.phase {
@@ -113,8 +114,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     expires_at_millis,
                 });
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(OperationWindowError::Contended)
     }
 
     /// Coalesces a newly authenticated parent generation without changing the mount.
@@ -123,7 +124,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         workspace_id: WorkspaceId,
         parent: GenerationId,
     ) -> Result<bool, OperationWindowError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut current = self.snapshot(workspace_id).await?;
             match &mut current.phase {
                 OperationWindowPhase::Idle => return Ok(false),
@@ -138,8 +139,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             if self.cas(workspace_id, expected, current).await? {
                 return Ok(true);
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(OperationWindowError::Contended)
     }
 
     /// Reconciles an idle child after its parent advances, or coalesces the
@@ -159,7 +160,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
     ) -> Result<Option<WorkspaceRebase<A, O>>, OperationWindowError<S::Error>> {
         validate_reconcile_limits(limits).map_err(OperationWindowError::Workspace)?;
         let workspace_id = workspace.id();
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut current = self.snapshot(workspace_id).await?;
             let reconcile = match &mut current.phase {
                 OperationWindowPhase::Idle => {
@@ -197,8 +198,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     None => Ok(None),
                 };
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(OperationWindowError::Contended)
     }
 
     /// Extends one still-active exact lease without changing the pinned mount.
@@ -214,7 +215,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         if expires_at_millis <= now_millis || expires_at_millis <= lease.expires_at_millis {
             return Err(OperationWindowError::InvalidExpiry);
         }
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut current = self.snapshot(lease.workspace_id).await?;
             let OperationWindowPhase::Active {
                 pinned_parent,
@@ -246,8 +247,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     expires_at_millis,
                 });
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(OperationWindowError::Contended)
     }
 
     /// Closes one lease and atomically claims reconciliation after the last close.
@@ -284,7 +285,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         reconciliation_ticket: OperationId,
         final_close: impl Fn() -> F,
     ) -> Result<(OperationWindowFinish, bool), OperationWindowError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut current = self.snapshot(lease.workspace_id).await?;
             let before = current.phase.clone();
             let mut result = close_lease(
@@ -322,8 +323,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     settled,
                 ));
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(OperationWindowError::Contended)
     }
 
     /// Closes a lease and runs exactly one core live rebase after the last close.
@@ -491,7 +492,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         now_millis: u64,
         ticket: OperationId,
     ) -> Result<Option<OperationWindowReconcile>, OperationWindowError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut current = self.snapshot(workspace_id).await?;
             match current.phase {
                 OperationWindowPhase::Idle => return Ok(None),
@@ -517,8 +518,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             if self.cas(workspace_id, expected, current).await? {
                 return Ok(Some(reconcile));
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(OperationWindowError::Contended)
     }
 
     /// Completes the exact reconciliation ticket and permits the next window.
@@ -539,7 +540,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         ticket: OperationId,
         next_ticket: OperationId,
     ) -> Result<(), OperationWindowError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut current = self.snapshot(workspace_id).await?;
             match current.phase {
                 OperationWindowPhase::Reconciling {
@@ -564,8 +565,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             if self.cas(workspace_id, expected, current).await? {
                 return Ok(());
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(OperationWindowError::Contended)
     }
 
     /// Returns validated durable state for diagnostics and recovery.

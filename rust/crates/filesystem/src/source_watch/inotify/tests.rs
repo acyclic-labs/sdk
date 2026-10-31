@@ -58,12 +58,8 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     let mut birth = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut birth)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut birth)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(watch.shared.polling.load(Ordering::Acquire));
-    let paused = watch.paused();
+    // The cursor lock waits for any delivery already in progress.
+    let mut paused = watch.shared.reading();
     // Startup leaves a retired gauge in the owner's admission registry; its
     // compaction is owner housekeeping that the next owner charge settles.
     original.lock().reconcile_cancellation_registry()?;
@@ -136,6 +132,85 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     assert!(ordinary.receipt().bytes_copied > 0);
     assert_eq!(ordinary.live_allocation_bytes(), 0);
     watch.unadmit_with_work(Path::new("a"), &mut ordinary)?;
+
+    // Keep delivery paused while real kernel records accumulate beyond one
+    // read chunk. Each drain routes newly completed filesystem work; it is
+    // not a readiness loop and prevents a real kernel queue overflow.
+    let hub = hub::hub()?;
+    for index in 0..128 {
+        std::fs::write(
+            root.path().join(format!("{index:03}-{}", "x".repeat(200))),
+            b"changed",
+        )?;
+        hub.drain()?;
+    }
+    let (queued, overflowed) = watch
+        .shared
+        .inbox
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pending();
+    assert!(queued > READ_BUFFER_BYTES);
+    assert!(!overflowed, "a subscriber backlog is not kernel loss");
+    let retained = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
+    assert!(retained > retained_before + READ_BUFFER_BYTES as u64);
+    let mut remaining = queued;
+    while remaining != 0 {
+        let read = watch
+            .shared
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take(
+                &mut paused.buffer,
+                READ_BUFFER_BYTES,
+                &watch.shared,
+                &mut caller,
+            )?;
+        assert!(read <= READ_BUFFER_BYTES);
+        remaining = remaining
+            .checked_sub(read)
+            .ok_or("queued records changed while paused")?;
+    }
+    assert_eq!(
+        watch
+            .shared
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pending(),
+        (0, false)
+    );
+    let retained = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
+    assert!(retained < retained_before + READ_BUFFER_BYTES as u64);
+    {
+        let mut owner = original.lock();
+        owner.budget.allocation_operations = owner.receipt().allocation_operations;
+    }
+    std::fs::write(root.path().join("denied"), b"changed")?;
+    hub.drain()?;
+    {
+        let inbox = watch
+            .shared
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(matches!(
+            inbox.failure(),
+            Some(DemandError::Work(WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            }))
+        ));
+        assert!(
+            !inbox.pending().1,
+            "explicit funding refusal preserves its typed cause"
+        );
+    }
+    assert_eq!(
+        watch.shared.retained_variable_bytes.load(Ordering::Acquire),
+        retained
+    );
     drop(paused);
     watch.stop_accepted_cleanup()?;
     assert!(watch.shared.physically_cleared());
@@ -384,11 +459,6 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(watch.shared.polling.load(Ordering::Acquire));
     let paused = watch.paused();
     cancellation.cancel();
     let prefix = original.lock().receipt();
@@ -439,19 +509,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     assert!(!watch.shared.stopping.load(Ordering::Acquire));
     assert!(!watch.is_stopped());
 
-    let wait = CancellationToken::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match watch.stop_with_cleanup_wait(&wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
     assert!(
@@ -463,7 +521,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     );
     let terminal = original.lock().receipt();
 
-    watch.stop_with_cleanup_wait(&wait)?;
+    watch.stop_with_cleanup_wait(&CancellationToken::new())?;
     assert_eq!(original.lock().receipt(), terminal);
     drop(watch);
 
@@ -488,40 +546,42 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = Arc::new(NativeSourceWatch::start_driver(&host, delivery, &mut work)?);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(watch.shared.polling.load(Ordering::Acquire));
+    // Startup is synchronous; the original cursor excludes any delivery
+    // already in flight before the accounting leaf is held below.
+    drop(watch.shared.reading());
     let wait = CancellationToken::new();
     // Holding only the test's accounting leaf delays recording a genuine wake/retirement, without inventing a mock native completion.
     let state = original.lock();
 
     let stopping = Arc::clone(&watch);
     let caller_wait = wait.clone();
+    let (admitted, admission) = std::sync::mpsc::channel();
     let (finished, received) = std::sync::mpsc::channel();
     let stopper = std::thread::spawn(move || {
+        AFTER_STOP_ADMISSION.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let _ = admitted.send(());
+            }));
+        });
         let result = stopping.stop_with_cleanup_wait(&caller_wait);
         assert!(finished.send(result).is_ok(), "live test controller");
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.stopping.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    let started = watch.shared.stopping.load(Ordering::Acquire);
+    let started = admission.recv_timeout(std::time::Duration::from_secs(5));
     wait.cancel();
     let premature = received.try_recv();
     let terminal_before_release = watch.is_stopped();
     drop(state);
     let result = match premature {
         Ok(result) => result,
-        Err(std::sync::mpsc::TryRecvError::Empty) => received.recv()?,
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            received.recv_timeout(std::time::Duration::from_secs(5))?
+        }
         Err(error) => return Err(error.into()),
     };
     stopper
         .join()
         .map_err(|_| "actual native stop controller panicked")?;
-    assert!(started);
+    started?;
     assert!(!terminal_before_release);
     assert!(matches!(result, Err(DemandError::Cancelled)));
     assert!(watch.is_stopped());
@@ -751,19 +811,7 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
         Ok(()) | Err(DemandError::Cancelled)
     ));
     assert_eq!(original.lock().receipt(), prefix);
-    let wait = CancellationToken::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match watch.stop_with_cleanup_wait(&wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
 
     assert_eq!(original.lock().receipt().items_returned, 1);
@@ -1033,15 +1081,23 @@ fn a_registration_never_receives_records_that_predate_it() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// Counts the changes delivered to one watch.
-#[derive(Default)]
-struct Counted(std::sync::atomic::AtomicUsize);
+/// Publishes nonempty changes from the original delivery callback.
+struct Counted(std::sync::mpsc::Sender<bool>);
+
+impl Counted {
+    fn record(&self, changes: &[HostChange]) {
+        if !changes.is_empty() {
+            let _ = self.0.send(true);
+        }
+    }
+}
+
 impl HostChangeSink for Counted {
     fn logical_owned_bytes(&self) -> u64 {
         0
     }
     fn host_changed(&self, changes: &[HostChange], _: &mut DemandWork) -> Result<(), DemandError> {
-        self.0.fetch_add(changes.len(), Ordering::AcqRel);
+        self.record(changes);
         Ok(())
     }
     fn host_changed_with_native_work(
@@ -1049,13 +1105,19 @@ impl HostChangeSink for Counted {
         changes: &[HostChange],
         work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), DemandError> {
-        self.0.fetch_add(changes.len(), Ordering::AcqRel);
+        self.record(changes);
         work.check()
+    }
+    fn delivery_lost(&self) {
+        let _ = self.0.send(false);
     }
 }
 
-fn counted(root: &Path) -> Result<(NativeSourceWatch, Arc<Counted>), Box<dyn std::error::Error>> {
-    let counted = Arc::new(Counted::default());
+fn counted(
+    root: &Path,
+) -> Result<(NativeSourceWatch, std::sync::mpsc::Receiver<bool>), Box<dyn std::error::Error>> {
+    let (delivered, observed) = std::sync::mpsc::channel();
+    let counted = Arc::new(Counted(delivered));
     let mut work = crate::native_host::ordinary_work();
     let host = crate::native_host::HostRoot::open(root, &mut work)
         .map_err(crate::native_host::ordinary_error)?;
@@ -1063,26 +1125,14 @@ fn counted(root: &Path) -> Result<(NativeSourceWatch, Arc<Counted>), Box<dyn std
         Delivery::new(counted.clone(), &mut work).map_err(crate::native_host::ordinary_error)?;
     let watch = NativeSourceWatch::start_driver(&host, Arc::new(delivery), &mut work)
         .map_err(crate::native_host::ordinary_error)?;
-    Ok((watch, counted))
-}
-
-/// Waits until `done` holds, or fails after a deadline.
-fn eventually(what: &str, done: impl Fn() -> bool) -> Result<(), Box<dyn std::error::Error>> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !done() {
-        if std::time::Instant::now() >= deadline {
-            return Err(format!("timed out waiting until {what}").into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    Ok(())
+    Ok((watch, observed))
 }
 
 /// A watch whose cursor is held never stalls delivery to other watches.
 /// Every watch shares the hub's service pool; a pass that waited for a held
 /// cursor parked a pool thread, and once records had scheduled the held watch
 /// once per pool thread, no other watch in the process was delivered until the
-/// cursor was released. A long pause (`lost_changes_are_reported_as_everything`
+/// cursor was released. A long pause (`a_paused_watch_preserves_changes_or_reports_host_loss`
 /// writing 20000 files) starved concurrent demand watches past their deadline.
 /// The held watch is served as soon as its cursor is released. Negative
 /// controls: a service pass taking `self.reading()` instead of
@@ -1093,40 +1143,48 @@ fn a_held_cursor_never_stalls_delivery_to_other_watches() -> Result<(), Box<dyn 
 {
     let held_root = tempfile::tempdir()?;
     let other_root = tempfile::tempdir()?;
-    let (held, held_changes) = counted(held_root.path())?;
-    let (_other, other_changes) = counted(other_root.path())?;
+    let (held, held_delivery) = counted(held_root.path())?;
+    let (_other, other_delivery) = counted(other_root.path())?;
     let hub = hub::hub()?;
-    let scheduled = || {
-        held.shared
-            .inbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .scheduled()
-    };
     let paused = held.paused();
     // Each routed record schedules the held watch again once a pass started,
     // so it reaches as many pool threads as it receives records.
     for index in 0..hub::SERVICE_THREADS {
+        let started = held
+            .shared
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .next_service();
         std::fs::write(held_root.path().join(format!("held-{index}")), b"")?;
         hub.drain()?;
-        eventually("a pass for the held watch started", || !scheduled())?;
+        started.recv_timeout(std::time::Duration::from_secs(5))?;
     }
     std::fs::write(other_root.path().join("other"), b"")?;
-    eventually("the other watch was delivered", || {
-        other_changes.0.load(Ordering::Acquire) > 0
-    })?;
-    assert_eq!(held_changes.0.load(Ordering::Acquire), 0);
+    assert!(other_delivery.recv_timeout(std::time::Duration::from_secs(5))?);
+    assert!(matches!(
+        held_delivery.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
     drop(paused);
-    eventually("the held watch was delivered", || {
-        held_changes.0.load(Ordering::Acquire) > 0
-    })?;
+    assert!(held_delivery.recv_timeout(std::time::Duration::from_secs(5))?);
     Ok(())
 }
 
 std::thread_local! {
+    /// Runs once after the controller accepts cleanup, before physical work.
+    static AFTER_STOP_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+
     /// Runs once at the controller's unsubscribe, after its credit check.
     static BEFORE_UNSUBSCRIBE_RECORD: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn after_stop_admission() {
+    if let Some(hook) = AFTER_STOP_ADMISSION.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
 }
 
 pub(super) fn before_unsubscribe_record() {

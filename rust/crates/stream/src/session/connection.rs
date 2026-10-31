@@ -72,9 +72,6 @@ impl Future for Change<'_> {
         let id = if let Some(id) = self.id {
             id
         } else {
-            if state.waiters.len() == crate::MAX_ITEMS {
-                return Poll::Ready(Err(StreamError::Capacity));
-            }
             let id = state.next_id;
             state.next_id = id.checked_add(1).ok_or(StreamError::Capacity)?;
             self.id = Some(id);

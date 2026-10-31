@@ -2,8 +2,7 @@
 
 fn main() {
     println!(
-        "{{\"maximum_message_bytes\":{},\"maximum_http_json_bytes\":{}}}",
+        "{{\"maximum_message_bytes\":{}}}",
         acyclic_inference::MAXIMUM_MESSAGE_BYTES,
-        acyclic_inference::MAXIMUM_HTTP_JSON_BYTES,
     );
 }

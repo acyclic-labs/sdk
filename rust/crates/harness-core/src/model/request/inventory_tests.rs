@@ -86,7 +86,7 @@ fn retained_inventory_updates_only_new_storage_and_explicit_clones_reset_it() ->
         });
         prepared = continuation.finish(
             Limits {
-                render_bytes: Limits::default().render_bytes - 1,
+                render_bytes: Some(1_048_576),
                 ..Limits::default()
             },
             None,

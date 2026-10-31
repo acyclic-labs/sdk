@@ -14,11 +14,10 @@ pub(super) mod tests;
 
 pub use super::workspace::HOST_VIEW_ROOT;
 
-/// Checks that `reference` names an `agents/<reference>` mount; a spawn
-/// checks it before committing the child.
+/// Checks the logical `agents/<reference>` branch component before spawn.
+/// Physical mounts use the workspace identity, independently of this name.
 pub(super) fn child_reference(reference: &str) -> Result<()> {
     let portable = !reference.is_empty()
-        && reference.len() <= 255
         && reference != "."
         && reference != ".."
         && reference

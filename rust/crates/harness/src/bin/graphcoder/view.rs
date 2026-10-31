@@ -27,8 +27,6 @@ use std::{sync::Arc, time::Instant};
 type Failure = Box<dyn std::error::Error>;
 mod diff;
 
-/// Settled turns shown when a conversation reopens.
-const HISTORY: u64 = 64;
 /// Rows of the newest tool call's output shown while the agent works.
 const OUTPUT_ROWS: usize = 8;
 /// What an interrupted turn shows in its place.
@@ -90,7 +88,6 @@ struct View {
     ring: bool,
     /// Rows scrolled back from the live tail.
     back: usize,
-    width: u16,
     pending_dirty: bool,
     search: Option<(String, usize)>,
     /// The one prompt the view itself opened. The next submission answers
@@ -138,8 +135,8 @@ impl View {
                 self.checkpoints.retain(|inbox| *inbox != entry.inbox);
                 if let Some(action) = checkpoint(&entry) {
                     match action {
-                        ContextAction::Compact { .. } => self.transcript.push(false, COMPACTED),
-                        ContextAction::Rewind => self.transcript.push(false, REWOUND),
+                        ContextAction::Compact { .. } => self.transcript.push(false, COMPACTED)?,
+                        ContextAction::Rewind => self.transcript.push(false, REWOUND)?,
                         // A cleared conversation shows nothing before it.
                         ContextAction::Clear => self.transcript = TranscriptRows::default(),
                     }
@@ -161,14 +158,14 @@ impl View {
                 // too, whichever of it and its status arrived first.
                 let (prompt, answer) = conversation.turn(&entry).await?;
                 if let Some(text) = sent.or(prompt) {
-                    self.transcript.push(true, &text);
+                    self.transcript.push(true, &text)?;
                 }
                 if !answer.is_empty() {
-                    self.transcript.push(false, &answer);
+                    self.transcript.push(false, &answer)?;
                 }
                 self.reply.clear();
                 if cancelled {
-                    self.transcript.push(false, CANCELLED);
+                    self.transcript.push(false, CANCELLED)?;
                     self.outcome = Outcome::Cancelled;
                     // It marks the stop a cancel in flight would otherwise mark.
                     self.cancel_marked = self.cancelling || self.stopped.is_some();
@@ -176,7 +173,7 @@ impl View {
                     self.outcome = Outcome::Settled;
                 }
                 self.ring = true;
-                self.stop(seen);
+                self.stop(seen)?;
             }
             Event::Output => return Ok(()),
             Event::Status(status) => {
@@ -195,7 +192,7 @@ impl View {
                     outcome: AgentOutcome::Failed { message },
                 } = &status.phase
                 {
-                    self.settle_pending();
+                    self.settle_pending()?;
                     self.ended = Some(format!("task {} failed: {message}", conversation.task()));
                     self.outcome = Outcome::Failed;
                     self.ring = true;
@@ -217,7 +214,7 @@ impl View {
                 }
                 self.pending_dirty = true;
                 self.phase = Some(status.phase);
-                self.stop(seen);
+                self.stop(seen)?;
             }
         }
         Ok(())
@@ -251,27 +248,28 @@ impl View {
     }
 
     /// Shows the pending prompts and the streamed answer as settled.
-    fn settle_pending(&mut self) {
+    fn settle_pending(&mut self) -> Result<(), Failure> {
         for (_, prompt) in self.pending.drain(..) {
-            self.transcript.push(true, &prompt);
+            self.transcript.push(true, &prompt)?;
         }
         if !self.reply.is_empty() {
             self.transcript
-                .push(false, &std::mem::take(&mut self.reply));
+                .push(false, &std::mem::take(&mut self.reply))?;
         }
         self.pending_dirty = true;
+        Ok(())
     }
 
     /// Shows a cancel's stop once every entry its status announced was
     /// shown (`seen` is past them): the prompts it dropped without a turn,
     /// and its mark unless a cancelled entry already made it. The text a
     /// stopped turn saved is its entry's, never the streamed preview's.
-    fn stop(&mut self, seen: u64) {
+    fn stop(&mut self, seen: u64) -> Result<(), Failure> {
         let Some((cursor, announced)) = self.stopped else {
-            return;
+            return Ok(());
         };
         if seen < announced {
-            return;
+            return Ok(());
         }
         self.stopped = None;
         let mut dropped = Vec::new();
@@ -283,32 +281,32 @@ impl View {
             kept
         });
         for prompt in dropped {
-            self.transcript.push(true, &prompt);
+            self.transcript.push(true, &prompt)?;
         }
         if !std::mem::take(&mut self.cancel_marked) {
             self.reply.clear();
-            self.transcript.push(false, CANCELLED);
+            self.transcript.push(false, CANCELLED)?;
             self.outcome = Outcome::Cancelled;
             self.ring = true;
         }
         self.pending_dirty = true;
+        Ok(())
     }
 
-    /// Append and transient-prompt changes leave settled rows wrapped once.
-    fn rows(&mut self, width: u16) -> &[Line<'static>] {
-        if self.pending_dirty || self.width != width {
-            self.width = width;
-            self.transcript.rows(width);
+    /// Update the disk row index when source or terminal width changes.
+    fn prepare(&mut self, width: u16) -> Result<(), Failure> {
+        self.transcript.set_width(width)?;
+        if self.pending_dirty {
             let reply = (!self.reply.is_empty()).then_some((false, self.reply.as_str()));
             self.transcript.pending(
                 self.pending
                     .iter()
                     .map(|(_, text)| (true, text.as_str()))
                     .chain(reply),
-            );
+            )?;
             self.pending_dirty = false;
         }
-        self.transcript.rows(width)
+        Ok(())
     }
 
     /// The commands and keys, from the same catalog completion uses.
@@ -373,9 +371,6 @@ impl View {
             ),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
-            _ if self.transcript.truncated() => {
-                "earlier transcript omitted · Ctrl+F finds prompt text".into()
-            }
             _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+D quits".into(),
         }
     }
@@ -404,8 +399,7 @@ fn terminal_events(
         .name("graphcoder-input".into())
         .spawn(move || {
             loop {
-                let deadline = Instant::now() + std::time::Duration::from_secs(86_400);
-                let events = tty.read_events(deadline);
+                let events = tty.read_events(None);
                 let failed = events.is_err();
                 if matches!(&events, Ok(events) if events.is_empty()) {
                     continue;
@@ -442,14 +436,9 @@ pub async fn run(
     let mut terminal = FrameTerminal::new(output, size()?)?;
     let mut keys = terminal_events(tty)?;
     let settled = conversation.settled().await?;
-    let from = if resume {
-        settled.saturating_sub(HISTORY)
-    } else {
-        settled
-    };
-    // Its settled turns, its phase and, while it works, the newest tool
-    // call's output or its streaming answer.
-    let mut events = conversation.observe(from).await?;
+    let mut events = conversation
+        .observe(if resume { 0 } else { settled })
+        .await?;
     let mut view = View::default();
     let mut output_rows = Vec::new();
     let catalog = CommandCatalog::builtins()?;
@@ -493,11 +482,11 @@ pub async fn run(
             let area = Rect::from((Position::ORIGIN, size));
             panel.wrap(Screen::default().areas(area, &input).overlay_columns());
         }
+        view.prepare(size.width.saturating_sub(1))?;
         let (areas, page) = {
             let status = Line::raw(view.status());
-            let screen = Screen {
+            let mut screen = Screen {
                 header: view.header(),
-                transcript: view.rows(size.width.saturating_sub(1)),
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
                 overlay: overlay.as_ref().map_or_else(
@@ -534,17 +523,26 @@ pub async fn run(
             };
             let area = Rect::from((Position::ORIGIN, size));
             let tail = screen.tail_scroll(area, &input);
-            let scroll = if overlay.is_some() || diff_open {
+            let panel_scroll = if overlay.is_some() || diff_open {
                 overlay_top = overlay_top.min(tail);
                 overlay_top
             } else {
-                tail.saturating_sub(back)
+                0
             };
             let mut areas = screen.areas(area, &input);
+            let page = usize::from(areas.transcript.height).max(1);
+            let total = view.transcript.len();
+            let scroll = total
+                .saturating_add(usize::from(busy))
+                .saturating_sub(page)
+                .saturating_sub(back);
+            let end = scroll.saturating_add(page).min(total);
+            screen.hidden_tail = end < total;
+            screen.transcript = view.transcript.window(scroll..end)?;
             terminal.draw(size, |frame| {
-                areas = screen.render(frame, &input, &mut viewport, scroll, now);
+                areas = screen.render(frame, &input, &mut viewport, panel_scroll, now);
             })?;
-            (areas, usize::from(areas.transcript.height).max(1))
+            (areas, page)
         };
         // Only inner content cells can advance the query. Reserve the hint;
         // a collapsed panel waits for the existing resize/input event.
@@ -643,7 +641,7 @@ pub async fn run(
                                     }
                                     continue;
                                 }
-                                match catalog.resolve(&text, u64::MAX) {
+                                match catalog.resolve(&text, None) {
                                     Ok(None) => {}
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit })) => {
                                         return Ok(view.outcome.code());
@@ -685,13 +683,6 @@ pub async fn run(
                                         input.editor = Editor::new(&text);
                                         continue;
                                     }
-                                }
-                                if view.pending.len() >= HISTORY as usize
-                                    || text.len().saturating_add(view.pending.iter().map(|(_, text)| text.len()).sum::<usize>()) > 1024 * 1024
-                                {
-                                    view.notice = Some("pending prompt display is full; wait for a turn to settle".into());
-                                    input.editor = Editor::new(&text);
-                                    continue;
                                 }
                                 // A refused prompt, such as an unknown `/name`, stays
                                 // in the editor with its reason. Sending the same text
@@ -765,9 +756,11 @@ pub async fn run(
                                 let before = view.search.as_ref()
                                     .filter(|(previous, _)| previous == query)
                                     .map_or(view.transcript.len(), |(_, row)| *row);
-                                if let Some(row) = view.transcript.find(query, before)
-                                    .or_else(|| view.transcript.find(query, view.transcript.len()))
-                                {
+                                let found = match view.transcript.find(query, before)? {
+                                    Some(row) => Some(row),
+                                    None => view.transcript.find(query, view.transcript.len())?,
+                                };
+                                if let Some(row) = found {
                                     view.back = view.transcript.len().saturating_sub(row + page);
                                     view.search = Some((query.to_owned(), row));
                                 }

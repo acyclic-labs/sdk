@@ -4,7 +4,7 @@ use crate::PreparedOwnedBytes;
 use acyclic_native_runtime::{
     NativeCodecReservation, NativeCodecWork, NativeReadMeter, ReadAllocation,
 };
-use std::{io, ops::Range};
+use std::io;
 
 mod controls;
 pub(crate) use controls::PreparedHeaderControls;
@@ -20,11 +20,7 @@ pub(crate) struct PreparedHeaders {
 }
 
 impl PreparedHeaders {
-    pub(crate) fn new(meter: &Arc<dyn NativeReadMeter>, maximum: usize) -> io::Result<Self> {
-        Self::with_controls(meter, maximum, PreparedHeaderControls::new(meter, maximum)?)
-    }
-
-    pub(super) fn new_shape(
+    pub(crate) fn new_shape(
         meter: &Arc<dyn NativeReadMeter>,
         maximum: usize,
         keys: usize,
@@ -79,15 +75,13 @@ impl PreparedHeaders {
         if headers.payload_bytes() > maximum {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let mut keys: [Range<usize>; MAX_RECORD_KEYS] = std::array::from_fn(|_| 0..0);
-        let mut attributes: [(Range<usize>, Range<usize>); MAX_RECORD_ATTRIBUTES] =
-            std::array::from_fn(|_| (0..0, 0..0));
-        for (key, range) in headers.keys().iter().zip(&mut keys) {
-            *range = append(&mut bytes, key)?;
+        for key in headers.keys() {
+            append(&mut bytes, key)?;
         }
-        for (attribute, (name, value)) in headers.attributes().iter().zip(&mut attributes) {
-            *name = append(&mut bytes, attribute.name.as_bytes())?;
-            *value = append(&mut bytes, attribute.value)?;
+        let key_bytes = bytes.buffer().len();
+        for attribute in headers.attributes() {
+            append(&mut bytes, attribute.name.as_bytes())?;
+            append(&mut bytes, attribute.value)?;
         }
         let length = bytes.buffer().len();
         let frozen = bytes
@@ -97,24 +91,31 @@ impl PreparedHeaders {
             copied: length as u64,
             ..NativeCodecWork::default()
         })?;
-        controls.finish(
-            frozen,
-            keys.get(..headers.keys().len())
-                .ok_or(io::ErrorKind::InvalidData)?,
-            attributes
-                .get(..headers.attributes().len())
-                .ok_or(io::ErrorKind::InvalidData)?,
-        )
+        // Reconstruct views from lengths rather than retaining another set of
+        // ranges. Iterator clones validate the entire shape before filling the
+        // already funded controls, with no allocation after issuance.
+        let mut offset = 0;
+        let keys = headers.keys().iter().map(move |key| {
+            let start = offset;
+            offset += key.len();
+            start..offset
+        });
+        let mut offset = key_bytes;
+        let attributes = headers.attributes().iter().map(move |attribute| {
+            let start = offset;
+            offset += attribute.name.len();
+            let name = start..offset;
+            let start = offset;
+            offset += attribute.value.len();
+            (name, start..offset)
+        });
+        controls.finish(frozen, keys, attributes)
     }
 }
 
-fn append(
-    bytes: &mut PreparedOwnedBytes<ReadAllocation>,
-    value: &[u8],
-) -> io::Result<Range<usize>> {
-    let start = bytes.buffer().len();
+fn append(bytes: &mut PreparedOwnedBytes<ReadAllocation>, value: &[u8]) -> io::Result<()> {
     bytes
         .extend_within_capacity(value)
         .ok_or(io::ErrorKind::InvalidData)?;
-    Ok(start..bytes.buffer().len())
+    Ok(())
 }

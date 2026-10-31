@@ -11,9 +11,7 @@ use crate::contract;
 use crate::obs;
 use crate::wire;
 
-/// Largest caller-supplied PEM trust bundle accepted by [`Inference::connect`].
-pub const MAXIMUM_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
-const INVALID_CA_CERTIFICATE_LENGTH: &str = "CA certificate must contain 1 to 65536 bytes";
+const INVALID_CA_CERTIFICATE_LENGTH: &str = "CA certificate must be nonempty";
 
 impl Drop for wire::Item {
     fn drop(&mut self) {
@@ -91,7 +89,7 @@ struct Connection {
 pub struct Inference(Arc<Connection>);
 
 impl Inference {
-    /// Connect using an explicit trusted CA, ambient `WebPKI` roots, and bounded TLS/RPC deadlines.
+    /// Connect using an explicit trusted CA and ambient `WebPKI` roots.
     pub async fn connect(endpoint: &str, api_key: &str, ca_pem: &[u8]) -> Result<Self, Error> {
         Self::connect_inner(endpoint, Some(api_key), None, ca_pem).await
     }
@@ -124,13 +122,11 @@ impl Inference {
                 if endpoint.uri().scheme_str() != Some("https") {
                     return Err(Error::Invalid("HTTPS is required"));
                 }
-                if ca_pem.is_empty() || ca_pem.len() > MAXIMUM_CA_CERTIFICATE_BYTES {
+                if ca_pem.is_empty() {
                     return Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH));
                 }
                 let authorization = api_key.map(authorization).transpose()?;
                 let channel = endpoint
-                    .connect_timeout(Duration::from_secs(10))
-                    .timeout(Duration::from_secs(60))
                     .http2_keep_alive_interval(Duration::from_secs(30))
                     .keep_alive_timeout(Duration::from_secs(10))
                     .tls_config(
@@ -430,25 +426,19 @@ impl Inference {
                     .list(self.request(wire::ListModelsRequest {}).await?)
                     .await?
                     .into_inner();
-                if response.models.is_empty() || response.models.len() > 4_096 {
+                if response.models.is_empty() {
                     return Err(Error::Invalid("model capability count is invalid"));
                 }
                 let mut names = std::collections::BTreeSet::new();
                 for model in &response.models {
                     let mut retention_profiles = std::collections::BTreeSet::new();
                     if model.model.is_empty()
-                        || model.model.len() > 256
                         || !names.insert(model.model.as_str())
                         || fixed::<32>(&model.execution_profile).is_err()
                         || model.maximum_context == 0
                         || model.maximum_output == 0
                         || model.features.is_empty()
-                        || model.features.len() > 64
-                        || model
-                            .features
-                            .iter()
-                            .any(|feature| feature.is_empty() || feature.len() > 64)
-                        || model.retention_profiles.len() > 64
+                        || model.features.iter().any(|feature| feature.is_empty())
                         || model.retention_profiles.iter().any(|profile| {
                             fixed::<32>(&profile.profile).is_err()
                                 || profile.minimum_duration_ms == 0
@@ -751,7 +741,6 @@ impl Inference {
         request
             .metadata_mut()
             .insert("authorization", authorization);
-        request.set_timeout(Duration::from_secs(60));
         Ok(request)
     }
 }

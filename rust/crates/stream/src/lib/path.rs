@@ -1,4 +1,4 @@
-use crate::{MAX_ITEMS, MAX_PATH_BYTES, StreamError};
+use crate::{MAX_ITEMS, StreamError};
 use std::{fmt, sync::Arc};
 
 /// Permanent account-relative slash-separated ASCII path.
@@ -70,14 +70,9 @@ impl StreamPath {
     /// Checks the canonical path grammar without allocating a path owner.
     ///
     /// # Errors
-    /// Returns an invalid-path error for a noncanonical or oversized path.
+    /// Returns an invalid-path error for a noncanonical path.
     pub fn validate(path: &str) -> Result<(), StreamError> {
-        if path.is_empty()
-            || path.len() > MAX_PATH_BYTES
-            || !path.is_ascii()
-            || path.starts_with('/')
-            || path.ends_with('/')
-        {
+        if path.is_empty() || !path.is_ascii() || path.starts_with('/') || path.ends_with('/') {
             return Err(StreamError::InvalidPath);
         }
         let mut count = 0_usize;

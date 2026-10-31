@@ -178,7 +178,7 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
     let bounded = RuntimeScope::new(
         scope.grants().clone(),
         Limits {
-            render_bytes: 2,
+            render_bytes: Some(2),
             ..Limits::default()
         },
     )?;

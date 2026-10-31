@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn reserve_output(
     output: &mut Vec<u8>,
     written: u64,
-    maximum: u64,
+    maximum: Option<u64>,
     scope: &mut Scope<'_>,
 ) -> Result<()> {
     let required = usize::try_from(written)
@@ -11,9 +11,11 @@ pub(super) fn reserve_output(
     if required <= output.capacity() {
         return Ok(());
     }
-    let capacity = required
-        .max(output.capacity().saturating_mul(2).max(64))
-        .min(usize::try_from(maximum).unwrap_or(usize::MAX));
+    let capacity = required.max(output.capacity().saturating_mul(2).max(64));
+    let capacity = match maximum {
+        Some(maximum) => capacity.min(usize::try_from(maximum).unwrap_or(usize::MAX)),
+        None => capacity,
+    };
     // Admit both the old-buffer copy and the incoming fragment before
     // allocating their replacement. The fragment itself is charged below.
     scope.event(JsonCodecCharge::CopyAdmission { bytes: written })?;
@@ -77,7 +79,16 @@ pub(super) fn output<T: Serialize + ?Sized>(
         bytes: prefix as u64,
     })?;
     bytes.resize(prefix, 0);
-    if write(value, scope, Some(&mut bytes), None, None, size, canonical)? != size {
+    if write(
+        value,
+        scope,
+        Some(&mut bytes),
+        None,
+        None,
+        Some(size),
+        canonical,
+    )? != size
+    {
         return Err(boundary(
             "JSON serialization changed between admission and encoding",
             scope.code,
@@ -103,8 +114,8 @@ mod tests {
         };
         let mut scope = super::super::scope(
             JsonBounds {
-                maximum_bytes: maximum,
-                maximum_items: u64::MAX,
+                maximum_bytes: Some(maximum),
+                maximum_items: None,
                 maximum_depth: 256,
             },
             None,
@@ -113,7 +124,7 @@ mod tests {
         let mut output = Vec::new();
         for &chunk in chunks {
             let written = output.len() + chunk;
-            reserve_output(&mut output, written as u64, maximum, &mut scope).unwrap();
+            reserve_output(&mut output, written as u64, Some(maximum), &mut scope).unwrap();
             output.resize(written, 0);
         }
         drop(scope);

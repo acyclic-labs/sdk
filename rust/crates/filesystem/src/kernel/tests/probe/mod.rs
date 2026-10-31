@@ -29,7 +29,7 @@ async fn fixture(
     let tree_entries = inserted_name
         .map(|value| {
             Ok(TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, value.as_bytes().to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, value.as_bytes().to_vec())?,
                 file_id: child_id,
                 kind: FileKind::Fifo,
             })
@@ -213,8 +213,8 @@ async fn sparse_probe_fixture(
     let root_id = FileId::from_bytes([21; 16]);
     let inline_id = FileId::from_bytes([22; 16]);
     let regular_id = FileId::from_bytes([23; 16]);
-    let inline_name = LogicalName::new(NameEncoding::Utf8, b"inline".to_vec(), 255)?;
-    let regular_name = LogicalName::new(NameEncoding::Utf8, b"regular".to_vec(), 255)?;
+    let inline_name = LogicalName::new(NameEncoding::Utf8, b"inline".to_vec())?;
+    let regular_name = LogicalName::new(NameEncoding::Utf8, b"regular".to_vec())?;
     let tree = put_tree_page(
         store,
         &TreePage::Leaf(vec![

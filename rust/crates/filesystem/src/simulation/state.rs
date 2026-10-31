@@ -1,7 +1,6 @@
 use super::*;
 
 pub(super) struct State {
-    pub(super) options: SimulationOptions,
     pub(super) occurrences: [u64; SIMULATION_OPERATION_COUNT],
     pub(super) faults: BTreeMap<(SimulationOperation, u64), SimulationFault>,
     pub(super) trace: Vec<SimulationTrace>,
@@ -16,9 +15,6 @@ impl State {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         accounting.check()?;
-        if self.trace.len() == self.options.maximum_trace_entries {
-            return Err(ObjectStoreError::Simulation("simulation trace bound exhausted").into());
-        }
         if self.trace.len() < self.trace.capacity() {
             return Ok(());
         }
@@ -27,8 +23,7 @@ impl State {
             .capacity()
             .checked_mul(2)
             .ok_or(crate::WorkError::Overflow)?
-            .max(1)
-            .min(self.options.maximum_trace_entries);
+            .max(1);
         let copied = self
             .trace
             .len()
@@ -52,9 +47,6 @@ impl State {
         &mut self,
         operation: SimulationOperation,
     ) -> Result<Option<SimulationFault>, &'static str> {
-        if self.trace.len() == self.options.maximum_trace_entries {
-            return Err("simulation trace bound exhausted");
-        }
         let counter = self
             .occurrences
             .get_mut(operation as usize)

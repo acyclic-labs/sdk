@@ -135,14 +135,25 @@ impl Collection {
     /// Turn an admitted closure into a root pin before releasing its sweep
     /// barrier. An active collection already remembers the admitted objects;
     /// later collections see the same ordinary root registry.
-    pub(crate) async fn hold_generation_with_accounting(
+    pub(crate) async fn hold_generation_with_accounting<S: crate::AsyncObjectStore>(
         self: &Arc<Self>,
+        objects: &S,
         proof: &crate::kernel::GenerationProof,
         config: crate::model::VolumeConfig,
         proven_at: u64,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Hold, crate::FsError> {
-        let admitted = self.admit(&proof.objects, |_| false, proven_at).await?;
+        let admitted = self
+            .admit(
+                objects,
+                crate::PublicationScope {
+                    objects: &proof.objects,
+                    proven_at,
+                },
+                |_| false,
+                accounting,
+            )
+            .await?;
         let hold = self.register_with_accounting(
             Held::Generation {
                 root: proof.generation_id.object_id(),

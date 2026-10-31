@@ -48,7 +48,7 @@ impl MemoryStream {
         // Minimum AVL nodes at height h are F(h+2)-1. Prepay the maximum
         // possible sibling spine while other paths are inserted after acceptance.
         let (mut low, mut high, mut height) = (0usize, 1usize, 0usize);
-        while high <= self.limits.paths {
+        while self.limits.paths.is_none_or(|limit| high <= limit) {
             height += 1;
             let next = low.saturating_add(high).saturating_add(1);
             if next == usize::MAX {
@@ -120,11 +120,12 @@ struct NamespaceNode {
 impl Drop for NamespaceNode {
     fn drop(&mut self) {
         // Fork snapshots chain through earlier destinations without bound.
-        // Retire uniquely owned links iteratively; children stay bounded by
-        // path depth.
+        // into_inner keeps concurrent last-owner retirement iterative too:
+        // a losing claim never implicitly drops the node. Children stay
+        // bounded by path depth.
         let mut cursor = self.origin.take().map(|origin| origin.snapshot);
         while let Some(node) = cursor {
-            let Ok(mut node) = Arc::try_unwrap(node) else {
+            let Some(mut node) = Arc::into_inner(node) else {
                 break;
             };
             cursor = node.origin.take().map(|origin| origin.snapshot);
@@ -149,7 +150,6 @@ struct Branch {
     height: u8,
     count: usize,
     bytes: usize,
-    max_suffix: usize,
     depth: usize,
     _allocation: Allocation,
 }
@@ -163,9 +163,6 @@ impl NamespaceNode {
     }
     fn suffix_bytes(&self) -> usize {
         self.children.as_ref().map_or(0, |n| n.bytes + n.count)
-    }
-    fn max_suffix(&self) -> usize {
-        self.children.as_ref().map_or(0, |n| n.max_suffix + 1)
     }
     fn depth(&self) -> usize {
         1 + self.children.as_ref().map_or(0, |n| n.depth)
@@ -187,9 +184,6 @@ fn branch(
         + node.suffix_bytes()
         + left.as_ref().map_or(0, |n| n.bytes)
         + right.as_ref().map_or(0, |n| n.bytes);
-    let max_suffix = (name.len() + node.max_suffix())
-        .max(left.as_ref().map_or(0, |n| n.max_suffix))
-        .max(right.as_ref().map_or(0, |n| n.max_suffix));
     let depth = node
         .depth()
         .max(left.as_ref().map_or(0, |n| n.depth))
@@ -215,7 +209,6 @@ fn branch(
         right,
         count,
         bytes,
-        max_suffix,
         depth,
         _allocation: allocation,
     };

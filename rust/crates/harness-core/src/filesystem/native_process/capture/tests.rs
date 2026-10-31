@@ -44,9 +44,8 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         cwd: root.path().into(),
         environment: Default::default(),
         inherit_environment: true,
-        timeout_ms: 300_000,
-        control_timeout_ms: 1000,
-        maximum_output_bytes: 32_768,
+        timeout_ms: Some(300_000),
+        maximum_output_bytes: None,
         standard_input: None,
         process_custody: None,
     };
@@ -131,8 +130,8 @@ mod simulation {
                         request.command.get_args().collect::<Vec<_>>(),
                         ["-c", "printf dst"]
                     );
-                    assert_eq!(request.timeout, Duration::from_millis(1000));
-                    assert_eq!(request.maximum, 3);
+                    assert_eq!(request.timeout, Some(Duration::from_millis(1000)));
+                    assert_eq!(request.maximum, Some(3));
                     assert!(request.input.is_none());
                     check().expect("script ownership check");
                     for chunk in [b"s".as_slice(), b"im".as_slice()] {
@@ -157,9 +156,8 @@ mod simulation {
                 cwd: "/".into(),
                 environment: Default::default(),
                 inherit_environment: false,
-                timeout_ms: 1000,
-                control_timeout_ms: 1000,
-                maximum_output_bytes: 3,
+                timeout_ms: Some(1000),
+                maximum_output_bytes: Some(3),
                 process_custody: None,
                 standard_input: None,
             };
@@ -185,7 +183,7 @@ mod simulation {
                                 tokio::runtime::Handle::try_current().is_ok(),
                                 "control future constructed outside its runtime"
                             );
-                            tokio::time::sleep(Duration::from_millis(3))
+                            acyclic_native_runtime::testing::boundary("capture:control")
                         });
                         assert!(tokio::runtime::Handle::try_current().is_err());
                     }
@@ -241,6 +239,12 @@ mod simulation {
             && ["native:submitted", "native:completed"]
                 .iter()
                 .all(|phase| observed.boundaries.contains(phase))
+            && observed
+                .boundaries
+                .iter()
+                .filter(|phase| **phase == "capture:control")
+                .count()
+                == 1
             && !observed.trace.iter().any(|event| event == "blocking:dispatch")
     }
 

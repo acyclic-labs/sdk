@@ -52,7 +52,7 @@ async fn failed_initialization_can_retry_with_the_same_retained_owner()
     let owner = OwnershipAnchor::new(directory);
     let retained = owner.clone();
     let mut invalid = LocalOptions::new(&root);
-    invalid.stream.journal_operations = 0;
+    invalid.stream.compaction_operations = 0;
     assert!(
         Fs::local_with_ownership_anchor(invalid, owner.clone())
             .await
@@ -68,20 +68,13 @@ async fn failed_initialization_can_retry_with_the_same_retained_owner()
     .await??;
     let released = fs.local_root_release_barrier().ok_or("missing lifecycle")?;
     drop(fs);
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while !released.is_released() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), released.released()).await?;
     assert!(root.exists(), "the retained caller still owns the root");
     drop(retained);
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while root.exists() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
+    assert!(
+        !root.exists(),
+        "final caller cleanup did not remove the root"
+    );
     Ok(())
 }
 

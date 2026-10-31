@@ -15,6 +15,18 @@ struct Gate {
 struct Objects {
     fs: crate::LocalFs,
     gate: Arc<Gate>,
+    // Signal actual field retirement without retaining the publication owner.
+    retirement: acyclic_native_runtime::OwnershipAnchor,
+}
+
+impl Objects {
+    fn new(fs: crate::LocalFs, gate: Arc<Gate>) -> Self {
+        Self {
+            fs,
+            gate,
+            retirement: acyclic_native_runtime::OwnershipAnchor::new(()),
+        }
+    }
 }
 
 impl AsyncObjectStore for Objects {
@@ -237,7 +249,7 @@ async fn proposal_core(
             config,
             head: expected,
             rebase: true,
-            reads: crate::kernel::CheckoutDependencies::new([], [], 1)?,
+            reads: crate::kernel::CheckoutDependencies::new([], [])?,
         },
         base,
         delta,
@@ -321,10 +333,8 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
         release: tokio::sync::Notify::new(),
         fail: matches!(delivery, Delivery::Failure),
     });
-    let owner = Owner(Arc::new(Objects {
-        fs,
-        gate: Arc::clone(&gate),
-    }));
+    let owner = Owner(Arc::new(Objects::new(fs, Arc::clone(&gate))));
+    let owner_released = owner.0.retirement.release_barrier();
     let weak = Arc::downgrade(&owner.0);
     let mut preparation = Box::pin(compose(
         owner,
@@ -392,10 +402,13 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
         }
         gate.release.notify_one();
     }
+    owner_released.released().await;
+    assert_eq!(
+        weak.strong_count(),
+        0,
+        "composition owner remained after retirement"
+    );
     if let Some(collector) = collector.take() {
-        while weak.strong_count() != 0 {
-            tokio::task::yield_now().await;
-        }
         let observer = CancellationToken::new();
         assert_eq!(
             collector
@@ -410,9 +423,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
         );
         drop(collector);
     }
-    while weak.strong_count() != 0 || !released.is_released() {
-        tokio::task::yield_now().await;
-    }
+    released.released().await;
     if native {
         assert_eq!(original.live_allocation_bytes(), baseline);
     } else {

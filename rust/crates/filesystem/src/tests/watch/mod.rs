@@ -32,6 +32,56 @@ fn event(kind: EventKind, paths: Vec<PathBuf>) -> Event {
 }
 
 #[test]
+fn callback_retains_complete_burst() -> Result<(), Box<dyn std::error::Error>> {
+    let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
+    let context = NativeEventContext {
+        root: root.clone(),
+        _root_allocation: None,
+        root_identity: NativeRootIdentity {
+            device: 0,
+            object: 0,
+        },
+        profile: FilesystemProfile::Portable,
+        limits: VolumeLimits::default(),
+    };
+    let (sender, receiver) = crate::watch_queue::channel(None);
+    let queued = Arc::new(AtomicUsize::new(0));
+    let shared = Arc::new(WatchState::new(SharedState::new(None)));
+    for index in 0..65_537 {
+        accept_native_event(
+            &Ok(event(
+                EventKind::Create(CreateKind::File),
+                vec![root.join(format!("item-{index}"))],
+            )),
+            &context,
+            &sender,
+            &shared,
+            &queued,
+        );
+    }
+    assert_eq!(
+        shared
+            .state
+            .lock()
+            .map_err(|_| "poisoned")?
+            .seal_invalidation(),
+        None
+    );
+    assert_eq!(queued.load(Ordering::Acquire), 65_537);
+    for index in 0..65_537 {
+        let path = relative_namespace_path(
+            &root,
+            &root.join(format!("item-{index}")),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )?;
+        assert_eq!(receiver.try_recv()?.change, WatchChange::Created(path));
+    }
+    assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    Ok(())
+}
+
+#[test]
 fn watcher_names_follow_the_volume_profile() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
     let event = event(
@@ -252,11 +302,10 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
         },
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
-        maximum_queued_changes: 1,
     };
-    let (sender, receiver) = crate::watch_queue::bounded(1, None);
-    let queued = Arc::new(AtomicU32::new(0));
-    let shared = Arc::new(Mutex::new(SharedState::new(None)));
+    let (sender, receiver) = crate::watch_queue::channel(None);
+    let queued = Arc::new(AtomicUsize::new(0));
+    let shared = Arc::new(WatchState::new(SharedState::new(None)));
     for event in [
         tracked_rename(RenameMode::From, vec![from.clone()], 7),
         tracked_rename(RenameMode::To, vec![to.clone()], 7),
@@ -265,7 +314,11 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
         accept_native_event(&Ok(event), &context, &sender, &shared, &queued);
     }
     assert_eq!(
-        shared.lock().map_err(|_| "poisoned")?.seal_invalidation(),
+        shared
+            .state
+            .lock()
+            .map_err(|_| "poisoned")?
+            .seal_invalidation(),
         None
     );
     assert_eq!(queued.load(Ordering::Acquire), 1);
@@ -292,7 +345,6 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
         },
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
-        maximum_queued_changes: 1,
     };
     let scenarios = [
         vec![tracked_rename(RenameMode::To, vec![to.clone()], 7)],
@@ -335,14 +387,18 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
         ],
     ];
     for events in scenarios {
-        let (sender, receiver) = crate::watch_queue::bounded(1, None);
-        let queued = Arc::new(AtomicU32::new(0));
-        let shared = Arc::new(Mutex::new(SharedState::new(None)));
+        let (sender, receiver) = crate::watch_queue::channel(None);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let shared = Arc::new(WatchState::new(SharedState::new(None)));
         for event in events {
             accept_native_event(&Ok(event), &context, &sender, &shared, &queued);
         }
         assert_eq!(
-            shared.lock().map_err(|_| "poisoned")?.seal_invalidation(),
+            shared
+                .state
+                .lock()
+                .map_err(|_| "poisoned")?
+                .seal_invalidation(),
             Some(WatchInvalidationReason::AmbiguousRename)
         );
         assert!(receiver.try_recv().is_err());
@@ -356,13 +412,15 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
     let directory = tempfile::tempdir()?;
     let mut watch = NativeWatch::open(
         directory.path(),
-        NativeWatchOptions {
-            maximum_queued_changes: 1,
-            ..NativeWatchOptions::new(VolumeLimits::default())
-        },
+        NativeWatchOptions::new(VolumeLimits::default()),
     )?;
     let rescan = watch.begin_rescan()?;
-    watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
+    watch
+        .shared
+        .state
+        .lock()
+        .map_err(|_| "poisoned")?
+        .pending_rename = Some(PendingRename {
         tracker: 7,
         from: relative_namespace_path(
             directory.path(),
@@ -385,6 +443,7 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
     assert!(
         watch
             .shared
+            .state
             .lock()
             .map_err(|_| "poisoned")?
             .pending_rename
@@ -394,7 +453,12 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
         watch.finish_rescan(rescan)?,
         WatchBatch::Changes { .. }
     ));
-    watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
+    watch
+        .shared
+        .state
+        .lock()
+        .map_err(|_| "poisoned")?
+        .pending_rename = Some(PendingRename {
         tracker: 8,
         from: relative_namespace_path(
             directory.path(),
@@ -415,7 +479,12 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
             ..
         }
     ));
-    watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = None;
+    watch
+        .shared
+        .state
+        .lock()
+        .map_err(|_| "poisoned")?
+        .pending_rename = None;
     assert!(matches!(
         watch
             .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
@@ -463,44 +532,6 @@ fn access_is_ignored_but_native_rescan_and_root_removal_invalidate()
             VolumeLimits::default(),
         ),
         Err(WatchInvalidationReason::RootChanged)
-    );
-    Ok(())
-}
-
-#[test]
-fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
--> Result<(), Box<dyn std::error::Error>> {
-    let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
-    let (sender, _receiver) = crate::watch_queue::bounded(1, None);
-    let queued = Arc::new(AtomicU32::new(0));
-    let shared = Arc::new(Mutex::new(SharedState::new(None)));
-    let context = NativeEventContext {
-        _root_allocation: None,
-        root: root.clone(),
-        root_identity: NativeRootIdentity {
-            device: 0,
-            object: 0,
-        },
-        profile: FilesystemProfile::Portable,
-        limits: VolumeLimits::default(),
-        #[cfg(any(target_os = "linux", windows))]
-        maximum_queued_changes: 1,
-    };
-    for name in ["a", "b"] {
-        accept_native_event(
-            &Ok(event(
-                EventKind::Create(CreateKind::File),
-                vec![root.join(name)],
-            )),
-            &context,
-            &sender,
-            &shared,
-            &queued,
-        );
-    }
-    assert_eq!(
-        shared.lock().map_err(|_| "poisoned")?.invalidation,
-        Some(WatchInvalidationReason::QueueOverflow)
     );
     Ok(())
 }
@@ -609,10 +640,10 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directories()
+#[tokio::test]
+async fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directories()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("observed"))?;
@@ -624,7 +655,8 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
     watch.accept_lazy_baseline()?;
 
     std::fs::write(&file, b"unobserved")?;
-    std::thread::sleep(Duration::from_millis(100));
+    // A completed producer fence proves the unobserved write cannot arrive later.
+    watch.fence(Duration::from_secs(5))?;
     assert!(matches!(
         watch
             .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
@@ -635,42 +667,45 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
     let portable = crate::path::PortablePath::parse("/observed", VolumeLimits::default())?;
     let observed = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
     watch.watch_directory(&observed)?;
+    let work = native_watch_work()?;
+    let changed = watch.changed_with_native_work(&work);
     std::fs::write(&file, b"after")?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match watch
-            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value
-        {
-            WatchBatch::Changes { changes, .. }
-                if changes.iter().any(|change| match change {
-                    WatchChange::Created(path)
-                    | WatchChange::Modified(path)
-                    | WatchChange::Arrived(path)
-                    | WatchChange::MetadataChanged(path)
-                    | WatchChange::Removed(path) => path.depth() == 2,
-                    WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
-                }) =>
+    tokio::time::timeout(Duration::from_secs(5), async {
+        changed.await?;
+        loop {
+            match watch
+                .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+                .value
             {
-                break;
+                WatchBatch::Changes { changes, .. }
+                    if changes.iter().any(|change| match change {
+                        WatchChange::Created(path)
+                        | WatchChange::Modified(path)
+                        | WatchChange::Arrived(path)
+                        | WatchChange::MetadataChanged(path)
+                        | WatchChange::Removed(path) => path.depth() == 2,
+                        WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
+                    }) =>
+                {
+                    return Ok::<_, Box<dyn std::error::Error>>(());
+                }
+                WatchBatch::Changes { .. } => {}
+                WatchBatch::RescanRequired { reason, .. } => {
+                    return Err(format!("demand watcher invalidated: {reason}").into());
+                }
             }
-            WatchBatch::Changes { .. } if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            WatchBatch::Changes { .. } => return Err("demand watcher timed out".into()),
-            WatchBatch::RescanRequired { reason, .. } => {
-                return Err(format!("demand watcher invalidated: {reason}").into());
-            }
+            watch.changed_with_native_work(&work).await?;
         }
-    }
+    })
+    .await??;
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory()
+#[tokio::test]
+async fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let root = tempfile::tempdir()?;
     let mut options = NativeWatchOptions::new(VolumeLimits::default());
@@ -681,35 +716,38 @@ fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory(
     let portable = crate::path::PortablePath::parse("/future/child", VolumeLimits::default())?;
     let absent = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
     watch.watch_directory(&absent)?;
+    let work = native_watch_work()?;
+    let changed = watch.changed_with_native_work(&work);
     std::fs::create_dir(root.path().join("future"))?;
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match watch
-            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value
-        {
-            WatchBatch::Changes { changes, .. }
-                if changes.iter().any(|change| match change {
-                    WatchChange::Created(path)
-                    | WatchChange::Modified(path)
-                    | WatchChange::Arrived(path)
-                    | WatchChange::MetadataChanged(path)
-                    | WatchChange::Removed(path) => path.depth() == 1,
-                    WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,
-                }) =>
+    tokio::time::timeout(Duration::from_secs(5), async {
+        changed.await?;
+        loop {
+            match watch
+                .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+                .value
             {
-                break;
+                WatchBatch::Changes { changes, .. }
+                    if changes.iter().any(|change| match change {
+                        WatchChange::Created(path)
+                        | WatchChange::Modified(path)
+                        | WatchChange::Arrived(path)
+                        | WatchChange::MetadataChanged(path)
+                        | WatchChange::Removed(path) => path.depth() == 1,
+                        WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,
+                    }) =>
+                {
+                    return Ok::<_, Box<dyn std::error::Error>>(());
+                }
+                WatchBatch::Changes { .. } => {}
+                WatchBatch::RescanRequired { reason, .. } => {
+                    return Err(format!("demand watcher invalidated: {reason}").into());
+                }
             }
-            WatchBatch::Changes { .. } if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            WatchBatch::Changes { .. } => return Err("demand watcher timed out".into()),
-            WatchBatch::RescanRequired { reason, .. } => {
-                return Err(format!("demand watcher invalidated: {reason}").into());
-            }
+            watch.changed_with_native_work(&work).await?;
         }
-    }
+    })
+    .await??;
     Ok(())
 }
 
@@ -744,62 +782,6 @@ fn live_native_backend_fences_a_replaced_root_without_backend_assistance()
     drop(watch);
     std::fs::remove_dir(&root)?;
     std::fs::rename(displaced, root)?;
-    Ok(())
-}
-
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-#[test]
-fn live_native_backend_saturation_fails_closed_and_recovers()
--> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
-
-    let directory = tempfile::tempdir()?;
-    let mut options = NativeWatchOptions::new(VolumeLimits::default());
-    options.maximum_queued_changes = 1;
-    let mut watch = NativeWatch::open(directory.path(), options)?;
-    let rescan = watch.begin_rescan()?;
-    assert!(matches!(
-        watch.finish_rescan(rescan)?,
-        WatchBatch::Changes { .. }
-    ));
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut attempt = 0_u32;
-    let reason = loop {
-        for index in 0..64_u32 {
-            std::fs::write(
-                directory
-                    .path()
-                    .join(format!("saturation-{attempt:04}-{index:04}")),
-                index.to_le_bytes(),
-            )?;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-        match watch
-            .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value
-        {
-            WatchBatch::RescanRequired { reason, .. } => break reason,
-            WatchBatch::Changes { .. } if Instant::now() < deadline => {
-                attempt = attempt.checked_add(1).ok_or("attempt overflow")?;
-            }
-            WatchBatch::Changes { .. } => return Err("watcher saturation timed out".into()),
-        }
-    };
-    assert!(matches!(
-        reason,
-        WatchInvalidationReason::QueueOverflow
-            | WatchInvalidationReason::NativeRescanRequired
-            | WatchInvalidationReason::UnrepresentablePath
-    ));
-
-    let rescan = watch.begin_rescan()?;
-    let epoch = rescan.epoch();
-    assert!(epoch > 1);
-    assert!(matches!(
-        watch.finish_rescan(rescan)?,
-        WatchBatch::Changes { .. }
-    ));
     Ok(())
 }
 

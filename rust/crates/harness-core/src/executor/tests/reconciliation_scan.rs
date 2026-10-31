@@ -165,7 +165,7 @@ async fn drive(modes: &[Mode]) -> Result<()> {
         operation_id: OperationId::from_bytes([47; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
-        max_steps: 2,
+        max_steps: Some(2),
     };
     let journal = Journal::default();
     let lost = modes

@@ -9,10 +9,10 @@ mod guest;
 pub use guest::{GuestSessionAdmission, GuestSessionFailure, GuestSessionRetired};
 
 use super::{
-    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
-    MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest,
-    ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
+    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MountDirectoryEntry, MountFilesystem, MountLookup,
+    MountNode, MountNodeKind, MountOpenFile, MountPath, MountSeekTarget, MountSourceError,
+    NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp, create_metadata,
+    metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::lock_order::{

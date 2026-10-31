@@ -29,17 +29,15 @@ pub enum SourceMode {
     Tracking,
 }
 
-/// Exact bounded native-source configuration.
+/// Native-source configuration with optional caller admission policies.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceOptions {
     /// Source advancement behavior.
     pub mode: SourceMode,
     /// Maximum paths in one authenticated baseline or reconciliation batch.
-    pub maximum_paths: u32,
-    /// Maximum sparse data spans admitted per regular file.
-    pub maximum_extent_spans: u32,
-    /// Maximum pending native hints before continuity is invalidated.
-    pub maximum_queued_changes: u32,
+    pub maximum_paths: Option<u32>,
+    /// Optional caller policy for sparse data spans per regular file.
+    pub maximum_extent_spans: Option<u32>,
     /// Canonical portable prefixes omitted from capture and deletion inference.
     pub excluded_paths: Vec<PortablePath>,
 }
@@ -48,9 +46,8 @@ impl Default for SourceOptions {
     fn default() -> Self {
         Self {
             mode: SourceMode::Tracking,
-            maximum_paths: 262_144,
-            maximum_extent_spans: 65_536,
-            maximum_queued_changes: 65_536,
+            maximum_paths: None,
+            maximum_extent_spans: None,
             excluded_paths: Vec::new(),
         }
     }
@@ -84,6 +81,9 @@ pub enum ReconcileOutcome<A: 'static, O: 'static> {
 /// Fail-closed attached-source failure.
 #[derive(Debug, Error)]
 pub enum SourceError {
+    /// The caller cancelled a native source observation.
+    #[error("source observation was cancelled")]
+    Cancelled,
     /// Source configuration is empty or exceeds workspace bounds.
     #[error("source options are invalid")]
     InvalidOptions,
@@ -133,7 +133,6 @@ struct SourceSession<A: 'static, O: 'static> {
     capture: CaptureOptions,
     capture_policy: CapturePolicy,
     mode: SourceMode,
-    maximum_queued_changes: u32,
     state: SourceState,
     authority_head: Head,
 }
@@ -141,12 +140,14 @@ struct SourceSession<A: 'static, O: 'static> {
 /// Cloneable handle to one exact attached native directory.
 pub struct Source<A: 'static, O: 'static> {
     inner: Arc<Mutex<SourceSession<A, O>>>,
+    changes: crate::watch::NativeWatchSubscription,
 }
 
 impl<A: 'static, O: 'static> Clone for Source<A, O> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            changes: self.changes.clone(),
         }
     }
 }
@@ -210,7 +211,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
             return Err(SourceError::Pinned);
         }
         begin_source_operation(&mut session, key, SourceOperation::Reconcile).await?;
-        let maximum_paths = session.capture.maximum_paths;
+        let maximum_paths = session.capture.maximum_paths.unwrap_or(1024);
         let batch = session
             .watcher
             .poll(
@@ -249,6 +250,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
             SourceState::Clean,
         )
         .await
+    }
+
+    /// Waits for a native hint or invalidation without holding the session
+    /// operation lock. Cancellation and observer storage use the caller's
+    /// original native ledger; waking alone does not publish a generation.
+    pub async fn changed_with_native_work(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), SourceError> {
+        self.changes
+            .changed_with_native_work(work)
+            .await
+            .map_err(|error| match error {
+                crate::watch::NativeWatchError::Cancelled(_) => SourceError::Cancelled,
+                error => engine(error),
+            })
     }
 
     /// Rebuilds one complete authenticated baseline while preserving events that arrive concurrently with the scan.
@@ -577,7 +594,7 @@ async fn rebase_source_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .volume
                 .config()
                 .limits
-                .maximum_checkout_dependencies,
+                .maximum_directory_page_entries,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -664,10 +681,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         path: impl AsRef<Path>,
         options: SourceOptions,
     ) -> Result<Workspace<A, O>, SourceError> {
-        if options.maximum_paths == 0
-            || options.maximum_extent_spans == 0
-            || options.maximum_queued_changes == 0
-        {
+        if options.maximum_paths == Some(0) || options.maximum_extent_spans == Some(0) {
             return Err(SourceError::InvalidOptions);
         }
         let workspace = self.open_source_workspace(name.as_ref()).await?;
@@ -676,7 +690,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             workspace.volume.config().profile,
             NativeWatchOptions {
                 limits: workspace.volume.config().limits,
-                maximum_queued_changes: options.maximum_queued_changes,
                 recursive: true,
             },
         )
@@ -731,6 +744,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map_err(engine)?
             .value;
         let source = Source {
+            changes: watcher.subscription(),
             inner: Arc::new(Mutex::new(SourceSession {
                 workspace: workspace.clone(),
                 checkout,
@@ -738,7 +752,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 capture,
                 capture_policy,
                 mode: options.mode,
-                maximum_queued_changes: options.maximum_queued_changes,
                 state: SourceState::NeedsRescan(WatchInvalidationReason::InitialSnapshotRequired),
                 authority_head,
             })),
@@ -798,7 +811,6 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             || latest.mode != durable_mode(options.mode)
             || latest.maximum_paths != options.maximum_paths
             || latest.maximum_extent_spans != options.maximum_extent_spans
-            || latest.maximum_queued_changes != options.maximum_queued_changes
             || latest.capture_policy != capture_policy
         {
             return Err(SourceError::BindingMismatch);
@@ -813,7 +825,6 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             mode: durable_mode(options.mode),
             maximum_paths: options.maximum_paths,
             maximum_extent_spans: options.maximum_extent_spans,
-            maximum_queued_changes: options.maximum_queued_changes,
             capture_policy,
             state: DurableSourceState::NeedsRescan(SourceInvalidation::InitialSnapshotRequired),
             generation_id,
@@ -1073,7 +1084,6 @@ fn validate_source_fact_binding<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         || fact.mode != durable_mode(session.mode)
         || fact.maximum_paths != session.capture.maximum_paths
         || fact.maximum_extent_spans != session.capture.maximum_extent_spans
-        || fact.maximum_queued_changes != session.maximum_queued_changes
         || fact.capture_policy != session.capture_policy.fingerprint()
     {
         return Err(SourceError::BindingMismatch);
@@ -1254,7 +1264,6 @@ fn source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         mode: durable_mode(session.mode),
         maximum_paths: session.capture.maximum_paths,
         maximum_extent_spans: session.capture.maximum_extent_spans,
-        maximum_queued_changes: session.maximum_queued_changes,
         capture_policy: session.capture_policy.fingerprint(),
         state: durable_state(state),
         generation_id,
@@ -1456,6 +1465,64 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use std::sync::atomic::{AtomicU8, Ordering};
+
+    #[tokio::test]
+    async fn cancelled_observer_settles_while_the_source_session_is_locked()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::future::Future as _;
+        use std::task::{Context, Poll, Waker};
+
+        let root = tempfile::tempdir()?;
+        let workspace = Box::pin(Fs::memory().attach_directory(
+            "cancelled-source-observation",
+            root.path(),
+            SourceOptions::default(),
+        ))
+        .await?;
+        let source = workspace.source().ok_or("source missing")?;
+        let mut session = source.inner.lock().await;
+        let scan = session.watcher.begin_rescan()?;
+        for cancel_authority in [false, true] {
+            for cancel_early in [false, true] {
+                let authority = CancellationToken::new();
+                let original =
+                    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &authority)
+                        .map_err(|(error, _)| error)?;
+                let (work, invocation) = original.invocation_view()?;
+                let cancelled = if cancel_authority {
+                    &authority
+                } else {
+                    &invocation
+                };
+                if cancel_early {
+                    cancelled.cancel();
+                }
+                let mut changed = std::pin::pin!(source.changed_with_native_work(&work));
+                if !cancel_early {
+                    assert!(
+                        changed
+                            .as_mut()
+                            .poll(&mut Context::from_waker(Waker::noop()))
+                            .is_pending()
+                    );
+                    cancelled.cancel();
+                }
+                assert!(matches!(
+                    changed
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop())),
+                    Poll::Ready(Err(SourceError::Cancelled))
+                ));
+                assert!(
+                    source.inner.try_lock().is_err(),
+                    "cancellation cannot unlock another operation"
+                );
+            }
+        }
+        scan.abort(WatchInvalidationReason::BackendError);
+        drop(session);
+        Ok(())
+    }
 
     #[derive(Clone, Copy, Eq, PartialEq)]
     enum AppendGatePhase {

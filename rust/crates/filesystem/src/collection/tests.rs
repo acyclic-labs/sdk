@@ -1,5 +1,5 @@
 use super::*;
-use crate::storage::{ObjectId, ObjectKind};
+use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 
 fn object(byte: u8) -> ObjectId {
     ObjectId {
@@ -149,7 +149,13 @@ async fn prepared_generation_pin_hands_sweep_admission_to_the_root_registry()
             .map(|(ledger, _, _, _)| ledger.live_bytes());
         let collecting = collection.begin().await;
         let pin = collection
-            .hold_generation_with_accounting(&proof, config, collection.sweeps(), &mut accounting)
+            .hold_generation_with_accounting(
+                &crate::MemoryObjectStore::default(),
+                &proof,
+                config,
+                collection.sweeps(),
+                &mut accounting,
+            )
             .await?;
         let held = collection.held();
         assert!(
@@ -367,41 +373,72 @@ fn bounded_registration_preserves_roots_and_reuses_vacant_slots()
 async fn a_closure_proven_before_a_sweep_of_its_object_is_refused()
 -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
+    let objects = crate::MemoryObjectStore::default();
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let proven_at = collection.sweeps();
     let collecting = collection.begin().await;
     let (gate, sweepable) = collecting
         .sweepable(vec![object(1).digest, object(2).digest])
         .await;
     assert_eq!(sweepable, vec![object(1).digest, object(2).digest]);
-    for swept in sweepable {
-        collecting.sweeping(swept);
+    for _ in sweepable {
+        collecting.sweeping();
     }
     drop(gate);
-    assert!(
+    let scope = crate::PublicationScope {
+        objects: &[object(1)],
+        proven_at,
+    };
+    assert!(matches!(
         collection
-            .admit(&[object(1)], |_| false, proven_at)
-            .await
-            .is_err()
-    );
+            .admit(&objects, scope, |_| false, &mut accounting)
+            .await,
+        Err(crate::FsError::Object(ObjectStoreError::Missing))
+    ));
     // A staged copy is stored again by the publication's drain.
-    drop(collection.admit(&[object(1)], |_| true, proven_at).await?);
-    // A proof made after the sweep read the store as it is.
     drop(
         collection
-            .admit(&[object(1)], |_| false, collection.sweeps())
+            .admit(&objects, scope, |_| true, &mut accounting)
             .await?,
     );
-    drop(collection.admit(&[object(3)], |_| false, proven_at).await?);
+    // A proof made after the sweep read the store as it is; admission adds no read.
+    let before = accounting.spent();
+    drop(
+        collection
+            .admit(
+                &objects,
+                crate::PublicationScope {
+                    objects: &[object(1)],
+                    proven_at: collection.sweeps(),
+                },
+                |_| false,
+                &mut accounting,
+            )
+            .await?,
+    );
+    assert_eq!(accounting.spent(), before);
     Ok(())
 }
 
 #[tokio::test]
 async fn a_closure_admitted_while_collecting_is_kept() -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
+    let objects = crate::MemoryObjectStore::default();
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let collecting = collection.begin().await;
     drop(
         collection
-            .admit(&[object(1)], |_| false, collection.sweeps())
+            .admit(
+                &objects,
+                crate::PublicationScope {
+                    objects: &[object(1)],
+                    proven_at: collection.sweeps(),
+                },
+                |_| false,
+                &mut accounting,
+            )
             .await?,
     );
     let (_gate, sweepable) = collecting
@@ -415,12 +452,39 @@ async fn a_closure_admitted_while_collecting_is_kept() -> Result<(), Box<dyn std
 async fn a_collection_begins_after_every_admitted_record_is_written()
 -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
-    let hold = collection.admit(&[object(1)], |_| false, 0).await?;
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let hold = collection
+        .admit(
+            &crate::MemoryObjectStore::default(),
+            crate::PublicationScope {
+                objects: &[object(1)],
+                proven_at: 0,
+            },
+            |_| false,
+            &mut accounting,
+        )
+        .await?;
+    let (waiting, registered) = tokio::sync::oneshot::channel();
     let begun = tokio::spawn({
         let collection = Arc::clone(&collection);
-        async move { drop(collection.begin().await) }
+        async move {
+            let mut begin = std::pin::pin!(collection.begin());
+            let mut waiting = Some(waiting);
+            let collecting = std::future::poll_fn(|cx| {
+                let result = std::future::Future::poll(begin.as_mut(), cx);
+                if result.is_pending()
+                    && let Some(waiting) = waiting.take()
+                {
+                    let _ = waiting.send(());
+                }
+                result
+            })
+            .await;
+            drop(collecting);
+        }
     });
-    tokio::task::yield_now().await;
+    registered.await?;
     assert!(!begun.is_finished(), "the collection waits for the record");
     drop(hold);
     begun.await?;
@@ -428,20 +492,136 @@ async fn a_collection_begins_after_every_admitted_record_is_written()
 }
 
 #[tokio::test]
-async fn a_proof_older_than_every_remembered_collection_is_refused()
+async fn an_intact_old_closure_survives_unrelated_collections_with_original_work()
 -> Result<(), Box<dyn std::error::Error>> {
+    use crate::AsyncObjectStore as _;
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
     let collection = Arc::new(Collection::default());
+    let objects = crate::MemoryObjectStore::default();
+    let cancellation = crate::CancellationToken::new();
+    let object = crate::storage::HashedObject::new(
+        ObjectKind::Blob,
+        acyclic_stream::OwnedBytes::from_static(b"an intact old closure"),
+    );
+    let id = object.object_id();
+    objects
+        .put_hashed(
+            object,
+            &mut crate::AuthorityWork::new(crate::WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await?;
     let proven_at = collection.sweeps();
-    for round in 0..=REMEMBERED_COLLECTIONS {
+    for _ in 0..9 {
         let collecting = collection.begin().await;
         let (_gate, _) = collecting.sweepable(Vec::new()).await;
-        collecting.sweeping(object(u8::try_from(round)? + 10).digest);
+        collecting.sweeping();
     }
-    assert!(
-        collection
-            .admit(&[object(1)], |_| false, proven_at)
+    let scope = crate::PublicationScope {
+        objects: &[id],
+        proven_at,
+    };
+    for native in [false, true] {
+        let mut accounting =
+            KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+        #[cfg(not(target_arch = "wasm32"))]
+        let original =
+            crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(cause, _)| cause)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if native {
+            accounting = KernelAccounting::native(&original, &cancellation);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if native {
+            continue;
+        }
+        let before = accounting.spent();
+        let collecting = collection.begin().await;
+        drop(
+            collection
+                .admit(&objects, scope, |_| false, &mut accounting)
+                .await?,
+        );
+        let after = accounting.spent();
+        assert_eq!(
+            after.backend_read_operations - before.backend_read_operations,
+            1
+        );
+        assert_eq!(after.object_bytes_read - before.object_bytes_read, 21);
+        assert_eq!(after.bytes_hashed - before.bytes_hashed, 21);
+        let (gate, sweepable) = collecting.sweepable(vec![id.digest]).await;
+        assert!(
+            sweepable.is_empty(),
+            "revalidated closure lost active-collection custody"
+        );
+        drop(gate);
+        drop(collecting);
+
+        let mut denied = KernelAccounting::standalone(
+            crate::WorkBudget {
+                object_bytes_read: 0,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let denied_original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                object_bytes_read: 0,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, _)| cause)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if native {
+            denied = KernelAccounting::native(&denied_original, &cancellation);
+        }
+        let refusal = match collection
+            .admit(&objects, scope, |_| false, &mut denied)
             .await
-            .is_err()
-    );
+        {
+            Ok(_) => return Err("finite work admitted an unfunded object read".into()),
+            Err(error) => error,
+        };
+        if native {
+            #[cfg(not(target_arch = "wasm32"))]
+            assert!(matches!(
+                refusal,
+                crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+                    crate::WorkError::BudgetExceeded {
+                        counter: "object_bytes_read",
+                        ..
+                    }
+                ))
+            ));
+        } else {
+            assert!(matches!(
+                refusal,
+                crate::FsError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "object_bytes_read",
+                    ..
+                })
+            ));
+        }
+        assert_eq!(denied.spent().object_bytes_read, 0);
+        let cancelled = crate::CancellationToken::new();
+        cancelled.cancel();
+        let mut cancelled_work =
+            KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancelled);
+        #[cfg(not(target_arch = "wasm32"))]
+        if native {
+            cancelled_work = KernelAccounting::native(&original, &cancelled);
+        }
+        let before = cancelled_work.spent();
+        assert!(matches!(
+            collection
+                .admit(&objects, scope, |_| false, &mut cancelled_work)
+                .await,
+            Err(crate::FsError::Cancelled(_))
+        ));
+        assert_eq!(cancelled_work.spent(), before);
+    }
     Ok(())
 }

@@ -1,16 +1,19 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
-    /// Reads one complete regular file within the caller's bound.
+    /// Reads one complete regular file with an optional caller-selected byte bound.
     pub async fn read<W: crate::facade::FsWork>(
         &self,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
+        let maximum_bytes = maximum_bytes.into();
         #[cfg(all(test, not(target_arch = "wasm32")))]
-        acyclic_test_support::differential::record(("workspace read", maximum_bytes));
+        if let Some(maximum) = maximum_bytes {
+            acyclic_test_support::differential::record(("workspace read", maximum));
+        }
         read_selected(
             self,
             GenerationSelector::Head,

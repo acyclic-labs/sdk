@@ -16,13 +16,7 @@ fn path(names: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
     let limits = VolumeLimits::default();
     let components = names
         .iter()
-        .map(|name| {
-            LogicalName::new(
-                NameEncoding::Utf8,
-                name.as_bytes().to_vec(),
-                limits.maximum_component_bytes,
-            )
-        })
+        .map(|name| LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec()))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(NamespacePath::new(components, limits)?)
 }
@@ -63,7 +57,7 @@ fn every_spelling_of_a_name_shares_its_changes() -> Result<(), Box<dyn std::erro
             }
             NameEncoding::Utf8 | NameEncoding::PosixBytes => text.as_bytes().to_vec(),
         };
-        LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+        LogicalName::new(encoding, bytes)
     };
     let directory = name(NameEncoding::Utf8, "src")?;
     let under = |name| NamespacePath::new(vec![directory.clone(), name], limits);
@@ -104,13 +98,7 @@ fn every_spelling_of_a_name_shares_its_changes() -> Result<(), Box<dyn std::erro
         ledger.unchanged_since(&other, None, stamp, &mut work)?,
         "distinct names stay distinct"
     );
-    let raw = |bytes: &[u8]| {
-        LogicalName::new(
-            NameEncoding::PosixBytes,
-            bytes.to_vec(),
-            limits.maximum_component_bytes,
-        )
-    };
+    let raw = |bytes: &[u8]| LogicalName::new(NameEncoding::PosixBytes, bytes.to_vec());
     let looked_up = under(raw(&[0xff, b'a'])?)?;
     let stamp = ledger.stamp();
     ledger.record(

@@ -63,19 +63,12 @@ fn file(payload: &[u8], sealed: bool, number: u64) -> FileRecord {
 fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
     let mut observe = |_| Ok::<_, FsError>(());
     let fail = |_| FsError::from(CanonicalDecodeError::AllocationFailed);
-    let name = || {
-        LogicalName::new(
-            NameEncoding::Utf8,
-            format!("n{number:016x}").into_bytes(),
-            256,
-        )
-        .unwrap()
-    };
+    let name =
+        || LogicalName::new(NameEncoding::Utf8, format!("n{number:016x}").into_bytes()).unwrap();
     let attribute = || {
         AttributeName::new(
             AttributeClass::PosixXattr,
             format!("a{number:016x}").into_bytes(),
-            256,
         )
         .unwrap()
     };

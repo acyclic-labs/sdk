@@ -8,7 +8,9 @@ use crate::{
     agent::{AgentPath, AgentRecord, ConversationEntry, Reply, StatusRecord, TurnInput},
     local::agent_conversation::Conversation,
 };
-use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{
+    ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+};
 use futures::TryStreamExt;
 use std::sync::Arc;
 
@@ -22,30 +24,51 @@ fn agent(error: impl std::fmt::Display) -> Error {
 }
 
 async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<Vec<u8>>> {
-    match stream
-        .read(ReadRequest {
-            key: None,
-            path,
-            from: 0,
-            limit: 16,
-            at_least: Default::default(),
-        })
-        .await
-    {
-        Ok(records) => Ok(records
-            .map_ok(|record| record.value.to_vec())
-            .try_collect()
+    let tail = match stream.tail(path.clone()).await {
+        Ok(tail) => tail,
+        Err(StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) => return Err(agent(error)),
+    };
+    let mut from = 0;
+    let mut values = Vec::new();
+    while from < tail {
+        let mut page = stream
+            .read(ReadRequest {
+                key: None,
+                path: path.clone(),
+                from,
+                limit: (tail - from).min(16) as u32,
+                at_least: Default::default(),
+            })
             .await
-            .map_err(agent)?),
-        Err(StreamError::NotFound) => Ok(Vec::new()),
-        Err(error) => Err(agent(error)),
+            .map_err(agent)?;
+        let start = from;
+        while let Some(record) = page.try_next().await.map_err(agent)? {
+            if record.sequence != from || from >= tail {
+                return Err(Error::Conflict(
+                    "conversation read was not contiguous".into(),
+                ));
+            }
+            from += 1;
+            values.push(record.value.to_vec());
+        }
+        if from == start {
+            return Err(Error::Conflict(
+                "conversation ended before its captured tail".into(),
+            ));
+        }
     }
+    Ok(values)
 }
 
 /// The root's conversation once it has settled every input sent before
 /// this call: idle past that inbox tail. Its adoption's own `Idle` status
 /// precedes those inputs, so it never counts.
-async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
+async fn settled(
+    harness: &LocalHarness,
+    agents: &LocalAgents,
+    root: &AgentPath,
+) -> Result<Vec<Vec<u8>>> {
     let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
         .await
         .map_err(agent)?;
@@ -59,7 +82,7 @@ async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>>
             .await
             .map_err(agent)?,
     );
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+    let observed = async {
         while let Some(record) = statuses.try_next().await.map_err(agent)? {
             let status = StatusRecord::decode(&record.value).map_err(agent)?;
             match status.phase {
@@ -78,9 +101,14 @@ async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>>
         Err(Error::Storage(
             "agent status follow ended before settlement".into(),
         ))
-    })
-    .await
-    .map_err(|_| Error::Conflict("agent did not publish settlement".into()))?
+    };
+    tokio::select! {
+        result = observed => result,
+        failure = harness.agents.get().ok_or_else(|| Error::Storage("agent host absent".into()))?.runtime.completion() => {
+            failure?;
+            Err(Error::Storage("agent runtime ended before settlement".into()))
+        }
+    }
 }
 
 #[tokio::test]
@@ -100,7 +128,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let client = conversation(&harness).await?;
     let inbox = client.send("hello", "hello").await?;
     let conversation = root.conversation().map_err(agent)?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     assert_eq!(entries.len(), 1);
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     assert_eq!(entry.inbox, inbox);
@@ -161,45 +189,95 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         }
     }
 
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        let directory = tempfile::tempdir().map_err(agent)?;
-        let project = volume(directory.path()).await?;
-        let (entered, entering) = oneshot::channel();
-        let (producer, result) = oneshot::channel();
-        let harness = Arc::new(LocalHarness::open(
-            volume_config(directory.path(), project, Arc::new(ClosingModel {
-                counts: text(),
-                gate: Mutex::new(Some((entered, result))),
-            }))?.compaction(crate::context::CompactionPolicy::Disabled),
-        ).await?);
-        let connection = harness.connect().await?;
-        let client = Conversation::open(connection.clone())?;
-        let mut events = client.observe(0).await?;
-        let inbox = client.send("lost-producer", "hello").await?;
-        entering.await.map_err(agent)?;
-        let waiting = async {
-            loop {
-                match events.next().await? {
-                    super::super::Event::Turn(_) => return Err::<(), _>(Error::Conflict("unsettled model produced a turn".into())),
-                    super::super::Event::Status(_) | super::super::Event::Output => {}
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let (entered, entering) = oneshot::channel();
+    let (producer, result) = oneshot::channel();
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(
+                directory.path(),
+                project,
+                Arc::new(ClosingModel {
+                    counts: text(),
+                    gate: Mutex::new(Some((entered, result))),
+                }),
+            )?
+            .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let client = Conversation::open(connection.clone())?;
+    let mut events = client.observe(0).await?;
+    let inbox = client.send("lost-producer", "hello").await?;
+    tokio::select! {
+        entered = entering => entered.map_err(agent)?,
+        failure = harness.agents.get().unwrap().runtime.completion() => {
+            failure?;
+            return Err(Error::Storage("agent runtime ended before model dispatch".into()));
+        }
+    }
+    let waiting = async {
+        loop {
+            match events.next().await? {
+                super::super::Event::Turn(_) => {
+                    return Err::<(), _>(Error::Conflict("unsettled model produced a turn".into()));
                 }
+                super::super::Event::Status(_) | super::super::Event::Output => {}
             }
-        };
-        tokio::pin!(waiting);
-        assert!(futures::poll!(&mut waiting).is_pending(), "live producer must retain the wait");
-        drop(producer);
-        // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
-        let observed = waiting.await;
-        assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");
-        let hosted = harness.agents.get().unwrap();
-        assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
-        assert!(harness.agent_stream.as_ref().unwrap().failure().is_none(), "the Session's runtime failure must not be invented as a provider failure");
-        assert!(matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "commands must retain the same runtime cause");
-        assert_eq!(hosted.agents().reply(hosted.root(), &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?, inbox).await.map_err(agent)?, crate::agent::Reply::Pending, "failed input stays recoverable");
-        assert!(records(&**hosted.agents().provider(), hosted.root().conversation().map_err(agent)?).await?.is_empty());
-        assert!(matches!(harness.connect().await, Err(Error::Storage(_))), "late clients observe the already closed runtime");
-        Ok(())
-    }).await.map_err(|_| Error::Conflict("closed local runtime retained a Session wait".into()))?
+        }
+    };
+    tokio::pin!(waiting);
+    assert!(
+        futures::poll!(&mut waiting).is_pending(),
+        "live producer must retain the wait"
+    );
+    drop(producer);
+    // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
+    let observed = waiting.await;
+    assert!(
+        matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "observation lost the runtime cause: {observed:?}"
+    );
+    let hosted = harness.agents.get().unwrap();
+    assert!(
+        matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed"))
+    );
+    assert!(
+        harness.agent_stream.as_ref().unwrap().failure().is_none(),
+        "the Session's runtime failure must not be invented as a provider failure"
+    );
+    assert!(
+        matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "commands must retain the same runtime cause"
+    );
+    assert_eq!(
+        hosted
+            .agents()
+            .reply(
+                hosted.root(),
+                &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
+                inbox
+            )
+            .await
+            .map_err(agent)?,
+        crate::agent::Reply::Pending,
+        "failed input stays recoverable"
+    );
+    assert!(
+        records(
+            &**hosted.agents().provider(),
+            hosted.root().conversation().map_err(agent)?
+        )
+        .await?
+        .is_empty()
+    );
+    assert!(
+        matches!(harness.connect().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "late clients observe the original retained runtime failure"
+    );
+    Ok(())
 }
 
 /// The names directly under `path` on `volume`.
@@ -272,15 +350,11 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     let harness = Arc::new(LocalHarness::open(config).await?);
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
-    let completion = harness.agents.get().unwrap().runtime.completion();
     conversation(&harness)
         .await?
         .send("shell", "run one command")
         .await?;
-    let entries = tokio::select! {
-        result = settled(&agents, &root) => result,
-        failure = completion => Err(Error::Conflict(format!("shell turn failed before settlement: {failure:?}"))),
-    };
+    let entries = settled(&harness, &agents, &root).await;
     let entries = entries.inspect_err(|_| {
         let _ = waits.report(&mut std::io::stderr());
     })?;
@@ -305,7 +379,6 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         String::from_utf8_lossy(&output)
     );
     assert_eq!(names(&harness, private, "tools").await?, [turn.to_string()]);
-    let turn_id = turn.to_string();
     let turn = format!("tools/{turn}");
     let calls = names(&harness, private, &turn).await?;
     let [call] = calls.as_slice() else {
@@ -327,7 +400,7 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         .map_err(agent)?
         .clone()
         .ok_or_else(|| Error::NotFound("served admission".into()))?;
-    follow_tool_output(&harness, &state.path, &turn_id, &scope).await
+    follow_tool_output(&harness, &state.path, &scope).await
 }
 
 async fn observation(
@@ -354,7 +427,6 @@ async fn observation(
 async fn follow_tool_output(
     harness: &Arc<LocalHarness>,
     root: &AgentPath,
-    turn: &str,
     admitted: &crate::core::Scope,
 ) -> Result<()> {
     use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
@@ -436,8 +508,7 @@ async fn follow_tool_output(
     observation(harness, &reader, path).await?;
     // From after the settled turn: its output stays the newest call's.
     let mut observer = conversation(harness).await?.observe(1).await?;
-    let wait = std::time::Duration::from_secs(10);
-    tokio::time::timeout(wait, async {
+    async {
         loop {
             if matches!(observer.next().await?, super::super::Event::Output) {
                 observer.absorb().await?;
@@ -446,9 +517,8 @@ async fn follow_tool_output(
                 }
             }
         }
-    })
-    .await
-    .map_err(|_| Error::Conflict(format!("no output of turn {turn} arrived")))??;
+    }
+    .await?;
     // Revoking the agent scope the connection's credential derives from
     // ends its observation.
     // Negative control: an unrelated root with identical grants cannot close it.
@@ -460,15 +530,11 @@ async fn follow_tool_output(
         .revoke_workload(&unrelated.scope)?;
     issuer.verifier(&mut None)?.verify(admitted, &mut None)?;
     issuer.revoke_workload(admitted)?;
-    tokio::time::timeout(wait, async {
-        loop {
-            if observer.next().await.is_err() {
-                return;
-            }
+    loop {
+        if observer.next().await.is_err() {
+            return Ok(());
         }
-    })
-    .await
-    .map_err(|_| Error::Conflict("a revoked observation stayed open".into()))
+    }
 }
 
 /// A local HTTP peer that answers each request with its own ordinal, so a
@@ -586,16 +652,12 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         .await?
         .send("hooked", "hello")
         .await?;
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        // A turn that fails for good commits its agent's failure, so the
-        // agent settling before dispatch is that failure.
-        tokio::select! {
-            request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into())),
-            failure = completion => Err(Error::Conflict(format!("hooked turn failed before model dispatch: {failure:?}"))),
-        }
-    })
-    .await
-    .map_err(|_| Error::Conflict("the hooked turn never reached the model".into()))??;
+    // A turn that fails for good commits its agent's failure, so the
+    // agent settling before dispatch is that failure.
+    tokio::select! {
+        request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into())),
+        failure = completion => Err(Error::Conflict(format!("hooked turn failed before model dispatch: {failure:?}"))),
+    }?;
     let recorded = serde_json::to_string(&pending.request(0)).map_err(agent)?;
     assert!(recorded.contains("HOOK-HTTP-1"), "{recorded}");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -620,7 +682,7 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let harness = open(resumed.clone()).await?;
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     assert_eq!(entries.len(), 1);
     // The replay ran no hook and made no HTTP call.
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -738,7 +800,7 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         first
     );
     let inbox = client.send("mention", prompt).await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     // Later publications on the private volume leave a replay unchanged.
     assert_eq!(
         harness.prompt_attachments(b"direct", Some(prompt)).await?,
@@ -844,7 +906,7 @@ async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is
     let (agents, root) = (Arc::clone(agents), root.clone());
     let client = conversation(&harness).await?;
     let inbox = client.send("marker", "/marker now").await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     // The command, the skill catalog and the mentioned file are all gone.
     std::fs::remove_dir_all(checkout.join(".claude")).map_err(agent)?;
@@ -874,7 +936,7 @@ async fn a_ten_mebibyte_prompt_is_accepted_and_reads_back_exactly() -> Result<()
     // command names them by digest.
     let prompt = "0123456789abcdef\n".repeat(10 * 1024 * 1024 / 17 + 1);
     let inbox = client.send("large", &prompt).await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let (read, _) = client.turn(&entry).await?;
     assert!(read.as_deref() == Some(prompt.as_str()));
@@ -1244,7 +1306,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     let AgentReply::Spawned { agent: child, .. } = connection.execute(&spawn).await? else {
         return Err(Error::Invalid("spawn was not delivered".into()));
     };
-    let entries = settled(&agents, &child).await?;
+    let entries = settled(&harness, &agents, &child).await?;
     let request = provider
         .request(0)
         .ok_or_else(|| Error::NotFound("child request".into()))?;
@@ -1265,7 +1327,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     // Negative control: the child reads no other file of its parent's.
     let client = conversation(&harness).await?;
     client.send("other", "a parent's own prompt").await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Message { body, .. } = entry.input else {
         return Err(Error::Invalid(
@@ -1315,7 +1377,7 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
         .collect::<Vec<_>>()
         .join(" ");
     client.send("many", &prompt).await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Message {
         attachments: Some(manifest),
@@ -1327,18 +1389,14 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
         ));
     };
     let listed = listed(&harness, manifest).await?;
-    // Negative control: the same files listed inline in the record, as the
-    // message carried them before, exceed the stream's record bound.
+    // Compare the compact record with the full inline manifest so this
+    // checks reference publication independently of any record-size policy.
     let inline = serde_json::to_vec(&listed).map_err(agent)?;
-    assert!(
-        inline.len() > crate::agent::MAX_RECORD_BYTES,
-        "{} inline bytes fit a record",
-        inline.len()
-    );
     // The records stay one reference: as small as a one-file prompt's.
     let inbox = records(&**agents.provider(), root.inbox().map_err(agent)?).await?;
     for record in inbox.iter().chain(&entries) {
         assert!(record.len() < 4096, "{} record bytes", record.len());
+        assert!(record.len() < inline.len());
     }
     assert_eq!(listed.len(), MENTIONS);
     // The model sees the prompt and every file, in mention order.
@@ -1405,7 +1463,7 @@ async fn a_volume_project_mention_is_copied_beside_its_manifest() -> Result<()> 
         .collect::<Vec<_>>()
         .join(" ");
     client.send("project", &prompt).await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Message {
         attachments: Some(manifest),
@@ -1444,12 +1502,11 @@ async fn a_volume_project_mention_is_copied_beside_its_manifest() -> Result<()> 
     Ok(())
 }
 
-/// A copy's path has one length however long the mentioned path is, so a
-/// path at the path bound is mentioned like any other. The control: naming
-/// a copy by its path below the same directory exceeds the bound.
+/// Long mentions preserve complete identities while copied attachments use
+/// fixed-width names, independent of the source path length.
 #[tokio::test]
-async fn a_mention_at_the_path_bound_is_copied_under_a_fixed_length_name() -> Result<()> {
-    use crate::conversation::MAX_PATH_BYTES;
+async fn a_long_mention_is_copied_under_a_fixed_length_name() -> Result<()> {
+    const SOURCE_PATH_BYTES: usize = 8193;
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let provider = text();
@@ -1464,15 +1521,15 @@ async fn a_mention_at_the_path_bound_is_copied_under_a_fixed_length_name() -> Re
         project.provider().clone(),
         &project.storage_name(&mut None)?,
     )?;
-    // Nested 200-byte components, then a file name, to one byte under the bound.
+    // Cross the former logical path ceiling with ordinary-sized components.
     let mut parents = Vec::new();
     let mut long = String::new();
-    while MAX_PATH_BYTES - 1 - long.len() > 200 {
+    while SOURCE_PATH_BYTES - 1 - long.len() > 200 {
         long.push_str(&format!("{}{}/", parents.len() % 10, "d".repeat(199)));
         parents.push(format!("/{}", long.trim_end_matches('/')));
     }
-    long.push_str(&"f".repeat(MAX_PATH_BYTES - 1 - long.len()));
-    assert_eq!(long.len() + 1, MAX_PATH_BYTES);
+    long.push_str(&"f".repeat(SOURCE_PATH_BYTES - 1 - long.len()));
+    assert_eq!(long.len() + 1, SOURCE_PATH_BYTES);
     let mutations = parents
         .into_iter()
         .map(|path| crate::filesystem::WorkspaceMutation::CreateDirectory { path })
@@ -1498,7 +1555,7 @@ async fn a_mention_at_the_path_bound_is_copied_under_a_fixed_length_name() -> Re
     let (agents, root) = (Arc::clone(agents), root.clone());
     let client = conversation(&harness).await?;
     client.send("long", &format!("@short.txt @{long}")).await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Message {
         attachments: Some(manifest),
@@ -1520,7 +1577,7 @@ async fn a_mention_at_the_path_bound_is_copied_under_a_fixed_length_name() -> Re
         assert_eq!(bytes.as_ref(), text.as_bytes());
     }
     let (directory, _) = listed[1].path().rsplit_once('/').expect("copy directory");
-    assert!(format!("{directory}/{long}").len() > MAX_PATH_BYTES);
+    assert!(format!("{directory}/{long}").len() > SOURCE_PATH_BYTES);
     Ok(())
 }
 
@@ -1543,7 +1600,7 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
             volume_config(directory.path(), project.clone(), provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled)
                 .limits(crate::conversation::Limits {
-                    file_bytes: FILE_BYTES,
+                    file_bytes: Some(FILE_BYTES),
                     ..Default::default()
                 }),
         )
@@ -1580,7 +1637,7 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
         .collect::<Vec<_>>()
         .join(" ");
     client.send("small", &prompt).await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Message {
         attachments: Some(manifest),
@@ -1607,20 +1664,23 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
     );
     // The next turn replays that message, attachments expanded, under the
     // same bound.
-    client.send("next", "next").await?;
-    let conversation = root.conversation().map_err(agent)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-    while records(&**agents.provider(), conversation.clone())
-        .await?
-        .len()
-        < 2
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the second turn did not settle"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let mut following = agents.follow_conversation(&root, 1).await.map_err(agent)?;
+    let inbox = client.send("next", "next").await?;
+    let record = tokio::select! {
+        record = following.try_next() => record.map_err(agent)?,
+        failure = harness.agents.get().unwrap().runtime.completion() => {
+            failure?;
+            return Err(Error::Storage("agent runtime ended before the second turn".into()));
+        }
     }
+    .ok_or_else(|| Error::Storage("conversation follow ended before the second turn".into()))?;
+    assert_eq!(record.sequence, 1);
+    assert_eq!(
+        ConversationEntry::decode(&record.value)
+            .map_err(agent)?
+            .inbox,
+        inbox
+    );
     let request = provider.last_request().expect("a second model request");
     let replayed = request
         .messages

@@ -230,7 +230,7 @@ pub(crate) fn tree_page_decode_shape(
         LEAF_TAG => {
             for _ in 0..item_count {
                 decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-                let name_bytes = decoder.skip_bounded_bytes(limits.maximum_name_bytes)?;
+                let name_bytes = decoder.skip_bytes()?;
                 nested_bytes = nested_bytes
                     .checked_add(usize_to_u64(name_bytes))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
@@ -243,7 +243,7 @@ pub(crate) fn tree_page_decode_shape(
         INTERNAL_TAG => {
             for _ in 0..item_count {
                 decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-                let name_bytes = decoder.skip_bounded_bytes(limits.maximum_name_bytes)?;
+                let name_bytes = decoder.skip_bytes()?;
                 nested_bytes = nested_bytes
                     .checked_add(usize_to_u64(name_bytes))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
@@ -292,7 +292,7 @@ where
             crate::kernel::file_read::reserve_decoded_items(&mut entries, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let name = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;
+                let name = decode_name(&mut decoder, observe)?;
                 let file_id = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
                 let kind = FileKind::from_tag(decoder.u8(observe)?).map_err(invariant)?;
                 entries.push(TreeEntry {
@@ -313,7 +313,7 @@ where
             crate::kernel::file_read::reserve_decoded_items(&mut children, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let first = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;
+                let first = decode_name(&mut decoder, observe)?;
                 let page = decoder.object(ObjectKind::TreePage, observe)?;
                 children.push(Child { first, page });
                 observe(ReadAllocationStep::Item)?;
@@ -364,12 +364,11 @@ pub(super) fn encode_name(
 
 pub(super) fn decode_name<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
-    maximum_name_bytes: u32,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
 ) -> Result<LogicalName, E> {
     let encoding = NameEncoding::from_tag(decoder.u8(observe)?).map_err(invariant)?;
-    let bytes = decoder.bounded_bytes(maximum_name_bytes, observe)?;
-    LogicalName::new(encoding, bytes, maximum_name_bytes).map_err(|error| invariant(error).into())
+    let bytes = decoder.bytes(observe)?;
+    LogicalName::new(encoding, bytes).map_err(|error| invariant(error).into())
 }
 
 fn count(length: usize) -> Result<u32, CanonicalDecodeError> {

@@ -26,14 +26,7 @@ fn named(config: VolumeConfig, names: &[(NameEncoding, Vec<u8>)]) -> NamespacePa
     NamespacePath::new(
         names
             .iter()
-            .map(|(encoding, bytes)| {
-                LogicalName::new(
-                    *encoding,
-                    bytes.clone(),
-                    config.limits.maximum_component_bytes,
-                )
-                .unwrap()
-            })
+            .map(|(encoding, bytes)| LogicalName::new(*encoding, bytes.clone()).unwrap())
             .collect(),
         config.limits,
     )
@@ -42,11 +35,10 @@ fn named(config: VolumeConfig, names: &[(NameEncoding, Vec<u8>)]) -> NamespacePa
 
 fn configs() -> [VolumeConfig; 3] {
     let portable = VolumeConfig::portable(crate::Lifecycle::Ephemeral);
-    let mut windows = VolumeConfig {
+    let windows = VolumeConfig {
         profile: FilesystemProfile::Windows,
         ..portable
     };
-    windows.limits.maximum_component_bytes = 255 * 2;
     let folded = VolumeConfig {
         case_sensitivity: CaseSensitivity::ProfileFolded,
         ..portable
@@ -177,7 +169,7 @@ fn a_key_that_cannot_be_the_whole_path_never_stands_for_one() {
     let carried = |config, key: &[u8]| super::path(key, "create", &created, config);
     // The negative control: an untruncated key in a case-preserving volume.
     assert!(carried(portable, b"a/b").is_ok());
-    let truncated = vec![b'x'; acyclic_stream::MAX_RECORD_KEY_BYTES];
+    let truncated = vec![b'x'; acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES];
     assert_eq!(carried(portable, &truncated), Err(Malformed));
     assert_eq!(carried(folded, b"a/b"), Err(Malformed));
     assert_eq!(carried(portable, b""), Err(Malformed));

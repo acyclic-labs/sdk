@@ -1,4 +1,4 @@
-import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority, decodeReadResponse } from "../generated/wasm/acyclic_harness_wasm.js";
+import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority, decodeReadResponse, decodeClientJson } from "../generated/wasm/acyclic_harness_wasm.js";
 import { fromBinary } from "@bufbuild/protobuf";
 import { ReadResponseSchema, RecordBatchSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { fixtureAuthority, initializeFixtureAuthority } from "../../../../rust/crates/conformance/cloudflare/fixture-authority.mjs";
@@ -32,6 +32,7 @@ export async function agentsFixture(id, reply, initialize = init) {
     preset: { tools: [], web_tools: false, max_children: null, approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },
   };
   const failures = [];
+  const active = new Set();
   let rejectFailure;
   const failed = new Promise((_, reject) => { rejectFailure = reject; });
   failed.catch(() => {});
@@ -44,7 +45,13 @@ export async function agentsFixture(id, reply, initialize = init) {
     providers: kind => kind === "memory" ? WasmAgentProviders.memory(options) : WasmAgentProviders.indexedDb(options),
     guest: providers => AgentGuest.open(providers, options, owner, registry),
     hosting: (providers, guest) => WasmAgents.openHosting(providers, options, owner, guest.manifest(),
-      (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt), report),
+      (delivery, signal, interrupt) => {
+        const result = guest.onRecord(delivery, signal, interrupt);
+        active.add(result);
+        void result.then(() => active.delete(result), () => active.delete(result));
+        return result;
+      }, report),
+    close: async agents => { agents?.free(); await Promise.allSettled(active); },
     free: () => { rejectFailure(new Error("fixture owner closed")); authority.close(); registry.free(); owner.free(); authority.free(); } };
 }
 
@@ -67,7 +74,7 @@ export async function untilRecords(fixture, agents, agent, stream, test) {
       if (bytes === null) throw new Error("agent stream closed before its required record");
       const frame = fromBinary(ReadResponseSchema, bytes);
       const batch = fromBinary(RecordBatchSchema, decodeReadResponse(frame.codec, frame.data, frame.decodedLength));
-      for (const record of batch.records) records.push({ sequence: record.sequence, value: JSON.parse(new TextDecoder().decode(record.value)) });
+      for (const record of batch.records) records.push({ sequence: record.sequence, value: decodeClientJson(record.value) });
       if (test(records)) return records;
     }
   } finally { cursor.close(); cursor.free(); }

@@ -9,18 +9,26 @@ pub(crate) struct NativeInvocationView {
     authority: Option<crate::kernel::allocation::retained::AuthorityLifetime>,
 }
 impl NativeInvocationView {
+    pub(crate) fn cancellation_tokens<'a>(
+        &'a self,
+        original: &'a crate::CancellationToken,
+    ) -> [&'a crate::CancellationToken; 2] {
+        [
+            self.authority
+                .as_ref()
+                .map_or(original, |owner| owner.cancellation()),
+            &self.cancellation,
+        ]
+    }
+
     pub(crate) fn check_cancellation(
         &self,
         original: &crate::CancellationToken,
     ) -> Result<(), crate::DemandError> {
-        self.authority
-            .as_ref()
-            .map_or(original, |owner| owner.cancellation())
-            .check()
-            .map_err(|_| crate::DemandError::Cancelled)?;
-        self.cancellation
-            .check()
-            .map_err(|_| crate::DemandError::Cancelled)
+        for token in self.cancellation_tokens(original) {
+            token.check().map_err(|_| crate::DemandError::Cancelled)?;
+        }
+        Ok(())
     }
     pub(crate) fn owns_resource(&self, resource: Option<&Arc<NativeResourceAllowance>>) -> bool {
         match (&self.metadata.work().resource, resource) {

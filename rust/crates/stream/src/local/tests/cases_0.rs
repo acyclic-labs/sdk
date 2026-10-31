@@ -329,21 +329,21 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
         };
         let first = commit("first");
         tokio::task::spawn_blocking(move || started_rx.recv()).await??;
+        // Arm the journal's publication event before submitting the next write.
+        // The first flush is still held, so this notification must belong to
+        // the second accepted frame rather than device completion.
+        let mut publication = provider.inner.revision.subscribe();
         let second = commit("second");
-        let appended = |provider: &LocalStream| {
+        tokio::time::timeout(std::time::Duration::from_secs(5), publication.changed()).await??;
+        assert_eq!(
             provider
                 .inner
                 .journal
                 .lock()
-                .map(|journal| journal.appended)
-                .unwrap_or_default()
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while appended(&provider) < 2 {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await?;
+                .map_err(|_| "journal was poisoned")?
+                .appended,
+            2
+        );
         assert!(!first.is_finished() && !second.is_finished());
         release_tx.send(())?;
         for (outcome, path) in [(first.await??, "first"), (second.await??, "second")] {
@@ -620,8 +620,8 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits {
         memory: MemoryLimits {
-            commits: 1,
-            idempotency_results: 1,
+            commits: Some(1),
+            idempotency_results: Some(1),
             ..MemoryLimits::default()
         },
         ..LocalStreamLimits::default()

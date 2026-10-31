@@ -7,18 +7,23 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         scope: PublicationScope<'_>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
+        work.accounting()
+            .check()
+            .map_err(crate::async_storage::object_error)?;
+        let unswept = self.collection.unswept().await;
         let mut spill = self.spill_io.write().await;
-        let PublicationScope {
-            objects, proven_at, ..
-        } = scope;
+        let PublicationScope { objects, .. } = scope;
         let unswept = self
             .collection
-            .admit(
-                objects,
+            .admit_held(
+                unswept,
+                &self.inner,
+                scope,
                 |id| self.index().objects.contains_key(id),
-                proven_at,
+                &mut work.accounting(),
             )
-            .await?;
+            .await
+            .map_err(crate::async_storage::object_error)?;
         let targets = {
             let index = self.index();
             let targets = work.vec_owned(objects.len())?;

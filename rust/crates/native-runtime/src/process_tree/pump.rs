@@ -4,44 +4,46 @@
 //! When nothing more can move, it returns, and the caller arms one wait on
 //! exactly the sources that can make progress: the open output pipes, stdin
 //! while input remains, the child's exit until it is observed, and the next
-//! check or the deadline. A synchronous caller parks on that wait; an async
+//! owner control signal or the deadline. A synchronous caller parks on that wait; an async
 //! caller awaits it, holding no thread while the child runs.
 
 use super::events::{self, Source};
 use super::*;
 use std::process::{ChildStderr, ChildStdout};
 
-/// When a capture stops and how often it rechecks its owner.
+/// The original lifetime policy, fixed before capture submission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureSchedule {
-    /// Also run the check this often while nothing else happens. `None`
-    /// checks only when output, input, exit or the deadline wakes capture.
-    pub check_every: Option<Duration>,
-    /// Original deadline, fixed before submission. `None` is unbounded.
-    pub deadline: Option<Instant>,
-    deadline_overflow: bool,
+    deadline: CaptureDeadline,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureDeadline {
+    Unlimited,
+    At(Instant),
+    Overflow,
 }
 
 impl CaptureSchedule {
-    /// A capture bounded by `timeout` that checks only on its own events.
+    /// Selects an optional caller deadline before any worker is queued.
     #[must_use]
-    pub fn new(timeout: Duration) -> Self {
-        let deadline = capture_now().checked_add(timeout);
+    pub fn new(timeout: impl Into<Option<Duration>>) -> Self {
         Self {
-            check_every: None,
-            deadline,
-            deadline_overflow: deadline.is_none(),
+            deadline: match timeout.into() {
+                None => CaptureDeadline::Unlimited,
+                Some(timeout) => match capture_now().checked_add(timeout) {
+                    Some(deadline) => CaptureDeadline::At(deadline),
+                    None => CaptureDeadline::Overflow,
+                },
+            },
         }
     }
 
-    /// Waits only on original pipe, process-exit and owner-control events.
-    /// No deadline or periodic readiness check is registered.
+    /// Waits only on the original pipe, exit and owner-control events.
     #[must_use]
     pub const fn unbounded() -> Self {
         Self {
-            check_every: None,
-            deadline: None,
-            deadline_overflow: false,
+            deadline: CaptureDeadline::Unlimited,
         }
     }
 
@@ -49,17 +51,8 @@ impl CaptureSchedule {
     #[must_use]
     pub const fn until(deadline: Instant) -> Self {
         Self {
-            check_every: None,
-            deadline: Some(deadline),
-            deadline_overflow: false,
+            deadline: CaptureDeadline::At(deadline),
         }
-    }
-
-    /// Also checks every `interval` while the child is quiet.
-    #[must_use]
-    pub const fn checking_every(mut self, interval: Duration) -> Self {
-        self.check_every = Some(interval);
-        self
     }
 }
 
@@ -153,9 +146,7 @@ impl<H: CaptureHandler> CaptureOutcome<H> {
 
 pub(super) struct Pump<'a> {
     deadline: Option<Instant>,
-    check_every: Option<Duration>,
-    next_check: Instant,
-    remaining: usize,
+    remaining: Option<usize>,
     output: [Vec<u8>; 2],
     input: Option<PendingStdin<'a>>,
     stdout: Option<ChildStdout>,
@@ -199,7 +190,7 @@ impl<'a> Pump<'a> {
     pub(super) fn new(
         tree: &mut ProcessTree,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<PendingStdin<'a>>,
         meter: Option<&dyn crate::NativeReadMeter>,
         output: [Vec<u8>; 2],
@@ -210,14 +201,16 @@ impl<'a> Pump<'a> {
                 "queued stdin already belongs to the native session",
             )));
         }
-        let now = capture_now();
-        if schedule.deadline_overflow {
-            return Err(ProcessCaptureFailure::before_capture(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "process deadline overflow",
-            )));
-        }
-        let deadline = schedule.deadline;
+        let deadline = match schedule.deadline {
+            CaptureDeadline::Unlimited => None,
+            CaptureDeadline::At(deadline) => Some(deadline),
+            CaptureDeadline::Overflow => {
+                return Err(ProcessCaptureFailure::before_capture(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "process deadline overflow",
+                )));
+            }
+        };
         if input.is_none() {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;
@@ -255,8 +248,6 @@ impl<'a> Pump<'a> {
         };
         Ok(Self {
             deadline,
-            check_every: schedule.check_every,
-            next_check: now,
             remaining: max_bytes,
             output,
             input,
@@ -297,14 +288,28 @@ impl<'a> Pump<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        let deadline = self
-            .deadline
-            .map(|at| Instant::now() + at.saturating_duration_since(capture_now()));
-        events::arm(&sources, deadline)
+        events::arm(&sources, self.wake_deadline()?)
+    }
+
+    // Translate a frozen capture clock onto the wait hub without adding a
+    // timer to an unbounded capture or restarting its original deadline.
+    fn wake_deadline(&self) -> io::Result<Option<Instant>> {
+        self.deadline
+            .map(|deadline| {
+                Instant::now()
+                    .checked_add(deadline.saturating_duration_since(capture_now()))
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
+                    })
+            })
+            .transpose()
     }
 
     pub(super) fn check_deadline(&self) -> io::Result<()> {
-        if self.deadline.is_some_and(|at| capture_now() >= at) {
+        if self
+            .deadline
+            .is_some_and(|deadline| capture_now() >= deadline)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "process output deadline exceeded; effects may have occurred",
@@ -347,13 +352,7 @@ impl<'a> Pump<'a> {
             if self.streaming {
                 self.check_deadline()?;
             }
-            let now = capture_now();
-            if self.check_every.is_none_or(|_| now >= self.next_check) {
-                check()?;
-                if let Some(interval) = self.check_every {
-                    self.next_check = capture_now() + interval;
-                }
-            }
+            check()?;
             let mut progressed = self
                 .input
                 .as_mut()
@@ -431,15 +430,7 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
     ) -> io::Result<events::Wait> {
-        let wake_at = match (self.check_every, self.deadline) {
-            (Some(_), Some(at)) => Some(self.next_check.min(at)),
-            (Some(_), None) => Some(self.next_check),
-            (None, at) => at,
-        };
-        // The capture clock is frozen in some tests; the hub runs on wall
-        // time, so arm the same remaining interval from now.
-        let wake_at =
-            wake_at.map(|at| Instant::now() + at.saturating_duration_since(capture_now()));
+        let wake_at = self.wake_deadline()?;
         let writing = self.input.as_ref().is_some_and(PendingStdin::writing);
         #[cfg(unix)]
         {
@@ -561,7 +552,7 @@ impl<'a> Pump<'a> {
     }
 
     /// Bytes captured so far, for the operation span.
-    pub(super) fn captured(&self, max_bytes: usize) -> usize {
-        max_bytes - self.remaining
+    pub(super) fn captured(&self) -> usize {
+        self.output.iter().map(Vec::len).sum()
     }
 }

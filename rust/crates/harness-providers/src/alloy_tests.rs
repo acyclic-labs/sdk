@@ -59,7 +59,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                     authentication: Authentication::Optional,
                     base_url: format!("http://localhost/{name}"),
                     headers: BTreeMap::new(),
-                    max_event_bytes: 65536,
+                    max_event_bytes: Some(65536),
                     retry: crate::RetrySpec::DEFAULT,
                     timeouts: crate::TimeoutSpec::DEFAULT,
                     token_counter: Some(TokenCounterSpec {

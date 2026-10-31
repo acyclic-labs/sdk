@@ -19,7 +19,7 @@ mod sse;
 #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
 pub use native::NativeMcpHttpProvider;
 
-/// One portable HTTP request with finite I/O bounds.
+/// One portable HTTP request with optional caller-selected I/O policies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
@@ -32,10 +32,11 @@ pub struct McpHttpRequest {
     pub headers: BTreeMap<String, String>,
     /// UTF-8 JSON-RPC message, or empty GET/DELETE body.
     pub body: Vec<u8>,
-    /// Whole-exchange deadline.
-    pub timeout_ms: u32,
+    /// Optional whole-exchange deadline.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint | null"))]
+    pub timeout_ms: Option<u64>,
     /// Total response body allowance.
-    pub maximum_response_bytes: u32,
+    pub maximum_response_bytes: Option<u32>,
 }
 
 /// Bounded streaming HTTP response.
@@ -50,7 +51,7 @@ pub struct McpHttpResponse {
 
 /// Platform I/O for admitted HTTP operations.
 pub trait McpHttpProvider: acyclic_stream::ProviderPlatform {
-    /// Performs one exchange with finite I/O bounds.
+    /// Performs one exchange under the caller-selected I/O policies.
     fn exchange<'a>(
         &'a self,
         operation: OperationId,
@@ -69,15 +70,21 @@ pub struct HttpMcpTransport {
     provider: Arc<dyn McpHttpProvider>,
     endpoint: String,
     session: Option<String>,
-    maximum_bytes: u32,
-    timeout_ms: u32,
+    maximum_bytes: Option<u32>,
+    timeout_ms: Option<u64>,
     callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
 }
 
 impl HttpMcpTransport {
     /// Selects independent tool-exchange bounds after catalog discovery.
-    pub fn with_tool_limits(mut self, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
-        if maximum_bytes == 0 || timeout_ms == 0 {
+    pub fn with_tool_limits(
+        mut self,
+        maximum_bytes: impl Into<Option<u32>>,
+        timeout_ms: impl Into<Option<u64>>,
+    ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
+        let timeout_ms = timeout_ms.into();
+        if maximum_bytes == Some(0) || timeout_ms == Some(0) {
             return Err(Error::Invalid(
                 "MCP request deadline must be positive".into(),
             ));
@@ -105,10 +112,12 @@ impl HttpMcpTransport {
         provider: Arc<dyn McpHttpProvider>,
         endpoint: String,
         session: Option<String>,
-        maximum_bytes: u32,
-        timeout_ms: u32,
+        maximum_bytes: impl Into<Option<u32>>,
+        timeout_ms: impl Into<Option<u64>>,
         callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
     ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
+        let timeout_ms = timeout_ms.into();
         let uri = endpoint
             .parse::<::http::Uri>()
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -119,8 +128,8 @@ impl HttpMcpTransport {
                 || authority.as_str().contains('@')
                 || (authority.port().is_some() && authority.port_u16().is_none())
         }) || endpoint.contains('#')
-            || maximum_bytes == 0
-            || timeout_ms == 0
+            || maximum_bytes == Some(0)
+            || timeout_ms == Some(0)
             || session.as_ref().is_some_and(|value| !valid_session(value))
         {
             return Err(Error::Invalid(
@@ -192,7 +201,9 @@ impl HttpMcpTransport {
     /// Constructs the exact request for separate host admission.
     pub fn request(&self, method: &str, body: Vec<u8>) -> Result<McpHttpRequest> {
         if !matches!(method, "POST" | "GET" | "DELETE")
-            || body.len() as u64 > u64::from(self.maximum_bytes)
+            || self
+                .maximum_bytes
+                .is_some_and(|maximum| body.len() as u64 > u64::from(maximum))
         {
             return Err(Error::Invalid("invalid MCP HTTP request".into()));
         }
@@ -259,7 +270,10 @@ impl HttpMcpTransport {
             bytes
                 .len()
                 .checked_add(chunk.len())
-                .filter(|total| *total as u64 <= u64::from(self.maximum_bytes))
+                .filter(|total| {
+                    self.maximum_bytes
+                        .is_none_or(|maximum| *total as u64 <= u64::from(maximum))
+                })
                 .ok_or(Error::Indeterminate(operation))?;
             bytes.extend_from_slice(&chunk);
         }

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "./process-capture.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function harnessPackageClosure(selected = "acyclic-harness") {
-  const result = spawnSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], {
+  const result = captureCommand("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], {
     cwd: root,
     encoding: "utf8",
   });

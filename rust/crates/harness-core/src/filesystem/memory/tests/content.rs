@@ -14,7 +14,7 @@ proptest::proptest! {
             let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
             let write = ContentGrant::verify(
                 &storage.verifier(), &storage.scope, &storage.volume,
-                VolumeOperation::Write, 1024, &mut None,
+                VolumeOperation::Write, &mut None,
             )?;
             let key = IdempotencyKey::new(key)?;
             let original = storage.host.put_content(
@@ -130,7 +130,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         .observe_staged_once(
             operation,
             None,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&observed_io),
@@ -212,7 +212,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .observe_staged_once(
                 denied_operation,
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&observed_io)
@@ -395,7 +395,6 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         &storage.scope,
         &storage.volume,
         VolumeOperation::Write,
-        1024,
         &mut None,
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -632,7 +631,7 @@ fn exhausted_native_custody_transfer_keeps_existing_guard_until_value_drops() ->
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-    let bytes = io.encode(&serde_json::Value::Null, 1024, true)?;
+    let bytes = io.encode(&serde_json::Value::Null, Some(1024), true)?;
     let held = io.owned_bytes()?;
     let live_held = work.live_allocation_bytes() - baseline;
     let Err(error) = io.into_native_custody(held + work.remaining()?.peak_allocation_bytes + 1)
@@ -668,7 +667,7 @@ fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Resu
     let receiver_baseline = receiving.live_allocation_bytes();
     let producer_baseline = producing.live_allocation_bytes();
     let producer_io = crate::filesystem::PreparationIo::from_native_work(&producing)?;
-    let bytes = producer_io.encode(&serde_json::Value::Null, 1024, true)?;
+    let bytes = producer_io.encode(&serde_json::Value::Null, Some(1024), true)?;
     drop(producer_io);
     let (metadata, incoming) = producing
         .display("source carrier metadata")

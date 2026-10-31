@@ -16,7 +16,8 @@ fn allocate(bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
 }
 
 pub(super) fn native_image(
-    maximum_work: u64,
+    file: &FileRef,
+    maximum_work: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<FileProjectionPolicy> {
     allocate(std::mem::size_of::<NativeMediaPolicy>() as u64, io)?;
@@ -24,8 +25,10 @@ pub(super) fn native_image(
         intent: NativeMediaIntent::Image {
             detail: ImageDetail::Auto,
         },
-        maximum_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
-        maximum_work,
+        maximum_bytes: file.descriptor().byte_length(),
+        maximum_work: maximum_work.map_or(file.descriptor().byte_length(), |maximum| {
+            maximum.min(file.descriptor().byte_length())
+        }),
         configuration: None,
     })))
 }
@@ -75,7 +78,7 @@ pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<
 pub(super) async fn resolve<'a>(
     message: &'a ConversationMessage,
     resolver: &'a dyn ContentResidencyVerifier,
-    maximum: usize,
+    maximum: Option<std::num::NonZeroUsize>,
     io: Option<&'a PreparationIo>,
 ) -> Result<(Cow<'a, [Attachment]>, Option<ContentHold<'a>>)> {
     #[cfg(feature = "filesystem")]
@@ -84,7 +87,7 @@ pub(super) async fn resolve<'a>(
     }
     match &message.attachments {
         ReferencedAttachments::Inline { items } => {
-            if items.len() > maximum {
+            if maximum.is_some_and(|maximum| items.len() > maximum.get()) {
                 return Err(stock_boundary(
                     io,
                     Invalid,
@@ -97,7 +100,7 @@ pub(super) async fn resolve<'a>(
             manifest,
             item_count,
         } => {
-            if *item_count as usize > maximum {
+            if maximum.is_some_and(|maximum| *item_count as usize > maximum.get()) {
                 return Err(stock_boundary(
                     io,
                     Invalid,
@@ -116,13 +119,13 @@ pub(super) fn append(
     source_hold: Option<ContentHold<'_>>,
     count: usize,
     parts: &mut Vec<ModelContentPart>,
-    maximum_work: u64,
+    maximum_work: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let mut append = |file: FileRef| -> Result<()> {
         let policy = match file.descriptor().media_type() {
             "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                native_image(maximum_work, io)?
+                native_image(&file, maximum_work, io)?
             }
             _ => FileProjectionPolicy::Reference,
         };

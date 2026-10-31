@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -28,14 +29,14 @@ export function verifyPackageOutputs(outputs, digests, required, unexpectedMessa
     || digestNames.some(name => !required.has(name) || !/^[a-f0-9]{64}$/.test(digests[name]))) throw new Error("package digest inventory differs");
 }
 
-export function runCli(url, execute, names, missingMessage) {
+export async function runCli(url, execute, names, missingMessage) {
   if (!process.argv[1] || resolve(process.argv[1]) !== fileURLToPath(url)) return;
   const options = Object.fromEntries(names.map(name => [name, { type: "string" }]));
   const { values } = parseArgs({ options });
   if (names.some(name => !values[name])) {
     throw new Error(missingMessage ?? names.slice(0, -1).map(name => "--" + name).join(", ") + " and --" + names.at(-1) + " are required");
   }
-  console.log(JSON.stringify(execute(values), null, 2));
+  console.log(JSON.stringify(await execute(values), null, 2));
 }
 
 // Shared output checks remain covered by the existing authority-reader receipt digest.
@@ -75,6 +76,12 @@ export function verifyInstalledPayload(root, payload) {
   for (const [name, bytes] of payload) readInput(root, name, sha256(bytes));
 }
 
+export async function verifyInstalledDigests(root, digests) {
+  const files = inventory(root);
+  if (files.length !== digests.size || files.some(name => !digests.has(name))) throw new Error("installed payload inventory differs");
+  for (const [name, digest] of digests) await hashInput(root, name, digest);
+}
+
 export function stageDescriptorSets(manifest, inputs, directory) {
   const descriptors = new Map();
   for (const family of manifest.families) {
@@ -98,13 +105,39 @@ export function copyGeneratedFiles(source, output, files, emitted) {
   }
 }
 
-export function readInput(root, name, digest) {
+function inputPath(root, name) {
   if (!canonical(name)) throw new Error("unsafe authority path");
   const path = realpathSync(join(root, name));
   if (!within(root, path)) throw new Error("authority input escapes root");
-  const bytes = readFileSync(path);
+  return path;
+}
+
+export function readInput(root, name, digest) {
+  const bytes = readFileSync(inputPath(root, name));
   if (!/^[a-f0-9]{64}$/.test(digest) || sha256(bytes) !== digest) throw new Error("authority input digest mismatch");
   return bytes;
+}
+
+// Keep large pinned files on disk and bind evidence to the actual open file.
+export async function hashInput(root, name, digest) {
+  if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error("authority input digest mismatch");
+  const path = inputPath(root, name), file = await open(path, "r");
+  try {
+    const before = await file.stat({ bigint: true });
+    if (!before.isFile()) throw new Error("authority input is not a regular file");
+    const hash = createHash("sha256");
+    let size = 0n;
+    for await (const chunk of file.createReadStream({ autoClose: false })) {
+      hash.update(chunk);
+      size += BigInt(chunk.length);
+    }
+    const after = await file.stat({ bigint: true });
+    if (size !== before.size || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) throw new Error("authority input changed while reading");
+    if (hash.digest("hex") !== digest) throw new Error("authority input digest mismatch");
+    return { path, digest, size };
+  } finally {
+    await file.close();
+  }
 }
 
 export function loadAuthority(root) {
@@ -163,7 +196,7 @@ export function generateProtocPackage(args, {
   if (!pluginPin || pluginHash !== pluginPin.sha256) throw new Error(pluginMismatch);
   const compilerHash = sha256(readFileSync(protoc));
   if (compilerHash !== toolchain.protoc?.[host]?.sha256) throw new Error("compiler executable differs from published host pin");
-  const options = { encoding: "utf8", timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
+  const options = { encoding: "utf8", timeout: 180_000,
     env: { ...process.env, LC_ALL: "C" } };
   const version = command(protoc, ["--version"], options);
   if (version.error || version.status !== 0 || version.stdout.trim() !== toolchain.protoc_version) {

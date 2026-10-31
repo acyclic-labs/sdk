@@ -181,7 +181,8 @@ message Capabilities {
   repeated FilesystemProfile profiles = 2;
   uint64 maximum_request_bytes = 3;
   uint64 maximum_response_bytes = 4;
-  uint32 maximum_transaction_mutations = 5;
+  // Optional deployment-selected whole-transaction policy, absent by default.
+  optional uint32 maximum_transaction_mutations = 5;
   uint32 maximum_page_items = 6;
   bool native_mount_credentials = 7;
   bool s3_credentials = 8;
@@ -408,12 +409,12 @@ message ApplyTransactionRequest {
   GenerationRef base = 1;
   repeated Mutation mutations = 2;
   OperationOptions operation = 3;
-  uint32 maximum_conflicts = 4;
+  optional uint32 maximum_conflicts = 4;
 }
 message RebaseTransactionRequest {
   GenerationRef base = 1;
   repeated Mutation mutations = 2;
-  uint32 maximum_conflicts = 3;
+  optional uint32 maximum_conflicts = 3;
   OperationOptions operation = 4;
 }
 message RebaseTransactionResponse {
@@ -435,7 +436,7 @@ message ForkPathSelection {
 message DiffRequest {
   GenerationRef from = 1;
   GenerationRef to = 2;
-  uint32 maximum_changes = 3;
+  optional uint32 maximum_changes = 3;
 }
 enum NameEncoding {
   NAME_ENCODING_UNSPECIFIED = 0;
@@ -512,10 +513,10 @@ message DiffResponse {
 message RebaseRequest {
   WorkspaceRef workspace = 1;
   reserved 2;
-  uint32 maximum_conflicts = 3;
+  optional uint32 maximum_conflicts = 3;
   OperationOptions operation = 4;
-  uint32 maximum_generations = 5;
-  uint32 maximum_changes = 6;
+  optional uint32 maximum_generations = 5;
+  optional uint32 maximum_changes = 6;
 }
 message FileConflict {
   bytes file_id = 1;
@@ -571,9 +572,9 @@ message RebaseResponse {
 message PlanJoinRequest {
   GenerationRef source = 1;
   GenerationRef target = 2;
-  uint32 maximum_changes = 3;
-  uint32 maximum_conflicts = 4;
-  uint32 maximum_generations = 5;
+  optional uint32 maximum_changes = 3;
+  optional uint32 maximum_conflicts = 4;
+  optional uint32 maximum_generations = 5;
   JoinHistory history = 6;
 }
 message JoinPlan {
@@ -584,9 +585,9 @@ message JoinPlan {
   repeated Conflict conflicts = 5;
   bool truncated = 6;
   GenerationRef common_ancestor = 7;
-  uint32 maximum_generations = 8;
-  uint32 maximum_changes = 9;
-  uint32 maximum_conflicts = 10;
+  optional uint32 maximum_generations = 8;
+  optional uint32 maximum_changes = 9;
+  optional uint32 maximum_conflicts = 10;
   JoinHistory history = 11;
   repeated DirectoryBindingChange binding_changes = 12;
 }

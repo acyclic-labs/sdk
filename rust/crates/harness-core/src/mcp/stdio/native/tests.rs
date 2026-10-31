@@ -52,6 +52,45 @@ async fn deadlines_cancel_each_remote_request_once_and_preserve_the_connection()
 }
 
 #[tokio::test(start_paused = true)]
+async fn absent_deadline_preserves_a_slow_response_without_cancellation() -> Result<()> {
+    let (arrived, waiting) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let (transport, server) = fixture_with_response_gate("slow", Some((arrived, released))).await?;
+    let transport = transport.with_tool_limits(None, None)?;
+    let result = {
+        let request = transport.list_tools(OperationId::new(), None);
+        tokio::pin!(request);
+        tokio::select! {
+            _ = &mut request => return Err(invalid("response settled before release")),
+            arrived = waiting => arrived.map_err(invalid)?,
+        }
+        // Cross the former default deadline while the original response is withheld.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(futures::poll!(&mut request).is_pending());
+        release
+            .send(())
+            .map_err(|_| invalid("response producer closed"))?;
+        request.await?
+    };
+    assert_eq!(result.tools.len(), 1);
+    drop(transport);
+    let methods = server.await.map_err(invalid)??;
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| *method == "tools/list")
+            .count(),
+        1
+    );
+    assert!(
+        !methods
+            .iter()
+            .any(|method| method == "notifications/cancelled")
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
 async fn blocked_cancellation_delivery_closes_the_connection_within_the_cleanup_bound() -> Result<()>
 {
     let (transport, server) = fixture("stalled-cancel").await?;
@@ -114,9 +153,7 @@ async fn cancelling_initialization_reaps_the_owned_child_without_blocking_the_ru
     };
     assert_eq!(stream.read_u8().await.map_err(Error::process_io)?, 1);
     drop(future);
-    let result = tokio::time::timeout(Duration::from_millis(500), stream.read_u8())
-        .await
-        .map_err(invalid)?;
+    let result = stream.read_u8().await;
     assert!(
         matches!(result, Err(error) if matches!(error.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset))
     );
@@ -125,6 +162,19 @@ async fn cancelling_initialization_reaps_the_owned_child_without_blocking_the_ru
 
 async fn fixture(
     mode: &'static str,
+) -> Result<(
+    StdioMcpTransport,
+    tokio::task::JoinHandle<Result<Vec<String>>>,
+)> {
+    fixture_with_response_gate(mode, None).await
+}
+
+async fn fixture_with_response_gate(
+    mode: &'static str,
+    mut response_gate: Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
 ) -> Result<(
     StdioMcpTransport,
     tokio::task::JoinHandle<Result<Vec<String>>>,
@@ -162,6 +212,12 @@ async fn fixture(
                     unanswered.is_none(),
                     "previous server work was not cancelled"
                 );
+                if let Some((arrived, released)) = response_gate.take() {
+                    arrived
+                        .send(())
+                        .map_err(|_| invalid("response observer closed"))?;
+                    released.await.map_err(invalid)?;
+                }
                 if mode == "stalled-cancel" {
                     std::future::pending::<()>().await;
                 }
@@ -183,33 +239,35 @@ async fn fixture(
                 _ => return Err(invalid("unexpected fixture method")),
             };
             let recovered = request["params"]["cursor"] == "recover";
-            let bytes =
-                if method == "initialize" || matches!(mode, "success" | "reverse") || recovered {
-                    serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":id, "result":result}))
-                        .map_err(invalid)?
-                } else {
-                    match mode {
-                        "oversize" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
+            let bytes = if method == "initialize"
+                || matches!(mode, "success" | "reverse" | "slow")
+                || recovered
+            {
+                serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":id, "result":result}))
+                    .map_err(invalid)?
+            } else {
+                match mode {
+                    "oversize" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
                         "result":{"tools":[{"name":"large","description":"x".repeat(8192),
                         "inputSchema":{"type":"object"}}]}}))
-                        .map_err(invalid)?,
-                        "malformed" => b"not json".to_vec(),
-                        "rpc-error" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
+                    .map_err(invalid)?,
+                    "malformed" => b"not json".to_vec(),
+                    "rpc-error" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
                         "error":{"code":-32602,"message":"invalid fixture cursor"}}))
-                        .map_err(invalid)?,
-                        "wrong-id" => {
-                            unanswered = Some(id);
-                            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":999,"result":result}))
-                                .map_err(invalid)?
-                        }
-                        "timeout" => {
-                            unanswered = Some(id);
-                            continue;
-                        }
-                        "closed" => break,
-                        _ => return Err(invalid("unknown fixture mode")),
+                    .map_err(invalid)?,
+                    "wrong-id" => {
+                        unanswered = Some(id);
+                        serde_json::to_vec(&json!({"jsonrpc":"2.0","id":999,"result":result}))
+                            .map_err(invalid)?
                     }
-                };
+                    "timeout" => {
+                        unanswered = Some(id);
+                        continue;
+                    }
+                    "closed" => break,
+                    _ => return Err(invalid("unknown fixture mode")),
+                }
+            };
             let first = if mode == "reverse" && method != "initialize" {
                 if pending.is_none() {
                     pending = Some(bytes);
@@ -233,8 +291,14 @@ async fn fixture(
         Ok(methods)
     });
     let (read, write) = tokio::io::split(client);
-    let client =
-        StdioMcpTransport::bind(read, write, 4096, Duration::from_millis(50), None).await?;
+    let client = StdioMcpTransport::bind(
+        read,
+        write,
+        Some(4096),
+        Some(Duration::from_millis(50)),
+        None,
+    )
+    .await?;
     Ok((client, server))
 }
 

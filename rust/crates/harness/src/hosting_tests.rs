@@ -188,9 +188,9 @@ fn binding_with(
         Turns {
             executors,
             limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
-                max_steps: 4,
-                history_turns: 8,
+                maximum_bytes: Some(64 * 1024),
+                max_steps: Some(4),
+                history_turns: Some(8),
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
@@ -321,13 +321,19 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         ..Default::default()
     };
     let missing = connect(None)?;
-    assert!(matches!(
-        missing.subscribe(subscription.clone()).await,
-        Err(StreamError::Unsupported)
-    ));
+    let unsupported = match missing.subscribe(subscription.clone()).await {
+        Err(error) => error,
+        Ok(mut follow) => match follow.next().await {
+            Some(Err(error)) => error,
+            other => {
+                return Err(format!("missing resource provider did not refuse: {other:?}").into());
+            }
+        },
+    };
+    assert!(matches!(unsupported, StreamError::Unsupported));
     let connected = connect(Some(Arc::new(bound.changes()?)))?;
     let mut follow = connected.subscribe(subscription).await?;
-    let observed = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+    async {
         while let Some(update) = follow.next().await {
             if let Some(session_wire::session_frame::Body::Data(data)) = update?.into_wire().body
                 && let Some(session_wire::session_data::Item::Record(record)) = data.item
@@ -343,9 +349,8 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             }
         }
         Err(acyclic_stream::StreamError::Unavailable)
-    })
+    }
     .await?;
-    observed?;
     for offset in [0, MAX_READ_BYTES, body.len() as u64] {
         // Reconnect between pages. Both exact FileRef and tool-path reads use
         // this same admitted reader, with no local filesystem provider.
@@ -390,8 +395,17 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             ContentAccess::default(),
         )?
         .await?;
+    assert!(matches!(
+        PreparedCommand::new(&AgentCommand::Read {
+            agent: root.clone(),
+            target: ReadTarget::ToolOutput {
+                path: "../outside".into(),
+            },
+            offset: 0,
+        }),
+        Err(acyclic_harness_client::CommandError::Invalid)
+    ));
     for (agent, path) in [
-        (root.clone(), "../outside"),
         (root.clone(), "tools/missing"),
         (root.clone(), "notes/private"),
         (AgentPath::root(&AgentId::from_bytes([9; 16])), path),
@@ -583,8 +597,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Ok(AgentReply::Children { items, next: None }) if items.is_empty()
     ));
     owner.childless.store(false, Ordering::SeqCst);
-    // A spawn is the parent's own step: the reply names the child, and the
-    // running host's next step for the parent creates it.
+    // The reply waits for the parent's committed spawn step.
     let runner = {
         let server = server.clone();
         tokio::spawn(async move { server.run(|_, _| {}).await })
@@ -735,9 +748,9 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
         Turns {
             executors: Arc::new(Never),
             limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
-                max_steps: 4,
-                history_turns: 8,
+                maximum_bytes: Some(64 * 1024),
+                max_steps: Some(4),
+                history_turns: Some(8),
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),

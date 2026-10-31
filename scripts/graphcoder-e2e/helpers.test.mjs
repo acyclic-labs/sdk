@@ -47,7 +47,7 @@ test("helper cancellation drains every process and cannot qualify a blocked suit
     await writeFile(fixture, `import test from 'node:test'; import {spawn} from 'node:child_process';
       import {once} from 'node:events';
       test('blocked fixture',async()=>{
-        const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});
+        const child=spawn(process.execPath,['-e','Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0)'],{stdio:'ignore',windowsHide:true});
         await once(child,'spawn'); console.log('BLOCKED_HELPER '+JSON.stringify([process.pid,child.pid]));
         await new Promise(()=>{});
       });`);

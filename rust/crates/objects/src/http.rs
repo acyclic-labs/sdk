@@ -127,7 +127,7 @@ pub struct HttpObjects {
     authorization: Option<HeaderValue>,
     credential: Option<CredentialProvider>,
     context: Option<acyclic_auth::operation::Context>,
-    maximum: usize,
+    maximum: Option<usize>,
 }
 
 impl HttpObjects {
@@ -139,31 +139,37 @@ impl HttpObjects {
         self
     }
 
-    /// Creates a bounded client with optional exclusive PEM trust.
+    /// Creates a client with optional response policy and exclusive PEM trust.
     pub fn new(
         endpoint: &str,
         token: &str,
-        maximum_response_bytes: usize,
+        maximum_response_bytes: impl Into<Option<usize>>,
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
-        Self::build(endpoint, Some(token), None, maximum_response_bytes, ca)
+        Self::build(
+            endpoint,
+            Some(token),
+            None,
+            maximum_response_bytes.into(),
+            ca,
+        )
     }
 
     /// Resolves the callback for every physical request.
     pub fn with_credential_provider(
         endpoint: &str,
         credential: CredentialProvider,
-        maximum: usize,
+        maximum: impl Into<Option<usize>>,
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
-        Self::build(endpoint, None, Some(credential), maximum, ca)
+        Self::build(endpoint, None, Some(credential), maximum.into(), ca)
     }
 
     fn build(
         endpoint: &str,
         token: Option<&str>,
         credential: Option<CredentialProvider>,
-        maximum_response_bytes: usize,
+        maximum_response_bytes: Option<usize>,
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
         let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
@@ -181,7 +187,7 @@ impl HttpObjects {
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || maximum_response_bytes == 0
+            || maximum_response_bytes == Some(0)
         {
             return Err(invalid());
         }
@@ -191,7 +197,7 @@ impl HttpObjects {
         let authorization = token.map(credential_header).transpose()?;
         let mut transport = Client::builder().redirect(reqwest::redirect::Policy::none());
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > crate::MAX_PEM_BYTES {
+            if ca.is_empty() {
                 return Err(invalid());
             }
             transport = transport
@@ -252,15 +258,12 @@ impl HttpObjects {
                 .join(route)
                 .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
             let (authorization, lease) = self.authorization().await?;
-            let mut request = self
+            let request = self
                 .transport
                 .post(url)
                 .header(AUTHORIZATION, authorization)
                 .header("content-type", "application/json")
                 .body(json::encode(input_name, input)?);
-            if self.context.is_none() {
-                request = request.timeout(std::time::Duration::from_secs(30));
-            }
             if let Some(context) = &self.context {
                 context.check()?;
             }
@@ -300,15 +303,19 @@ impl HttpObjects {
     }
 
     async fn bytes(&self, mut response: Response) -> Result<Vec<u8>, Error> {
-        if response
-            .content_length()
-            .is_some_and(|size| size > self.maximum as u64)
-        {
+        if self.maximum.is_some_and(|maximum| {
+            response
+                .content_length()
+                .is_some_and(|size| size > maximum as u64)
+        }) {
             return Err(wire::ErrorCode::QuotaExceeded.into());
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
-            if chunk.len() > self.maximum.saturating_sub(bytes.len()) {
+            if self
+                .maximum
+                .is_some_and(|maximum| chunk.len() > maximum.saturating_sub(bytes.len()))
+            {
                 return Err(wire::ErrorCode::QuotaExceeded.into());
             }
             bytes.extend_from_slice(&chunk);

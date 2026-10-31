@@ -74,8 +74,8 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
-        maximum_paths: 8,
-        maximum_extent_spans: 8,
+        maximum_paths: Some(8),
+        maximum_extent_spans: Some(8),
     };
     let policy = CapturePolicy::default();
     runtime.block_on(capture_subtrees_with_native_work(
@@ -95,7 +95,6 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         limits,
         path("/"),
         &policy,
-        8,
         &mut warmed,
         &warm.native,
     ))?;
@@ -124,7 +123,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
                         start,
                         &policy,
                         &scope.native,
-                        |p, _, meter| append_scanned_path(&mut paths, p, 8, meter),
+                        |p, _, meter| capture_push_entry(&mut paths, p, (), meter),
                     )
                 } else {
                     runtime.block_on(collect_checkout_subtree_paths(
@@ -132,13 +131,13 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
                         limits,
                         start,
                         &policy,
-                        8,
                         &mut paths,
                         &scope.native,
                     ))
                 });
             });
             result.unwrap().unwrap();
+            capture_order_entries(&mut paths, Some(8), &scope.native).unwrap();
             assert_eq!(paths.len(), 6);
             assert_eq!(paths, expected_paths);
             drop(paths);
@@ -208,8 +207,8 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
-        maximum_paths: 32,
-        maximum_extent_spans: 8,
+        maximum_paths: Some(32),
+        maximum_extent_spans: Some(8),
     };
     runtime.block_on(capture_subtrees_with_native_work(
         &mut checkout,
@@ -235,7 +234,6 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
         limits,
         path("/"),
         &CapturePolicy::default(),
-        32,
         &mut warmed,
         &warm.native,
     ))?;
@@ -297,7 +295,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                                             test_host_stat(&root, &namespace_to_host_path(&p)?)
                                                 .unwrap();
                                         ensure_same_host_node(&expected, &stat)?;
-                                        append_scanned_path(&mut paths, p, maximum, meter)
+                                        capture_push_entry(&mut paths, p, (), meter)
                                     },
                                 )
                             } else {
@@ -306,7 +304,6 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                                     limits,
                                     start,
                                     &policy,
-                                    maximum,
                                     &mut paths,
                                     &scope.native,
                                 )
@@ -315,6 +312,13 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                             if let Err(error) = result {
                                 failure = Some(error.to_string());
                                 break;
+                            }
+                        }
+                        if failure.is_none() {
+                            if let Err(error) =
+                                capture_order_entries(&mut paths, Some(maximum), &scope.native)
+                            {
+                                failure = Some(error.to_string());
                             }
                         }
                         let mut receipt = meter.receipt();

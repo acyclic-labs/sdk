@@ -47,12 +47,12 @@ async fn authenticated_generation_counts_hardlinked_inline_file_once()
         &store,
         &TreePage::Leaf(vec![
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec())?,
                 file_id,
                 kind: FileKind::Regular,
             },
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec())?,
                 file_id,
                 kind: FileKind::Regular,
             },
@@ -164,8 +164,6 @@ async fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
         ObjectCacheOptions {
             maximum_entries: 64,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 4,
-            maximum_waiters_per_object: 4,
         },
     )?;
     let cancellation = CancellationToken::new();
@@ -210,8 +208,6 @@ async fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_
         ObjectCacheOptions {
             maximum_entries: 32,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 4,
-            maximum_waiters_per_object: 4,
         },
     )?;
     let cancellation = CancellationToken::new();
@@ -294,12 +290,12 @@ async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
         &store,
         &TreePage::Leaf(vec![
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"link".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"link".to_vec())?,
                 file_id: symlink_id,
                 kind: FileKind::SymbolicLink,
             },
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"reparse".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"reparse".to_vec())?,
                 file_id: reparse_id,
                 kind: FileKind::ReparsePoint,
             },
@@ -410,12 +406,12 @@ async fn shared_regular_data_and_metadata_are_authenticated_once()
         &store,
         &TreePage::Leaf(vec![
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec())?,
                 file_id: child_ids[0],
                 kind: FileKind::Regular,
             },
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec())?,
                 file_id: child_ids[1],
                 kind: FileKind::Regular,
             },

@@ -143,7 +143,7 @@ mod tests {
         let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
         let components = vec!["component"; 130];
         let text = components.join("/");
-        assert!(text.len() > acyclic_stream::MAX_RECORD_KEY_BYTES);
+        assert!(text.len() > acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES);
         let mut metadata = Vec::new();
         prost::encoding::encode_varint(components.len() as u64 + 1, &mut metadata);
         for component in components {
@@ -156,7 +156,7 @@ mod tests {
         metadata.extend_from_slice(&[8; 32]);
         let entry = wire::ChangeEntry {
             key: bytes::Bytes::copy_from_slice(
-                &text.as_bytes()[..acyclic_stream::MAX_RECORD_KEY_BYTES],
+                &text.as_bytes()[..acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES],
             ),
             operation: "create".into(),
             metadata: metadata.into(),

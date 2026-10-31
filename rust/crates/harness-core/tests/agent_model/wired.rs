@@ -26,9 +26,9 @@ use acyclic_stream::{
 use std::sync::Arc;
 
 const LIMITS: TurnLimits = TurnLimits {
-    maximum_bytes: 64 * 1024,
-    max_steps: 4,
-    history_turns: 8,
+    maximum_bytes: Some(64 * 1024),
+    max_steps: Some(4),
+    history_turns: Some(8),
 };
 
 /// A memory filesystem host with agent `path`'s private volume.
@@ -79,8 +79,12 @@ fn executors_with_targets(
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
     let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
     preset.tools.clear();
+    preset.max_steps = LIMITS
+        .max_steps
+        .map(|steps| std::num::NonZeroUsize::try_from(usize::try_from(steps)?))
+        .transpose()?;
     let base = acyclic_harness_core::conversation::Limits {
-        model_steps: 1,
+        model_steps: std::num::NonZeroUsize::new(1),
         ..Default::default()
     };
     let bindings = acyclic_harness_core::runtime::Bindings {
@@ -244,6 +248,263 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         .await?;
         assert_eq!(again.outs, first.outs);
         assert_eq!(model.requests().len(), 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> Result {
+    use acyclic_harness_core::{
+        conversation::{ContentAccess, ContentGrant},
+        goal::{GoalContinuationPolicy, GoalView},
+    };
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct Edit {
+        host: Host,
+        volume: VolumeRef,
+        write: ContentGrant,
+        pending: AtomicBool,
+        reads: AtomicUsize,
+        replacement: &'static [u8],
+    }
+    impl Edit {
+        async fn publish(
+            &self,
+            bytes: &[u8],
+            key: &'static str,
+        ) -> acyclic_harness_core::Result<()> {
+            self.host
+                .put_content(
+                    &self.volume,
+                    &self.write,
+                    "GOAL.md",
+                    bytes,
+                    "text/markdown",
+                    "GOAL.md",
+                    None,
+                    &acyclic_harness_core::IdempotencyKey::new(key)?,
+                    None,
+                    ContentAccess::default(),
+                )
+                .await?;
+            Ok(())
+        }
+    }
+    struct EditedGoal {
+        original: Arc<dyn TurnGoal>,
+        edit: Arc<Edit>,
+    }
+    impl TurnGoal for EditedGoal {
+        fn policy(&self) -> GoalContinuationPolicy {
+            self.original.policy()
+        }
+        fn read(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Option<GoalView>>> {
+            Box::pin(async move {
+                let observed = self.original.read().await?;
+                self.edit.reads.fetch_add(1, Ordering::SeqCst);
+                if self.edit.pending.swap(false, Ordering::SeqCst) {
+                    // An actual file publication changes the original observation
+                    // after its read and before its conditioned rewrite.
+                    self.edit
+                        .publish(self.edit.replacement, "goal-edit")
+                        .await?;
+                }
+                Ok(observed)
+            })
+        }
+        fn rewrite<'a>(
+            &'a self,
+            goal: &'a GoalView,
+            contents: &'a str,
+            key: &'a str,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            self.original.rewrite(goal, contents, key)
+        }
+    }
+    struct EditingHost<H> {
+        original: H,
+        edit: Arc<Edit>,
+    }
+    impl<H: TurnHost> TurnHost for EditingHost<H> {
+        fn open<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            turn: OperationId,
+            input: &'a ModelContent,
+            cancellation: acyclic_actors::guest::CancellationToken,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
+            Box::pin(async move {
+                let mut open = self.original.open(agent, turn, input, cancellation).await?;
+                open.goal = open.goal.map(|original| {
+                    Arc::new(EditedGoal {
+                        original,
+                        edit: self.edit.clone(),
+                    }) as Arc<dyn TurnGoal>
+                });
+                Ok(open)
+            })
+        }
+    }
+
+    for replacement in [
+        b"---\nstatus: done\n---\nconcurrent body\n".as_slice(),
+        b"concurrent body\n".as_slice(),
+    ] {
+        let stream = Arc::new(MemoryStream::default());
+        let path = super::create(&stream, id(3)).await?;
+        let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+            "done".into(),
+        )]));
+        let (host, private) = private(&path).await?;
+        let volume = VolumeRef::new(
+            private.volume.provider().clone(),
+            "agent-scratch".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                path.id().to_bytes(),
+            )),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let issuer = AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        );
+        let scope = issuer.bootstrap_scope(
+            "goal-editor",
+            &Capabilities::new([
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(acyclic_harness_core::AgentId::from_bytes(
+                path.id().to_bytes(),
+            )),
+            &mut None,
+        )?;
+        let verifier = issuer.verifier(&mut None)?;
+        let read = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "", &mut None)?;
+        let edit = Arc::new(Edit {
+            host: host.clone(),
+            write: ContentGrant::verify(
+                &verifier,
+                &scope,
+                &volume,
+                VolumeOperation::Write,
+                &mut None,
+            )?,
+            volume: volume.clone(),
+            pending: AtomicBool::new(true),
+            reads: AtomicUsize::new(0),
+            replacement,
+        });
+        edit.publish(b"original body\n", "goal-original").await?;
+        let driver = ExecutorDriver::new(EditingHost {
+            original: FilesystemTurnHost::new(
+                stream.clone(),
+                host.clone(),
+                issuer,
+                TurnAdmission::LocalRoot,
+                executors(model.clone())?,
+                LIMITS,
+                Default::default(),
+            )
+            .with_goals(Some(GoalContinuationPolicy {
+                max_continuations: Some(0),
+            })),
+            edit: edit.clone(),
+        });
+        let mut adoption = adopted(id(3));
+        adoption.volumes = vec![
+            private,
+            VolumeBinding {
+                name: "scratch".into(),
+                volume: volume.clone(),
+            },
+        ];
+        let first = step(
+            &driver,
+            &path,
+            Some(AgentState::adopted(path.clone(), &adoption)?),
+            2,
+            requested("goal", &path),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        // Restoring the read/rewrite retry settles in this first step instead.
+        assert_eq!(edit.reads.load(Ordering::SeqCst), 1);
+        assert!(first.state.turn.is_some());
+        assert_eq!(turn_segment(&first.state)?, 0);
+        assert_eq!(first.state.conversation_tail, 0);
+        assert!(
+            !first
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::Conversation(_) | Out::GoalCompleted { .. }))
+        );
+        assert_eq!(first.alarm, Alarm::At(CONTINUE_NOW));
+        assert_eq!(model.requests().len(), 1);
+        let commit = lower(&first, 2, delivery_key(&first.state, "goal-changed")?)?;
+        assert!(matches!(
+            stream.commit(commit.clone()).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert!(matches!(
+            stream.commit(commit).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let second = step(
+            &driver,
+            &path,
+            Some(first.state),
+            2,
+            Wake::Alarm,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(edit.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(second.state.phase, Phase::Idle);
+        assert_eq!(second.state.conversation_tail, 1);
+        assert_eq!(
+            model.requests().len(),
+            1,
+            "the original filesystem journal replays the completed model call"
+        );
+        assert_eq!(
+            second
+                .outs
+                .iter()
+                .filter(|out| matches!(out, Out::Conversation(_)))
+                .count(),
+            1
+        );
+        let commit = lower(&second, 2, delivery_key(&second.state, "goal-settled")?)?;
+        assert!(matches!(
+            stream.commit(commit).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let (_, bytes) = host
+            .read_private_path(
+                &volume,
+                &read,
+                "GOAL.md",
+                None,
+                None,
+                ContentAccess::default(),
+            )
+            .await?;
+        let text = std::str::from_utf8(&bytes)?;
+        assert!(text.ends_with("concurrent body\n"));
+        assert!(!text.contains("original body"));
+        assert!(text.contains(if replacement.starts_with(b"---") {
+            "status: done"
+        } else {
+            "status: blocked"
+        }));
     }
     Ok(())
 }
@@ -1217,11 +1478,11 @@ impl acyclic_harness_core::conversation::ContentPublisher for Writer {
 }
 
 #[tokio::test]
-async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
+async fn spawn_respects_only_an_explicit_child_limit() -> Result {
     let path = AgentPath::root(&id(9));
     let (_, binding) = private(&path).await?;
     let mut state = AgentState::adopted(path.clone(), &adopted(id(9))).expect("adopts");
-    state.open_children.insert(path.child(&id(10))?);
+    state.open_children.insert(path.child(&id(10))?).await?;
     // Each spawn call in order, under `limit`: which ones the tool refused.
     let refused = |state: AgentState, limit: Option<u32>| {
         let volume = binding.volume.clone();
@@ -1233,7 +1494,7 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
                 &state,
                 (effects.clone() as Arc<dyn TurnEffects>, None),
                 Arc::new(Writer(volume)),
-                1024,
+                Some(1024),
                 (&acyclic_harness_core::tools::default_names(), limit),
             )?;
             let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;
@@ -1266,17 +1527,6 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
         refused(state.clone(), None).await?,
         (vec![false, false, false], 3)
     );
-    // Without one the agent's hard limit still holds: one below it, `b` fits
-    // and `c` is refused to the model rather than dropped by the step.
-    let mut full = state;
-    for n in 0..MAX_OPEN_CHILDREN - 2 {
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&(n as u64 + 1_000).to_le_bytes());
-        full.open_children
-            .insert(path.child(&AgentId::from_bytes(bytes))?);
-    }
-    assert_eq!(full.open_children.len(), MAX_OPEN_CHILDREN - 1);
-    assert_eq!(refused(full, None).await?, (vec![false, false, true], 2));
     Ok(())
 }
 
