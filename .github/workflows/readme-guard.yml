@@ -15,8 +15,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: readme-guard-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: readme-guard-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
 
 jobs:
   readme-guard:
