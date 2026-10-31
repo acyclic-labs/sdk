@@ -163,10 +163,11 @@ fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer
         let port = ReportPort::new(GENERATION.into(), child).unwrap();
         let (entered, started) = tokio::sync::oneshot::channel();
         let (release, held) = std::sync::mpsc::channel::<()>();
-        let completion = acyclic_native_runtime::spawn_persistence(move || {
-            let _ = entered.send(());
-            held.recv().map_err(io::Error::other)
-        });
+        let completion =
+            acyclic_native_runtime::spawn_persistence("report", "held", &0u64, move || {
+                let _ = entered.send(());
+                held.recv().map_err(io::Error::other)
+            });
         tokio::pin!(completion);
         let (terminate, signal) = tokio::sync::oneshot::channel();
         let shutdown = async {
