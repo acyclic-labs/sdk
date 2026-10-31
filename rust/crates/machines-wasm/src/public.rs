@@ -124,6 +124,7 @@ pub(crate) fn provider_error(error: ProviderError) -> JsValue {
         ProviderError::Unsupported(_) => "unsupported",
         ProviderError::Invalid(_) => "invalid",
         ProviderError::Rejected(_) => "rejected",
+        ProviderError::FailedPrecondition(_) => "failed-precondition",
         ProviderError::Unavailable => "unavailable",
         ProviderError::Indeterminate(_)
         | ProviderError::OperationIndeterminate(_)

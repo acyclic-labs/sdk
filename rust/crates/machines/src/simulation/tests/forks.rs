@@ -123,10 +123,10 @@ async fn live_fork_sources_are_joined_after_their_children() {
     else {
         unreachable!()
     };
-    assert!(matches!(
+    assert_eq!(
         provider.destroy_machine(parent.id, key(0x12)).await,
-        Err(ProviderError::Conflict(_))
-    ));
+        Err(ProviderError::FailedPrecondition(Precondition::LiveForks))
+    );
     for (index, child) in (0x13_u8..).zip(&children) {
         assert_eq!(
             provider.destroy_machine(child.id, key(index)).await,
@@ -140,7 +140,7 @@ async fn live_fork_sources_are_joined_after_their_children() {
 }
 
 #[tokio::test]
-async fn live_fork_requires_a_running_source() {
+async fn live_fork_forks_a_suspended_source_without_waking_it() {
     let provider = SimulatedMachines::default();
     let Ok(MutationOutcome::Created(parent)) = provider.create(request(key(0x20))).await else {
         unreachable!()
@@ -149,8 +149,36 @@ async fn live_fork_requires_a_running_source() {
         .suspend(parent.id, key(0x21))
         .await
         .unwrap_or_else(|_| unreachable!());
+    let Ok(MutationOutcome::MachineForked { children, .. }) =
+        provider.fork_machine(parent.id, two(), key(0x22)).await
+    else {
+        unreachable!()
+    };
+    assert!(
+        children
+            .iter()
+            .all(|child| child.state == MachineState::Running)
+    );
+    assert_eq!(
+        provider
+            .inspect_machine(parent.id)
+            .await
+            .map(|value| value.state),
+        Ok(MachineState::Suspended)
+    );
+    // A destroyed source forks nothing.
+    for (index, child) in (0x25_u8..).zip(&children) {
+        provider
+            .destroy_machine(child.id, key(index))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+    }
+    provider
+        .destroy_machine(parent.id, key(0x27))
+        .await
+        .unwrap_or_else(|_| unreachable!());
     assert!(matches!(
-        provider.fork_machine(parent.id, two(), key(0x22)).await,
+        provider.fork_machine(parent.id, two(), key(0x28)).await,
         Err(ProviderError::Conflict(_))
     ));
     assert!(matches!(

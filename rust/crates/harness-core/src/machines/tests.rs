@@ -30,6 +30,11 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
             false,
         ),
         (
+            ProviderError::FailedPrecondition(acyclic_machines::Precondition::LiveForks),
+            ErrorCode::Conflict,
+            false,
+        ),
+        (
             ProviderError::Unsupported("m".into()),
             ErrorCode::Unsupported,
             false,

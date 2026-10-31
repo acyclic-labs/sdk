@@ -182,20 +182,13 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         if observed.contract.fork_fidelity().is_none() {
             return Ok(None);
         }
-        match observed.state {
-            MachineState::Running => {}
-            // The provider suspended it while idle: wake it to fork it. Each
-            // wake is its own mutation, so a retry after the source suspends
-            // again wakes it again.
-            MachineState::Suspended if observed.contract.wakes_on_demand() => {
-                let wake = OperationId::new();
-                let key = IdempotencyKey::new(format!(
-                    "acyclic.harness.machine.wake.v1:{agent}:{}:{wake}",
-                    target.name
-                ))?;
-                target.host.wake(wake, &key, &source).await?;
-            }
-            _ => return Ok(None),
+        // A suspended source (paused, or idled by the provider) is its own
+        // checkpoint: it forks without waking.
+        if !matches!(
+            observed.state,
+            MachineState::Running | MachineState::Suspended
+        ) {
+            return Ok(None);
         }
         let (operation, key) = intent("fork", agent, &target.name)?;
         let (_, children) = target
@@ -301,7 +294,8 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// Destroys every Machine `agent` holds, each under the key of
     /// (agent, target): a retry replays the original destruction.
     ///
-    /// A provider may refuse to destroy a fork source while its forks live.
+    /// A provider refuses to destroy a fork source while its forks live
+    /// ([`acyclic_machines::Precondition::LiveForks`]).
     /// An archive closes a parent before its children, so a refused source
     /// stays until its last fork closes: each closing fork then destroys its
     /// closed ancestors' sources, under their own keys, as far as the
@@ -351,27 +345,11 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             .await
         {
             Ok(()) => Ok(true),
-            Err(Error::Machines(acyclic_machines::ProviderError::Conflict(_)))
-                if self.has_forks(target, binding).await? =>
-            {
-                Ok(false)
-            }
+            Err(Error::Machines(acyclic_machines::ProviderError::FailedPrecondition(
+                acyclic_machines::Precondition::LiveForks,
+            ))) => Ok(false),
             Err(error) => Err(error),
         }
-    }
-
-    /// Whether the provider refused `binding`'s destruction for its forks:
-    /// the Machine is still live and was the source of a fork.
-    async fn has_forks(
-        &self,
-        target: &ProvisionedTarget,
-        binding: &MachineBinding,
-    ) -> Result<bool> {
-        let observed = target.host.inspect(&sandbox(target, binding)?).await?;
-        Ok(
-            observed.state != MachineState::Destroyed
-                && observed.contract.fork_fidelity().is_some(),
-        )
     }
 
     async fn closed(&self, agent: &AgentPath) -> Result<bool> {
