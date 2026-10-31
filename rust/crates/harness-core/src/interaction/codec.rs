@@ -148,10 +148,16 @@ pub(super) fn interaction_request_owned_bytes(
                 tool,
                 call_id,
                 arguments,
+                target,
                 ..
             } => (prompt.capacity() as u64)
                 .checked_add(tool.capacity() as u64)
                 .and_then(|bytes| bytes.checked_add(call_id.capacity() as u64))
+                .and_then(|bytes| {
+                    bytes.checked_add(target.as_ref().map_or(0, |target| {
+                        (target.device.capacity() + target.owner.capacity()) as u64
+                    }))
+                })
                 .ok_or_else(overflow)?
                 .checked_add(crate::executor::json::json_value_logical_owned_bytes(
                     arguments,

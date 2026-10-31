@@ -11,6 +11,10 @@ pub(in super::super) fn mutation_error(
         | tonic::Code::Unknown
         | tonic::Code::Internal => ProviderError::Indeterminate(key),
         tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
+        tonic::Code::FailedPrecondition => Precondition::from_wire(value.details()).map_or_else(
+            || ProviderError::Rejected(value.message().into()),
+            ProviderError::FailedPrecondition,
+        ),
         _ => ProviderError::Rejected(value.message().into()),
     }
 }

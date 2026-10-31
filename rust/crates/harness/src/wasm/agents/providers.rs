@@ -346,7 +346,13 @@ impl Providers {
         let context: Arc<dyn TurnContext> = match &registry.workspace {
             Some(workspace) => Arc::new(Tasks(
                 crate::runtime::Bindings {
-                    workspace_tools: Some(Arc::clone(&workspace.executor)),
+                    targets: Some(Arc::new(
+                        crate::runtime::InProcessTargets::home(
+                            workspace.target.clone(),
+                            Arc::clone(&workspace.executor),
+                        )
+                        .map_err(js_error)?,
+                    )),
                     scope: crate::runtime::RuntimeScope::new(
                         crate::Capabilities::new(
                             grants

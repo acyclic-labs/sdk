@@ -3,6 +3,7 @@ mod filtered_progress;
 mod properties;
 mod queue_scaling;
 mod resource_admission;
+mod sockets;
 
 use super::*;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
@@ -374,8 +375,7 @@ async fn host_shutdown_closes_all_channels_without_data_credit() -> TestResult {
     let mut output = serve_on_with_products(
         provider,
         testing::authority(),
-        None,
-        None,
+        Products::default(),
         "node".into(),
         Limits::default(),
         receiver.boxed(),

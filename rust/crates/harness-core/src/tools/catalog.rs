@@ -87,8 +87,8 @@ pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
 
 static SHELL: ToolSpec = ToolSpec {
     name: super::shell::PLATFORM.name,
-    revision: "1",
-    description: super::shell::PLATFORM.description,
+    revision: "2",
+    description: super::shell::DESCRIPTION,
     hook_names: &[],
     binding: ToolBinding::Workspace,
     input: schema::input::<super::ShellInput>,

@@ -28,11 +28,13 @@ pub use sources::model::{verify_source_recheck, verify_source_wakes};
 mod calls;
 mod pages;
 mod resources;
+mod sockets;
 pub use calls::{CallAuthorization, CallProvider};
 pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,
 };
+pub use sockets::{SocketChannel, SocketInbound, SocketProvider};
 mod client;
 mod connection;
 mod local;
@@ -50,7 +52,9 @@ use crate::runtime::{signal, sync};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use client::Cache;
 pub use client::transport;
-pub use client::{ApplicationDelivery, ApplicationSubscription, Client};
+pub use client::{
+    ActorSocket, ActorSocketSender, ApplicationDelivery, ApplicationSubscription, Client,
+};
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use client::{
     verify_abandoned_reconnect, verify_cache, verify_cancel_before_open, verify_follow_data,
@@ -105,6 +109,8 @@ struct Channel {
     applied: wire::SessionCursor,
     /// The `SessionClosed` code sent once every queued frame has drained.
     ending: Option<&'static str>,
+    /// Peer frames of an actor socket; dropping it ends that socket.
+    socket: Option<Box<dyn SocketInbound>>,
 }
 struct Pending {
     frame: wire::SessionFrame,
@@ -122,6 +128,11 @@ enum Event {
         bytes: Bytes,
         item: fn(Bytes) -> Item,
     },
+    /// One frame to an actor socket's peer, counted from 1.
+    Socket {
+        next: u64,
+        bytes: Bytes,
+    },
     /// A bounded follow delivered its whole range.
     End,
 }
@@ -136,6 +147,7 @@ struct Session<P: ?Sized> {
     provider: Arc<P>,
     resources: Option<Arc<dyn ResourceProvider>>,
     calls: Option<Arc<dyn CallProvider>>,
+    sockets: Option<Arc<dyn SocketProvider>>,
     executor: Arc<dyn crate::runtime::Executor>,
     limits: Limits,
     node: String,
@@ -249,7 +261,17 @@ fn serve_on_with_resources<P: StreamProvider + ?Sized>(
     executor: Arc<dyn crate::runtime::Executor>,
 ) -> Result<transport::Responses, StreamError> {
     serve_on_with_products(
-        provider, authority, resources, None, node, limits, incoming, executor, None,
+        provider,
+        authority,
+        Products {
+            resources,
+            ..Products::default()
+        },
+        node,
+        limits,
+        incoming,
+        executor,
+        None,
     )
 }
 
@@ -269,8 +291,11 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
     serve_on_with_products(
         provider,
         authority,
-        resources,
-        Some(calls),
+        Products {
+            resources,
+            calls: Some(calls),
+            sockets: None,
+        },
         node,
         limits,
         incoming,
@@ -279,11 +304,18 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
     )
 }
 
+/// The owning product dispatchers one session routes to.
+#[derive(Clone, Default)]
+pub(crate) struct Products {
+    pub(crate) resources: Option<Arc<dyn ResourceProvider>>,
+    pub(crate) calls: Option<Arc<dyn CallProvider>>,
+    pub(crate) sockets: Option<Arc<dyn SocketProvider>>,
+}
+
 fn serve_on_with_products<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
     authority: Arc<Authority>,
-    resources: Option<Arc<dyn ResourceProvider>>,
-    calls: Option<Arc<dyn CallProvider>>,
+    products: Products,
     node: String,
     limits: Limits,
     incoming: transport::Responses,
@@ -301,6 +333,11 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
         .snapshot()
         .map_err(|_| StreamError::AccessDenied)?
         .revision;
+    let Products {
+        resources,
+        calls,
+        sockets,
+    } = products;
     let session = Session {
         authority,
         slots: authority::Slots::default(),
@@ -309,6 +346,7 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
         provider,
         resources,
         calls,
+        sockets,
         executor,
         node,
         limits,
@@ -568,7 +606,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             ));
             return Ok(());
         }
-        if input.channel_id != 0 && matches!(body, Body::Window(_) | Body::Ack(_)) {
+        if input.channel_id != 0 && matches!(body, Body::Window(_) | Body::Ack(_) | Body::Data(_)) {
             match self.channels.get(&input.channel_id) {
                 None => return Ok(()),
                 Some(channel) if input.generation < channel.generation => return Ok(()),
@@ -615,6 +653,25 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     return Err(StreamError::OutOfRange);
                 }
                 channel.applied = applied;
+                Ok(())
+            }
+            Body::Data(data) if input.channel_id != 0 => {
+                let channel = self.channel(input.channel_id, input.generation)?;
+                let (Some(socket), Some(Item::ActorSocket(bytes))) = (&channel.socket, data.item)
+                else {
+                    return Err(StreamError::InvalidArgument);
+                };
+                if channel.ending.is_some() {
+                    return Ok(());
+                }
+                if bytes.is_empty() || bytes.len() > crate::MAX_RECORD_BYTES {
+                    return Err(StreamError::LimitExceeded);
+                }
+                // Handed over without awaiting the owner, so one socket's
+                // storage latency never stalls the session's other channels.
+                if let Err(error) = socket.receive(bytes) {
+                    self.end(input.channel_id, error.code())?;
+                }
                 Ok(())
             }
             _ => Err(StreamError::InvalidArgument),

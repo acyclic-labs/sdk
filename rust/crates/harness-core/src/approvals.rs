@@ -110,8 +110,43 @@ pub struct ApprovalRule {
     /// Additional argument selectors, all of which must match.
     #[serde(default)]
     pub selectors: Vec<ApprovalSelector>,
+    /// Optional execution target the call must run on; a rule naming one
+    /// matches only calls of the workspace tools resolved to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
+    pub target: Option<TargetSelector>,
     /// Result when every selector matches.
     pub verdict: RuleVerdict,
+}
+
+/// The execution target a rule selects: a device, an owner's devices, or one
+/// owner's named device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
+pub struct TargetSelector {
+    /// Exact device name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
+    pub device: Option<String>,
+    /// Exact owner user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
+    pub owner: Option<String>,
+}
+
+impl TargetSelector {
+    fn matches(&self, target: Option<&crate::interaction::ApprovalTarget>) -> bool {
+        target.is_some_and(|target| {
+            self.device
+                .as_deref()
+                .is_none_or(|device| device == target.device)
+                && self
+                    .owner
+                    .as_deref()
+                    .is_none_or(|owner| owner == target.owner)
+        })
+    }
 }
 
 /// Policy and model results use the same escalation semantics.
@@ -211,8 +246,25 @@ impl ApprovalRule {
         tool: &str,
         arguments: &Value,
     ) -> RuleVerdict {
+        Self::evaluate_target(rules, fallback, (tool, arguments), None)
+    }
+
+    /// [`Self::evaluate`] for a call resolved to `target`: what a device
+    /// evaluates again before it runs a command dispatched to it.
+    pub fn evaluate_target(
+        rules: &[Self],
+        fallback: RuleVerdict,
+        (tool, arguments): (&str, &Value),
+        target: Option<&crate::interaction::ApprovalTarget>,
+    ) -> RuleVerdict {
         Self::decide(
-            rules.iter().filter(|rule| rule.matches(tool, arguments)),
+            rules.iter().filter(|rule| {
+                rule.matches(tool, arguments)
+                    && rule
+                        .target
+                        .as_ref()
+                        .is_none_or(|selector| selector.matches(target))
+            }),
             fallback,
         )
     }
@@ -226,11 +278,17 @@ impl ApprovalRule {
     ) -> RuleVerdict {
         match subject {
             crate::interaction::ApprovalSubject::Tool {
-                tool, arguments, ..
-            } => Self::evaluate(rules, fallback, tool, arguments),
+                tool,
+                arguments,
+                target,
+                ..
+            } => Self::evaluate_target(rules, fallback, (tool, arguments), target.as_ref()),
             crate::interaction::ApprovalSubject::Opaque {} => Self::decide(
                 rules.iter().filter(|rule| {
-                    rule.tool.is_none() && rule.arguments.is_none() && rule.selectors.is_empty()
+                    rule.tool.is_none()
+                        && rule.arguments.is_none()
+                        && rule.selectors.is_empty()
+                        && rule.target.is_none()
                 }),
                 fallback,
             ),

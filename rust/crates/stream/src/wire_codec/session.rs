@@ -75,6 +75,27 @@ pub fn actor_call_sequence(
     Ok(next)
 }
 
+/// Admit one whole actor-socket frame: `after.next` counts frames from 1 on
+/// one generation, with an empty opaque cursor. Frames are never spliced
+/// across a reconnect, because a socket channel is never replayed.
+pub fn actor_socket_sequence(next: u64, data: &wire::SessionData) -> Result<u64, StreamError> {
+    let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
+    let whole = matches!(
+        &data.item,
+        Some(wire::session_data::Item::ActorSocket(frame))
+            if !frame.is_empty() && frame.len() <= crate::MAX_RECORD_BYTES
+    );
+    if !whole
+        || !after.opaque.is_empty()
+        || after.next != next.checked_add(1).ok_or(StreamError::OutOfRange)?
+        || data.accepted != after.next
+        || data.durable != 0
+    {
+        return Err(StreamError::InvalidResponse);
+    }
+    Ok(next)
+}
+
 /// Decodes a bounded peer session message; protocol validation remains in the pool.
 pub fn decode_frame(bytes: &[u8]) -> Result<wire::SessionFrame, StreamError> {
     if bytes.len() > crate::MAX_COMMAND_BYTES {

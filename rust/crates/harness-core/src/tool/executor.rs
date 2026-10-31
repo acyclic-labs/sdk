@@ -1,5 +1,15 @@
 use super::*;
 
+/// Records appended atomically with a tool call's claim
+/// ([`ToolExecutor::dispatch`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dispatch {
+    /// The original command, fitting one protective Stream record.
+    pub delivery: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
+    /// The owning Actor's activation, committed with its input and tool claim.
+    pub activation: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
+}
+
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Runs configured hooks inside this executor's selected, owner-fenced workspace.
@@ -39,6 +49,18 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         }
         let _ = work;
         Ok(())
+    }
+
+    /// The record that hands this invocation to another host, appended in the
+    /// same commit as the journal entry that claims it; `None` when the
+    /// invocation runs here. A dispatch that is never claimed was never sent,
+    /// and a claimed one was sent exactly once.
+    fn dispatch(
+        &self,
+        _invocation: &ToolInvocation,
+        _context: Option<&crate::runtime::ToolContext>,
+    ) -> Result<Option<Dispatch>> {
+        Ok(None)
     }
 
     /// Whether dropping an invocation future retires all its I/O before return.

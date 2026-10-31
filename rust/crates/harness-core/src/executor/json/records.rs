@@ -129,6 +129,44 @@ pub(crate) fn json_value_retained_owned_bytes(value: &Value) -> Result<u64> {
     value_owned_bytes(value, true)
 }
 
+/// The bytes an object of `entries` entries holds in its own slots,
+/// excluding what its keys and values own.
+fn object_slot_bytes(entries: usize, retained: bool) -> Option<u64> {
+    if retained && entries != 0 {
+        let node = 11 * std::mem::size_of::<(String, Value)>() + 14 * std::mem::size_of::<usize>();
+        (1 + (entries - 1) / 5).checked_mul(node)
+    } else {
+        entries.checked_mul(std::mem::size_of::<(String, Value)>())
+    }
+    .map(|bytes| bytes as u64)
+}
+
+/// Sets `key` to `value` in `object`, returning the retained bytes the
+/// object grew by ([`json_value_retained_owned_bytes`]), zero when it shrank.
+pub(crate) fn json_object_insert(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Value,
+) -> Result<u64> {
+    let overflow = || {
+        boundary(
+            "JSON value capacity inventory overflows",
+            Some(crate::wire::ErrorCode::Invalid),
+        )
+    };
+    let before = object_slot_bytes(object.len(), true).ok_or_else(overflow)?;
+    let added = value_owned_bytes(&value, true)?;
+    let (added, removed) = match object.insert(key.to_owned(), value) {
+        Some(old) => (added, value_owned_bytes(&old, true)?),
+        None => (added.checked_add(key.len() as u64).ok_or_else(overflow)?, 0),
+    };
+    let after = object_slot_bytes(object.len(), true).ok_or_else(overflow)?;
+    Ok((after - before)
+        .checked_add(added)
+        .ok_or_else(overflow)?
+        .saturating_sub(removed))
+}
+
 fn value_owned_bytes(value: &Value, retained: bool) -> Result<u64> {
     let overflow = || {
         boundary(
@@ -155,16 +193,7 @@ fn value_owned_bytes(value: &Value, retained: bool) -> Result<u64> {
             // owns at least one entry; every other node owns at least five.
             // Newly decoded empty maps have no node. Retain the bound until
             // destruction, including unused slots in sparsely filled nodes.
-            let slots = if retained && !values.is_empty() {
-                let node =
-                    11 * std::mem::size_of::<(String, Value)>() + 14 * std::mem::size_of::<usize>();
-                (1 + (values.len() - 1) / 5).checked_mul(node)
-            } else {
-                values
-                    .len()
-                    .checked_mul(std::mem::size_of::<(String, Value)>())
-            }
-            .ok_or_else(overflow)? as u64;
+            let slots = object_slot_bytes(values.len(), retained).ok_or_else(overflow)?;
             values.iter().try_fold(slots, |bytes, (key, value)| {
                 let value_bytes = value_owned_bytes(value, retained)?;
                 bytes

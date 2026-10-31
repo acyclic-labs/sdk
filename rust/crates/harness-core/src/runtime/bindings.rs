@@ -2,7 +2,7 @@ use super::*;
 
 /// Immutable runtime bindings that every agent turn context shares.
 pub struct AgentHarness {
-    pub(crate) workspace_tools: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    pub(crate) targets: Option<Arc<dyn super::TargetResolver>>,
     pub(super) scope: RuntimeScope,
     pub(super) content: Option<ContentBindings>,
     pub(super) artifacts: Option<ContentBindings>,
@@ -21,8 +21,8 @@ pub struct ContentBindings {
 /// Runtime bindings assembled before agent turns run.
 #[derive(Default)]
 pub struct Bindings {
-    /// Executor for the agent's selected checkout or fork view.
-    pub workspace_tools: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    /// The agent's execution targets; its home runs its checkout or fork view.
+    pub targets: Option<Arc<dyn super::TargetResolver>>,
     /// Effective authority and bounds.
     pub scope: RuntimeScope,
     /// Optional owner-bound content access for tools.
@@ -42,7 +42,7 @@ impl Bindings {
     pub fn build(self) -> Result<Arc<AgentHarness>> {
         self.scope.limits.validate(&mut None)?;
         Ok(Arc::new(AgentHarness {
-            workspace_tools: self.workspace_tools,
+            targets: self.targets,
             scope: self.scope,
             content: self.content,
             artifacts: self.artifacts,
@@ -51,21 +51,39 @@ impl Bindings {
 }
 
 impl AgentHarness {
-    /// Selects an agent's workspace executor and project content together,
+    /// Selects an agent's execution targets and project content together,
     /// preserving this composition's scope and independent artifact storage.
     /// The providers must already be bound to the selected project authority.
     #[must_use]
     pub fn with_workspace(
         &self,
-        workspace_tools: Option<Arc<dyn crate::tool::ToolExecutor>>,
+        targets: Option<Arc<dyn super::TargetResolver>>,
         content: ContentBindings,
     ) -> Arc<Self> {
         Arc::new(Self {
-            workspace_tools,
+            targets,
             content: Some(content),
             scope: self.scope.clone(),
             artifacts: self.artifacts.clone(),
         })
+    }
+
+    /// The agent's execution targets, when any are bound.
+    #[must_use]
+    pub fn targets(&self) -> Option<&Arc<dyn super::TargetResolver>> {
+        self.targets.as_ref()
+    }
+
+    /// The executor of the target `target` names, its home when omitted.
+    ///
+    /// # Errors
+    /// [`Error::Unsupported`] when no targets are bound; [`Error::Target`]
+    /// when the named one cannot take the call.
+    pub fn target(&self, target: Option<&str>) -> Result<Arc<super::Target>> {
+        self.targets
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("workspace tools are not bound".into()))?
+            .resolve(target)
     }
 
     /// The context for one agent turn. Its scope is this runtime's (tools,

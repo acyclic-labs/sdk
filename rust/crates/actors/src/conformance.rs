@@ -23,6 +23,9 @@ use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// The actor socket suite, over the same store surface.
+pub mod sockets;
+
 /// Upper bound for one observation; an event-driven wait ends earlier.
 const BUDGET_MS: u64 = 5_000;
 /// Alarm lead time; long enough to clear or restart before it fires.

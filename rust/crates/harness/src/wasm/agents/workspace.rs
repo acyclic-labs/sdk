@@ -24,6 +24,20 @@ impl WasmMachinesWorkspace {
     pub(super) fn executor(&self) -> Arc<dyn ToolExecutor> {
         self.workspace.clone()
     }
+
+    /// The tree's home target: this provisioned Machine, guarded by the
+    /// tree's human approver. Hosted Machines run Linux.
+    pub(super) fn target(&self) -> crate::agent::TargetRecord {
+        crate::runtime::InProcessTargets::record(
+            ("machine", crate::approvals::HUMAN_APPROVER),
+            (
+                crate::agent::TargetClass::Provisioned,
+                crate::agent::DeviceKind::VirtualMachine,
+            ),
+            "linux",
+            self.workspace.shell_spec(),
+        )
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

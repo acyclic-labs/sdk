@@ -167,6 +167,10 @@ pub enum Error {
     /// A persisted record of another format version, refused whole.
     #[error(transparent)]
     UnsupportedRecordVersion(crate::agent::UnsupportedRecordVersion),
+    /// A command's execution target cannot take it: the call settles with
+    /// exactly this text and the run continues.
+    #[error("{0}")]
+    Target(crate::agent::TargetRefusal),
     /// A Machines provider failure with no operation receipt, keeping its exact cause.
     #[cfg(feature = "machines")]
     #[error("Machines {0}")]
@@ -415,7 +419,7 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
     use acyclic_machines::ProviderError as Machines;
     match cause {
         Machines::NotFound(_) => ErrorCode::NotFound,
-        Machines::Conflict(_) => ErrorCode::Conflict,
+        Machines::Conflict(_) | Machines::FailedPrecondition(_) => ErrorCode::Conflict,
         Machines::Unsupported(_) => ErrorCode::Unsupported,
         Machines::Invalid(_) | Machines::Rejected(_) => ErrorCode::Invalid,
         Machines::Indeterminate(_)
@@ -490,6 +494,11 @@ impl Error {
             Self::Indeterminate(_)
             | Self::CommandIndeterminate { .. }
             | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
+            Self::Target(refusal) => match refusal.refused {
+                crate::agent::Refused::Unknown => ErrorCode::NotFound,
+                crate::agent::Refused::Offline => ErrorCode::Unsupported,
+                crate::agent::Refused::Declined(_) => ErrorCode::Unauthorized,
+            },
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
             Self::ModelDiagnostic { code, .. } => *code,
@@ -635,6 +644,7 @@ impl Error {
             | Self::Indeterminate(_)
             | Self::CommandIndeterminate { .. }
             | Self::UnsupportedRecordVersion(_)
+            | Self::Target(_)
             | Self::SearchPublicationDeferred => false,
             Self::ModelDiagnostic { .. } => false,
             #[cfg(feature = "machines")]

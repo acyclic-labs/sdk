@@ -8,10 +8,14 @@ let provider = acyclic_machines::local::provider(
     observation.clone(), native_options, streams, journal_path,
 ).await?; // Arc<dyn MachinesProvider>
 let host = MachinesHost::new(provider, provider_ref)?;
-let tools = host.workspace(observation, &selected_volume, original_scope, verifier)?
-    .with_shell(resolved_shell, &acyclic_host_platform::shell::PLATFORM)?;
-// The server and local application both install these same workspace tools.
-bindings.workspace_tools = Some(Arc::new(tools));
+let tools = Arc::new(host.workspace(observation, &selected_volume, original_scope, verifier)?
+    .with_shell(resolved_shell, &acyclic_host_platform::shell::PLATFORM)?);
+// The server and local application both install this same home target.
+let home = InProcessTargets::record(
+    ("machine", owner), (TargetClass::Attached, DeviceKind::Desktop),
+    std::env::consts::OS, tools.shell_spec(),
+);
+bindings.targets = Some(Arc::new(InProcessTargets::home(home, tools)?));
 ```
 
 `native_options` is `local::LocalOptions { cwd, environment, process_custody }`,

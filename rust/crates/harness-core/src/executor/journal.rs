@@ -170,6 +170,24 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// [`Self::append_if_tail`], with `dispatch` appended in the same commit:
+    /// the observation and the record it dispatches both land, or neither.
+    fn dispatch_if_tail<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _expected_tail: u64,
+        _claim_id: &'a str,
+        _event: &'a ExecutionEvent,
+        _dispatch: &'a crate::tool::Dispatch,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal cannot dispatch with a claim",
+        ))
+    }
+
     /// Stages immutable private bytes before any referring observation is appended.
     fn stage<'a>(
         &'a self,

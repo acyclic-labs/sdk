@@ -75,8 +75,7 @@ where
         &self,
         summary: &mut ExecutionSummary,
         retry: [u8; 32],
-        event: &ExecutionEvent,
-        bytes: &OwnedBytes,
+        (event, bytes, dispatch): (&ExecutionEvent, &OwnedBytes, Option<&crate::tool::Dispatch>),
         io: Option<&PreparationIo>,
     ) -> Result<Option<Recovery>> {
         let operation = summary.operation.ok_or_else(|| invalid(io))?;
@@ -140,6 +139,7 @@ where
             head_tail,
             base,
             digest,
+            dispatch,
         };
         let committed = cut
             .publish(

@@ -8,8 +8,9 @@
 //! ([`AgentPath::status`], [`AgentPath::conversation`]) any client follows.
 
 use super::{
-    AgentHandler, AgentPath, Error, ForkAdopted, INBOX, InboxRecord, IntentId, Sender, Spawn,
-    SpawnOutcome, SpawnVolumes, Submitted, TurnDriver, archive, handler::Agents, send, submit,
+    AgentComposer, AgentHandler, AgentLifecycle, AgentPath, Error, ForkAdopted, INBOX, InboxRecord,
+    IntentId, Sender, Spawn, SpawnOutcome, SpawnVolumes, Submitted, TurnDriver, archive,
+    handler::Agents, send, submit,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -47,6 +48,7 @@ pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
     agents: Agents<P>,
     runtime: Runtime<P>,
     within: ActorReference,
+    lifecycle: Option<Arc<dyn AgentLifecycle>>,
 }
 
 /// The agents' actor store in `provider`'s domain, under [`super::ACTORS`].
@@ -67,7 +69,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         limits: ActorLimits,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, Error> {
-        Self::build(provider, driver, within, limits, clock, None)
+        Self::composing(provider, driver, within, limits, clock, None, None)
     }
 
     /// Host whose spawns create each child's volumes through `volumes`, in the
@@ -80,25 +82,48 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         clock: Arc<dyn Clock>,
         volumes: Arc<dyn SpawnVolumes>,
     ) -> Result<Self, Error> {
-        Self::build(provider, driver, within, limits, clock, Some(volumes))
+        Self::composing(provider, driver, within, limits, clock, Some(volumes), None)
     }
 
-    fn build<D: TurnDriver + 'static>(
+    /// Host whose spawns create children's volumes through `volumes`, and
+    /// whose agents' resources `lifecycle` parks on pause and releases in each
+    /// agent's closing step, before that step commits.
+    pub fn composing<D: TurnDriver + 'static>(
         provider: Arc<P>,
         driver: D,
         within: ActorReference,
         limits: ActorLimits,
         clock: Arc<dyn Clock>,
         volumes: Option<Arc<dyn SpawnVolumes>>,
+        lifecycle: Option<Arc<dyn AgentLifecycle>>,
     ) -> Result<Self, Error> {
-        let handler = AgentHandler::new(actor_store(&provider)?, driver, limits)
+        let mut handler = AgentHandler::new(actor_store(&provider)?, driver, limits)
             .map_err(|_| Error::Record("agent handler manifest"))?;
-        let handler = match &volumes {
-            Some(volumes) => handler.with_spawn_volumes(volumes.clone()),
-            None => handler,
+        if let Some(volumes) = &volumes {
+            handler = handler.with_spawn_volumes(volumes.clone());
+        }
+        if lifecycle.is_some() {
+            handler = handler.with_close();
+        }
+        let composer: Option<Arc<dyn Composer>> = match (&volumes, &lifecycle) {
+            (None, None) => None,
+            _ => Some(Arc::new(AgentComposer::new(volumes, lifecycle.clone()))),
         };
-        let composer = volumes.map(|volumes| volumes as Arc<dyn Composer>);
-        Self::hosting(provider, within, Arc::new(handler), clock, composer)
+        let host = Self::hosting(provider, within, Arc::new(handler), clock, composer)?;
+        Ok(match lifecycle {
+            Some(lifecycle) => host.with_lifecycle(lifecycle),
+            None => host,
+        })
+    }
+
+    /// Parks what each agent holds when [`Self::pause`] pauses it. A host
+    /// from [`Self::hosting`] releases the same resources on archive by
+    /// passing an [`AgentComposer`] with `lifecycle` and a handler built
+    /// with [`AgentHandler::with_close`].
+    #[must_use]
+    pub fn with_lifecycle(mut self, lifecycle: Arc<dyn AgentLifecycle>) -> Self {
+        self.lifecycle = Some(lifecycle);
+        self
     }
 
     /// Host for agents whose turns run in `handler`, such as the agent guest
@@ -123,6 +148,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             runtime: Runtime::new(published, handler, clock).claiming(&within),
             provider,
             within,
+            lifecycle: None,
         })
     }
 
@@ -340,14 +366,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         self.deliver(target, archive(target, by, id)?).await
     }
 
-    /// Durably pause or resume one agent. A paused agent consumes nothing.
+    /// Durably pause or resume one agent. A paused agent consumes nothing:
+    /// its resources are parked too (its Machines suspended), and its next
+    /// use after resuming wakes them.
     pub async fn pause(&self, agent: &AgentPath, paused: bool) -> Result<(), Error> {
         let actor = self.actor(agent)?;
         self.runtime.track(actor.clone()).map_err(actor_error)?;
         self.runtime
             .pause(&actor, paused)
             .await
-            .map_err(actor_error)
+            .map_err(actor_error)?;
+        match &self.lifecycle {
+            Some(lifecycle) if paused => lifecycle.pause(agent).await,
+            _ => Ok(()),
+        }
     }
 
     /// Host an agent created elsewhere (for example after reopening), so its

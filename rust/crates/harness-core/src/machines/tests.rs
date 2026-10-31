@@ -30,6 +30,11 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
             false,
         ),
         (
+            ProviderError::FailedPrecondition(acyclic_machines::Precondition::LiveForks),
+            ErrorCode::Conflict,
+            false,
+        ),
+        (
             ProviderError::Unsupported("m".into()),
             ErrorCode::Unsupported,
             false,
@@ -255,7 +260,8 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
                 crate::tools::ShellInput {
                     command: "true".into(),
                     cwd: None,
-                    timeout: None
+                    timeout: None,
+                    target: None
                 },
                 1024
             )

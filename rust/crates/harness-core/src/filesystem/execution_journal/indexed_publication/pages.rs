@@ -15,6 +15,8 @@ pub(super) struct Cut<'a> {
     pub(super) head_tail: u64,
     pub(super) base: u64,
     pub(super) digest: [u8; 32],
+    /// A record the journal entry dispatches, appended in its commit.
+    pub(super) dispatch: Option<&'a crate::tool::Dispatch>,
 }
 
 impl Cut<'_> {
@@ -57,6 +59,11 @@ impl Cut<'_> {
                 std::slice::from_ref(observation),
             )?;
             add_records(&mut request, self.head, std::slice::from_ref(checkpoint))?;
+            if let Some(dispatch) = self.dispatch {
+                for (path, record) in [&dispatch.delivery, &dispatch.activation] {
+                    add_records(&mut request, path, std::slice::from_ref(record))?;
+                }
+            }
         }
         add_records(&mut request, self.pages, records)?;
         Ok(request)
@@ -178,7 +185,19 @@ impl Cut<'_> {
         match outcome {
             CommitOutcome::Conflict(_) => Ok(false),
             CommitOutcome::Committed(receipt) => {
-                if receipt.appends.len() != 3
+                // The dispatched record lands at whatever its stream's tail is.
+                let dispatched = self.dispatch.is_none_or(|dispatch| {
+                    [&dispatch.delivery, &dispatch.activation]
+                        .iter()
+                        .all(|(path, _)| {
+                            receipt.appends.iter().any(|append| {
+                                append.path == *path
+                                    && append.start.checked_add(1) == Some(append.tail)
+                            })
+                        })
+                });
+                if receipt.appends.len() != if self.dispatch.is_some() { 5 } else { 3 }
+                    || !dispatched
                     || !receipt.forks.is_empty()
                     || !confirms(
                         receipt,

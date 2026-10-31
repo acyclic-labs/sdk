@@ -1429,9 +1429,19 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
     let replayed = request
         .messages
         .iter()
-        .filter(|message| message.role == ModelRole::User)
+        .filter(|message| message.role == ModelRole::User && !is_roster(&message.content))
         .map(|message| attached(&message.content))
         .collect::<Vec<_>>();
     assert_eq!(replayed, vec![MENTIONS + 1, 1]);
     Ok(())
+}
+
+/// Whether `content` is a roster announcement: its own message, one staged
+/// roster file and nothing else ([`crate::agent::roster_message`]).
+fn is_roster(content: &crate::model::ModelContent) -> bool {
+    matches!(
+        content,
+        crate::model::ModelContent::Part(crate::model::ModelContentPart::File { file, .. })
+            if file.path().contains("/targets/")
+    )
 }

@@ -147,7 +147,13 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
         };
         let tool = executor.tools.get(&invocation.name, None, None)?.unwrap();
         let started = StockExecution::ordinary(&executor)
-            .require_tool_policy(&journal, invocation.operation_id, &invocation, tool, true)
+            .require_tool_policy(
+                &journal,
+                invocation.operation_id,
+                &invocation,
+                (tool, None),
+                true,
+            )
             .await;
         if deny {
             assert!(

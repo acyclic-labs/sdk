@@ -9,8 +9,8 @@ event stream. `read_file` and `write_file` use the native binary file primitives
 with an absolute guest path, exact offset and original deadline. `suspend` and
 `destroy` retain the caller's original idempotency key on uncertain outcomes.
 
-Bind `MachinesWorkspace` as `runtime::Bindings::workspace_tools` for the standard
-`shell` tool. Construct it from the selected machine, volume, original signed
+Bind `MachinesWorkspace` as the home target of `runtime::Bindings::targets`
+(`runtime::InProcessTargets::home`) for the standard `shell` tool. Construct it from the selected machine, volume, original signed
 parent scope and its `AuthorityVerifier`. It checks both parent and task grants,
 uses the shared Linux bash invocation, and sends the earlier of authenticated
 parent expiry and task deadline. The standard input schema and 300 second

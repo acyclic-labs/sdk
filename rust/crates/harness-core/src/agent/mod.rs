@@ -22,6 +22,8 @@ mod host;
 mod input;
 pub mod kernel;
 mod layout;
+mod lifecycle;
+pub use lifecycle::{AgentComposer, AgentLifecycle, CLOSE};
 mod lower;
 mod machine;
 pub(crate) mod records;
@@ -29,6 +31,11 @@ mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
 mod slots;
+mod targets;
+pub use targets::{
+    DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,
+    TargetRecord, TargetRefusal, TargetState, USER_PREFIX,
+};
 mod volumes;
 pub use volumes::SpawnVolumes;
 
@@ -39,12 +46,15 @@ pub use commit::{
 };
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutcome,
-    TurnOutputs, approval_intent, expand_attachments, model_input, turn_id, turn_segment,
+    TurnOutputs, approval_intent, expand_attachments, model_input, roster_message, turn_id,
+    turn_roster, turn_segment,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
-pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
+pub use layout::{
+    ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
+};
 pub use lower::{delivery_key, lower};
 pub use machine::{
     AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,

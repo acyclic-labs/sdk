@@ -161,6 +161,13 @@ impl TurnContext for LocalContext {
             Ok(executor)
         })
     }
+
+    /// Every agent of the tree runs on its one home target, the checkout
+    /// (a child on its fork view of it).
+    fn roster(&self, _: &AgentState) -> Option<Arc<crate::agent::Roster>> {
+        let local = self.0.upgrade()?;
+        local.harness.targets().map(|targets| targets.roster())
+    }
 }
 
 impl LocalHarness {
@@ -207,7 +214,7 @@ impl LocalHarness {
                 )
                 .await?;
             return Ok(self.harness.with_workspace(
-                Some(tools),
+                Some(home(tools)?),
                 crate::runtime::ContentBindings {
                     reader: Arc::clone(&authority.content.reader),
                     writer: Some(writer),
@@ -231,6 +238,23 @@ impl LocalHarness {
         ))
     }
 }
+
+/// The tree's one execution target: this host's checkout, run by `tools`
+/// and guarded by its one human. Every agent's fork view runs on it.
+pub(super) fn home(
+    tools: Arc<dyn crate::tool::ToolExecutor>,
+) -> Result<Arc<dyn crate::runtime::TargetResolver>> {
+    let record = crate::runtime::InProcessTargets::local_record(
+        HOME_TARGET,
+        crate::approvals::HUMAN_APPROVER,
+    );
+    Ok(Arc::new(crate::runtime::InProcessTargets::home(
+        record, tools,
+    )?))
+}
+
+/// The name of a local tree's home target.
+const HOME_TARGET: &str = "local";
 
 /// A native host's agents: it owns their loop and tool execution, so none
 /// of their turns runs here.

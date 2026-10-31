@@ -41,6 +41,8 @@ pub mod context;
 pub mod contract;
 pub mod conversation;
 pub mod core;
+#[cfg(all(feature = "machines", not(target_arch = "wasm32")))]
+pub mod devices;
 #[cfg(feature = "filesystem")]
 pub mod distributed;
 mod effects;

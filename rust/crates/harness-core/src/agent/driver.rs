@@ -52,6 +52,11 @@ pub struct OpenTurn {
     /// The input the executor runs, with its attachment manifests expanded
     /// ([`expand_attachments`]); `None` runs the input as given.
     pub input: Option<ModelContent>,
+    /// The roster this turn announces, staged, and its digest: present only
+    /// when it differs from the one the agent last announced
+    /// ([`AgentState::roster`]). It is decided once, when the turn starts,
+    /// and `selected` carries it as its own message before the input.
+    pub roster: Option<(FileRef, [u8; 32])>,
 }
 
 fn is_manifest(part: &ModelContentPart) -> bool {
@@ -192,6 +197,11 @@ pub struct ConversationEntry {
     #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<OperationId>,
+    /// The execution-target roster this turn announced before its input,
+    /// staged on the agent's private volume; absent while it is unchanged.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef", optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<FileRef>,
 }
 
 impl ConversationEntry {
@@ -246,10 +256,11 @@ fn encode(input: &impl Serialize) -> Result<Vec<u8>, Error> {
         .map_err(|_| Error::Record("turn input does not encode"))
 }
 
-/// The driver's checkpoint of a turn in progress: the input that started it
-/// and how many of its effect segments already committed. A turn commits its
-/// recorded effects whenever a later call waits on them (see
-/// [`super::TurnEffects::holds`]) and continues in the next segment.
+/// The driver's checkpoint of a turn in progress: the input that started it,
+/// the roster it announced, and how many of its effect segments already
+/// committed. A turn commits its recorded effects whenever a later call waits
+/// on them (see [`super::TurnEffects::holds`]) and continues in the next
+/// segment.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Checkpoint {
@@ -257,6 +268,10 @@ struct Checkpoint {
     input: TurnInput,
     #[serde(default)]
     segment: u32,
+    /// Kept for the whole turn, so a resumed turn sends the request it
+    /// started with; a roster change meanwhile is the next turn's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    roster: Option<(FileRef, [u8; 32])>,
 }
 
 /// The input of the turn a step continues (kept in the checkpoint) and its
@@ -275,6 +290,7 @@ fn starting(agent: &AgentState, input: Option<Queued>) -> Result<(Queued, u32), 
                 inbox,
                 input,
                 segment,
+                ..
             } = checkpoint(agent)?.ok_or(Error::Record("resume without a turn in progress"))?;
             Ok((Queued { inbox, input }, segment))
         }
@@ -302,6 +318,16 @@ fn checkpoint(agent: &AgentState) -> Result<Option<Checkpoint>, Error> {
 /// When the turn's checkpoint is malformed.
 pub fn turn_segment(agent: &AgentState) -> Result<u32, Error> {
     Ok(checkpoint(agent)?.map_or(0, |checkpoint| checkpoint.segment))
+}
+
+/// The roster announcement of `agent`'s turn in progress, decided when it
+/// started (`Some(None)`: it announced none); `None` when a new turn starts
+/// and decides its own.
+///
+/// # Errors
+/// When the turn's checkpoint is malformed.
+pub fn turn_roster(agent: &AgentState) -> Result<Option<Option<(FileRef, [u8; 32])>>, Error> {
+    Ok(checkpoint(agent)?.map(|checkpoint| checkpoint.roster))
 }
 
 /// Model-visible content of a turn input: a message or event file as a file
@@ -365,6 +391,18 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
     })
 }
 
+/// The model message announcing the roster staged as `roster`: one file and
+/// nothing else, its own message before the announcing turn's input. So it
+/// takes nothing from any input's attachment or render budget; the static
+/// `shell` description says how to read it.
+#[must_use]
+pub fn roster_message(roster: &FileRef) -> ModelContent {
+    ModelContent::Part(ModelContentPart::File {
+        file: roster.clone(),
+        policy: FileProjectionPolicy::BoundedFull,
+    })
+}
+
 fn host_error(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))
 }
@@ -420,20 +458,30 @@ async fn settle_selection(
         output,
         outcome: TurnOutcome::Completed,
         goal: None,
+        targets: None,
     };
     Ok(TurnStep {
         reserved_children: 0,
         checkpoint: None,
-        outs: settled(&entry)?,
+        outs: settled(&entry, open)?,
         wait: Wait::Input,
         drops: None,
     })
 }
 
+/// An entry's append, recording the roster it announced.
+fn appended(entry: &ConversationEntry, open: &OpenTurn) -> Result<Vec<Out>, Error> {
+    let mut outs = vec![Out::Conversation(entry.encode()?)];
+    if let (Some(_), Some((_, digest))) = (&entry.targets, &open.roster) {
+        outs.push(Out::Roster(*digest));
+    }
+    Ok(outs)
+}
+
 /// A settled entry's appends: the entry, indexed as the agent's latest
 /// checkpoint when it is one.
-fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
-    let mut outs = vec![Out::Conversation(entry.encode()?)];
+fn settled(entry: &ConversationEntry, open: &OpenTurn) -> Result<Vec<Out>, Error> {
+    let mut outs = appended(entry, open)?;
     if entry.checkpoint().is_some() {
         outs.push(Out::Checkpoint);
     }
@@ -441,6 +489,11 @@ fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
         outs.push(Out::GoalCompleted { run });
     }
     Ok(outs)
+}
+
+/// The roster file a turn's entry names: the one it announced.
+fn announced(open: &OpenTurn) -> Option<FileRef> {
+    open.roster.as_ref().map(|(file, _)| file.clone())
 }
 
 /// Every settled turn commits its already-recorded actions, including a turn
@@ -506,11 +559,12 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     output: stage_text(&open, turn, partial).await?,
                     outcome: TurnOutcome::Cancelled,
                     goal,
+                    targets: announced(&open),
                 };
                 return Ok(TurnStep {
                     reserved_children: 0,
                     checkpoint: None,
-                    outs: settled(&entry)?,
+                    outs: settled(&entry, &open)?,
                     wait: Wait::Input,
                     drops: None,
                 });
@@ -562,12 +616,13 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         output,
                         outcome: TurnOutcome::Completed,
                         goal: run,
+                        targets: announced(&open),
                     };
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = if goal.is_some() {
-                        vec![Out::Conversation(entry.encode()?)]
+                        appended(&entry, &open)?
                     } else {
-                        settled(&entry)?
+                        settled(&entry, &open)?
                     };
                     outs.extend(goal);
                     // Every agent waits for input once its turn settles: a child
@@ -604,6 +659,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             inbox,
                             input,
                             segment,
+                            roster: open.roster.clone(),
                         })?),
                         reserved_children: 0,
                         outs,
@@ -631,6 +687,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             inbox,
                             input,
                             segment,
+                            roster: open.roster.clone(),
                         })?),
                         reserved_children,
                         outs: Vec::new(),
@@ -669,6 +726,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             inbox,
                             input,
                             segment,
+                            roster: open.roster.clone(),
                         })?),
                         reserved_children,
                         outs,

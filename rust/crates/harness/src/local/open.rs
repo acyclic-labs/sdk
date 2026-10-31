@@ -396,7 +396,7 @@ impl Opening {
         let harness = crate::runtime::Bindings {
             scope,
             content: Some(crate::runtime::ContentBindings { reader, writer }),
-            workspace_tools,
+            targets: workspace_tools.map(super::agents::home).transpose()?,
             ..crate::runtime::Bindings::local()
         }
         .build()?;
