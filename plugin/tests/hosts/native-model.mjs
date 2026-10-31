@@ -21,7 +21,6 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
    '--config','model_providers.mock.requires_openai_auth=false','--model','tiny',
    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
-  if(!installed)policy.push('--config','plugins."acyclic@acyclic".enabled=false');
   return {policy,args:[...policy,'exec','--json',input?'-':prompt]};
  }
  if(host==='claude-code') {
@@ -48,7 +47,11 @@ export async function installedHost({host,processes,fixture,capture,tools,native
  const native=await nativeHost(host,fixture.env);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
- assert.ok(fixture.url,'step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs');
+ let endpoint;
+ try {endpoint=new URL(fixture.url);}
+ catch(cause) {throw new Error('step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs',{cause});}
+ assert.ok(endpoint.protocol==='http:'&&endpoint.hostname==='127.0.0.1',
+  'step=admit mock endpoint; recovery=supply the original loopback fixture.url');
  const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
  env.PATH=[dirname(native.entry),native.path,env.PATH].join(delimiter);
  let step='stage native package';

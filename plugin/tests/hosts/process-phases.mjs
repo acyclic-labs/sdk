@@ -28,6 +28,11 @@ export class ProcessPhases {
   this.#times[event.phase]=event.elapsed_seconds;
   if(event.phase==='node-exit')this.#exit={code:event.code,signal:event.signal};
  }
+ snapshot() {
+  return {schema:'acyclic.direct-process-phases.v1',operation:this.#operation,ordinal:this.#ordinal,report:this.#report,
+   clock:'node-launch-relative-seconds',offsets:{...this.#times},exit:this.#exit,
+   child_consumption:null,pipe_read_arrival:null,native_tree_retirement:null,warm_turn:null};
+ }
  complete(result) {
   for(const phase of required)assert.ok(Object.hasOwn(this.#times,phase),'missing original phase: '+phase);
   assert.ok(!Object.hasOwn(this.#times,'stdin-write-failed'),'original input write failed');
@@ -38,12 +43,10 @@ export class ProcessPhases {
   assert.ok(t['node-exit']<=t['node-close']&&t['node-close']<=t.closed);
   // Keep raw offsets so overlapping EOF/exit and async file-write completion
   // cannot be turned into invented, sequential native execution intervals.
-  return {schema:'acyclic.direct-process-phases.v1',operation:this.#operation,ordinal:this.#ordinal,report:this.#report,
-   clock:'node-launch-relative-seconds',offsets:{...t},exit:this.#exit,
+  return {...this.snapshot(),
    intervals:{launch_to_spawn:t['node-spawn'],
     input_pipe_acceptance:t['stdin-write-complete']-t['stdin-write-admitted'],
-    exit_to_closed:t.closed-t['node-exit'],launch_to_closed:t.closed},
-   child_consumption:null,pipe_read_arrival:null,native_tree_retirement:null,warm_turn:null};
+    exit_to_closed:t.closed-t['node-exit'],launch_to_closed:t.closed}};
  }
 }
 

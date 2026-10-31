@@ -2,17 +2,25 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
+import {rm} from 'node:fs/promises';
+import {join} from 'node:path';
 import {createModels} from '@earendil-works/pi-ai/models';
+import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
+import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
+import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
+import {nativeHost} from './native-host.mjs';
+import {launchNativeHost} from './native-model.mjs';
 import register from './keyless-pi-provider.mjs';
 
 // Exercise the actual lockfile-pinned native provider/auth/Responses path.
 // This is an unsupported-admission control, never an installed-host pass.
-test('pinned Pi retains native keyless refusal without a credential or HTTP request',async()=>{
+test('pinned Pi retains native keyless refusal without a credential or HTTP request',async t=>{
  const server=createServer((_request,response)=>{requests++;response.writeHead(500).end();});
  let requests=0;
  server.listen(0,'127.0.0.1');await once(server,'listening');
  const previous=process.env.ACYCLIC_E2E_MODEL_URL;
  process.env.ACYCLIC_E2E_MODEL_URL=`http://127.0.0.1:${server.address().port}/fixture/v1`;
+ const root=hostFixtureDirectory('native-keyless-'),scope=new Processes();
  try {
   let provider;
   register({registerProvider(value){assert.equal(provider,undefined);provider=value;}});
@@ -27,8 +35,15 @@ test('pinned Pi retains native keyless refusal without a credential or HTTP requ
   const result=await models.completeSimple(model,{messages:[{role:'user',content:'keyless admission',timestamp:0}]});
   assert.equal(result.stopReason,'error');
   assert.match(result.errorMessage,/step=admit Pi keyless Responses provider: No API key for provider: fixture/);
+  const env=environment(join(root,'profile')),native=await nativeHost('pi',env);
+  const launch=await launchNativeHost('pi',{url:process.env.ACYCLIC_E2E_MODEL_URL,env,prompt:'keyless admission'});
+  const completed=await scope.runOwned(native.program,[...native.args,...launch.args],{cwd:root,env});
+  t.diagnostic(JSON.stringify({native_entry:native.entry,...completed}));
+  assert.notEqual(completed.code,0,'unsupported native provider must not report successful coding');
+  assert.match(completed.stdout+completed.stderr,/step=admit Pi keyless Responses provider: No API key for provider: fixture/);
   assert.equal(requests,0,'no credential/fetch shim may silently admit a different native request');
  } finally {
+  await scope.close();await rm(root,{recursive:true,force:true});
   if(previous===undefined)delete process.env.ACYCLIC_E2E_MODEL_URL;
   else process.env.ACYCLIC_E2E_MODEL_URL=previous;
   await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));

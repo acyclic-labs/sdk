@@ -15,9 +15,10 @@ import {ProcessPhases,pairPhases} from './process-phases.mjs';
 
 const digest=async path=>createHash('sha256').update(await readFile(path)).digest('hex');
 const quote=text=>"'"+text.replaceAll("'","'\\''")+"'";
-export async function nativePair({host,binary,mock,plugin,output,source}) {
+export async function nativePair({host,binary,mock,plugin,output,source,artifactSource=source}) {
  assert.ok(['codex','claude-code'].includes(host),'step=pair native host; recovery=select codex or claude-code; Pi keyless admission is unsupported');
  assert.match(source??'',/^[0-9a-f]{40}$/,'step=bind pair source; recovery=set E2E_SOURCE to the exact admitted source commit');
+ assert.match(artifactSource??'',/^[0-9a-f]{40}$/,'step=bind pair artifact source; recovery=set E2E_ARTIFACT_SOURCE to the original executable source');
  for(const path of [binary,mock,plugin,output])assert.ok(isAbsolute(path),'step=admit pair paths; recovery=supply absolute GRAPHCODER MOCK_MODEL PLUGIN OUTPUT');
  const workspace=join(output,'workspace'),settings=join(output,'profile');
  await mkdir(workspace,{recursive:true});await mkdir(join(output,'transcripts'));
@@ -41,11 +42,11 @@ export async function nativePair({host,binary,mock,plugin,output,source}) {
    server=scope.start(mock,['--script',join(output,'script.json'),'--record',join(output,'requests.jsonl')],{env});
    events=new Spool(server.child.stdout,server.closed,{transcript:join(output,'events.jsonl'),
     key:event=>event.event==='ready'?['ready']:[]});
-   env.E2E_MOCK_URL=`http://127.0.0.1:${(await events.keyed('ready')).port}/installed/v1`;
+   fixture.url=`http://127.0.0.1:${(await events.keyed('ready')).port}/installed/v1`;
   },run:()=>installedHost({host,processes:scope,fixture,capture:record=>captures.push(record),tools:[],
    nativePermissions:['Bash'],prompt,answer,execute:async({native,configuration,run})=>{
     const version=await run(native.program,[...native.args,'--version']);assert.equal(version.code,0,version.stderr);
-    const binding={source,host,host_entry_sha256:await digest(native.entry),
+    const binding={source,artifact_source:artifactSource,host,host_entry_sha256:await digest(native.entry),
      host_version:version.stdout.trim(),
      host_lock_sha256:await digest(fileURLToPath(new URL('./package-lock.json',import.meta.url))),
      artifacts:{graphcoder:await digest(binary),mock:await digest(mock),plugin:await digest(plugin)},
@@ -54,11 +55,19 @@ export async function nativePair({host,binary,mock,plugin,output,source}) {
     await json(join(output,'binding.json'),binding);
     setupSeconds=(performance.now()-setupOrigin)/1000;
     for(const mode of ['bare','installed']) {
+     // CLI config overrides do not remove the pinned host's advertised plugin
+     // tools. Use its original plugin manager, outside both measured launches.
+     if(host==='codex') {
+      const changed=mode==='bare'
+       ?await run(native.program,[...native.args,'plugin','remove','acyclic@acyclic','--json'])
+       :await run(plugin,['install','codex','--plugin-root',configuration.packageRoot]);
+      assert.equal(changed.code,0,changed.stderr);
+     }
      await rm(join(workspace,'parent.txt'),{force:true});
      const operation=randomUUID();collector=new ProcessPhases(operation);
      const legEnv={...configuration.env};
      const launch=await launchNativeHost(host,{...configuration,env:legEnv,
-      url:env.E2E_MOCK_URL.replace('/installed/','/'+mode+'/'),installed:mode==='installed',input:true});
+      url:fixture.url.replace('/installed/','/'+mode+'/'),installed:mode==='installed',input:true});
      legEnv.ACYCLIC_HOST_ARGS=JSON.stringify(launch.policy);
      // Direct launch is essential: the owned wrapper's stdin is a cancellation
      // control, not this host's prompt pipe. The caller must also retain its
@@ -84,14 +93,20 @@ export async function nativePair({host,binary,mock,plugin,output,source}) {
   await json(join(output,'pair.json'),{...pair,case:result,physical_custody:'requires enclosing original completion receipt',
    fixture_setup_seconds:setupSeconds,setup_and_case_seconds:result.total_seconds,requests:records});
   return pair;
- } finally {await scope.close();await json(join(output,'captures.json'),captures);}
+ } finally {
+  try {await scope.close();}
+  finally {
+   await json(join(output,'captures.json'),captures);
+   await json(join(output,'phases.json'),{samples,current:collector?.snapshot()});
+  }
+ }
 }
 
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
  const [host,binary,mock,plugin,output,...extra]=process.argv.slice(2);
  try {
   assert.equal(extra.length,0);
-  await nativePair({host,binary,mock,plugin,output,source:process.env.E2E_SOURCE});
+  await nativePair({host,binary,mock,plugin,output,source:process.env.E2E_SOURCE,artifactSource:process.env.E2E_ARTIFACT_SOURCE??process.env.E2E_SOURCE});
  } catch(error) {
   console.error(`step=deterministic native pair: ${error.stack}; recovery=node plugin/tests/hosts/native-pairs.mjs HOST GRAPHCODER MOCK_MODEL PLUGIN NEW_OUTPUT with exact admitted E2E_SOURCE`);
   process.exitCode=1;
