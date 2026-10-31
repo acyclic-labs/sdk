@@ -17,8 +17,6 @@ use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 /// Session admission version. Checked before credentials or the first request.
 pub const VERSION: u32 = 2;
 
-mod admission;
-pub use admission::{Admission, CapabilityVerifier, CredentialVerifier};
 mod authority;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
