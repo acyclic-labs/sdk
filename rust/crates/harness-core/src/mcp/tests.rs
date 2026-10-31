@@ -276,6 +276,41 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
     assert!(registry.get("mcp.fixture.a", Some("1"), None)?.is_some());
     assert!(registry.get("mcp.fixture.b", Some("1"), None)?.is_some());
     assert!(registry.get("mcp.fixture.a", Some("2"), None)?.is_some());
+
+    let names: Vec<_> = (0..33).map(|index| format!("tool{index}")).collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
+    let mut unlimited = catalog("3", &names);
+    unlimited.tools[0].description = "x".repeat(131_072);
+    let approval = CatalogApproval {
+        operation: OperationId::from_bytes([52; 16]),
+        interaction: InteractionId::from_bytes([53; 16]),
+        digest: unlimited.installation_digest(Some(&replacement), None, None)?,
+        reads: AtomicUsize::new(0),
+    };
+    for bounds in [(Some(8), None), (None, Some(8192)), (None, None)] {
+        let result = unlimited
+            .install_scoped(
+                &mut registry,
+                Some(&replacement),
+                (&bound, &projection),
+                (approval.operation, approval.interaction),
+                (&scope, &verifier, &approval),
+                bounds,
+            )
+            .await;
+        if bounds == (None, None) {
+            result?;
+            let definitions = registry.definitions(None)?;
+            assert_eq!(definitions.len(), 33);
+            assert_eq!(definitions[0].description.len(), 131_072);
+        } else {
+            assert!(result.is_err());
+            assert!(registry.definitions(None)?.is_empty());
+            assert_eq!(approval.reads.load(Ordering::SeqCst), 0);
+        }
+    }
+    assert_eq!(approval.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(transport.0.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
