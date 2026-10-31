@@ -1,5 +1,8 @@
 use super::*;
-use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamError};
+use acyclic_stream::{
+    AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamError,
+    StreamProviderExt,
+};
 use futures::TryStreamExt;
 use std::sync::{
     Arc,
@@ -11,7 +14,7 @@ async fn terminal_source_releases_the_follow_without_reading_a_later_record()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = MemoryStream::default();
     let path = StreamPath::new("monitor/source")?;
-    provider
+    let AppendOutcome::Committed(published) = provider
         .append(AppendRequest {
             path: path.clone(),
             records: vec![
@@ -21,7 +24,10 @@ async fn terminal_source_releases_the_follow_without_reading_a_later_record()
             if_tail: Some(0),
             idempotency_key: IdempotencyKey::new(b"terminal-monitor".to_vec())?,
         })
-        .await?;
+        .await?
+    else {
+        return Err("source publication refused".into());
+    };
     let definition = Monitor {
         version: 1,
         id: IntentId::try_from("terminal".to_owned())?,
@@ -107,6 +113,8 @@ async fn terminal_source_releases_the_follow_without_reading_a_later_record()
             .await?;
         let mut selected = definition.clone();
         selected.cursor.next = next;
+        selected.cursor.preceding = (next != 0).then_some(*published.commit_id.as_bytes());
+        selected.validate()?;
         let mut follow = MonitorFollow {
             definition: selected,
             updates: Some(Box::pin(source.map_ok(FollowUpdate::Record))),
