@@ -110,6 +110,10 @@ Twenty additional `compact-medium-*` producers prepare an obsolete value using
 the original compaction chunk and retain a second live value. They require an
 actual sync and rename in the successful trace. Post-append maintenance faults
 must preserve the original successful mutation and both live/reopened values.
+Preparation reserves two payloads plus the original chunk as obsolete bytes,
+with checked allocation representability before IO. A named real-adapter
+regression covers payloads larger than that chunk, which otherwise need not
+trigger compaction and can cause a false fuzz crash.
 
 ```sh
 cargo run --features storage-schedules --example capture -- --accept-goldens
