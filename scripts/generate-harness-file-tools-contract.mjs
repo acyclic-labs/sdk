@@ -2,7 +2,7 @@ export const rust = [["acyclic-harness", "example", "file-tools-contract"]];
 
 export function render([stdout]) {
   const contract = JSON.parse(stdout);
-  const fields = ["exact_read", "file_result", "literal_search", "range_read", "source", "tool_definitions"];
+  const fields = ["authored_range_read", "exact_read", "file_result", "literal_search", "range_read", "source", "tool_definitions"];
   if (Object.keys(contract).sort().join(",") !== fields.join(",")) {
     throw new Error("Harness file-tool contract field inventory drift");
   }

@@ -49,7 +49,8 @@ function definition(variant: string): Definition {
 
 test("native file results and Full/Reference projections pass actual WASM contracts", () => {
   for (const [key, prefix] of [
-    ["range_read", "range_read"], ["literal_search", "literal_search"], ["exact_read", "exact_read"],
+    ["authored_range_read", "range_read"], ["range_read", "range_read"],
+    ["literal_search", "literal_search"], ["exact_read", "exact_read"],
   ] as const) {
     const value = fixture[key];
     const canonical = JSON.stringify(value.canonical);
@@ -64,8 +65,27 @@ test("native file results and Full/Reference projections pass actual WASM contra
       expect(() => contracts.validateToolProjection(tool, value.canonical, limits)).toThrow();
     }
     expect(JSON.stringify(value.canonical)).toBe(canonical);
-    expect(value.reference.parts[1].file).toEqual(fixture.source.file);
-    expect(value.reference.parts[1].policy).toBe("reference");
+    if (key === "authored_range_read") {
+      expect(value.canonical.file.authored.path).toBe(value.input.path);
+      expect(value.full).toEqual({
+        kind: "json", value: { ...value.reference.value, text: value.canonical.text },
+      });
+      expect(value.reference).toEqual({
+        kind: "json", value: { path: value.input.path, version: value.full.value.version },
+      });
+      expect(value.full.value.version.startsWith("authored-file-v1:")).toBe(true);
+      expect(JSON.parse(value.full.value.version.slice("authored-file-v1:".length)))
+        .toEqual(value.canonical.file.authored);
+      const wrongSource = structuredClone(value.canonical);
+      wrongSource.file.authored.generation.kind = "workspace";
+      expect(() => contracts.validateToolResult(definition("range_read_full"), { value: wrongSource })).toThrow();
+      const wrongProjection = structuredClone(value.reference);
+      delete wrongProjection.value.version;
+      expect(() => contracts.validateToolProjection(definition("range_read_reference"), wrongProjection, limits)).toThrow();
+    } else {
+      expect(value.reference.parts[1].file).toEqual(fixture.source.file);
+      expect(value.reference.parts[1].policy).toBe("reference");
+    }
   }
   for (const mode of ["full", "reference"]) {
     const tool = definition(`write_${mode}`);

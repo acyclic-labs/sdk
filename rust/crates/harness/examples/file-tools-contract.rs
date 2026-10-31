@@ -3,8 +3,10 @@
 
 use acyclic_harness::{
     AgentId, OperationId, Result,
-    conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    resources::ProviderRef,
+    conversation::{
+        FileDescriptor, FilePathSelection, FileRef, VolumeClass, VolumeOwner, VolumeRef,
+    },
+    resources::{GenerationRef, ProviderRef},
     tool::{
         Tool, ToolInvocation, ToolProjection, ToolResult,
         files::{self, FileProjection, FileResult, ReadFileInput, ReadFileResult},
@@ -108,6 +110,28 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             text: read.into(),
         })?,
     };
+    let authored_input = ReadFileInput {
+        version: None,
+        ..read_input.clone()
+    };
+    let authored_invocation = invocation("read", value(&authored_input)?);
+    let authored_result = ToolResult {
+        value: value(ReadFileResult {
+            file: files::FileReadSource::Authored(FilePathSelection {
+                volume: file.volume().clone(),
+                path: file.path().into(),
+                generation: GenerationRef::new(
+                    file.volume().provider(),
+                    b"generation-1",
+                    None,
+                    None,
+                )?
+                .0,
+                byte_length: source.len() as u64,
+            }),
+            text: read.into(),
+        })?,
+    };
     let search_input = SearchInput {
         file: file.clone(),
         query: "aba".into(),
@@ -148,6 +172,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         json!({
             "tool_definitions":definitions,
             "source":{"file":file,"text":source},
+            "authored_range_read":{
+                "input":authored_input,"canonical":authored_result.value,
+                "full":FileProjection::Read(ProjectionMode::Full).project(&authored_invocation,&authored_result,None)?.0,
+                "reference":FileProjection::Read(ProjectionMode::Reference).project(&authored_invocation,&authored_result,None)?.0,
+            },
             "range_read":{
                 "input":read_input,"canonical":read_result.value,
                 "full":FileProjection::Read(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,
