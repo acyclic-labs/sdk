@@ -413,3 +413,258 @@ async fn concurrent_hosts_cannot_share_an_incarnation() -> TestResult {
         .into()),
     }
 }
+
+/// Retains actual owned socket work until this deterministic executor runs or
+/// drops it. All publications still use the original MemoryStream producer.
+#[derive(Default)]
+struct HeldCloseExecutor {
+    tasks: std::sync::Mutex<VecDeque<BoxProviderFuture<'static, ()>>>,
+}
+
+impl Executor for HeldCloseExecutor {
+    fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
+        self.tasks.lock().unwrap().push_back(future);
+    }
+
+    fn sleep(&self, _milliseconds: u32) -> BoxProviderFuture<'static, ()> {
+        Box::pin(async { panic!("a decided socket operation must not retry") })
+    }
+}
+
+impl HeldCloseExecutor {
+    fn take(&self) -> Result<BoxProviderFuture<'static, ()>, &'static str> {
+        self.tasks
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or("missing owned close task")
+    }
+}
+
+/// The actual open producer creates its invocation, socket stream and ledger.
+/// Only the guest acceptance is supplied here; close custody starts afterwards.
+async fn admitted_close_fixture(
+    sockets: &Sockets<MemoryStream>,
+    label: &str,
+) -> Result<(String, StreamPath, oneshot::Receiver<Bytes>), Box<dyn std::error::Error>> {
+    let shared = &sockets.shared;
+    let actor = ActorReference::new(b"account", b"sockets", label.as_bytes())?;
+    let inbox = StreamPath::new(format!("close/{label}"))?;
+    let mut publication = PreparedPublish::foreign(IdempotencyKey::new(label.as_bytes().to_vec())?);
+    for effect in shared.store.create(
+        &actor,
+        BTreeMap::from([(
+            "inbox".into(),
+            super::super::Subscription {
+                path: inbox.clone(),
+                cursor: 0,
+            },
+        )]),
+        None,
+    )? {
+        publication.join(effect)?;
+    }
+    PreparedPublish::settle(
+        &shared
+            .store
+            .provider()
+            .commit(publication.into_request()?)
+            .await?,
+    )?;
+    let connection = format!(
+        "{}-{}",
+        shared.incarnation,
+        shared.next.fetch_add(1, Ordering::Relaxed)
+    );
+    let (outbound, _frames) = mpsc::channel(acyclic_stream::MAX_ITEMS);
+    let (final_frame, last) = oneshot::channel();
+    let (abandon, _abandoned) = oneshot::channel();
+    shared
+        .lock()
+        .actors
+        .entry(actor.clone())
+        .or_default()
+        .insert(connection.clone());
+    shared.lock().sockets.insert(
+        connection.clone(),
+        Entry {
+            actor: actor.clone(),
+            inbox: None,
+            phase: Phase::Opening {
+                committed: false,
+                pending: None,
+            },
+            tags: Vec::new(),
+            attachment: None,
+            answered_at: None,
+            outbound,
+            final_frame: Some(final_frame),
+            messages: 0,
+            inbound: VecDeque::new(),
+            draining: false,
+            peer_closed: false,
+            completion: None,
+            _abandon: abandon,
+        },
+    );
+    let open = SocketOpen {
+        actor,
+        subscription: "inbox".into(),
+        app_channel: None,
+        subprotocols: Vec::new(),
+        headers: Vec::new(),
+        resume_after: 0,
+        reconnected: false,
+    };
+    assert!(matches!(
+        shared.commit_open(&connection, &open).await?,
+        Opened::Committed(_)
+    ));
+    shared
+        .lock()
+        .sockets
+        .get_mut(&connection)
+        .ok_or(Error::Invalid("fixture lost its original open"))?
+        .phase = Phase::Open;
+    Ok((connection, inbox, last))
+}
+
+#[tokio::test]
+async fn close_custody_and_peer_terminal_order_use_original_publications() -> TestResult {
+    let executor = Arc::new(HeldCloseExecutor::default());
+    let sockets = Sockets::open(
+        Store::new(Arc::new(MemoryStream::default()), root()?),
+        executor.clone(),
+        Arc::new(SystemClock),
+    )
+    .await?;
+    let shared = &sockets.shared;
+    let (connection, inbox, last) = admitted_close_fixture(&sockets, "peer-order").await?;
+    shared.message(
+        &connection,
+        SocketPayload::Text {
+            text: "before".into(),
+        },
+    )?;
+    let first = Close::new(1000, "first", SocketCloseInitiator::Peer);
+    shared.peer_close(&connection, first);
+    for _ in 0..100_000 {
+        shared.peer_close(
+            &connection,
+            Close::new(1001, "later", SocketCloseInitiator::Peer),
+        );
+        shared.message(
+            &connection,
+            SocketPayload::Text {
+                text: "after".into(),
+            },
+        )?;
+    }
+    {
+        let table = shared.lock();
+        let entry = table
+            .sockets
+            .get(&connection)
+            .ok_or("lost queued peer close")?;
+        assert_eq!(
+            entry.inbound.len(),
+            2,
+            "only the preceding message and first Close survive"
+        );
+        assert_eq!(executor.tasks.lock().unwrap().len(), 1);
+    }
+    executor.take()?.await;
+    assert!(
+        matches!(SocketFrame::decode(&last.await?)?, SocketFrame::Close { code: 1000, reason, .. } if reason == "first")
+    );
+    assert_eq!(
+        records(&shared.store, &inbox).await?.len(),
+        3,
+        "original open, message, Close"
+    );
+    assert_eq!(
+        shared
+            .store
+            .provider()
+            .tail(shared.layout.socket(&connection)?)
+            .await?,
+        2
+    );
+    assert!(sockets.is_empty());
+
+    let (connection, inbox, last) = admitted_close_fixture(&sockets, "cancel-drain").await?;
+    let mut first = Box::pin(sockets.drain());
+    assert!(futures::poll!(&mut first).is_pending());
+    drop(first);
+    let mut later = Box::pin(sockets.drain());
+    assert!(futures::poll!(&mut later).is_pending());
+    assert_eq!(
+        executor.tasks.lock().unwrap().len(),
+        1,
+        "late drain joins the original owner"
+    );
+    executor.take()?.await;
+    assert!(later.await.is_ok());
+    assert!(matches!(
+        SocketFrame::decode(&last.await?)?,
+        SocketFrame::Close { code: 1001, .. }
+    ));
+    assert_eq!(records(&shared.store, &inbox).await?.len(), 2);
+    assert_eq!(
+        shared
+            .store
+            .provider()
+            .tail(shared.layout.socket(&connection)?)
+            .await?,
+        2
+    );
+
+    let (connection, inbox, last) = admitted_close_fixture(&sockets, "lost-producer").await?;
+    let mut waiting = Box::pin(sockets.drain());
+    assert!(futures::poll!(&mut waiting).is_pending());
+    drop(executor.take()?); // Drop the actual close future before its first poll.
+    assert!(matches!(
+        waiting.await,
+        Err(error) if matches!(error.as_ref(), Error::Stream(StreamError::Unavailable))
+    ));
+    assert!(
+        last.await.is_err(),
+        "producer loss cannot publish a successful Close"
+    );
+    assert_eq!(records(&shared.store, &inbox).await?.len(), 1);
+    assert_eq!(
+        shared
+            .store
+            .provider()
+            .tail(shared.layout.socket(&connection)?)
+            .await?,
+        1
+    );
+    assert!(
+        sockets.is_empty(),
+        "lost close work must retire its live entry"
+    );
+
+    let (connection, inbox, last) = admitted_close_fixture(&sockets, "refused-close").await?;
+    shared
+        .store
+        .provider()
+        .append(acyclic_stream::AppendRequest {
+            path: shared.layout.socket(&connection)?,
+            records: vec![Bytes::from_static(b"foreign close")],
+            if_tail: Some(1),
+            idempotency_key: IdempotencyKey::new(b"foreign-close".to_vec())?,
+        })
+        .await?;
+    let mut waiting = Box::pin(sockets.drain());
+    assert!(futures::poll!(&mut waiting).is_pending());
+    executor.take()?.await;
+    assert!(matches!(waiting.await, Err(error) if matches!(error.as_ref(), Error::Conflict)));
+    assert!(
+        last.await.is_err(),
+        "a refused publication cannot report a successful Close"
+    );
+    assert_eq!(records(&shared.store, &inbox).await?.len(), 1);
+    assert!(sockets.is_empty());
+    Ok(())
+}
