@@ -120,46 +120,54 @@ async fn check_prefix(native: bool, cancel: bool) -> TestResult {
     let mut first = first.ok_or("first admission")?;
     let mut second = second.ok_or("second admission")?;
     gate.armed.store(true, Ordering::SeqCst);
-    let mut delivery = Box::pin(futures::future::join(
-        first.prepare_prefix(owner.clone(), limits, &mut first_accounting, &cancellation),
-        second.prepare_prefix(owner.clone(), limits, &mut second_accounting, &cancellation),
-    ));
-    drop(owner);
-    tokio::select! {
-        () = gate.entered.notified() => {},
-        result = &mut delivery => panic!("prefix returned before blocked I/O: {result:?}"),
-    }
-    if cancel {
-        cancellation.cancel();
-        let (first, second) = delivery.await;
-        assert!(matches!(first, Err(crate::FsError::Cancelled(_))));
-        assert!(matches!(second, Err(crate::FsError::Cancelled(_))));
-    } else {
-        drop(delivery);
-    }
-    drop(first);
-    drop(second);
-    assert!(
-        weak.upgrade().is_some(),
-        "reply withdrawal destroyed the selected-prefix owner during object I/O"
-    );
-    assert!(
-        !released.is_released(),
-        "reply withdrawal released the prefix's local root"
-    );
-    if native {
-        assert!(first_work.live_allocation_bytes() > first_baseline);
-        assert!(second_work.live_allocation_bytes() > second_baseline);
-    }
-    gate.release.notify_one();
-    while weak.strong_count() != 0 || !released.is_released() {
-        tokio::task::yield_now().await;
-    }
-    if native {
-        assert_eq!(first_work.live_allocation_bytes(), first_baseline);
-        assert_eq!(second_work.live_allocation_bytes(), second_baseline);
-    }
-    Ok(())
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    composition_events(&mut boundaries, async {
+        let mut delivery = Box::pin(schedule.scope(futures::future::join(
+            first.prepare_prefix(owner.clone(), limits, &mut first_accounting, &cancellation),
+            second.prepare_prefix(owner.clone(), limits, &mut second_accounting, &cancellation),
+        )));
+        drop(owner);
+        tokio::select! {
+            () = gate.entered.notified() => {},
+            result = &mut delivery => panic!("prefix returned before blocked I/O: {result:?}"),
+        }
+        if cancel {
+            cancellation.cancel();
+            let (first, second) = delivery.await;
+            assert!(matches!(first, Err(crate::FsError::Cancelled(_))));
+            assert!(matches!(second, Err(crate::FsError::Cancelled(_))));
+        } else {
+            drop(delivery);
+        }
+        drop(first);
+        drop(second);
+        assert!(
+            weak.upgrade().is_some(),
+            "reply withdrawal destroyed the selected-prefix owner during object I/O"
+        );
+        assert!(
+            !released.is_released(),
+            "reply withdrawal released the prefix's local root"
+        );
+        assert!(futures::poll!(std::pin::pin!(schedule.drained())).is_pending());
+        if native {
+            assert!(first_work.live_allocation_bytes() > first_baseline);
+            assert!(second_work.live_allocation_bytes() > second_baseline);
+        }
+        gate.release.notify_one();
+        schedule.drained().await;
+        assert!(
+            weak.upgrade().is_none(),
+            "selected-prefix owner survived its physical task retirement"
+        );
+        released.released().await;
+        if native {
+            assert_eq!(first_work.live_allocation_bytes(), first_baseline);
+            assert_eq!(second_work.live_allocation_bytes(), second_baseline);
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]
@@ -224,36 +232,56 @@ async fn check_pins(native: bool) -> TestResult {
     )?;
     let mut first = first.ok_or("first admission")?;
     let mut second = second.ok_or("second admission")?;
-    let (first_prefix, second_prefix) = futures::try_join!(
-        first.prepare_prefix(owner.clone(), limits, &mut first_accounting, &cancellation),
-        second.prepare_prefix(owner.clone(), limits, &mut second_accounting, &cancellation),
-    )?;
-    let first_root = first_prefix.ok_or("first prefix")?.0;
-    let (second_root, predecessor) = second_prefix.ok_or("second prefix")?;
-    assert_eq!(predecessor, Some(first_root));
-    assert_ne!(
-        second_root, request.generation_root,
-        "test needs an unpublished prefix"
-    );
-    sweep_prepared_prefix(&owner.0.fs, &orphan, second_root, &cancellation).await?;
-    assert_eq!(
-        owner
-            .authority()
-            .head(
-                request.authority_id,
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            )
-            .await?,
-        request.expected
-    );
-    drop(first);
-    drop(second);
-    let weak = Arc::downgrade(&owner.0);
-    drop(owner);
-    while weak.strong_count() != 0 {
-        tokio::task::yield_now().await;
-    }
-    Ok(())
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    composition_events(&mut boundaries, async {
+        let (first_prefix, second_prefix) = schedule
+            .scope(async {
+                futures::try_join!(
+                    first.prepare_prefix(
+                        owner.clone(),
+                        limits,
+                        &mut first_accounting,
+                        &cancellation
+                    ),
+                    second.prepare_prefix(
+                        owner.clone(),
+                        limits,
+                        &mut second_accounting,
+                        &cancellation
+                    ),
+                )
+            })
+            .await?;
+        let first_root = first_prefix.ok_or("first prefix")?.0;
+        let (second_root, predecessor) = second_prefix.ok_or("second prefix")?;
+        assert_eq!(predecessor, Some(first_root));
+        assert_ne!(
+            second_root, request.generation_root,
+            "test needs an unpublished prefix"
+        );
+        sweep_prepared_prefix(&owner.0.fs, &orphan, second_root, &cancellation).await?;
+        assert_eq!(
+            owner
+                .authority()
+                .head(
+                    request.authority_id,
+                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                )
+                .await?,
+            request.expected
+        );
+        drop(first);
+        drop(second);
+        let weak = Arc::downgrade(&owner.0);
+        drop(owner);
+        schedule.drained().await;
+        assert!(
+            weak.upgrade().is_none(),
+            "prepared-prefix owner survived its physical task retirement"
+        );
+        Ok(())
+    })
+    .await
 }
 
 async fn sweep_prepared_prefix(
