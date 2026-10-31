@@ -43,7 +43,8 @@ pub mod codec_fuzz {
         observations::codec_fuzz::check(bytes);
         checkpoint::codec_fuzz::check(bytes);
         persistent_index::node::codec_fuzz::check(bytes);
-        checkpoint_maps::model_cell::codec_fuzz::check(bytes);
+        checkpoint_maps::codec_fuzz::check(bytes);
+        step_index::codec_fuzz::check(bytes);
     }
 
     /// Capture the actual observation and fixed checkpoint frame writers.
@@ -51,7 +52,8 @@ pub mod codec_fuzz {
         let mut seeds = observations::codec_fuzz::seeds()?;
         seeds.extend(checkpoint::codec_fuzz::seeds()?);
         seeds.extend(persistent_index::node::codec_fuzz::seeds()?);
-        seeds.extend(checkpoint_maps::model_cell::codec_fuzz::seeds()?);
+        seeds.extend(checkpoint_maps::codec_fuzz::seeds()?);
+        seeds.extend(step_index::codec_fuzz::seeds()?);
         Ok(seeds)
     }
 }
