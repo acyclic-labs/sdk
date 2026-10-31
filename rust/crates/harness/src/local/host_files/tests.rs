@@ -99,6 +99,14 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         "a second workspace owner must not dispatch the same requests"
     );
     let requests = checkout.path().join(DIRECTORY).join("requests");
+    // A stale or untrusted status entry must neither select another reply nor
+    // be pruned by publication. Its name exhausted the former sequence order.
+    let debris = checkout
+        .path()
+        .join(DIRECTORY)
+        .join("status/workspace/18446744073709551615.json");
+    std::fs::create_dir_all(debris.parent().expect("status parent")).map_err(storage)?;
+    std::fs::write(&debris, b"unrelated status is not a reply").map_err(storage)?;
     std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
     std::fs::write(
         requests.join("oversized.json"),
@@ -379,18 +387,16 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .count(),
         0
     );
-    // Every read reply is dropped from its agent's latest status.
+    // Every consumed operation's reply is retired, without touching debris.
     let statuses = checkout.path().join(DIRECTORY).join("status");
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let mut pending = 0;
             for entry in std::fs::read_dir(&statuses).map_err(storage)? {
-                if let Some((_, path)) = latest(&entry.map_err(storage)?.path())? {
-                    // A status superseded while read is counted as pending.
-                    pending += std::fs::read(path).ok().map_or(1, |bytes| {
-                        serde_json::from_slice::<Status>(&bytes)
-                            .map_or(1, |status| status.replies.len())
-                    });
+                for reply in std::fs::read_dir(entry.map_err(storage)?.path()).map_err(storage)? {
+                    if reply.map_err(storage)?.path() != debris {
+                        pending += 1;
+                    }
                 }
             }
             if pending == 0 {
@@ -401,6 +407,11 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     })
     .await
     .map_err(storage)??;
+    assert_eq!(
+        std::fs::read(&debris).map_err(storage)?,
+        b"unrelated status is not a reply",
+        "publishing or retiring one reply must never prune unrelated leaves"
+    );
     // Every registration retired, and with the last of each key its watch.
     let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
     let bridge = Registry::live(&registry, &cwd)
