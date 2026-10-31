@@ -52,6 +52,10 @@ mod dispatch;
 mod live_reply;
 pub use live_reply::LiveReply;
 mod model_observation;
+pub(crate) mod model_usage;
+#[cfg(feature = "filesystem")]
+pub(crate) use model_usage::validate as validate_model_usage;
+pub use model_usage::{ModelTokenUsage, ModelUsageRecord};
 pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;
@@ -301,6 +305,10 @@ pub enum ExecutionEvent {
         /// Pinned, private JSON file containing one observed model event.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         event: FileRef,
+        /// Private per-call JSONL record, committed with its terminal event.
+        /// Absent on nonterminal observations and unmeasured journal adapters.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire | null"))]
+        usage: Option<FileRef>,
     },
     /// One small canonical model event stored directly in the journal frame.
     ModelInline {
@@ -310,6 +318,10 @@ pub enum ExecutionEvent {
         purpose: ModelPurpose,
         /// Exact canonical model-event JSON, bounded by the journal provider.
         event: String,
+        /// Private per-call JSONL record, committed with its terminal event.
+        /// Absent on nonterminal observations and unmeasured journal adapters.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire | null"))]
+        usage: Option<FileRef>,
     },
     /// The local model producer stopped after invocation cancellation.
     ModelStopped {

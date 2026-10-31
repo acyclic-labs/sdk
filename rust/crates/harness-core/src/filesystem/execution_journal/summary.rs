@@ -418,7 +418,7 @@ fn release_model(
 }
 
 // Version 3 settles approval refusals through the ordinary tool-failure kind.
-pub(super) const OBSERVATION_VERSION: u32 = 3;
+pub(super) const OBSERVATION_VERSION: u32 = 4;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -460,6 +460,7 @@ impl PreparationRecord for Observation {
                 "model_stopped",
                 "model",
                 "model_inline",
+                "usage",
                 "tool_started",
                 "tool_completed",
                 "tool_failed",

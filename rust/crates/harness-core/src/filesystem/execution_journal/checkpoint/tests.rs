@@ -45,7 +45,7 @@ fn checkpoint_frame_has_fixed_size_and_one_canonical_root_encoding() -> Result<(
     checkpoint.state.roots = [None; 5];
     let original = codec::encode(&checkpoint, None)?;
     let mut former = original.to_vec();
-    former[..4].copy_from_slice(b"EXC3");
+    former[..4].copy_from_slice(b"EXC4");
     assert!(codec::decode(&former, None).is_err());
     for index in 0..5 {
         let mut changed = original.to_vec();
