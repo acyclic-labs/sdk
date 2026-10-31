@@ -55,6 +55,7 @@ fn a_completed_native_rename_reaches_the_sink_in_one_batch()
             &[HostChangeWide::Path {
                 action,
                 path: &path,
+                file: None,
             }],
             &mut work,
         )?;

@@ -101,9 +101,13 @@ pub(crate) enum HostChange {
     Rebound(PathBuf),
     /// The entry at this root-relative path may have changed in place: its content or attributes.
     Altered(PathBuf),
-    /// The file with this host file index, on the root's volume, may have changed under every name bound to it.
+    /// One Windows notification retains its path and original file identity.
     #[cfg(windows)]
-    File(u64),
+    Observed {
+        action: u32,
+        path: PathBuf,
+        file: u64,
+    },
     /// Notifications were lost: anything may have changed.
     Everything,
     /// Changes may not all have been delivered yet, though none is known to have been lost: a fence that cannot prove delivery (see the macOS and Windows backends) reports this instead.
@@ -113,8 +117,12 @@ pub(crate) enum HostChange {
 
 #[cfg(windows)]
 pub(crate) enum HostChangeWide<'a> {
-    Path { action: u32, path: &'a [u16] },
-    File(u64),
+    /// The file ID belongs to this same native record, never another mutation.
+    Path {
+        action: u32,
+        path: &'a [u16],
+        file: Option<u64>,
+    },
     Everything,
     Unconfirmed,
 }

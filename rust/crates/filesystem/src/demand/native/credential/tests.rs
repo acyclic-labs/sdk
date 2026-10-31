@@ -284,7 +284,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
         directory.path().join("credential"),
         "rotated-source-snapshot",
     )?;
-    // The original inotify fence is the event producer. No timer, sleep,
+    // The original native fence is the event producer. No timer, sleep,
     // repeated read, readiness probe or polling loop advances this control.
     source.0.watch.clone().fence().await?;
     changed.await?;

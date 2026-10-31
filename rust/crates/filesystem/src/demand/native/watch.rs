@@ -255,70 +255,85 @@ impl NativeChanges {
         let result = (|| {
             for change in changes {
                 work.check()?;
-                match change {
-                    HostChange::Everything => reported.push(SourceChange::Everything),
+                let (relative, altered, _file) = match change {
+                    HostChange::Everything => {
+                        reported.push(SourceChange::Everything);
+                        continue;
+                    }
                     #[cfg(any(target_os = "macos", windows))]
-                    HostChange::Unconfirmed => reported.push(SourceChange::Unconfirmed),
+                    HostChange::Unconfirmed => {
+                        reported.push(SourceChange::Unconfirmed);
+                        continue;
+                    }
                     #[cfg(windows)]
-                    HostChange::File(index) => reported.push(SourceChange::Node(
-                        windows_file_identity(inner.root.identity().device, *index),
-                    )),
-                    HostChange::Rebound(relative) | HostChange::Altered(relative) => {
-                        let (name, exact, allocation, mut guard) = inner.name(relative, work)?;
-                        claimed += allocation;
-                        if let Some(mut incoming) = guard.take() {
-                            if let Some(native) = &mut native {
-                                native
-                                    .absorb(&mut incoming)
-                                    .map_err(crate::native_name::original_name_error)?;
-                            } else {
-                                native = Some(incoming);
-                            }
-                        }
-                        let metadata = {
-                            #[cfg(unix)]
-                            {
-                                inner
-                                    .root
-                                    .held(work)
-                                    .and_then(|root| root.stat(relative, work))
-                            }
-                            #[cfg(windows)]
-                            {
-                                crate::native_host::with_wide_path(relative, work, |path, work| {
-                                    inner.root.held(work).and_then(|root| root.stat(path, work))
-                                })
-                            }
-                        };
-                        let node = match metadata {
-                            Ok(metadata) => Some(file_identity(&metadata)),
-                            Err(DemandError::Io(error))
-                                if matches!(
-                                    error.kind(),
-                                    std::io::ErrorKind::NotFound
-                                        | std::io::ErrorKind::NotADirectory
-                                ) =>
-                            {
-                                None
-                            }
-                            Err(error) => {
-                                drop(name);
-                                return Err(error);
-                            }
-                        };
-                        let altered = matches!(change, HostChange::Altered(_))
-                            && exact
-                            && (node.is_some() || name.is_root());
-                        reported.push(if altered {
-                            SourceChange::Entry(name)
-                        } else if name.is_root() {
-                            SourceChange::Everything
-                        } else {
-                            SourceChange::Name(name)
-                        });
-                        reported.extend(node.map(SourceChange::Node));
+                    HostChange::Observed { action, path, file } => {
+                        (path, !matches!(action, 1 | 2 | 4 | 5), Some(*file))
+                    }
+                    HostChange::Rebound(relative) => (relative, false, None::<u64>),
+                    HostChange::Altered(relative) => (relative, true, None::<u64>),
+                };
+                let (name, exact, allocation, mut guard) = inner.name(relative, work)?;
+                claimed += allocation;
+                if let Some(mut incoming) = guard.take() {
+                    if let Some(native) = &mut native {
+                        native
+                            .absorb(&mut incoming)
+                            .map_err(crate::native_name::original_name_error)?;
+                    } else {
+                        native = Some(incoming);
                     }
                 }
+                // Extended Windows records already carry their original
+                // identity. Keep it paired with this path, instead of
+                // looking up a newer binding and emitting two mutations.
+                #[cfg(windows)]
+                let observed =
+                    _file.map(|index| windows_file_identity(inner.root.identity().device, index));
+                #[cfg(unix)]
+                let observed = None;
+                let node = if observed.is_some() {
+                    observed
+                } else {
+                    let metadata = {
+                        #[cfg(unix)]
+                        {
+                            inner
+                                .root
+                                .held(work)
+                                .and_then(|root| root.stat(relative, work))
+                        }
+                        #[cfg(windows)]
+                        {
+                            crate::native_host::with_wide_path(relative, work, |path, work| {
+                                inner.root.held(work).and_then(|root| root.stat(path, work))
+                            })
+                        }
+                    };
+                    match metadata {
+                        Ok(metadata) => Some(file_identity(&metadata)),
+                        Err(DemandError::Io(error))
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                            ) =>
+                        {
+                            None
+                        }
+                        Err(error) => {
+                            drop(name);
+                            return Err(error);
+                        }
+                    }
+                };
+                let altered = altered && exact && (node.is_some() || name.is_root());
+                reported.push(if altered {
+                    SourceChange::Entry(name)
+                } else if name.is_root() {
+                    SourceChange::Everything
+                } else {
+                    SourceChange::Name(name)
+                });
+                reported.extend(node.map(SourceChange::Node));
             }
             for batch in reported
                 .chunk_by(|a, b| self.excluded.visible(a) == self.excluded.visible(b))
@@ -353,16 +368,21 @@ impl NativeChanges {
                 owned.push(match change {
                     HostChangeWide::Everything => HostChange::Everything,
                     HostChangeWide::Unconfirmed => HostChange::Unconfirmed,
-                    HostChangeWide::File(index) => HostChange::File(*index),
-                    HostChangeWide::Path { action, path } => {
+                    HostChangeWide::Path { action, path, file } => {
                         let mut allocation = work.claim(path.len() as u64 * 2)?;
                         let name = std::ffi::OsString::from_wide(path);
                         work.reconcile_allocation(&mut allocation, name.capacity() as u64)?;
                         claimed += allocation;
-                        if matches!(action, 1 | 2 | 4 | 5) {
-                            HostChange::Rebound(name.into())
-                        } else {
-                            HostChange::Altered(name.into())
+                        match file {
+                            Some(file) => HostChange::Observed {
+                                action: *action,
+                                path: name.into(),
+                                file: *file,
+                            },
+                            None if matches!(action, 1 | 2 | 4 | 5) => {
+                                HostChange::Rebound(name.into())
+                            }
+                            None => HostChange::Altered(name.into()),
                         }
                     }
                 });
