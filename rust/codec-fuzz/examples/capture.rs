@@ -57,7 +57,16 @@ fn equivalent(target: &str, fresh: &[u8], saved: &[u8]) -> Result<bool, Box<dyn 
 
 fn golden_controls() -> Result<(), Box<dyn Error>> {
     let name = "acyclic.harness.v2.ConversationMessage-user";
-    let saved = acyclic_proto_build::golden::frame(&format!("corpus/protobuf/{name}"))?;
+    let index = DECODERS
+        .iter()
+        .position(|decoder| decoder.name == "acyclic.harness.v2.ConversationMessage")
+        .ok_or("golden control has no current decoder")?;
+    let current = u64::try_from(index)?.to_le_bytes();
+    let mut saved = acyclic_proto_build::golden::frame(&format!("corpus/protobuf/{name}"))?;
+    saved
+        .get_mut(..8)
+        .ok_or("short golden selector")?
+        .copy_from_slice(&current);
     let (selector, payload) = saved
         .split_first_chunk::<8>()
         .ok_or("short golden selector")?;
@@ -76,7 +85,11 @@ fn golden_controls() -> Result<(), Box<dyn Error>> {
     fresh[0] ^= 1;
     assert!(!equivalent("protobuf", &fresh, &saved)?);
 
-    let saved = acyclic_proto_build::golden::frame(&format!("corpus/protobuf_json/{name}"))?;
+    let mut saved = acyclic_proto_build::golden::frame(&format!("corpus/protobuf_json/{name}"))?;
+    saved
+        .get_mut(..8)
+        .ok_or("short JSON selector")?
+        .copy_from_slice(&current);
     let (selector, payload) = saved
         .split_first_chunk::<8>()
         .ok_or("short JSON selector")?;
@@ -104,7 +117,29 @@ fn save(
         Err("golden frame is missing") if accept || extend => None,
         Err(error) => return Err(format!("golden {frame}: {error}").into()),
     };
-    let golden = if let Some(golden) = golden {
+    let golden = if let Some(mut golden) = golden {
+        // A schema insertion can move the generated table slot without
+        // changing this named producer's packet. Refresh only that selector;
+        // the original payload must still compare equal through its decoder.
+        if std::env::args().any(|arg| arg == "--only-protobuf") {
+            let (selector, _) = bytes
+                .split_first_chunk::<8>()
+                .ok_or("protobuf producer has no selector")?;
+            let index = usize::try_from(u64::from_le_bytes(*selector))?;
+            let decoder = DECODERS
+                .get(index)
+                .ok_or("protobuf producer has no decoder")?;
+            if !name
+                .strip_prefix(decoder.name)
+                .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('-'))
+            {
+                return Err("protobuf producer name differs from its selector".into());
+            }
+            golden
+                .get_mut(..8)
+                .ok_or("protobuf golden has no selector")?
+                .copy_from_slice(selector);
+        }
         if !equivalent(target, bytes, &golden)? {
             if !accept {
                 return Err(format!("encoder changed golden {frame}; recovery after reviewing the format change: cargo run --example capture -- --accept-goldens").into());
@@ -139,6 +174,32 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-protobuf") {
+        golden_controls()?;
+        let previous = std::fs::read_to_string("corpus/SOURCES.tsv")?;
+        let mut manifest = previous
+            .lines()
+            .filter(|line| !line.starts_with("protobuf"))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        let streams = futures::executor::block_on(acyclic_stream::codec_fuzz::seeds())?;
+        let semantic = acyclic_codec_fuzz::semantic_seeds(&streams)?;
+        capture_protobuf(&semantic, &mut manifest)?;
+        let names = manifest
+            .lines()
+            .filter_map(|row| row.split('\t').next())
+            .collect::<std::collections::HashSet<_>>();
+        for line in previous.lines().filter(|line| line.starts_with("protobuf")) {
+            let name = line
+                .split('\t')
+                .next()
+                .ok_or("missing protobuf capture name")?;
+            if !names.contains(name) {
+                std::fs::remove_file(Path::new("corpus").join(name))?;
+            }
+        }
+        return finish(&manifest, "protobuf");
+    }
     if std::env::args().any(|arg| arg == "--only-storage") {
         #[cfg(feature = "storage-schedules")]
         {
@@ -164,27 +225,9 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "codec_fuzz::session_seed from SessionHello encoder and test credential issuer",
         &mut manifest,
     )?;
-    for (index, decoder) in DECODERS.iter().enumerate() {
-        let mut bytes = u64::try_from(index)?.to_le_bytes().to_vec();
-        bytes.extend_from_slice(&(decoder.seed)());
-        save(
-            "protobuf",
-            decoder.name,
-            &bytes,
-            "prost::Message::default().encode_to_vec (first 8 bytes select type)",
-            &mut manifest,
-        )?;
-        let mut json = u64::try_from(index)?.to_le_bytes().to_vec();
-        json.extend_from_slice(&json_seed(decoder, &(decoder.seed)())?);
-        save(
-            "protobuf_json",
-            decoder.name,
-            &json,
-            "Objects json::encode_binary or shared acyclic_protobuf_json::encode from typed protobuf default output (first 8 bytes select type)",
-            &mut manifest,
-        )?;
-    }
     let streams = futures::executor::block_on(acyclic_stream::codec_fuzz::seeds())?;
+    let semantic = acyclic_codec_fuzz::semantic_seeds(&streams)?;
+    capture_protobuf(&semantic, &mut manifest)?;
     for (name, bytes) in acyclic_codec_fuzz::inference_http::seeds()? {
         save(
             "inference_http",
@@ -194,7 +237,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
-    for (message, variant, payload) in acyclic_codec_fuzz::semantic_seeds(&streams)? {
+    for (message, variant, payload) in semantic {
         if message == "acyclic.harness.v2.ReferencedAttachments" && variant == "inline" {
             use acyclic_harness_core::{conversation as c, wire};
             let c::ReferencedAttachments::Inline { items } = c::ReferencedAttachments::try_from(
@@ -222,31 +265,6 @@ fn capture() -> Result<(), Box<dyn Error>> {
                 &mut manifest,
             )?;
         }
-        let (index, decoder) = DECODERS
-            .iter()
-            .enumerate()
-            .find(|(_, decoder)| decoder.name == message)
-            .ok_or("semantic seed has no generated message decoder")?;
-        let name = format!("{message}-{variant}");
-        let selector = u64::try_from(index)?.to_le_bytes();
-        let mut binary = selector.to_vec();
-        binary.extend_from_slice(&payload);
-        save(
-            "protobuf",
-            &name,
-            &binary,
-            "SDK semantic_seeds production wire writers (first 8 bytes select type)",
-            &mut manifest,
-        )?;
-        let mut json = selector.to_vec();
-        json.extend_from_slice(&json_seed(decoder, &payload)?);
-        save(
-            "protobuf_json",
-            &name,
-            &json,
-            "Objects json::encode_binary or shared acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)",
-            &mut manifest,
-        )?;
     }
     for (name, bytes) in streams {
         save(
@@ -622,6 +640,55 @@ fn capture() -> Result<(), Box<dyn Error>> {
     finish(&manifest, "")
 }
 
+fn capture_protobuf(
+    semantic: &[(&str, &str, Vec<u8>)],
+    manifest: &mut String,
+) -> Result<(), Box<dyn Error>> {
+    let mut pair = |index: usize, name: &str, payload: &[u8], semantic: bool| {
+        let decoder = DECODERS
+            .get(index)
+            .ok_or("protobuf producer has no decoder")?;
+        let selector = u64::try_from(index)?.to_le_bytes();
+        let mut binary = selector.to_vec();
+        binary.extend_from_slice(payload);
+        save(
+            "protobuf",
+            name,
+            &binary,
+            if semantic {
+                "SDK semantic_seeds production wire writers (first 8 bytes select type)"
+            } else {
+                "prost::Message::default().encode_to_vec (first 8 bytes select type)"
+            },
+            manifest,
+        )?;
+        let mut json = selector.to_vec();
+        json.extend_from_slice(&json_seed(decoder, payload)?);
+        save(
+            "protobuf_json",
+            name,
+            &json,
+            if semantic {
+                "Objects json::encode_binary or shared acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)"
+            } else {
+                "Objects json::encode_binary or shared acyclic_protobuf_json::encode from typed protobuf default output (first 8 bytes select type)"
+            },
+            manifest,
+        )
+    };
+    for (index, decoder) in DECODERS.iter().enumerate() {
+        pair(index, decoder.name, &(decoder.seed)(), false)?;
+    }
+    for (message, variant, payload) in semantic {
+        let index = DECODERS
+            .iter()
+            .position(|decoder| decoder.name == *message)
+            .ok_or("semantic seed has no generated message decoder")?;
+        pair(index, &format!("{message}-{variant}"), payload, true)?;
+    }
+    Ok(())
+}
+
 #[cfg(feature = "storage-schedules")]
 fn capture_storage(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     for (name, bytes) in acyclic_codec_fuzz::object_schedule::seeds() {
@@ -895,14 +962,38 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() {
+    let recovery = || {
+        let quote = |value: &str| {
+            let escaped = value.replace('\'', if cfg!(windows) { "''" } else { "'\\''" });
+            format!("'{escaped}'")
+        };
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let features = if cfg!(feature = "storage-schedules") {
+            " --features storage-schedules"
+        } else {
+            ""
+        };
+        let arguments = std::env::args()
+            .skip(1)
+            .map(|arg| quote(&arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "cargo run --locked --manifest-path {}{features} --example capture -- {arguments}",
+            quote(&manifest.to_string_lossy())
+        )
+    };
     match std::panic::catch_unwind(capture) {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
-            eprintln!("corpus capture failed: {error}; recovery: cargo run --example capture");
+            eprintln!("corpus capture failed: {error}; recovery: {}", recovery());
             std::process::exit(1);
         }
         Err(_) => {
-            eprintln!("corpus encoder validation panicked; recovery: cargo run --example capture");
+            eprintln!(
+                "corpus encoder validation panicked; recovery: {}",
+                recovery()
+            );
             std::process::exit(1);
         }
     }
