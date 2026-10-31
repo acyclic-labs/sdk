@@ -337,13 +337,20 @@ pub struct ObjectStorage {
 }
 
 impl ObjectId {
+    /// Smallest canonical object-reference encoding.
+    pub const MIN_ENCODED_LEN: usize = 33;
+
     /// Largest canonical object-reference encoding.
     pub const ENCODED_LEN: usize = 113;
 
     /// Canonical bytes occupied by this reference.
     #[must_use]
     pub const fn encoded_len(self) -> usize {
-        if self.storage.is_some() { 113 } else { 33 }
+        if self.storage.is_some() {
+            Self::ENCODED_LEN
+        } else {
+            Self::MIN_ENCODED_LEN
+        }
     }
 
     /// Returns the canonical typed reference, including its sealed association.

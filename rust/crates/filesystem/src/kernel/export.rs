@@ -103,6 +103,9 @@ pub fn decode_generation_export_manifest(
     }
     let capacity =
         usize::try_from(count).map_err(|_| GenerationExportManifestError::TooManyObjects)?;
+    if capacity > decoder.remaining() / ObjectId::MIN_ENCODED_LEN {
+        return Err(CanonicalDecodeError::Truncated.into());
+    }
     let mut objects = Vec::new();
     objects
         .try_reserve_exact(capacity)

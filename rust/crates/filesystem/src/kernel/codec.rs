@@ -458,6 +458,10 @@ impl<'a> Decoder<'a> {
         self.take(length)
     }
 
+    pub(crate) fn remaining(&self) -> usize {
+        self.bytes.len() - self.cursor
+    }
+
     fn take(&mut self, length: usize) -> Result<&'a [u8], CanonicalDecodeError> {
         let end = self
             .cursor

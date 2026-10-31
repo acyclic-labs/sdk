@@ -62,6 +62,49 @@ fn manifest_round_trip_is_canonical_and_bounded() -> Result<(), Box<dyn std::err
         decode_generation_export_manifest(&encoded, encoded.len() as u64, 1),
         Err(GenerationExportManifestError::TooManyObjects)
     ));
+    // A declared count cannot fund storage without at least one canonical
+    // reference per entry. Use the real writer's prefix, including a sealed root.
+    let reference_bytes: usize = value.objects.iter().map(|id| id.encoded_len()).sum();
+    let count_start = encoded.len() - reference_bytes - 4;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut truncated = encoded[..count_start + 4].to_vec();
+        for count in [
+            1_u32,
+            value
+                .config
+                .limits
+                .maximum_objects_per_generation
+                .min(u64::from(u32::MAX)) as u32,
+        ] {
+            truncated[count_start..].copy_from_slice(&count.to_le_bytes());
+            let mut result = None;
+            let allocations = acyclic_test_support::measure(|| {
+                result = Some(decode_generation_export_manifest(
+                    &truncated,
+                    u64::MAX,
+                    u64::MAX,
+                ));
+            });
+            assert_eq!(
+                result.unwrap(),
+                Err(GenerationExportManifestError::Decode(
+                    CanonicalDecodeError::Truncated
+                ))
+            );
+            assert_eq!(allocations.count_total, 0);
+        }
+    }
+    // Truncation within either canonical width still refuses; the check is a
+    // necessary lower bound, while the shared reference decoder remains exact.
+    for end in count_start + 4..encoded.len() {
+        assert!(matches!(
+            decode_generation_export_manifest(&encoded[..end], u64::MAX, u64::MAX),
+            Err(GenerationExportManifestError::Decode(
+                CanonicalDecodeError::Truncated
+            ))
+        ));
+    }
     // Equal plaintext with a different locator is a different root reference.
     value.generation_id = GenerationId::from_root(plain_root);
     assert!(matches!(
