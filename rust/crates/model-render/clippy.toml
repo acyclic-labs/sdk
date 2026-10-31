@@ -1,0 +1,32 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+disallowed-macros = [
+    { path = "std::env", reason = "configuration is an explicit input" },
+    { path = "std::option_env", reason = "configuration is an explicit input" },
+]
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "request rendering must be deterministic" },
+    { path = "std::collections::HashSet", reason = "request rendering must be deterministic" },
+    { path = "std::time::SystemTime", reason = "time is an explicit conversation item" },
+    { path = "std::time::Instant", reason = "rendering has no clock" },
+    { path = "std::collections::hash_map::RandomState", reason = "rendering has no entropy" },
+]
+disallowed-methods = [
+    { path = "std::env::var", reason = "configuration is pinned in the epoch header" },
+    { path = "std::env::var_os", reason = "configuration is pinned in the epoch header" },
+    { path = "std::env::vars", reason = "configuration is pinned in the epoch header" },
+    { path = "std::env::vars_os", reason = "configuration is pinned in the epoch header" },
+    { path = "std::env::args", reason = "configuration is an explicit input" },
+    { path = "std::env::args_os", reason = "configuration is an explicit input" },
+    { path = "std::env::current_dir", reason = "the environment snapshot is an explicit item" },
+    { path = "std::env::current_exe", reason = "rendering cannot inspect its process" },
+    { path = "std::env::temp_dir", reason = "rendering cannot inspect its process" },
+    { path = "std::env::set_var", reason = "rendering has no process side effects" },
+    { path = "std::env::remove_var", reason = "rendering has no process side effects" },
+    { path = "std::env::set_current_dir", reason = "rendering has no process side effects" },
+    { path = "rand::random", reason = "rendering has no entropy", allow-invalid = true },
+    { path = "rand::rng", reason = "rendering has no entropy", allow-invalid = true },
+    { path = "rand::thread_rng", reason = "rendering has no entropy", allow-invalid = true },
+    { path = "getrandom::fill", reason = "rendering has no entropy", allow-invalid = true },
+]

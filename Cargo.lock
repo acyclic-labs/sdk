@@ -640,6 +640,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-core",
+ "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -873,6 +874,15 @@ dependencies = [
 [[package]]
 name = "acyclic-markdown-work"
 version = "0.2.0"
+
+[[package]]
+name = "acyclic-model-render"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "acyclic-native-runtime"

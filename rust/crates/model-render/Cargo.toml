@@ -1,0 +1,19 @@
+[package]
+name = "acyclic-model-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Deterministic rendering of immutable model conversation items"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["raw_value"] }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

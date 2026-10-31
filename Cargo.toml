@@ -49,6 +49,7 @@ members = [
   "rust/crates/workers",
   "rust/fuzz",
   "rust/crates/manifest",
+  "rust/crates/model-render",
   "plugin",
   "plugin/identity",
 ]
