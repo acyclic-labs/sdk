@@ -609,13 +609,11 @@ mod tests {
             #[cfg(unix)]
             if std::env::var(PHASE_MODE).unwrap() == "failed" {
                 use std::os::fd::AsRawFd as _;
-                let write_only = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open("/dev/null")
-                    .unwrap();
+                let directory = std::fs::File::open(root).unwrap();
                 // SAFETY: this fixture process owns stdin. Its original control
-                // read must receive the actual EBADF from this write-only fd.
-                assert_eq!(unsafe { libc::dup2(write_only.as_raw_fd(), 0) }, 0);
+                // read receives the actual directory-read error. Unlike EBADF,
+                // std's stdin wrapper does not turn this error into EOF.
+                assert_eq!(unsafe { libc::dup2(directory.as_raw_fd(), 0) }, 0);
             }
             let result = run_external_process_host_with_progress([
                 "--custody".into(),
@@ -756,7 +754,16 @@ mod tests {
                 assert_eq!(observation["failed"], true);
                 assert_eq!(observation["phase"], "Control");
                 #[cfg(unix)]
-                assert_eq!(observation["raw_os_error"], libc::EBADF);
+                {
+                    let expected = std::fs::File::open(root.path())
+                        .unwrap()
+                        .read(&mut [0])
+                        .unwrap_err();
+                    assert_eq!(
+                        observation["raw_os_error"].as_i64(),
+                        expected.raw_os_error().map(i64::from)
+                    );
+                }
                 assert_eq!(observation["control_failed"], true);
                 assert_eq!(observation["root_status_observed"], true);
                 assert_ne!(observation["root_code"], 124);
