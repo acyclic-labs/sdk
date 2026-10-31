@@ -171,7 +171,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             fixture.objects.put(body.into(), Vec::new())
         )?;
         let digest = put.verified().ok_or("object publication unknown")?.digest;
-        if digest != Digest::of(&expected) {
+        if digest != expected_digest {
             return Err("object PUT returned a different content identity".into());
         }
         first = Some(first.map_or(digest, |current| current.min(digest)));
@@ -248,6 +248,7 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
     let mut next = seed.start.checked_add(1).ok_or("stream cursor overflow")?;
     for index in 0..samples {
         let append_key = key(format!("append/{index}"))?;
+        let append_identity = hex::encode(append_key.as_bytes());
         let mut follow = stream.follow(next, Default::default()).await?;
         let probe = Arc::new(DeliveryWake::default());
         let wake = Waker::from(probe.clone());
@@ -295,7 +296,7 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
             commit(1024),
             appended,
             Observation::default(),
-            serde_json::json!({"path": stream.path().as_str(), "key": format!("append/{index}"), "start": receipt.start, "count": 1}),
+            serde_json::json!({"path": stream.path().as_str(), "key_hex": append_identity, "start": receipt.start, "count": 1}),
         )?;
         rows.record(
             Operation::StreamFollow,
@@ -359,7 +360,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
             rows,
             Operation::ActorCreate,
             commit(0),
-            serde_json::json!({"actor": format!("{actor:?}"), "key": format!("actor-create/{index}")}),
+            serde_json::json!({"actor": format!("{actor:?}"), "key_hex": hex::encode(creation_key.as_bytes())}),
             async {
                 let mut creation = PreparedPublish::foreign(creation_key);
                 for effect in store.create(&actor, BTreeMap::new(), None)? {
@@ -488,7 +489,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
             rows,
             Operation::ActorDurableWrite,
             commit(256),
-            serde_json::json!({"actor": format!("{address:?}"), "key": format!("actor-write/{index}"), "subscription": "inbox", "sequence": sequence}),
+            serde_json::json!({"actor": format!("{address:?}"), "key_hex": hex::encode(operation.as_bytes()), "subscription": "inbox", "sequence": sequence}),
             async {
                 binding.transaction(|state| {
                     state.put("value".into(), Bytes::copy_from_slice(&payload));
