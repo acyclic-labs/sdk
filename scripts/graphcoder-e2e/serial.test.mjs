@@ -88,7 +88,10 @@ test('installed host admission binds second trees, nested hidden files and link 
   const second=await packageEntry('pi','@earendil-works/pi-coding-agent',secondModules);
   const nested=join(secondModules,'.retained/node_modules/runtime.js');
   await mkdir(dirname(nested),{recursive:true});await copyFile(second,nested);
-  const link=join(secondModules,'runtime-link');await symlink(second,link);
+  // Directory junctions retain link-edge coverage on Windows without requiring
+  // Developer Mode or the account's file-symlink privilege.
+  const link=join(secondModules,'runtime-link'),type=process.platform==='win32'?'junction':'dir';
+  await symlink(dirname(second),link,type);
   const cases=['codex','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));
   const env={E2E_CODEX:first,E2E_PI:second};
   const bind=()=>acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
@@ -99,10 +102,10 @@ test('installed host admission binds second trees, nested hidden files and link 
   const changed=await bind();
   assert.deepEqual(changed.hosts,before.hosts,'both package entries stay unchanged');
   assert.notEqual(changed.source[key],before.source[key],'second-tree dependency changes must fence composition');
-  await rm(link);await symlink(nested,link);
+  await rm(link);await symlink(dirname(nested),link,type);
   const retargeted=await bind(),edge='installed-hosts/pi/runtime-link';
   assert.notEqual(retargeted.source[edge],changed.source[edge],'internal link retargeting must fence composition');
-  await rm(link);await symlink(process.execPath,link);
+  await rm(link);await symlink(dirname(process.execPath),link,type);
   await assert.rejects(bind(),/step=admit pi dependency tree:.*recovery=npm ci/,
    'a link outside the admitted installation must refuse');
  }finally{await rm(root,{recursive:true,force:true});}
