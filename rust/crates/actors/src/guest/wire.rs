@@ -403,6 +403,8 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
 
 /// Decode a guest's canonical transition on its host. Effects arrive as one
 /// effect carrying every condition, which joins identically to the original.
+/// Effects omit the host-owned commit deadline and require a mutation to carry
+/// their conditions; unrepresentable guards are refused.
 pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
     let wire: TransitionWire = canonical(bytes, "transition", TRANSITION_DOMAIN)?;
     let alarm = match wire.alarm.ok_or_else(|| invalid("alarm"))? {
@@ -411,11 +413,14 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
         AlarmWire::Clear(true) => AlarmChange::Clear,
         AlarmWire::Keep(false) | AlarmWire::Clear(false) => return Err(invalid("alarm")),
     };
-    let effects = wire_codec::commit_from_wire(wire.effects.ok_or_else(|| invalid("effects"))?)
-        .map_err(|_| invalid("effects"))?;
-    if effects.idempotency_key.as_bytes() != EFFECTS_KEY {
+    let effects = wire.effects.ok_or_else(|| invalid("effects"))?;
+    if effects.idempotency_key.as_ref() != EFFECTS_KEY
+        || effects.deadline_unix_millis.is_some()
+        || (effects.mutations.is_empty() && !effects.conditions.is_empty())
+    {
         return Err(invalid("effects"));
     }
+    let effects = wire_codec::commit_from_wire(effects).map_err(|_| invalid("effects"))?;
     let mut conditions = Some(effects.conditions);
     Ok(Transition {
         response: wire.response,
@@ -518,6 +523,34 @@ mod tests {
         let transition = transition()?;
         let bytes = encode_transition(&transition)?;
         assert_eq!(decode_transition(&bytes)?, transition);
+        let admitted: TransitionWire = canonical(&bytes, "transition", TRANSITION_DOMAIN)?;
+        for deadline in [0, u64::MAX] {
+            let mut forged = admitted.clone();
+            forged
+                .effects
+                .as_mut()
+                .expect("actual writer effects")
+                .deadline_unix_millis = Some(deadline);
+            assert!(matches!(
+                decode_transition(&encode(&forged, TRANSITION_DOMAIN)),
+                Err(GuestError::Decode(_))
+            ));
+        }
+        let mut orphaned = admitted;
+        orphaned
+            .effects
+            .as_mut()
+            .expect("actual writer effects")
+            .mutations
+            .clear();
+        assert!(matches!(
+            decode_transition(&encode(&orphaned, TRANSITION_DOMAIN)),
+            Err(GuestError::Decode(_))
+        ));
+        // No-effect transitions are representable; only unretained guards refuse.
+        let mut empty = transition.clone();
+        empty.effects.clear();
+        assert_eq!(decode_transition(&encode_transition(&empty)?)?, empty);
         // An unknown field the host would otherwise ignore.
         let mut unknown = bytes.clone();
         unknown.extend_from_slice(&[0x50, 0x01]);
