@@ -50,7 +50,7 @@ export function createMachinesClient(transport: Transport) {
         if (typeof request.timeoutMs !== "bigint" || request.timeoutMs < 1n || request.timeoutMs > 0xffffffffffffffffn) throw new RangeError("timeoutMs must be a positive uint64 bigint");
         if (query.cwd !== undefined && (!query.cwd || query.cwd.includes("\0"))) throw new RangeError("cwd must be nonempty and NUL-free");
         return ownedStream(async function* (signal) {
-          let remaining = query.timeoutMs + 1000n;
+          let remaining = query.timeoutMs;
           if (query.expiryUnixMs !== undefined) {
             const expiry = query.expiryUnixMs - BigInt(Date.now());
             if (expiry < remaining) remaining = expiry;
