@@ -255,6 +255,7 @@ fn a_runner_started_while_threads_allocate_serves_every_spawn() {
 fn runner_owner_helper() {
     match std::env::var(MODE).as_deref() {
         Ok("hammer") => hammered_owner(),
+        Ok("security") => security_owner(),
         Ok(_) => killed_runner_owner(),
         Err(_) => {}
     }
@@ -318,6 +319,103 @@ fn owner(mode: &str) {
         .status()
         .expect("owner");
     assert!(status.success(), "the runner owner failed: {status}");
+}
+
+/// Exercises irreversible credential changes only in an isolated real owner.
+fn security_owner() {
+    fn status(custody: &ProcessCustody) -> String {
+        let mut command = ProcessCommand::new("/bin/cat");
+        command.arg("/proc/self/status");
+        output(&mut command, custody)
+    }
+    fn field<'a>(status: &'a str, key: &str) -> &'a str {
+        status
+            .lines()
+            .find(|line| line.starts_with(key))
+            .expect(key)
+    }
+    let (root, first_custody) = custody();
+    let before = status(&first_custody);
+    let first_runner = runner_pid().expect("initial runner");
+    // A different launching thread changes its own mask after runner creation.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                // SAFETY: valid thread-local signal sets and no old-set output.
+                unsafe {
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    assert_eq!(libc::sigemptyset(&raw mut set), 0);
+                    assert_eq!(libc::sigaddset(&raw mut set, libc::SIGUSR1), 0);
+                    assert_eq!(
+                        libc::pthread_sigmask(
+                            libc::SIG_BLOCK,
+                            &raw const set,
+                            std::ptr::null_mut()
+                        ),
+                        0
+                    );
+                }
+                let direct = Command::new("/bin/cat")
+                    .arg("/proc/self/status")
+                    .output()
+                    .expect("direct child");
+                let direct = String::from_utf8(direct.stdout).expect("status");
+                let observed = status(&first_custody);
+                assert_ne!(field(&direct, "SigBlk:"), field(&before, "SigBlk:"));
+                assert_eq!(field(&observed, "SigBlk:"), field(&direct, "SigBlk:"));
+                assert_eq!(
+                    runner_pid(),
+                    Some(first_runner),
+                    "a signal mask needs no replacement runner"
+                );
+            })
+            .join()
+            .expect("launching thread");
+    });
+    let original = fs::read_to_string("/proc/thread-self/status").expect("owner status");
+    if field(&original, "NoNewPrivs:").ends_with('0') {
+        // SAFETY: irreversible restriction confined to this helper process.
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+            0
+        );
+        let observed = status(&first_custody);
+        assert!(field(&observed, "NoNewPrivs:").ends_with('1'));
+        assert_ne!(
+            runner_pid(),
+            Some(first_runner),
+            "old runner retained unrestricted credentials"
+        );
+        eprintln!("actual NoNewPrivs transition qualified");
+    }
+    drop(first_custody);
+    drop(root);
+    // Where the original owner has privilege, reproduce the reviewed root ->
+    // unprivileged transition, including supplementary groups and saved IDs.
+    // SAFETY: reads this isolated owner's effective user.
+    if unsafe { libc::geteuid() } == 0 {
+        let privileged_runner = runner_pid().expect("privileged runner");
+        // SAFETY: permanent privilege drop confined to this helper process.
+        unsafe {
+            assert_eq!(libc::setgroups(0, std::ptr::null()), 0);
+            assert_eq!(libc::setresgid(65534, 65534, 65534), 0);
+            assert_eq!(libc::setresuid(65534, 65534, 65534), 0);
+        }
+        let (_root, current_custody) = custody();
+        let observed = status(&current_custody);
+        let current = fs::read_to_string("/proc/thread-self/status").expect("current credentials");
+        for key in ["Uid:", "Gid:", "Groups:"] {
+            assert_eq!(field(&observed, key), field(&current, key));
+        }
+        assert_ne!(runner_pid(), Some(privileged_runner));
+        eprintln!("actual root credential and supplementary-group drop qualified");
+    }
+    retire_runner();
+}
+
+#[test]
+fn a_runner_preserves_current_security_and_each_launching_threads_signal_mask() {
+    owner("security");
 }
 
 #[test]

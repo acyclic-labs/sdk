@@ -58,10 +58,11 @@ const LIMITS: u32 = 16;
 
 /// Appends what a fork of the owner would have inherited but the long-lived
 /// runner cannot know: the owner's current file-creation mask and resource
-/// limits, both changeable after the runner started.
-fn put_settings(body: &mut Vec<u8>) -> io::Result<()> {
+/// limits and launching thread's signal mask. Returns the security state
+/// that must still match the runner's original owner before it may clone.
+fn put_settings(body: &mut Vec<u8>) -> io::Result<Vec<u8>> {
     // Read without changing it; umask(2) can only set it.
-    let status = std::fs::read("/proc/self/status")?;
+    let mut status = std::fs::read("/proc/thread-self/status")?;
     let mask = status
         .split(|byte| *byte == b'\n')
         .find_map(|line| line.strip_prefix(b"Umask:"))
@@ -69,6 +70,13 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<()> {
         .and_then(|value| u32::from_str_radix(value.trim(), 8).ok())
         .ok_or(io::ErrorKind::InvalidData)?;
     body.extend_from_slice(&mask.to_ne_bytes());
+    let signals = status
+        .split(|byte| *byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"SigBlk:"))
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+        .ok_or(io::ErrorKind::InvalidData)?;
+    body.extend_from_slice(&signals.to_ne_bytes());
     for resource in 0..LIMITS {
         let mut limit = libc::rlimit {
             rlim_cur: 0,
@@ -81,7 +89,35 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<()> {
         body.extend_from_slice(&limit.rlim_cur.to_ne_bytes());
         body.extend_from_slice(&limit.rlim_max.to_ne_bytes());
     }
-    Ok(())
+    // Reuse the status allocation. Credentials (including supplementary
+    // groups and capabilities) and irreversible security restrictions must
+    // be inherited from the current caller, never an earlier privileged one.
+    let mut read = 0;
+    let mut written = 0;
+    while read < status.len() {
+        let length = status[read..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(status.len() - read, |end| end + 1);
+        let line = &status[read..read + length];
+        if [
+            b"Uid:".as_slice(),
+            b"Gid:",
+            b"Groups:",
+            b"Cap",
+            b"NoNewPrivs:",
+            b"Seccomp",
+        ]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
+        {
+            status.copy_within(read..read + length, written);
+            written += length;
+        }
+        read += length;
+    }
+    status.truncate(written);
+    Ok(status)
 }
 
 /// Appends a slot per standard stream, and the descriptor each sent one
@@ -138,7 +174,7 @@ fn encode(
     body: &mut Vec<u8>,
     command: &ProcessCommand,
     environment: &BTreeMap<&OsStr, &OsStr>,
-) -> io::Result<()> {
+) -> io::Result<Vec<u8>> {
     let identity = &command.unix;
     let flags = [
         (command.cwd.is_some(), HAS_CWD),
@@ -152,7 +188,7 @@ fn encode(
     body.extend_from_slice(&identity.uid.unwrap_or_default().to_ne_bytes());
     body.extend_from_slice(&identity.gid.unwrap_or_default().to_ne_bytes());
     body.extend_from_slice(&std::process::id().to_ne_bytes());
-    put_settings(body)?;
+    let security = put_settings(body)?;
     put_count(body, 1 + command.args.len());
     put_count(body, environment.len());
     put_string(body, &[command.program.as_bytes()])?;
@@ -173,7 +209,7 @@ fn encode(
     for (key, value) in environment {
         put_string(body, &[key.as_bytes(), b"=", value.as_bytes()])?;
     }
-    Ok(())
+    Ok(security)
 }
 
 /// Has the runner start `command` in `directory`'s custody. Returns the
@@ -230,11 +266,11 @@ pub(super) fn start(
     ];
     let mut body = Vec::new();
     let (theirs, ours) = slots(command, open_streams, &mut descriptors, &mut body)?;
-    encode(&mut body, command, &environment)?;
+    let security = encode(&mut body, command, &environment)?;
     let mut message = Vec::with_capacity(8 + body.len());
     put_count(&mut message, body.len());
     message.extend_from_slice(&body);
-    send(&descriptors, &message)?;
+    send(&descriptors, &message, security)?;
     // Only the runner and its clone hold the child's ends now.
     drop(theirs);
     drop(reply_end);
@@ -303,6 +339,7 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 /// This owner's runner: its control socket and process.
 struct Runner {
     owner: u32,
+    security: Vec<u8>,
     control: UnixStream,
     pid: pid_t,
     reaped: bool,
@@ -311,7 +348,7 @@ struct Runner {
 static RUNNER: Mutex<Option<Runner>> = Mutex::new(None);
 
 impl Runner {
-    fn start() -> io::Result<Self> {
+    fn start(security: Vec<u8>) -> io::Result<Self> {
         let image = image()?;
         let (control, theirs) = UnixStream::pair()?;
         // The runner's standard input is its control socket.
@@ -331,6 +368,7 @@ impl Runner {
         let pid = pid_t::try_from(runner.id()).map_err(|_| io::ErrorKind::InvalidData)?;
         Ok(Self {
             owner: std::process::id(),
+            security,
             control,
             pid,
             reaped: false,
@@ -352,6 +390,9 @@ impl Runner {
     }
 
     fn retire(self) {
+        // EOF ends the original control loop even when a credential drop
+        // means the owner can no longer signal its earlier privileged child.
+        drop(self.control);
         if self.owner == std::process::id() && !self.reaped {
             // SAFETY: this process's own unreaped child, so the PID is its.
             unsafe { libc::kill(self.pid, libc::SIGKILL) };
@@ -422,15 +463,17 @@ fn runner() -> std::sync::MutexGuard<'static, Option<Runner>> {
 }
 
 /// Sends one request, starting a runner when none serves this process.
-fn send(descriptors: &[RawFd], message: &[u8]) -> io::Result<()> {
+fn send(descriptors: &[RawFd], message: &[u8], security: Vec<u8>) -> io::Result<()> {
     let mut slot = runner();
-    if slot.as_mut().is_some_and(|runner| !runner.serves())
+    if slot
+        .as_mut()
+        .is_some_and(|runner| runner.security != security || !runner.serves())
         && let Some(stale) = slot.take()
     {
         stale.retire();
     }
     if slot.is_none() {
-        *slot = Some(Runner::start()?);
+        *slot = Some(Runner::start(security)?);
     }
     let runner = slot.as_mut().ok_or(io::ErrorKind::NotFound)?;
     let sent = send_message(&runner.control, descriptors, message);
