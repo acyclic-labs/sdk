@@ -7,7 +7,9 @@ use std::{io, process::Output};
 /// Original capture arguments, after command and ownership validation.
 pub struct ProcessCapture<'a> {
     /// Fully composed executable, arguments, environment and working directory.
-use std::{io, process::Output};
+    pub command: &'a ProcessCommand,
+    /// Original capture lifetime, fixed before worker submission.
+    pub schedule: crate::CaptureSchedule,
     /// Shared stdout and stderr bound.
     pub maximum: usize,
     /// Original literal input or exchange allowance.

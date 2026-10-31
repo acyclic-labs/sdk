@@ -1,4 +1,5 @@
 use super::*;
+use super::{ProcessCommand as Command, ProcessStdio as Stdio};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex};

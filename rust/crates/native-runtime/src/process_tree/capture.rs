@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn final_interactive_payload_retires_at_original_pipe_completion() -> io::Result<()> {
-        let mut command = std::process::Command::new(std::env::current_exe()?);
+        let mut command = ProcessCommand::new(std::env::current_exe()?);
         command
             .args([
                 "--exact",
@@ -418,9 +418,9 @@ mod tests {
                 "--nocapture",
             ])
             .env("ACYCLIC_TEST_STREAM_CAPTURE", "credit")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
         let mut tree = ProcessTree::spawn(&mut command)?;
         let mut input = PendingStdin::owned(super::super::OwnedCaptureInput::Interactive {
             initial: Vec::new(),
