@@ -203,7 +203,9 @@ async fn native_staged_decoded_alias_keeps_original_guard_after_resident_ejectio
             .2
             .remaining()
             .map_err(crate::ObjectStoreError::from)
-            .and_then(|_| store.decoded_cache_admit(__decoded_args.0, __decoded_args.1))
+            .and_then(|_| {
+                crate::async_storage::publish_decoded(&store, __decoded_args.0, __decoded_args.1)
+            })
     }?);
     let cached = {
         let __decoded_args = (key, &work);
@@ -211,7 +213,7 @@ async fn native_staged_decoded_alias_keeps_original_guard_after_resident_ejectio
             .1
             .remaining()
             .map_err(crate::ObjectStoreError::from)
-            .and_then(|_| store.decoded_cache_get(__decoded_args.0))
+            .and_then(|_| crate::async_storage::cached_value(&store, __decoded_args.0))
     }?
     .ok_or("resident native decoded miss")?;
     assert_eq!(

@@ -15,6 +15,10 @@ use acyclic_stream::OwnedBytes;
 #[path = "persistent_io/owned.rs"]
 mod owned;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "persistent_io/epochs.rs"]
+mod epochs;
+
 async fn put_tree_page(
     store: &MemoryObjectStore,
     name: &[u8],

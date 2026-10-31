@@ -9,6 +9,7 @@ pub(super) enum Staged {
         bytes: OwnedBytes,
         referenced: AtomicBool,
         order: u64,
+        incarnation: u64,
         decoded: OnceLock<(DecodedCacheKey, DecodedCacheValue)>,
     },
     Spilled {
@@ -68,6 +69,7 @@ pub(super) struct Index {
     // superseded ones leave it.
     pub(super) order: BTreeMap<u64, ObjectId>,
     pub(super) next_order: u64,
+    next_incarnation: u64,
     pub(super) resident_bytes: u64,
     pub(super) spilled_objects: usize,
     // Append offset of the spill file; space is reused only once no staged
@@ -85,15 +87,28 @@ pub(super) struct Index {
 impl Index {
     /// Holds `bytes` in memory as the newest object unless the identity is
     /// already staged. Returns whether the object was admitted.
-    pub(super) fn admit_resident(&mut self, object_id: ObjectId, bytes: OwnedBytes) -> bool {
+    pub(super) fn admit_resident(
+        &mut self,
+        object_id: ObjectId,
+        bytes: OwnedBytes,
+    ) -> Result<bool, ObjectStoreError> {
         if self.objects.contains_key(&object_id) {
-            return false;
+            return Ok(false);
         }
-        self.insert_resident(object_id, bytes);
-        true
+        self.insert_resident(object_id, bytes)?;
+        Ok(true)
     }
 
-    pub(super) fn insert_resident(&mut self, object_id: ObjectId, bytes: OwnedBytes) {
+    pub(super) fn insert_resident(
+        &mut self,
+        object_id: ObjectId,
+        bytes: OwnedBytes,
+    ) -> Result<(), ObjectStoreError> {
+        let incarnation = self.next_incarnation;
+        let next = incarnation
+            .checked_add(1)
+            .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))?;
+        self.next_incarnation = next;
         let order = self.next_order;
         self.next_order += 1;
         self.resident_bytes = self.resident_bytes.saturating_add(byte_length(&bytes));
@@ -104,11 +119,13 @@ impl Index {
                 bytes,
                 referenced: AtomicBool::new(false),
                 order,
+                incarnation,
                 decoded: OnceLock::new(),
             },
         ) {
             self.spilled_objects -= 1;
         }
+        Ok(())
     }
 
     /// Takes the resident objects to spill, oldest first, until the window
@@ -178,4 +195,28 @@ impl Index {
             None => {}
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn exhausted_resident_incarnation_refuses_without_reusing_a_retired_slot() {
+    let bytes = OwnedBytes::from_static(b"resident incarnation");
+    let id = ObjectId {
+        storage: None,
+        kind: crate::ObjectKind::BlobChunk,
+        digest: crate::object_digest(&bytes),
+    };
+    let mut index = Index::default();
+    assert!(index.admit_resident(id, bytes.clone()).unwrap());
+    let next_order = index.next_order;
+    index.remove(id);
+    index.next_incarnation = u64::MAX;
+    assert!(matches!(
+        index.admit_resident(id, bytes),
+        Err(ObjectStoreError::Work(crate::WorkError::Overflow))
+    ));
+    assert!(index.objects.is_empty());
+    assert!(index.order.is_empty());
+    assert_eq!(index.next_order, next_order);
+    assert_eq!(index.resident_bytes, 0);
 }

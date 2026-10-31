@@ -31,7 +31,7 @@ fn publish(cache: &CachedObjectStore<()>, id: u8, split: bool) {
         drop(state);
         loom::thread::yield_now();
         cache
-            .decoded_admit_bounded::<false>(key(id), value(id))
+            .decoded_admit_bounded::<false>(key(id), cache.shared.fill_epoch(), value(id))
             .unwrap();
     } else {
         cache.decoded_admit(key(id), value(id)).unwrap();

@@ -28,26 +28,29 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
         work.remaining()?;
     }
     let cached = store
-        .decoded_cache_get(cache_key)
+        .decoded_cache_lookup(cache_key)
         .map_err(read_store_error)?;
-    if let Some(cached) = cached {
-        let logical_bytes = cached.logical_bytes;
-        let page = cached
-            .value
-            .downcast::<Page<F>>()
-            .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?;
-        let source = OwnedPage {
-            page: PageLease::Shared {
-                page,
-                logical_bytes,
-            },
-            logical_bytes: 0,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: cached.native_custody,
-        };
-        let allocation = accounting.claim_owned(0, 0)?;
-        return Ok((source, allocation));
-    }
+    let miss = match cached {
+        crate::async_storage::DecodedCacheLookup::Miss(miss) => miss,
+        crate::async_storage::DecodedCacheLookup::Hit(cached) => {
+            let logical_bytes = cached.logical_bytes;
+            let page = cached
+                .value
+                .downcast::<Page<F>>()
+                .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?;
+            let source = OwnedPage {
+                page: PageLease::Shared {
+                    page,
+                    logical_bytes,
+                },
+                logical_bytes: 0,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_custody: cached.native_custody,
+            };
+            let allocation = accounting.claim_owned(0, 0)?;
+            return Ok((source, allocation));
+        }
+    };
     let (read, retained) =
         read_cold_object(store, page, limits, accounting, cancellation, data_custody).await?;
     let decoded = decode_read_with_accounting::<F>(&read, limits, accounting, data_custody);
@@ -56,7 +59,7 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
         let mut allocation = KernelOwnedAllocation::Standalone;
         accounting.release_owned(&mut allocation, retained)?;
     }
-    admit_decoded_with_accounting(store, cache_key, decoded?, accounting, data_custody)
+    admit_decoded_with_accounting(store, miss, decoded?, accounting, data_custody)
 }
 
 async fn read_cold_object<S: AsyncObjectStore>(
@@ -157,7 +160,7 @@ async fn read_cold_object<S: AsyncObjectStore>(
 )]
 pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S,
-    key: DecodedCacheKey,
+    miss: crate::async_storage::DecodedCacheMiss<'_>,
     decoded: (OwnedPage<F>, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
     data_custody: Option<&crate::kernel::ProofDataCustody>,
@@ -231,10 +234,7 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
             .remaining()
             .map_err(crate::ObjectStoreError::from)
             .map_err(read_store_error)?;
-        let value = match store
-            .decoded_cache_admit(key, value)
-            .map_err(read_store_error)?
-        {
+        let value = match miss.admit(value).map_err(read_store_error)? {
             DecodedCacheAdmission::Shared(value) | DecodedCacheAdmission::Uncached(value) => value,
         };
         let page = value
@@ -294,7 +294,7 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
         #[cfg(not(target_arch = "wasm32"))]
         native_custody: decoded.native_custody,
     };
-    match store.decoded_cache_admit(key, value) {
+    match miss.admit(value) {
         Ok(DecodedCacheAdmission::Shared(value)) => {
             allocations
                 .release(control_bytes)

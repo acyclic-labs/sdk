@@ -57,36 +57,29 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         crate::async_storage::read_many_stored_sequential(self, requests, work).await
     }
 
-    fn decoded_cache_get(
+    fn decoded_cache_lookup(
         &self,
         key: DecodedCacheKey,
-    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        match self.index().objects.get(&key.object_id) {
-            Some(Staged::Resident { decoded, .. }) => Ok(decoded
-                .get()
-                .filter(|(cached, _)| *cached == key)
-                .map(|(_, value)| value.clone())),
-            Some(Staged::Spilled { .. }) => Ok(None),
-            None => self.inner.decoded_cache_get(key),
-        }
-    }
-    fn decoded_cache_admit(
-        &self,
-        key: DecodedCacheKey,
-        value: DecodedCacheValue,
-    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        match self.index().objects.get(&key.object_id) {
-            Some(Staged::Resident { decoded, .. }) => {
-                let (cached, shared) = decoded.get_or_init(|| (key, value.clone()));
-                Ok(if *cached == key {
-                    DecodedCacheAdmission::Shared(shared.clone())
-                } else {
-                    DecodedCacheAdmission::Uncached(value)
-                })
+    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
+        use crate::async_storage::{DecodedCacheLookup, DecodedCacheMiss};
+        let index = self.index();
+        Ok(match index.objects.get(&key.object_id) {
+            Some(Staged::Resident {
+                decoded,
+                incarnation,
+                ..
+            }) => match decoded.get().filter(|(cached, _)| *cached == key) {
+                Some((_, value)) => DecodedCacheLookup::Hit(value.clone()),
+                None => DecodedCacheLookup::Miss(DecodedCacheMiss::new(key, *incarnation, self)),
+            },
+            Some(Staged::Spilled { .. }) => {
+                DecodedCacheLookup::Miss(DecodedCacheMiss::uncached(key))
             }
-            Some(Staged::Spilled { .. }) => Ok(DecodedCacheAdmission::Uncached(value)),
-            None => self.inner.decoded_cache_admit(key, value),
-        }
+            None => {
+                drop(index);
+                return self.inner.decoded_cache_lookup(key);
+            }
+        })
     }
     async fn put(
         &self,
@@ -133,7 +126,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         let overflowing = {
             let (object_id, bytes) = object.into_parts();
             let mut index = self.index_mut();
-            index.admit_resident(object_id, bytes) && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
+            index.admit_resident(object_id, bytes)? && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
         };
         if !overflowing {
             return Ok(());
@@ -274,5 +267,31 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             return Ok(true);
         }
         self.inner.contains(object_id, work).await
+    }
+}
+
+impl<S: AsyncObjectStore> crate::async_storage::DecodedCacheOrigin for StagedObjects<S> {
+    fn admit(
+        &self,
+        key: DecodedCacheKey,
+        epoch: u64,
+        value: DecodedCacheValue,
+    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
+        let index = self.index();
+        Ok(match index.objects.get(&key.object_id) {
+            Some(Staged::Resident {
+                decoded,
+                incarnation,
+                ..
+            }) if *incarnation == epoch => {
+                let (cached, shared) = decoded.get_or_init(|| (key, value.clone()));
+                if *cached == key {
+                    DecodedCacheAdmission::Shared(shared.clone())
+                } else {
+                    DecodedCacheAdmission::Uncached(value)
+                }
+            }
+            _ => DecodedCacheAdmission::Uncached(value),
+        })
     }
 }

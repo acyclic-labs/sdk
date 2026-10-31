@@ -606,9 +606,8 @@ pub(crate) fn release_standalone_read_bytes(
     release_read_allocation(bytes, KernelOwnedAllocation::Standalone, accounting)
 }
 
-pub(crate) fn cache_decoded_read<S: AsyncObjectStore, T: std::any::Any + Send + Sync>(
-    store: &S,
-    key: crate::async_storage::DecodedCacheKey,
+pub(crate) fn cache_decoded_read<T: std::any::Any + Send + Sync>(
+    miss: crate::async_storage::DecodedCacheMiss<'_>,
     mut owner: ReadOwned<(T, u64)>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(crate::async_storage::DecodedCacheValue, u64), FsError> {
@@ -649,18 +648,18 @@ pub(crate) fn cache_decoded_read<S: AsyncObjectStore, T: std::any::Any + Send + 
     #[cfg(not(target_arch = "wasm32"))]
     let admitted = if let Some(original) = accounting.native_work() {
         {
-            let __decoded_args = (key, value, original);
+            let __decoded_args = (miss, value, original);
             __decoded_args
                 .2
                 .remaining()
                 .map_err(crate::ObjectStoreError::from)
-                .and_then(|_| store.decoded_cache_admit(__decoded_args.0, __decoded_args.1))
+                .and_then(|_| __decoded_args.0.admit(__decoded_args.1))
         }
     } else {
-        store.decoded_cache_admit(key, value)
+        miss.admit(value)
     };
     #[cfg(target_arch = "wasm32")]
-    let admitted = store.decoded_cache_admit(key, value);
+    let admitted = miss.admit(value);
     let value = match admitted.map_err(crate::kernel::file_read::read_store_error)? {
         crate::async_storage::DecodedCacheAdmission::Shared(value)
         | crate::async_storage::DecodedCacheAdmission::Uncached(value) => value,

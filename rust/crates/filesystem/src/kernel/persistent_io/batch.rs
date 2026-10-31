@@ -1,12 +1,12 @@
 use super::*;
 
-enum BatchSource {
+enum BatchSource<'a> {
     Cached(DecodedCacheValue),
-    Cold(ObjectId),
+    Cold(crate::async_storage::DecodedCacheMiss<'a>),
 }
 
-struct BatchPlan {
-    sources: Vec<BatchSource>,
+struct BatchPlan<'a> {
+    sources: Vec<BatchSource<'a>>,
     requests: Vec<ObjectReadRequest>,
     source_bytes: u64,
     request_bytes: u64,
@@ -16,13 +16,14 @@ struct BatchPlan {
 
 pub(crate) struct PageBatch<'a, S: AsyncObjectStore, F: Format> {
     store: &'a S,
-    sources: std::vec::IntoIter<BatchSource>,
+    sources: std::vec::IntoIter<BatchSource<'a>>,
     reads: std::vec::IntoIter<ObjectRead>,
     source_bytes: u64,
     read_container_bytes: u64,
     remaining_owned_bytes: u64,
     data_custody: Option<&'a crate::kernel::ProofDataCustody>,
     format: PhantomData<F>,
+    limits: DecodeLimits,
     source_allocation: KernelOwnedAllocation,
     read_allocation: KernelOwnedAllocation,
 }
@@ -122,17 +123,18 @@ where
         remaining_owned_bytes,
         data_custody,
         format: PhantomData,
+        limits,
         source_allocation: plan.source_allocation,
         read_allocation: cold.custody,
     })
 }
 
-fn plan_page_batch<S, F, I>(
-    store: &S,
+fn plan_page_batch<'a, S, F, I>(
+    store: &'a S,
     pages: I,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<BatchPlan, FsError>
+) -> Result<BatchPlan<'a>, FsError>
 where
     S: AsyncObjectStore,
     F: Format,
@@ -144,7 +146,7 @@ where
     }
     accounting.check()?;
     let (sources, source_bytes, source_allocation) =
-        batch_container::<BatchSource>(count, accounting)?;
+        batch_container::<BatchSource<'_>>(count, accounting)?;
     let (requests, request_bytes, request_allocation) =
         match batch_container::<ObjectReadRequest>(count, accounting) {
             Ok(container) => container,
@@ -170,14 +172,17 @@ where
         for object_id in pages {
             let key = DecodedCacheKey::new::<Page<F>>(object_id, limits);
             accounting.check()?;
-            if let Some(value) = store.decoded_cache_get(key).map_err(read_store_error)? {
-                plan.sources.push(BatchSource::Cached(value));
-            } else {
-                plan.sources.push(BatchSource::Cold(object_id));
-                plan.requests.push(ObjectReadRequest {
-                    object_id,
-                    maximum_bytes: limits.maximum_object_bytes,
-                });
+            match store.decoded_cache_lookup(key).map_err(read_store_error)? {
+                crate::async_storage::DecodedCacheLookup::Hit(value) => {
+                    plan.sources.push(BatchSource::Cached(value))
+                }
+                crate::async_storage::DecodedCacheLookup::Miss(miss) => {
+                    plan.sources.push(BatchSource::Cold(miss));
+                    plan.requests.push(ObjectReadRequest {
+                        object_id,
+                        maximum_bytes: limits.maximum_object_bytes,
+                    });
+                }
             }
         }
         Ok(())
@@ -191,7 +196,7 @@ where
     }
 }
 
-fn release_plan(plan: BatchPlan, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+fn release_plan(plan: BatchPlan<'_>, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
     drop(plan.sources);
     drop(plan.requests);
     release_read_allocation(plan.source_bytes, plan.source_allocation, accounting)?;
@@ -263,8 +268,11 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         let decoded = (|| {
             cancellation.check()?;
             accounting.check()?;
+            if limits != self.limits {
+                return Err(invalid_batch_result());
+            }
             let source = self.sources.next().ok_or_else(invalid_batch_result)?;
-            let object_id = match source {
+            let miss = match source {
                 BatchSource::Cached(value) => {
                     let page = OwnedPage {
                         page: PageLease::Shared {
@@ -281,7 +289,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
                     let allocation = accounting.claim_owned(0, 0)?;
                     return Ok((page, allocation));
                 }
-                BatchSource::Cold(object_id) => object_id,
+                BatchSource::Cold(miss) => miss,
             };
             let read = self.reads.next().ok_or_else(invalid_batch_result)?;
             let retained = match self.read_allocation {
@@ -298,13 +306,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
             if retained != 0 {
                 release_read_allocation(retained, KernelOwnedAllocation::Standalone, accounting)?;
             }
-            admit_decoded_with_accounting(
-                self.store,
-                DecodedCacheKey::new::<Page<F>>(object_id, limits),
-                decoded?,
-                accounting,
-                self.data_custody,
-            )
+            admit_decoded_with_accounting(self.store, miss, decoded?, accounting, self.data_custody)
         })();
         if decoded.is_err() {
             self.release_pending_with_accounting(accounting)?;
