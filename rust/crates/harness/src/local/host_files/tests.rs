@@ -2,6 +2,179 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
+fn rejected_requests_end_without_owner_exit() -> Result<()> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let workspace = std::fs::canonicalize(checkout.path()).map_err(storage)?;
+    let directory = workspace.join(DIRECTORY);
+    let requests = directory.join("requests");
+    std::fs::create_dir_all(&requests).map_err(storage)?;
+    std::fs::create_dir(directory.join("status")).map_err(storage)?;
+    let root = acyclic_fs::hold_root(&directory).map_err(native_file_error)?;
+    let owner = acyclic_native_runtime::FileLock::try_acquire(
+        root.open_file(Path::new("owner.lock"), true)
+            .map_err(native_file_error)?,
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    )
+    .map_err(storage)?;
+    let session = uuid::Uuid::new_v4();
+    let mut endpoint = Endpoint {
+        version: 2,
+        session,
+        workspace,
+    };
+    let descriptor = directory.join("owner.json");
+    immutable(
+        &descriptor,
+        &serde_json::to_vec(&endpoint).map_err(storage)?,
+    )?;
+    assert!(matches!(
+        discover(&endpoint.workspace),
+        Err(Error::Unsupported(reason)) if reason.contains("requires 3")
+    ));
+    remove_projection(&descriptor)?;
+    endpoint.version = 3;
+    immutable(
+        &descriptor,
+        &serde_json::to_vec(&endpoint).map_err(storage)?,
+    )?;
+    let (_, endpoint) = discover(&endpoint.workspace)?;
+    let bridge = Arc::new(Bridge::open(&directory, endpoint)?);
+    let mut served = Served::default();
+    for fault in 0..3 {
+        let operation = OperationId::new();
+        let path = requests.join(format!("{operation}.json"));
+        let (delivery, response) = mpsc::sync_channel(1);
+        let waiting = bridge.wait(operation, delivery)?;
+        // An old removal observed before publication cannot reject new work.
+        bridge
+            .shared
+            .note(Ok(notify::Event::new(notify::EventKind::Remove(
+                notify::event::RemoveKind::File,
+            ))
+            .add_path(path.clone())));
+        assert!(matches!(
+            response.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        let mut request = Request {
+            session,
+            operation,
+            action: HostAction::Open {
+                host: "codex".into(),
+                session: "must-not-dispatch".into(),
+            },
+        };
+        immutable(&path, &serde_json::to_vec(&request).map_err(storage)?)?;
+        bridge.shared.published(operation);
+        assert!(matches!(
+            response.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        let bytes = match fault {
+            0 => b"{malformed request".to_vec(),
+            1 => {
+                request.session = uuid::Uuid::new_v4();
+                serde_json::to_vec(&request).map_err(storage)?
+            }
+            _ => {
+                request.operation = OperationId::new();
+                serde_json::to_vec(&request).map_err(storage)?
+            }
+        };
+        std::fs::write(&path, bytes).map_err(storage)?;
+        served.touch(
+            &requests,
+            session,
+            Touched {
+                names: BTreeSet::from([OsString::from(format!("{operation}.json"))]),
+                rescan: false,
+                failure: None,
+            },
+        )?;
+        assert!(
+            served.start().is_empty(),
+            "rejected bytes must never dispatch"
+        );
+        assert!(served.known.is_empty());
+        assert_eq!(served.rescans, 0);
+        assert!(
+            matches!(response.recv_timeout(Duration::from_secs(2)).map_err(storage)?,
+            Delivery::Reply(Err(Error::Indeterminate(id))) if id == operation)
+        );
+        assert!(
+            !lock(&bridge.shared.waiters).gone,
+            "the real owner lock remains held"
+        );
+        drop(waiting);
+        // No new notification is needed by a waiter arriving after rejection.
+        let (delivery, response) = mpsc::sync_channel(1);
+        let late = bridge.wait(operation, delivery)?;
+        bridge.shared.published(operation);
+        assert!(matches!(response.try_recv(),
+            Ok(Delivery::Reply(Err(Error::Indeterminate(id)))) if id == operation));
+        drop(late);
+        assert!(lock(&bridge.shared.waiters).waiting.is_empty());
+        assert_eq!(lock(&bridge.shared.waiters).registered, 0);
+        assert!(!lock(&bridge.watching).watched);
+    }
+    // Exercise caller cleanup, not just delivery: the rejecting owner has
+    // already removed the input when request_operation withdraws it again.
+    let operation = OperationId::new();
+    let leaf = OsString::from(format!("{operation}.json"));
+    let (changed, changes) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        if projection_changed(&event) {
+            let _ = changed.send(event);
+        }
+    })
+    .map_err(storage)?;
+    watcher
+        .watch(&requests, RecursiveMode::NonRecursive)
+        .map_err(storage)?;
+    let registry = Mutex::<Registry>::default();
+    let (completed, completion) = mpsc::sync_channel(1);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let _ = completed.send(request_operation(
+                &registry,
+                &bridge.workspace,
+                operation,
+                HostAction::Open {
+                    host: "codex".into(),
+                    session: "rejected-caller-cleanup".into(),
+                },
+            ));
+        });
+        let observation = (|| {
+            loop {
+                let event = changes
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(storage)?;
+                let event = event.map_err(storage)?;
+                if event
+                    .paths
+                    .iter()
+                    .any(|path| path.file_name() == Some(&leaf))
+                {
+                    break;
+                }
+            }
+            served.observe(&requests, uuid::Uuid::new_v4(), &leaf)?;
+            assert!(served.start().is_empty());
+            assert!(!lock(&bridge.shared.waiters).gone);
+            completion
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(storage)
+        })();
+        // Even a failed assertion guard must release the original owner so
+        // the scoped caller can finish; it must not leave a joining thread.
+        drop(owner);
+        observation
+    })?;
+    assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
+    Ok(())
+}
+
 async fn projection_event(
     events: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
     owner: &mut tokio::task::JoinHandle<Result<()>>,
@@ -58,6 +231,7 @@ fn projection_reads_cannot_wake_either_endpoint() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn workspace_projection_uses_shared_results_without_client_state() -> Result<()> {
+    rejected_requests_end_without_owner_exit()?;
     let registry = Arc::new(Mutex::<Registry>::default());
     let checkout = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
@@ -104,7 +278,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let debris = checkout
         .path()
         .join(DIRECTORY)
-        .join("status/workspace/18446744073709551615.json");
+        .join("status/18446744073709551615.json");
     std::fs::create_dir_all(debris.parent().expect("status parent")).map_err(storage)?;
     std::fs::write(&debris, b"unrelated status is not a reply").map_err(storage)?;
     std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
@@ -149,14 +323,9 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     let mut other_owner = tokio::spawn(Box::pin(serve(Arc::clone(&other_local))));
     let other_descriptor = other_checkout.path().join(DIRECTORY).join("owner.json");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !other_descriptor.is_file() {
-            projection_event(&mut changes, &mut other_owner).await?;
-        }
-        Ok::<_, Error>(())
-    })
-    .await
-    .map_err(storage)??;
+    while !other_descriptor.is_file() {
+        projection_event(&mut changes, &mut other_owner).await?;
+    }
     watcher.unwatch(other_checkout.path()).map_err(storage)?;
     let other_cwd = std::fs::canonicalize(other_checkout.path()).map_err(storage)?;
     let opening_registry = Arc::clone(&registry);
@@ -219,6 +388,48 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         })?,
         &connected,
     ));
+    // Obtain an actual committed workspace result. On this current-thread
+    // runtime the owner cannot process withdrawal between the removal below
+    // and the late read: an available result must win over absent input.
+    let operation = OperationId::new();
+    let (delivery, response) = mpsc::sync_channel(1);
+    let waiting = connected.wait(operation, delivery)?;
+    let recovery_path = requests.join(format!("{operation}.json"));
+    immutable(
+        &recovery_path,
+        &serde_json::to_vec(&Request {
+            session: connected.session,
+            operation,
+            action: HostAction::Open {
+                host: "codex".into(),
+                session: "reply-withdrawal-recovery".into(),
+            },
+        })
+        .map_err(storage)?,
+    )?;
+    connected.shared.published(operation);
+    let committed =
+        tokio::task::spawn_blocking(move || response.recv_timeout(Duration::from_secs(2)))
+            .await
+            .map_err(storage)?
+            .map_err(storage)?;
+    let Delivery::Reply(Ok(committed)) = committed else {
+        panic!("the actual owner must publish its committed result");
+    };
+    assert!(committed.get("ok").is_some());
+    remove_projection(&recovery_path)?;
+    drop(waiting);
+    let (delivery, response) = mpsc::sync_channel(1);
+    let late = connected.wait(operation, delivery)?;
+    connected.shared.published(operation);
+    let Delivery::Reply(Ok(recovered)) = response
+        .try_recv()
+        .expect("committed reply is immediately available")
+    else {
+        panic!("withdrawal must not replace an available committed outcome");
+    };
+    assert_eq!(recovered, committed);
+    drop(late);
     let requests_registry = Arc::clone(&registry);
     let result = tokio::task::spawn_blocking(move || {
         // A caller can occupy its exact writable reply name before watching.
@@ -226,12 +437,12 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         // without requiring a new notification for the pre-existing bytes.
         let operation = OperationId::new();
         let directory = cwd.join(DIRECTORY);
-        let path = reply_path(&directory.join("status"), WORKSPACE, operation);
+        let path = reply_path(&directory.join("status"), operation);
         std::fs::write(&path, b"{conflicting reply").map_err(storage)?;
         let mut served = Served::default();
         served.known.insert(
             operation,
-            (WORKSPACE.into(), Tracked::Running { withdrawn: false }),
+            Tracked::Running { withdrawn: false },
         );
         let held = acyclic_fs::hold_root(&directory).map_err(native_file_error)?;
         served.answer(&held, operation, Ok(serde_json::json!({"ok": null})))?;
@@ -422,10 +633,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         loop {
             let mut pending = 0;
             for entry in std::fs::read_dir(&statuses).map_err(storage)? {
-                for reply in std::fs::read_dir(entry.map_err(storage)?.path()).map_err(storage)? {
-                    if reply.map_err(storage)?.path() != debris {
-                        pending += 1;
-                    }
+                if entry.map_err(storage)?.path() != debris {
+                    pending += 1;
                 }
             }
             if pending == 0 {
@@ -441,22 +650,22 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         b"unrelated status is not a reply",
         "publishing or retiring one reply must never prune unrelated leaves"
     );
-    // Every registration retired, and with the last of each key its watch.
+    // Every registration retired, and with the last the directory watches.
     let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
     let bridge = Registry::live(&registry, &cwd)
         .ok_or_else(|| Error::Conflict("client bridge absent".into()))?;
-    assert!(lock(&bridge.shared.waiters).keys.is_empty());
+    assert!(lock(&bridge.shared.waiters).waiting.is_empty());
     assert!(
-        lock(&bridge.watching).watched.is_empty(),
-        "a key nothing awaits must not stay watched"
+        !lock(&bridge.watching).watched,
+        "a connection nothing awaits must not stay watched"
     );
     // The real connection has completed ordinary requests. Lose its
     // notification producer while two registered replies remain outstanding:
     // both must finish without publishing a reply or waiting for owner death.
     let (first, first_reply) = mpsc::sync_channel(1);
-    let first = bridge.wait(WORKSPACE, OperationId::new(), first)?;
+    let first = bridge.wait(OperationId::new(), first)?;
     let (second, second_reply) = mpsc::sync_channel(1);
-    let second = bridge.wait(WORKSPACE, OperationId::new(), second)?;
+    let second = bridge.wait(OperationId::new(), second)?;
     assert!(matches!(
         first_reply.try_recv(),
         Err(mpsc::TryRecvError::Empty)
@@ -507,8 +716,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         0,
         "a refused connection must not publish a request with no response producer"
     );
-    assert!(lock(&bridge.shared.waiters).keys.is_empty());
-    assert!(lock(&bridge.watching).watched.is_empty());
+    assert!(lock(&bridge.shared.waiters).waiting.is_empty());
+    assert!(!lock(&bridge.watching).watched);
     assert!(
         !owner.is_finished(),
         "client failure must not kill the workspace owner"
@@ -518,7 +727,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let (directory, endpoint) = discover(&cwd)?;
     let observed = Arc::new(Bridge::open(&directory, endpoint)?);
     let (delivery, response) = mpsc::sync_channel(1);
-    let waiting = observed.wait(WORKSPACE, OperationId::new(), delivery)?;
+    let waiting = observed.wait(OperationId::new(), delivery)?;
     observed
         .shared
         .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
@@ -540,11 +749,11 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .owner_finished(Err(std::io::ErrorKind::PermissionDenied.into()));
     let (late, _) = mpsc::sync_channel(1);
     assert!(matches!(
-        observed.wait(WORKSPACE, OperationId::new(), late),
+        observed.wait(OperationId::new(), late),
         Err(Error::Storage(error)) if error == failure
     ));
-    assert!(lock(&observed.shared.waiters).keys.is_empty());
-    assert!(lock(&observed.watching).watched.is_empty());
+    assert!(lock(&observed.shared.waiters).waiting.is_empty());
+    assert!(!lock(&observed.watching).watched);
     let (producer, mut ended) = tokio::sync::mpsc::unbounded_channel();
     drop(producer);
     assert!(matches!(
@@ -553,12 +762,46 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     ));
     assert!(local.agent.is_none());
     assert!(local.tools().definitions(None)?.is_empty());
-    owner.abort();
-    assert!(owner.await.unwrap_err().is_cancelled());
-    Arc::try_unwrap(local)
-        .map_err(|_| Error::Conflict("workspace owner retained after shutdown".into()))?
-        .disconnect()
-        .await?;
+    // Retirement requires the caller to release its harness handle before
+    // the original owner joins physical view cleanup and disconnects it.
+    drop(local);
+    // A rejected projection that cannot be unlinked has no withdrawal
+    // producer. Its error must retire the original owner and end the call.
+    let (directory, endpoint) = discover(&cwd)?;
+    let blocked = Arc::new(Bridge::open(&directory, endpoint)?);
+    let operation = OperationId::new();
+    let (delivery, response) = mpsc::sync_channel(1);
+    let waiting = blocked.wait(operation, delivery)?;
+    // A directory at a canonical request leaf is rejected by the no-follow
+    // reader and cannot be unlinked as a file on any supported platform.
+    std::fs::create_dir(requests.join(format!("{operation}.json"))).map_err(storage)?;
+    blocked.shared.published(operation);
+    let failure = tokio::time::timeout(Duration::from_secs(2), &mut owner)
+        .await
+        .map_err(storage)?
+        .map_err(storage)?
+        .unwrap_err()
+        .to_string();
+    assert!(
+        failure.contains(&format!(
+            "step=withdraw rejected native request {operation}:"
+        )),
+        "the original rejection cause must survive retirement: {failure}"
+    );
+    assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
+    assert!(matches!(
+        response
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(storage)?,
+        Delivery::Gone
+    ));
+    drop(waiting);
+    assert!(lock(&blocked.shared.waiters).gone);
+    let (delivery, _) = mpsc::sync_channel(1);
+    assert!(matches!(
+        blocked.wait(operation, delivery),
+        Err(Error::NotFound(_))
+    ));
     Ok(())
 }
 
