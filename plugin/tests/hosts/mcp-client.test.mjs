@@ -4,6 +4,33 @@ import { once } from "node:events";
 import { test } from "node:test";
 import { McpClient } from "../../shared/mcp-client.mjs";
 
+test("native MCP cancellation during encoding retains the next request producer", { timeout: 10_000 }, async () => {
+  const child = fork(new URL("./mcp-pipe-child.mjs", import.meta.url), [], { silent: true });
+  const closed = once(child, "close");
+  child.stderr.resume();
+  const initialization = once(child, "message");
+  const client = new McpClient(child, { name: "transport-conformance", version: "1",
+    recovery: "node --test --test-name-pattern 'native MCP cancellation during encoding' plugin/tests/hosts/mcp-client.test.mjs" });
+  try {
+    await initialization;
+    const abort = new AbortController();
+    const cancelled = client.request("wait", { toJSON() {
+      abort.abort();
+      return { text: "withdrawn" };
+    } }, abort.signal).catch(error => error);
+    const next = client.request("wait", { text: "kept" });
+    child.send("initialize");
+    child.send("resume");
+    assert.match((await cancelled).message, /cancelled/);
+    assert.deepEqual(await next, { received: 4 },
+      "a retired encoder must neither write its frame nor unlink the next request");
+  } finally {
+    child.send("exit");
+    assert.deepEqual(await closed, [0, null]);
+    await client.closed;
+  }
+});
+
 test("native MCP pipe credits retain cancellation and terminals for queued callers", { timeout: 10_000 }, async () => {
   const child = fork(new URL("./mcp-pipe-child.mjs", import.meta.url), [], { silent: true });
   const closed = once(child, "close");

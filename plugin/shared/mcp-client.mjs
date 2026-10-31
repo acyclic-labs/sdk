@@ -124,7 +124,13 @@ export class McpClient {
       if (budget <= 0) { this.#blocked = true; return; }
       while (budget > 0 && this.#head && !this.#head.gated && !this.#blocked) {
         const entry = this.#head;
-        entry.bytes ??= Buffer.from(JSON.stringify(entry.message) + "\n");
+        if (!entry.bytes) {
+          const json = JSON.stringify(entry.message);
+          // Serialization can invoke a caller's getter/toJSON and retire this
+          // entry. That caller no longer owns byte admission or queue removal.
+          if (this.#head !== entry || this.#failure) continue;
+          entry.bytes = Buffer.from(json + "\n");
+        }
         entry.offset ??= 0;
         const length = Math.min(budget, entry.bytes.length - entry.offset);
         const chunk = entry.bytes.subarray(entry.offset, entry.offset + length);
