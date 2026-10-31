@@ -3,7 +3,7 @@ use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, IdempotencyKey, OwnedBytes, ProviderPlatform, ReadRequest,
     StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
-    testing::{Counted, RequestLedger, Requests},
+    testing::{Counted, RequestClass, RequestLedger, Requests},
 };
 use futures::{StreamExt as _, TryStreamExt as _};
 
@@ -131,7 +131,7 @@ pub async fn bench(backend: &dyn Backend) -> Result<Measurement, Failure> {
 
 fn budget(case: &'static str, before: Requests, ledger: &RequestLedger) -> Result<(), Failure> {
     let requests = ledger.requests().since(before);
-    if requests.control() != 0 || requests.data() > 1 {
+    if requests.auxiliary(Some(RequestClass::Data)) != Some(0) || requests.data() > 1 {
         return Err(Failure::Budget { case, requests });
     }
     Ok(())

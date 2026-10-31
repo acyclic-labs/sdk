@@ -32,21 +32,46 @@ pub enum RequestClass {
 }
 
 /// An immutable ledger snapshot, or the difference between two snapshots.
+/// A component equal to `u64::MAX` has lost precision and stays unknown in
+/// subsequent deltas. These values never certify hidden physical work.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Requests([u64; 6]);
 
 impl Requests {
-    /// Calls that carry payload data.
+    /// Calls that carry payload data; `u64::MAX` denotes lost precision.
     pub fn data(self) -> u64 {
         self.0[RequestClass::Data as usize]
     }
 
-    /// Every metadata, list, head, lease or token request.
+    /// Every non-payload request, irrespective of what the caller requested.
+    /// For requested HEAD/LIST semantics use [`Self::auxiliary`] instead.
+    /// `u64::MAX` means the aggregate is unknown, never a wrapped zero.
     pub fn control(self) -> u64 {
-        self.0[1..].iter().sum()
+        self.auxiliary(Some(RequestClass::Data)).unwrap_or(u64::MAX)
     }
 
-    /// Calls in one specific class.
+    /// Calls outside the original operation's explicitly requested class.
+    /// `None` means missing requested semantics or lost counter precision.
+    /// The requested component remains in [`Self::class`]: surplus calls of
+    /// that same class still violate its budget and cannot disappear here.
+    /// This partitions this provider boundary, not unobserved transport work.
+    pub fn auxiliary(self, requested: Option<RequestClass>) -> Option<u64> {
+        let requested = requested? as usize;
+        self.0
+            .iter()
+            .enumerate()
+            .try_fold(0_u64, |sum, (class, &count)| {
+                if count == u64::MAX {
+                    None
+                } else if class == requested {
+                    Some(sum)
+                } else {
+                    sum.checked_add(count)
+                }
+            })
+    }
+
+    /// Calls in one specific class; `u64::MAX` denotes lost precision.
     pub fn class(self, class: RequestClass) -> u64 {
         self.0[class as usize]
     }
@@ -55,10 +80,14 @@ impl Requests {
     ///
     /// # Panics
     /// Panics if any counter precedes the earlier snapshot. Take both snapshots
-    /// in order from the same ledger, without counter overflow.
+    /// in order from the same ledger. Lost precision propagates through deltas.
     pub fn since(self, earlier: Self) -> Self {
         let mut delta = self;
         for (current, previous) in delta.0.iter_mut().zip(earlier.0) {
+            if *current == u64::MAX || previous == u64::MAX {
+                *current = u64::MAX;
+                continue;
+            }
             assert!(
                 *current >= previous,
                 "request ledger moved backwards; take both snapshots from the same wrapper"
@@ -81,7 +110,10 @@ impl RequestLedger {
 
     /// Records one dispatched call in its contract class.
     pub fn record(&self, class: RequestClass) {
-        self.0[class as usize].fetch_add(1, Ordering::Relaxed);
+        let _ =
+            self.0[class as usize].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                count.checked_add(1)
+            });
     }
 
     /// Reads the ledger without resetting other handles.
@@ -227,10 +259,69 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].value.as_ref(), b"value");
         let absent = StreamPath::new("absent").unwrap();
+        let before = ledger.requests();
         assert_eq!(
             crate::assert_requests!(ledger, provider.tail(absent).await, control = 1, data = 0),
             Err(StreamError::NotFound)
         );
+        let requested = ledger.requests().since(before);
+        assert_eq!(requested.class(RequestClass::Head), 1);
+        assert_eq!(requested.auxiliary(Some(RequestClass::Head)), Some(0));
+
+        // Listing is the requested data operation here. Its independent result
+        // oracle stays intact; a method-class name cannot turn it into a probe.
+        let before = ledger.requests();
+        let list = || crate::ChildrenPageRequest {
+            tail_stream: None,
+            parent: None,
+            limit: 8,
+            after: None,
+            hierarchy_version: None,
+        };
+        let page = provider.children_page(list()).await.unwrap();
+        assert_eq!(page.children.len(), 1);
+        assert_eq!(
+            page.children[0].path,
+            StreamPath::new("request-budget").unwrap()
+        );
+        let requested = ledger.requests().since(before);
+        assert_eq!(requested.class(RequestClass::List), 1);
+        assert_eq!(requested.auxiliary(Some(RequestClass::List)), Some(0));
+        assert_eq!(requested.auxiliary(None), None);
+        assert_eq!(
+            requested.control(),
+            1,
+            "raw method classification is not requested semantics"
+        );
+
+        // Actual extra provider calls must remain visible, including one of
+        // the same requested class and a failed auxiliary HEAD.
+        provider.children_page(list()).await.unwrap();
+        assert_eq!(
+            provider.tail(StreamPath::new("absent").unwrap()).await,
+            Err(StreamError::NotFound)
+        );
+        let extra = ledger.requests().since(before);
+        assert_eq!(extra.class(RequestClass::List), 2);
+        assert_eq!(extra.auxiliary(Some(RequestClass::List)), Some(1));
+
+        // Bounded arithmetic state control, not a fabricated native fixture.
+        let overflow = RequestLedger::new();
+        overflow.0[RequestClass::Token as usize].store(u64::MAX - 1, Ordering::Relaxed);
+        let before = overflow.requests();
+        overflow.record(RequestClass::Token);
+        let full = overflow.requests();
+        overflow.record(RequestClass::Token);
+        assert_eq!(overflow.requests().class(RequestClass::Token), u64::MAX);
+        assert_eq!(full.since(before).auxiliary(Some(RequestClass::Data)), None);
+        assert_eq!(
+            overflow
+                .requests()
+                .since(full)
+                .auxiliary(Some(RequestClass::Data)),
+            None
+        );
+        assert_ne!(overflow.requests().since(full).control(), 0);
     }
 
     #[test]
