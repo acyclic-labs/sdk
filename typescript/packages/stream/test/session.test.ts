@@ -1,11 +1,10 @@
 import { expect, test } from "bun:test";
-import { create } from "@bufbuild/protobuf";
-import { SessionFollowSchema } from "../generated/proto/stream/v1/session_pb.js";
+import { create, fromBinary } from "@bufbuild/protobuf";
+import { SessionFollowSchema, SessionFrameSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "../src/session.js";
 import { StreamError } from "../src/types.js";
 import { SessionQueue } from "../src/session-queue.js";
 import { SessionFilterSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
-import type { SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 
 test("session slots, filters and record headers survive the TypeScript bridge", async () => {
@@ -163,10 +162,10 @@ test("concurrent first follows share a silent peer until cancellation or termina
     let connections = 0, closes = 0;
     let hello!: () => void;
     const sentHello = new Promise<void>(resolve => { hello = resolve; });
-    const incoming = new SessionQueue<SessionFrame>(2);
+    const incoming = new SessionQueue<Uint8Array>(2);
     const client = new StreamSessions(async () => {
       connections += 1;
-      return { incoming, async send(input) { if (input.body.case === "hello") hello(); },
+      return { incoming, async send(bytes) { if (fromBinary(SessionFrameSchema, bytes).body.case === "hello") hello(); },
         close() { closes += 1; incoming.end(); } };
     });
     const firstCancel = new AbortController();
@@ -209,9 +208,10 @@ test("Welcome followed by EOF resumes the first subscription on a live peer", as
   const client = new StreamSessions(async (target, signal) => {
     const transport = await node.connect(target, signal);
     if (++connects !== 1) return transport;
-    return { ...transport, async send(input) {
+    return { ...transport, async send(bytes) {
+      const input = fromBinary(SessionFrameSchema, bytes);
       if (input.body.case === "hello") {
-        await transport.send(input);
+        await transport.send(bytes);
         transport.close();
       }
     } };

@@ -21,6 +21,13 @@ export function checkedRecord(record: WireRecord | undefined, expected: bigint, 
     const origin = record.origin === "" ? followed : record.origin;
     if (origin === undefined) throw new Error("missing origin");
     if (record.origin !== "") validatePathValue(origin);
-    return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros, origin, keys: record.keys, attributes: record.attributes };
+    return projectRecord(record, followed);
   } catch { throw new StreamError("invalid_response", "stream record has an invalid commit identity or origin"); }
+}
+
+/** Project an admitted record, resolving its elided origin from the followed path. */
+export function projectRecord(record: WireRecord, followed?: string): EncodedRecord {
+  return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId),
+    committedAtMicros: record.committedAtMicros, keys: record.keys, attributes: record.attributes,
+    origin: record.origin === "" && followed !== undefined ? followed : record.origin };
 }

@@ -4,7 +4,7 @@ import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/se
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
-import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
+import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
@@ -113,10 +113,10 @@ function streamGrpc(options: StreamGrpcOptions) {
       const input = new SessionQueue<SessionFrame>(wire.StreamLimit.MAX_ITEMS);
       const client = createClient(StreamSessionService, transport);
       const incoming = async function* () {
-        try { yield* client.session(input, { signal }); }
+        try { for await (const frame of client.session(input, { signal })) yield toBinary(SessionFrameSchema, frame); }
         catch (error) { throw sessionTransportError(error); }
       };
-      return { incoming: incoming(), send: (frame, writeSignal) => input.send(frame, writeSignal), close: () => input.end() };
+      return { incoming: incoming(), send: (frame, writeSignal) => input.send(fromBinary(SessionFrameSchema, frame), writeSignal), close: () => input.end() };
     }, acknowledgeDeliveries !== false, options.revisionScope);
     return { client, sessions };
 }

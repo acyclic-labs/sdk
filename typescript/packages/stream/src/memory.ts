@@ -1,4 +1,4 @@
-import { checkedReadSequence, checkedRecord } from "./record.js";
+import { checkedReadSequence, projectRecord } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
@@ -51,7 +51,7 @@ class RustStreamProvider implements StreamProvider {
     try {
       const values = await (await this.#inner).read(request);
       return values.flatMap(value => readResponseRecords(fromBinary(ReadResponseSchema, value))
-        .map(record => checkedRecord(record, record.sequence, path)));
+        .map(record => projectRecord(record, path)));
     } catch (error) { throw streamError(error, "read"); }
   }
 
@@ -117,7 +117,7 @@ class RustStreamProvider implements StreamProvider {
         try { bytes = await handle.next(); }
         catch (error) { throw streamError(error, "follow"); }
         if (bytes === null || signal?.aborted) return;
-        for (const decoded of readResponseRecords(fromBinary(ReadResponseSchema, bytes))) yield checkedRecord(decoded, decoded.sequence, path);
+        for (const decoded of readResponseRecords(fromBinary(ReadResponseSchema, bytes))) yield projectRecord(decoded, path);
       }
     } finally {
       signal?.removeEventListener("abort", close);

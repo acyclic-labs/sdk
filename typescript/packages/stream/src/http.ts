@@ -1,4 +1,3 @@
-import { checkedReadSequence } from "./record.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
@@ -19,7 +18,7 @@ export interface HttpStreamProviderOptions extends CredentialOptions {
   readonly revisionScope?: Uint8Array;
 }
 
-/** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
+/** Authenticated JSON unary calls and credited binary reads. Mutation retries are the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
   readonly #sessions: StreamSessions;
   readonly #endpoint: string;
@@ -48,7 +47,14 @@ export class HttpStreamProvider implements StreamProvider {
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
-  async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> { for (const item of await this.#read(path, options)) yield item; }
+  async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
+    const records = this.#sessions.read(path, options);
+    try {
+      const first = await observed(this.#observer, "stream", "read", () => records.next());
+      if (!first.done) yield first.value;
+      yield* records;
+    } finally { await records.return(undefined); }
+  }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
     await this.#sessions.registerCredential(slot, credential);
   }
@@ -102,25 +108,6 @@ export class HttpStreamProvider implements StreamProvider {
     const input = wireCreateTokenRequest(request);
     return this.#request("tokens/create", await encodeHttpRequest("tokens/create", input));
   }
-  async #read(path: string, options: ReadOptions, signal?: AbortSignal): Promise<readonly EncodedRecord[]> {
-    const { from, limit, key } = structuredClone(options);
-    await validateWireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
-    const atLeast = this.#sessions.revisionFloor();
-    const input = wireRequest({ kind: "read", path, from, limit, atLeast, ...(key === undefined ? {} : { key }) });
-    const { records, applied } = await this.#request("read", await encodeHttpRequest("read", input), signal, path);
-    // The page's own served revision must prove the minimum sent, and then
-    // floors later reads: a lagging replica cannot serve older data.
-    this.#sessions.served(atLeast, applied);
-    // A canonical read is a contiguous page beginning at the requested
-    // cursor.  Checking this at the transport boundary prevents a malformed
-    // hosted response from making follow skip records or move its cursor
-    // backwards.
-    let expected = from;
-    for (const record of records) {
-      expected = checkedReadSequence(record, expected, key) + 1n;
-    }
-    return records;
-  }
   async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
     return this.#sessions.heads(options);
   }
@@ -138,10 +125,10 @@ export class HttpStreamProvider implements StreamProvider {
     this.#sessions.served(atLeast, applied);
     return tail;
   }
-  #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, followed?: string): Promise<HttpResponseFor<Route>> {
-    return observed(this.#observer, "stream", route, sizes => this.#send(route, body, signal, sizes, followed));
+  #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal): Promise<HttpResponseFor<Route>> {
+    return observed(this.#observer, "stream", route, sizes => this.#send(route, body, signal, sizes));
   }
-  async #send<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, sizes?: OperationSizes, followed?: string): Promise<HttpResponseFor<Route>> {
+  async #send<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, sizes?: OperationSizes): Promise<HttpResponseFor<Route>> {
     const payload = typeof body === "string" ? body : JSON.stringify(body);
     if (sizes) sizes.requestBytes = new TextEncoder().encode(payload).byteLength;
     const lease = await resolveCredential(this.#credential, signal);
@@ -159,7 +146,7 @@ export class HttpStreamProvider implements StreamProvider {
     try { await ensureStreamWasm(); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     lease.check();
     let decoded: HttpResponseFor<Route>;
-    try { decoded = decodeHttpResponseFor(route, text, followed); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    try { decoded = decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     lease.check();
     return decoded;
   }

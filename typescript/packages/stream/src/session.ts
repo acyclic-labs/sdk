@@ -4,14 +4,15 @@ import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { projectMemoryResponse, WasmSession, type WasmFollow, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
-import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import { checkedRecord } from "./record.js";
-import { StreamError, commitId, type EncodedRecord, type FollowOptions, type Revision } from "./types.js";
+import { RevisionSchema, RecordSchema } from "../generated/proto/stream/v1/stream_pb.js";
+import { StreamError, type EncodedRecord, type FollowOptions, type ReadOptions, type Revision } from "./types.js";
+import { projectRecord } from "./record.js";
 
 export interface SessionTransport {
-  readonly incoming: AsyncIterable<wire.SessionFrame>;
+  /** Canonical v1 frames; the Rust session admits each untrusted message. */
+  readonly incoming: AsyncIterable<Uint8Array>;
   /** Abort withdraws a write that has not yet entered the transport queue. */
-  send(frame: wire.SessionFrame, signal?: AbortSignal): Promise<void>;
+  send(frame: Uint8Array, signal?: AbortSignal): Promise<void>;
   close(): void;
 }
 export type SessionConnect = (node: wire.SessionNode | undefined, signal: AbortSignal) => Promise<SessionTransport>;
@@ -38,9 +39,9 @@ export class StreamSessions {
       return {
         async next() {
           const item = await incoming.next();
-          return item.done ? null : toBinary(wire.SessionFrameSchema, item.value);
+          return item.done ? null : item.value;
         },
-        send(bytes: Uint8Array, writeSignal: AbortSignal) { return transport.send(fromBinary(wire.SessionFrameSchema, bytes), writeSignal); },
+        send(bytes: Uint8Array, writeSignal: AbortSignal) { return transport.send(bytes, writeSignal); },
         close() { transport.close(); },
       };
     }, acknowledge, revisionScope);
@@ -78,11 +79,20 @@ export class StreamSessions {
     catch (error) { throw streamError(error, "session"); }
   }
 
+  /** Finite reads share the native pinned-end, revision and credit machinery. */
+  async *read(path: string, options: ReadOptions): AsyncGenerator<EncodedRecord> {
+    const { from, limit, key } = structuredClone(options);
+    const request = { kind: "read" as const, path, from, limit, ...(key === undefined ? {} : { key }) };
+    await validateWireRequest(request);
+    const input = wireRequest(request);
+    yield* this.#cursor(() => this.#inner.read(input), undefined,
+      bytes => projectRecord(fromBinary(RecordSchema, bytes), path));
+  }
+
   async *follow(path: string, options: FollowOptions & SessionOptions): AsyncGenerator<EncodedRecord> {
     for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL, whenAbsent: wireWhenAbsent(options.whenAbsent) }), options)) {
       if (data.item.case !== "record") throw new Error("Rust ALL cursor returned a non-record item");
-      const record = data.item.value;
-      yield checkedRecord(record, record.sequence, path);
+      yield projectRecord(data.item.value, path);
     }
   }
 

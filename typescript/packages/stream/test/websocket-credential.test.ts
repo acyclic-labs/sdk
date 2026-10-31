@@ -5,7 +5,7 @@ import { SessionFrameSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { webSocketSession } from "../src/session-websocket.js";
 
 // Synthetic frames use the SDK's canonical encoder over a real WebSocket.
-test("WebSocket lease custody covers queued records, wire decode, writes and producer loss", async () => {
+test("WebSocket lease custody covers queued bytes, writes and producer loss", async () => {
   const frame = create(SessionFrameSchema, { channelId: 1n, generation: 1n });
   const encoded = toBinary(SessionFrameSchema, frame);
   for (const operation of ["queued", "message", "send", "pending", "disconnect"] as const) {
@@ -20,6 +20,8 @@ test("WebSocket lease custody covers queued records, wire decode, writes and pro
       }, () => ({ nowUnixSeconds: now, revision }));
       let peer: Bun.ServerWebSocket<undefined> | undefined;
       let delivered!: (event: "message" | "close") => void;
+      let receivedBytes: ArrayBuffer | undefined;
+      let forwarded: Parameters<WebSocket["send"]>[0] | undefined;
       const received = new Promise<"message" | "close">(resolve => { delivered = resolve; });
       let sent!: () => void;
       const written = new Promise<void>(resolve => { sent = resolve; });
@@ -33,8 +35,10 @@ test("WebSocket lease custody covers queued records, wire decode, writes and pro
       const controller = new AbortController();
       const connect = webSocketSession("https://example.test", cache.provider, (_url, protocols) => {
         const socket = new WebSocket(server.url.href.replace("http:", "ws:"), protocols);
-        socket.addEventListener("message", () => delivered("message"), { once: true });
+        socket.addEventListener("message", event => { receivedBytes = event.data; delivered("message"); }, { once: true });
         socket.addEventListener("close", () => delivered("close"), { once: true });
+        const send = socket.send.bind(socket);
+        socket.send = data => { forwarded = data; send(data); };
         return socket;
       });
       try {
@@ -57,14 +61,17 @@ test("WebSocket lease custody covers queued records, wire decode, writes and pro
           case "cancel": controller.abort(); break;
         }
         if (operation === "disconnect") peer!.close();
-        // Invalid bytes prove freshness refusal happens before protobuf decoding.
+        // Invalid bytes prove freshness refusal happens before frame admission.
         if (operation === "message") peer!.send(change === "unchanged" ? encoded : new Uint8Array([0xff]));
         if (operation === "send") {
-          if (change === "unchanged") { await transport.send(frame); await written; }
-          else await expect(transport.send(frame)).rejects.toHaveProperty("code", change === "cancel" ? "unavailable" : "access_denied");
+          if (change === "unchanged") { await transport.send(encoded); await written; expect(forwarded).toBe(encoded); }
+          else await expect(transport.send(encoded)).rejects.toHaveProperty("code", change === "cancel" ? "unavailable" : "access_denied");
         } else {
           const outcome = await (pending ?? incoming.next().then(value => ({ value }), error => ({ error })));
-          if (change === "unchanged" && operation !== "disconnect") expect(outcome).toHaveProperty("value.value.channelId", 1n);
+          if (change === "unchanged" && operation !== "disconnect") {
+            expect(outcome).toHaveProperty("value.value", encoded);
+            if ("value" in outcome) expect(outcome.value.value?.buffer).toBe(receivedBytes);
+          }
           else expect(outcome).toHaveProperty("error.code", change === "cancel" || operation === "disconnect" ? "unavailable" : "access_denied");
         }
         transport.close();
