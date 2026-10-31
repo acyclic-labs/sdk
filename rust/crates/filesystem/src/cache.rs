@@ -276,7 +276,7 @@ struct BatchLeader {
 struct PreparedBatch {
     slots: Owned<Vec<BatchSlot>>,
     leaders: Owned<Vec<BatchLeader>>,
-    shared: Namespace,
+    shared: Arc<Namespace>,
 }
 
 impl Drop for PreparedBatch {
@@ -298,7 +298,7 @@ impl Drop for PreparedBatch {
 /// Async immutable-object accelerator over any conforming backend.
 pub struct CachedObjectStore<S> {
     inner: S,
-    shared: Namespace,
+    shared: Arc<Namespace>,
 }
 
 impl<S: Clone> Clone for CachedObjectStore<S> {
@@ -319,13 +319,13 @@ impl<S> CachedObjectStore<S> {
     fn with_options(inner: S, options: ObjectCacheOptions) -> Self {
         Self {
             inner,
-            shared: Namespace {
+            shared: Arc::new(Namespace {
                 id: 0,
                 pool: Arc::new(Shared {
                     options,
                     state: Mutex::new(CacheState::default()),
                 }),
-            },
+            }),
         }
     }
 
@@ -346,10 +346,10 @@ impl<S> CachedObjectStore<S> {
         };
         Ok(CachedObjectStore {
             inner,
-            shared: Namespace {
+            shared: Arc::new(Namespace {
                 id,
                 pool: Arc::clone(&self.shared.pool),
-            },
+            }),
         })
     }
 
@@ -383,8 +383,11 @@ impl<S> CachedObjectStore<S> {
 
     /// Discards this namespace's resident bytes. In-flight reads remain valid.
     pub fn clear(&self) -> Result<(), ObjectStoreError> {
-        let mut state = self.lock_state()?;
-        self.shared.clear(&mut state)?;
+        let detached = {
+            let mut state = self.lock_state()?;
+            self.shared.clear(&mut state)?
+        };
+        drop(detached);
         Ok(())
     }
 
@@ -531,7 +534,7 @@ impl<S> CachedObjectStore<S> {
         let selected = if MATCH_IDENTITY {
             Some(key)
         } else {
-            state.decoded.keys().next().copied()
+            state.decoded.first_key()
         };
         let Some((key, entry)) =
             selected.and_then(|key| state.decoded.get_mut(&key).map(|entry| (key, entry)))
