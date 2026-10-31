@@ -10,18 +10,24 @@ The retained archive decoder admits at most 64 MiB compressed input, 256 MiB com
 
 ## Standalone secret references
 
-The Workers `./manifest` export initializes the existing manifest WASM module. After initialization:
+The Workers `./manifest` export initializes the existing manifest WASM module.
+The shared versioned Auth contract owns secret-reference admission:
 
 ```ts
-const reference = parseSecretReference("secrets:/Scope/deep/NAME");
-// "secrets:/Scope/deep/NAME"
-formatSecretReference(["Scope", "deep", "NAME"]);
-selectSecretReference("MODEL_KEY", reference);
+const reference = JSON.parse(parseSecretReference(JSON.stringify({
+  scope: "models", name: "Primary", version: "1",
+})));
 ```
 
-These functions call the existing Rust constructors. There is no URL normalization, percent decoding, fixed path depth, implicit scope, alias interpretation or secret-value access. Selection admits the environment property separately. A valid reference grants no authority to resolve it: the host must still check the admitted source/binding and effective capability ceiling. Full-manifest validation remains available.
-
-The standalone WASM exports inspect JavaScript string/array lengths before copying input into Rust. Their admission follows the original 256-byte reference and 63-byte environment-name ceilings; UTF-16 length is a conservative preliminary check, followed by the unchanged ASCII grammar. Formatting visits a bounded snapshot of the array length and admits each segment against the remaining reference budget. Canonical parsing preserves `ManifestError` with `path: "reference"` and `rule: "secret-reference"`. Formatting and selection throw `SecretReferenceError` with `code: "invalid_argument"` and a schema `path`. Diagnostics never include submitted bytes. This bounds input copying without claiming exact allocator usage. The selected Node qualification below exercises the actual compiled module; browser execution remains unqualified.
+This retains the canonical scope, name and decimal-string version. Legacy
+`secrets:/` addresses and their formatting/selection helpers are retired;
+there is no compatibility parser. Syntax admission grants no authority to
+resolve values: the host still checks the original source/binding and effective
+capability ceiling. Canonical parsing preserves `ManifestError` with
+`path: "reference"` and `rule: "secret-reference"`; diagnostics omit submitted
+values. The original shared deployment and standalone contract controls remain
+unchanged. Earlier source-specific qualification of the retired address grammar
+below does not qualify this current contract or its resource costs.
 
 ## On-demand evidence plan
 
