@@ -2,13 +2,16 @@
 // supplies no host loop, tool response, process event or authentication input.
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
+import {openSync,closeSync} from 'node:fs';
 import {access,readFile,realpath,writeFile} from 'node:fs/promises';
 import {dirname,isAbsolute,join,relative,sep} from 'node:path';
+import {assertNativeResume,nativeSessionIdentity} from './native-session-proof.mjs';
 
-const [phase,workspace,...extra]=process.argv.slice(2);
+const [phase,workspace,host,...extra]=process.argv.slice(2);
 let step='admit native filesystem effect';
 try {
- assert.ok(['parent','child','merge','resumed','finish'].includes(phase)&&isAbsolute(workspace??'')&&!extra.length);
+ assert.ok(['parent','child','merge','resumed','finish'].includes(phase)&&isAbsolute(workspace??'')
+  &&['codex','claude-code','pi'].includes(host)&&!extra.length);
  const root=await realpath(workspace),cwd=await realpath(process.cwd());
  const text=path=>readFile(path,'utf8');
  const absent=async path=>{
@@ -49,6 +52,18 @@ try {
   const original=await proof();
   assert.notEqual(original.task,process.env.ACYCLIC_TASK,'parent substituted its own task for the child');
   assert.notEqual(original.cwd,cwd,'parent substituted its own view for the child');
+  // Public wait has settled the native turn. The existing owner query reads
+  // its original native identifier; no second event reader is introduced.
+  const initial=join(root,'.volumes/scratch/native-initial-session.json');
+  const current=phase==='merge'?initial:join(root,'.volumes/scratch/native-resumed-session.json');
+  const descriptor=openSync(current,'w');
+  try {
+   execFileSync(binary,['__workspace'],{input:JSON.stringify({kind:'hook',host,event:'NativeSession',
+    input:{task:original.task}}),stdio:['pipe',descriptor,'inherit']});
+  } finally {closeSync(descriptor);}
+  const session=JSON.parse(await text(current));
+  nativeSessionIdentity(session);
+  if(phase==='finish')assertNativeResume(JSON.parse(await text(initial)),session);
   if(phase==='finish')assert.equal(await text('resumed.txt'),'RESUMED');
   else await absent('resumed.txt');
  }

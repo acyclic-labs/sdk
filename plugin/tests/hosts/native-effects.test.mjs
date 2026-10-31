@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {copyFile,mkdir,readFile,rm,unlink,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -8,6 +8,7 @@ import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
 import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
+import {assertNativeResume} from './native-session-proof.mjs';
 
 test('native filesystem effects reject parent-only execution and lost resume custody',async t=>{
  const root=hostFixtureDirectory('native-effects-'),workspace=join(root,'workspace');
@@ -18,7 +19,7 @@ test('native filesystem effects reject parent-only execution and lost resume cus
   const script=fileURLToPath(new URL('./native-effects.mjs',import.meta.url));
   const task=randomUUID();
   const run=async(phase,cwd,identity=task)=>{
-   const result=await processes.run(process.execPath,[script,phase,workspace],
+   const result=await processes.run(process.execPath,[script,phase,workspace,'codex'],
     {cwd,env:{...env,ACYCLIC_TASK:identity}});
    t.diagnostic(JSON.stringify({phase,cwd,...result}));return result;
   };
@@ -48,6 +49,24 @@ test('native filesystem effects reject parent-only execution and lost resume cus
    const resumed=await run('resumed',child);
    assert.equal(resumed.code,0,resumed.stderr);
    assert.equal(await readFile(join(child,'resumed.txt'),'utf8'),'RESUMED');
+   step='reject a fresh native session with the same task and retained files';
+   // Both identifiers come from unchanged real CLI initialization captures.
+   // Admit provenance before projecting the original identifier fields.
+   const directory=new URL('./fixtures/native/',import.meta.url);
+   const provenance=JSON.parse(await readFile(new URL('provenance.json',directory),'utf8'));
+   const native=async host=>{
+    const bytes=await readFile(new URL(host+'.jsonl',directory));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'),
+     provenance.find(row=>row.host===host).fixture_sha256);
+    const event=JSON.parse(bytes.toString());return {id:event.thread_id??event.session_id};
+   };
+   const original=await native('codex'),fresh=await native('claude-code');
+   const paths=['native-child.json','child.txt','resumed.txt','.volumes/scratch/native-retained.txt'];
+   const before=await Promise.all(paths.map(path=>readFile(join(child,path))));
+   assert.throws(()=>assertNativeResume(original,fresh),/resume changed native session identity/);
+   assert.throws(()=>assertNativeResume(original,{}),/identifier is missing/);
+   assertNativeResume(original,original);
+   assert.deepEqual(await Promise.all(paths.map(path=>readFile(join(child,path)))),before);
   }});
   assert.equal(receipt.expired,false);
  } catch(cause) {

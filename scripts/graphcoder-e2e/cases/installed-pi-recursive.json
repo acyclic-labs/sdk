@@ -29,7 +29,7 @@
             "id": "native_parent",
             "name": "bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' parent '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' parent '{{workspace}}' pi"
             }
           }
         ]
@@ -75,7 +75,7 @@
             "id": "native_merge",
             "name": "bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' merge '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' merge '{{workspace}}' pi"
             }
           }
         ]
@@ -121,7 +121,7 @@
             "id": "native_finish",
             "name": "bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' finish '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' finish '{{workspace}}' pi"
             }
           }
         ]
@@ -159,7 +159,7 @@
             "id": "native_child",
             "name": "bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' child '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' child '{{workspace}}' pi"
             }
           }
         ]
@@ -182,7 +182,7 @@
             "id": "native_resumed",
             "name": "bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' resumed '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' resumed '{{workspace}}' pi"
             }
           }
         ]

@@ -17,11 +17,11 @@
       "prompt": "NATIVE_PLUGIN_MODEL",
       "answer": "NATIVE_PLUGIN_MODEL_DONE",
       "native_permissions": [
-        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' parent '{{workspace}}')",
-        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' merge '{{workspace}}')",
-        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' finish '{{workspace}}')",
-        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' child '{{workspace}}')",
-        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' resumed '{{workspace}}')"
+        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' parent '{{workspace}}' claude-code)",
+        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' merge '{{workspace}}' claude-code)",
+        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' finish '{{workspace}}' claude-code)",
+        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' child '{{workspace}}' claude-code)",
+        "Bash(node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' resumed '{{workspace}}' claude-code)"
       ]
     }
   ],
@@ -36,7 +36,7 @@
             "id": "native_parent",
             "name": "Bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' parent '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' parent '{{workspace}}' claude-code"
             }
           }
         ]
@@ -82,7 +82,7 @@
             "id": "native_merge",
             "name": "Bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' merge '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' merge '{{workspace}}' claude-code"
             }
           }
         ]
@@ -128,7 +128,7 @@
             "id": "native_finish",
             "name": "Bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' finish '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' finish '{{workspace}}' claude-code"
             }
           }
         ]
@@ -166,7 +166,7 @@
             "id": "native_child",
             "name": "Bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' child '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' child '{{workspace}}' claude-code"
             }
           }
         ]
@@ -189,7 +189,7 @@
             "id": "native_resumed",
             "name": "Bash",
             "arguments": {
-              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' resumed '{{workspace}}'"
+              "command": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' resumed '{{workspace}}' claude-code"
             }
           }
         ]

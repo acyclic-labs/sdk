@@ -29,7 +29,7 @@
             "id": "native_parent",
             "name": "exec_command",
             "arguments": {
-              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' parent '{{workspace}}'"
+              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' parent '{{workspace}}' codex"
             },
             "namespace": "functions"
           }
@@ -78,7 +78,7 @@
             "id": "native_merge",
             "name": "exec_command",
             "arguments": {
-              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' merge '{{workspace}}'"
+              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' merge '{{workspace}}' codex"
             },
             "namespace": "functions"
           }
@@ -127,7 +127,7 @@
             "id": "native_finish",
             "name": "exec_command",
             "arguments": {
-              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' finish '{{workspace}}'"
+              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' finish '{{workspace}}' codex"
             },
             "namespace": "functions"
           }
@@ -167,7 +167,7 @@
             "id": "native_child",
             "name": "exec_command",
             "arguments": {
-              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' child '{{workspace}}'"
+              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' child '{{workspace}}' codex"
             },
             "namespace": "functions"
           }
@@ -191,7 +191,7 @@
             "id": "native_resumed",
             "name": "exec_command",
             "arguments": {
-              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' resumed '{{workspace}}'"
+              "cmd": "node '{{support}}/../../plugin/tests/hosts/native-effects.mjs' resumed '{{workspace}}' codex"
             },
             "namespace": "functions"
           }
