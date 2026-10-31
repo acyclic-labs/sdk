@@ -1,11 +1,22 @@
 //! Arc backing stays funded until both strong and weak handles retire.
 use super::*;
 
-// Retirement takes the original token out of its last funding Arc before
-// releasing it, so that Arc's own backing has also been deallocated.
+// Fields retire in declaration order, including during unwinding: value
+// backing first, then its original funding and that funding's own backing.
 pub(crate) struct RetainedArc<T> {
-    value: Option<Arc<T>>,
-    allocation: Option<Arc<RetainedAllocation>>,
+    value: Arc<T>,
+    allocation: RetainedFunding,
+}
+
+#[derive(Clone, Default)]
+struct RetainedFunding(Option<Arc<RetainedAllocation>>);
+
+impl Drop for RetainedFunding {
+    fn drop(&mut self) {
+        // Take the original token out of the final Arc: its control backing
+        // retires before the returned token can refund those same bytes.
+        drop(self.0.take().and_then(Arc::into_inner));
+    }
 }
 
 /// Original backing admission, before its value is moved under shared custody.
@@ -17,15 +28,15 @@ pub(crate) struct RetainedArcAdmission<T> {
 impl<T> RetainedArcAdmission<T> {
     pub(crate) fn into_value(self, value: T) -> RetainedArc<T> {
         RetainedArc {
-            value: Some(Arc::new(value)),
-            allocation: Some(Arc::new(self.allocation)),
+            value: Arc::new(value),
+            allocation: RetainedFunding(Some(Arc::new(self.allocation))),
         }
     }
 }
 
 pub(crate) struct RetainedWeak<T> {
     value: std::sync::Weak<T>,
-    allocation: Option<Arc<RetainedAllocation>>,
+    allocation: RetainedFunding,
 }
 
 impl<T> RetainedArc<T> {
@@ -56,10 +67,7 @@ impl<T> RetainedArc<T> {
 
     pub(crate) fn downgrade(&self) -> RetainedWeak<T> {
         RetainedWeak {
-            value: match &self.value {
-                Some(value) => Arc::downgrade(value),
-                None => unreachable!("a retained value is present until retirement"),
-            },
+            value: Arc::downgrade(&self.value),
             allocation: self.allocation.clone(),
         }
     }
@@ -68,7 +76,7 @@ impl<T> RetainedArc<T> {
 impl<T> Clone for RetainedArc<T> {
     fn clone(&self) -> Self {
         Self {
-            value: self.value.clone(),
+            value: Arc::clone(&self.value),
             allocation: self.allocation.clone(),
         }
     }
@@ -78,17 +86,7 @@ impl<T> std::ops::Deref for RetainedArc<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        match &self.value {
-            Some(value) => value,
-            None => unreachable!("a retained value is present until retirement"),
-        }
-    }
-}
-
-impl<T> Drop for RetainedArc<T> {
-    fn drop(&mut self) {
-        drop(self.value.take());
-        drop(self.allocation.take().and_then(Arc::into_inner));
+        &self.value
     }
 }
 
@@ -96,7 +94,7 @@ impl<T> Default for RetainedWeak<T> {
     fn default() -> Self {
         Self {
             value: std::sync::Weak::new(),
-            allocation: None,
+            allocation: RetainedFunding::default(),
         }
     }
 }
@@ -113,16 +111,9 @@ impl<T> RetainedWeak<T> {
 
     pub(crate) fn upgrade(&self) -> Option<RetainedArc<T>> {
         Some(RetainedArc {
-            value: Some(self.value.upgrade()?),
-            allocation: Some(Arc::clone(self.allocation.as_ref()?)),
+            value: self.value.upgrade()?,
+            allocation: RetainedFunding(Some(Arc::clone(self.allocation.0.as_ref()?))),
         })
-    }
-}
-
-impl<T> Drop for RetainedWeak<T> {
-    fn drop(&mut self) {
-        drop(std::mem::take(&mut self.value));
-        drop(self.allocation.take().and_then(Arc::into_inner));
     }
 }
 
@@ -136,7 +127,7 @@ mod tests {
         let mut accounting =
             KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
         let value = RetainedArc::new(73_u64, &mut accounting)?;
-        let ledger = match value.allocation.as_deref() {
+        let ledger = match value.allocation.0.as_deref() {
             Some(RetainedAllocation::Standalone { _lease }) => Arc::clone(&_lease.ledger),
             #[cfg(not(target_arch = "wasm32"))]
             Some(RetainedAllocation::Native { .. }) => unreachable!("standalone accounting"),
