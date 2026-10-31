@@ -336,11 +336,26 @@ enum OpKey {
     Children(StreamPath, u32),
 }
 
+#[cfg(test)]
+thread_local! {
+    static OP_PATH_PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl OpKey {
     fn path(&self) -> &StreamPath {
+        #[cfg(test)]
+        OP_PATH_PROJECTIONS.with(|visits| visits.set(visits.get() + 1));
         match self {
             Self::Read(path, _) | Self::Head(path) | Self::Children(path, _) => path,
         }
+    }
+
+    fn path_ranges(path: &StreamPath) -> [std::ops::RangeInclusive<Self>; 3] {
+        [
+            Self::Read(path.clone(), 0)..=Self::Read(path.clone(), u64::MAX),
+            Self::Head(path.clone())..=Self::Head(path.clone()),
+            Self::Children(path.clone(), 0)..=Self::Children(path.clone(), u32::MAX),
+        ]
     }
 }
 
@@ -1415,7 +1430,9 @@ impl Reader {
     /// Acknowledge a displayed issue. Retry a denial only after renewing authority.
     pub fn acknowledge_issue(&mut self, stream: &StreamPath) {
         self.issues.remove(stream);
-        self.refused.retain(|key| key.path() != stream);
+        for range in OpKey::path_ranges(stream) {
+            self.refused.extract_if(range, |_| true).for_each(drop);
+        }
         self.generation += 1;
     }
 
@@ -2199,7 +2216,40 @@ mod reader_tests {
         reader.begin_frame(10_000);
         reader.plan([(want.clone(), Priority::Visible)]);
         assert!(reader.poll(10_000).is_empty());
+        let refused = [
+            OpKey::Read(stream.clone(), 0),
+            OpKey::Read(stream.clone(), u64::MAX),
+            OpKey::Head(stream.clone()),
+            OpKey::Children(stream.clone(), 0),
+            OpKey::Children(stream.clone(), u32::MAX),
+        ];
+        reader.refused.extend(refused.iter().cloned());
+        for index in 0..100_000 {
+            reader.refused.insert(OpKey::Head(
+                StreamPath::new(format!("test/source/unrelated-{index}")).unwrap(),
+            ));
+        }
+        let neighboring = [
+            OpKey::Read(child.clone(), u64::MAX),
+            OpKey::Head(grandchild.clone()),
+            OpKey::Children(parent.clone(), u32::MAX),
+        ];
+        reader.refused.extend(neighboring.iter().cloned());
+        OP_PATH_PROJECTIONS.with(|visits| visits.set(0));
         reader.acknowledge_issue(&stream);
+        assert_eq!(
+            OP_PATH_PROJECTIONS.with(std::cell::Cell::get),
+            0,
+            "explicit retry enumerated retained refusal paths"
+        );
+        assert!(reader.issues().next().is_none());
+        assert!(
+            refused.iter().all(|key| !reader.refused.contains(key)),
+            "explicit retry retained an operation for the acknowledged stream"
+        );
+        assert_eq!(reader.refused.len(), 100_003);
+        assert!(neighboring.iter().all(|key| reader.refused.contains(key)));
+        assert!(reader.refused.contains(&unrelated));
         reader.plan([(want, Priority::Visible)]);
         assert_eq!(reader.poll(10_000).len(), 1);
     }
