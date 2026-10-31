@@ -53,7 +53,7 @@ pub fn bind_defaults(
             && !TRAINED_FILES
                 .iter()
                 .any(|variant| variant.name() == name.as_str())
-            && name != PATCH
+            && name.as_str() != PATCH
             && !PROFILE_FUNCTIONS.contains(&name.as_str())
             && !super::AGENT_TOOLS.contains(&name.as_str())
     }) {

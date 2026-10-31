@@ -58,13 +58,15 @@ async fn nested_files_use_original_journal_startup_and_replay_without_republicat
             host, &volume, &verifier, &signed, 65_536, None,
         )?),
     };
-    let task = crate::runtime::Bindings {
-        scope: scope.clone(),
-        content: Some(content.clone()),
-        ..crate::runtime::Bindings::local()
-    }
-    .build()?
-    .agent_context(&crate::Capabilities::default(), content)?;
+    let task = Arc::new(
+        crate::runtime::Bindings {
+            scope: scope.clone(),
+            content: Some(content.clone()),
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?
+        .agent_context(&crate::Capabilities::default(), content)?,
+    );
     let stock = StockExecutor::new(
         Model::new("test".into(), "model".into(), "1".into())?,
         Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new())),
