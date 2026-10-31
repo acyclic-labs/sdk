@@ -249,6 +249,36 @@ pub struct PinnedContextPath {
 }
 
 impl PinnedContextPath {
+    /// Captures the exact lazy identity on the caller's original allocation owner.
+    /// Additions and removals use the same boundary; neither opens a body.
+    pub(crate) fn capture(
+        root: &ContextRoot,
+        generation: &GenerationRef,
+        path: &str,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            #[cfg(feature = "filesystem")]
+            let generation = GenerationRef::from_resource(
+                crate::core::copy_resource(generation.as_resource(), quota)?,
+                quota.work(),
+            )?;
+            #[cfg(not(feature = "filesystem"))]
+            let generation = generation.clone();
+            let pinned = Self {
+                root: ContextRoot {
+                    volume: root.volume.clone_in_quota(quota)?,
+                    directory: crate::core::copy_text(&root.directory, quota)?,
+                },
+                generation,
+                path: crate::core::copy_text(path, quota)?,
+            };
+            pinned.validate(quota.work())?;
+            Ok(pinned)
+        })
+        .map(|(pinned, _)| pinned)
+    }
+
     #[doc(hidden)]
     pub fn validate(
         &self,
