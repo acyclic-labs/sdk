@@ -1,6 +1,32 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+struct NativeEventBatch<'a>(&'a Delivery);
+
+#[cfg(target_os = "linux")]
+impl Drop for NativeEventBatch<'_> {
+    fn drop(&mut self) {
+        if self.0.events.is_none() {
+            return;
+        }
+        if std::thread::panicking() || !self.0.is_exact() {
+            self.0.notify_lost();
+        }
+        if let Some(sink) = &self.0.events {
+            self.0.callback(|| sink.batch_finished());
+        }
+    }
+}
+
 impl Delivery {
+    #[cfg(target_os = "linux")]
+    pub(super) fn event_batch(&self) -> impl Drop + '_ {
+        if let Some(sink) = &self.events {
+            self.callback(|| sink.batch_started());
+        }
+        NativeEventBatch(self)
+    }
+
     pub(super) fn notify_lost(&self) {
         self.callback(|| self.sink.delivery_lost());
     }

@@ -273,6 +273,9 @@ impl NativeWatchOptions {
 struct SharedState {
     invalidation: Option<WatchInvalidationReason>,
     rescan: Option<u64>,
+    source_lost: bool,
+    #[cfg(target_os = "linux")]
+    delivering: bool,
     #[cfg(any(target_os = "linux", windows))]
     pending_rename: Option<PendingRename>,
     /// Host path of the outstanding fence cookie, cleared on delivery.
@@ -307,6 +310,9 @@ impl SharedState {
         Self {
             invalidation,
             rescan: None,
+            source_lost: false,
+            #[cfg(target_os = "linux")]
+            delivering: false,
             #[cfg(any(target_os = "linux", windows))]
             pending_rename: None,
             fence: None,
@@ -317,9 +323,21 @@ impl SharedState {
         }
     }
 
-    fn seal_invalidation(&mut self) -> Option<WatchInvalidationReason> {
+    fn has_changes(&self, queued: u32) -> bool {
         #[cfg(any(target_os = "linux", windows))]
-        if self.invalidation.is_none() && self.pending_rename.is_some() {
+        let pending_rename = self.pending_rename.is_some();
+        #[cfg(not(any(target_os = "linux", windows)))]
+        let pending_rename = false;
+        self.invalidation.is_some() || pending_rename || queued != 0
+    }
+
+    fn seal_invalidation(&mut self) -> Option<WatchInvalidationReason> {
+        #[cfg(target_os = "linux")]
+        let settled = !self.delivering;
+        #[cfg(windows)]
+        let settled = true;
+        #[cfg(any(target_os = "linux", windows))]
+        if settled && self.invalidation.is_none() && self.pending_rename.is_some() {
             self.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
         }
         self.invalidation
@@ -391,7 +409,7 @@ enum NativeWatchDriver {
 }
 
 #[cfg(target_os = "linux")]
-impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
+impl crate::source_watch::HostChangeSink for NativeEventDelivery {
     fn logical_owned_bytes(&self) -> u64 {
         0
     }
@@ -400,7 +418,7 @@ impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
         changes: &[crate::source_watch::HostChange],
         work: &mut crate::demand::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
-        invalidate_root_hints(self, changes, work)
+        invalidate_root_hints(&self.shared, changes, work)
     }
 
     fn host_changed_with_native_work(
@@ -408,7 +426,10 @@ impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
         changes: &[crate::source_watch::HostChange],
         work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), crate::demand::DemandError> {
-        invalidate_root_hints(self, changes, work)
+        invalidate_root_hints(&self.shared, changes, work)
+    }
+    fn delivery_lost(&self) {
+        lose_delivery(&self.shared, &self.fenced);
     }
 }
 
@@ -534,6 +555,7 @@ impl crate::source_watch::HostChangeSink for RootHints {
 /// and every fence waiting on it wakes to refuse, until a rescan begins.
 fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
     if let Ok(mut state) = shared.lock() {
+        state.source_lost = true;
         state
             .invalidation
             .get_or_insert(WatchInvalidationReason::BackendError);
@@ -551,8 +573,9 @@ struct AdapterDelivery {
 
 #[cfg(not(windows))]
 impl AdapterDelivery {
-    fn completed(&self, event: &notify::Result<Event>) {
+    fn completed(&self, event: &notify::Result<Event>, queued: u32) {
         if let Ok(mut state) = self.shared.lock() {
+            let armed = state.fence.is_some();
             if let Ok(event) = event
                 && state
                     .fence
@@ -560,8 +583,8 @@ impl AdapterDelivery {
                     .is_some_and(|fence| event.paths.contains(fence))
             {
                 state.fence = None;
-                self.fenced.notify_all();
-            } else if state.invalidation.is_some() {
+            }
+            if (armed && state.fence.is_none()) || state.has_changes(queued) {
                 self.fenced.notify_all();
             }
         }
@@ -586,6 +609,21 @@ struct NativeEventDelivery {
 
 #[cfg(target_os = "linux")]
 impl crate::source_watch::NativeEventSink for NativeEventDelivery {
+    fn batch_started(&self) {
+        if let Ok(mut state) = self.shared.lock() {
+            state.delivering = true;
+        }
+    }
+
+    fn batch_finished(&self) {
+        if let Ok(mut state) = self.shared.lock() {
+            state.delivering = false;
+            if state.has_changes(self.queued.load(Ordering::Acquire)) {
+                self.fenced.notify_all();
+            }
+        }
+    }
+
     fn logical_owned_bytes(&self) -> u64 {
         size_of::<Self>() as u64 + self.context.root.capacity() as u64
     }
@@ -1122,6 +1160,7 @@ impl WindowsRootSink {
                 }
             }
         }
+        self.delivery.fenced.notify_all();
         Ok(())
     }
 
@@ -1200,6 +1239,9 @@ impl WindowsRootSink {
                     self.delivery.fenced.notify_all();
                 }
             }
+        }
+        if state.has_changes(self.delivery.queued.load(Ordering::Acquire)) {
+            self.delivery.fenced.notify_all();
         }
         Ok(())
     }
@@ -2008,7 +2050,7 @@ impl NativeWatch {
                     &delivery.shared,
                     &callback_queued,
                 );
-                delivery.completed(&event);
+                delivery.completed(&event, callback_queued.load(Ordering::Acquire));
             })
         } else {
             None
@@ -2046,7 +2088,7 @@ impl NativeWatch {
                 queued: Arc::clone(&queued),
                 fenced: Arc::clone(&fenced),
             });
-            let sink = Arc::clone(&shared);
+            let sink = Arc::clone(&events);
             Some(
                 crate::source_watch::NativeSourceWatch::start_with_events_with_work(
                     held, sink, events, work,
@@ -3461,7 +3503,7 @@ impl NativeWatch {
         result: Result<T, crate::demand::DemandError>,
     ) -> Result<T, NativeWatchError> {
         result.map_err(|error| {
-            lose_delivery(&self.shared, &self.fenced);
+            self.invalidate_after_poll_failure(WatchInvalidationReason::BackendError);
             demand_watch_error(error)
         })
     }
@@ -3712,6 +3754,61 @@ impl NativeWatch {
             .then_some(host)
             .into_iter()
             .collect())
+    }
+
+    /// Waits for a settled native batch or a required rescan. This consumes no
+    /// hints and performs no filesystem I/O. Cancellation and permanent producer
+    /// loss wake the same condition and return their original typed failure.
+    pub fn wait_for_changes_with_native_work(
+        &self,
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeWatchError> {
+        original.admit(WorkCounters::UNCHARGED)?;
+        if let Some(owner) = &self.pending_source_watch {
+            return Err(NativeWatchError::SourceStartup(Arc::clone(owner)));
+        }
+        match &self.watcher {
+            NativeWatchDriver::Source(source) => {
+                source.ensure_wait_available().map_err(demand_watch_error)?;
+            }
+            NativeWatchDriver::StartupFailure(owner) => {
+                return Err(NativeWatchError::SourceStartup(Arc::clone(owner)));
+            }
+            #[cfg(not(windows))]
+            NativeWatchDriver::Adapter(_) => {}
+        }
+        let shared = Arc::clone(&self.shared);
+        let fenced = Arc::clone(&self.fenced);
+        let _cancel = original.cancellation().on_cancel(Some(original), move || {
+            let _state = shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            fenced.notify_all();
+        })?;
+        let mut state = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        loop {
+            original.admit(WorkCounters::UNCHARGED)?;
+            if state.source_lost {
+                return Err(NativeWatchError::SourceUnavailable);
+            }
+            if state.rescan.is_some() {
+                return Err(NativeWatchError::RescanInProgress);
+            }
+            #[cfg(target_os = "linux")]
+            let settled = !state.delivering;
+            #[cfg(not(target_os = "linux"))]
+            let settled = true;
+            if settled && state.has_changes(self.queued.load(Ordering::Acquire)) {
+                return Ok(());
+            }
+            state = self
+                .fenced
+                .wait(state)
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
+        }
     }
 
     /// Moves at most `maximum_changes` contiguous hints from the native queue.

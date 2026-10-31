@@ -2626,6 +2626,14 @@ Allowed bounds retained after inspection:
 
 Validation obligations for each changed mechanism: preserve atomicity and authority; waits name their actual producer and report producer loss; admission/check overhead is constant in unrelated history/population. Negative controls restore a former cap, suppress/drop the producer, or grow unrelated history. Full requested output necessarily costs its own bytes/items; this is not a population scan. Record required syscalls, durability barriers, round trips, allocations and copies in the PR, including before/after counts where known.
 
+## Native batch arrival
+
+`NativeWatch::wait_for_changes_with_native_work` observes the original retained queue and native-batch boundary on the watch's existing condition variable. It does not consume hints or write a fence cookie. Inotify brackets the same serialized drain, so an arrival observer cannot seal a half-delivered rename. Its original delivery sink also receives permanent producer loss; both physical retirement paths publish that terminal before withdrawing their original owner. A rescan can clear ordinary continuity loss, but cannot resurrect a physically retired producer. Native source callback reentry and partial startup return their retained typed failure.
+
+Safety controls use real file writes and a rename, with a physically settled early batch as the event-before-subscribe negative control. Cancellation and physical inotify retirement race the original arrival registration without a timer. Progress has one producer: completion of that original native batch, or its retained loss/cancellation terminal. The Linux named control also asserts that waiting adds zero backend reads and writes. Source is formatted; compilation and execution of this new control are pending.
+
+Required per-operation work: the existing queue and condition remain one each, with no added worker, task, queue, scan, durability barrier, round trip or payload copy. A cancellable blocked observer retains the existing O(1) cancellation registration and notification allocation. The two inotify batch-boundary locks are fixed work per native drain, independent of queued history; no idle native event means no condition notification. Remaining consumer polling rows stay pending until they use this event.
+
 ## Rejecting source rule
 
 Pending: `scripts/check-no-polling.mjs <baseline-revision>` compares real Git objects with tracked and untracked sources in the working tree. `scripts/no-polling.mjs` rejects new timer/readiness references, aliases, embedded timer programs and unclassified loops. JavaScript/TypeScript uses the existing TypeScript parser; native sources retain raw-string and nested-comment boundaries. Each disposition names one exact source fingerprint, classification, producer, terminal and negative control. Changing executable tokens reopens dispositions in that source unit; an accepted occurrence cannot authorize another copy.

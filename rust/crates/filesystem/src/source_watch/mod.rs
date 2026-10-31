@@ -163,6 +163,9 @@ pub(crate) trait HostChangeSink: Send + Sync {
 
 #[cfg(target_os = "linux")]
 pub(crate) trait NativeEventSink: Send + Sync {
+    /// Brackets the original inotify drain, so a rename is never exposed halfway.
+    fn batch_started(&self);
+    fn batch_finished(&self);
     fn logical_owned_bytes(&self) -> u64;
     fn event_measured(
         &self,

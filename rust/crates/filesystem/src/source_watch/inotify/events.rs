@@ -124,6 +124,7 @@ impl Shared {
         if self.stopping.load(Ordering::Acquire) {
             return Ok(false);
         }
+        let _batch = self.delivery.event_batch();
         let result = (|| {
             loop {
                 work.check()?;
