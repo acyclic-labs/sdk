@@ -96,7 +96,7 @@ pub struct MonitorEvent {
 /// The original follow, held only while this monitor is active.
 pub struct MonitorFollow {
     definition: Monitor,
-    updates: FollowStream,
+    updates: Option<FollowStream>,
 }
 
 impl Monitor {
@@ -155,21 +155,49 @@ impl Monitor {
         let updates = provider.follow(request).await.map_err(Error::Stream)?;
         Ok(MonitorFollow {
             definition: self.clone(),
-            updates,
+            updates: Some(updates),
         })
     }
 }
 
 impl MonitorFollow {
-    /// Waits on the source primitive. A clean source end ends this monitor.
+    /// Waits on the source primitive. End or error retires the original source;
+    /// subsequent calls return `None` without polling it again.
     /// Publish each returned notice and cursor together before requesting more.
     pub async fn next(&mut self) -> Result<Option<MonitorEvent>, Error> {
-        let Some(update) = self.updates.next().await else {
+        let Some(updates) = self.updates.as_mut() else {
             return Ok(None);
         };
-        let (next, preceding, notice) = match update.map_err(Error::Stream)? {
-            FollowUpdate::Progress { next, preceding } => (next, preceding, None),
+        let update = match updates.next().await {
+            Some(Ok(update)) => update,
+            Some(Err(error)) => {
+                self.updates = None;
+                return Err(Error::Stream(error));
+            }
+            None => {
+                self.updates = None;
+                return Ok(None);
+            }
+        };
+        let event = self.observe(update);
+        if event.is_err() {
+            self.updates = None;
+        }
+        event.map(Some)
+    }
+
+    fn observe(&mut self, update: FollowUpdate) -> Result<MonitorEvent, Error> {
+        let (next, preceding, notice) = match update {
+            FollowUpdate::Progress { next, preceding } => {
+                if next <= self.definition.cursor.next {
+                    return Err(invalid("monitor source cursor did not advance"));
+                }
+                (next, preceding, None)
+            }
             FollowUpdate::Record(record) => {
+                if record.sequence != self.definition.cursor.next {
+                    return Err(invalid("monitor source record skipped its cursor"));
+                }
                 let next = record
                     .sequence
                     .checked_add(1)
@@ -198,14 +226,14 @@ impl MonitorFollow {
                 )
             }
         };
-        if next <= self.definition.cursor.next {
-            return Err(invalid("monitor source cursor did not advance"));
-        }
         let cursor = MonitorCursor {
             next,
             preceding: Some(*preceding.as_bytes()),
         };
         self.definition.cursor = cursor.clone();
-        Ok(Some(MonitorEvent { cursor, notice }))
+        Ok(MonitorEvent { cursor, notice })
     }
 }
+
+#[cfg(test)]
+mod tests;
