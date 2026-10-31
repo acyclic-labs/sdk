@@ -413,7 +413,7 @@ impl AgentTool {
                             crate::tool::files::encode_file_version(&file, work)?;
                         format_work(
                             format_args!(
-                                "{}\n\nSnapshot base version: {version}\nPlan snapshot: {}\n\n{text}",
+                                "{}\n\nSnapshot version: {version}\nPlan snapshot: {}\n\n{text}",
                                 input.message, source.path
                             ),
                             io,
@@ -875,7 +875,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Send a message to your parent or an open child (by name or path). Optional file copies one immutable plan snapshot, including its base version; the recipient never reads your live file. It is queued before your next tool call runs",
+                "Send a message to your parent or an open child (by name or path). Optional file copies one immutable plan snapshot and names its version. A revised plan must name the received snapshot version as its base in the message or plan; the recipient never reads your live file. It is queued before your next tool call runs",
             )?,
         ),
         (
