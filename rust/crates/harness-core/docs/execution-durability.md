@@ -4,6 +4,33 @@ This is the required contract for consolidating execution publications. The
 executor has not yet been qualified against its two-boundary cost target.
 Changing a durability scope alone does not establish atomic publication.
 
+## Observing the original boundaries
+
+The shared `Operations` collector observes
+`acyclic.harness.executor.publication` with four static `rpc` selections:
+
+| Selection | Original work inside the observation |
+|---|---|
+| `model-dispatch` | Prepared request staging and the conditional `ModelStarted` claim, under the existing required-durability scope. |
+| `tool-intent` | Invocation staging and its conditional `ToolStarted` claim. Reconciliation publishes no new intent observation. |
+| `tool-settlement` | Result/projection staging, conditional completion record and the already-admitted phase durability completion. |
+| `tool-failure-record` | Conditional terminal failure record. This can be nested inside a rejected payload's settlement and is not another full settlement. |
+
+The static `data` field names the requested payload role; `control` names the
+conditional journal append. These describe requested work, not measured request
+counts. Operation and step are diagnostic fields, never metric labels. The
+existing in-place future observer retains original errors and records abandoned
+observation as `incomplete`. No output queue, additional future allocation or
+physical work is introduced. The counters consumer needs no log exporter.
+
+These are logical publication scopes. A successful scope does not certify one
+atomic commit, one physical call, a provider append range or device-cache
+durability. Native attempts retain their separate typed observations and
+creation-time parent edges through the original persistence worker. Missing
+parent/owner/range coverage stays unknown. Failure-record success can precede
+an enclosing phase's durability completion; it cannot substitute for that
+completion. Replaying a completed turn adds no dispatch or settlement scope.
+
 ## Accepted dispatch
 
 Before a model request can reach its provider, one conditional publication must

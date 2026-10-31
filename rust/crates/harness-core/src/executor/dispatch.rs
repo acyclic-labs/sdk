@@ -110,12 +110,16 @@ impl StockExecution<'_> {
                 self.resume_model_attempt(input.operation_id, dispatch, replayed.is_empty(), phase)
                     .await?
             } else {
-                super::phase::claim(self.claim_model_dispatch(
-                    journal,
-                    input,
-                    (step, purpose, purpose_key),
-                    &request,
-                    phase,
+                super::phase::claim(super::phase::Publication::ModelDispatch.observe(
+                    input.operation_id,
+                    step,
+                    self.claim_model_dispatch(
+                        journal,
+                        input,
+                        (step, purpose, purpose_key),
+                        &request,
+                        phase,
+                    ),
                 ))
                 .await?
             };
