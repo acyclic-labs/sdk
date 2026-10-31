@@ -89,7 +89,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
                 .execute(invocation.clone(), Some(context.clone()))
                 .await?;
             assert_eq!(result.value["text"], "pinned text");
-            assert_eq!(result.value["file"]["path"], "notes/one.txt");
+            assert_eq!(result.value["file"]["content"]["path"], "notes/one.txt");
             let projection = tool.projection.project(&invocation, &result, None)?.0;
             assert_eq!(projection, expected_projection);
             let content = tool
@@ -457,6 +457,20 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         Ok((invocation, result))
     }
     let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+    let workspace =
+        super::super::bounded_io::content_workspace(&storage.host.provider, &storage.volume, None)?;
+    storage
+        .host
+        .apply(
+            &workspace,
+            None,
+            &[crate::filesystem::WorkspaceMutation::PutFile {
+                path: "/large.txt".into(),
+                bytes: bytes::Bytes::from(vec![b'x'; 2 * 1024 * 1024]).into(),
+            }],
+            &crate::IdempotencyKey::new("large-range-source")?,
+        )
+        .await?;
     storage
         .stage(
             OperationId::new(),
@@ -484,6 +498,35 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         async move {
         let read = crate::tool::files::read()?;
         let edit = crate::tool::files::edit()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+                source_bytes_read: 64 * 1024, bytes_copied: 64 * 1024, ..FINITE_CONTENT_BUDGET
+            }, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(), call_id: "bounded-path".into(), name: "read".into(),
+                arguments: json!({"path":"large.txt","range":{"start":1024,"end":1040}}),
+            };
+            let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
+            let baseline = work.live_allocation_bytes();
+            {
+                let (result, _custody) = read.executor.execute_with_native_context(&context, &invocation, &work)?.await?;
+                assert_eq!(result.value["text"], "xxxxxxxxxxxxxxxx");
+                let projected = read.projection.project(&invocation, &result, Some(&work))?;
+                assert!(projected.0["value"]["version"].as_str().is_some());
+            }
+            assert!(work.receipt().source_bytes_read < 64 * 1024);
+            assert!(work.receipt().bytes_copied < 64 * 1024);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            // The old complete-file path cannot satisfy the same 4 KiB
+            // selected-byte allowance for this 2 MiB source.
+            assert!(call(&task, &read, json!({"path":"large.txt"})).await.is_err());
+            cancellation.cancel();
+            let io = crate::executor::PreparationIo::from_native_work(&work)?;
+            assert!(context.read_tool_path_range("large.txt", None,
+                acyclic_fs::ByteRange { offset: 1024, length: 16 }, Some(&io)).await.is_err());
+        }
         // A real bound writer remains present, but the caller can only read.
         let read_granted = task.scoped(Capabilities::new([
             read_capability, "tool:call:read".into(), "tool:call:edit".into(),
@@ -526,6 +569,17 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert_eq!(task.read_file(&source, None).await?.as_ref(), b"one");
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":version})).await?.1.value, result.value);
 
+        let (range_invocation, range_result) = call(&task, &read,
+            json!({"path":"notes/one.txt", "range":{"start":0,"end":2}})).await?;
+        let range_projection = read.projection.project(&range_invocation, &range_result, None)?.0;
+        let range_version = range_projection["value"]["version"].as_str().expect("selected generation");
+        assert_eq!(range_result.value["text"], "on");
+        assert!(range_result.value["file"]["authored"]["generation"].is_object());
+        assert!(call(&task, &read, json!({"path":"notes/one.txt", "range":{"start":0,"end":4}})).await.is_err());
+        let mut corrupt = range_result.clone();
+        corrupt.value["text"] = json!("wrong length");
+        assert!(read.projection.project(&range_invocation, &corrupt, None).is_err());
+
         for arguments in [
             json!({"path":"notes/other.txt","version":version}),
             json!({"path":"notes/one.txt","version":"invented"}),
@@ -538,8 +592,13 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
             assert_eq!(call(&denied, &read, arguments).await.unwrap_err().code(), crate::wire::ErrorCode::Unauthorized);
         }
         assert_eq!(call(&denied, &edit, json!({"path":"notes/one.txt","version":version,"old_text":"one","new_text":"denied"})).await.unwrap_err().code(), crate::wire::ErrorCode::Unauthorized);
+        assert_eq!(call(&denied, &read, json!({"path":"notes/one.txt","version":range_version,"range":{"start":0,"end":2}})).await.unwrap_err().code(), crate::wire::ErrorCode::Unauthorized);
+        assert!(call(&task, &read, json!({"path":"notes/other.txt","version":range_version,"range":{"start":0,"end":2}})).await.is_err());
 
         task.stage_file(None, OperationId::new(), "notes/one.txt", b"two", "text/plain", "one.txt").await?;
+        assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":range_version,"range":{"start":0,"end":2}})).await?.1.value, range_result.value);
+        assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":range_version})).await?.1.value["text"], "one");
+        assert_eq!(call(&task, &edit, json!({"path":"notes/one.txt","version":range_version,"old_text":"one","new_text":"stale"})).await.unwrap_err().code(), crate::wire::ErrorCode::Conflict);
         assert_eq!(call(&task, &edit, json!({"path":"notes/one.txt","version":version,"old_text":"one","new_text":"stale"})).await.unwrap_err().code(), crate::wire::ErrorCode::Conflict);
         let (invocation, result) = call(&task, &edit, json!({"path":"notes/one.txt","old_text":"two","new_text":"three"})).await?;
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "three");

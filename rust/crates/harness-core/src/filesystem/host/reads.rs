@@ -218,9 +218,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         expected_generation: Option<&GenerationRef>,
         range: acyclic_fs::ByteRange,
-        io: Option<&PreparationIo>,
-    ) -> Result<(acyclic_stream::OwnedBytes, u64)> {
+        access: crate::conversation::ContentAccess<'_, '_>,
+    ) -> Result<(acyclic_stream::OwnedBytes, GenerationRef, u64)> {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
         self.require_private_directory(volume, grant, path, io)?;
+        super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
         validate_private_read_path(path, io)?;
         let unmeasured;
         let io = if let Some(io) = io {
@@ -235,12 +237,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
             None => io.sdk(workspace.head(io, io.cancellation()).await)?,
         };
-        let view = private_read_view(&workspace, grant, generation.id(), None, io).await?;
+        let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         bounded_io::retain(&generation, Some(io)).await?;
-        let requested = format!("/{path}");
-        let stat = io.sdk(generation.stat(&requested, io, io.cancellation()).await)?;
+        let requested = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{path}"), work)
+        })?;
+        let requested_hold = io.guard_owned(requested.capacity() as u64)?;
+        let stat = io
+            .sdk(generation.stat(&requested, io, io.cancellation()).await)
+            .map_err(path_read_refusal)?;
         let length = match (stat.kind, stat.logical_bytes) {
             (acyclic_fs::kernel::FileKind::Regular, Some(length)) => length,
             _ => {
@@ -248,7 +255,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     Some(io),
                     crate::wire::ErrorCode::Invalid,
                     "private path is not a regular file",
-                ));
+                )
+                .tool_input());
             }
         };
         let remaining = length.checked_sub(range.offset).ok_or_else(|| {
@@ -257,6 +265,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 crate::wire::ErrorCode::Invalid,
                 "read offset is past the file's end",
             )
+            .tool_input()
         })?;
         let chunk = io.sdk(
             generation
@@ -271,7 +280,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?;
         super::super::access::require_current(&workspace, &view.0, io).await?;
         grant.recheck(Some(io))?;
-        Ok((chunk.bytes, length))
+        let selected = self.generation_ref_id(generation.id(), Some(io))?;
+        drop(requested_hold);
+        Ok((chunk.bytes, selected, length))
     }
 
     /// Reads a finite private prefix at an explicitly pinned generation.

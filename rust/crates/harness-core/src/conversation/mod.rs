@@ -203,6 +203,7 @@ mod clone;
 mod content;
 mod directory;
 pub mod epochs;
+mod file_source;
 mod files;
 mod history;
 mod message;
@@ -227,6 +228,7 @@ pub use directory::{
     MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
     PrivateDirectoryPage,
 };
+pub use file_source::FilePathSelection;
 pub use files::{FileDescriptor, FileRef};
 #[cfg(feature = "filesystem")]
 pub(crate) use files::{PublicationDomain, PublicationWitness};

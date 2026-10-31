@@ -271,7 +271,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let offset = body.len() - 10;
-    let (bytes, length) = host
+    let (bytes, selected, length) = host
         .read_private_range(
             volume,
             &read,
@@ -281,7 +281,10 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
                 offset: offset as u64,
                 length: 64,
             },
-            Some(&io),
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
         )
         .await?;
     assert_eq!(
@@ -289,6 +292,40 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         (&body[offset..], body.len() as u64)
     );
     assert!(work.receipt().source_bytes_read < 64 * 1024);
+    assert_eq!(selected.as_resource().provider(), volume.provider());
+    host.apply(
+        &workspace,
+        None,
+        &[crate::filesystem::WorkspaceMutation::PutFile {
+            path: "/ordinary".into(),
+            bytes: bytes::Bytes::from_static(b"new head").into(),
+        }],
+        &IdempotencyKey::new("replace-range-source")?,
+    )
+    .await?;
+    let pinned_work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let pinned_io = PreparationIo::from_native_work(&pinned_work)?;
+    let (pinned, generation, pinned_length) = host
+        .read_private_range(
+            volume,
+            &read,
+            "ordinary",
+            Some(&selected),
+            acyclic_fs::ByteRange {
+                offset: offset as u64,
+                length: 10,
+            },
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&pinned_io),
+            },
+        )
+        .await?;
+    assert_eq!(generation, selected);
+    assert_eq!(pinned_length, body.len() as u64);
+    assert_eq!(pinned.as_ref(), &body[offset..]);
+    assert!(pinned_work.receipt().source_bytes_read < 64 * 1024);
     for (path, maximum, code) in [
         ("missing", u64::MAX, crate::wire::ErrorCode::NotFound),
         ("directory", u64::MAX, crate::wire::ErrorCode::Invalid),
@@ -325,7 +362,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
             volume,
             &read,
             "ordinary",
-            None,
+            Some(&selected),
             u64::MAX,
             crate::conversation::ContentAccess {
                 ceiling: None,
@@ -339,17 +376,17 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         "actual byte-credit loss must remain terminal: {error:?}"
     );
     assert!(!error.is_tool_failure());
-    let (bytes, _) = host
+    let (bytes, _, _) = host
         .read_private_range(
             volume,
             &read,
             "ordinary",
-            None,
+            Some(&selected),
             acyclic_fs::ByteRange {
                 offset: body.len() as u64,
                 length: 64,
             },
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     assert!(bytes.is_empty());
@@ -358,12 +395,12 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
             volume,
             &read,
             "ordinary",
-            None,
+            Some(&selected),
             acyclic_fs::ByteRange {
                 offset: body.len() as u64 + 1,
                 length: 64
             },
-            None
+            crate::conversation::ContentAccess::default()
         )
         .await
         .is_err()

@@ -630,6 +630,7 @@ impl ToolContext {
     pub(crate) async fn read_tool_path(
         &self,
         path: &str,
+        expected_generation: Option<&crate::resources::GenerationRef>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
@@ -641,12 +642,75 @@ impl ToolContext {
                     volume,
                     relative.rsplit_once('/').map_or("", |(parent, _)| parent),
                     &relative,
-                    None,
+                    expected_generation,
                 ),
                 self.effective_scope(),
                 io,
             )
             .await
+    }
+
+    /// Retains the original range producer's immutable selection without a
+    /// complete-body read, digest or second head selection.
+    pub(crate) async fn read_tool_path_range(
+        &self,
+        path: &str,
+        expected_generation: Option<&crate::resources::GenerationRef>,
+        range: acyclic_fs::ByteRange,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(
+        crate::conversation::FilePathSelection,
+        acyclic_stream::OwnedBytes,
+        u64,
+    )> {
+        let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        let (selected, bytes, hold) = self
+            .task()
+            .tool_read_content()
+            .reader
+            .read_private_range(
+                volume,
+                relative.rsplit_once('/').map_or("", |(parent, _)| parent),
+                &relative,
+                expected_generation,
+                range,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(self.effective_scope().grants()),
+                    io,
+                },
+            )?
+            .await?;
+        crate::executor::with_history_io(io, |history| {
+            selected.validate(history)?;
+            if &selected.volume != volume
+                || selected.path != relative
+                || expected_generation.is_some_and(|generation| generation != &selected.generation)
+                || selected
+                    .byte_length
+                    .checked_sub(range.offset)
+                    .map(|remaining| remaining.min(range.length))
+                    != Some(bytes.len() as u64)
+            {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Conflict,
+                    "range reader returned another selection",
+                ));
+            }
+            Ok(())
+        })?;
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        #[cfg(not(feature = "filesystem"))]
+        let retained = {
+            let _ = hold;
+            0
+        };
+        Ok((selected, bytes, retained))
     }
 
     /// Reads immutable content under the effective tool scope and caller IO limits.

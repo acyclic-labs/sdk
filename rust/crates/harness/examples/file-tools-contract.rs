@@ -104,7 +104,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let read_invocation = invocation("read", value(&read_input)?);
     let read_result = ToolResult {
         value: value(ReadFileResult {
-            file: file.clone(),
+            file: files::FileReadSource::Content(file.clone()),
             text: read.into(),
         })?,
     };
@@ -134,7 +134,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let exact_invocation = invocation("read", value(&exact_input)?);
     let exact_result = ToolResult {
         value: value(ReadFileResult {
-            file: file.clone(),
+            file: files::FileReadSource::Content(file.clone()),
             text: source.into(),
         })?,
     };

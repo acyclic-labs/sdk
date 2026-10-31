@@ -14,7 +14,7 @@ macro_rules! typed_reference {
     };
     ($name:ident, $kind:ident, $description:literal, {$($constructor:item)*}) => {
         #[doc = $description]
-        #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
         #[serde(transparent)]
         pub struct $name(pub(super) ResourceRef);
         crate::core::ownership::owned_tuple!($name, (resource));

@@ -686,7 +686,7 @@ where
             &mut None,
         )
         .map_err(turn)?;
-        let (bytes, length) = self
+        let (bytes, _selection, length) = self
             .volumes
             .read_private_range(
                 &authority.private.volume,
@@ -697,7 +697,7 @@ where
                     offset,
                     length: maximum,
                 },
-                None,
+                crate::conversation::ContentAccess::default(),
             )
             .await
             .map_err(turn)?;
