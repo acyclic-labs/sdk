@@ -53,6 +53,7 @@ impl ObjectContentStore {
     /// Exposes the authenticated reader and optional original-owner writer.
     pub fn bindings(self: &Arc<Self>) -> ContentBindings {
         ContentBindings {
+            volume: self.volume.clone(),
             reader: self.clone(),
             writer: self
                 .writer

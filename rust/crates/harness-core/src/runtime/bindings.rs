@@ -12,10 +12,28 @@ pub struct AgentHarness {
 /// version it returns; the writer publishes only to its own volume.
 #[derive(Clone)]
 pub struct ContentBindings {
+    /// Selected volume identity, independent of whether publication is allowed.
+    pub volume: VolumeRef,
     /// Authenticated, exact-version read and residency boundary.
     pub reader: Arc<dyn ContentResidencyVerifier>,
     /// Authenticated writer for one volume; read-only agents omit it.
     pub writer: Option<Arc<dyn ContentPublisher>>,
+}
+
+impl ContentBindings {
+    fn validate(&self) -> Result<()> {
+        self.volume.validate(&mut None)?;
+        if self
+            .writer
+            .as_ref()
+            .is_some_and(|writer| writer.volume() != &self.volume)
+        {
+            return Err(Error::Invalid(
+                "content writer belongs to another selected volume".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Runtime bindings assembled before agent turns run.
@@ -41,6 +59,12 @@ impl Bindings {
     /// Validates the immutable composition.
     pub fn build(self) -> Result<Arc<AgentHarness>> {
         self.scope.limits.validate(&mut None)?;
+        if let Some(content) = &self.content {
+            content.validate()?;
+        }
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.validate()?;
+        }
         Ok(Arc::new(AgentHarness {
             workspace_tools: self.workspace_tools,
             scope: self.scope,
@@ -54,18 +78,18 @@ impl AgentHarness {
     /// Selects an agent's workspace executor and project content together,
     /// preserving this composition's scope and independent artifact storage.
     /// The providers must already be bound to the selected project authority.
-    #[must_use]
     pub fn with_workspace(
         &self,
         workspace_tools: Option<Arc<dyn crate::tool::ToolExecutor>>,
         content: ContentBindings,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+    ) -> Result<Arc<Self>> {
+        content.validate()?;
+        Ok(Arc::new(Self {
             workspace_tools,
             content: Some(content),
             scope: self.scope.clone(),
             artifacts: self.artifacts.clone(),
-        })
+        }))
     }
 
     /// The context for one agent turn. Its scope is this runtime's (tools,
@@ -77,6 +101,7 @@ impl AgentHarness {
         grants: &Capabilities,
         private: ContentBindings,
     ) -> Result<TaskContext> {
+        private.validate()?;
         if private.writer.is_none() {
             return Err(Error::Invalid("agent private content has no writer".into()));
         }

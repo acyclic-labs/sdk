@@ -7,9 +7,12 @@ use super::*;
 )]
 #[serde(deny_unknown_fields)]
 pub struct ReadFileInput {
-    /// Owner-authorized immutable source.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
-    pub file: FileRef,
+    /// Public path relative to the agent's project volume.
+    pub path: String,
+    /// Opaque version from a prior read or publication. Omission reads the
+    /// current path under the original directory read grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// Optional exact UTF-8 byte interval; omission reads the complete file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<super::text::TextRange>,
@@ -39,9 +42,12 @@ pub struct WriteFileInput {
 )]
 #[serde(deny_unknown_fields)]
 pub struct EditFileInput {
-    /// Owner-authorized immutable source.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
-    pub file: FileRef,
+    /// Public path relative to the agent's project volume.
+    pub path: String,
+    /// Opaque version from a prior read or publication. Omission resolves the
+    /// current path under the original directory read grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// One exact nonempty unambiguous needle.
     #[schemars(length(min = 1))]
     pub old_text: String,
@@ -76,6 +82,30 @@ pub struct FileResult {
     pub file: FileRef,
 }
 
+/// Canonical read result retains its verified source independently of the
+/// compact model projection.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct ReadFileResult {
+    /// Original immutable source, used for grant and replay validation.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+    pub file: FileRef,
+    /// Exact selected UTF-8 text.
+    pub text: String,
+}
+
+/// Model-visible file identity; the version is opaque and grants no authority.
+#[derive(Serialize, schemars::JsonSchema)]
+pub(crate) struct FileView<'a> {
+    pub path: &'a str,
+    pub version: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<&'a str>,
+}
+
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod codec_tests {
@@ -108,8 +138,9 @@ mod codec_tests {
             ).unwrap();
             let file = FileRef::new(volume, path.clone(), "version".into(),
                 FileDescriptor::new([1; 32], 128, "text/plain".into()).unwrap(), "file".into(), &mut None).unwrap();
-            round_trip(ReadFileInput { file: file.clone(), range: endpoints.map(|(start, end)| text::TextRange { start, end }) });
-            round_trip(EditFileInput { file, old_text: text.clone(), new_text: replacement });
+            let version = super::super::version::encode_version(&file, None).unwrap().0;
+            round_trip(ReadFileInput { path: path.clone(), version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }) });
+            round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement });
             round_trip(WriteFileInput { path, text, media_type: "text/plain".into(), display_name: "file".into() });
         }
     }

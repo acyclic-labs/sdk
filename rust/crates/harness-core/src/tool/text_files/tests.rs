@@ -42,21 +42,26 @@ fn assert_reference(projection: &Value, expected: &FileRef) -> Result<()> {
 fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> Result<()> {
     let mut work = super::super::edit::allocation(None, 0)?;
     let file = crate::tool::tests::file(b"ababa")?;
-    let input = invocation(json!({"file":file,"range":{"start":1,"end":4}}));
+    let input = invocation(
+        json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":1,"end":4}}),
+    );
     let result = ToolResult {
-        value: json!("bab"),
+        value: json!({"file":file,"text":"bab"}),
     };
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = FileProjection::Read(mode);
         let projected = projector.project(&input, &result, None)?.0;
         crate::executor::validate_json_schema_value(
-            &mode.schema::<String>()?,
+            &FileProjection::model_schema(mode)?,
             &projected,
             "read projection",
             &mut None,
         )?;
         if mode == ProjectionMode::Full {
-            assert_eq!(projected, json!({"kind":"json","value":result.value}));
+            assert_eq!(
+                projected,
+                json!({"kind":"json","value":{"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"text":"bab"}})
+            );
         } else {
             assert_reference(&projected, &file)?;
         }
@@ -143,7 +148,9 @@ fn factory_contract_binds_mode_and_limits_and_rejects_wrong_envelopes() -> Resul
 fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Result<()> {
     let file = crate::tool::tests::file(b"ababa")?;
     let adapter = FileTool::Read;
-    let input = invocation(json!({"file":file,"range":{"start":1,"end":4}}));
+    let input = invocation(
+        json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":1,"end":4}}),
+    );
     let empty = RuntimeScope::new(Capabilities::default(), Limits::default())?;
     assert!(adapter.authorize(None, None, &input, None).is_err());
     assert!(adapter.authorize(Some(&empty), None, &input, None).is_err());
@@ -161,7 +168,7 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
             adapter
                 .preflight(
                     &scope,
-                    &invocation(json!({"file":file,"range":range})),
+                    &invocation(json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":range})),
                     None
                 )
                 .is_err()
