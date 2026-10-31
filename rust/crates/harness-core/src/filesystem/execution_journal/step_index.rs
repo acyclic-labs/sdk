@@ -54,9 +54,13 @@ impl Pending {
         }
         if self.entries.len() == 1 {
             let first = self.entries.first().ok_or_else(|| invalid(io))?;
-            self.heads.insert(key(first.entry.step), 0, io)?;
+            self.heads.insert(
+                key(first.entry.step, first.entry.tool.map(|tool| tool.0)),
+                0,
+                io,
+            )?;
         }
-        let step_key = key(step);
+        let step_key = key(step, tool.map(|tool| tool.0));
         let previous = self.heads.get(&step_key, io)?.copied();
         if !self.entries.is_empty() {
             self.heads.insert(step_key, self.entries.len(), io)?;
@@ -82,6 +86,7 @@ impl Pending {
     fn collect(
         &self,
         step: Option<u32>,
+        call: Option<[u8; 32]>,
         maximum: usize,
         entries: &mut Funded<Entry>,
         io: Option<&PreparationIo>,
@@ -89,16 +94,18 @@ impl Pending {
         let mut next = if self.entries.len() == 1 {
             self.entries
                 .first()
-                .filter(|value| value.entry.step == step)
+                .filter(|value| {
+                    key(value.entry.step, value.entry.tool.map(|tool| tool.0)) == key(step, call)
+                })
                 .map(|_| 0)
         } else {
-            self.heads.get(&key(step), io)?.copied()
+            self.heads.get(&key(step, call), io)?.copied()
         };
         let before = entries.values.len();
         while let Some(position) = next {
             crate::model::charge_items(io, 1)?;
             let value = self.entries.get(position).ok_or_else(|| invalid(io))?;
-            if value.entry.step != step
+            if key(value.entry.step, value.entry.tool.map(|tool| tool.0)) != key(step, call)
                 || entries.values.len() - before >= maximum
                 || value.previous.is_some_and(|previous| previous >= position)
             {
@@ -117,7 +124,7 @@ impl Pending {
     ) -> Result<Option<NodeRef>> {
         for pending in &self.entries {
             let entry = &pending.entry;
-            let key = key(entry.step);
+            let key = key(entry.step, entry.tool.map(|tool| tool.0));
             let reader = writer.reader();
             let previous = reader.get(root, &key).await?.map(|read| read.reference());
             let value = encode(entry, previous);
@@ -127,7 +134,10 @@ impl Pending {
     }
 }
 
-fn key(step: Option<u32>) -> [u8; 32] {
+fn key(step: Option<u32>, call: Option<[u8; 32]>) -> [u8; 32] {
+    if let (Some(step), Some(call)) = (step, call) {
+        return crate::executor::call_bucket_key(step, call);
+    }
     let mut bytes = [0; 32];
     if let Some(step) = step {
         bytes[0] = 1;
@@ -222,9 +232,7 @@ fn decode(
     Ok((entry, previous))
 }
 
-/// Tool admission is part of the step chain, rather than a second durable map
-/// of the same observations. Newest matching state wins; strictly decreasing
-/// record positions prevent cycles and keep recovery within this one step.
+/// The head of this call's observation chain is its current admission state.
 pub(super) async fn tool_state<P: crate::store::JournalProvider + ?Sized>(
     reader: &Reader<'_, P>,
     root: Option<NodeRef>,
@@ -233,31 +241,20 @@ pub(super) async fn tool_state<P: crate::store::JournalProvider + ?Sized>(
     call: [u8; 32],
 ) -> Result<Option<bool>> {
     let io = reader.io;
-    let mut read = reader.get(root, &key(Some(step))).await?;
-    let mut sequence = tail.checked_add(1).ok_or_else(|| invalid(io))?;
-    while let Some(node) = read {
-        let Node::Leaf { key: found, value } = node.node(io)? else {
-            return Err(invalid(io));
-        };
-        if found != key(Some(step)) {
-            return Err(invalid(io));
-        }
-        let (entry, previous) = decode(value, node.reference(), Some(step), io)?;
-        if entry.sequence >= sequence {
-            return Err(invalid(io));
-        }
-        sequence = entry.sequence;
-        if let Some((found, settled)) = entry.tool
-            && found == call
-        {
-            return Ok(Some(settled));
-        }
-        read = match previous {
-            Some(previous) => Some(reader.read(previous).await?),
-            None => None,
-        };
+    let Some(node) = reader.get(root, &key(Some(step), Some(call))).await? else {
+        return Ok(None);
+    };
+    let Node::Leaf { key: found, value } = node.node(io)? else {
+        return Err(invalid(io));
+    };
+    let (entry, _) = decode(value, node.reference(), Some(step), io)?;
+    if found != key(Some(step), Some(call))
+        || entry.sequence > tail
+        || entry.tool.is_none_or(|tool| tool.0 != call)
+    {
+        return Err(invalid(io));
     }
-    Ok(None)
+    Ok(entry.tool.map(|tool| tool.1))
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
@@ -336,6 +333,10 @@ where
             cache: Some(&summary.pages),
         };
         let mut entries = Funded::new(io)?;
+        let call = query
+            .call_id
+            .map(|call| crate::model::hash_bytes(call.as_bytes(), io))
+            .transpose()?;
         for step in [None, Some(query.step)] {
             if step.is_none() && !query.include_started {
                 continue;
@@ -351,6 +352,7 @@ where
                 state.roots[4],
                 state.tail,
                 step,
+                if step.is_some() { call } else { None },
                 maximum,
                 &mut entries,
             )
@@ -361,9 +363,13 @@ where
             let remaining = maximum
                 .checked_sub(entries.values.len() - before)
                 .ok_or_else(|| invalid(io))?;
-            summary
-                .pending_steps
-                .collect(step, remaining, &mut entries, io)?;
+            summary.pending_steps.collect(
+                step,
+                if step.is_some() { call } else { None },
+                remaining,
+                &mut entries,
+                io,
+            )?;
         }
         Ok(Some(Entries {
             tail: summary.tail,
@@ -430,11 +436,12 @@ async fn collect_step<P: crate::store::JournalProvider + ?Sized>(
     root: Option<NodeRef>,
     tail: u64,
     step: Option<u32>,
+    call: Option<[u8; 32]>,
     maximum: usize,
     entries: &mut Funded<Entry>,
 ) -> Result<()> {
     let io = reader.io;
-    let mut read = reader.get(root, &key(step)).await?;
+    let mut read = reader.get(root, &key(step, call)).await?;
     if read.is_none() && step.is_none() {
         return Err(invalid(io));
     }
@@ -448,10 +455,13 @@ async fn collect_step<P: crate::store::JournalProvider + ?Sized>(
         let Node::Leaf { key: found, value } = node.node(io)? else {
             return Err(invalid(io));
         };
-        if found != key(step) {
+        if found != key(step, call) {
             return Err(invalid(io));
         }
         let (entry, previous) = decode(value, node.reference(), step, io)?;
+        if entry.tool.map(|tool| tool.0) != call {
+            return Err(invalid(io));
+        }
         if entry.sequence >= previous_sequence {
             return Err(invalid(io));
         }

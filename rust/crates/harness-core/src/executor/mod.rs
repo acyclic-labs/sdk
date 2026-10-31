@@ -61,6 +61,7 @@ pub(crate) mod phase;
 pub(crate) use model_observation::append as append_model_event;
 mod prefix;
 mod record_index;
+pub(crate) use record_index::call_bucket_key;
 mod records;
 mod request;
 mod response;
@@ -68,6 +69,8 @@ mod retained_request;
 pub(crate) mod transcript;
 mod working_tail;
 pub(crate) use transcript::load_projection as load_response_projection;
+#[cfg(not(target_arch = "wasm32"))]
+mod code_mode;
 mod summary;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;

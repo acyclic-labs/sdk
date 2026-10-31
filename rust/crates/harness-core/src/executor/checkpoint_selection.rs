@@ -20,6 +20,7 @@ pub(crate) async fn selected_step_records<'a>(
         .unwrap_or(0);
     let operation = query.operation;
     let step = query.step;
+    let call_id = query.call_id;
     let include_started = query.include_started;
     let maximum = query.maximum;
     let select = query.select;
@@ -48,6 +49,18 @@ pub(crate) async fn selected_step_records<'a>(
             maximum,
             |event| {
                 (event.step() == Some(step) || (include_started && event.step().is_none()))
+                    && match event {
+                        ExecutionEvent::ToolStarted {
+                            call_id: recorded, ..
+                        }
+                        | ExecutionEvent::ToolCompleted {
+                            call_id: recorded, ..
+                        }
+                        | ExecutionEvent::ToolFailed {
+                            call_id: recorded, ..
+                        } => call_id == Some(recorded.as_str()),
+                        _ => call_id.is_none() || (include_started && event.step().is_none()),
+                    }
                     && select(event)
             },
             io,
@@ -68,6 +81,7 @@ pub async fn canonical_checkpoint_for_operation(
         ExecutionRecordQuery {
             operation: operation_id,
             step: 0,
+            call_id: None,
             include_started: false,
             maximum_step_records: ExecutionRecordQuery::step_bound(limits),
             maximum: 1,

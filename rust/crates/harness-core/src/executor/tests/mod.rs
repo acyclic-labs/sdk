@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+mod code_mode;
 mod pre_dispatch;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -367,6 +369,7 @@ pub(crate) struct Journal(
     AtomicUsize,
     Option<crate::core::AuthorityVerifier>,
     ExecutionJournalCacheId,
+    tokio_util::sync::CancellationToken,
 );
 
 impl Journal {
@@ -428,6 +431,13 @@ impl crate::context::ContextSource for ChangingContextSource {
 }
 
 impl ExecutionJournal for Journal {
+    fn model_cancellation(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async {
+            self.10.cancelled().await;
+            Ok(())
+        })
+    }
+
     fn has_file_bound_model_verification(&self) -> bool {
         true
     }
