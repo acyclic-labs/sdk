@@ -10,7 +10,8 @@ use acyclic_harness::local::{
 };
 use acyclic_native_runtime::lines::AsyncLines;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, io::Write, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
+use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 
 type Failure = Box<dyn std::error::Error>;
 
@@ -30,7 +31,7 @@ pub async fn prompt(
     conversation: &Arc<Conversation>,
     operation: &str,
     prompt: &str,
-    output: &mut impl Write,
+    output: &mut (impl AsyncWrite + Unpin),
 ) -> Result<u8, Failure> {
     let mut events = conversation.observe(conversation.settled().await?).await?;
     let inbox = conversation.send(operation, prompt).await?;
@@ -75,10 +76,11 @@ pub async fn prompt(
 async fn print(
     conversation: &Conversation,
     entry: &ConversationEntry,
-    output: &mut impl Write,
+    output: &mut (impl AsyncWrite + Unpin),
 ) -> Result<u8, Failure> {
     let (_, text) = conversation.turn(entry).await?;
-    writeln!(output, "{text}")?;
+    output.write_all(text.as_bytes()).await?;
+    output.write_all(b"\n").await?;
     Ok(0)
 }
 
@@ -112,9 +114,12 @@ async fn settled(
     })
 }
 
-fn emit(output: &mut impl Write, line: &Value) -> std::io::Result<()> {
-    writeln!(output, "{line}")?;
-    output.flush()
+async fn emit(output: &mut (impl AsyncWrite + Unpin), line: &Value) -> std::io::Result<()> {
+    // This one caller-owned frame remains live through its original write.
+    // The synchronous serializer never writes to an OS handle or a second queue.
+    let mut bytes = serde_json::to_vec(line)?;
+    bytes.push(b'\n');
+    output.write_all(&bytes).await
 }
 
 /// The JSONL stream's outstanding prompts.
@@ -136,7 +141,7 @@ impl Outstanding {
     async fn send(
         &mut self,
         conversation: &Conversation,
-        output: &mut impl Write,
+        output: &mut (impl AsyncWrite + Unpin),
         message: String,
         id: String,
         prompt: String,
@@ -146,7 +151,7 @@ impl Outstanding {
             // A refused prompt, such as an unknown `/name`, is its own
             // record; the stream goes on.
             Sent::Refused(reason) => {
-                emit(output, &json!({"id": id, "error": reason}))?;
+                emit(output, &json!({"id": id, "error": reason})).await?;
                 return Ok(());
             }
             Sent::Unknown => {
@@ -161,9 +166,9 @@ impl Outstanding {
             settled(conversation, &id, inbox, reply).await?,
             &self.finished,
         ) {
-            (Some(line), _) => emit(output, &line)?,
+            (Some(line), _) => emit(output, &line).await?,
             (None, Some(reason)) => {
-                emit(output, &json!({"id": id, "inbox": inbox, "error": reason}))?;
+                emit(output, &json!({"id": id, "inbox": inbox, "error": reason})).await?;
             }
             (None, None) => {
                 self.pending.insert(inbox, (message, id));
@@ -177,7 +182,7 @@ impl Outstanding {
     async fn resend(
         &mut self,
         conversation: &Conversation,
-        output: &mut impl Write,
+        output: &mut (impl AsyncWrite + Unpin),
     ) -> Result<(), Failure> {
         for (message, id, prompt) in std::mem::take(&mut self.uncertain) {
             self.send(conversation, output, message, id, prompt).await?;
@@ -201,7 +206,7 @@ impl Outstanding {
 pub async fn jsonl(
     conversation: &Arc<Conversation>,
     operation: &str,
-    output: &mut impl Write,
+    output: &mut (impl AsyncWrite + Unpin),
 ) -> Result<u8, Failure> {
     let mut events = conversation.observe(conversation.settled().await?).await?;
     let mut lines = stdin_lines()?;
@@ -271,7 +276,7 @@ pub async fn jsonl(
                             (_, reply) => settled(conversation, &id, inbox, reply).await?,
                         };
                         match line {
-                            Some(line) => emit(output, &line)?,
+                            Some(line) => emit(output, &line).await?,
                             None => {
                                 pending.insert(inbox, (message, id));
                             }
@@ -282,14 +287,14 @@ pub async fn jsonl(
                     // until stdin closes.
                     if let Some(reason) = ended {
                         for (inbox, (_, id)) in std::mem::take(pending) {
-                            emit(output, &json!({"id": id, "inbox": inbox, "error": reason}))?;
+                            emit(output, &json!({"id": id, "inbox": inbox, "error": reason})).await?;
                         }
                         outstanding.finished = Some(reason);
                     }
                     if let Phase::WaitingApproval { id } = &status.phase
                         && announced.as_ref() != Some(id)
                     {
-                        emit(output, &json!({"approval": id.as_str()}))?;
+                        emit(output, &json!({"approval": id.as_str()})).await?;
                         announced = Some(id.clone());
                     }
                     // A status is the stream's event for a prompt of
@@ -298,5 +303,115 @@ pub async fn jsonl(
                 }
             },
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use acyclic_native_runtime::{
+        InheritedOutput,
+        obs::{ReportAck, ReportOutcome, ReportPort, ReportRequest, WaitReport},
+    };
+    use futures::FutureExt as _;
+    use std::{
+        future::{Future as _, poll_fn},
+        io::Read as _,
+        os::fd::AsFd as _,
+        pin::Pin,
+        task::Poll,
+    };
+    use tokio::io::{AsyncBufReadExt as _, BufReader};
+
+    #[test]
+    fn a_full_answer_pipe_keeps_report_and_shutdown_runnable() -> Result<(), Failure> {
+        acyclic_native_runtime::coordination_runtime()?.block_on(async {
+            let (mut reader, original) = std::io::pipe()?;
+            let mut output =
+                InheritedOutput::from_file(original.as_fd().try_clone_to_owned()?.into())?;
+            let chunk = [b'x'; 8192];
+            let mut filled = output.write(&chunk).await?;
+            loop {
+                let written = poll_fn(|cx| {
+                    Poll::Ready(match Pin::new(&mut output).poll_write(cx, &chunk) {
+                        Poll::Ready(result) => Some(result),
+                        Poll::Pending => None,
+                    })
+                })
+                .await;
+                let Some(written) = written else { break };
+                let written = written?;
+                assert_ne!(written, 0);
+                filled += written;
+            }
+
+            let report = WaitReport::default();
+            let request = ReportRequest {
+                request_id: "abcdef0123456789abcdef0123456789".into(),
+                generation: "0123456789abcdef0123456789abcdef".into(),
+                deadline_unix_ms: u64::MAX,
+            };
+            let (owner, child) = tokio::io::duplex(4096);
+            let port = ReportPort::new(request.generation.clone(), child)?;
+            let (entered, blocked) = tokio::sync::oneshot::channel();
+            let (terminate, signal) = tokio::sync::oneshot::channel();
+            let shutdown = async move {
+                signal.await.unwrap();
+                Ok(143)
+            }
+            .boxed()
+            .shared();
+            let line = json!({"id": "original-answer", "text": "settled"});
+            let operation = async {
+                let writing = emit(&mut output, &line);
+                tokio::pin!(writing);
+                poll_fn(|cx| {
+                    assert!(writing.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                entered.send(()).unwrap();
+                writing.await?;
+                Ok(0)
+            };
+            let host = async {
+                let mut owner = BufReader::new(owner);
+                let mut line = String::new();
+                owner.read_line(&mut line).await.unwrap();
+                blocked.await.unwrap();
+                let mut bytes = serde_json::to_vec(&request).unwrap();
+                bytes.push(b'\n');
+                owner.get_mut().write_all(&bytes).await.unwrap();
+                line.clear();
+                owner.read_line(&mut line).await.unwrap();
+                let ack: ReportAck = serde_json::from_str(&line).unwrap();
+                assert_eq!(ack.request_id, request.request_id);
+                assert_eq!(ack.generation, request.generation);
+                assert_eq!(ack.outcome, ReportOutcome::Empty);
+                assert!(ack.waits.is_empty());
+                terminate.send(()).unwrap();
+                owner
+            };
+            let ((result, diagnostic), owner) = tokio::join!(
+                crate::lifecycle::observe(&report, Ok(Some(port)), shutdown, false, operation),
+                host,
+            );
+            assert_eq!(result?, 143);
+            diagnostic?;
+            output.shutdown().await?;
+            drop(original);
+            // Cancellation accepted no answer bytes. Drain only the exact
+            // previously accepted prefix, then join the original pipe EOF.
+            while filled != 0 {
+                let count = filled.min(chunk.len());
+                let mut received = [0; 8192];
+                reader.read_exact(&mut received[..count])?;
+                assert_eq!(&received[..count], &chunk[..count]);
+                filled -= count;
+            }
+            assert_eq!(reader.read(&mut [0])?, 0);
+            drop(owner);
+            Ok(())
+        })
     }
 }
