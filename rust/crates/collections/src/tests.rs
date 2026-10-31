@@ -257,3 +257,141 @@ fn extracted_values_keep_their_original_leaf_funding_after_cancelled_removal()
     assert_eq!(work.live.get(), 0);
     Ok(())
 }
+
+#[test]
+fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
+-> Result<(), &'static str> {
+    use proptest::test_runner::{Config, TestRunner};
+    use std::ops::Bound::{Excluded, Unbounded};
+
+    let mut runner = TestRunner::new(Config {
+        cases: 128,
+        failure_persistence: None,
+        ..Config::default()
+    });
+    runner
+        .run(
+            &(
+                prop::collection::vec(prop::array::uniform::<_, 40>(any::<u8>()), 0..96),
+                prop::collection::vec(prop::array::uniform::<_, 40>(any::<u8>()), 0..32),
+            ),
+            |(keys, queries)| {
+                let mut work = Work::default();
+                let mut table = FixedIndex::default();
+                let mut expected = BTreeMap::new();
+                for (value, key) in keys.into_iter().enumerate() {
+                    table
+                        .get_or_try_insert_with(key, &mut work, |_| Ok(value))
+                        .map_err(TestCaseError::fail)?;
+                    expected.entry(key).or_insert(value);
+                }
+                let claims = work.claims;
+                let live = work.live.get();
+                for key in expected.keys().copied().chain(queries) {
+                    let before = work.items;
+                    let observed = table
+                        .seek_after(key, &mut work)
+                        .map_err(TestCaseError::fail)?;
+                    prop_assert_eq!(observed, expected.range((Excluded(key), Unbounded)).next());
+                    prop_assert!(work.items - before <= 25 * 40 + 3);
+                    let before = work.items;
+                    let observed = table.get_mut(key, &mut work).map_err(TestCaseError::fail)?;
+                    prop_assert_eq!(observed.as_deref(), expected.get(&key));
+                    if let Some(value) = observed {
+                        *value += 1;
+                        *expected.get_mut(&key).unwrap() += 1;
+                    }
+                    prop_assert!(work.items - before <= 9 * 40 + 1);
+                }
+                let mut row = table.first(&mut work).map_err(TestCaseError::fail)?;
+                for expected in &expected {
+                    prop_assert_eq!(row, Some(expected));
+                    row = table
+                        .seek_after(*expected.0, &mut work)
+                        .map_err(TestCaseError::fail)?;
+                }
+                prop_assert_eq!(row, None);
+                prop_assert_eq!(work.claims, claims);
+                prop_assert_eq!(work.live.get(), live);
+                drop(table);
+                prop_assert_eq!(work.live.get(), 0);
+                Ok(())
+            },
+        )
+        .map_err(|_| "ordered seek or existing mutation disagreed with independent map")?;
+
+    // Every possible branch coordinate, including beyond 256 bits, and the
+    // empty key exercise the structural bound independently of random shape.
+    fn boundary<const N: usize>() -> Result<(), &'static str> {
+        let mut work = Work::default();
+        let mut table = FixedIndex::default();
+        let mut expected = BTreeMap::new();
+        table.get_or_try_insert_with([0; N], &mut work, |_| Ok(0))?;
+        expected.insert([0; N], 0);
+        for byte in 0..N {
+            for offset in 0..8 {
+                let mut key = [0; N];
+                key[byte] = 0x80 >> offset;
+                table.get_or_try_insert_with(key, &mut work, |_| Ok(1))?;
+                expected.insert(key, 1);
+            }
+        }
+        let claims = work.claims;
+        for key in expected.keys().copied().chain([[255; N]]) {
+            let before = work.items;
+            assert_eq!(
+                table.seek_after(key, &mut work)?,
+                expected.range((Excluded(key), Unbounded)).next()
+            );
+            assert!(work.items - before <= (25 * N + 3) as u64);
+        }
+        let before = work.items;
+        table
+            .get_mut([0; N], &mut work)?
+            .ok_or("missing original key")?;
+        let required = work.items - before;
+        for credit in 0..required {
+            work.maximum_items = Some(work.items + credit);
+            assert_eq!(
+                table.get_mut([0; N], &mut work).err(),
+                Some("items refused")
+            );
+        }
+        work.maximum_items = None;
+        assert_eq!(table.get([0; N], &mut work)?, Some(&0));
+        let before = work.items;
+        table.seek_after([0; N], &mut work)?;
+        let required = work.items - before;
+        for credit in 0..required {
+            work.maximum_items = Some(work.items + credit);
+            assert_eq!(
+                table.seek_after([0; N], &mut work).err(),
+                Some("items refused")
+            );
+        }
+        work.maximum_items = None;
+        work.cancelled = true;
+        assert_eq!(table.get_mut([255; N], &mut work).err(), Some("cancelled"));
+        assert_eq!(
+            table.seek_after([255; N], &mut work).err(),
+            Some("cancelled")
+        );
+        let mut empty = FixedIndex::<usize, Allocation, N>::default();
+        assert_eq!(empty.get_mut([0; N], &mut work).err(), Some("cancelled"));
+        assert_eq!(empty.seek_after([0; N], &mut work).err(), Some("cancelled"));
+        assert!(
+            empty
+                .get_or_try_insert_with([0; N], &mut work, |_| panic!("cancelled construction"))
+                .is_err()
+        );
+        assert_eq!(work.claims, claims);
+        drop(table);
+        assert_eq!(work.live.get(), 0);
+        Ok(())
+    }
+    boundary::<0>()?;
+    boundary::<8>()?;
+    boundary::<24>()?;
+    boundary::<40>()?;
+    a_full_scan_negative_exposes_population_work_hidden_by_the_fixed_key_index()
+}

@@ -186,6 +186,88 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         Ok(None)
     }
 
+    /// Mutably borrows an existing exact value without constructing or funding
+    /// a registration. Refusal leaves the value and its original custody intact.
+    pub fn get_mut<W: IndexWork<Allocation = A>>(
+        &mut self,
+        key: [u8; N],
+        accounting: &mut W,
+    ) -> Result<Option<&mut V>, W::Error> {
+        accounting.check()?;
+        let mut cursor = self.root.as_deref_mut();
+        while let Some(node) = cursor {
+            accounting.charge_items(1)?;
+            match &mut node.kind {
+                Kind::Leaf {
+                    key: observed,
+                    value,
+                } => {
+                    accounting.charge_items(N as u64)?;
+                    return Ok((*observed == key).then_some(value));
+                }
+                Kind::Branch {
+                    bit,
+                    low,
+                    high: upper,
+                } => {
+                    cursor = if high(&key, *bit) { upper } else { low }.as_deref_mut();
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Borrows the least key strictly greater than `after` without allocating.
+    /// The cursor is the complete original key, never an ordinal or cache hint.
+    /// At most three bounded-depth paths and N comparison bytes are visited;
+    /// work does not depend on the number of keys before or after the cursor.
+    pub fn seek_after<W: IndexWork<Allocation = A>>(
+        &self,
+        after: [u8; N],
+        accounting: &mut W,
+    ) -> Result<Option<(&[u8; N], &V)>, W::Error> {
+        let (differing, _) = self.differing_bit(after, accounting)?;
+        let Some(differing) = differing else {
+            return Ok(None);
+        };
+        let mut cursor = self.root.as_deref();
+        let mut successor = None;
+        while let Some(node) = cursor {
+            accounting.charge_items(1)?;
+            match &node.kind {
+                Kind::Branch {
+                    bit,
+                    low,
+                    high: upper,
+                } if differing.is_none_or(|difference| *bit < difference) => {
+                    cursor = if high(&after, *bit) {
+                        upper.as_deref()
+                    } else {
+                        successor = upper.as_deref();
+                        low.as_deref()
+                    };
+                }
+                _ => {
+                    // At the first omitted differing bit this whole subtree
+                    // is on the observed leaf's side. No descendant can cross
+                    // it. An exact match instead uses the saved upper subtree.
+                    if differing.is_some_and(|bit| !high(&after, bit)) {
+                        successor = Some(node);
+                    }
+                    break;
+                }
+            }
+        }
+        while let Some(node) = successor {
+            accounting.charge_items(1)?;
+            match &node.kind {
+                Kind::Leaf { key, value } => return Ok(Some((key, value))),
+                Kind::Branch { low, .. } => successor = low.as_deref(),
+            }
+        }
+        Ok(None)
+    }
+
     /// Returns the existing value or constructs it after both node admissions.
     /// Every fallible charge precedes link publication; refusal leaves the index
     /// unchanged and retires all temporary tokens. Existing keys never construct.
@@ -263,6 +345,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         key: [u8; N],
         accounting: &mut W,
     ) -> Result<(Option<Option<Bit>>, u64), W::Error> {
+        accounting.check()?;
         let mut cursor = self.root.as_deref();
         let mut depth = 0;
         while let Some(node) = cursor {
