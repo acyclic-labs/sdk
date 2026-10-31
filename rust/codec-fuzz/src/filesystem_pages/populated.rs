@@ -145,6 +145,7 @@ pub(super) fn seeds() -> Result<Seeds, Box<dyn std::error::Error>> {
                 payload,
                 link_count: 1,
                 metadata: object(ObjectKind::Metadata, 5),
+                bindings: None,
             });
         }
         capture!(
