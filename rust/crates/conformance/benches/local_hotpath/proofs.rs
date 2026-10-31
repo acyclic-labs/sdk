@@ -22,7 +22,7 @@ struct Cut {
     stage: usize,
     events: [AtomicU64; 3],
     crashes: AtomicU64,
-    simulation_failed: AtomicU64,
+    simulation_error: AtomicU64,
 }
 
 impl Cut {
@@ -31,7 +31,7 @@ impl Cut {
             stage,
             events: std::array::from_fn(|_| AtomicU64::new(0)),
             crashes: AtomicU64::new(0),
-            simulation_failed: AtomicU64::new(0),
+            simulation_error: AtomicU64::new(0),
         }
     }
 
@@ -48,7 +48,7 @@ impl Cut {
         let expected = std::array::from_fn(|stage| u64::from(stage <= self.stage));
         if self.counts() != expected
             || self.crashes.load(Ordering::SeqCst) != 1
-            || self.simulation_failed.load(Ordering::SeqCst) != 0
+            || self.simulation_error.load(Ordering::SeqCst) != 0
         {
             return Err("root crash did not faithfully cut its original journal frame".into());
         }
@@ -71,9 +71,15 @@ impl PersistenceCut for Cut {
 
     fn crashed(&self, simulation: std::result::Result<(), CutSimulationError>) {
         self.crashes.fetch_add(1, Ordering::SeqCst);
-        if simulation.is_err() {
-            self.simulation_failed.fetch_add(1, Ordering::SeqCst);
-        }
+        self.simulation_error.store(
+            match simulation {
+                Ok(()) => 0,
+                Err(CutSimulationError::Lock) => 1,
+                Err(CutSimulationError::Truncate(_)) => 2,
+                Err(CutSimulationError::Task) => 3,
+            },
+            Ordering::SeqCst,
+        );
     }
 }
 
@@ -170,7 +176,7 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
     if fail_simulation {
         if cut.require_faithful().is_ok()
             || cut.crashes.load(Ordering::SeqCst) != 1
-            || cut.simulation_failed.load(Ordering::SeqCst) != 1
+            || cut.simulation_error.load(Ordering::SeqCst) != 2
             || cut.counts() != [1, 1, 0]
         {
             return Err("crash oracle accepted failed physical truncation".into());
@@ -179,6 +185,7 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
             "schema": 1, "kind": "proof_negative_control", "operation": "swarm.session_start",
             "control": "original journal fails to discard unflushed bytes", "result": "rejected",
             "journal_events": cut.counts(), "typed_outcome": "Unknown",
+            "simulation_error": "Truncate",
             "request_digest": hex::encode(request_digest),
         }));
     }
