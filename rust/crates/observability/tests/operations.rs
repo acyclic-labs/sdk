@@ -134,7 +134,9 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
 
     // Equal user IDs in another registry are not the original admission.
     let unrelated = tracing::dispatcher::with_default(
-        &tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(Metrics::new()))),
+        &tracing::Dispatch::new(
+            tracing_subscriber::registry().with(Operations(Metrics::default())),
+        ),
         || {
             let root = tracing::info_span!(parent: None, "acyclic.test.admitted_owner", outcome = tracing::field::Empty);
             Ok::<_, Box<dyn std::error::Error>>(Binding::attach(
