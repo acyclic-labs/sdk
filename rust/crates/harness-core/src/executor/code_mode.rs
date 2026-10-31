@@ -154,24 +154,11 @@ impl StockExecution<'_> {
             let admitted = self
                 .stock
                 .tools
-                .get(target.tool, None, self.io)?
+                .get_callable_skill(target.tool, self.io)?
                 .ok_or_else(|| Error::tool_rejected("skill is not admitted"))?;
             let source = admitted.skill_source.as_ref().ok_or_else(|| {
                 Error::tool_rejected("call target is not an admitted filesystem skill")
             })?;
-            let readable = with_history_io(self.io, |work| {
-                crate::core::directory_read_granted_with_work(
-                    self.stock.tool_scope.grants(),
-                    &source.source().root.volume,
-                    &source.source().root.directory,
-                    work,
-                )
-            })?;
-            if !readable {
-                return Err(Error::tool_rejected(
-                    "skill source is outside the original read grant",
-                ));
-            }
             let metadata = HostMetadata {
                 parent: invocation.operation_id,
                 revision: &admitted.definition.revision,
@@ -188,7 +175,7 @@ impl StockExecution<'_> {
                 self.native_work(),
             )?;
             return self
-                .nested_dispatch(journal, nested, &metadata)
+                .nested_dispatch(journal, nested, &metadata, true)
                 .await
                 .map(Some);
         }
@@ -404,7 +391,8 @@ impl StockExecution<'_> {
                 self.stock.limits.file_bytes,
                 self.native_work(),
             )?;
-            self.nested_dispatch(journal, nested, &metadata).await
+            self.nested_dispatch(journal, nested, &metadata, false)
+                .await
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -421,6 +409,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         invocation: ToolInvocation,
         metadata: &Value,
+        callable_skill: bool,
     ) -> Result<ProfileDispatch> {
         // One existing journal namespace per nested invocation prevents code's
         // internal calls from changing the model step's call count or history.
@@ -441,9 +430,18 @@ impl StockExecution<'_> {
         nested.io = self.io;
         let call_id = stock_string_copy(&invocation.call_id, self.io)?;
         let mut hooks = Vec::new();
-        let settled = Box::pin(
-            nested.settle_tool_invocation(journal, parent, 0, invocation, metadata, &mut hooks),
-        )
+        let settled = Box::pin(nested.settle_tool_invocation(
+            journal,
+            parent,
+            0,
+            invocation,
+            if callable_skill {
+                super::tool_execution::InvocationSelection::CallableSkill(metadata)
+            } else {
+                super::tool_execution::InvocationSelection::Declared(metadata)
+            },
+            &mut hooks,
+        ))
         .await?;
         match settled {
             ExecutionProgress::Ready(_) => {
@@ -588,7 +586,7 @@ impl crate::code_mode::CodeHost for OriginalCodeHost<'_, '_> {
             let (metadata, _metadata_credit) =
                 crate::tool::value(&metadata, execution.stock.limits.file_bytes, Some(work))?;
             let result = execution
-                .nested_dispatch(self.journal, invocation, &metadata)
+                .nested_dispatch(self.journal, invocation, &metadata, false)
                 .await?;
             drop(execution);
             match result {

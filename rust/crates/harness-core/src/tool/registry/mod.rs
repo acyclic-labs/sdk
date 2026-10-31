@@ -15,9 +15,23 @@ pub struct Tool {
     pub projection: Arc<dyn ToolProjection>,
 }
 
+impl Tool {
+    /// Filesystem skills share the fixed call capability; their source and
+    /// exact definition remain the original invocation's approval identity.
+    pub(crate) fn capability_name(&self) -> &str {
+        if self.skill_source.is_some() {
+            "call"
+        } else {
+            &self.definition.name
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum ModelSelection {
     Revision(String),
+    /// Pinned callable skill omitted from the fixed model declaration prefix.
+    CallableRevision(String),
     Ambiguous,
     Hidden,
 }

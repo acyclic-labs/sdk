@@ -23,7 +23,9 @@ impl ToolRegistry {
         }
         for (name, selection) in &self.data.selected {
             let deep = match selection {
-                ModelSelection::Revision(revision) => revision.capacity() as u64,
+                ModelSelection::Revision(revision) | ModelSelection::CallableRevision(revision) => {
+                    revision.capacity() as u64
+                }
                 _ => 0,
             };
             bytes = bytes
@@ -78,6 +80,9 @@ impl ToolRegistry {
             let name = crate::executor::stock_string_copy(name, Some(&io))?;
             let selection = match selection {
                 ModelSelection::Revision(revision) => ModelSelection::Revision(
+                    crate::executor::stock_string_copy(revision, Some(&io))?,
+                ),
+                ModelSelection::CallableRevision(revision) => ModelSelection::CallableRevision(
                     crate::executor::stock_string_copy(revision, Some(&io))?,
                 ),
                 ModelSelection::Ambiguous => ModelSelection::Ambiguous,

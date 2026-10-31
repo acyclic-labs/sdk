@@ -37,7 +37,8 @@ impl ToolRegistry {
                     "manifest repeats a tool name",
                 ));
             }
-            for (name, selection) in &mut Arc::make_mut(&mut self.data).selected {
+            let data = Arc::make_mut(&mut self.data);
+            for (name, selection) in &mut data.selected {
                 let replacement = match selected
                     .binary_search_by(|(candidate, _)| candidate.cmp(&name.as_str()))
                 {
@@ -45,11 +46,23 @@ impl ToolRegistry {
                         selected[index].1,
                         io,
                     )?),
-                    Err(_) => ModelSelection::Hidden,
+                    Err(_) => match selection {
+                        ModelSelection::Revision(revision)
+                        | ModelSelection::CallableRevision(revision)
+                            if lookup::get(&data.versions, name, revision)
+                                .is_some_and(|tool| tool.skill_source.is_some()) =>
+                        {
+                            ModelSelection::CallableRevision(crate::executor::stock_string_copy(
+                                revision, io,
+                            )?)
+                        }
+                        _ => ModelSelection::Hidden,
+                    },
                 };
                 #[cfg(feature = "filesystem")]
                 let old_bytes = match selection {
-                    ModelSelection::Revision(revision) => revision.capacity(),
+                    ModelSelection::Revision(revision)
+                    | ModelSelection::CallableRevision(revision) => revision.capacity(),
                     _ => 0,
                 };
                 *selection = replacement;
@@ -166,6 +179,29 @@ impl ToolRegistry {
         })
     }
 
+    /// Resolves only the currently selected callable skill in this snapshot.
+    /// Explicit historical revisions cannot bypass a hidden or replaced selection.
+    pub(crate) fn get_callable_skill(
+        &self,
+        name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<&Tool>> {
+        crate::executor::with_history_io(io, |work| {
+            if let Some(work) = work.as_deref_mut() {
+                work.check_cancellation()?;
+            }
+            let revision = match self.data.selected.get(name) {
+                Some(
+                    ModelSelection::Revision(revision) | ModelSelection::CallableRevision(revision),
+                ) => revision,
+                _ => return Ok(None),
+            };
+            Ok(lookup::get(&self.data.versions, name, revision)
+                .filter(|tool| tool.skill_source.is_some())
+                .map(Arc::as_ref))
+        })
+    }
+
     /// Returns the unambiguous model selection in canonical order.
     pub fn definitions(
         &self,
@@ -205,7 +241,9 @@ impl ToolRegistry {
                 }
                 match self.data.selected.get(name) {
                     Some(ModelSelection::Revision(revision)) => Some(Ok((name, revision))),
-                    Some(ModelSelection::Hidden) | None => None,
+                    Some(ModelSelection::Hidden | ModelSelection::CallableRevision(_)) | None => {
+                        None
+                    }
                     Some(ModelSelection::Ambiguous) => Some(Err(crate::executor::stock_boundary(
                         io,
                         crate::wire::ErrorCode::Conflict,

@@ -202,6 +202,57 @@ mod tests {
             assert!(refused.register((changed, None), &mut None, None).is_err());
             assert!(refused.definitions(None)?.is_empty());
         }
+        // Fixed declarations hide skill names from the model while preserving
+        // the exact original callable selection for generic call.
+        let call = crate::executor::call_tool()?;
+        let declarations = vec![call.definition.clone()];
+        registry.register((call, None), &mut None, None)?;
+        registry.pin_model_definitions(&declarations, None)?;
+        assert_eq!(registry.definitions(None)?, declarations);
+        assert!(registry.get("read", None, None)?.is_none());
+        let admitted = registry.get_callable_skill("read", None)?.unwrap();
+        assert_eq!(admitted.definition, original.definition);
+        assert_eq!(admitted.capability_name(), "call");
+        assert!(registry.get_callable_skill("call", None)?.is_none());
+        let retained = registry.clone();
+        registry.remove_from_model("read")?;
+        registry.pin_model_definitions(&declarations, None)?;
+        assert!(registry.get_callable_skill("read", None)?.is_none());
+        assert!(
+            registry
+                .get_callable_skill(&format!("read@{}", original.definition.revision), None)?
+                .is_none()
+        );
+        assert!(retained.get_callable_skill("read", None)?.is_some());
+        // An unselected newly registered revision invalidates the callable
+        // selection; retaining old bytes does not admit historical execution.
+        let mut replaced = retained;
+        let mut newer = original.clone();
+        newer.definition.revision.push_str("-new");
+        newer.skill_source = Some(SkillSource::admitted(
+            source.source().clone(),
+            source.runtime().clone(),
+            &newer.definition,
+            None,
+        )?);
+        replaced.register((newer.clone(), None), &mut None, None)?;
+        replaced.pin_model_definitions(&declarations, None)?;
+        assert!(replaced.get_callable_skill("read", None)?.is_none());
+        replaced.select_model_version("read", &newer.definition.revision)?;
+        replaced.pin_model_definitions(&declarations, None)?;
+        assert_eq!(
+            replaced
+                .get_callable_skill("read", None)?
+                .unwrap()
+                .definition
+                .revision,
+            newer.definition.revision
+        );
+        assert!(
+            replaced
+                .get_callable_skill(&format!("read@{}", original.definition.revision), None)?
+                .is_none()
+        );
         // An ordinary function never acquires the skill marker by registration.
         let mut ordinary = ToolRegistry::default();
         ordinary.register((crate::tool::files::read()?, None), &mut None, None)?;
@@ -210,6 +261,7 @@ mod tests {
                 .get("read", None, None)?
                 .is_some_and(|tool| tool.skill_source.is_none())
         );
+        assert!(ordinary.get_callable_skill("read", None)?.is_none());
         Ok(())
     }
 }

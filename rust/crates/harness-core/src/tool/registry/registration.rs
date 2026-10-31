@@ -208,7 +208,8 @@ impl ToolRegistry {
                 std::mem::size_of::<(String, ModelSelection)>() as u64,
                 name.capacity() as u64,
                 match selected {
-                    ModelSelection::Revision(revision) => revision.capacity() as u64,
+                    ModelSelection::Revision(revision)
+                    | ModelSelection::CallableRevision(revision) => revision.capacity() as u64,
                     _ => 0,
                 },
             ]
@@ -228,7 +229,9 @@ impl ToolRegistry {
         .ok_or(OWNERSHIP_OVERFLOW)?;
         let released = if previous && selection.is_none() {
             match self.data.selected.get(&key.0) {
-                Some(ModelSelection::Revision(revision)) => revision.capacity() as u64,
+                Some(
+                    ModelSelection::Revision(revision) | ModelSelection::CallableRevision(revision),
+                ) => revision.capacity() as u64,
                 _ => 0,
             }
         } else {

@@ -51,6 +51,13 @@ enum ToolInvocationOutcome {
     Progress(ExecutionProgress<()>),
 }
 
+/// Only the generic call dispatcher can select a skill omitted from model
+/// declarations. Both paths retain metadata in the original invocation record.
+pub(in crate::executor) enum InvocationSelection<'a> {
+    Declared(&'a Value),
+    CallableSkill(&'a Value),
+}
+
 impl StockExecution<'_> {
     pub(super) async fn settle_tool_call(
         &self,
@@ -74,7 +81,7 @@ impl StockExecution<'_> {
                 operation_id,
                 step,
                 invocation,
-                metadata,
+                InvocationSelection::Declared(metadata),
                 _hook_context,
             )
             .await?
@@ -99,9 +106,13 @@ impl StockExecution<'_> {
         operation_id: OperationId,
         step: u32,
         invocation: ToolInvocation,
-        metadata: &Value,
+        selection: InvocationSelection<'_>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<(ToolInvocation, crate::model::ToolResultContent)>> {
+        let (metadata, callable_skill) = match selection {
+            InvocationSelection::Declared(metadata) => (metadata, false),
+            InvocationSelection::CallableSkill(metadata) => (metadata, true),
+        };
         self.verify_task_context_binding(operation_id)?;
         let invocation_limits = crate::conversation::Limits {
             file_bytes: self
@@ -117,7 +128,19 @@ impl StockExecution<'_> {
             ..self.stock.limits
         };
         invocation.validate_recorded(metadata, invocation_limits, self.io)?;
-        let admitted = match self.stock.tools.get(&invocation.name, None, self.io)? {
+        let selected = if callable_skill {
+            self.stock
+                .tools
+                .get_callable_skill(&invocation.name, self.io)?
+        } else {
+            self.stock
+                .tools
+                .get(&invocation.name, None, self.io)?
+                .filter(|tool| {
+                    tool.skill_source.is_none() || invocation.name == tool.definition.name
+                })
+        };
+        let admitted = match selected {
             Some(tool) => self
                 .authorize_tool_invocation(tool, &invocation)?
                 .map(|(context, capability)| (tool, context, capability)),
@@ -417,7 +440,7 @@ impl StockExecution<'_> {
     ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
     {
         let capability = with_history_io(self.io, |work| {
-            preparation_format(format_args!("tool:call:{}", tool.definition.name), work)
+            preparation_format(format_args!("tool:call:{}", tool.capability_name()), work)
         })?;
         if !self.stock.tool_scope.grants().contains(&capability) {
             return Ok(Err(ToolCallRejection::Unavailable));
@@ -433,6 +456,21 @@ impl StockExecution<'_> {
         })? {
             return Ok(Err(ToolCallRejection::InvalidInput(violation)));
         }
+        if let Some(source) = &tool.skill_source {
+            let readable = with_history_io(self.io, |work| {
+                crate::core::directory_read_granted_with_work(
+                    self.stock.tool_scope.grants(),
+                    &source.source().root.volume,
+                    &source.source().root.directory,
+                    work,
+                )
+            })?;
+            if !readable {
+                return Ok(Err(ToolCallRejection::Failed(Error::tool_rejected(
+                    "skill source is outside the original read grant",
+                ))));
+            }
+        }
         let context = self.invocation_context(invocation)?;
         stock_authorize_tool(
             tool,
@@ -442,6 +480,30 @@ impl StockExecution<'_> {
             self.io,
         )?;
         Ok(Ok((context, capability)))
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn profile_tool_available(
+        &self,
+        profiles: &crate::profile::Profiles,
+        pin: &crate::profile::AgentProfilePin,
+        model: &str,
+        tool: &crate::tool::Tool,
+    ) -> Result<bool> {
+        let declaration = if tool.skill_source.is_some() {
+            let Some(call) = self.stock.tools.get("call", None, self.io)? else {
+                return Ok(false);
+            };
+            call
+        } else {
+            tool
+        };
+        profiles.tool_available(
+            pin,
+            model,
+            &declaration.definition.name,
+            &declaration.definition.revision,
+        )
     }
 
     pub(super) async fn require_tool_policy(
@@ -454,12 +516,7 @@ impl StockExecution<'_> {
     ) -> Result<Option<PolicyStop>> {
         #[cfg(feature = "filesystem")]
         if let Some((profiles, pin, model)) = &self.stock.profile
-            && !profiles.tool_available(
-                pin,
-                model,
-                &tool.definition.name,
-                &tool.definition.revision,
-            )?
+            && !self.profile_tool_available(profiles, pin, model, tool)?
         {
             return if started {
                 Err(Error::Indeterminate(invocation.operation_id))
@@ -618,6 +675,144 @@ async fn cancel_safe_call<T>(
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod refusal_admission_tests {
     use super::*;
+
+    #[test]
+    fn callable_skill_keeps_its_read_grant_and_fixed_role_capability() -> Result<()> {
+        use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
+        use crate::profile::{ModelProfile, Profiles, ProjectLayer, RoleFile};
+        let volume = VolumeRef::new(
+            crate::resources::ProviderRef::new(
+                "test".into(),
+                "filesystem".into(),
+                "1".into(),
+                &mut None,
+            )?,
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes([11; 16])),
+            &mut None,
+        )?;
+        let mut definition = super::super::call_tool()?.definition;
+        definition.name = "plan-review".into();
+        definition.revision = "pinned-plan-1".into();
+        definition.input_schema = serde_json::json!({"type":"object"});
+        let skill = crate::tool::Tool::filesystem_skill(
+            definition,
+            crate::context::PinnedContextPath {
+                root: crate::context::ContextRoot {
+                    volume: volume.clone(),
+                    directory: "skills".into(),
+                },
+                generation: crate::resources::GenerationRef::new(
+                    volume.provider(),
+                    &[1],
+                    None,
+                    None,
+                )?
+                .0,
+                path: "skills/review/SKILL.md".into(),
+            },
+            crate::tool::SkillRuntime::Shell {
+                script: "skills/review/run.sh".into(),
+            },
+            None,
+        )?;
+        let read = crate::conversation::content_label(
+            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+            crate::executor::json::canonical_json_digest(&volume, u64::MAX, &mut None)?,
+            &mut None,
+        )?;
+        let family = "---\nversion: 1\ntools:\n  - {capability: call, variant: call, revision: skill-call-1}\nreasoning: {mode: disabled}\ncache: automatic\nwatermark_tokens: 700\n---\n";
+        let empty = "---\nversion: 1\n---\n";
+        for role_allows in [false, true] {
+            let role = if role_allows {
+                "worker"
+            } else {
+                "orchestrator"
+            };
+            let context = if role_allows { "fork" } else { "top_level" };
+            let allowed = if role_allows { "call" } else { "" };
+            let profiles = Arc::new(Profiles::new(
+                [ModelProfile::parse(
+                    family,
+                    "---\nversion: 1\nkey: test/model\n---\n",
+                    crate::context::ModelContextCapacity {
+                        context_tokens: 1000,
+                        output_tokens: Some(200),
+                    },
+                    "renderer-1",
+                )?],
+                [RoleFile::parse(&format!(
+                    "---\nversion: 1\nname: {role}\nmodel: test/model\ncontext: {context}\nmay_spawn: []\nallowed_tools: [{allowed}]\n---\n"
+                ))?],
+                ProjectLayer::parse(empty)?,
+                empty,
+                crate::approvals::ApprovalPolicy::default().bind()?,
+            )?);
+            let pin = profiles.role_pin(role)?;
+            for call_granted in [false, true] {
+                for read_granted in [false, true] {
+                    let mut tools = crate::tool::ToolRegistry::default();
+                    let call = super::super::call_tool()?;
+                    let declarations = vec![call.definition.clone()];
+                    tools.register((call, None), &mut None, None)?;
+                    tools.register((skill.clone(), None), &mut None, None)?;
+                    tools.pin_model_definitions(&declarations, None)?;
+                    let mut grants = vec!["tool:call:plan-review".to_owned()];
+                    if call_granted {
+                        grants.push("tool:call:call".into());
+                    }
+                    if read_granted {
+                        grants.push(read.clone());
+                    }
+                    let stock = StockExecutor::new(
+                        Model::new("test".into(), "model".into(), "1".into())?,
+                        Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new())),
+                        crate::context::ContextPipeline::default(),
+                        tools,
+                    )
+                    .with_tool_authority(
+                        crate::runtime::RuntimeScope::new(
+                            crate::Capabilities::new(grants),
+                            Limits::default(),
+                        )?,
+                        Arc::new(crate::test_support::FixedToolPolicy::new(
+                            ToolPolicyDecision::Allow,
+                        )?),
+                    )?
+                    .with_profile(profiles.clone(), pin.clone())?;
+                    let execution = StockExecution::ordinary(&stock);
+                    let admitted = stock
+                        .tools
+                        .get_callable_skill("plan-review", None)?
+                        .unwrap();
+                    let invocation = ToolInvocation {
+                        operation_id: OperationId::new(),
+                        call_id: "skill".into(),
+                        name: "plan-review".into(),
+                        arguments: serde_json::json!({}),
+                    };
+                    assert_eq!(
+                        execution
+                            .admit_tool_invocation(admitted, &invocation)?
+                            .is_ok(),
+                        call_granted && read_granted
+                    );
+                    assert_eq!(
+                        execution.profile_tool_available(
+                            &profiles,
+                            &pin,
+                            "test/model",
+                            admitted
+                        )?,
+                        role_allows
+                    );
+                    assert!(stock.tools.get("plan-review", None, None)?.is_none());
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn native_unavailable_cause_allocates_nothing_before_ledger_admission() -> Result<()> {
