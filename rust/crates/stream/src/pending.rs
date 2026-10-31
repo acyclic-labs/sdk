@@ -1,69 +1,113 @@
 //! Owned custody of one exact keyed commit, independent of its waiters.
 use crate::StreamProviderExt as _;
-use crate::{BoxProviderFuture, CommitOutcome, CommitRequest, StreamError, StreamProvider};
-use futures::{FutureExt as _, channel::oneshot, future::Shared};
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
+use crate::{CommitOutcome, CommitRequest, StreamError, StreamProvider};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
 };
+use tokio::sync::Notify;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::NativePending;
 
-/// One submitted commit and its shared terminal result.
-///
-/// Submission immediately transfers the exact request to the executor. Dropping
-/// or cancelling any waiter never cancels publication. Clones observe the same
-/// result; no clone retries. A transport failure remains an ambiguous outcome:
-/// recover or replay [`Self::request`] with its original identity and bytes.
-#[derive(Clone)]
-#[must_use = "retain the handle or its request identity to recover an ambiguous outcome"]
-pub struct Pending {
-    request: Arc<CommitRequest>,
-    outcome: Shared<BoxProviderFuture<'static, Result<CommitOutcome, StreamError>>>,
+struct Completion<R, H> {
+    request: CommitRequest,
+    result: OnceLock<R>,
+    finished: AtomicBool,
+    changed: Notify,
+    // Request, result and event storage retire before their original funding.
+    _storage: H,
 }
 
+struct Producer<R, H>(Arc<Completion<R, H>>);
+impl<R, H> Producer<R, H> {
+    fn publish(self, result: R) {
+        // There is exactly one producer; no waiter can replace its result.
+        assert!(self.0.result.set(result).is_ok());
+    }
+}
+impl<R, H> Drop for Producer<R, H> {
+    fn drop(&mut self) {
+        self.0.finished.store(true, Ordering::Release);
+        self.0.changed.notify_one();
+    }
+}
+
+/// One exact commit and its retained terminal result.
+///
+/// Clones observe the same producer; no clone retries. Producer loss is an
+/// explicit unavailable outcome, never a wait for a successor or transport EOF.
+#[must_use = "retain the handle or its request identity to recover an ambiguous outcome"]
+pub struct Pending<R = Result<CommitOutcome, StreamError>, H = ()> {
+    completion: Arc<Completion<R, H>>,
+}
+impl<R, H> Clone for Pending<R, H> {
+    fn clone(&self) -> Self {
+        Self {
+            completion: Arc::clone(&self.completion),
+        }
+    }
+}
+impl<R, H> Pending<R, H> {
+    fn prepare(request: CommitRequest, storage: H) -> (Self, Producer<R, H>) {
+        let completion = Arc::new(Completion {
+            request,
+            result: OnceLock::new(),
+            finished: AtomicBool::new(false),
+            changed: Notify::new(),
+            _storage: storage,
+        });
+        (
+            Self {
+                completion: Arc::clone(&completion),
+            },
+            Producer(completion),
+        )
+    }
+    /// Exact submitted bytes, conditions, deadline and recovery identity.
+    #[must_use]
+    pub fn request(&self) -> &CommitRequest {
+        &self.completion.request
+    }
+
+    /// Borrows the original result without copying its receipt or native error.
+    /// Cancelling a wait never cancels the producer or consumes its result.
+    /// Each completion wakes one waiter, which passes the wake onward in O(1).
+    pub async fn result(&self) -> Result<&R, StreamError> {
+        let completion = &self.completion;
+        let notified = completion.changed.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if !completion.finished.load(Ordering::Acquire) {
+            notified.await;
+        }
+        let result = completion.result.get().ok_or(StreamError::Unavailable);
+        completion.changed.notify_one();
+        result
+    }
+}
 impl Pending {
-    /// Submits one canonical commit on the supplied executor. Staged publication
-    /// uses this same handle once its canonical commit is ready.
+    /// Transfers one canonical commit to the supplied executor immediately.
+    /// Losing every waiter cannot withdraw an already submitted publication.
     pub fn submit<P: StreamProvider + ?Sized>(
         provider: Arc<P>,
         request: CommitRequest,
         executor: &dyn crate::runtime::Executor,
     ) -> Self {
-        let request = Arc::new(request);
-        let owned = Arc::clone(&request);
-        let (send, receive) = oneshot::channel();
+        let command = request.clone();
+        let (pending, producer) = Self::prepare(request, ());
         executor.spawn(Box::pin(async move {
-            let outcome = provider.commit((*owned).clone()).await;
-            let _ = send.send(outcome);
+            producer.publish(provider.commit(command).await);
         }));
-        let outcome: BoxProviderFuture<'static, _> =
-            Box::pin(async move { receive.await.unwrap_or(Err(StreamError::Unavailable)) });
-        Self {
-            request,
-            outcome: outcome.shared(),
-        }
+        pending
     }
-
-    /// Exact submitted bytes, conditions, deadline and recovery identity.
-    #[must_use]
-    pub fn request(&self) -> &CommitRequest {
-        &self.request
-    }
-
-    /// Waits without consuming this handle. Cancelling the wait leaves both
-    /// the owned submission and its eventual result available to other waiters.
+    /// Waits for the retained portable receipt. Native callers borrow the same
+    /// completion with [`Self::result`] to preserve its original allocation.
     pub async fn wait(&self) -> Result<CommitOutcome, StreamError> {
-        self.outcome.clone().await
-    }
-}
-
-impl Future for Pending {
-    type Output = Result<CommitOutcome, StreamError>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.get_mut().outcome).poll(cx)
+        self.result().await?.clone()
     }
 }
