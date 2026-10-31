@@ -15,7 +15,7 @@ mod serializer;
 #[doc(hidden)]
 pub use authority::JournalWrite;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use commit::{NativeCommit, native_call_result};
+pub(crate) use commit::{CommitPhase, NativeCommit, native_call_result};
 pub(crate) use commit::{add_condition, commit, commit_request};
 pub(crate) use serializer::digest_key;
 pub(crate) use serializer::execution_path;
