@@ -592,10 +592,11 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         )
         .await?;
     let mut declaration = fixture.declaration();
-    assert!(matches!(
-        declaration.capture(fixture.reader.as_ref()).await,
-        Err(Error::Conflict(message)) if message == "discovered skill names are repeated"
-    ));
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    assert_eq!(captured.skills.len(), 2);
+    assert!(captured.skills.iter().all(|skill| skill.name == "same"));
+    assert_eq!(captured.skills[0].source.path, "skills/a/SKILL.md");
+    assert_eq!(captured.skills[1].source.path, "skills/b/SKILL.md");
     declaration.policy.skill_name = None;
     declaration.limits.entries = 1;
     assert!(matches!(

@@ -127,6 +127,7 @@ impl ContextManifest {
                 ));
             }
             drop(selected);
+            quota.replace(0)?;
             let mut names = crate::core::reserve_copy_vector::<&str>(self.tools.len(), &mut quota)?;
             names.extend(self.tools.iter().map(|tool| tool.name.as_str()));
             names.sort_unstable();
