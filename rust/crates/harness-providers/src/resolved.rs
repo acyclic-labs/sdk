@@ -48,10 +48,12 @@ impl ResolvedModel {
         }
         let binding = profile.bind_model(&self.model, self.capacity)?;
         crate::projection::validate_profile(self.config.adapter, &binding)?;
-        self.model.revision = format!(
-            "profile-v1:{}",
-            blake3::Hash::from(binding.digest()).to_hex()
-        );
+        let mut revision = blake3::Hasher::new();
+        revision.update(b"acyclic.model-profile-binding.v1\0");
+        revision.update(&(self.model.revision.len() as u64).to_be_bytes());
+        revision.update(self.model.revision.as_bytes());
+        revision.update(&binding.digest());
+        self.model.revision = format!("profile-v1:{}", revision.finalize().to_hex());
         self.profile = Some(binding);
         Ok(self)
     }
