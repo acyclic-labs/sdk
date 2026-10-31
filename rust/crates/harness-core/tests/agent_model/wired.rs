@@ -411,6 +411,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
             .await?;
     }
     let forked = ForkAdopted {
+        profile: None,
         agent: id(6),
         parent: Some(parent.clone()),
         forked_at: 0,
