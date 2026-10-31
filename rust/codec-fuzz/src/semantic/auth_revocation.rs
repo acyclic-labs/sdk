@@ -144,6 +144,7 @@ fn admission(candidate: &SignedRevocation) {
     if result.is_err() {
         assert_eq!(observe(&original, &candidate.publication), before);
     } else {
+        targets(&original, &candidate.publication);
         refuse(
             &mut original,
             candidate,
@@ -156,6 +157,7 @@ fn admission(candidate: &SignedRevocation) {
     if let Ok(mut checkpoint) =
         RevocationState::from_checkpoint(candidate, "account", &issuer(), u64::MAX)
     {
+        targets(&checkpoint, &candidate.publication);
         let normalized =
             RevocationState::from_checkpoint(&normalized, "account", &issuer(), u64::MAX).unwrap();
         assert_eq!(
@@ -183,6 +185,15 @@ fn admission(candidate: &SignedRevocation) {
             ));
         }
     }
+}
+
+fn targets(state: &RevocationState, publication: &RevocationPublication) {
+    let actual = observe(state, publication);
+    let (keys, blocks) = entries(publication);
+    assert_eq!(actual.keys.len(), keys.len() + 2);
+    assert_eq!(actual.blocks.len(), blocks.len() + 2);
+    assert!(actual.keys[2..].iter().all(|revoked| *revoked));
+    assert!(actual.blocks[2..].iter().all(|revoked| *revoked));
 }
 
 pub(super) fn check(name: &str, bytes: &[u8]) {
@@ -285,7 +296,29 @@ pub(super) fn seeds() -> Vec<(&'static str, &'static str, Vec<u8>)> {
             }],
             revoke_all_before_epoch: epoch,
         }));
+        for duplicate_key in [false, true] {
+            let RevocationPublication::Delta(mut duplicate) = candidate.publication.clone() else {
+                unreachable!()
+            };
+            if duplicate_key {
+                duplicate.keys.push(duplicate.keys[0].clone());
+            } else {
+                duplicate.blocks.push(duplicate.blocks[0].clone());
+            }
+            refuse(
+                &mut state,
+                &signed(RevocationPublication::Delta(duplicate)),
+                &issuer(),
+                u64::MAX,
+                VerifyError::Malformed,
+            );
+        }
         state.apply(&candidate, &issuer(), u64::MAX).unwrap();
+        targets(&state, &candidate.publication);
+        let actual = observe(&state, &candidate.publication);
+        assert_eq!(actual.minimum_epoch, epoch.unwrap_or(1));
+        assert_eq!(&actual.keys[..2], &[true, false]);
+        assert_eq!(&actual.blocks[..2], &[true, false]);
         outputs.push((
             MESSAGE,
             name,
@@ -329,7 +362,26 @@ pub(super) fn seeds() -> Vec<(&'static str, &'static str, Vec<u8>)> {
             },
             issued_at_unix_seconds: NOW + 1,
         }));
+        let RevocationPublication::Checkpoint(mut dropping) = candidate.publication.clone() else {
+            unreachable!()
+        };
+        dropping.keys.clear();
+        dropping.blocks.clear();
+        dropping.retired_before_unix_seconds = NOW;
+        refuse(
+            &mut state,
+            &signed(RevocationPublication::Checkpoint(dropping)),
+            &issuer(),
+            u64::MAX,
+            VerifyError::Revoked,
+        );
         state.apply(&candidate, &issuer(), u64::MAX).unwrap();
+        targets(&state, &candidate.publication);
+        let actual = observe(&state, &candidate.publication);
+        assert_eq!(actual.minimum_epoch, 2);
+        assert_eq!(actual.not_before, retired);
+        assert_eq!(&actual.keys[..2], &[retain, false]);
+        assert_eq!(&actual.blocks[..2], &[retain, false]);
         outputs.push((
             MESSAGE,
             name,

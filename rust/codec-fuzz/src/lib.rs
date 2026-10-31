@@ -376,12 +376,22 @@ pub fn actor_codecs(bytes: &[u8]) {
     if let Ok(value) = wire::decode_manifest(bytes) {
         let canonical = wire::encode_manifest(&value);
         assert_eq!(
+            canonical.as_slice(),
+            bytes,
+            "admitted manifest retains every field"
+        );
+        assert_eq!(
             wire::encode_manifest(&wire::decode_manifest(&canonical).unwrap()),
             canonical
         );
     }
     if let Ok((value, checkpoint)) = wire::decode_delivery(bytes) {
         let canonical = wire::encode_delivery(&value, checkpoint.as_ref());
+        assert_eq!(
+            canonical.as_slice(),
+            bytes,
+            "admitted delivery retains every field"
+        );
         let (value, checkpoint) = wire::decode_delivery(&canonical).unwrap();
         assert_eq!(
             wire::encode_delivery(&value, checkpoint.as_ref()),
@@ -390,6 +400,11 @@ pub fn actor_codecs(bytes: &[u8]) {
     }
     if let Ok(value) = wire::decode_transition(bytes) {
         let canonical = wire::encode_transition(&value).unwrap();
+        assert_eq!(
+            canonical.as_slice(),
+            bytes,
+            "admitted transition retains every effect guard"
+        );
         assert_eq!(
             wire::encode_transition(&wire::decode_transition(&canonical).unwrap()).unwrap(),
             canonical
