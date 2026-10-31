@@ -122,6 +122,7 @@ fn decode_metadata_payload(
 }
 
 #[cfg(any(
+    test,
     feature = "test-support",
     all(any(test, feature = "local"), feature = "native-mount")
 ))]
