@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(feature = "filesystem")]
 use acyclic_stream::StreamProviderExt as _;
 use protocol::{Completion, Demand, Refusal, State};
 
@@ -107,6 +108,7 @@ fn source_range_and_renderer_model_identity_fence_shared_summaries() {
 
 /// Full materialized model: a summary marks source items individually. It
 /// intentionally pays O(history) to serve as an independent coverage oracle.
+#[cfg(feature = "filesystem")]
 #[derive(Clone, Default)]
 struct Reference {
     items: Vec<bool>,
@@ -114,6 +116,7 @@ struct Reference {
     job: Option<(protocol::SummaryId, usize, Option<Completion>)>,
 }
 
+#[cfg(feature = "filesystem")]
 impl Reference {
     fn verify(&self, state: State) {
         let cursor = self.items.iter().take_while(|covered| **covered).count();
@@ -180,6 +183,7 @@ impl Reference {
 }
 
 proptest::proptest! {
+    #[cfg(feature = "filesystem")]
     #[test]
     fn epoch_reducer_matches_materialized_history_at_every_commit_cut(
         schedule in proptest::collection::vec((0_u8..6, 0_u8..8, proptest::bool::ANY), 1..128)
@@ -190,12 +194,14 @@ proptest::proptest! {
     }
 }
 
+#[cfg(feature = "filesystem")]
 async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
     use acyclic_stream::{
         AppendRecord, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream,
     };
 
     let provider = MemoryStream::default();
+    let io = snapshot_io();
     let source = StreamPath::new("account/agent/conversation").unwrap();
     let path = StreamPath::new("account/agent/epochs").unwrap();
     let genesis = Snapshot::genesis(Epoch {
@@ -211,8 +217,8 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
     })
     .unwrap();
     assert!(matches!(
-        provider
-            .commit(snapshot_request(&genesis, path.clone()))
+        snapshot_request(&genesis, path.clone(), &io)
+            .commit(&provider)
             .await
             .unwrap(),
         CommitOutcome::Committed(_)
@@ -304,7 +310,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
             if !actual {
                 assert_eq!(candidate, durable);
             } else {
-                let request = snapshot_request(&candidate, path.clone());
+                let request = snapshot_request(&candidate, path.clone(), &io);
                 if crash_before_commit {
                     interrupted[match operation {
                         1 => 0,
@@ -316,9 +322,9 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
                         // Both proposals observed the same committed epoch.
                         // Distinct request identities must linearize as one
                         // success and one conflict, including joined effects.
-                        let competing = snapshot_request(&candidate, path.clone());
+                        let competing = snapshot_request(&candidate, path.clone(), &io);
                         let (left, right) =
-                            futures::join!(provider.commit(request), provider.commit(competing));
+                            futures::join!(request.commit(&provider), competing.commit(&provider));
                         assert!(matches!(
                             (left.unwrap(), right.unwrap()),
                             (CommitOutcome::Committed(_), CommitOutcome::Conflict(_))
@@ -327,7 +333,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
                         raced = true;
                     } else {
                         assert!(matches!(
-                            provider.commit(request).await.unwrap(),
+                            request.commit(&provider).await.unwrap(),
                             CommitOutcome::Committed(_)
                         ));
                     }
@@ -366,6 +372,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
     );
 }
 
+#[cfg(feature = "filesystem")]
 async fn last_snapshot(
     provider: &acyclic_stream::MemoryStream,
     path: &StreamPath,
@@ -389,7 +396,83 @@ async fn last_snapshot(
     record
 }
 
-fn snapshot_request(snapshot: &Snapshot, path: StreamPath) -> acyclic_stream::CommitRequest {
+#[cfg(feature = "filesystem")]
+fn snapshot_io() -> crate::filesystem::PreparationIo {
+    crate::filesystem::PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(10_000_000, 10_000_000),
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "filesystem")]
+struct SnapshotRequest<'io> {
+    request: acyclic_stream::CommitRequest,
+    encoded: EncodedSnapshot<'io>,
+}
+
+#[cfg(feature = "filesystem")]
+impl SnapshotRequest<'_> {
+    async fn commit(
+        self,
+        provider: &acyclic_stream::MemoryStream,
+    ) -> std::result::Result<acyclic_stream::CommitOutcome, acyclic_stream::StreamError> {
+        let result = provider.commit(self.request).await;
+        drop(self.encoded);
+        result
+    }
+}
+
+#[cfg(feature = "filesystem")]
+#[test]
+fn snapshot_encoding_keeps_its_original_reservation_and_refuses_without_credit() -> crate::Result<()>
+{
+    let snapshot = Snapshot::genesis(Epoch {
+        header: [1; 32],
+        profile: [2; 32],
+        summary: None,
+        key: SummaryKey {
+            source: StreamPath::new("account/agent/conversation").unwrap(),
+            through: 0,
+            renderer: 1,
+            model: [3; 32],
+        },
+    })
+    .unwrap();
+    let path = StreamPath::new("account/agent/epochs").unwrap();
+    let io = snapshot_io();
+    let baseline = io.remaining()?.peak_allocation_bytes;
+    let encoded = snapshot.encode(path.clone(), &io)?;
+    assert!(io.remaining()?.peak_allocation_bytes < baseline);
+    drop(encoded);
+    assert_eq!(io.remaining()?.peak_allocation_bytes, baseline);
+
+    let mut budget = acyclic_fs::performance::work_budget(10_000_000, 10_000_000);
+    budget.peak_allocation_bytes = 0;
+    let denied = crate::filesystem::PreparationIo::from_budget(
+        budget,
+        &acyclic_fs::CancellationToken::new(),
+    )?;
+    assert!(snapshot.encode(path.clone(), &denied).is_err());
+    assert_eq!(denied.owned_bytes()?, 0);
+
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let cancelled = crate::filesystem::PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(10_000_000, 10_000_000),
+        &cancellation,
+    )?;
+    cancellation.cancel();
+    assert!(snapshot.encode(path, &cancelled).is_err());
+    assert_eq!(cancelled.owned_bytes()?, 0);
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+fn snapshot_request<'io>(
+    snapshot: &Snapshot,
+    path: StreamPath,
+    io: &'io crate::filesystem::PreparationIo,
+) -> SnapshotRequest<'io> {
     use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, IdempotencyKey};
 
     // A preexisting mutation witnesses that epoch conditions guard the whole
@@ -403,8 +486,14 @@ fn snapshot_request(snapshot: &Snapshot, path: StreamPath) -> acyclic_stream::Co
         }],
         idempotency_key: IdempotencyKey::unique(),
     };
-    snapshot.append_to(path, &mut request).unwrap();
-    request
+    let encoded = snapshot.encode(path.clone(), io).unwrap();
+    let (condition, record) = encoded.parts();
+    request.conditions.push(condition.clone());
+    request.mutations.push(CommitMutation::Append {
+        path,
+        records: vec![AppendRecord::from(record.clone())],
+    });
+    SnapshotRequest { request, encoded }
 }
 
 #[test]
@@ -489,11 +578,13 @@ fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
     assert_eq!(state.prepare([6; 32], 11, 12), Err(Refusal::Busy));
 }
 
+#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across_reopen() {
     use acyclic_stream::{CommitOutcome, MemoryStream};
 
     let provider = MemoryStream::default();
+    let io = snapshot_io();
     let source = StreamPath::new("account/agent/conversation").unwrap();
     let path = StreamPath::new("account/agent/epochs").unwrap();
     let marker = StreamPath::new("account/agent/transaction-marker").unwrap();
@@ -509,15 +600,15 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         },
     };
     let initial = Snapshot::genesis(genesis).unwrap();
-    let request = snapshot_request(&initial, path.clone());
+    let request = snapshot_request(&initial, path.clone(), &io);
     assert!(matches!(
-        provider.commit(request).await.unwrap(),
+        request.commit(&provider).await.unwrap(),
         CommitOutcome::Committed(_)
     ));
     // A caller cannot attach an old genesis to a newer observed head.
     assert!(matches!(
-        provider
-            .commit(snapshot_request(&initial, path.clone()))
+        snapshot_request(&initial, path.clone(), &io)
+            .commit(&provider)
             .await
             .unwrap(),
         CommitOutcome::Conflict(_)
@@ -529,7 +620,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     let mut competing = first.clone();
     let summary = first.prepare(10, 12).unwrap();
     competing.prepare(11, 12).unwrap();
-    let request = snapshot_request(&first, path.clone());
+    let request = snapshot_request(&first, path.clone(), &io);
     // A crash before commit leaves the previous complete snapshot intact.
     assert_eq!(
         Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12)
@@ -538,12 +629,12 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         State::default()
     );
     assert!(matches!(
-        provider.commit(request).await.unwrap(),
+        request.commit(&provider).await.unwrap(),
         CommitOutcome::Committed(_)
     ));
     assert!(matches!(
-        provider
-            .commit(snapshot_request(&competing, path.clone()))
+        snapshot_request(&competing, path.clone(), &io)
+            .commit(&provider)
             .await
             .unwrap(),
         CommitOutcome::Conflict(_)
@@ -587,9 +678,9 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         Err(SnapshotError::Transition(Refusal::Contradiction))
     ));
     assert_eq!(reopened, ready);
-    let request = snapshot_request(&reopened, path.clone());
+    let request = snapshot_request(&reopened, path.clone(), &io);
     assert!(matches!(
-        provider.commit(request).await.unwrap(),
+        request.commit(&provider).await.unwrap(),
         CommitOutcome::Committed(_)
     ));
     let mut reopened =
@@ -615,9 +706,9 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     ));
     assert_eq!(reopened, ready);
     reopened.swap(0, next, 12).unwrap();
-    let request = snapshot_request(&reopened, path.clone());
+    let request = snapshot_request(&reopened, path.clone(), &io);
     assert!(matches!(
-        provider.commit(request).await.unwrap(),
+        request.commit(&provider).await.unwrap(),
         CommitOutcome::Committed(_)
     ));
     let final_record = last_snapshot(&provider, &path).await;
@@ -628,8 +719,8 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     assert!(check_partition(12, &[0..10], &[10, 11]));
     // The unchanged stale producer cannot replace the committed epoch.
     assert!(matches!(
-        provider
-            .commit(snapshot_request(&competing, path.clone()))
+        snapshot_request(&competing, path.clone(), &io)
+            .commit(&provider)
             .await
             .unwrap(),
         CommitOutcome::Conflict(_)
@@ -637,11 +728,12 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
 
     // Removing the exact-head condition is the real publication negative: the
     // same stale producer now overwrites coverage in the authoritative stream.
-    let mut bypass = snapshot_request(&competing, path.clone());
+    let mut bypass = snapshot_request(&competing, path.clone(), &io);
     assert_eq!(provider.tail(marker.clone()).await.unwrap(), 4);
-    bypass.conditions = vec![acyclic_stream::CommitCondition::Present { path: path.clone() }];
+    bypass.request.conditions =
+        vec![acyclic_stream::CommitCondition::Present { path: path.clone() }];
     assert!(matches!(
-        provider.commit(bypass).await.unwrap(),
+        bypass.commit(&provider).await.unwrap(),
         CommitOutcome::Committed(_)
     ));
     assert_eq!(provider.tail(marker).await.unwrap(), 5);

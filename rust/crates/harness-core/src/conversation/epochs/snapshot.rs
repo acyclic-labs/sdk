@@ -5,9 +5,9 @@ use super::{
     Epoch, FileRef, InvalidEpoch,
     protocol::{Completion, Pending, Refusal, State},
 };
-use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitId, CommitMutation, CommitRequest, Record, StreamPath,
-};
+#[cfg(feature = "filesystem")]
+use acyclic_stream::{CommitCondition, OwnedBytes};
+use acyclic_stream::{CommitId, Record, StreamPath};
 use serde::{Deserialize, Serialize};
 
 /// A checked epoch and the preparation custody retained with it.
@@ -17,6 +17,26 @@ pub struct Snapshot {
     state: State,
     outcome: Option<SummaryOutcome>,
     anchor: Option<(u64, CommitId)>,
+}
+
+/// One encoded contribution to the original conditional publication.
+/// Keep this owner alive until that publication has retired its borrowed bytes.
+#[cfg(feature = "filesystem")]
+pub struct EncodedSnapshot<'io> {
+    condition: CommitCondition,
+    record: OwnedBytes,
+    // Physical values retire before their original preparation reservation.
+    _hold: Option<crate::conversation::ContentHold<'io>>,
+}
+
+#[cfg(feature = "filesystem")]
+impl EncodedSnapshot<'_> {
+    /// Original optimistic fence and already-encoded record. The shared
+    /// publication builder admits its own request storage, without reencoding.
+    #[must_use]
+    pub const fn parts(&self) -> (&CommitCondition, &OwnedBytes) {
+        (&self.condition, &self.record)
+    }
 }
 
 /// The immutable result associated with the prepared summary identity.
@@ -206,23 +226,30 @@ impl Snapshot {
         Ok(())
     }
 
-    /// Adds the epoch, pending identity and result to the caller's existing
-    /// conditional commit. Its actor checkpoint, request identity and deadline
-    /// stay on that same request. Encoding failure leaves the request unchanged.
-    /// There is no separate request, flush, head lookup or publication here.
-    pub fn append_to(
+    /// Encodes the epoch, pending identity and result on the original operation's
+    /// ledger. Native bytes retain their own custody; standalone bytes retain
+    /// the original reservation here. The path is moved, never reconstructed.
+    /// No request, submission, head lookup or durability barrier is created.
+    #[cfg(feature = "filesystem")]
+    pub fn encode<'io>(
         &self,
         path: StreamPath,
-        request: &mut CommitRequest,
-    ) -> Result<(), SnapshotError> {
+        io: &'io crate::filesystem::PreparationIo,
+    ) -> crate::Result<EncodedSnapshot<'io>> {
         let condition = if let Some((sequence, commit_id)) = self.anchor {
             CommitCondition::Head {
-                path: path.clone(),
-                expected: sequence.checked_add(1).ok_or(Refusal::Exhausted)?,
+                path,
+                expected: sequence.checked_add(1).ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        Some(io),
+                        crate::wire::ErrorCode::Storage,
+                        "epoch snapshot cursor overflows",
+                    )
+                })?,
                 commit_id,
             }
         } else {
-            CommitCondition::Absent { path: path.clone() }
+            CommitCondition::Absent { path }
         };
         let wire = RecordWire::V1(SnapshotWire {
             epoch: &self.epoch,
@@ -234,12 +261,12 @@ impl Snapshot {
                 completion: self.outcome.as_ref(),
             }),
         });
-        let record = AppendRecord::from(serde_json::to_vec(&wire)?);
-        request.conditions.push(condition);
-        request.mutations.push(CommitMutation::Append {
-            path,
-            records: vec![record],
-        });
-        Ok(())
+        let record = io.encode(&wire, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+        let hold = io.guard_bytes(&record)?;
+        Ok(EncodedSnapshot {
+            condition,
+            record,
+            _hold: hold,
+        })
     }
 }
