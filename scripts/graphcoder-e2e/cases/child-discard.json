@@ -31,9 +31,7 @@
             "name": "write",
             "arguments": {
               "path": "child.txt",
-              "text": "child\n",
-              "media_type": "text/plain",
-              "display_name": "child.txt"
+              "content": "child\n"
             }
           }
         ]

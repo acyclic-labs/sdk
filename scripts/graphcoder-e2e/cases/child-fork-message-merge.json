@@ -31,9 +31,7 @@
             "name": "write",
             "arguments": {
               "path": "child.txt",
-              "text": "CHILD_E2E_CONTENT\n",
-              "media_type": "text/plain",
-              "display_name": "child.txt"
+              "content": "CHILD_E2E_CONTENT\n"
             }
           }
         ]

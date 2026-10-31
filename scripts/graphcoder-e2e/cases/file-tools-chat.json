@@ -14,9 +14,7 @@
             "name": "write",
             "arguments": {
               "path": "result.txt",
-              "text": "before edit\n",
-              "media_type": "text/plain",
-              "display_name": "result.txt"
+              "content": "before edit\n"
             }
           }
         ]

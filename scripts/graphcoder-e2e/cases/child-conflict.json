@@ -31,9 +31,7 @@
             "name": "write",
             "arguments": {
               "path": "seed.txt",
-              "text": "child\n",
-              "media_type": "text/plain",
-              "display_name": "seed.txt"
+              "content": "child\n"
             }
           }
         ]
@@ -57,9 +55,7 @@
             "name": "write",
             "arguments": {
               "path": "seed.txt",
-              "text": "parent\n",
-              "media_type": "text/plain",
-              "display_name": "seed.txt"
+              "content": "parent\n"
             }
           }
         ]
@@ -149,9 +145,7 @@
             "name": "write",
             "arguments": {
               "path": "seed.txt",
-              "text": "resolved\n",
-              "media_type": "text/plain",
-              "display_name": "seed.txt"
+              "content": "resolved\n"
             }
           }
         ]

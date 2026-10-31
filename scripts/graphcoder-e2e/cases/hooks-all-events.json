@@ -14,9 +14,7 @@
             "name": "write",
             "arguments": {
               "path": "hook.txt",
-              "text": "hooked\n",
-              "media_type": "text/plain",
-              "display_name": "hook.txt"
+              "content": "hooked\n"
             }
           }
         ]

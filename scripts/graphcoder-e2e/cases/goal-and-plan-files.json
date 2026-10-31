@@ -14,9 +14,7 @@
             "name": "write",
             "arguments": {
               "path": ".volumes/scratch/GOAL.md",
-              "text": "---\nstatus: active\n---\nGOAL_E2E\n",
-              "media_type": "text/plain",
-              "display_name": "GOAL.md"
+              "content": "---\nstatus: active\n---\nGOAL_E2E\n"
             }
           }
         ]
@@ -29,9 +27,7 @@
             "name": "write",
             "arguments": {
               "path": ".volumes/scratch/plans/release.md",
-              "text": "- [ ] PLAN_E2E\n",
-              "media_type": "text/plain",
-              "display_name": "release.md"
+              "content": "- [ ] PLAN_E2E\n"
             }
           }
         ]
@@ -50,9 +46,7 @@
             "name": "write",
             "arguments": {
               "path": ".volumes/scratch/GOAL.md",
-              "text": "---\nstatus: done\n---\nGOAL_E2E\n",
-              "media_type": "text/plain",
-              "display_name": "GOAL.md"
+              "content": "---\nstatus: done\n---\nGOAL_E2E\n"
             }
           }
         ]
