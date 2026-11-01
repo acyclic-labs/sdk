@@ -74,6 +74,8 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
     use std::num::NonZeroU32;
     use virtio_queue::desc::split::Descriptor;
 
+    crate::initialize_native_mount_services()?;
+
     #[derive(serde::Deserialize)]
     struct Captured {
         request: Vec<u8>,
