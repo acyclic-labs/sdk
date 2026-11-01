@@ -3,20 +3,18 @@ use crate::workspace::ForkOptions;
 use crate::{Generation, IdempotencyKey, TransactionCommit, WorkspaceDelete};
 use std::error::Error;
 
-async fn retained_source_fork_work<
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
->(
-    fs: &Fs<A, O>,
-    source: &Generation<A, O>,
+async fn retained_source_fork_work(
+    fs: &crate::LocalFs,
+    source: &Generation<crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
     name: &str,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancel: &CancellationToken,
 ) -> Result<crate::WorkCounters, Box<dyn Error>> {
-    // Each probe starts with the same empty disposable proof cache. The source
+    // Each probe starts with empty disposable proof, byte and decoded caches. The source
     // must carry its own original witness rather than inherit an earlier probe's slot.
     let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
     drop(discarded);
+    fs.clear_object_cache()?;
     let name = crate::WorkspaceName::new(name, &WorkBudget::UNBOUNDED, cancel)?.value;
     let destination = fs.workspace_id_for_name(&name, accounting, cancel)?;
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
