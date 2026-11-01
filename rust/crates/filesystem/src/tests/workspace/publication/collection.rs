@@ -12,10 +12,40 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
                 let cancel = CancellationToken::new();
                 let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
                 let workspace = unbounded!(fs, create_workspace("observed-hold"))?;
-                workspace
-                    .write_text("/content", &"held".repeat(1_250))
-                    .await?;
+                let content = "held".repeat(1_250);
+                workspace.write_text("/content", &content).await?;
                 let id = unbounded!(workspace, head())?.id();
+                let config = workspace.volume.config();
+                let record = {
+                    let mut checkout = unbounded!(
+                        workspace,
+                        checkout(
+                            GenerationSelector::Exact(id),
+                            CheckoutMode::read_only_pinned()
+                        )
+                    )?;
+                    let path = crate::kernel::NamespacePath::from_text_in_profile(
+                        "/content",
+                        config.profile,
+                        config.limits,
+                    )?;
+                    unbounded!(checkout, lookup_no_follow(&path))?
+                        .record
+                        .ok_or("missing file")?
+                };
+                let crate::kernel::FilePayload::Regular { extents, .. } = record.payload else {
+                    return Err("the control needs separately stored file bytes".into());
+                };
+                let account = fs.local_account();
+                let mut pending = vec![acyclic_objects::Digest::from_bytes(
+                    extents.digest.into_bytes(),
+                )];
+                let mut content_objects = std::collections::BTreeSet::new();
+                while let Some(digest) = pending.pop() {
+                    if content_objects.insert(digest) {
+                        pending.extend(account.head(digest).await?.references);
+                    }
+                }
                 let original = native
                     .then(|| crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel))
                     .transpose()
@@ -38,7 +68,6 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
                     workspace.delete(IdempotencyKey::new()).await?,
                     WorkspaceDelete::Deleted
                 );
-                let account = fs.local_account();
                 let digest = acyclic_objects::Digest::from_bytes(id.digest().into_bytes());
                 // Both epoch transitions must see the same surviving root.
                 for _ in 0..2 {
@@ -55,6 +84,23 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
                     );
                 } else {
                     assert!(!found?.body().is_empty());
+                    // Bypass disposable caches: read the actual stored extent/blob closure.
+                    let read = crate::kernel::read_file_range_async(
+                        fs.objects().inner().inner(),
+                        crate::kernel::FileRangeRequest {
+                            record,
+                            range: crate::ByteRange {
+                                offset: 0,
+                                length: content.len() as u64,
+                            },
+                            maximum_spans: config.limits.maximum_directory_page_entries,
+                            limits: crate::kernel::DecodeLimits::for_volume(config),
+                            budget: WorkBudget::UNBOUNDED,
+                        },
+                        &cancel,
+                    )
+                    .await?;
+                    assert_eq!(read.bytes.as_ref(), content.as_bytes());
                 }
                 drop(last);
                 fs.collect_local_garbage(None, &cancel).await?;
@@ -63,6 +109,13 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
                     acyclic_objects::wire::ErrorCode::NotFound,
                     "the final alias must release the original root"
                 );
+                for content_digest in content_objects {
+                    assert_eq!(
+                        account.head(content_digest).await.unwrap_err().code,
+                        acyclic_objects::wire::ErrorCode::NotFound,
+                        "the final alias must release file content {content_digest:?}"
+                    );
+                }
                 drop((account, workspace));
                 close_local(fs).await?;
                 if let Some(work) = &original {
