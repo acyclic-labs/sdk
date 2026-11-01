@@ -373,6 +373,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
+ "acyclic-protobuf-json",
  "acyclic-stream",
  "async-trait",
  "blake3",
@@ -459,6 +460,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
 ]
 
 [[package]]
