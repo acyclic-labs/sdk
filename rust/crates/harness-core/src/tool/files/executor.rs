@@ -250,8 +250,10 @@ impl FileTool {
             .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
         let _notebook_hold;
-        let (edited, notebook_hold) = if let Some(operation) = &input.0.notebook {
-            super::notebook::edit(source, operation, work)?
+        let _notebook_facts;
+        let (edited, notebook_hold, notebook_facts) = if let Some(operation) = &input.0.notebook {
+            let (edited, hold, facts) = super::notebook::edit(source, operation, work)?;
+            (edited, hold, Some(facts))
         } else {
             (
                 super::edit::replace(
@@ -263,9 +265,11 @@ impl FileTool {
                     &mut allocation,
                 )?,
                 None,
+                None,
             )
         };
         _notebook_hold = notebook_hold;
+        _notebook_facts = notebook_facts;
         if edited.len() as u64 > maximum {
             return Err(invalid("edited file exceeds admitted file credit"));
         }
