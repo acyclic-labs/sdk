@@ -28,7 +28,8 @@
 //! valid only in that generation. Reads check the generation before and after
 //! accessing account state. Fenced reads refuse as [`VerifyError::Unavailable`].
 //! No task per account; one hash lookup per trust read. Publication wakes still
-//! reach all subscribers. Record verification holds only its own account lock;
+//! reach only the selected account and explicitly unscoped subscribers; global
+//! changes reach every dependency. Record verification holds only its account lock;
 //! keyring publication also checks the environment revision it authenticated.
 //! Environment signatures hold no publication lock and must extend the same
 //! retained environment revision when they publish.
@@ -305,11 +306,26 @@ pub enum FollowerState {
 /// Follows signed trust records for any number of accounts of one environment.
 pub struct Follower {
     environment: RwLock<EnvironmentFrontier>,
-    accounts: RwLock<HashMap<String, Arc<RwLock<Account>>>>,
+    accounts: RwLock<HashMap<String, Arc<AccountEntry>>>,
     floor: AtomicU64,
     // The original state watch serializes generation updates and their wakes.
     generation: AtomicU64,
     state: tokio::sync::watch::Sender<FollowerState>,
+    global: tokio::sync::watch::Sender<()>,
+}
+
+struct AccountEntry {
+    state: RwLock<Account>,
+    changes: tokio::sync::watch::Sender<()>,
+}
+
+impl Default for AccountEntry {
+    fn default() -> Self {
+        Self {
+            state: RwLock::default(),
+            changes: tokio::sync::watch::Sender::new(()),
+        }
+    }
 }
 
 enum Target<'a> {
@@ -329,6 +345,7 @@ impl Follower {
             floor: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             state: tokio::sync::watch::Sender::new(FollowerState::Connecting),
+            global: tokio::sync::watch::Sender::new(()),
         }
     }
 
@@ -388,10 +405,11 @@ impl Follower {
 
     /// Release a successfully drained account queue, then wake its consumers.
     pub fn release(&self, account: &str) {
-        if let Ok(Some(account)) = self.find_account(account)
-            && let Ok(mut account) = account.write()
-        {
-            account.poisoned = false;
+        if let Ok(Some(account)) = self.find_account(account) {
+            if let Ok(mut state) = account.state.write() {
+                state.poisoned = false;
+            }
+            account.changes.send_replace(());
         }
         self.notify(None);
     }
@@ -417,8 +435,21 @@ impl Follower {
         if !matches {
             return Err(VerifyError::Trust);
         }
-        let result = match &record {
-            TrustRecordKind::Environment(signed) => {
+        let account_id = match &record {
+            TrustRecordKind::Environment(_) => None,
+            TrustRecordKind::Keyring(signed) => Some(signed.snapshot.account_id.as_str()),
+            TrustRecordKind::Revocation(signed) => Some(publication_account(signed)),
+        };
+        let account = account_id
+            .map(|id| self.account_entry(id).map(|entry| (id, entry)))
+            .transpose()
+            .inspect_err(|_| {
+                // Storage loss cannot leave existing account waits idle.
+                self.notify(None);
+                self.global.send_replace(());
+            })?;
+        let result = match (&record, &account) {
+            (TrustRecordKind::Environment(signed), _) => {
                 let result = self.environment_record(signed, now);
                 if result.is_err() {
                     self.fence(FenceCause::Refused);
@@ -426,23 +457,24 @@ impl Follower {
                 }
                 result
             }
-            TrustRecordKind::Keyring(signed) => {
-                self.account_record(&signed.snapshot.account_id, &record, now, release)
-            }
-            TrustRecordKind::Revocation(signed) => {
-                self.account_record(publication_account(signed), &record, now, release)
-            }
+            (_, Some((id, entry))) => self.account_record(entry, id, &record, now, release),
+            _ => return Err(VerifyError::Trust),
         };
-        match result {
-            Ok((Applied::Duplicate, _)) => {}
-            Ok((Applied::Changed, issued_at)) => {
-                self.floor.fetch_max(issued_at, Ordering::SeqCst);
-                // Wake only after the write lock is released: woken
-                // consumers read the swapped trust.
-                self.notify(None);
+        let time_advanced = if let Ok((Applied::Changed, issued_at)) = result {
+            self.floor.fetch_max(issued_at, Ordering::SeqCst) < issued_at
+        } else {
+            false
+        };
+        if !matches!(result, Ok((Applied::Duplicate, _))) {
+            // The new trust, refusal and protected time precede every wake.
+            self.notify(None);
+            if let Some((_, entry)) = &account {
+                entry.changes.send_replace(());
             }
-            // The account is fenced; its consumers recheck and refuse.
-            Err(_) => self.notify(None),
+            // The protected time floor is a dependency of every account.
+            if account.is_none() || time_advanced {
+                self.global.send_replace(());
+            }
         }
         result.map(|(applied, _)| applied)
     }
@@ -485,13 +517,13 @@ impl Follower {
 
     fn account_record(
         &self,
+        entry: &AccountEntry,
         id: &str,
         record: &TrustRecordKind,
         now: u64,
         release: bool,
     ) -> Result<(Applied, u64), VerifyError> {
-        let account = self.account_entry(id)?;
-        let mut account = account.write().map_err(|_| VerifyError::Unavailable)?;
+        let mut account = entry.state.write().map_err(|_| VerifyError::Unavailable)?;
         let result = match record {
             TrustRecordKind::Keyring(signed) => {
                 let (keys, revision) = {
@@ -539,7 +571,7 @@ impl Follower {
         Ok(prepared.result)
     }
 
-    fn find_account(&self, id: &str) -> Result<Option<Arc<RwLock<Account>>>, VerifyError> {
+    fn find_account(&self, id: &str) -> Result<Option<Arc<AccountEntry>>, VerifyError> {
         Ok(self
             .accounts
             .read()
@@ -548,7 +580,7 @@ impl Follower {
             .cloned())
     }
 
-    fn account_entry(&self, id: &str) -> Result<Arc<RwLock<Account>>, VerifyError> {
+    fn account_entry(&self, id: &str) -> Result<Arc<AccountEntry>, VerifyError> {
         if let Some(account) = self.find_account(id)? {
             return Ok(account);
         }
@@ -593,6 +625,7 @@ impl Follower {
                 };
             }
         });
+        self.global.send_replace(());
     }
 
     /// The driver applied the environment Stream through the tail it observed
@@ -600,6 +633,7 @@ impl Follower {
     /// refused, so nothing is skipped. A closed follower stays closed.
     pub fn resume(&self) {
         self.notify(Some(FollowerState::Serving));
+        self.global.send_replace(());
     }
 
     /// The driver applied `account`'s Stream through the tail it observed
@@ -616,11 +650,12 @@ impl Follower {
     }
 
     fn acknowledge(&self, account: &str, generation: u64) {
-        if let Ok(account) = self.account_entry(account)
-            && let Ok(mut account) = account.write()
-        {
-            // A delayed older call must not undo a newer catch-up acknowledgement.
-            account.serving_generation = account.serving_generation.max(generation);
+        if let Ok(account) = self.account_entry(account) {
+            if let Ok(mut state) = account.state.write() {
+                // A delayed older call must not undo a newer acknowledgement.
+                state.serving_generation = state.serving_generation.max(generation);
+            }
+            account.changes.send_replace(());
         }
         self.notify(None);
     }
@@ -632,7 +667,7 @@ impl Follower {
         let Some(account) = self.find_account(account)? else {
             return Ok(false);
         };
-        let account = account.read().map_err(|_| VerifyError::Unavailable)?;
+        let account = account.state.read().map_err(|_| VerifyError::Unavailable)?;
         Ok(account.keyring.is_some() && account.revocations.is_some())
     }
 
@@ -640,10 +675,11 @@ impl Follower {
     /// an undecodable record included: fence that account until a record
     /// for it applies.
     pub fn refuse(&self, account: &str) {
-        if let Ok(account) = self.account_entry(account)
-            && let Ok(mut account) = account.write()
-        {
-            account.poisoned = true;
+        if let Ok(account) = self.account_entry(account) {
+            if let Ok(mut state) = account.state.write() {
+                state.poisoned = true;
+            }
+            account.changes.send_replace(());
         }
         self.notify(None);
     }
@@ -657,8 +693,8 @@ impl Follower {
             .max(observed_unix_seconds)
     }
 
-    // One notifier: a transition or publication bumps the watch, waking
-    // every receiver whether or not the state value changed. Closed is final.
+    // Preserve the public unscoped publication watch. Account dependencies
+    // register only their own event and the global event. Closed is final.
     fn notify(&self, next: Option<FollowerState>) {
         self.state.send_modify(|state| {
             if let Some(next) = next
@@ -726,7 +762,7 @@ impl Follower {
         let generation = self.serving_generation()?;
         let result = match self.find_account(id)? {
             Some(account) => {
-                let account = account.read().map_err(|_| VerifyError::Unavailable)?;
+                let account = account.state.read().map_err(|_| VerifyError::Unavailable)?;
                 match &*account {
                     Account {
                         keyring: Some(keyring),
@@ -956,6 +992,39 @@ impl ChangeSource for Follower {
         } else {
             Err(SourceClosed)
         }
+    }
+
+    fn changed_for(&self, account: &str) -> Changed {
+        // Subscribe before the caller's validity check. Receivers retain no
+        // sender, so neither an idle wait nor an account operation can keep the
+        // global producer alive. Unknown names never create retained accounts.
+        let mut global = self.global.subscribe();
+        let state = self.state.subscribe();
+        let account = self
+            .find_account(account)
+            .ok()
+            .flatten()
+            .map(|entry| entry.changes.subscribe());
+        Box::pin(async move {
+            let mut account = account.ok_or(SourceClosed)?;
+            if matches!(*state.borrow(), FollowerState::Closed(_)) {
+                return Err(SourceClosed);
+            }
+            let global_event = global.changed();
+            let account_event = account.changed();
+            futures::pin_mut!(global_event, account_event);
+            match futures::future::select(global_event, account_event).await {
+                futures::future::Either::Left((result, _))
+                | futures::future::Either::Right((result, _)) => {
+                    result.map_err(|_| SourceClosed)?;
+                }
+            }
+            if matches!(*state.borrow(), FollowerState::Closed(_)) {
+                Err(SourceClosed)
+            } else {
+                Ok(())
+            }
+        })
     }
 
     fn changed(&self) -> Changed {
