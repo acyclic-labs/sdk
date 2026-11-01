@@ -4,6 +4,9 @@ use acyclic_stream::{AppendRecord, IdempotencyKey, MemoryStream, OwnedBytes};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+
 fn caller(key: &'static [u8]) -> Result<FilesystemCommit, acyclic_stream::StreamError> {
     let path = StreamPath::new("caller/observation")?;
     Ok(FilesystemCommit::new(CommitRequest {

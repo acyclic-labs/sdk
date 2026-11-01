@@ -149,8 +149,13 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         // complete request so a later refusal cannot mutate the caller's cut.
         let mut request = work.copy_commit(commit.request())?;
         merge_transaction(&mut request, part, work)?;
-        grow(&mut commit.authorities, 1, work)?;
-        grow(&mut commit.contributions, 1, work)?;
+        let authorities = prepare_growth(&commit.authorities, 1, work)?;
+        let contributions = prepare_growth(&commit.contributions, 1, work)?;
+        // The request and projection backing outlive this preparation work.
+        // A refused transfer must leave both original vectors untouched.
+        commit.retain_request_custody(work)?;
+        install_growth(&mut commit.authorities, authorities);
+        install_growth(&mut commit.contributions, contributions);
         commit.request = request;
         commit.authorities.push(first.authority_id);
         commit.contributions.push(Contribution {

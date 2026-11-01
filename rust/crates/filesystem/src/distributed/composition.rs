@@ -317,17 +317,32 @@ pub(super) fn grow<T>(
     additional: usize,
     work: &mut AuthorityWork<'_>,
 ) -> Result<(), AuthorityStoreError> {
+    let grown = prepare_growth(entries, additional, work)?;
+    install_growth(entries, grown);
+    Ok(())
+}
+
+/// Prepares the same growth without moving backing out of its original owner.
+pub(super) fn prepare_growth<T>(
+    entries: &Vec<T>,
+    additional: usize,
+    work: &mut AuthorityWork<'_>,
+) -> Result<Option<Vec<T>>, AuthorityStoreError> {
     if entries.capacity() - entries.len() >= additional {
-        return Ok(());
+        return Ok(None);
     }
     let capacity = entries
         .len()
         .checked_add(additional)
         .ok_or(crate::WorkError::Overflow)?;
-    let mut grown = work.vec(capacity)?;
-    grown.append(entries);
-    *entries = grown;
-    Ok(())
+    work.vec(capacity).map(Some)
+}
+
+pub(super) fn install_growth<T>(entries: &mut Vec<T>, grown: Option<Vec<T>>) {
+    if let Some(mut grown) = grown {
+        grown.append(entries);
+        *entries = grown;
+    }
 }
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
