@@ -10,13 +10,6 @@ type GenerationIndex = crate::kernel::allocation::fixed_index::PersistentIndex<
     { crate::ObjectId::ENCODED_LEN },
 >;
 
-fn generation_key(generation: crate::GenerationId) -> [u8; crate::ObjectId::ENCODED_LEN] {
-    let reference = generation.to_bytes();
-    let mut key = [0; crate::ObjectId::ENCODED_LEN];
-    key[..reference.len()].copy_from_slice(reference.as_slice());
-    key
-}
-
 struct AuthorityState {
     epoch: Epoch,
     commits: Vec<DurableCommit>,

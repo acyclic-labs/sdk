@@ -35,6 +35,32 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
     .ok_or("generation missing")?;
     let first = head.sequence;
     assert_eq!(first, Sequence::new(2));
+    let original_head = head;
+    let retained_root = crate::kernel::read_generation_root_with_accounting(
+        fs.objects(),
+        generation.object_id(),
+        workspace.volume_config(),
+        &mut setup.accounting(),
+        &cancel,
+    )
+    .await?;
+    let publication = crate::PublicationChanges::proposed(
+        fs.objects(),
+        &retained_root.0,
+        &retained_root.0,
+        crate::kernel::PublishGenerationRequest {
+            authority_id: authority,
+            volume_id: workspace.id().volume_id(),
+            epoch: head.epoch,
+            expected: head,
+            operation_id: OperationId::new(),
+            generation_root: generation.object_id(),
+        },
+        workspace.volume_config(),
+        &mut setup.accounting(),
+        &cancel,
+    )
+    .await?;
     let old = workspace
         .checkout(
             GenerationSelector::Head,
@@ -50,6 +76,8 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
     for history in 0..=65 {
         if history != 0 {
             let mut work = AuthorityWork::new(BUDGET, &cancel);
+            let mut publication = publication.clone();
+            publication.compose_base(original_head, head)?;
             let outcome = store
                 .compare_and_append(
                     crate::GuardedAppend {
@@ -58,7 +86,7 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
                         expected: head,
                         permit: PublicationPermit::Unrestricted,
                         commit: ProposedCommit {
-                            publication: None,
+                            publication: Some(publication),
                             operation_id: OperationId::new(),
                             fingerprint: Digest::from_bytes([history; 32]),
                             payload: payload.clone(),
@@ -212,6 +240,42 @@ async fn forged_header_is_not_publication_evidence() -> TestResult {
     assert!(matches!(
         store
             .first_generation(authority, fake, durable.sequence, &mut work)
+            .await,
+        Err(AuthorityStoreError::Corrupt(_) | AuthorityStoreError::CorruptStatic(_))
+    ));
+    // A canonical durable envelope and matching index key still cannot publish
+    // another volume's authenticated generation fact under this authority.
+    let foreign = fs.create_workspace("foreign", BUDGET, &cancel).await?.value;
+    let foreign_authority = volume_authority_id(foreign.id().volume_id());
+    let head = store.head(foreign_authority, &mut work).await?;
+    let generation = crate::async_storage::generation_fact(
+        authority,
+        durable.sequence,
+        &payload,
+        &mut work.accounting(),
+    )?
+    .ok_or("generation missing")?;
+    durable.sequence = head.sequence.checked_next()?;
+    durable.previous_digest = head.digest;
+    durable.epoch = head.epoch;
+    durable.operation_id = OperationId::new();
+    durable.digest = work.durable_digest(foreign_authority, &durable)?;
+    let record = work.publication_record(&durable, Some(generation))?;
+    provider
+        .append(acyclic_stream::AppendRequest {
+            path: stream_path(foreign_authority, "/records")?,
+            records: vec![record],
+            if_tail: Some(durable.sequence.get()),
+            idempotency_key: work.key(
+                &[],
+                b"foreign-generation",
+                &[&foreign_authority.into_bytes()],
+            )?,
+        })
+        .await?;
+    assert!(matches!(
+        store
+            .first_generation(foreign_authority, generation, durable.sequence, &mut work)
             .await,
         Err(AuthorityStoreError::Corrupt(_) | AuthorityStoreError::CorruptStatic(_))
     ));

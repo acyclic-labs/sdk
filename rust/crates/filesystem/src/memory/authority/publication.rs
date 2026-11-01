@@ -374,7 +374,7 @@ fn prepare_generation(
     else {
         return Ok(None);
     };
-    let key = generation_key(generation);
+    let key = generation.object_id().index_key();
     if generations.get(key, accounting)?.is_some() {
         return Ok(None);
     }
