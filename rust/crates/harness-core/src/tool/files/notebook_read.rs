@@ -600,7 +600,7 @@ pub(super) async fn read(
             },
             outputs: &outputs.values,
         },
-        u64::MAX,
+        None,
         work,
     )?;
     Ok((ToolResult { value: result.0 }, result.1))

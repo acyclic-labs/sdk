@@ -273,6 +273,15 @@ pub struct ReadKeySeek {
     pub before: u64,
 }
 
+impl ReadKeySeek {
+    pub(crate) fn validate(&self) -> Result<(), StreamError> {
+        if self.key.len() > crate::MAX_RECORD_KEY_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(())
+    }
+}
+
 /// Policy for a path absent at follow registration.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WhenAbsent {

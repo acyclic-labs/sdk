@@ -105,7 +105,10 @@ fn executors_with_render_bytes(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
             if matching_limits {
                 acyclic_harness_core::conversation::Limits {
-                    model_steps: usize::try_from(LIMITS.max_steps)?,
+                    model_steps: LIMITS
+                        .max_steps
+                        .map(|steps| std::num::NonZeroUsize::try_from(usize::try_from(steps)?))
+                        .transpose()?,
                     ..base
                 }
             } else {
@@ -115,18 +118,23 @@ fn executors_with_render_bytes(
         ..Default::default()
     }
     .build()?;
-    Ok(Arc::new(preset.executors(
-        (selection, model),
-        ToolRegistry::default(),
-        (
-            acyclic_harness_core::conversation::Limits {
-                model_steps: usize::try_from(LIMITS.max_steps)?,
-                ..base
-            },
-            CompactionPolicy::Disabled,
+    Ok(Arc::new(
+        preset.executors(
+            (selection, model),
+            ToolRegistry::default(),
+            (
+                acyclic_harness_core::conversation::Limits {
+                    model_steps: LIMITS
+                        .max_steps
+                        .map(|steps| std::num::NonZeroUsize::try_from(usize::try_from(steps)?))
+                        .transpose()?,
+                    ..base
+                },
+                CompactionPolicy::Disabled,
+            ),
+            Arc::new(Tasks(bindings)),
         ),
-        Arc::new(Tasks(bindings)),
-    )))
+    ))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {
