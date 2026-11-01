@@ -7,83 +7,122 @@ use std::sync::Arc;
 /// predecessor lookup makes at most eight branch decisions per key byte,
 /// inspecting each branch's child minimum before visiting one leaf.
 /// Neither operation depends on fork depth or the retained population.
-pub struct PersistentIndex<V, A, const N: usize = 8> {
-    root: Option<Node<V, A, N>>,
+pub struct PersistentIndex<V, A, const N: usize = 8, C = std::convert::Infallible> {
+    root: Option<Node<V, A, N, C>>,
     before: Option<[u8; N]>,
+    value_before: Option<C>,
 }
 
 /// One borrowed value and the exact inherited exclusive cut under which it
 /// was found. A range value must respect this cut even after a later insertion.
-pub struct PersistentPosition<'a, V, const N: usize> {
+pub struct PersistentPosition<'a, V, const N: usize, C = std::convert::Infallible> {
     /// The original retained key at or below the query.
     pub key: &'a [u8; N],
     /// The original immutable value, borrowed without a copy.
     pub value: &'a V,
     /// The effective exclusive prefix cut on the path to this value.
     pub before: Option<[u8; N]>,
+    pub(crate) value_before: Option<C>,
 }
 
-struct Node<V, A, const N: usize>(Option<Arc<Body<V, A, N>>>);
+struct Node<V, A, const N: usize, C>(Option<Arc<Body<V, A, N, C>>>);
 
-struct Body<V, A, const N: usize> {
+struct Body<V, A, const N: usize, C> {
     minimum: [u8; N],
-    kind: Kind<V, A, N>,
+    kind: Kind<V, A, N, C>,
     // Values and child references retire before their original node funding.
     _allocation: A,
 }
 
-enum Kind<V, A, const N: usize> {
+enum Kind<V, A, const N: usize, C> {
     Leaf(V),
     Branch {
         bit: Bit,
-        low: PersistentIndex<V, A, N>,
-        high: PersistentIndex<V, A, N>,
+        low: PersistentIndex<V, A, N, C>,
+        high: PersistentIndex<V, A, N, C>,
     },
 }
 
-impl<V, A, const N: usize> Node<V, A, N> {
-    fn body(&self) -> Option<&Body<V, A, N>> {
+impl<V, A, const N: usize, C> Node<V, A, N, C> {
+    fn body(&self) -> Option<&Body<V, A, N, C>> {
         self.0.as_deref()
     }
 }
 
-impl<V, A, const N: usize> Clone for Node<V, A, N> {
+impl<V, A, const N: usize, C> Clone for Node<V, A, N, C> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<V, A, const N: usize> Drop for Node<V, A, N> {
+impl<V, A, const N: usize, C> Drop for Node<V, A, N, C> {
     fn drop(&mut self) {
         // All references are these private handles; there are no weak handles.
         // into_inner elects exactly one last owner even on concurrent drops,
         // and releases the physical Arc backing before returning its body.
         // Its token therefore refunds after both backing and value retirement.
-        if let Some(body) = self.0.take().and_then(Arc::into_inner) {
-            drop(body);
+        let Some(body) = self.0.take().and_then(Arc::into_inner) else {
+            return;
+        };
+        if matches!(body.kind, Kind::Leaf(_)) {
+            return;
+        }
+        // At most one sibling per strictly increasing branch coordinate.
+        // Physical retirement needs no allocator or fallible admission, even
+        // for wide adversarial keys or concurrently released shared roots.
+        let mut pending = [const { [const { None }; 8] }; N];
+        let mut depth = 0;
+        let mut current = Some(body);
+        loop {
+            if let Some(mut body) = current.take() {
+                if let Kind::Branch { low, high, .. } = &mut body.kind {
+                    if let Some(upper) = high.root.take() {
+                        pending[depth / 8][depth % 8] = Some(upper);
+                        depth += 1;
+                    }
+                    current = low
+                        .root
+                        .take()
+                        .and_then(|mut node| node.0.take())
+                        .and_then(Arc::into_inner);
+                }
+                drop(body);
+            }
+            if current.is_none() {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+                current = pending[depth / 8][depth % 8]
+                    .take()
+                    .and_then(|mut node: Node<V, A, N, C>| node.0.take())
+                    .and_then(Arc::into_inner);
+            }
         }
     }
 }
 
-impl<V, A, const N: usize> Clone for PersistentIndex<V, A, N> {
+impl<V, A, const N: usize, C: Copy> Clone for PersistentIndex<V, A, N, C> {
     fn clone(&self) -> Self {
         Self {
             root: self.root.clone(),
             before: self.before,
+            value_before: self.value_before,
         }
     }
 }
 
-impl<V, A, const N: usize> Default for PersistentIndex<V, A, N> {
+impl<V, A, const N: usize, C> Default for PersistentIndex<V, A, N, C> {
     fn default() -> Self {
         Self {
             root: None,
             before: None,
+            value_before: None,
         }
     }
 }
 
-impl<V, A, const N: usize> PersistentIndex<V, A, N> {
+impl<V, A, const N: usize, C: Copy + Ord> PersistentIndex<V, A, N, C> {
     /// Pins the original keys strictly before this exclusive cut. Repeated
     /// prefixing keeps the earlier cut, without a chain of historical views.
     pub fn prefix(&self, before: [u8; N]) -> Self {
@@ -91,17 +130,28 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
         Self {
             root: self.root.clone(),
             before: Some(before),
+            value_before: self.value_before,
         }
     }
 
-    fn body(&self) -> Option<&Body<V, A, N>> {
+    // A keyed sequence composition applies this bound to the value's inner
+    // index. It never filters the outer key space or copies an inherited tree.
+    pub(crate) fn values_before(&self, before: C) -> Self {
+        Self {
+            root: self.root.clone(),
+            before: self.before,
+            value_before: Some(self.value_before.map_or(before, |prior| prior.min(before))),
+        }
+    }
+
+    fn body(&self) -> Option<&Body<V, A, N, C>> {
         self.root.as_ref().and_then(Node::body)
     }
 
     fn visible_body<W: IndexReadWork>(
         &self,
         work: &mut W,
-    ) -> Result<Option<&Body<V, A, N>>, W::Error> {
+    ) -> Result<Option<&Body<V, A, N, C>>, W::Error> {
         if self.root.is_none() {
             return Ok(None);
         }
@@ -112,16 +162,21 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
     }
 
     fn child(&self, child: &Self) -> Self {
-        self.before
-            .map_or_else(|| child.clone(), |before| child.prefix(before))
+        let child = self
+            .before
+            .map_or_else(|| child.clone(), |before| child.prefix(before));
+        match self.value_before {
+            Some(before) => child.values_before(before),
+            None => child,
+        }
     }
 
     fn node<W: IndexWork<Allocation = A>>(
         minimum: [u8; N],
-        kind: Kind<V, A, N>,
+        kind: Kind<V, A, N, C>,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        let allocation = work.claim(arc_allocation_bytes::<Body<V, A, N>>() as u64)?;
+        let allocation = work.claim(arc_allocation_bytes::<Body<V, A, N, C>>() as u64)?;
         Ok(Self {
             root: Some(Node(Some(Arc::new(Body {
                 minimum,
@@ -129,6 +184,7 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
                 _allocation: allocation,
             })))),
             before: None,
+            value_before: None,
         })
     }
 
@@ -153,10 +209,11 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
         &self,
         key: [u8; N],
         work: &mut W,
-    ) -> Result<Option<PersistentPosition<'_, V, N>>, W::Error> {
+    ) -> Result<Option<PersistentPosition<'_, V, N, C>>, W::Error> {
         work.validate()?;
         let mut cursor = self;
         let mut before = self.before;
+        let mut value_before = self.value_before;
         loop {
             let Some(body) = cursor.visible_body(work)? else {
                 return Ok(None);
@@ -171,6 +228,7 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
                         key: &body.minimum,
                         value,
                         before,
+                        value_before,
                     }));
                 }
                 Kind::Branch { low, high, .. } => {
@@ -186,7 +244,77 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
                     if let Some(cut) = cursor.before {
                         before = Some(before.map_or(cut, |prior| prior.min(cut)));
                     }
+                    if let Some(cut) = cursor.value_before {
+                        value_before = Some(value_before.map_or(cut, |prior| prior.min(cut)));
+                    }
                 }
+            }
+        }
+    }
+
+    /// Borrows the least retained key at or above `key`, without allocating.
+    /// The bounded search descends one path and at most one minimum path.
+    pub fn successor<W: IndexReadWork>(
+        &self,
+        key: [u8; N],
+        work: &mut W,
+    ) -> Result<Option<PersistentPosition<'_, V, N, C>>, W::Error> {
+        work.validate()?;
+        let mut cursor = self;
+        let mut before = None;
+        let mut value_before = None;
+        let mut candidate = None;
+        loop {
+            if let Some(cut) = cursor.before {
+                before = Some(before.map_or(cut, |prior: [u8; N]| prior.min(cut)));
+            }
+            if let Some(cut) = cursor.value_before {
+                value_before = Some(value_before.map_or(cut, |prior: C| prior.min(cut)));
+            }
+            let body = cursor.visible_body(work)?;
+            work.examine(2 * N as u64)?;
+            match body.filter(|body| before.is_none_or(|cut| key < cut && body.minimum < cut)) {
+                Some(Body {
+                    minimum,
+                    kind: Kind::Leaf(value),
+                    ..
+                }) if *minimum >= key => {
+                    return Ok(Some(PersistentPosition {
+                        key: minimum,
+                        value,
+                        before,
+                        value_before,
+                    }));
+                }
+                Some(Body {
+                    kind: Kind::Branch { low, high, .. },
+                    ..
+                }) => {
+                    let upper = high.visible_body(work)?;
+                    work.examine(2 * N as u64)?;
+                    if let Some(upper) =
+                        upper.filter(|upper| before.is_none_or(|cut| upper.minimum < cut))
+                    {
+                        if upper.minimum <= key {
+                            cursor = high;
+                        } else {
+                            candidate = Some((high, before, value_before));
+                            cursor = low;
+                        }
+                    } else {
+                        cursor = low;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            match candidate.take() {
+                Some((next, cut, value_cut)) => {
+                    cursor = next;
+                    before = cut;
+                    value_before = value_cut;
+                }
+                None => return Ok(None),
             }
         }
     }
@@ -224,52 +352,56 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
             }
         }
         let leaf = Self::node(key, Kind::Leaf(value), work)?;
-        self.insert_path(key, differing, leaf, work)
-    }
-
-    fn insert_path<W: IndexWork<Allocation = A>>(
-        &self,
-        key: [u8; N],
-        differing: Option<Bit>,
-        leaf: Self,
-        work: &mut W,
-    ) -> Result<Self, W::Error> {
-        let Some(body) = self.visible_body(work)? else {
-            return Ok(leaf);
-        };
-        match &body.kind {
-            Kind::Branch {
-                bit,
-                low,
-                high: upper,
-            } if differing.is_none_or(|difference| *bit < difference) => {
-                work.charge_items(2 * N as u64)?;
-                let low = self.child(low);
-                let upper = self.child(upper);
-                if high(&key, *bit) {
-                    Self::branch(
-                        *bit,
-                        low,
-                        upper.insert_path(key, differing, leaf, work)?,
-                        work,
-                    )
-                } else {
-                    Self::branch(
-                        *bit,
-                        low.insert_path(key, differing, leaf, work)?,
-                        upper,
-                        work,
-                    )
+        let mut view = self.clone();
+        let mut result = Self::default();
+        let mut destination = &mut result;
+        loop {
+            let Some(body) = view.visible_body(work)? else {
+                *destination = leaf;
+                return Ok(result);
+            };
+            match &body.kind {
+                Kind::Branch {
+                    bit,
+                    low,
+                    high: upper,
+                } if differing.is_none_or(|difference| *bit < difference) => {
+                    work.charge_items(2 * N as u64)?;
+                    let bit = *bit;
+                    let minimum = body.minimum.min(key);
+                    let low = view.child(low);
+                    let upper = view.child(upper);
+                    let selected_high = high(&key, bit);
+                    let (selected, sibling) = if selected_high {
+                        (upper, low)
+                    } else {
+                        (low, upper)
+                    };
+                    if sibling.visible_body(work)?.is_none() {
+                        view = selected;
+                        continue;
+                    }
+                    let (low, high) = if selected_high {
+                        (sibling, Self::default())
+                    } else {
+                        (Self::default(), sibling)
+                    };
+                    *destination = Self::node(minimum, Kind::Branch { bit, low, high }, work)?;
+                    let body = Arc::get_mut(destination.root.as_mut().unwrap().0.as_mut().unwrap())
+                        .unwrap_or_else(|| unreachable!("the unpublished path has one owner"));
+                    let Kind::Branch { low, high, .. } = &mut body.kind else {
+                        unreachable!("the path just constructed a branch")
+                    };
+                    destination = if selected_high { high } else { low };
+                    view = selected;
                 }
-            }
-            _ => {
-                let Some(bit) = differing else {
-                    return Ok(leaf);
-                };
-                if high(&key, bit) {
-                    Self::branch(bit, self.clone(), leaf, work)
-                } else {
-                    Self::branch(bit, leaf, self.clone(), work)
+                _ => {
+                    *destination = match differing {
+                        None => leaf,
+                        Some(bit) if high(&key, bit) => Self::branch(bit, view, leaf, work)?,
+                        Some(bit) => Self::branch(bit, leaf, view, work)?,
+                    };
+                    return Ok(result);
                 }
             }
         }
