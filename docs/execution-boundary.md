@@ -84,6 +84,16 @@ Configuration-based MCP installation explicitly supplies no grant
 until authenticated admission provides one. Server names, configuration and
 tool arguments confer no execution authority.
 
+The original checked hook runner accepts an optional host-selected
+`HookExecution`, sharing the same immutable grant and an explicit ordinary
+environment across the selected commands. Granted hooks clear the ambient
+environment, retain the original workspace variable, and enter the same native
+launch boundary before their original capture. Hook configuration and output
+cannot select a grant. A refusal follows the existing hook failure policy;
+the runner never retries without the grant. Stock hook callers explicitly
+select no grant until authenticated admission supplies one. Hook matching,
+output budgets, cancellation, capture and cleanup retain their original owners.
+
 Network `Off` denies new sockets. `On` admits Internet networking subject to
 inherited restrictions. `TcpPorts` grants outbound TCP destination ports on
 any address, with no listeners, UDP, raw or local IPC sockets. An empty set

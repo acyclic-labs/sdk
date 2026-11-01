@@ -250,6 +250,7 @@ pub use output::{HookDiagnostic, HookOutput};
 mod native;
 #[doc(hidden)]
 pub use native::HookCheck;
+pub use native::HookExecution;
 // Negative-control seam for the facade's `mcp_identity_tests`: substitutes the
 // hook subject.
 #[cfg(any(test, feature = "test-support"))]
