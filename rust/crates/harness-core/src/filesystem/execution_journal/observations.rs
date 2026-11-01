@@ -399,7 +399,8 @@ where
         self.require_operation(operation_id, io)?;
         let identity = indexed_publication::contribution_identity(contributions, io)?;
         let bound = match event {
-            ExecutionEvent::ConversationItem { publication, .. } => *publication == identity,
+            ExecutionEvent::ConversationItem { publication, .. }
+            | ExecutionEvent::ToolStarted { publication, .. } => *publication == identity,
             _ => identity.is_none(),
         };
         if !bound || (!contributions.is_empty() && expected_tail.is_none()) {

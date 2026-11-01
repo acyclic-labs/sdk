@@ -17,7 +17,7 @@ use acyclic_stream::{
 };
 use futures::StreamExt as _;
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use tokio::sync::watch;
 
 /// The authority an agent's host attaches to each run it dispatches: a
@@ -33,33 +33,51 @@ pub struct DeviceGrant {
 
 /// Every device's last presence, in attach order, and the roster they make.
 struct Devices {
-    order: Vec<String>,
     statuses: BTreeMap<String, TargetStatus>,
-    roster: OnceLock<Arc<Roster>>,
+    roster: Arc<Roster>,
+    offline: Arc<Roster>,
     following: bool,
     active: bool,
 }
 
 impl Devices {
-    fn roster(&self, home: &crate::agent::TargetRecord) -> Arc<Roster> {
-        Arc::clone(self.roster.get_or_init(|| {
-            let targets = std::iter::once(home.clone())
-                .chain(self.order.iter().filter_map(|name| {
-                    self.statuses.get(name).map(|status| {
-                        let mut target = status.target.clone();
-                        if !self.active {
-                            target.state = TargetState::Offline;
-                        }
-                        target
-                    })
-                }))
-                .collect();
-            // Each record was validated at the presence boundary; names are indexed once.
-            Arc::new(Roster {
-                home: home.name.clone(),
-                targets,
-            })
-        }))
+    fn roster(&self) -> Arc<Roster> {
+        Arc::clone(if self.active {
+            &self.roster
+        } else {
+            &self.offline
+        })
+    }
+
+    fn changed_roster(
+        &self,
+        home: &crate::agent::TargetRecord,
+        status: &TargetStatus,
+    ) -> Result<Option<(Arc<Roster>, Arc<Roster>)>> {
+        if self
+            .statuses
+            .get(&status.target.name)
+            .is_some_and(|prior| prior.target == status.target)
+        {
+            return Ok(None);
+        }
+        let mut targets = self.roster.targets().to_vec();
+        if let Some(prior) = targets
+            .iter_mut()
+            .find(|target| target.name == status.target.name)
+        {
+            *prior = status.target.clone();
+        } else {
+            targets.push(status.target.clone());
+        }
+        let roster = Arc::new(Roster::new(home.name.clone(), targets.clone()).map_err(agent)?);
+        // Prepare producer-loss disclosure at this same admitted change. Drop
+        // only selects a retained immutable snapshot; it cannot allocate/fail.
+        for target in targets.iter_mut().skip(1) {
+            target.state = TargetState::Offline;
+        }
+        let offline = Arc::new(Roster::new(home.name.clone(), targets).map_err(agent)?);
+        Ok(Some((roster, offline)))
     }
 }
 
@@ -70,7 +88,6 @@ impl Drop for Presence<'_> {
         self.0.send_modify(|devices| {
             devices.following = false;
             devices.active = false;
-            devices.roster.take();
         });
     }
 }
@@ -83,6 +100,7 @@ impl Drop for Presence<'_> {
 /// retaining each agent's own grant and home workspace.
 pub struct TargetDirectory<P: StreamProvider + ?Sized + 'static> {
     provider: Arc<P>,
+    sockets: Arc<dyn acyclic_actors::guest::SocketHost>,
     store: Arc<acyclic_actors::local::Store<P>>,
     paths: TargetPaths,
     home: Arc<Target>,
@@ -107,21 +125,26 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
     /// When the home record is malformed.
     pub fn new(
         store: acyclic_actors::local::Store<P>,
+        sockets: Arc<dyn acyclic_actors::guest::SocketHost>,
         paths: TargetPaths,
         home: Target,
         grant: DeviceGrant,
     ) -> Result<Self> {
         crate::agent::AgentRecord::check(&home.record).map_err(agent)?;
+        let roster = Arc::new(
+            Roster::new(home.record.name.clone(), vec![home.record.clone()]).map_err(agent)?,
+        );
         let devices = Devices {
-            order: Vec::new(),
             statuses: BTreeMap::new(),
-            roster: OnceLock::new(),
+            offline: Arc::clone(&roster),
+            roster,
             following: false,
             active: false,
         };
         Ok(Self {
             provider: Arc::clone(store.provider()),
             store: Arc::new(store),
+            sockets,
             paths,
             home: Arc::new(home),
             grant: Arc::new(grant),
@@ -137,6 +160,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
         Self {
             provider: Arc::clone(&self.provider),
             store: Arc::clone(&self.store),
+            sockets: Arc::clone(&self.sockets),
             paths: self.paths.clone(),
             home: Arc::new(Target {
                 record: self.home.record.clone(),
@@ -170,7 +194,6 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
         let mut updates = self.provider.follow(request).await?;
         self.devices.send_modify(|devices| {
             devices.active = true;
-            devices.roster.take();
         });
         loop {
             let Some(update) = updates.next().await else {
@@ -181,7 +204,9 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
             };
             let status: TargetStatus = decode(&record.value)?;
             crate::agent::AgentRecord::check(&status.target).map_err(agent)?;
-            if (status.target.state == TargetState::Online) != status.session.is_some() {
+            if (status.target.state == TargetState::Online) != status.session.is_some()
+                || status.session.is_some() != status.socket.is_some()
+            {
                 return Err(Error::Invalid(
                     "device presence has no matching session".into(),
                 ));
@@ -191,11 +216,16 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
             if name == self.home.record.name {
                 continue;
             }
+            let changed = self
+                .devices
+                .borrow()
+                .changed_roster(&self.home.record, &status)?;
             self.devices.send_modify(|devices| {
-                if devices.statuses.insert(name.clone(), status).is_none() {
-                    devices.order.push(name);
+                devices.statuses.insert(name, status);
+                if let Some((roster, offline)) = changed {
+                    devices.roster = roster;
+                    devices.offline = offline;
                 }
-                devices.roster.take();
             });
         }
     }
@@ -203,7 +233,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
 
 impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P> {
     fn roster(&self) -> Arc<Roster> {
-        self.devices.borrow().roster(&self.home.record)
+        self.devices.borrow().roster()
     }
 
     fn resolve(&self, target: Option<&str>) -> Result<Arc<Target>> {
@@ -212,12 +242,46 @@ impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P>
         if record.name == self.home.record.name {
             return Ok(Arc::clone(&self.home));
         }
+        let connection = self
+            .devices
+            .borrow()
+            .statuses
+            .get(&record.name)
+            .cloned()
+            .ok_or_else(|| Error::Invalid("listed device has no original connection".into()))?;
+        let socket = connection
+            .socket
+            .clone()
+            .ok_or_else(|| Error::Invalid("online device has no original socket".into()))?;
+        let terminal = self
+            .sockets
+            .web_socket_terminal(
+                &self.paths.actor(&record.name)?,
+                &acyclic_actors::guest::WebSocketId(socket),
+            )
+            .map_err(|_| {
+                Error::Target(TargetRefusal {
+                    target: record.name.clone(),
+                    refused: Refused::Offline,
+                    online: roster
+                        .targets()
+                        .iter()
+                        .filter(|target| {
+                            target.state == TargetState::Online && target.name != record.name
+                        })
+                        .map(|target| target.name.clone())
+                        .collect(),
+                })
+            })?;
         Ok(Arc::new(Target {
             record: record.clone(),
             executor: Arc::new(DeviceExecutor {
                 provider: Arc::clone(&self.provider),
                 paths: self.paths.clone(),
                 name: record.name.clone(),
+                sockets: Arc::clone(&self.sockets),
+                connection,
+                terminal,
                 wake: self
                     .store
                     .activation_record(&self.paths.actor(&record.name)?),
@@ -235,6 +299,9 @@ struct DeviceExecutor<P: StreamProvider + ?Sized + 'static> {
     provider: Arc<P>,
     paths: TargetPaths,
     name: String,
+    sockets: Arc<dyn acyclic_actors::guest::SocketHost>,
+    connection: TargetStatus,
+    terminal: Arc<dyn acyclic_actors::guest::SocketTerminal>,
     wake: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
     grant: Arc<DeviceGrant>,
     devices: watch::Receiver<Devices>,
@@ -243,12 +310,12 @@ struct DeviceExecutor<P: StreamProvider + ?Sized + 'static> {
 
 impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
     fn refusal(&self, refused: Refused) -> Error {
-        let roster = self.devices.borrow().roster(&self.home);
+        let roster = self.devices.borrow().roster();
         Error::Target(TargetRefusal {
             target: self.name.clone(),
             refused,
             online: roster
-                .targets
+                .targets()
                 .iter()
                 .filter(|record| record.state == TargetState::Online)
                 .map(|record| record.name.clone())
@@ -262,6 +329,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         &self,
         invocation: &ToolInvocation,
         context: &ToolContext,
+        reconcile: bool,
     ) -> Result<ToolResult> {
         // Dispatch publishes no Run for malformed input. Both first execution
         // and recovery must return that verdict before following its outcome.
@@ -270,11 +338,28 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         input.validate()?;
         let mut request =
             FollowRequest::new(self.paths.run(&self.name, invocation.operation_id)?, 0);
-        request.when_absent = WhenAbsent::Wait;
-        let mut events = self.provider.follow(request).await?;
+        if !reconcile {
+            request.when_absent = WhenAbsent::Wait;
+        }
+        let mut socket_end = (!reconcile).then(|| Arc::clone(&self.terminal).completion());
+        let mut closed_at = None;
+        let opening = self.provider.follow(request);
+        tokio::pin!(opening);
+        let mut events = tokio::select! {
+            result = &mut opening => result.map_err(|error| match error {
+                acyclic_stream::StreamError::NotFound if reconcile => Error::Indeterminate(invocation.operation_id),
+                cause => cause.into(),
+            })?,
+            _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
+                socket_end = None;
+                let tail = self.accepted_tail(invocation.operation_id).await?;
+                if tail == 0 { return Err(Error::Indeterminate(invocation.operation_id)); }
+                closed_at = Some(tail);
+                opening.await?
+            }
+        };
         let mut ended: Option<acyclic_stream::FollowStream> = None;
         let mut output = super::output::Output::new(context);
-        let mut closed_at = None;
         let mut next = 0;
         loop {
             if closed_at.is_some_and(|tail| next >= tail) {
@@ -282,6 +367,16 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             }
             let update = tokio::select! {
                 biased;
+                _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
+                    // The same socket's physical publication producer ended.
+                    // Inspect one accepted cut, drain its output/Exit, and never
+                    // wait for a marker a refused Close could not publish.
+                    socket_end = None;
+                    ended = None;
+                    closed_at = Some(self.accepted_tail(invocation.operation_id).await?);
+                    continue;
+                }
+
                 end = futures::future::OptionFuture::from(ended.as_mut().map(futures::StreamExt::next)), if ended.is_some() => {
                     let end = end.flatten().ok_or_else(|| Error::Storage("device session producer ended".into()))??;
                     if let FollowUpdate::Record(record) = end {
@@ -310,14 +405,44 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
                 .checked_add(1)
                 .ok_or_else(|| Error::Invalid("device run sequence overflows".into()))?;
             let RunRecord { event, .. } = decode(&record.value)?;
-            if let RunEvent::Started { generation, .. } = event {
+            if let RunEvent::Started {
+                socket, generation, ..
+            } = event
+            {
                 if closed_at.is_some() {
                     continue;
+                }
+                if reconcile {
+                    let pin = if self.connection.socket.as_deref() == Some(socket.as_str())
+                        && self.connection.generation == generation
+                    {
+                        Some(Arc::clone(&self.terminal))
+                    } else {
+                        self.sockets
+                            .web_socket_terminal(
+                                &self.paths.actor(&self.name)?,
+                                &acyclic_actors::guest::WebSocketId(socket),
+                            )
+                            .ok()
+                    };
+                    match pin {
+                        Some(pin) => socket_end = Some(pin.completion()),
+                        None => {
+                            closed_at = Some(self.accepted_tail(invocation.operation_id).await?);
+                            continue;
+                        }
+                    }
                 }
                 let mut request =
                     FollowRequest::new(self.paths.session_end(&self.name, generation)?, 0);
                 request.when_absent = WhenAbsent::Wait;
-                ended = Some(self.provider.follow(request).await?);
+                tokio::select! {
+                    result = self.provider.follow(request) => ended = Some(result?),
+                    _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
+                        socket_end = None;
+                        closed_at = Some(self.accepted_tail(invocation.operation_id).await?);
+                    }
+                }
             } else if let RunEvent::Output { stderr, data, .. } = event {
                 output
                     .append(context, record.sequence, stderr, &data)
@@ -325,6 +450,18 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             } else if let Some(result) = self.terminal(event, invocation) {
                 return output.finish(result?);
             }
+        }
+    }
+
+    async fn accepted_tail(&self, operation: crate::OperationId) -> Result<u64> {
+        match self
+            .provider
+            .head(self.paths.run(&self.name, operation)?)
+            .await
+        {
+            Ok(head) => Ok(head.tail),
+            Err(acyclic_stream::StreamError::NotFound) => Ok(0),
+            Err(_) => Err(Error::Indeterminate(operation)),
         }
     }
 
@@ -394,7 +531,12 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             .active
             .then(|| current.statuses.get(&self.name))
             .flatten()
-            .filter(|status| status.target.state == TargetState::Online)
+            .filter(|status| {
+                status.target.state == TargetState::Online
+                    && status.session == self.connection.session
+                    && status.socket == self.connection.socket
+                    && status.generation == self.connection.generation
+            })
             .and_then(|status| {
                 status
                     .session
@@ -473,7 +615,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("device shell has no original task".into()))?;
-            self.outcome(&invocation, context).await
+            self.outcome(&invocation, context, false).await
         })
     }
 
@@ -487,7 +629,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("device shell has no original task".into()))?;
-            self.outcome(&invocation, context).await.map(Some)
+            self.outcome(&invocation, context, true).await.map(Some)
         })
     }
 }

@@ -268,13 +268,14 @@ impl ToolExecutor for MachinesWorkspace {
             })?;
             let input: ShellInput = serde_json::from_value(invocation.arguments)
                 .map_err(|error| Error::Invalid(format!("shell input decode failed: {error}; recovery: use the shared ShellInput schema")))?;
-            let mut result = self.run_shell(
-                context.operation_id(),
-                input,
-                context.effective_scope().limits().render_bytes,
-                context.effective_scope().run_limits().deadline_epoch_ms,
-            )
-            .await?;
+            let mut result = self
+                .run_shell(
+                    context.operation_id(),
+                    input,
+                    context.effective_scope().limits().render_bytes,
+                    context.effective_scope().run_limits().deadline_epoch_ms,
+                )
+                .await?;
             result.value["execution"] = serde_json::json!({
                 "agent": context.task().agent().map(|(path, _)| path.as_str()),
                 "turn": context.turn_id(),

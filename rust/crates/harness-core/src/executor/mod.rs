@@ -359,6 +359,10 @@ pub enum ExecutionEvent {
         /// Pinned, private JSON file containing the admitted invocation.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         invocation: FileRef,
+
+        /// Identity of original records published atomically with this start.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        publication: Option<[u8; 32]>,
     },
     /// Tool execution and projection completed.
     ToolCompleted {

@@ -824,12 +824,29 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
 
     let (connection, inbox, last, _frames) =
         admitted_close_fixture(&sockets, "lost-producer").await?;
+    let actor = shared
+        .lock()
+        .sockets
+        .get(&connection)
+        .ok_or("missing original socket")?
+        .actor
+        .clone();
+    let pin = sockets.web_socket_terminal(&actor, &WebSocketId(connection.clone()))?;
+
     let mut waiting = Box::pin(sockets.drain());
     assert!(futures::poll!(&mut waiting).is_pending());
     drop(executor.take()?); // Drop the actual close future before its first poll.
     assert!(matches!(
         waiting.await,
         Err(error) if matches!(error.as_ref(), Error::Stream(StreamError::Unavailable))
+    ));
+    let terminal = pin
+        .completion()
+        .await
+        .expect_err("original producer loss must remain terminal");
+    assert!(matches!(
+        terminal.downcast_ref::<Error>(),
+        Some(Error::Stream(StreamError::Unavailable))
     ));
     assert!(
         last.await.is_err(),
@@ -851,6 +868,31 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
 
     let (connection, inbox, last, _frames) =
         admitted_close_fixture(&sockets, "refused-close").await?;
+    let actor = shared
+        .lock()
+        .sockets
+        .get(&connection)
+        .ok_or("missing original socket")?
+        .actor
+        .clone();
+    let foreign = ActorReference::new(b"foreign", b"namespace", b"actor")?;
+    assert!(
+        sockets
+            .web_socket_terminal(&foreign, &WebSocketId(connection.clone()))
+            .is_err()
+    );
+    assert!(
+        shared
+            .lock()
+            .sockets
+            .get(&connection)
+            .ok_or("lost original socket")?
+            .completion
+            .is_none()
+    );
+    let pin = sockets.web_socket_terminal(&actor, &WebSocketId(connection.clone()))?;
+    let late = Arc::clone(&pin);
+
     shared
         .store
         .provider()
@@ -879,6 +921,22 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     let drain_error = waiting.await.expect_err("drain must retain the refusal");
     assert!(matches!(joined_error.as_ref(), Error::Conflict));
     assert!(Arc::ptr_eq(&joined_error, &drain_error));
+    let public_error = pin
+        .completion()
+        .await
+        .expect_err("original Close must refuse");
+    let late_error = late
+        .completion()
+        .await
+        .expect_err("retirement cannot discard the refusal");
+    assert!(Arc::ptr_eq(&public_error, &late_error));
+    assert!(std::ptr::eq(
+        public_error
+            .downcast_ref::<Error>()
+            .ok_or("lost original error type")?,
+        joined_error.as_ref()
+    ));
+
     assert!(
         last.await.is_err(),
         "a refused publication cannot report a successful Close"

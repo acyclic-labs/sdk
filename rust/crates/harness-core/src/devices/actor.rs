@@ -103,6 +103,7 @@ impl State {
             v: RECORD_VERSION,
             target,
             session: self.connection.as_ref().map(|(_, session)| session.clone()),
+            socket: self.connection.as_ref().map(|(socket, _)| socket.clone()),
             generation: self.generation,
         };
         Ok(append(
@@ -169,13 +170,23 @@ impl State {
             == *blake3::hash(&self.paths()?.actor(&self.target.name)?.encode()).as_bytes();
         if accepted {
             self.handover = Some(record.sequence);
-            effects.push(self.event(
-                op,
-                RunEvent::Started {
-                    session: run.command.session.clone(),
-                    generation: self.generation,
-                },
-            )?);
+            effects.push(
+                self.event(
+                    op,
+                    RunEvent::Started {
+                        session: run.command.session.clone(),
+                        socket: self
+                            .connection
+                            .as_ref()
+                            .ok_or_else(|| {
+                                Error::Invalid("accepted device has no original socket".into())
+                            })?
+                            .0
+                            .clone(),
+                        generation: self.generation,
+                    },
+                )?,
+            );
         } else {
             effects.push(self.event(
                 op,
@@ -236,6 +247,7 @@ impl State {
                     RunEvent::Started {
                         session,
                         generation,
+                        ..
                     }
                     | RunEvent::Output {
                         session,

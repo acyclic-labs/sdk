@@ -115,6 +115,8 @@ pub struct TargetStatus {
     pub target: TargetRecord,
     /// The session the device opened its socket with, while it is online.
     pub session: Option<String>,
+    /// Original host socket; observation never authorizes a replacement socket.
+    pub socket: Option<String>,
     /// The number of sessions the device has opened.
     pub generation: u64,
 }
@@ -203,6 +205,8 @@ pub enum RunEvent {
     Started {
         /// The session it runs in.
         session: String,
+        /// The original host socket retained before physical handover.
+        socket: String,
         /// Original Actor connection generation.
         generation: u64,
     },

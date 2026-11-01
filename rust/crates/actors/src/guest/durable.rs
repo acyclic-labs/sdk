@@ -19,12 +19,36 @@ pub struct WebSocketAutoResponse {
     /// Exact outgoing text frame.
     pub response: String,
 }
+/// A retained observation of one original host socket's close producer.
+/// Dropping an observer never cancels that producer. The original decided
+/// failure remains reachable after the host retires its live socket entry.
+pub trait SocketTerminal: acyclic_stream::ProviderPlatform {
+    fn completion(
+        self: Arc<Self>,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'static,
+        Result<(), Arc<dyn std::error::Error + Send + Sync>>,
+    >;
+}
+
 /// Hibernatable socket effects. A host keeps sockets, tags, attachments and the
 /// auto-response pair outside the actor heap, so a hibernated actor holding
 /// sockets costs it nothing; implementations check the actor on every call.
 /// Like every host trait it follows the platform boundary: thread-safe on
 /// native targets, and free to own thread-affine handles in a browser.
 pub trait SocketHost: acyclic_stream::ProviderPlatform {
+    /// Registers against this actor's exact live socket before dispatch.
+    /// A missing socket refuses registration; absence is no close certificate.
+    fn web_socket_terminal(
+        &self,
+        _actor: &ActorReference,
+        _socket: &WebSocketId,
+    ) -> Result<Arc<dyn SocketTerminal>, GuestError> {
+        Err(GuestError::Handler(
+            "original socket terminal is unavailable".into(),
+        ))
+    }
+
     /// Transfer a pending socket to host ownership, retaining tags across hibernation.
     fn accept_web_socket(
         &self,

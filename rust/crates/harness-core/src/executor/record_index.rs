@@ -152,10 +152,12 @@ impl ExecutionEvent {
                 step,
                 call_id,
                 invocation,
+                publication,
             } => ToolStarted {
                 step: *step,
                 call_id: text(call_id)?,
                 invocation: file(invocation)?,
+                publication: *publication,
             },
             ToolCompleted {
                 step,

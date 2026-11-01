@@ -140,6 +140,13 @@ async fn terminal(
 
 #[tokio::test]
 async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> Result {
+    for refused_close in [false, true] {
+        committed_handover(refused_close).await?;
+    }
+    Ok(())
+}
+
+async fn committed_handover(refused_close: bool) -> Result {
     let (owner, scope, workspace) = super::workspace_fixture().await?;
     let workspace = Arc::new(workspace);
     let provider = Arc::new(MemoryStream::default());
@@ -175,6 +182,7 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
     }));
     let directory = Arc::new(acyclic_harness_core::devices::TargetDirectory::new(
         Store::new(provider.clone(), StreamPath::new("harness/actors")?),
+        Arc::new(sockets.clone()),
         paths.clone(),
         Target {
             record: InProcessTargets::local_record("home", "ana"),
@@ -233,7 +241,9 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
     let mut link = client.actor_socket(attachment.open(), 0).await?;
     let _device = Task(tokio::spawn(async move {
         let outcome = runner.serve(&attachment, &mut link).await;
-        let _sent = failures.send(format!("original device connection ended: {outcome:?}"));
+        if !refused_close {
+            let _sent = failures.send(format!("original device connection ended: {outcome:?}"));
+        }
         outcome
     }));
     let exercise = async {
@@ -251,9 +261,10 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
         assert!(futures::poll!(following.as_mut()).is_pending());
         use acyclic_harness_core::runtime::TargetResolver as _;
         let remote = directory.resolve(Some("desktop"))?;
-        let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
+        let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::with_stream(
             acyclic_harness_core::AgentId::from_bytes(agent.id().to_bytes()),
             4096,
+            provider.clone(),
         )
         .await?;
         let mut bindings = acyclic_harness_core::runtime::Bindings::local();
@@ -419,9 +430,57 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             })
         };
         let request = dispatch(run.clone(), b"original-device-dispatch")?;
+        let contributed = acyclic_harness_core::tool::Dispatch {
+            delivery: (
+                paths.queue("desktop")?,
+                match &request.mutations[0] {
+                    CommitMutation::Append { records, .. } => records[0].value.clone().into(),
+                    _ => return Err("missing original delivery".into()),
+                },
+            ),
+            activation: Store::new(provider.clone(), StreamPath::new("harness/actors")?)
+                .activation_record(&actor),
+        };
+        let journal = storage.journal();
+        journal
+            .append(
+                op,
+                "start",
+                &acyclic_harness_core::executor::ExecutionEvent::Started {
+                    request_digest: [1; 32],
+                },
+                None,
+            )?
+            .await?;
+        let reference = journal
+            .stage(op, "invocation", b"{}", "application/json", None)?
+            .await?;
+        let mut started = acyclic_harness_core::executor::ExecutionEvent::ToolStarted {
+            step: 0,
+            call_id: run.call_id.clone(),
+            invocation: reference,
+            publication: None,
+        };
+        assert!(
+            journal
+                .dispatch_if_tail(
+                    op,
+                    1,
+                    "original-device-dispatch",
+                    &mut started,
+                    &contributed,
+                    None
+                )?
+                .await?
+        );
+        let admitted = journal.replay(op, 0, 3, None)?.await?;
+        assert_eq!(admitted.len(), 2);
         assert!(matches!(
-            provider.commit(request.clone()).await?,
-            CommitOutcome::Committed(_)
+            &admitted[1].event,
+            acyclic_harness_core::executor::ExecutionEvent::ToolStarted {
+                publication: Some(_),
+                ..
+            }
         ));
         let (mut release, _) = listener.accept().await?;
         let result = terminal(&provider, paths.run("desktop", op)?, async || {
@@ -434,10 +493,33 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
         assert_eq!(result["exit"]["result"]["stderr"], "err");
         assert_eq!(result["exit"]["result"]["exit_code"], 7);
         // Original lost-reply recovery reuses the exact dispatch, never another Run.
-        assert!(matches!(
-            provider.commit(request).await?,
-            CommitOutcome::Committed(_)
-        ));
+        assert!(
+            journal
+                .dispatch_if_tail(
+                    op,
+                    1,
+                    "original-device-dispatch",
+                    &mut started,
+                    &contributed,
+                    None
+                )?
+                .await?
+        );
+        let mut changed = contributed.clone();
+        changed.delivery.1 = acyclic_stream::OwnedBytes::from_static(b"substituted run");
+        assert!(
+            journal
+                .dispatch_if_tail(
+                    op,
+                    1,
+                    "original-device-dispatch",
+                    &mut started,
+                    &changed,
+                    None
+                )?
+                .await
+                .is_err()
+        );
         assert_eq!(std::fs::read(&marker_path)?, b"x");
         assert_eq!(provider.tail(paths.queue("desktop")?).await?, 1);
 
@@ -488,41 +570,91 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
             .commit(dispatch(active, b"archive-active-command")?)
             .await?;
         let (mut held, _) = listener.accept().await?;
-        let lost = terminal(&provider, paths.run("desktop", active_op)?, async || {
-            lifecycle.close(&agent).await?;
-            Ok(())
-        })
-        .await?;
-        assert!(
-            lost.get("lost").is_some(),
-            "interrupted command settled as {lost}"
-        );
+        if refused_close {
+            let mut original = provider
+                .follow(FollowRequest::new(paths.run("desktop", active_op)?, 0))
+                .await?;
+            loop {
+                let FollowUpdate::Record(record) = original
+                    .next()
+                    .await
+                    .ok_or("original run producer ended")??
+                else {
+                    continue;
+                };
+                let value: serde_json::Value = serde_json::from_slice(&record.value)?;
+                if value["event"].get("output").is_some() {
+                    break;
+                }
+            }
+            // Refuse the actual original Close with a real competing tail.
+            // The run and session follows stay healthy and have no Lost marker.
+            let connection = online.socket.as_ref().ok_or("missing original socket")?;
+            let socket_path = StreamPath::new(format!(
+                "harness/actors/_sockets/v1/s/{}",
+                acyclic_auth::encode_component(connection.as_bytes())
+            ))?;
+            let tail = provider.head(socket_path.clone()).await?.tail;
+            provider
+                .append(acyclic_stream::AppendRequest {
+                    path: socket_path,
+                    records: vec![
+                        acyclic_stream::OwnedBytes::from_static(b"competing close").into(),
+                    ],
+                    if_tail: Some(tail),
+                    idempotency_key: IdempotencyKey::new(b"refuse-original-close".to_vec())?,
+                })
+                .await?;
+            assert!(
+                sockets.drain().await.is_err(),
+                "the original close unexpectedly committed"
+            );
+            assert!(matches!(
+                provider
+                    .head(paths.session_end("desktop", online.generation)?)
+                    .await,
+                Err(acyclic_stream::StreamError::NotFound)
+            ));
+        } else {
+            let lost = terminal(&provider, paths.run("desktop", active_op)?, async || {
+                lifecycle.close(&agent).await?;
+                Ok(())
+            })
+            .await?;
+            assert!(
+                lost.get("lost").is_some(),
+                "interrupted command settled as {lost}"
+            );
+        }
         use tokio::io::AsyncReadExt as _;
         assert_eq!(
             held.read_u8().await.unwrap_err().kind(),
             std::io::ErrorKind::UnexpectedEof
         );
         assert_eq!(std::fs::read(&marker_path)?, b"xx");
-        assert!(
+        assert_eq!(
             owner
                 .verifier(&mut None)?
                 .verify(&scope, &mut None)
-                .is_err()
+                .is_err(),
+            !refused_close
         );
         // Consume the original connection's committed end before recovery.
         // The failed command's output still belongs to its accepted prefix.
-        let mut ended_request =
-            FollowRequest::new(paths.session_end("desktop", online.generation)?, 0);
-        ended_request.when_absent = acyclic_stream::WhenAbsent::Wait;
-        let mut ended = provider.follow(ended_request).await?;
-        drop(_device);
-        loop {
-            let event = ended
-                .next()
-                .await
-                .ok_or("original session-end producer dropped")??;
-            if matches!(event, FollowUpdate::Record(_)) {
-                break;
+        if !refused_close {
+            let mut ended_request =
+                FollowRequest::new(paths.session_end("desktop", online.generation)?, 0);
+            ended_request.when_absent = acyclic_stream::WhenAbsent::Wait;
+            let mut ended = provider.follow(ended_request).await?;
+            drop(_device);
+            loop {
+                let event = ended
+                    .next()
+                    .await
+                    .ok_or("original session-end producer dropped")??;
+                if matches!(event, FollowUpdate::Record(_)) {
+                    break;
+                }
             }
         }
         for (operation, expected_exit) in [(op, Some(7)), (active_op, None)] {
@@ -550,6 +682,7 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
                 .follow(FollowRequest::new(paths.run("desktop", operation)?, 0))
                 .await?;
             let mut chunks = 0;
+            let tail = provider.head(paths.run("desktop", operation)?).await?.tail;
             loop {
                 let event = records.next().await.ok_or("original run prefix ended")??;
                 let FollowUpdate::Record(record) = event else {
@@ -581,6 +714,9 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
                     assert_eq!(bytes.as_ref(), original.as_slice());
                     chunks += 1;
                 } else if value["event"].get("started").is_none() {
+                    break;
+                }
+                if record.sequence + 1 == tail {
                     break;
                 }
             }

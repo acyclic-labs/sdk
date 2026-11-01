@@ -260,11 +260,11 @@ where
             };
             // Fixed owner-derived order: epoch precedes source in this namespace.
             let contributions = [
-                indexed_publication::Contribution {
+                indexed_publication::Contribution::Conditioned {
                     condition: epoch_condition.clone(),
                     record: epoch_record,
                 },
-                indexed_publication::Contribution {
+                indexed_publication::Contribution::Conditioned {
                     condition: source_condition,
                     record: &source_record,
                 },

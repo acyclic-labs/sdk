@@ -215,6 +215,59 @@ where
         self.append_contributed_if_tail(operation, expected_tail, key, event, &[], None, io)
     }
 
+    fn dispatch_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        expected_tail: u64,
+        key: &'a str,
+        event: &'a mut ExecutionEvent,
+        dispatch: &'a crate::tool::Dispatch,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            use indexed_publication::Contribution;
+            let mut contributions = [
+                Contribution::Append {
+                    path: &dispatch.delivery.0,
+                    record: &dispatch.delivery.1,
+                },
+                Contribution::Append {
+                    path: &dispatch.activation.0,
+                    record: &dispatch.activation.1,
+                },
+            ];
+            if dispatch.delivery.0 > dispatch.activation.0 {
+                contributions.swap(0, 1);
+            }
+            let identity = indexed_publication::contribution_identity(&contributions, io)?;
+            let ExecutionEvent::ToolStarted { publication, .. } = event else {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "remote dispatch requires its original tool start",
+                ));
+            };
+            if publication.is_some() && *publication != identity {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "remote dispatch differs from its original tool start",
+                ));
+            }
+            *publication = identity;
+            self.append_contributed_if_tail(
+                operation,
+                expected_tail,
+                key,
+                event,
+                &contributions,
+                None,
+                io,
+            )?
+            .await
+        })
+    }
+
     fn append_envelope_if_tail<'a>(
         &'a self,
         expected_tail: u64,

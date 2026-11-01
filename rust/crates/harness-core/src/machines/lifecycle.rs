@@ -531,10 +531,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> OnFirstUse<P> {
         target: &ProvisionedTarget,
         sandbox: SandboxRef,
     ) -> Result<Arc<dyn ToolExecutor>> {
-        self.bound.get_or_try_init(|| async {
-            let observed = target.host.inspect(&sandbox).await?;
-            self.executors.bind(target, sandbox, observed)
-        }).await.map(Arc::clone)
+        self.bound
+            .get_or_try_init(|| async {
+                let observed = target.host.inspect(&sandbox).await?;
+                self.executors.bind(target, sandbox, observed)
+            })
+            .await
+            .map(Arc::clone)
     }
 }
 

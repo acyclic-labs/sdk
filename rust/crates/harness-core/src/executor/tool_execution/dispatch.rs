@@ -36,7 +36,12 @@ impl StockExecution<'_> {
                 Err(error) => return Err(error),
             }
         };
-        let claim = self.claim_tool_invocation(journal, (operation_id, step), (&record, dispatch.as_ref()), started);
+        let claim = self.claim_tool_invocation(
+            journal,
+            (operation_id, step),
+            (&record, dispatch.as_ref()),
+            started,
+        );
         let claimed = if started {
             // Reconciliation consumes the original intent; it publishes none.
             crate::executor::phase::claim(claim).await?
@@ -366,15 +371,21 @@ impl StockExecution<'_> {
                     work,
                 )
             })?;
-            let event = ExecutionEvent::ToolStarted {
+            let mut event = ExecutionEvent::ToolStarted {
                 step,
                 call_id: stock_string_copy(&invocation.call_id, self.io)?,
                 invocation: reference,
+                publication: None,
             };
             let appended = match dispatch {
-                Some(dispatch) => {
-                    journal.dispatch_if_tail(operation_id, tail, &key, &event, dispatch, self.io)?
-                }
+                Some(dispatch) => journal.dispatch_if_tail(
+                    operation_id,
+                    tail,
+                    &key,
+                    &mut event,
+                    dispatch,
+                    self.io,
+                )?,
                 None => journal.append_if_tail(operation_id, tail, &key, &event, self.io)?,
             };
             match appended.await {

@@ -206,7 +206,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         _operation_id: OperationId,
         _expected_tail: u64,
         _claim_id: &'a str,
-        _event: &'a ExecutionEvent,
+        _event: &'a mut ExecutionEvent,
         _dispatch: &'a crate::tool::Dispatch,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {

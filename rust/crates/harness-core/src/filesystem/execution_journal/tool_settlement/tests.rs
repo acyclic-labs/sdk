@@ -122,6 +122,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                     step: 64,
                     call_id: "call".into(),
                     invocation: payload.clone(),
+                    publication: None,
                 },
                 None,
             )?
