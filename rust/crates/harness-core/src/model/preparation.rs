@@ -110,7 +110,11 @@ pub(super) fn invalid(work: &mut Option<&mut dyn HistoryIo>, reason: &'static st
         None => Error::Invalid(reason.into()),
     }
 }
-fn inspect_value(value: &Value, maximum: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
+fn inspect_value(
+    value: &Value,
+    maximum: Option<u64>,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<()> {
     if let Some(observer) = work.as_deref_mut() {
         #[cfg(feature = "filesystem")]
         let maximum_items = observer.remaining()?.items_examined;
@@ -120,7 +124,7 @@ fn inspect_value(value: &Value, maximum: u64, work: &mut Option<&mut dyn History
             value,
             crate::executor::json::JsonBounds {
                 maximum_bytes: maximum,
-                maximum_items,
+                maximum_items: Some(maximum_items),
                 maximum_depth: 256,
             },
             crate::executor::json::JsonValueSchema::None,
@@ -131,7 +135,7 @@ fn inspect_value(value: &Value, maximum: u64, work: &mut Option<&mut dyn History
 }
 pub(super) fn value_bound(
     value: &Value,
-    maximum: u64,
+    maximum: Option<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     inspect_value(value, maximum, work)?;
@@ -139,7 +143,7 @@ pub(super) fn value_bound(
 }
 pub(super) fn result_bound(
     content: &ToolResultContent,
-    maximum: u64,
+    maximum: Option<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     if work.is_some() {

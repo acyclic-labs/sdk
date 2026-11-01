@@ -70,9 +70,8 @@ impl LocalHarness {
             .observe_staged_once(
                 manifest_operation(operation),
                 None,
-                // The manifest is a harness record bounded by what it
-                // renders, not admitted content under the file bound.
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                // Harness manifests are independent of the selected input-file policy.
+                None,
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;
@@ -103,7 +102,11 @@ impl LocalHarness {
                 return Ok(reference);
             }
             let path = manifest_path(operation);
-            if path.len() > self.limits.path_bytes {
+            if self
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+            {
                 return Err(Error::Invalid(
                     "context manifest path exceeds path bound".into(),
                 ));
@@ -124,7 +127,11 @@ impl LocalHarness {
             };
             let policy = ContextDiscoveryPolicy::default();
             let limits = ContextDiscoveryLimits::default();
-            let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
+            let maximum = limits
+                .instruction_bytes
+                .into_iter()
+                .chain(self.limits.file_bytes)
+                .min();
             let mut work = crate::context::DiscoveryWork {
                 limits: ContextDiscoveryLimits {
                     instruction_bytes: maximum,
@@ -331,8 +338,7 @@ impl LocalHarness {
         }
         // The manifest's own encoding bounds it: it lists files already
         // admitted under the content bounds, so it takes no content bound.
-        let publisher =
-            self.input_publisher_with_limit(crate::conversation::MAX_EXACT_JS_INTEGER)?;
+        let publisher = self.input_publisher_with_limit(None)?;
         let operation = publication_operation(b"acyclic.local.mention-manifest/v1\0", key);
         if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
             return Ok(Some(manifest));
@@ -381,7 +387,7 @@ impl LocalHarness {
             .observe_staged_once(
                 operation,
                 None,
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                None,
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;
@@ -589,7 +595,12 @@ impl crate::context::InstructionReader for VolumeInstructions<'_> {
         maximum: u64,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
         Box::pin(async move {
-            if path.len() > self.harness.limits.path_bytes {
+            if self
+                .harness
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+            {
                 return Err(Error::Invalid("instruction path exceeds path bound".into()));
             }
             let instruction = self.source.instruction(path, revision, maximum).await?;
@@ -671,12 +682,12 @@ mod tests {
 
     proptest! {
         // Property: every accepted instruction round-trips without normalization;
-        // exactly the positive byte bound, UTF-8 and NUL constraints determine acceptance.
+        // exactly the optional positive byte bound, UTF-8 and NUL constraints determine acceptance.
         #[test]
-        fn instruction_text_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..128), maximum in 0u64..128) {
+        fn instruction_text_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..128), maximum in prop::option::of(0u64..128)) {
             let limits = ContextDiscoveryLimits { instruction_bytes: maximum, ..Default::default() };
             let accepted = limits.validate_instruction(&bytes).is_ok();
-            prop_assert_eq!(accepted, maximum > 0 && bytes.len() as u64 <= maximum && std::str::from_utf8(&bytes).is_ok() && !bytes.contains(&0));
+            prop_assert_eq!(accepted, maximum.is_none_or(|maximum| maximum > 0 && bytes.len() as u64 <= maximum) && std::str::from_utf8(&bytes).is_ok() && !bytes.contains(&0));
             if accepted {
                 prop_assert_eq!(std::str::from_utf8(&bytes).unwrap().as_bytes(), bytes.as_slice());
                 let mut invalid = bytes;
@@ -696,7 +707,6 @@ mod tests {
             let name = path.strip_prefix("inputs/").unwrap().strip_suffix(".manifest.json").unwrap();
             let decoded: OperationId = serde_json::from_value(serde_json::Value::String(name.into()))?;
             prop_assert_eq!(decoded, operation);
-            prop_assert!(path.len() <= Limits::default().path_bytes);
             prop_assert_eq!(manifest_path(operation), path.clone());
             if operation != other {
                 prop_assert_ne!(path, manifest_path(other));

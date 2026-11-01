@@ -110,6 +110,12 @@ impl FileTool {
                         "byte ranges and projections are mutually exclusive",
                     ));
                 }
+                let maximum = scope
+                    .limits()
+                    .render_bytes
+                    .into_iter()
+                    .chain(scope.limits().file_bytes)
+                    .min();
                 let length = match input.0.range {
                     Some(range)
                         if source
@@ -125,7 +131,9 @@ impl FileTool {
                         .as_ref()
                         .map_or(Some(0), |file| Some(file.descriptor().byte_length())),
                 };
-                if length.is_none() {
+                if maximum.is_some_and(|maximum| maximum == 0 || maximum == u64::MAX)
+                    || length.is_none_or(|length| maximum.is_some_and(|maximum| length > maximum))
+                {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file selection exceeds source bounds",
@@ -147,7 +155,11 @@ impl FileTool {
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 self.public_path(&input.0.path, io)?;
-                if input.0.path.len() > scope.limits().path_bytes {
+                if scope
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|maximum| input.0.path.len() > maximum.get())
+                {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file path exceeds original task bound",
@@ -167,7 +179,12 @@ impl FileTool {
                     || input.0.query.len() as u64 > options.maximum_query_bytes
                     || u64::from(options.maximum_matches)
                         * std::mem::size_of::<super::text::TextRange>() as u64
-                        > maximum_result_bytes.min(scope.limits().file_bytes)
+                        > scope
+                            .limits()
+                            .file_bytes
+                            .map_or(maximum_result_bytes, |maximum| {
+                                maximum_result_bytes.min(maximum)
+                            })
                 {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
@@ -199,7 +216,11 @@ impl FileTool {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
         self.public_path(path, io)?;
-        if path.len() > scope.limits().path_bytes {
+        if scope
+            .limits()
+            .path_bytes
+            .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(super::executor::rejection(
                 work,
                 "file path exceeds original task bound",

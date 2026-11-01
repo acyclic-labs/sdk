@@ -320,8 +320,7 @@ async fn first_generation_seek_retains_identity_prefix_and_original_funding() ->
     let simulated = crate::Simulation::wrap(
         MemoryAuthorityStore::default(),
         MemoryObjectStore::default(),
-        Default::default(),
-    )?;
+    );
     first_occurrence(simulated.stores().0, false).await?;
     first_occurrence(
         StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default())),
@@ -331,8 +330,7 @@ async fn first_generation_seek_retains_identity_prefix_and_original_funding() ->
     let simulated = crate::Simulation::wrap(
         StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default())),
         MemoryObjectStore::default(),
-        Default::default(),
-    )?;
+    );
     first_occurrence(simulated.stores().0, true).await?;
     forged_header_is_not_publication_evidence().await?;
     #[cfg(feature = "local")]

@@ -145,7 +145,7 @@ fn transport_failure(
 /// Retryable diagnostics retain only their bounded excerpt.
 async fn http_failure(
     response: HttpResponse,
-    maximum: usize,
+    maximum: Option<usize>,
     work: acyclic_harness_core::NativeWork<'_>,
 ) -> Error {
     #[cfg(not(target_arch = "wasm32"))]

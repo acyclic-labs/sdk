@@ -55,11 +55,6 @@ type BrowserTurns = FilesystemTurnHost<dyn StreamProvider, Authorities, Objects>
 type BrowserAgents = AgentHost<dyn StreamProvider>;
 type BrowserHandler = AgentHandler<dyn StreamProvider, ExecutorDriver<Arc<BrowserTurns>>>;
 
-/// Settled turns of history in each turn's model context, as in the local host.
-const HISTORY_TURNS: u32 = 64;
-/// Backstop on one delivery, which awaits a whole turn, as in the local host.
-const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
-
 fn to_js<T: Serialize>(value: &T) -> std::result::Result<JsValue, JsValue> {
     value
         .serialize(
@@ -753,7 +748,7 @@ impl WasmAgents {
         from: u64,
         limit: u32,
     ) -> std::result::Result<JsValue, JsValue> {
-        let path = record_path(agent, &stream)?;
+        let path = agent_stream_path(agent, &stream)?;
         let records = match self
             .agents
             .provider()
@@ -785,9 +780,8 @@ impl WasmAgents {
         to_js(&records)
     }
 
-    /// Atomically replays and follows the same agent stream as `read`.
-    /// The canonical Stream cursor returns encoded ReadResponse frames; close
-    /// it to release the subscription and wake a pending next call.
+    /// Atomic replay-to-live observation through the shared Streams cursor.
+    /// Closing the cursor wakes a pending read and releases its subscription.
     pub async fn follow(
         &self,
         agent: String,
@@ -795,16 +789,27 @@ impl WasmAgents {
         stream: String,
         from: u64,
     ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
-        use prost::Message as _;
-        let request = acyclic_stream::wire::FollowRequest {
-            path: record_path(agent, &stream)?.to_string(),
-            from,
-            when_absent: acyclic_stream::wire::WhenAbsent::Wait as i32,
-            ..Default::default()
-        };
-        acyclic_stream::WasmStream::from_provider(Arc::clone(self.agents.provider()))
-            .open_follow(&request.encode_to_vec())
+        if stream == "conversation" {
+            let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+            return Ok(acyclic_stream::WasmFollow::from_records(
+                self.agents
+                    .follow_conversation(&agent, from)
+                    .await
+                    .map_err(agent_error)?,
+                agent.conversation().map_err(agent_error)?,
+            ));
+        }
+        let path = agent_stream_path(agent, &stream)?;
+        let records = self
+            .agents
+            .provider()
+            .follow(acyclic_stream::FollowRequest::new(path.clone(), from))
             .await
+            .map_err(stream_error)?;
+        Ok(acyclic_stream::WasmFollow::from_records(
+            acyclic_stream::records_only(records),
+            path,
+        ))
     }
 
     /// The verified bytes of `file` on one of `agent`'s volumes, such as a
@@ -837,6 +842,17 @@ impl WasmAgents {
                 .as_slice(),
         ))
     }
+}
+
+fn agent_stream_path(agent: String, stream: &str) -> std::result::Result<StreamPath, JsValue> {
+    let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+    match stream {
+        "inbox" => agent.inbox(),
+        "conversation" => agent.conversation(),
+        "status" => agent.status(),
+        _ => return Err(js_error(Error::Invalid("unknown agent stream".into()))),
+    }
+    .map_err(agent_error)
 }
 
 impl WasmAgents {

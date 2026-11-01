@@ -56,8 +56,8 @@ pub struct ReaderPolicy {
     pub lag: u64,
     /// Follow deliveries folded per frame; the rest wait on session credit.
     pub deliveries: usize,
-    /// A read unanswered after this is failed and its slot reused.
-    pub timeout_ms: u64,
+    /// Optional caller-selected deadline before a read is retried.
+    pub timeout_ms: Option<u64>,
     /// First retry delay after a failure.
     pub backoff_min_ms: u64,
     /// Longest retry delay.
@@ -80,7 +80,7 @@ impl Default for ReaderPolicy {
             listing_limit: 64,
             lag: 16,
             deliveries: 256,
-            timeout_ms: 10_000,
+            timeout_ms: None,
             backoff_min_ms: 250,
             backoff_max_ms: 8_000,
             offline_after: 3,
@@ -101,21 +101,19 @@ impl ReaderPolicy {
         }
     }
 
-    /// Refuse budgets above the client hard ceilings or with no capacity.
+    /// Validate caller-selected credits and nonzero page sizes.
     ///
     /// # Errors
-    /// `StreamError::LimitExceeded` names any out-of-range budget.
+    /// `StreamError::LimitExceeded` names invalid credit or page settings.
     pub fn validate(&self) -> Result<(), StreamError> {
-        let ok = (64 * 1024..=256 << 20).contains(&self.cache_bytes)
-            && (16..=65_536).contains(&self.streams)
-            && (2..=64).contains(&self.requests)
+        let ok = self.requests > 0
             && self.prefetch_requests < self.requests
             && self.follow_requests > 0
-            && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.read_limit)
-            && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.listing_limit)
+            && self.read_limit > 0
+            && self.listing_limit > 0
             && self.lag >= 1
-            && (1..=65_536).contains(&self.deliveries)
-            && self.timeout_ms > 0
+            && self.deliveries > 0
+            && self.timeout_ms.is_none_or(|timeout| timeout > 0)
             && self.backoff_min_ms > 0
             && self.backoff_min_ms <= self.backoff_max_ms
             && self.offline_after > 0;
@@ -392,7 +390,7 @@ struct Paging {
 struct InFlight {
     key: OpKey,
     priority: Priority,
-    deadline: u64,
+    deadline: Option<u64>,
     issued: u64,
     paging: Paging,
     observed: Option<(u64, u64)>,
@@ -404,7 +402,7 @@ std::thread_local! {
 }
 
 impl InFlight {
-    fn deadline(&self) -> u64 {
+    fn deadline(&self) -> Option<u64> {
         #[cfg(test)]
         DEADLINE_READS.with(|reads| reads.set(reads.get() + 1));
         self.deadline
@@ -441,12 +439,11 @@ struct Anchors {
 
 const MAX_ANCHORED_PARENTS: usize = 64;
 const MAX_ANCHORS: usize = 256;
-const MAX_REFUSED: usize = 64;
 
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Residency {
-    /// One encoded snapshot awaiting source admission, separately bounded.
+    /// Staged cache charge awaiting source admission, under the cache budget.
     pub snapshot_bytes: usize,
     /// Cache charge, never above the byte budget.
     pub cache_bytes: usize,
@@ -476,7 +473,7 @@ pub struct Reader {
     policy: ReaderPolicy,
     cache: RecordCache,
     credentials: Option<Credentials>,
-    pending_snapshot: Option<Vec<u8>>,
+    pending_snapshot: Option<cache::PendingSnapshot>,
     driver: Option<std::sync::Arc<()>>,
     demand: Demands,
     next_ticket: u64,
@@ -589,7 +586,7 @@ impl Reader {
                 if let Some(snapshot) = self.pending_snapshot.take() {
                     // A cache miss is harmless; it never authenticates a source
                     // or changes the requested observation's logical outcome.
-                    let _ = self.cache.restore(&snapshot);
+                    let _ = self.cache.install_snapshot(snapshot);
                 }
             }
             CredentialStatus::Pending => {}
@@ -653,7 +650,7 @@ impl Reader {
     }
 
     /// Warm start from persisted bytes. While the registered source resolves,
-    /// retain one bounded snapshot for atomic validation after lease admission.
+    /// retain private cache residency for atomic validation after lease admission.
     ///
     /// # Errors
     /// Refuses malformed bytes or replacement while reads or follows are active.
@@ -662,10 +659,7 @@ impl Reader {
             return Err(SnapshotError);
         }
         if self.credential_status() == CredentialStatus::Pending {
-            if bytes.len() > self.cache.snapshot_limit() {
-                return Err(SnapshotError);
-            }
-            self.pending_snapshot = Some(bytes.to_vec());
+            self.pending_snapshot = Some(self.cache.prepare_snapshot(bytes)?);
             self.generation += 1;
             return Ok(());
         }
@@ -676,16 +670,10 @@ impl Reader {
 
     /// Adapt to memory pressure: shrink (or regrow) the one cache budget.
     pub fn set_cache_budget(&mut self, bytes: usize) {
-        let bytes = bytes.clamp(64 * 1024, 256 << 20);
         self.policy.cache_bytes = bytes;
         self.cache.set_budget(bytes);
-        if self
-            .pending_snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.len() > self.cache.snapshot_limit())
-        {
-            self.pending_snapshot = None;
-            self.generation += 1;
+        if let Some(snapshot) = &mut self.pending_snapshot {
+            snapshot.set_budget(bytes);
         }
     }
 
@@ -742,7 +730,10 @@ impl Reader {
     #[must_use]
     pub fn residency(&self) -> Residency {
         Residency {
-            snapshot_bytes: self.pending_snapshot.as_ref().map_or(0, Vec::len),
+            snapshot_bytes: self
+                .pending_snapshot
+                .as_ref()
+                .map_or(0, cache::PendingSnapshot::bytes),
             cache_bytes: self.cache.bytes(),
             passed_bytes: self.cache.passed_bytes(),
             backing_bytes: self.cache.backing_bytes(),
@@ -766,7 +757,7 @@ impl Reader {
         // IDs follow monotonic admission time and one immutable timeout.
         // Their existing order is therefore also the deadline order.
         while let Some((&id, flight)) = self.inflight.first_key_value() {
-            if flight.deadline() > now {
+            if flight.deadline().is_none_or(|deadline| deadline > now) {
                 break;
             }
             if self.cancel(id) {
@@ -1022,7 +1013,10 @@ impl Reader {
                     id,
                     stream: stream.clone(),
                     from: *from,
-                    limit: self.policy.read_limit,
+                    limit: self
+                        .policy
+                        .read_limit
+                        .min(acyclic_stream::CHILDREN_PAGE_ITEMS),
                 },
                 OpKey::Head(stream) => Op::Head {
                     id,
@@ -1043,7 +1037,10 @@ impl Reader {
                 InFlight {
                     key: key.clone(),
                     priority: *priority,
-                    deadline: now.saturating_add(self.policy.timeout_ms),
+                    deadline: self
+                        .policy
+                        .timeout_ms
+                        .map(|timeout| now.saturating_add(timeout)),
                     issued: now,
                     paging: Paging::default(),
                     observed: self.cache.observation(key.path()),
@@ -1153,7 +1150,11 @@ impl Reader {
                     version,
                 },
             ) => {
-                let valid = children.len() <= self.policy.listing_limit as usize
+                let valid = children.len()
+                    <= self
+                        .policy
+                        .listing_limit
+                        .min(acyclic_stream::CHILDREN_PAGE_ITEMS) as usize
                     && children.iter().all(|child| {
                         child
                             .origin
@@ -1383,11 +1384,6 @@ impl Reader {
     }
 
     fn refuse(&mut self, key: OpKey) {
-        if self.refused.len() >= MAX_REFUSED
-            && let Some(first) = self.refused.iter().next().cloned()
-        {
-            self.refused.remove(&first);
-        }
         self.refused.insert(key);
     }
 
@@ -1535,12 +1531,6 @@ impl Reader {
     }
 
     fn report_issue(&mut self, stream: &StreamPath, issue: ReadIssue) {
-        if self.issues.len() == MAX_REFUSED
-            && !self.issues.contains_key(stream)
-            && let Some(first) = self.issues.keys().next().cloned()
-        {
-            self.issues.remove(&first);
-        }
         self.issues.insert(stream.clone(), issue);
     }
 
@@ -1620,7 +1610,7 @@ impl Reader {
         let read = self
             .inflight
             .first_key_value()
-            .map(|(_, flight)| flight.deadline());
+            .and_then(|(_, flight)| flight.deadline());
         let waiting = !self.demand.is_empty() || (self.follow_backoff && !self.follows.is_empty());
         let retry = (waiting && self.retry_at > self.now).then_some(self.retry_at);
         let credential = self.credentials.as_ref().and_then(Credentials::deadline);
@@ -1672,6 +1662,77 @@ fn projected(cache: &RecordCache, want: &Want) -> Vec<(StreamPath, u64)> {
 #[cfg(test)]
 mod reader_tests {
     use super::*;
+
+    #[test]
+    fn duplicate_prefetch_promotes_without_spending_prefetch_credit() {
+        let mut reader = Reader::new(ReaderPolicy {
+            prefetch: false,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let first = StreamPath::new("test/first-visible").unwrap();
+        let later = StreamPath::new("test/later-visible").unwrap();
+        let want = |stream: StreamPath| Want::Last { stream, count: 1 };
+        let ops = frame(
+            &mut reader,
+            0,
+            &[
+                (want(later.clone()), Priority::Prefetch),
+                (want(first.clone()), Priority::Visible),
+                (want(later.clone()), Priority::Visible),
+            ],
+        );
+        assert_eq!(ops.len(), 2);
+        let actual: BTreeSet<_> = ops
+            .into_iter()
+            .map(|op| match op {
+                Op::Head { stream, .. } => stream,
+                op => panic!("expected a visible head: {op:?}"),
+            })
+            .collect();
+        assert_eq!(actual, BTreeSet::from([first, later]));
+    }
+
+    #[test]
+    fn all_requested_reads_and_follows_are_reachable_without_default_ceilings() {
+        let mut reader = Reader::new(ReaderPolicy {
+            requests: 5_000,
+            prefetch_requests: 0,
+            cache_bytes: 0,
+            streams: 0,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let streams: Vec<_> = (0..5_000)
+            .map(|index| StreamPath::new(format!("test/{index}")).unwrap())
+            .collect();
+        reader.plan(streams.iter().map(|stream| {
+            (
+                Want::Last {
+                    stream: stream.clone(),
+                    count: 1,
+                },
+                Priority::Visible,
+            )
+        }));
+        let ops = reader.poll(0);
+        assert_eq!(ops.len(), streams.len());
+        reader.begin_frame(20_000);
+        assert!(
+            reader.take_cancelled().is_empty(),
+            "slow reads retain their original credit"
+        );
+        for op in ops {
+            reader.complete(
+                op.id(),
+                Outcome::Head(head(0, CommitId::from_bytes([0; 32]), b"", None)),
+                20_000,
+            );
+        }
+        reader.set_follows(streams.clone());
+        let followed: BTreeSet<_> = reader.follows().map(|(stream, _)| stream.clone()).collect();
+        assert_eq!(followed, streams.into_iter().collect());
+    }
 
     fn head(
         tail: u64,
@@ -2149,7 +2210,7 @@ mod reader_tests {
             InFlight {
                 key: key.clone(),
                 priority: Priority::Visible,
-                deadline: 100,
+                deadline: Some(100),
                 issued: 0,
                 paging: Paging {
                     after: Some(old.clone()),
@@ -2425,7 +2486,7 @@ mod reader_tests {
             let policy = ReaderPolicy {
                 requests: 64,
                 prefetch_requests: 0,
-                timeout_ms: 100,
+                timeout_ms: Some(100),
                 ..ReaderPolicy::default()
             };
             let first_want = (

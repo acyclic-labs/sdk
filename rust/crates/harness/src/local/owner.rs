@@ -420,7 +420,7 @@ impl Owner {
 
     fn load_record(path: &Path, custody: SigningCustody<'_>) -> Result<Self> {
         use acyclic_native_runtime::{owner_record, private_file};
-        let record = private_file::read_for_upgrade_with(path, 65_536, |file, length| {
+        let record = private_file::read_for_upgrade_with(path, None, |file, length| {
             let mut bytes = owner_record::SecretBytes(Vec::with_capacity(
                 usize::try_from(length + 1).map_err(std::io::Error::other)?,
             ));
@@ -438,7 +438,7 @@ impl Owner {
         let plain = if legacy {
             record
         } else {
-            owner_record::decode_with(&record.0, 65_536, None, |bytes| {
+            owner_record::decode_with(&record.0, None, None, |bytes| {
                 Ok::<_, std::io::Error>(owner_record::SecretBytes(bytes.to_vec()))
             })
             .map_err(|error| Error::Invalid(error.to_string()))?
@@ -503,7 +503,7 @@ impl Owner {
         let plain = owner_record::SecretBytes(
             serde_json::to_vec(self).map_err(|error| Error::Invalid(error.to_string()))?,
         );
-        let bytes = owner_record::encode_with(&plain.0, 65_536, None, |parts| {
+        let bytes = owner_record::encode_with(&plain.0, None, None, |parts| {
             Ok::<_, std::io::Error>(owner_record::SecretBytes(parts.concat()))
         })
         .map_err(storage)?;

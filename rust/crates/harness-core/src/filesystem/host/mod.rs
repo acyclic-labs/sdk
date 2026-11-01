@@ -146,6 +146,7 @@ impl<A, O> FilesystemHost<A, O> {
 mod content;
 mod publication;
 pub(in crate::filesystem) use publication::{PublicationLookup, PublicationPurpose};
+pub(super) mod authentication;
 mod content_selection;
 mod directory;
 mod family;
@@ -166,7 +167,7 @@ pub use keys::{filesystem_key, workspace_ref};
 pub(in crate::filesystem) use publication::{
     content_metadata_matches, decode_content_metadata, recover_internal_upload_receipt,
 };
-pub(in crate::filesystem) use reads::read_generation;
+pub(in crate::filesystem) use reads::{read_generation, read_metadata};
 
 use crate::executor::stock_boundary;
 
@@ -196,12 +197,8 @@ impl<A, O> FilesystemHost<A, O> {
         reference: FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
-        let identity = crate::executor::with_history_io(io, |work| {
-            reference.identity_digest(
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work,
-            )
-        })?;
+        let identity =
+            crate::executor::with_history_io(io, |work| reference.identity_digest(None, work))?;
         crate::executor::with_history_io(io, |work| {
             let bytes = (std::mem::size_of::<PublicationWitness>()
                 + 2 * std::mem::size_of::<usize>()) as u64;
@@ -232,12 +229,8 @@ impl<A, O> FilesystemHost<A, O> {
         if !Arc::ptr_eq(&self.publication_domain, &witness._domain) {
             return Ok(false);
         }
-        let identity = crate::executor::with_history_io(io, |work| {
-            reference.identity_digest(
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work,
-            )
-        })?;
+        let identity =
+            crate::executor::with_history_io(io, |work| reference.identity_digest(None, work))?;
         Ok(identity == witness._identity)
     }
 }

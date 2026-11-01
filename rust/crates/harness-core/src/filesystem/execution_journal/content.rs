@@ -45,9 +45,6 @@ where
                 &self.scope,
                 &self.volume,
                 VolumeOperation::Read,
-                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-                    .transpose()?
-                    .unwrap_or(u64::MAX),
                 work,
             )
         })?;
@@ -58,7 +55,7 @@ where
                     volume: &self.volume,
                     key: &key,
                     expected_path: Some(&path),
-                    maximum_bytes: super::MAXIMUM_PAYLOAD_BYTES,
+                    maximum_bytes: None,
                     internal_class: Some(payload_class(&path)),
                     purpose: super::super::PublicationPurpose::Content,
                     scope: &self.scope,
@@ -152,9 +149,6 @@ where
                 &self.scope,
                 &self.volume,
                 VolumeOperation::Write,
-                io.map_or(Ok(u64::MAX), |io| {
-                    io.remaining().map(|budget| budget.bytes_encoded)
-                })?,
                 work,
             )
         })?;
@@ -199,17 +193,12 @@ where
                 "journal content belongs to another private volume",
             ));
         }
-        let maximum = io
-            .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
                 &self.verifier,
                 &self.scope,
                 &self.volume,
                 VolumeOperation::Read,
-                maximum,
                 work,
             )
         })?;
@@ -248,9 +237,6 @@ where
                 &self.scope,
                 &self.volume,
                 operation,
-                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-                    .transpose()?
-                    .unwrap_or(u64::MAX),
                 work,
             )
         })
@@ -379,7 +365,7 @@ where
                             )?;
                             let _canonical_hold;
                             let canonical =
-                                io.encode(&parsed.0, super::MAXIMUM_PAYLOAD_BYTES, true)?;
+                                io.encode(&parsed.0, Some(super::MAXIMUM_PAYLOAD_BYTES), true)?;
                             _canonical_hold = io.guard_bytes(&canonical)?;
                             if canonical.as_ref() != bytes {
                                 return Err(canonical_boundary(
@@ -496,7 +482,6 @@ where
                         &self.scope,
                         reference.volume(),
                         VolumeOperation::Read,
-                        io.remaining()?.bytes_encoded,
                         work,
                     )
                 })?;
@@ -520,7 +505,6 @@ where
                     &self.scope,
                     reference.volume(),
                     VolumeOperation::Read,
-                    super::MAXIMUM_PAYLOAD_BYTES,
                     &mut None,
                 )?
             };

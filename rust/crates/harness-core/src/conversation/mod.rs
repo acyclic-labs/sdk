@@ -11,13 +11,6 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
-/// Maximum normalized UTF-8 path length admitted by the Harness protocol:
-/// the common `PATH_MAX`. With [`MAX_LABEL_BYTES`] it bounds every file and
-/// volume reference, so every record that carries one has a static size bound.
-pub const MAX_PATH_BYTES: usize = 4096;
-/// Maximum UTF-8 bytes in a file or volume label, display name, provider
-/// identity part or media type: the common file-name limit.
-pub const MAX_LABEL_BYTES: usize = 255;
 /// Largest integer that can be represented exactly by a JavaScript number.
 pub const MAX_EXACT_JS_INTEGER: u64 = (1_u64 << 53) - 1;
 #[allow(clippy::cast_precision_loss, reason = "2^53 - 1 is exact in f64")]
@@ -58,35 +51,35 @@ pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
-    /// Maximum bytes in one referenced file admitted to a conversation.
-    pub file_bytes: u64,
-    /// Maximum normalized UTF-8 path bytes.
-    pub path_bytes: usize,
-    /// Maximum attachments in one message, inline or manifest-backed.
-    pub attachments: usize,
-    /// Maximum bytes rendered directly into one model context part.
-    pub render_bytes: u64,
-    /// Maximum model round trips in the stock agent loop.
-    pub model_steps: usize,
-    /// Maximum streamed observations admitted in one model round trip.
-    pub model_events_per_step: usize,
-    /// Maximum distinct tool calls admitted in one model round trip.
-    pub tool_calls_per_step: usize,
-    /// Maximum canonical messages selected into one model request.
-    pub context_messages: usize,
+    /// Optional maximum bytes in one referenced file admitted to a conversation.
+    pub file_bytes: Option<u64>,
+    /// Optional maximum normalized UTF-8 path bytes.
+    pub path_bytes: Option<std::num::NonZeroUsize>,
+    /// Optional maximum attachments in one message, inline or manifest-backed.
+    pub attachments: Option<std::num::NonZeroUsize>,
+    /// Optional maximum bytes rendered directly into one model context part.
+    pub render_bytes: Option<u64>,
+    /// Optional maximum model round trips in the stock agent loop.
+    pub model_steps: Option<std::num::NonZeroUsize>,
+    /// Optional maximum streamed observations admitted in one model round trip.
+    pub model_events_per_step: Option<std::num::NonZeroUsize>,
+    /// Optional maximum distinct tool calls admitted in one model round trip.
+    pub tool_calls_per_step: Option<std::num::NonZeroUsize>,
+    /// Optional maximum canonical messages selected into one model request.
+    pub context_messages: Option<std::num::NonZeroUsize>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            file_bytes: MAX_EXACT_JS_INTEGER,
-            path_bytes: u32::MAX as usize,
-            attachments: u32::MAX as usize,
-            render_bytes: MAX_EXACT_JS_INTEGER,
-            model_steps: u32::MAX as usize,
-            model_events_per_step: u32::MAX as usize,
-            tool_calls_per_step: u32::MAX as usize,
-            context_messages: u32::MAX as usize,
+            file_bytes: None,
+            path_bytes: None,
+            attachments: None,
+            render_bytes: None,
+            model_steps: None,
+            model_events_per_step: None,
+            tool_calls_per_step: None,
+            context_messages: None,
         }
     }
 }
@@ -102,17 +95,16 @@ impl Limits {
         }
         if [self.file_bytes, self.render_bytes]
             .into_iter()
+            .flatten()
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
-            || [
-                self.path_bytes,
-                self.attachments,
-                self.model_steps,
-                self.model_events_per_step,
-                self.tool_calls_per_step,
-                self.context_messages,
-            ]
-            .into_iter()
-            .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)
+            || [self.path_bytes, self.attachments, self.context_messages]
+                .into_iter()
+                .flatten()
+                .map(std::num::NonZeroUsize::get)
+                .chain(self.model_steps.map(std::num::NonZeroUsize::get))
+                .chain(self.model_events_per_step.map(std::num::NonZeroUsize::get))
+                .chain(self.tool_calls_per_step.map(std::num::NonZeroUsize::get))
+                .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)
         {
             return Err(conversation_error(
                 work,
@@ -130,7 +122,10 @@ impl Limits {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.validate_file_metadata(file, work)?;
-        if file.descriptor().byte_length() > self.file_bytes {
+        if self
+            .file_bytes
+            .is_some_and(|maximum| file.descriptor().byte_length() > maximum)
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
@@ -193,7 +188,10 @@ impl Limits {
     ) -> Result<()> {
         self.validate(work)?;
         file.validate(work)?;
-        if file.path().len() > self.path_bytes {
+        if self
+            .path_bytes
+            .is_some_and(|maximum| file.path().len() > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
@@ -218,7 +216,10 @@ impl Limits {
                 item_count,
             } => (&[][..], Some(manifest), *item_count as usize),
         };
-        if count > self.attachments {
+        if self
+            .attachments
+            .is_some_and(|maximum| count > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
@@ -372,7 +373,7 @@ impl TryFrom<ConversationStateWire> for ConversationState {
     type Error = Error;
 
     fn try_from(wire: ConversationStateWire) -> Result<Self> {
-        Self::from_wire(wire, 1, &mut None).map(|(state, _)| state)
+        Self::from_wire(wire, None, &mut None).map(|(state, _)| state)
     }
 }
 
@@ -455,7 +456,7 @@ fn turn_outcome_parent(message: &ConversationMessage) -> Option<Uuid> {
 fn advance_history_digest(
     previous: [u8; 32],
     message: &ConversationMessage,
-    maximum_encoded_bytes: u64,
+    maximum_encoded_bytes: Option<u64>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     let digest =
@@ -538,7 +539,6 @@ fn validate_label(
         io.check_cancellation()?;
     }
     if value.is_empty()
-        || value.len() as u64 > MAX_LABEL_BYTES as u64
         || value.chars().any(char::is_control)
         || value.contains('/')
         || value.contains('\\')
@@ -563,7 +563,6 @@ pub fn validate_content_path(
         io.check_cancellation()?;
     }
     if path.is_empty()
-        || path.len() as u64 > MAX_PATH_BYTES as u64
         || path.starts_with('/')
         || path.contains('\\')
         || path.chars().any(char::is_control)

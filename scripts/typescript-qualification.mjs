@@ -1,12 +1,11 @@
 #!/usr/bin/env node
+import { captureCommand } from "./process-capture.mjs";
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 
-const MAX_RECEIPT_BYTES = 1_048_576;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGES = JSON.parse(readFileSync(join(root, "release", "npm-packages.json"), "utf8"))
   .filter(item => item.source === "typescript");
@@ -41,23 +40,27 @@ async function create(output, sourceSha, buildReceipt, retained) {
   const original = retained ? await retainedCompilerFiles(retained, sourceSha, buildReceipt) : undefined;
   const { build, receiptSha256: buildSha256 } = readCompilerBuild(buildReceipt, sourceSha, original);
   const archiveUtils = await import("./archive-utils.mjs");
-  const packages = expectedAssets().map(({ directory, ...packageEntry }) => {
+  const packages = [];
+  for (const { directory, ...packageEntry } of expectedAssets()) {
     const archive = join(output, packageEntry.asset);
-    const validatedSha256 = validateArchive(archive, packageEntry.name, packageEntry.version, directory);
+    const validatedSha256 = await validateArchive(archive, packageEntry.name, packageEntry.version, directory);
     {
-      const { expanded } = archiveUtils.readBoundedGzip(archive, 104_857_600, 536_870_912);
       const prefix = `${directory}/dist/`;
       const expected = build.outputs.filter(file => file.path.startsWith(prefix));
-      const observed = archiveUtils.tarEntries(expanded)
-        .filter(entry => entry.path.startsWith("package/dist/") && entry.type !== "5")
-        .map(entry => ({ path: `${directory}/${entry.path.slice(8)}`, sha256: `sha256:${archiveUtils.sha256(entry.body)}`, bytes: entry.body.length }))
-        .sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
+      const observed = [];
+      const digest = await archiveUtils.readTarGzip(archive, async entry => {
+        if (entry.path.startsWith("package/dist/") && entry.type !== "5") {
+          observed.push({ path: `${directory}/${entry.path.slice(8)}`, sha256: `sha256:${await archiveUtils.hashBody(entry)}`, bytes: entry.size });
+        }
+      });
+      if (digest.digest !== validatedSha256) fail(`archive changed during compiler output admission: ${packageEntry.asset}`);
+      observed.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
       if (!expected.length || JSON.stringify(expected) !== JSON.stringify(observed)) fail(`archive dist differs from compiler output: ${packageEntry.asset}`);
     }
     const [sha256, size] = digest(archive);
     if (validatedSha256 !== sha256) fail(`archive changed while it was being validated: ${packageEntry.asset}`);
-    return { ...packageEntry, sha256, size };
-  });
+    packages.push({ ...packageEntry, sha256, size });
+  }
   const expectedNames = new Set(packages.map(item => item.asset));
   const observedNames = new Set(readdirSync(output).filter(name => name.endsWith(".tgz")));
   if (expectedNames.size !== observedNames.size || [...expectedNames].some(name => !observedNames.has(name))) {
@@ -71,16 +74,16 @@ async function create(output, sourceSha, buildReceipt, retained) {
   writeFileSync(target, `${JSON.stringify({ ...provenance, source_commit: sourceSha, packages })}\n`, { flag: "wx" });
 }
 
-function readReceiptBytes(path, limit) {
+function readReceiptBytes(path) {
   const info = lstatSync(path);
-  if (!info.isFile() || info.size > limit) fail("receipt must be a regular file within its size bound");
+  if (!info.isFile()) fail("receipt must be a regular file");
   const payload = readFileSync(path);
   if (payload.length !== info.size) fail("receipt changed while it was being read");
   return payload;
 }
 
 function readCompilerBuild(path, sourceSha, retained) {
-  const payload = readReceiptBytes(path, 16_777_216);
+  const payload = readReceiptBytes(path);
   const build = JSON.parse(payload.toString("utf8"));
   if (!build || Object.keys(build).sort().join() !== "executions,outputs,runtime,rust_producers_qualified,schema,scope,source_commit,source_files,source_sha256" || build.schema !== "acyclic.typescript-build-receipt.v1" || build.scope !== "typescript-compiler" || build.rust_producers_qualified !== false) fail("compiler build receipt scope is invalid");
   if (!/^v\d+\.\d+\.\d+/.test(build.runtime) || !Array.isArray(build.executions) || build.executions.length !== consumerCommands().length) fail("compiler build receipt executions are invalid");
@@ -106,22 +109,23 @@ const compareRecords = (a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from
 async function retainedCompilerFiles(directory, sourceSha, buildReceipt) {
   const receiptPath = join(directory, "QUALIFICATION.json");
   const receipt = readReceipt(receiptPath);
-  const build = JSON.parse(readReceiptBytes(buildReceipt, 16_777_216).toString("utf8"));
+  const build = JSON.parse(readReceiptBytes(buildReceipt).toString("utf8"));
   if (receipt.compiler_build_receipt_sha256 !== `sha256:${digest(buildReceipt)[0]}` || receipt.source_sha256 !== build.source_sha256) fail("retained compiler provenance differs");
-  const { readBoundedGzip, tarEntries, sha256 } = await import("./archive-utils.mjs");
+  const { readTarGzip, hashBody } = await import("./archive-utils.mjs");
   const { validateArchive } = await import("./validate-npm-package.mjs");
   const files = new Map();
   for (const item of expectedAssets()) {
     const archive = join(directory, item.asset);
     verify(receiptPath, sourceSha, item.asset, archive);
-    const { compressed, expanded } = readBoundedGzip(archive, 104_857_600, 536_870_912);
-    if (receipt.packages.find(entry => entry.asset === item.asset).sha256 !== sha256(compressed) || validateArchive(archive, item.name, item.version, item.directory) !== sha256(compressed)) fail("retained archive changed during admission");
-    for (const entry of tarEntries(expanded)) {
-      if (entry.type === "5") continue;
+    const expectedDigest = receipt.packages.find(entry => entry.asset === item.asset).sha256;
+    if (await validateArchive(archive, item.name, item.version, item.directory) !== expectedDigest) fail("retained archive changed during admission");
+    const observedDigest = await readTarGzip(archive, async entry => {
+      if (entry.type === "5") return;
       const path = `${item.directory}/${entry.path.slice(8)}`;
       if (files.has(path)) fail("retained archive contains duplicate compiler files");
-      files.set(path, { path, sha256: `sha256:${sha256(entry.body)}`, bytes: entry.body.length });
-    }
+      files.set(path, { path, sha256: `sha256:${await hashBody(entry)}`, bytes: entry.size });
+    });
+    if (observedDigest.digest !== expectedDigest) fail("retained archive changed during admission");
   }
   return files;
 }
@@ -143,7 +147,7 @@ function retainedSource(records, retained) {
 }
 
 function readReceipt(path) {
-  const payload = readReceiptBytes(path, MAX_RECEIPT_BYTES);
+  const payload = readReceiptBytes(path);
   const receipt = JSON.parse(payload.toString("utf8"));
   const keys = "compiler_build_receipt_sha256,packages,revision,rust_producers_qualified,scope,source_commit,source_sha256";
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) || Object.keys(receipt).sort().join() !== keys) {
@@ -180,7 +184,7 @@ function verify(receiptPath, sourceSha, assetName, archive) {
 }
 
 function checkedGit(args) {
-  const result = spawnSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+  const result = captureCommand("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
   if (result.error || result.status !== 0) fail(`source inspection failed: ${result.error ?? result.stderr}`);
   return result.stdout;
 }
@@ -266,8 +270,8 @@ function consumer(bun, buildReceipt) {
     }
     const command = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(bun) ? "cmd" : bun;
     const commandArgs = command === "cmd" ? ["/d", "/c", bun, ...args] : args;
-    const result = spawnSync(command, commandArgs, { cwd: root, encoding: "utf8" });
-    if (result.error || result.status !== 0) return { schema: 1, passed: false, elapsed_ms: Math.trunc(performance.now() - started), error: String(result.error ?? `${result.stderr}${result.stdout}`).slice(-2000) };
+    const result = captureCommand(command, commandArgs, { cwd: root, encoding: "utf8" });
+    if (result.error || result.status !== 0) return { schema: 1, passed: false, elapsed_ms: Math.trunc(performance.now() - started), error: String(result.error ?? `${result.stderr}${result.stdout}`) };
     if (args[0] === "x" && args[2] === "--version" && !/^Version \d+\.\d+\.\d+/.test(result.stdout.trim())) fail("TypeScript compiler version was not observed");
     if (args.includes("-b")) {
       if (JSON.stringify(source) !== JSON.stringify(compilerSource())) fail("compiler source changed during the consumer build");

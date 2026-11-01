@@ -158,6 +158,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         &self,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
+        let unswept = self.collection.unswept().await;
         let mut spill = self.spill_io.write().await;
         self.spill_locked(&mut spill, work).await?;
         let (_target_allocation, targets) = {
@@ -199,7 +200,6 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             }
             (allocation, targets)
         };
-        let unswept = self.collection.unswept().await;
         self.drain_locked(&mut spill, &unswept, &targets, work)
             .await?;
         Ok(())

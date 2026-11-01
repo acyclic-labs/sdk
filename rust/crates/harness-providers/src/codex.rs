@@ -16,7 +16,6 @@ use acyclic_fs::{NativeAllocation, WorkCounters};
 use credential_io::CredentialIo;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 
 /// Native-only reuse of an existing Codex CLI ChatGPT login.
 /// Refreshes serialize in memory and defer to concurrent CLI writes.
@@ -329,7 +328,7 @@ async fn refresh_document(
     body: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
     io: &mut CredentialIo,
 ) -> Result<Value> {
-    let body = crate::http::bounded::read(body, MAX_AUTH_BYTES as usize, io.work()).await?;
+    let body = crate::http::bounded::read(body, None, io.work()).await?;
     // Encoded body custody retires with that buffer. Only the decoded document
     // joins the original credential operation and its publication owner.
     let updated = io.json(&body.bytes)?;
@@ -393,12 +392,17 @@ fn read(path: &Path, io: &mut CredentialIo) -> Result<Vec<u8>> {
         .metadata()
         .map_err(|_| invalid("cannot stat Codex auth.json"))?
         .len();
-    if length > MAX_AUTH_BYTES {
-        return Err(invalid("Codex auth.json exceeds limit"));
-    }
-    let capacity = length as usize + 1;
+    let length = usize::try_from(length)
+        .map_err(|_| invalid("Codex auth.json length cannot be represented"))?;
+    let capacity = length
+        .checked_add(1)
+        .ok_or_else(|| invalid("Codex auth.json length overflow"))?;
     io.claim(capacity as u64, 1, WorkCounters::UNCHARGED)?;
-    let mut bytes = vec![0; capacity];
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| invalid("cannot allocate Codex auth.json"))?;
+    bytes.resize(capacity, 0);
     let read_allowance = io
         .work()
         .map(|work| {
@@ -428,7 +432,7 @@ fn read(path: &Path, io: &mut CredentialIo) -> Result<Vec<u8>> {
         }
         read += count;
     }
-    if read > length as usize {
+    if read != length {
         return Err(invalid("Codex auth.json changed while reading"));
     }
     bytes.truncate(read);
@@ -443,9 +447,6 @@ fn document(bytes: &[u8], io: &mut CredentialIo) -> Result<Value> {
 
 #[cfg(any(test, feature = "fuzzing"))]
 pub(crate) fn decode_auth(bytes: &[u8]) -> Result<Value> {
-    if bytes.len() as u64 > MAX_AUTH_BYTES {
-        return Err(invalid("Codex auth.json exceeds limit"));
-    }
     document(bytes, &mut CredentialIo::new(None)?)
 }
 
@@ -572,8 +573,7 @@ fn stage(
 ) -> Result<()> {
     let encoded = (crate::projection::encoded_len(auth)? as u64)
         .checked_add(1)
-        .filter(|&bytes| bytes <= MAX_AUTH_BYTES)
-        .ok_or_else(|| invalid("Codex merged credentials exceed limit"))?;
+        .ok_or_else(|| invalid("Codex merged credential length overflow"))?;
     write_staged(file, auth, encoded, io)
 }
 

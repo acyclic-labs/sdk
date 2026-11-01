@@ -228,10 +228,9 @@ mod http {
             .ok_or("expected 32-byte id")
     }
     fn key(value: &Value) -> Result<()> {
-        let len = bytes(value)?.len();
-        (len > 0 && len <= crate::MAX_IDEMPOTENCY_KEY_BYTES)
-            .then_some(())
-            .ok_or("invalid idempotency key")
+        crate::IdempotencyKey::new(bytes(value)?)
+            .map(|_| ())
+            .map_err(|_| "invalid idempotency key")
     }
     fn set(object: &Object, name: &str, value: &JsValue) -> Result {
         Reflect::set(object.as_ref(), &JsValue::from_str(name), value)
@@ -525,9 +524,6 @@ mod http {
             }
             "fork" => {
                 let excluded = array(field(item, "exclude")?)?;
-                if excluded.len() > crate::MAX_ITEMS {
-                    return Err("too many exclusions");
-                }
                 for excluded in excluded {
                     path(excluded)?;
                 }

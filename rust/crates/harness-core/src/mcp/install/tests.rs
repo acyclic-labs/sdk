@@ -260,7 +260,7 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         let worker_active = active.clone();
         let connection = Arc::new(Remote::default());
         let worker_connection = connection.clone();
-        let task = tokio::spawn(register_before(deadline, move |check| {
+        let task = register_before(deadline, move |check| {
             let _connection = worker_connection;
             worker_active.fetch_add(1, Ordering::SeqCst);
             let _ = started.send(std::thread::current().id());
@@ -270,23 +270,31 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
             worker_active.fetch_sub(1, Ordering::SeqCst);
             check()?;
             result
-        }));
+        });
+        tokio::pin!(task);
+        let entered = match futures::future::select(worker, &mut task).await {
+            futures::future::Either::Left((entered, _)) => entered,
+            futures::future::Either::Right((result, _)) => {
+                return Err(Error::Invalid(format!(
+                    "registration returned before worker entry: {result:?}"
+                )));
+            }
+        };
         assert_ne!(
-            worker
-                .await
-                .map_err(|error| Error::Invalid(error.to_string()))?,
+            entered.map_err(|error| Error::Invalid(error.to_string()))?,
             caller
         );
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(11)).await;
-        tokio::task::yield_now().await;
-        assert!(!task.is_finished(), "timeout must await worker retirement");
+        assert!(
+            futures::poll!(&mut task).is_pending(),
+            "timeout must await worker retirement"
+        );
         release
             .send(())
             .map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(matches!(
-            task.await
-                .map_err(|error| Error::Invalid(error.to_string()))?,
+            task.await,
             Err(Error::Process(crate::ProcessError::Timeout { .. }))
         ));
         assert_eq!(active.load(Ordering::SeqCst), 0);
@@ -362,11 +370,11 @@ async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect()
     for field in 0..5 {
         let mut limits = McpClientLimits::default();
         match field {
-            0 => limits.servers = 0,
-            1 => limits.tools_per_server = 0,
-            2 => limits.pages_per_server = 0,
-            3 => limits.catalog_bytes = 0,
-            _ => limits.tool_bytes = 0,
+            0 => limits.servers = Some(0),
+            1 => limits.tools_per_server = Some(0),
+            2 => limits.pages_per_server = Some(0),
+            3 => limits.catalog_bytes = Some(0),
+            _ => limits.tool_bytes = Some(0),
         }
         assert!(matches!(
             configuration()?
@@ -472,21 +480,21 @@ async fn discovery_moves_schemas_and_rejects_cursor_count_and_byte_overruns() ->
         (
             vec![page(&[], Some("x"))],
             McpClientLimits {
-                pages_per_server: 1,
+                pages_per_server: Some(1),
                 ..Default::default()
             },
         ),
         (
             vec![page(&["a", "b"], None)],
             McpClientLimits {
-                tools_per_server: 1,
+                tools_per_server: Some(1),
                 ..Default::default()
             },
         ),
         (
             vec![page(&["a"], None)],
             McpClientLimits {
-                catalog_bytes: 1,
+                catalog_bytes: Some(1),
                 ..Default::default()
             },
         ),
@@ -724,8 +732,8 @@ IFS= read -r input
             ToolRegistry::default(),
             root.path(),
             McpClientLimits {
-                catalog_bytes: 1024,
-                tool_bytes: 8192,
+                catalog_bytes: Some(1024),
+                tool_bytes: Some(8192),
                 ..Default::default()
             },
             Arc::new(crate::secrets::EnvSecrets),
