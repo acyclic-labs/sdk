@@ -49,6 +49,7 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?,
     );
     let connection = harness.connect().await?;
+    eprintln!("original endpoint connected");
     let custody = harness
         .agents
         .get()
@@ -72,6 +73,7 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         connection.execute(&AgentCommand::Root {}).await?,
         AgentReply::Root { .. }
     ));
+    eprintln!("original adoption observed");
     // The same real session without an in-process owner has no local cause to add.
     let mut remote = connection.clone();
     remote._host = None;
@@ -95,6 +97,7 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         Err(StreamError::Unavailable)
     );
     assert!(cut.0.load(Ordering::SeqCst));
+    eprintln!("original storage failure published");
     let cause = stream
         .failure()
         .ok_or_else(|| Error::Invalid("original failure was lost".into()))?
@@ -111,6 +114,7 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         "command lost original provider cause: {command}"
     );
     let observed = message(terminal(&mut observer).await);
+    eprintln!("original local observation ended");
     assert!(
         observed.contains(&cause),
         "observation lost original provider cause: {observed}"
@@ -127,7 +131,9 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         "remote session invented a local cause"
     );
     assert!(!message(terminal(&mut remote_observer).await).contains(&cause));
+    eprintln!("original remote observation ended");
     assert_eq!(closed.await, StreamError::Unavailable);
+    eprintln!("original failed runtime custody ended");
     assert_eq!(custody.check(), Err(StreamError::Unavailable));
     // A rejected command still reports its own admission error after storage fails.
     let invalid = AgentCommand::Read {
@@ -158,6 +164,7 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     let healthy =
         Arc::new(LocalHarness::open(volume_config(directory.path(), project, text())?).await?);
     let connection = healthy.connect().await?;
+    eprintln!("original healthy endpoint connected");
     let custody = healthy
         .agents
         .get()
@@ -168,8 +175,10 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     futures::pin_mut!(closed);
     assert!(custody.check().is_ok());
     assert!(futures::poll!(closed.as_mut()).is_pending());
+    let owner = Arc::downgrade(&healthy);
     drop(connection);
     drop(healthy);
+    assert!(owner.upgrade().is_none(), "custody retained its producer");
     assert_eq!(closed.await, StreamError::Unavailable);
     assert_eq!(custody.check(), Err(StreamError::Unavailable));
     Ok(())
