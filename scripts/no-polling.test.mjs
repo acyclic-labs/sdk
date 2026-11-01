@@ -191,6 +191,17 @@ test('malformed historical source cannot authorize current waits or hide malform
  assert.throws(() => newProjectPollingSites(before, before), SourceSyntaxError);
  const malformed = new Map(before).set(helper, 'export function settle() { return Bun.sleep(10); }}');
  assert.throws(() => newProjectPollingSites(before, malformed), SourceSyntaxError);
+ const brokenNative = new Map([
+  ['scripts/broken.py', '\n"unclosed'],
+  ['rust/crates/example/src/broken.rs', '\n/* unclosed'],
+ ]);
+ assert.throws(() => projectPollingSites(brokenNative), error => {
+  assert.ok(error instanceof AggregateError);
+  assert.equal(error.errors.length, 2);
+  assert.match(error.message, /scripts\/broken.py:2: unterminated quoted string/);
+  assert.match(error.message, /rust\/crates\/example\/src\/broken.rs:2: unterminated block comment/);
+  return true;
+ });
 });
 
 test('aliases cannot use an unchanged timer import to conceal a new call', () => {

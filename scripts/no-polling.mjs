@@ -122,6 +122,7 @@ function nativeTokens(source, file) {
  const out = [];
  let at = 0;
  let line = 1;
+ const malformed = message => new Error(`${file}:${line}: ${message}`);
  const emit = (end, kind, spelling) => {
   const value = source.slice(at, end);
   if (kind) out.push({value: spelling ?? value, kind, line, start: at});
@@ -141,14 +142,14 @@ function nativeTokens(source, file) {
     else if (source.startsWith('*/', end)) { depth--; end += 2; }
     else end++;
    }
-   if (depth) throw new Error('unterminated block comment');
+   if (depth) throw malformed('unterminated block comment');
    emit(end); continue;
   }
   const raw = rust && tail.match(/^(?:b|c)?r(#*)"/);
   if (raw) {
    const close = '"' + raw[1];
    const end = source.indexOf(close, at + raw[0].length);
-   if (end < 0) throw new Error('unterminated raw string');
+   if (end < 0) throw malformed('unterminated raw string');
    emit(end + close.length, 'literal'); continue;
   }
   const quote = tail[0];
@@ -156,7 +157,7 @@ function nativeTokens(source, file) {
    const delimiter = tail.slice(0, 3);
    let end = at + 3;
    while (end < source.length && !source.startsWith(delimiter, end)) end += source[end] === '\\' ? 2 : 1;
-   if (end >= source.length) throw new Error('unterminated Python triple-quoted string');
+   if (end >= source.length) throw malformed('unterminated Python triple-quoted string');
    emit(end + 3, 'literal'); continue;
   }
   const character = rust && quote === "'" && tail.match(/^'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\r\n])'/u);
@@ -164,7 +165,7 @@ function nativeTokens(source, file) {
   if (quote === '"' || (!rust && quote === "'")) {
    let end = at + 1;
    while (end < source.length && source[end] !== quote) end += source[end] === '\\' ? 2 : 1;
-   if (end >= source.length) throw new Error('unterminated quoted string');
+   if (end >= source.length) throw malformed('unterminated quoted string');
    emit(end + 1, 'literal'); continue;
   }
   const word = tail.match(wordPattern);

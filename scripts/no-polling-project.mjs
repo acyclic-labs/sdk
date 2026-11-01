@@ -91,6 +91,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  const units = new Map();
  /** @type {ReturnType<typeof pollingUnit>['sites']} */
  const sites = [];
+ const errors = [];
  for (const [file, source] of sources) {
   let unit;
   try { unit = pollingUnit(file, source); }
@@ -98,11 +99,14 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    // An unparseable predecessor cannot authorize any current executable site.
    // Current source is always strict, including unchanged malformed files.
    if (historical && error instanceof SourceSyntaxError) continue;
-   throw error;
+   errors.push(error);
+   continue;
   }
   for (const site of unit.sites) sites.push(site);
   if (script(file)) units.set(file, unit);
  }
+ if (errors.length === 1) throw errors[0];
+ if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'));
  const scripts = new Map([...units.keys()].map(file => ['/' + file, sources.get(file)]));
  const resolveModule = (name, containingFile) => {
   if (!name.startsWith('.')) return undefined;
