@@ -11,9 +11,12 @@ use crate::{
     approvals::{ApprovalCreate, ApprovalFiles},
     conversation::{ContentGrant, FileRef, VolumeRef},
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
+use acyclic_fs::{
+    AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, CancellationToken, DirectoryPage,
+    WorkBudget,
+};
 use acyclic_stream::{BoxProviderFuture, OwnedBytes};
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 /// Directory entries read per listing page.
 const PAGE: u32 = 256;
@@ -31,6 +34,70 @@ pub(in crate::filesystem) struct InternalRead<A: 'static, O: 'static> {
     generation: acyclic_fs::Generation<A, O>,
 }
 
+/// Pages from one selected directory. The original page owns its allocation
+/// until consumption ends; its last entry also supplies the next cursor.
+pub(in crate::filesystem) struct InternalDirectory<'a, A: 'static, O: 'static> {
+    generation: &'a acyclic_fs::Generation<A, O>,
+    path: Cow<'a, str>,
+    page: Option<(DirectoryPage, AuthorityAllocation)>,
+    finished: bool,
+}
+
+impl<'a, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    InternalDirectory<'a, A, O>
+{
+    fn new(generation: &'a acyclic_fs::Generation<A, O>, path: Cow<'a, str>) -> Self {
+        Self {
+            generation,
+            path,
+            page: None,
+            finished: false,
+        }
+    }
+
+    /// Reads at most one page, without another read after the final page or
+    /// an error. A missing directory is empty.
+    pub(in crate::filesystem) async fn next(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<&DirectoryPage>> {
+        if self.finished {
+            self.page = None;
+            return Ok(None);
+        }
+        let after = self
+            .page
+            .as_ref()
+            .and_then(|(page, _)| page.entries.last())
+            .map(|entry| &entry.name);
+        let result = self
+            .generation
+            .list_directory(&self.path, after, PAGE, WorkBudget::UNBOUNDED, cancellation)
+            .await;
+        self.finished = true;
+        self.page = None;
+        let (page, allocation) = match result {
+            Ok(receipt) => receipt.value,
+            Err(failure) => {
+                let error = super::map_error(failure.error);
+                return if missing(&error) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                };
+            }
+        };
+        if page.has_more && page.entries.is_empty() {
+            return Err(crate::Error::Storage(
+                "internal directory page has no continuation entry".into(),
+            ));
+        }
+        self.finished = !page.has_more;
+        self.page = Some((page, allocation));
+        Ok(self.page.as_ref().map(|(page, _)| page))
+    }
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> InternalRead<A, O> {
     pub(in crate::filesystem) async fn read(
         &self,
@@ -39,15 +106,34 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> InternalRe
     ) -> Result<Option<OwnedBytes>> {
         AgentInternalFiles::read_at(
             &self.generation,
-            &format!("/{}", internal(path)),
+            &format!("/{}{path}", InternalContentClass::Interaction.prefix()),
             maximum_bytes,
         )
         .await
     }
 
     pub(in crate::filesystem) async fn list(&self, path: &str) -> Result<Vec<String>> {
-        AgentInternalFiles::list_at(&self.generation, &format!("/{}", internal(path))).await
+        AgentInternalFiles::list_at(
+            &self.generation,
+            &format!("/{}{path}", InternalContentClass::Interaction.prefix()),
+        )
+        .await
     }
+
+    pub(in crate::filesystem) fn directory(&self, path: &str) -> InternalDirectory<'_, A, O> {
+        InternalDirectory::new(
+            &self.generation,
+            Cow::Owned(format!(
+                "/{}{path}",
+                InternalContentClass::Interaction.prefix()
+            )),
+        )
+    }
+}
+
+pub(in crate::filesystem) fn filename(bytes: &[u8]) -> Result<&str> {
+    std::str::from_utf8(bytes)
+        .map_err(|_| crate::Error::Storage("internal file name is not UTF-8".into()))
 }
 
 /// Storage path of internal-relative `path`.
@@ -232,40 +318,13 @@ where
     async fn list_at(head: &acyclic_fs::Generation<A, O>, directory: &str) -> Result<Vec<String>> {
         let cancellation = CancellationToken::new();
         let mut names = Vec::new();
-        let mut after = None;
-        loop {
-            let page = match head
-                .list_directory(
-                    directory,
-                    after.as_ref(),
-                    PAGE,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-            {
-                Ok(receipt) => receipt.value.0,
-                Err(failure) => {
-                    let error = super::map_error(failure.error);
-                    return if missing(&error) {
-                        Ok(names)
-                    } else {
-                        Err(error)
-                    };
-                }
-            };
+        let mut pages = InternalDirectory::new(head, Cow::Borrowed(directory));
+        while let Some(page) = pages.next(&cancellation).await? {
             for entry in &page.entries {
-                names.push(
-                    String::from_utf8(entry.name.as_bytes().to_vec()).map_err(|_| {
-                        crate::Error::Storage("internal file name is not UTF-8".into())
-                    })?,
-                );
+                names.push(filename(entry.name.as_bytes())?.to_owned());
             }
-            if !page.has_more || page.entries.is_empty() {
-                return Ok(names);
-            }
-            after = page.entries.last().map(|entry| entry.name.clone());
         }
+        Ok(names)
     }
 }
 
