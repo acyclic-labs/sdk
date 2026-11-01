@@ -262,21 +262,41 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
 
 #[tokio::test]
 async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_prefix() -> Result {
+    use acyclic_harness_core::conversation::{ContentAccess, ContentPublisher};
     let stream = Arc::new(MemoryStream::default());
     let path = super::create(&stream, id(216)).await?;
     let (filesystem, binding) = private(&path).await?;
+    let issuer = AuthorityRoot::new(
+        "agents",
+        [7; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "agents".into(),
+        },
+    )
+    .into();
+    let authority = acyclic_harness_core::filesystem::agent_authority(
+        &issuer,
+        &TurnAdmission::LocalRoot,
+        &path,
+        std::slice::from_ref(&binding),
+        &[],
+    )
+    .await?;
+    let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
+        filesystem.clone(),
+        &binding.volume,
+        &authority.verifier,
+        &authority.scope,
+        LIMITS.maximum_bytes,
+        None,
+    )?;
+    drop(authority);
     let model = Arc::new(ScriptedModelProvider::new([]));
     let host = FilesystemTurnHost::new(
         stream.clone(),
         filesystem,
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        ),
+        issuer,
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
         LIMITS,
@@ -304,15 +324,33 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         ("quiet-latest", false, vec!["b", "a"]),
         ("waking", true, vec!["w"]),
     ] {
+        let notice = acyclic_harness_core::conversation::wire::Notice {
+            source: "events".into(),
+            kind: "source.changed".into(),
+            body: serde_json::json!({"name": name, "paths": paths}),
+            wake,
+            coalesce_key: Some("changes".into()),
+        };
+        let notice = if wake {
+            let bytes = acyclic_harness_core::contract::canonical_json_bytes(&notice)?;
+            let file = publisher
+                .stage_once(
+                    OperationId::from_bytes([218; 16]),
+                    "inputs/waking.json",
+                    &bytes,
+                    NOTICE_MEDIA_TYPE,
+                    "notice",
+                    ContentAccess::default(),
+                )?
+                .await?
+                .0;
+            NoticePayload::Waking(Box::new(file))
+        } else {
+            NoticePayload::Quiet(notice)
+        };
         let record = InboxRecord::Notice {
             id: intent(name),
-            notice: acyclic_harness_core::conversation::wire::Notice {
-                source: "events".into(),
-                kind: "source.changed".into(),
-                body: serde_json::json!({"name": name, "paths": paths}),
-                wake,
-                coalesce_key: Some("changes".into()),
-            },
+            notice,
         };
         submit(&*stream, send(&path, &super::user(), &record)?).await?;
     }
@@ -351,13 +389,13 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             &super::user(),
             &InboxRecord::Notice {
                 id: intent("quiet-after-cut"),
-                notice: acyclic_harness_core::conversation::wire::Notice {
+                notice: NoticePayload::Quiet(acyclic_harness_core::conversation::wire::Notice {
                     source: "events".into(),
                     kind: "source.changed".into(),
                     body: serde_json::json!({"name": "later", "paths": ["c"]}),
                     wake: false,
                     coalesce_key: Some("changes".into()),
-                },
+                }),
             },
         )?,
     )
@@ -866,15 +904,22 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         .validate(&path)
         .is_err()
     );
-    host.send(&path, &super::user(), &event("cancelled", false))
-        .await?;
+    host.send(
+        &path,
+        &super::user(),
+        &InboxRecord::Notice {
+            id: intent("cancelled"),
+            notice: NoticePayload::Quiet(event("cancelled", false)),
+        },
+    )
+    .await?;
     host.drain(&path).await?;
     assert!(host.state(&path).await?.pending_notices.is_some());
     host.send(&path, &super::user(), &super::cancel("drop-events"))
         .await?;
     host.drain(&path).await?;
     assert_eq!(host.state(&path).await?.pending_notices, None);
-    host.send(&path, &super::user(), &event("after-cancel", true))
+    host.send(&path, &super::user(), &stage_waking("after-cancel").await?)
         .await?;
     host.drain(&path).await?;
     let requests = model.requests();

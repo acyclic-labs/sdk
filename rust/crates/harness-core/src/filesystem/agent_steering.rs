@@ -136,10 +136,11 @@ where
         .await
         .map_err(agent_error)?;
         let initial_notices = crate::agent::turn_notices(&self.agent).map_err(agent_error)?;
-        let inputs = selection.inputs.into_iter().filter(|input| {
-            !matches!(&input.input, crate::agent::TurnInput::Notice { notice, .. }
-                if !notice.wake && initial_notices.as_ref().is_some_and(|selected|
-                    selected.range.contains(&input.inbox)))
+        let inputs = selection.inputs.into_iter().filter(|(inbox, input)| {
+            !matches!(input, crate::agent::InboxRecord::Notice {
+                notice: crate::agent::NoticePayload::Quiet(_), ..
+            } if initial_notices.as_ref().is_some_and(|selected|
+                selected.range.contains(inbox)))
         });
         let mut messages = Vec::new();
         let mut notices: Option<NoticeBlocks> = None;
@@ -153,21 +154,31 @@ where
             }
         };
         let mut item = 0_u64;
-        for input in inputs {
+        for (inbox, input) in inputs {
             // Coalesce only consecutive unsent events in this frozen cut, using
             // the same bounded blocks as the turn's initial Notice selection.
-            if let crate::agent::TurnInput::Notice { notice, .. } = &input.input {
-                notices
-                    .get_or_insert_with(|| NoticeBlocks::new(self.maximum))
-                    .push(notice.clone())?;
-                continue;
+            let input = match input {
+                crate::agent::InboxRecord::Notice {
+                    notice: crate::agent::NoticePayload::Quiet(notice),
+                    ..
+                } => {
+                    notices
+                        .get_or_insert_with(|| NoticeBlocks::new(self.maximum))
+                        .push(notice)?;
+                    continue;
+                }
+                input => crate::agent::turn_input(inbox, input).ok_or_else(|| {
+                    Error::Invalid("selected steering record has no input".into())
+                })?,
+            };
+            let waking_notice = matches!(&input.input, crate::agent::TurnInput::Notice { .. });
+            if !waking_notice {
+                flush_notices(&mut notices, &mut messages);
             }
-            flush_notices(&mut notices, &mut messages);
             let content = crate::agent::model_input(&input.input).map_err(agent_error)?;
             let external = content.file_refs().cloned().collect::<Vec<_>>();
-            // The original inbox read already authorized the event. JSON in a
-            // Notice grants no file authority, so it needs no file verifier,
-            // derived grant or private-volume publication.
+            // Staged inputs retain the original exact-file admission. Notice
+            // JSON itself carries no authority to the paths it describes.
             if external.is_empty() {
                 messages.push(ModelMessage {
                     role: ModelRole::User,
@@ -191,6 +202,20 @@ where
                 None,
             )?;
             let mut content = crate::agent::expand_attachments(content, &*reader).await?;
+            if waking_notice {
+                let ModelContent::Part(ModelContentPart::Notices { notices: events }) = content
+                else {
+                    return Err(Error::Invalid(
+                        "staged steering Notice lost its event block".into(),
+                    ));
+                };
+                for notice in events {
+                    notices
+                        .get_or_insert_with(|| NoticeBlocks::new(self.maximum))
+                        .push(notice)?;
+                }
+                continue;
+            }
             // The envelope delegates its validated immutable contents, not its
             // own exact-file grant. Derive those files under the same original
             // admission; an admitted caller's ceiling remains unchanged.
