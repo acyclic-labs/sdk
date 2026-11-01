@@ -351,7 +351,16 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
                     drop(winner);
                     stop.cancel();
                     objects.release();
-                    assert!(matches!(rebase.await, Err(MountSourceError::Cancelled)));
+                    let result = rebase.await;
+                    assert!(
+                        matches!(
+                            result,
+                            Err(MountSourceError::NativeWork(
+                                crate::NativeTreeMaterializationError::Cancelled
+                            ))
+                        ),
+                        "original native cancellation cause: {result:?}"
+                    );
                 }
                 _ => {
                     drop(winner);
