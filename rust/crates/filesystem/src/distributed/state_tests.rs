@@ -163,7 +163,7 @@ async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals(
         .map_err(|(error, _)| error)?;
         let mut native = AuthorityWork::native(&original, &cancellation);
         let before = provider.requests();
-        let observed = store.observe_record(path, &mut native).await?;
+        let observed = store.observe_record(path.clone(), &mut native).await?;
         assert_eq!(
             observed.record.ok_or("missing native state")?.commit_id,
             receipt.commit_id
@@ -171,7 +171,86 @@ async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals(
         assert!(observed.allocation.is_some());
         let calls = provider.requests().since(before);
         assert_eq!(calls.class(RequestClass::Head), 1);
-        assert_eq!(calls.data(), 1);
+        assert_eq!(calls.data(), 0, "no separate native tail/read");
+
+        let before = provider.requests();
+        let missing = store
+            .observe_record(StreamPath::new("state/native-missing")?, &mut native)
+            .await?;
+        assert!(missing.record.is_none());
+        assert!(matches!(
+            missing.observation.condition(),
+            CommitCondition::Absent { .. }
+        ));
+        assert_eq!(
+            provider.requests().since(before).class(RequestClass::Head),
+            1
+        );
+        assert_eq!(provider.requests().since(before).data(), 0);
+        assert!(matches!(
+            store
+                .observe_record(StreamPath::new("state/empty")?, &mut native)
+                .await,
+            Err(AuthorityStoreError::CorruptStatic(_))
+        ));
+
+        // A fork's last record retains its original publication identity; its
+        // observation still fences the selected descendant, not the ancestor.
+        let descendant = StreamPath::new("state/inherited")?;
+        provider
+            .inner()
+            .fork(acyclic_stream::ForkRequest {
+                source: path,
+                destination: descendant.clone(),
+                at_tail: None,
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"state-fork"))?,
+            })
+            .await?;
+        let inherited = store
+            .observe_record(descendant.clone(), &mut native)
+            .await?;
+        assert_eq!(
+            inherited.observation.condition(),
+            &CommitCondition::Head {
+                path: descendant,
+                expected: 1,
+                commit_id: receipt.commit_id,
+            }
+        );
+        assert_eq!(
+            inherited
+                .record
+                .as_ref()
+                .ok_or("missing inherited state")?
+                .commit_id,
+            receipt.commit_id
+        );
+
+        for cancelled in [false, true] {
+            let token = CancellationToken::new();
+            let original = crate::NativeMaterializationWork::new(
+                WorkBudget {
+                    authority_records_read: u64::from(cancelled),
+                    ..crate::performance::BOUNDARY_BUDGET
+                },
+                &token,
+            )
+            .map_err(|(error, _)| error)?;
+            if cancelled {
+                token.cancel();
+            }
+            let mut denied = AuthorityWork::native(&original, &token);
+            let before = provider.requests();
+            assert!(
+                store
+                    .observe_record(StreamPath::new("state/root")?, &mut denied)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(provider.requests().since(before).control(), 0);
+            assert_eq!(provider.requests().since(before).data(), 0);
+        }
     }
     Ok(())
 }

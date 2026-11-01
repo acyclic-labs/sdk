@@ -100,7 +100,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         Ok(Some(durable.sequence))
     }
 
-    async fn authority_heads(
+    pub(super) async fn authority_heads(
         &self,
         request: &acyclic_stream::HeadsRequest,
         work: &mut AuthorityWork<'_>,
