@@ -82,6 +82,10 @@ pub struct Head {
 pub struct Deletion {
     /// What the delete did.
     pub outcome: Delete,
+    /// Outgoing references unlinked by this deletion, from the exact removed
+    /// envelope. Empty when nothing was removed. These identify newly eligible
+    /// children; another holder may still retain them.
+    pub references: Vec<Digest>,
     /// A revision covering the outcome, when the provider issues revisions.
     pub revision: Option<Revision>,
 }
@@ -307,6 +311,8 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     async fn head(&self, digest: Digest) -> Result<Head, Error>;
 
     /// Deletes an unreferenced blob; a referenced one is refused, never broken.
+    /// Returns the exact removed envelope's outgoing references without a
+    /// separate read. Absent or referenced outcomes release no references.
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error>;
 
     /// Lists digests strictly after `after` in ascending order. A blob present

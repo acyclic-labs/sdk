@@ -345,13 +345,10 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     );
 
     // delete-refuses-live-references
-    let referenced = first
-        .delete(left_digest)
-        .await
-        .map(|deletion| deletion.outcome);
+    let referenced = first.delete(left_digest).await;
     expect!(
         "delete-refuses-live-references",
-        referenced == Ok(Delete::Referenced),
+        matches!(&referenced, Ok(deletion) if deletion.outcome == Delete::Referenced && deletion.references.is_empty()),
         referenced
     );
     let root = RootId::new(format!("{run}/root").into_bytes())
@@ -361,7 +358,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         first,
         "delete-refuses-live-references",
         rooted_body,
-        Vec::new(),
+        vec![left_digest],
     )
     .await?;
     let retained = first.retain(&root, vec![rooted, rooted]).await;
@@ -444,16 +441,16 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         released_again == Ok(false),
         released_again
     );
-    let deleted = first.delete(rooted).await.map(|deletion| deletion.outcome);
+    let deleted = first.delete(rooted).await;
     expect!(
         "collection-keeps-retained-closures",
-        deleted == Ok(Delete::Deleted),
+        matches!(&deleted, Ok(deletion) if deletion.outcome == Delete::Deleted && deletion.references == [left_digest]),
         deleted
     );
-    let absent = first.delete(rooted).await.map(|deletion| deletion.outcome);
+    let absent = first.delete(rooted).await;
     expect!(
         "collection-keeps-retained-closures",
-        absent == Ok(Delete::Absent),
+        matches!(&absent, Ok(deletion) if deletion.outcome == Delete::Absent && deletion.references.is_empty()),
         absent
     );
 

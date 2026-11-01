@@ -316,24 +316,18 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let (_gate, sweepable) = collecting.sweepable(batch).await;
             for digest in sweepable {
                 let object = acyclic_objects::Digest::from_bytes(digest.into_bytes());
-                // The references a deletion releases, read while it still exists.
-                let children = match provider.head(object).await {
-                    Ok(head) => head.references,
-                    Err(error) if error.code == acyclic_objects::wire::ErrorCode::NotFound => {
-                        continue;
-                    }
-                    Err(error) => return Err(object_error(error)),
-                };
                 collecting.sweeping(digest);
                 let deleted = provider.delete(object).await.map_err(object_error);
                 // Retire cached copies and the original fill epoch after this
                 // delete attempt, including an uncertain provider result.
                 self.inner.objects.inner().clear()?;
-                match deleted?.outcome {
+                let deleted = deleted?;
+                match deleted.outcome {
                     acyclic_objects::Delete::Deleted => {
                         removed = removed.saturating_add(1);
                         work.deleted(
-                            children
+                            deleted
+                                .references
                                 .iter()
                                 .map(|child| crate::Digest::from_bytes(*child.as_bytes())),
                         );

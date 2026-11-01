@@ -1004,9 +1004,20 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
         Store::new(medium.clone()).account(b"acct")?,
         Store::new(medium.clone()).account(b"acct")?,
     );
+    let mut children = Vec::new();
+    for body in [b"old child".as_slice(), b"new child".as_slice()] {
+        children.push(
+            writing
+                .put(OwnedBytes::copy_from_slice(body), Vec::new())
+                .await?
+                .verified()
+                .ok_or("unknown child")?
+                .digest,
+        );
+    }
     let body = OwnedBytes::from(vec![9; 32]);
     let digest = writing
-        .put(body.clone(), Vec::new())
+        .put(body.clone(), vec![children[0]])
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1015,16 +1026,79 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
     let deleted = deleting.delete(digest);
     tokio::pin!(deleted);
     drive_to_park(deleted.as_mut(), &mut reached).await;
-    let put = writing.put(body.clone(), Vec::new()).await;
+    let put = writing.put(body.clone(), vec![children[1]]).await;
     release
         .send(())
         .expect("parked medium operation remains alive");
-    assert_eq!(deleted.await?, Delete::Deleted);
+    let deleted = deleted.await?;
+    assert_eq!(deleted.outcome, Delete::Deleted);
+    assert_eq!(deleted.references, [children[0]]);
     assert!(matches!(put?, Put::Created { .. }));
+    let replacement = writing.head(digest).await?;
+    assert_eq!(replacement.references, [children[1]]);
+    // Negative control: looking up the digest again observes another envelope.
+    assert_ne!(deleted.references, replacement.references);
+    #[cfg(objects_server)]
+    {
+        use prost::Message as _;
+        let encoded = crate::convert::wire_delete(deleted.clone()).encode_to_vec();
+        let reply = crate::wire::DeleteBlobResponse::decode(encoded.as_slice())?;
+        let decoded = crate::convert::delete(&reply)?;
+        assert_eq!(decoded.outcome, deleted.outcome);
+        assert_eq!(decoded.references, deleted.references);
+        for status in [
+            crate::wire::DeleteStatus::Absent,
+            crate::wire::DeleteStatus::Referenced,
+        ] {
+            let invalid = crate::wire::DeleteBlobResponse {
+                status: status as i32,
+                ..reply.clone()
+            };
+            assert!(crate::convert::delete(&invalid).is_err());
+        }
+    }
     assert_eq!(
         writing.get(digest, ByteRange::FULL, 32).await?.body(),
         &body
     );
+    assert_eq!(writing.delete(children[0]).await?, Delete::Deleted);
+    assert_eq!(writing.delete(children[1]).await?, Delete::Referenced);
+    let (mut reached, release) = medium.park("remove", "/e/");
+    let deleted = deleting.delete(digest);
+    tokio::pin!(deleted);
+    drive_to_park(deleted.as_mut(), &mut reached).await;
+    // Progress negative: losing the original release producer settles the
+    // accepted removal as uncertainty, without returning released references.
+    drop(release);
+    assert_eq!(deleted.await.unwrap_err().code, ErrorCode::OutcomeUnknown);
+    let mut previous = None;
+    for population in [4u8, 32] {
+        let store = Store::new(Counting::default());
+        let blobs = store.account(b"cost")?;
+        for value in 0..population {
+            blobs.put(vec![value; 8].into(), Vec::new()).await?;
+        }
+        let child = Digest::of(&[0; 8]);
+        let parent = Digest::of(&[255; 8]);
+        blobs.put(vec![255; 8].into(), vec![child]).await?;
+        store.medium().take();
+        let removed = blobs.delete(parent).await?;
+        assert_eq!(removed.references, [child]);
+        let direct = store.medium().take();
+        if let Some(previous) = &previous {
+            assert_eq!(&direct, previous, "unrelated blobs add no delete work");
+        }
+        blobs.put(vec![255; 8].into(), vec![child]).await?;
+        store.medium().take();
+        // Cost negative: the old caller reads the same envelope separately.
+        let old = blobs.head(parent).await?.references;
+        let removed = blobs.delete(parent).await?;
+        assert_eq!(old, removed.references);
+        let with_head = store.medium().take();
+        assert!(with_head["read"] > direct["read"]);
+        println!("population={population} delete={direct:?} head_then_delete={with_head:?}");
+        previous = Some(direct);
+    }
     Ok(())
 }
 
@@ -1045,11 +1119,20 @@ async fn delete_reads_only_its_inbound_index() -> Result<(), Box<dyn std::error:
         .digest;
     let root = RootId::new(*b"root")?;
     blobs.retain(&root, vec![child]).await?;
-    assert_eq!(blobs.delete(child).await?, Delete::Referenced);
-    assert_eq!(blobs.delete(parent).await?, Delete::Deleted);
+    let refused = blobs.delete(child).await?;
+    assert_eq!(refused.outcome, Delete::Referenced);
+    assert!(refused.references.is_empty());
+    let removed = blobs.delete(parent).await?;
+    assert_eq!(removed.outcome, Delete::Deleted);
+    assert_eq!(removed.references, [child]);
     assert_eq!(blobs.delete(child).await?, Delete::Referenced);
     assert!(blobs.release(&root).await?.existed);
-    assert_eq!(blobs.delete(child).await?, Delete::Deleted);
+    let removed = blobs.delete(child).await?;
+    assert_eq!(removed.outcome, Delete::Deleted);
+    assert!(removed.references.is_empty());
+    let absent = blobs.delete(child).await?;
+    assert_eq!(absent.outcome, Delete::Absent);
+    assert!(absent.references.is_empty());
     Ok(())
 }
 

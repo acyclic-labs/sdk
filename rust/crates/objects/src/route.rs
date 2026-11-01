@@ -234,8 +234,9 @@ pub async fn delete_blob(
     request: wire::DeleteBlobRequest,
 ) -> Result<Served<wire::DeleteBlobResponse>, Error> {
     let digest = convert::digest(request.digest.as_ref())?;
-    let deletion = blobs.delete(digest).await?;
-    Ok((convert::wire_delete(deletion.outcome), deletion.revision))
+    let mut deletion = blobs.delete(digest).await?;
+    let revision = deletion.revision.take();
+    Ok((convert::wire_delete(deletion), revision))
 }
 
 /// Lists digests after a cursor.

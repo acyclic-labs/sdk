@@ -1027,18 +1027,24 @@ impl<M: Medium> Account<M> {
     /// its mark: a later blob, a revival or another deleter's takeover makes
     /// that removal match nothing, however long the deleter was delayed.
     /// `OutcomeUnknown` means another actor moved the envelope first.
-    async fn remove_blob(&self, digest: Digest, fence: Option<u64>) -> Result<Delete, Error> {
+    async fn remove_blob(
+        &self,
+        digest: Digest,
+        fence: Option<u64>,
+    ) -> Result<(Delete, Vec<Digest>), Error> {
         let key = self.envelope_key(&digest);
         let Some((observed, envelope)) = self.stored_envelope(&digest).await? else {
             if fence.is_some() {
                 self.clear_torn(&key).await?;
             }
-            return Ok(Delete::Absent);
+            return Ok((Delete::Absent, Vec::new()));
         };
         match fence {
             // An envelope whose payload is still to come belongs to its put;
             // only collection, once its grace ends, removes it.
-            None if !self.complete(&digest, &envelope).await? => return Ok(Delete::Absent),
+            None if !self.complete(&digest, &envelope).await? => {
+                return Ok((Delete::Absent, Vec::new()));
+            }
             // A deleter's mark is taken over below, whatever the grace.
             None => {}
             Some(_) if envelope.dying.is_some() => {}
@@ -1049,12 +1055,12 @@ impl<M: Medium> Account<M> {
                     ..envelope
                 };
                 return match self.medium.replace(observed, stamped.encode().into()).await {
-                    Ok(_) | Err(MediumError::Ambiguous(_)) => Ok(Delete::Referenced),
+                    Ok(_) | Err(MediumError::Ambiguous(_)) => Ok((Delete::Referenced, Vec::new())),
                     Err(error) => Err(medium(error)),
                 };
             }
             Some(fence) if envelope.condemned.saturating_add(1) >= fence => {
-                return Ok(Delete::Referenced);
+                return Ok((Delete::Referenced, Vec::new()));
             }
             Some(_) => {}
         }
@@ -1063,7 +1069,7 @@ impl<M: Medium> Account<M> {
             if envelope.dying.is_some() && fence.is_some() {
                 self.revive(observed, envelope).await?;
             }
-            return Ok(Delete::Referenced);
+            return Ok((Delete::Referenced, Vec::new()));
         }
         let marked = Envelope {
             dying: Some(version()?),
@@ -1080,7 +1086,7 @@ impl<M: Medium> Account<M> {
         };
         if self.any(&self.index_prefix(&digest)).await? {
             self.revive(marked, envelope).await?;
-            return Ok(Delete::Referenced);
+            return Ok((Delete::Referenced, Vec::new()));
         }
         if !self.medium.remove_if(marked).await.map_err(moved)? {
             return Err(ErrorCode::OutcomeUnknown.into());
@@ -1096,7 +1102,7 @@ impl<M: Medium> Account<M> {
             &Self::envelope_tag(&digest, &envelope.version),
         )
         .await?;
-        Ok(Delete::Deleted)
+        Ok((Delete::Deleted, envelope.references))
     }
 
     /// Clears the mark `marked` from a kept blob, unless another actor
@@ -1117,7 +1123,7 @@ impl<M: Medium> Account<M> {
     async fn sweep(&self, digest: Digest, fence: u64) -> Result<Delete, Error> {
         match self.remove_blob(digest, Some(fence)).await {
             Err(error) if error.code == ErrorCode::OutcomeUnknown => Ok(Delete::Referenced),
-            outcome => outcome,
+            outcome => outcome.map(|(outcome, _references)| outcome),
         }
     }
 
@@ -1706,7 +1712,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
             async {
                 let issued = self.issued().await?;
                 let _gate = self.state.gate.read().await;
-                let outcome = self.remove_blob(digest, None).await?;
+                let (outcome, references) = self.remove_blob(digest, None).await?;
                 let revision = if outcome == Delete::Deleted {
                     issued.commit()
                 } else {
@@ -1714,6 +1720,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 };
                 Ok(Deletion {
                     outcome,
+                    references,
                     revision: Some(revision),
                 })
             }
