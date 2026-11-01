@@ -73,6 +73,27 @@ pub enum LocalOpenError {
     Io(#[from] std::io::Error),
 }
 
+/// Whether this close owned the last reference to the physical root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalClose {
+    /// The log was flushed, the recovery marker settled and the root lock released.
+    Released,
+    /// Another account, medium owner or accepted operation still held the root
+    /// at admission. This result makes no claim about that owner's final close.
+    StillReferenced,
+}
+
+/// Failure of an explicitly owned physical close.
+#[derive(Debug, thiserror::Error)]
+pub enum LocalCloseError {
+    /// The original close worker could not return its physical result.
+    #[error("local Objects close worker unavailable: {0}")]
+    Unavailable(#[source] std::io::Error),
+    /// The physical close failed; reopening performs the normal recovery checks.
+    #[error("local Objects close failed: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 const FORMAT: &[u8] = b"acyclic-objects-log-v1\n";
 /// The one-file-per-key layout's format marker.
 const FILE_PER_KEY_FORMAT: &[u8] = b"acyclic-objects-local-v1\n";
@@ -115,6 +136,16 @@ impl crate::Account<LocalMedium> {
         Store::new(medium)
             .account(b"local")
             .map_err(|_| LocalOpenError::Invalid)
+    }
+
+    /// Consumes this account and reports the physical close when it owns the
+    /// last medium reference. Other accounts and accepted operations remain
+    /// owners; `StillReferenced` does not wait for them or close their root.
+    pub async fn close(self) -> Result<LocalClose, LocalCloseError> {
+        match Arc::try_unwrap(self.into_medium()) {
+            Ok(medium) => medium.close().await,
+            Err(_) => Ok(LocalClose::StillReferenced),
+        }
     }
 }
 
@@ -186,6 +217,8 @@ struct Shared {
     /// root refuses every later write and flush and never closes clean: the
     /// next open recovers it.
     stopped: AtomicBool,
+    /// An explicit close reports its own failure; Drop must not retry it.
+    close_started: bool,
     #[cfg(test)]
     counts: Counts,
     /// The root's exclusive lock. It unlocks before its file closes, so a
@@ -207,20 +240,25 @@ impl Drop for Shared {
     /// A clean close of a settled root leaves nothing unflushed, so the next
     /// open trusts it; an unsettled or stopped one stays marked unclean.
     fn drop(&mut self) {
-        let settled = !*self.recovered.get_mut();
-        let closed = self.sync().and_then(|()| {
-            if !settled {
-                return Ok(());
-            }
-            std::fs::remove_file(self.root.join(OPEN))?;
-            self.sync_directory()
-        });
-        // A failed close leaves the marker, and the next open recovers.
-        drop(closed);
+        // A failed data flush leaves the marker, and the next open recovers.
+        drop(self.close());
     }
 }
 
 impl Shared {
+    fn close(&mut self) -> std::io::Result<()> {
+        if self.close_started {
+            return Ok(());
+        }
+        self.close_started = true;
+        self.sync()?;
+        if !*self.recovered.get_mut() {
+            std::fs::remove_file(self.root.join(OPEN))?;
+            self.sync_directory()?;
+        }
+        Ok(())
+    }
+
     fn log(&self) -> MutexGuard<'_, Log> {
         self.log.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -467,6 +505,27 @@ fn replay(
 }
 
 impl LocalMedium {
+    /// Consumes this medium. The last owner submits one owned close worker,
+    /// which retains the original root lock and ownership anchor through the
+    /// final flush and namespace barrier. Cancellation after submission does
+    /// not cancel that worker. `Released` follows actual lock retirement.
+    /// A recovered root stays marked unclean until its repair has settled.
+    pub async fn close(self) -> Result<LocalClose, LocalCloseError> {
+        let key = PersistenceKey::new(Arc::as_ptr(&self.shared) as usize, 0);
+        let Ok(mut shared) = Arc::try_unwrap(self.shared) else {
+            return Ok(LocalClose::StillReferenced);
+        };
+        spawn_persistence("objects", "close", key, move || {
+            let result = shared.close();
+            // Release the actual lock and anchor before delivering the result.
+            drop(shared);
+            result
+        })
+        .await
+        .map_err(LocalCloseError::Unavailable)??;
+        Ok(LocalClose::Released)
+    }
+
     async fn read_value(
         &self,
         key: String,
@@ -638,6 +697,7 @@ fn open_root(
         synced: AtomicU64::new(0),
         recovered: AtomicBool::new(recovered),
         stopped: AtomicBool::new(false),
+        close_started: false,
         #[cfg(test)]
         counts: Counts::default(),
         lock,

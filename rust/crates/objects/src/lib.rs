@@ -66,7 +66,7 @@ pub use grpc::{ConnectError, GrpcObjects};
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub use http::HttpObjects;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use local::{LocalMedium, LocalObjects};
+pub use local::{LocalClose, LocalCloseError, LocalMedium, LocalObjects};
 
 /// Largest blob stored inline in a retained stream record instead of as a blob.
 ///
