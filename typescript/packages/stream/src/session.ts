@@ -80,12 +80,12 @@ export class StreamSessions {
   }
 
   /** Finite reads share the native pinned-end, revision and credit machinery. */
-  async *read(path: string, options: ReadOptions): AsyncGenerator<EncodedRecord> {
+  async *read(path: string, options: ReadOptions, maximumResponseBytes?: number): AsyncGenerator<EncodedRecord> {
     const { from, limit, key } = structuredClone(options);
     const request = { kind: "read" as const, path, from, limit, ...(key === undefined ? {} : { key }) };
     const input = await validateWireRequest(request);
     yield* this.#cursor(() => this.#inner.read(input), undefined,
-      bytes => projectRecord(fromBinary(RecordSchema, bytes), path));
+      bytes => projectRecord(fromBinary(RecordSchema, bytes), path), maximumResponseBytes);
   }
 
   async *follow(path: string, options: FollowOptions & SessionOptions): AsyncGenerator<EncodedRecord> {
@@ -155,7 +155,9 @@ export class StreamSessions {
   }
 
   async *#cursor<T>(open: () => WasmFollow, signal: AbortSignal | undefined,
-    project: (bytes: Uint8Array) => T): AsyncGenerator<T> {
+    project: (bytes: Uint8Array) => T, maximumResponseBytes?: number): AsyncGenerator<T> {
+    if (maximumResponseBytes !== undefined && (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1)) throw new RangeError("maximumResponseBytes must be a positive safe integer");
+    let remaining = maximumResponseBytes;
     if (signal?.aborted) return;
     await ensureStreamWasm();
     if (signal?.aborted) return;
@@ -168,6 +170,10 @@ export class StreamSessions {
       for (;;) {
         const bytes = await cursor.next();
         if (signal?.aborted || bytes === null) return;
+        if (remaining !== undefined) {
+          if (bytes.byteLength > remaining) throw new StreamError("response_too_large", "response exceeds configured bound");
+          remaining -= bytes.byteLength;
+        }
         yield project(bytes);
       }
     } catch (error) {

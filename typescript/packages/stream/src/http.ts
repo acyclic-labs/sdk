@@ -13,7 +13,10 @@ import { observed, observedIterable, resolveObserver, type AcyclicObserver, type
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions extends CredentialOptions {
-  readonly endpoint: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver; readonly webSocketFactory?: SessionWebSocketFactory;
+  readonly endpoint: string; readonly fetcher?: typeof fetch;
+  /** Bounds unary response bytes or cumulative protobuf record bytes in one finite read. Omitted is unbounded. */
+  readonly maximumResponseBytes?: number;
+  readonly observer?: AcyclicObserver; readonly webSocketFactory?: SessionWebSocketFactory;
   /** Select an implicit authority from an authenticated receipt; explicit minima remain intact. */
   readonly revisionScope?: Uint8Array;
 }
@@ -48,7 +51,7 @@ export class HttpStreamProvider implements StreamProvider {
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); const input = await validateAppend(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); const input = await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
   read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
-    return observedIterable(this.#observer, "stream", "read", this.#sessions.read(path, options));
+    return observedIterable(this.#observer, "stream", "read", this.#sessions.read(path, options, this.#maximum));
   }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
     await this.#sessions.registerCredential(slot, credential);

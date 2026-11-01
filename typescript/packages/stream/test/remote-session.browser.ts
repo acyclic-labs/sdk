@@ -2,7 +2,7 @@ import { HttpStreamProvider } from "../src/http.js";
 import { streamResource } from "../src/contract.js";
 import init, { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import { create, toBinary, fromBinary } from "@bufbuild/protobuf";
-import { AppendRequestSchema, AppendResponseSchema, FollowRequestSchema, ForkRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
+import { AppendRequestSchema, AppendResponseSchema, FollowRequestSchema, ForkRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionDelivery, SessionFrameSchema, SessionSubscriptionSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { verifyHistoryTimeoutPolicy } from "./remote-history.browser.js";
 
@@ -92,6 +92,23 @@ export async function test(endpoint: string) {
   if (retained.done || retained.value.value[0] !== 7) throw new Error("returned bytes mutated retained history");
   await abandoned.return?.();
   if (readObservations !== 2) throw new Error("finite read cleanup did not report one terminal");
+  for (const maximumResponseBytes of [1, 2 * toBinary(RecordSchema, records[0]!).byteLength + 16]) {
+    const bounded = new HttpStreamProvider({ endpoint: "https://example.test", token: "browser-test", maximumResponseBytes,
+      fetcher: async () => { throw new Error("bounded finite read used the obsolete JSON page collector"); },
+      webSocketFactory: (_url, protocols) => new WebSocket(`${endpoint.replace(/^http/, "ws")}/v1/stream/session`, protocols),
+    }).read("browser/history", { from: 0n, limit: 3 })[Symbol.asyncIterator]();
+    try {
+      if (maximumResponseBytes > 1) {
+        if ((await bounded.next()).done || (await bounded.next()).done) throw new Error("bounded read refused records below its cumulative limit");
+      }
+      try {
+        await bounded.next();
+        throw new Error("finite read ignored its configured response limit");
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "response_too_large") throw error;
+      }
+    } finally { await bounded.return?.(); }
+  }
   await stream.dispatch("fork", toBinary(ForkRequestSchema, create(ForkRequestSchema, {
     source: "browser/history", destination: "browser/inherited", idempotencyKey: new TextEncoder().encode("browser-origin"),
   })));
