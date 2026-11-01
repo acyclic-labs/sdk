@@ -182,7 +182,8 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
             ..Limits::default()
         },
     )?;
-    assert!(adapter.preflight(&bounded, None, &input, None).is_err());
+    // Rendering credit pages the result; it does not deny the source interval.
+    assert!(adapter.preflight(&bounded, None, &input, None).is_ok());
     let bounded = FileTool::Search {
         options: SEARCH,
         maximum_result_bytes: 1,

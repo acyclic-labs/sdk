@@ -24,6 +24,22 @@ pub struct FilePathSelection {
 }
 
 impl FilePathSelection {
+    /// Whether a complete descriptor names this authored generation and path.
+    /// Authored path producers encode the generation key as lowercase hex in
+    /// the complete descriptor's version. This compares identity only; the
+    /// original content reader still authenticates its bytes and descriptor.
+    pub(crate) fn matches_content(&self, file: &FileRef) -> bool {
+        let key = self.generation.as_resource().key();
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        self.volume == *file.volume()
+            && self.path == file.path()
+            && self.byte_length == file.descriptor().byte_length()
+            && Some(file.version().len()) == key.len().checked_mul(2)
+            && file.version().bytes().eq(key
+                .iter()
+                .flat_map(|byte| [HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]]))
+    }
+
     pub(crate) fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,

@@ -456,7 +456,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         .unwrap_or_else(|| syn::parse_quote!(::acyclic_harness_core));
     let name = &input.ident;
     let mut generics = input.generics.clone();
-    let generic = generics.type_params().next().is_some();
+    let generic = !generics.params.is_empty();
     for param in generics.type_params_mut() {
         param
             .bounds

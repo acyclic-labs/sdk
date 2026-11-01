@@ -173,16 +173,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         scope: &Scope,
         reference: &'a FileRef,
-        maximum_bytes: u64,
         inherited_reference: bool,
         ceiling: Option<&crate::Capabilities>,
         io: &'a PreparationIo,
     ) -> Result<ReadObservation<'a, A, O>> {
         reference.validate(&mut Some(&mut io.history_io()))?;
-        if reference.volume().provider() != &self.provider
-            || reference.descriptor().byte_length() > maximum_bytes
-        {
-            return Err(io.invalid("content provider or size limit mismatch"));
+        if reference.volume().provider() != &self.provider {
+            return Err(io.invalid("content provider mismatch"));
         }
         if let Some(grants) = ceiling
             && !crate::runtime::read_granted_with_work(
@@ -239,17 +236,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         ceiling: Option<&crate::Capabilities>,
         io: &PreparationIo,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        self.read_selection_with_access(
-            scope,
-            reference,
-            maximum_bytes,
-            inherited_reference,
-            ceiling,
-            io,
-        )
-        .await?
-        .read_file(maximum_bytes)
-        .await
+        if reference.descriptor().byte_length() > maximum_bytes {
+            return Err(io.invalid("complete content exceeds its byte credit"));
+        }
+        self.read_selection_with_access(scope, reference, inherited_reference, ceiling, io)
+            .await?
+            .read_file(maximum_bytes)
+            .await
     }
 }
 

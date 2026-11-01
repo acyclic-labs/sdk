@@ -144,18 +144,7 @@ impl TaskContext {
         grants: &crate::Capabilities,
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
-        let grants = self.authorize_file_read(file, scope, grants, io)?;
-        if range
-            .offset
-            .checked_add(range.length)
-            .is_none_or(|end| end > file.descriptor().byte_length())
-        {
-            return Err(content_error(
-                io,
-                ErrorCode::Invalid,
-                "range exceeds the source file",
-            ));
-        }
+        let grants = self.authorize_file_read(file, scope, grants, Some(range), io)?;
         let reader = self
             .content_binding(Some(file.volume()))
             .map(|content| content.reader.as_ref())
@@ -180,11 +169,15 @@ impl TaskContext {
         file: &FileRef,
         scope: &'a RuntimeScope,
         request: &'a crate::Capabilities,
+        range: Option<acyclic_fs::ByteRange>,
         io: Option<&ContentIo>,
     ) -> Result<ReadGrants<'a>> {
         let grants = ReadGrants::bound(scope).intersect(Some(request), io)?;
         crate::executor::with_history_io(io, |work| {
-            grants.scope.limits.validate_file(file, work)?;
+            match range {
+                Some(range) => grants.scope.limits.validate_file_range(file, range, work)?,
+                None => grants.scope.limits.validate_file(file, work)?,
+            }
             if !read_granted_with_work(grants.grants, file, work)? {
                 return Err(content_error(
                     io,
@@ -362,7 +355,7 @@ impl TaskContext {
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
         let grants =
-            self.authorize_file_read(file, scope, ceiling.unwrap_or(scope.grants()), io)?;
+            self.authorize_file_read(file, scope, ceiling.unwrap_or(scope.grants()), None, io)?;
         let reader = binding
             .map(|content| content.reader.as_ref())
             .ok_or_else(|| {

@@ -42,6 +42,9 @@ scalars!(
 impl HeapLayout for str {
     const LAYOUT: &'static JsonLayout = &JsonLayout::Scalar;
 }
+impl HeapLayout for serde_json::value::RawValue {
+    const LAYOUT: &'static JsonLayout = &JsonLayout::BorrowedRaw;
+}
 #[cfg(not(target_arch = "wasm32"))]
 impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
     const LAYOUT: &'static JsonLayout = <[u8; 32]>::LAYOUT;
@@ -162,7 +165,7 @@ impl<K: HeapLayout, V: HeapLayout> HeapLayout for BTreeMap<K, V> {
 /// Whether a key decoded with `layout` allocates nothing beyond its string.
 const fn keeps_only_its_string(layout: &JsonLayout) -> bool {
     match layout {
-        JsonLayout::Scalar | JsonLayout::Node { .. } => true,
+        JsonLayout::BorrowedRaw | JsonLayout::Scalar | JsonLayout::Node { .. } => true,
         JsonLayout::Boxed { .. } | JsonLayout::Scaled { .. } => false,
         JsonLayout::Any { of, .. } => all_keep_only_their_strings(of),
     }

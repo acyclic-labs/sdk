@@ -118,13 +118,13 @@ async fn selection_case(body: Vec<u8>, a: u16, b: u16, mutate: bool) -> Result<(
         &body[start..end]
     );
     let input = crate::tool::files::ReadFileInput {
-        lines: None,
         path: file.path().into(),
         version: Some(serde_json::to_string(&file).unwrap()),
         range: Some(crate::tool::text::TextRange {
             start: range.offset,
             end: range.offset + range.length,
         }),
+        selection: None,
     };
     assert_eq!(
         serde_json::from_slice::<crate::tool::files::ReadFileInput>(

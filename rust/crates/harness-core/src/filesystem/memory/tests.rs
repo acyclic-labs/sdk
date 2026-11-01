@@ -9,6 +9,7 @@ const FINITE_CONTENT_BUDGET: acyclic_fs::WorkBudget =
 mod access;
 mod approvals;
 mod content;
+mod projections;
 mod publication_cost;
 mod publication_evidence;
 
@@ -466,10 +467,16 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         .apply(
             &workspace,
             None,
-            &[crate::filesystem::WorkspaceMutation::PutFile {
-                path: "/large.txt".into(),
-                bytes: bytes::Bytes::from(vec![b'x'; 2 * 1024 * 1024]).into(),
-            }],
+            &[
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/large.txt".into(),
+                    bytes: bytes::Bytes::from(vec![b'x'; 2 * 1024 * 1024]).into(),
+                },
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/lines.txt".into(),
+                    bytes: bytes::Bytes::from("αβ\n".repeat(2_000) + "tail").into(),
+                },
+            ],
             &crate::IdempotencyKey::new("large-range-source")?,
         )
         .await?;
@@ -554,10 +561,27 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
                 assert_eq!(result.value["text"], "xxxxxxxxxxxxxxxx");
             }
             assert_eq!(work.live_allocation_bytes(), cached);
-            // The old complete-file path cannot satisfy the same 4 KiB
-            // selected-byte allowance for this 2 MiB source.
-            assert!(call(&task, &read, json!({"path":"large.txt"})).await.is_err());
+            // Default reads page the same large source under the selected-byte
+            // allowance. Direct whole-body resolution remains a negative control.
+            let (page_invocation, page_result) = call(&task, &read, json!({"path":"large.txt"})).await?;
+            let next = page_result.value["page"]["next"].as_u64().expect("bounded continuation");
+            assert!(next > 0 && next < 2 * 1024 * 1024);
+            let projected = read.projection.project(&page_invocation, &page_result, None)?.0;
+            read.definition.validate_projection(&projected, limits, None)?;
+            let (line_invocation, line_result) = call(&task, &read,
+                json!({"path":"lines.txt","selection":{"kind":"lines","offset":1025,"limit":2}})).await?;
+            assert_eq!(line_result.value["text"], "αβ\nαβ\n");
+            assert_eq!(line_result.value["page"]["start"], 5125);
+            let line_projection = read.projection.project(&line_invocation, &line_result, None)?.0;
+            read.definition.validate_projection(&line_projection, limits, None)?;
+            let line_version = line_projection["value"]["version"].as_str().expect("immutable line source");
+            assert_eq!(call(&task, &read, json!({"path":"lines.txt","version":line_version,
+                "selection":{"kind":"lines","offset":1025,"limit":2}})).await?.1.value, line_result.value);
+            let (_, long_line) = call(&task, &read,
+                json!({"path":"large.txt","selection":{"kind":"lines","offset":0,"limit":1}})).await?;
+            assert!(long_line.value["text"].as_str().is_some_and(|text| !text.is_empty() && text.len() < 4096));
             let io = crate::executor::PreparationIo::from_native_work(&work)?;
+            assert!(context.read_tool_path("large.txt", None, Some(&io)).await.is_err());
             cancellation.cancel();
             assert!(context.read_tool_path_range("large.txt", None,
                 acyclic_fs::ByteRange { offset: 1024, length: 16 }, Some(&io)).await.is_err());
@@ -599,10 +623,22 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert_eq!(result.value["text"], "one");
         let projected = read.projection.project(&invocation, &result, None)?.0;
         let version = projected["value"]["version"].as_str().expect("opaque version");
-        let source: FileRef = serde_json::from_str(version).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(source.path(), "notes/one.txt");
-        assert_eq!(task.read_file(&source, None).await?.as_ref(), b"one");
+        let source: crate::tool::files::ReadFileResult = serde_json::from_value(result.value.clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let crate::tool::files::FileReadSource::Authored(source) = source.file else {
+            return Err(Error::Invalid("bounded path read did not retain its authored selection".into()));
+        };
+        assert_eq!(source.path, "notes/one.txt");
+        assert_eq!(source.byte_length, 3);
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":version})).await?.1.value, result.value);
+        let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
+        let (content, _bytes, _retained) = context.read_tool_path("notes/one.txt", Some(&source.generation), None).await?;
+        assert!(source.matches_content(&content));
+        let mut complete = crate::tool::ToolResult { value: json!({"file":{"content":content},"text":"one"}) };
+        let pinned = ToolInvocation { arguments: json!({"path":"notes/one.txt","version":version}), ..invocation.clone() };
+        read.projection.project(&pinned, &complete, None)?;
+        complete.value["file"]["content"]["version"] = json!("another-generation");
+        assert!(read.projection.project(&pinned, &complete, None).is_err());
 
         let (range_invocation, range_result) = call(&task, &read,
             json!({"path":"notes/one.txt", "range":{"start":0,"end":2}})).await?;
@@ -645,6 +681,37 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert!(context.observe_tool_source_file_once(operation, None, Some("notes/other.txt"), None).await?.0.is_none());
         assert!(context.observe_tool_file_once(operation, None).await?.0.is_none());
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "later");
+        task.stage_file(None, OperationId::new(), "notes/one.txt", b"one one", "text/plain", "one.txt").await?;
+        assert_eq!(call(&task, &edit, json!({"path":"notes/one.txt","old_text":"one","new_text":"two"})).await.unwrap_err().code(), crate::wire::ErrorCode::Conflict);
+        assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "one one");
+        call(&task, &edit, json!({"path":"notes/one.txt","old_text":"one","new_text":"two","replace_all":true})).await?;
+        assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "two two");
+
+        let notebook = json!({"nbformat":4,"nbformat_minor":5,"metadata":{"kept":"one"},"cells":[
+            {"cell_type":"code","id":"first","metadata":{"kept":true},"source":["one one"],"outputs":[{"output_type":"stream","text":"old"}],"execution_count":7},
+            {"cell_type":"markdown","id":"other","metadata":{},"source":["unchanged"]},
+        ]});
+        task.stage_file(None, OperationId::new(), "notes/book.ipynb", &serde_json::to_vec(&notebook).unwrap(), "application/x-ipynb+json", "book.ipynb").await?;
+        let (nb_call, nb_read) = call(&task, &read, json!({"path":"notes/book.ipynb","selection":{"kind":"cells","offset":0,"limit":1}})).await?;
+        let nb_projection = read.projection.project(&nb_call, &nb_read, None)?.0;
+        let nb_version = nb_projection["value"]["version"].as_str().expect("notebook version");
+        let cell_edit = json!({"kind":"replace","index":0,"id":"first","source":"two"});
+        for extra in [json!({"replace_all":true}), json!({"old_text":"one"}), json!({"new_text":"two"})] {
+            let mut arguments = json!({"path":"notes/book.ipynb","version":nb_version,"notebook":cell_edit});
+            arguments.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            assert_eq!(call(&task, &edit, arguments).await.unwrap_err().code(), crate::wire::ErrorCode::Invalid);
+        }
+        let (nb_edit, nb_result) = call(&task, &edit, json!({"path":"notes/book.ipynb","version":nb_version,"notebook":cell_edit})).await?;
+        let file: crate::tool::files::FileResult = serde_json::from_value(nb_result.value.clone()).unwrap();
+        let actual: Value = serde_json::from_slice(task.read_file(&file.file, None).await?.as_ref()).unwrap();
+        assert_eq!(actual["metadata"], notebook["metadata"]);
+        assert_eq!(actual["cells"][1], notebook["cells"][1]);
+        assert_eq!(actual["cells"][0]["source"], json!("two"));
+        assert_eq!(actual["cells"][0]["outputs"], json!([]));
+        assert_eq!(actual["cells"][0]["execution_count"], Value::Null);
+        assert_eq!(call(&task, &edit, json!({"path":"notes/book.ipynb","version":nb_version,"notebook":cell_edit})).await.unwrap_err().code(), crate::wire::ErrorCode::Conflict);
+        let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), nb_edit.operation_id, &nb_edit.call_id)?;
+        assert_eq!(edit.executor.reconcile(nb_edit, Some(context)).await?, Some(nb_result));
         Ok(())
     }}).await?;
     drop(storage);

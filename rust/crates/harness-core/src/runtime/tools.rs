@@ -1,5 +1,38 @@
 use super::*;
 
+impl TaskContext {
+    /// Retains complete tool output through the existing volume publisher.
+    pub(crate) async fn spill_tool_output(
+        &self,
+        operation: OperationId,
+        bytes: &[u8],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, String, u64)> {
+        let operation =
+            crate::conversation::derived_operation_id(operation, b"tool-output-spill-v1");
+        let path = crate::executor::with_history_io(io, |history| {
+            crate::executor::preparation_format(
+                format_args!(".volumes/scratch/tool-output/{operation}.json"),
+                history,
+            )
+        })?;
+        let file = self
+            .stage_bound_file(
+                self.tool_content(None),
+                operation,
+                &path,
+                bytes,
+                "application/json",
+                "tool-output.json",
+                super::content_write::ContentPublication::OperationBound,
+                self.scope(),
+                io,
+            )
+            .await?;
+        Ok((file.0, path, file.1))
+    }
+}
+
 /// An admission decision for one exact, schema-valid tool invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolPolicyDecision {
@@ -376,10 +409,12 @@ impl std::ops::Deref for ToolContext {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ToolContext {
-    /// Checks effective READ and limits before replay or content IO.
-    pub fn authorize_file_read_with_native_work(
+    /// Checks effective READ and the selected byte credit before content IO.
+    /// `None` admits the complete body; an empty range admits metadata only.
+    pub fn authorize_file_selection_with_native_work(
         &self,
         file: &FileRef,
+        range: Option<acyclic_fs::ByteRange>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.task()
@@ -387,6 +422,7 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
+                range,
                 Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
             )
             .map(|_| ())

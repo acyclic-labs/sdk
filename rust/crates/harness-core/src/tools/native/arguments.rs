@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     NativeCustody,
-    tool::{ToolInvocation, files::LineSelection},
+    tool::{ToolInvocation, files::ReadSelection},
 };
 use serde::Serialize;
 
@@ -52,7 +52,7 @@ impl Capability {
 enum Arguments<'a> {
     Read {
         path: &'a str,
-        lines: Option<LineSelection>,
+        selection: Option<ReadSelection>,
     },
     Write {
         path: &'a str,
@@ -155,7 +155,11 @@ impl adapter::Adapter {
                 };
                 Arguments::Read {
                     path: text(fields, "file_path")?,
-                    lines: Some(LineSelection { offset, limit }),
+                    selection: (fields
+                        .get(if cc { "offset" } else { "start_line" })
+                        .is_some()
+                        || fields.get(if cc { "limit" } else { "end_line" }).is_some())
+                    .then_some(ReadSelection::Lines { offset, limit }),
                 }
             }
             Capability::Write => Arguments::Write {

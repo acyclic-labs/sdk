@@ -14,7 +14,7 @@ mod defaults;
 pub use defaults::{defaults, names as default_names};
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
-mod bounds;
+pub(crate) mod bounds;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use bounds::prefix as json_string_prefix;
 mod command;

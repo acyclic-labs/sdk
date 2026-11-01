@@ -102,6 +102,27 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
             let control = control.bind_variant(&revisions[0],Arc::new(refusing))?.0;
             assert!(matches!(call(&task,&control,read_args).await,Err(Error::Conflict(reason)) if reason == "original producer refused"));
             assert_eq!(call(&task,&tools[0],json!({"file_path":path})).await?.1.value["text"],"later\n");
+            let lines_path = format!("{path}.lines");
+            call(&task,&tools[1],json!({"file_path":lines_path,"content":"first\nβeta\nlast"})).await?;
+            let lines_args = if cc {
+                json!({"file_path":lines_path,"offset":2,"limit":1})
+            } else {json!({"file_path":lines_path,"start_line":2,"end_line":2})};
+            let (line_call,line_result) = call(&task,&tools[0],lines_args).await?;
+            assert_eq!(line_result.value["text"],"βeta\n");
+            assert_eq!(line_result.value["page"]["offset"],1);
+            assert_eq!(line_result.value["page"]["start"],6);
+            assert_eq!(line_result.value["page"]["end"],12);
+            let projected = tools[0].projection.project(&line_call,&line_result,None)?.0;
+            tools[0].definition.validate_projection(&projected,limits,None)?;
+            let image_path = format!("{path}.png");
+            task.stage_file(None,OperationId::new(),&image_path,
+                include_bytes!("../../../tests/fixtures/notebook-output.png"),"image/png",&image_path).await?;
+            let (image_call,image_result) = call(&task,&tools[0],json!({"file_path":image_path})).await?;
+            assert_eq!(image_result.value["media"]["kind"],"image");
+            let projected = tools[0].projection.project(&image_call,&image_result,None)?.0;
+            tools[0].definition.validate_projection(&projected,limits,None)?;
+            assert!(matches!(call(&task,&tools[0],json!({"file_path":"absent.pdf","pages":"1-2"})).await,
+                Err(Error::Unsupported(_))));
         }
         Ok(())
     }).await

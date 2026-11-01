@@ -25,7 +25,7 @@ impl FileProjection {
                 let authored = generator.subschema_for::<schema::JsonProjection<FileView<'_>>>();
                 Ok(json!({"oneOf":[content,authored],"$defs":generator.take_definitions(true)}))
             }
-            Self::Read(ProjectionMode::Full) => ProjectionMode::Full.schema::<FileView<'_>>(),
+            Self::Read(ProjectionMode::Full) => schema::output::<ReadProjection<'_>>(),
             Self::Publication(mode) => Self::model_schema(mode),
             Self::Search(mode) => mode.schema::<SearchResult>(),
         }
@@ -33,6 +33,127 @@ impl FileProjection {
 
     pub(crate) fn model_schema(mode: ProjectionMode) -> Result<Value> {
         mode.schema::<FileView<'_>>()
+    }
+
+    pub(crate) fn read_schema(mode: ProjectionMode) -> Result<Value> {
+        Self::Read(mode).schema()
+    }
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ReadProjection<'a> {
+    Json {
+        value: FileView<'a>,
+    },
+    Parts {
+        #[schemars(with = "Vec<MediaPart<'a>>")]
+        parts: MediaParts<'a>,
+    },
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MediaPart<'a> {
+    Text {
+        #[schemars(with = "str")]
+        text: MediaText<'a>,
+    },
+    File {
+        file: &'a FileRef,
+        #[schemars(with = "Value")]
+        policy: NativePolicy,
+    },
+}
+
+#[derive(Serialize)]
+struct NativePolicy {
+    native: crate::model::NativeMediaPolicy,
+}
+
+#[derive(Clone, Copy)]
+enum MediaText<'a> {
+    Version(&'a str),
+    Notebook {
+        path: &'a str,
+        version: &'a str,
+        page: &'a ReadPage,
+        text: &'a str,
+    },
+}
+
+impl Serialize for MediaText<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Version(version) => serializer.serialize_str(version),
+            Self::Notebook { path, version, page, text } => serializer.collect_str(&format_args!(
+                "{version}\nFile {path}; cells from {}; source bytes {}..{}; next byte {:?}\n{text}",
+                page.offset, page.start, page.end, page.next,
+            )),
+        }
+    }
+}
+
+struct MediaParts<'a> {
+    text: MediaText<'a>,
+    primary: Option<(&'a FileRef, &'a ReadSelection)>,
+    outputs: &'a [NotebookOutput],
+}
+
+fn policy(file: &FileRef, intent: crate::model::NativeMediaIntent) -> NativePolicy {
+    NativePolicy {
+        native: crate::model::NativeMediaPolicy {
+            intent,
+            maximum_bytes: file.descriptor().byte_length().max(1),
+            maximum_work: file.descriptor().byte_length().max(1),
+            configuration: None,
+        },
+    }
+}
+
+impl Serialize for MediaParts<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{Error as _, SerializeSeq};
+        let length = self
+            .outputs
+            .len()
+            .checked_add(1 + usize::from(self.primary.is_some()))
+            .ok_or_else(|| S::Error::custom("native read part count overflow"))?;
+        let mut parts = serializer.serialize_seq(Some(length))?;
+        parts.serialize_element(&MediaPart::Text { text: self.text })?;
+        if let Some((file, selection)) = self.primary {
+            let intent = match selection {
+                ReadSelection::Image { detail } => {
+                    crate::model::NativeMediaIntent::Image { detail: *detail }
+                }
+                ReadSelection::Pdf => crate::model::NativeMediaIntent::Document,
+                _ => return Err(S::Error::custom("invalid native read modality")),
+            };
+            parts.serialize_element(&MediaPart::File {
+                file,
+                policy: policy(file, intent),
+            })?;
+        }
+        for output in self.outputs {
+            let intent = if output.file.descriptor().media_type() == "application/pdf" {
+                crate::model::NativeMediaIntent::Document
+            } else {
+                crate::model::NativeMediaIntent::Image {
+                    detail: crate::model::ImageDetail::Auto,
+                }
+            };
+            parts.serialize_element(&MediaPart::File {
+                file: &output.file,
+                policy: policy(&output.file, intent),
+            })?;
+        }
+        parts.end()
     }
 }
 
@@ -64,7 +185,61 @@ impl ToolProjection for FileProjection {
                 let io = owned_io.as_ref();
                 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
                 let io: Option<&crate::executor::PreparationIo> = None;
-                if let Some(range) = input.0.range {
+                if let Some(requested) = &input.0.selection {
+                    let native =
+                        matches!(requested, ReadSelection::Image { .. } | ReadSelection::Pdf);
+                    if native != result.0.media.is_some()
+                        || (native && result.0.media.as_ref() != Some(requested))
+                    {
+                        return Err(super::executor::rejection(
+                            work,
+                            "read result differs from requested projection",
+                        ));
+                    }
+                }
+                if let Some(page) = &result.0.page {
+                    if page.start > page.end || (result.0.media.is_some()) {
+                        return Err(super::executor::rejection(
+                            work,
+                            "invalid read page provenance",
+                        ));
+                    }
+                    if page.end.checked_sub(page.start) != Some(text.len() as u64)
+                        || page.end > file.byte_length()
+                        || page
+                            .next
+                            .is_some_and(|next| next != page.end || next > file.byte_length())
+                        || input
+                            .0
+                            .range
+                            .is_some_and(|range| page.start != range.start || page.end > range.end)
+                        || match input.0.selection {
+                            Some(
+                                ReadSelection::Lines { offset, .. }
+                                | ReadSelection::Cells { offset, .. },
+                            ) => page.offset != offset,
+                            Some(ReadSelection::Image { .. } | ReadSelection::Pdf) => true,
+                            None if input.0.path.ends_with(".ipynb") && input.0.range.is_none() => {
+                                page.offset != 0
+                            }
+                            None => {
+                                page.offset != 0 || (input.0.range.is_none() && page.start != 0)
+                            }
+                        }
+                    {
+                        return Err(super::executor::rejection(
+                            work,
+                            "text page differs from source interval",
+                        ));
+                    }
+                } else if result.0.media.is_some() {
+                    if !text.is_empty() {
+                        return Err(super::executor::rejection(
+                            work,
+                            "native read must preserve the source file",
+                        ));
+                    }
+                } else if let Some(range) = input.0.range {
                     if range.end.checked_sub(range.start) != Some(text.len() as u64)
                         || range.end > file.byte_length()
                     {
@@ -76,7 +251,7 @@ impl ToolProjection for FileProjection {
                             )
                         }));
                     }
-                } else if input.0.lines.is_none() {
+                } else {
                     crate::executor::with_history_io(io, |history| match file {
                         FileReadSource::Content(file) => {
                             file.descriptor().verify(text.as_bytes(), history)
@@ -91,12 +266,60 @@ impl ToolProjection for FileProjection {
                         )),
                     })?;
                 }
+                if !result.0.outputs.is_empty() {
+                    let cells = match input.0.selection {
+                        Some(ReadSelection::Cells { offset, limit }) => Some((offset, limit)),
+                        None if input.0.path.ends_with(".ipynb") && input.0.range.is_none() => {
+                            Some((0, None))
+                        }
+                        _ => None,
+                    };
+                    let Some((offset, limit)) = cells else {
+                        return Err(super::executor::rejection(
+                            work,
+                            "native outputs require a notebook cell selection",
+                        ));
+                    };
+                    let Some(page) = &result.0.page else {
+                        return Err(super::executor::rejection(
+                            work,
+                            "notebook outputs require source page provenance",
+                        ));
+                    };
+                    let mut previous = None;
+                    for output in &result.0.outputs {
+                        let position = (output.cell_index, output.output_index, output.start);
+                        if output.start < page.start
+                            || output.start >= output.end
+                            || output.end > file.byte_length()
+                            || (page.next.is_none() && output.end > page.end)
+                            || output.cell_index < offset
+                            || limit.is_some_and(|limit| output.cell_index - offset >= limit)
+                            || previous.is_some_and(|previous| previous >= position)
+                            || !matches!(
+                                output.file.descriptor().media_type(),
+                                "image/png"
+                                    | "image/jpeg"
+                                    | "image/gif"
+                                    | "image/webp"
+                                    | "application/pdf"
+                            )
+                            || output.file.descriptor().byte_length() == 0
+                        {
+                            return Err(super::executor::rejection(
+                                work,
+                                "notebook output differs from source provenance",
+                            ));
+                        }
+                        previous = Some(position);
+                    }
+                }
                 // The original executor validates the exact mounted path and
                 // volume before dispatch. A projector has no workspace and
                 // cannot compare that view path to a volume-relative path.
                 if let Some(version) = input.0.version.as_deref() {
                     let original = super::version::decode_version(file.path(), version, work)?;
-                    if original.0 != *file {
+                    if !original.0.same_source(file) {
                         return Err(super::executor::rejection(
                             work,
                             "read result belongs to another version",
@@ -105,12 +328,59 @@ impl ToolProjection for FileProjection {
                 }
                 if mode == ProjectionMode::Full {
                     let version = super::version::encode_source(file, work)?;
-                    return schema::project_json(
-                        &FileView {
-                            path: &input.0.path,
-                            version: &version.0,
-                            text: Some(text),
+                    if let Some(media) = &result.0.media {
+                        let FileReadSource::Content(file) = file else {
+                            return Err(super::executor::rejection(
+                                work,
+                                "native media requires a complete content descriptor",
+                            ));
+                        };
+                        return super::value(
+                            &ReadProjection::Parts {
+                                parts: MediaParts {
+                                    text: MediaText::Version(&version.0),
+                                    primary: Some((file, media)),
+                                    outputs: &[],
+                                },
+                            },
+                            u64::MAX,
+                            work,
+                        );
+                    }
+                    if !result.0.outputs.is_empty() {
+                        let page = result.0.page.as_ref().ok_or_else(|| {
+                            super::executor::rejection(
+                                work,
+                                "notebook outputs require source page provenance",
+                            )
+                        })?;
+                        return super::value(
+                            &ReadProjection::Parts {
+                                parts: MediaParts {
+                                    text: MediaText::Notebook {
+                                        path: &input.0.path,
+                                        version: &version.0,
+                                        page,
+                                        text,
+                                    },
+                                    primary: None,
+                                    outputs: &result.0.outputs,
+                                },
+                            },
+                            u64::MAX,
+                            work,
+                        );
+                    }
+                    return super::value(
+                        &ReadProjection::Json {
+                            value: FileView {
+                                path: &input.0.path,
+                                version: &version.0,
+                                text: Some(text),
+                                page: result.0.page.as_ref(),
+                            },
                         },
+                        u64::MAX,
                         work,
                     );
                 }
@@ -121,6 +391,7 @@ impl ToolProjection for FileProjection {
                             path: &input.0.path,
                             version: &version.0,
                             text: None,
+                            page: result.0.page.as_ref(),
                         },
                         work,
                     );
@@ -163,6 +434,7 @@ impl ToolProjection for FileProjection {
                                     .unwrap_or_else(|| value.0.file.path()),
                                 version: &version.0,
                                 text: None,
+                                page: None,
                             },
                             work,
                         )
