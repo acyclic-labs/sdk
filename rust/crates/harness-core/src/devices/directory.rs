@@ -231,6 +231,17 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
 }
 
 impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P> {
+    fn read_path<'a>(
+        &'a self,
+        path: &'a str,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(
+        &'a crate::conversation::VolumeRef,
+        std::borrow::Cow<'a, str>,
+    )> {
+        self.home.executor.read_path(path, work)
+    }
+
     fn roster(&self) -> Arc<Roster> {
         self.devices.borrow().roster()
     }

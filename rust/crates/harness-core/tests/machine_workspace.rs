@@ -7,6 +7,24 @@ async fn workspace_fixture() -> Result<(
     acyclic_harness_core::core::Scope,
     acyclic_harness_core::machines::MachinesWorkspace,
 )> {
+    use acyclic_harness_core::conversation::{VolumeClass, VolumeOwner, VolumeRef};
+    let volume = VolumeRef::new(
+        ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,
+        "project".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("project".into()),
+        &mut None,
+    )?;
+    workspace_fixture_for_volume(volume).await
+}
+
+async fn workspace_fixture_for_volume(
+    volume: acyclic_harness_core::conversation::VolumeRef,
+) -> Result<(
+    acyclic_harness_core::core::AuthorityRoot,
+    acyclic_harness_core::core::Scope,
+    acyclic_harness_core::machines::MachinesWorkspace,
+)> {
     use acyclic_harness_core::{
         conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
         core::{AggregateKind, Authority, AuthorityRoot},
@@ -23,13 +41,6 @@ async fn workspace_fixture() -> Result<(
             id: "local-machine-tools".into(),
         },
     );
-    let volume = VolumeRef::new(
-        ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,
-        "project".into(),
-        VolumeClass::Project,
-        VolumeOwner::Project("project".into()),
-        &mut None,
-    )?;
     let machine = MachineId::new();
     let other_volume = VolumeRef::new(
         volume.provider().clone(),

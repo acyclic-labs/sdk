@@ -26,6 +26,113 @@ use std::sync::Arc;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
+    use acyclic_harness_core::{
+        runtime::{Bindings, RuntimeScope, TargetResolver as _, ToolContext},
+        tool::{ToolInvocation, files},
+    };
+    let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
+        acyclic_harness_core::AgentId::from_bytes([41; 16]),
+        4096,
+    )
+    .await?;
+    let (owner, scope, workspace) =
+        super::workspace_fixture_for_volume(storage.volume().clone()).await?;
+    let provider = Arc::new(MemoryStream::default());
+    let sockets = Sockets::open(
+        Store::new(provider.clone(), StreamPath::new("harness/actors")?),
+        Arc::new(PlatformExecutor),
+        Arc::new(SystemClock),
+    )
+    .await?;
+    let directory = Arc::new(acyclic_harness_core::devices::TargetDirectory::new(
+        Store::new(provider, StreamPath::new("harness/actors")?),
+        Arc::new(sockets),
+        TargetPaths::new(
+            StreamPath::new("harness/devices/tree")?,
+            ActorReference::new(b"account", b"agents", b"tree")?,
+        ),
+        Target {
+            record: InProcessTargets::local_record("home", "ana"),
+            executor: Arc::new(workspace),
+        },
+        DeviceGrant {
+            scope,
+            issuer: owner.issuer(&mut None)?,
+            verifier: owner.verifier(&mut None)?,
+        },
+    )?);
+    // No presence producer or remote socket is required for home paths. The
+    // original Machine policy still refuses an unadmitted auxiliary mount.
+    assert!(
+        directory
+            .read_path(".volumes/scratch/file.txt", None)
+            .is_err()
+    );
+    let mut bindings = Bindings::local();
+    bindings.targets = Some(directory);
+    bindings.scope = RuntimeScope::new(
+        Capabilities::default(),
+        acyclic_harness_core::conversation::Limits {
+            file_bytes: 4096,
+            render_bytes: 4096,
+            ..Default::default()
+        },
+    )?;
+    let task = Arc::new(bindings.build()?.agent_context(
+        storage.owner_scope().capabilities(),
+        storage.content_bindings(),
+    )?);
+    storage
+        .stage(
+            OperationId::new(),
+            "notes.txt",
+            b"one",
+            "text/plain",
+            "notes.txt",
+        )
+        .await?;
+    for (tool, arguments, expected) in [
+        (
+            files::read()?,
+            serde_json::json!({"path":"notes.txt"}),
+            Some("one"),
+        ),
+        (
+            files::edit()?,
+            serde_json::json!({"path":"notes.txt","old_text":"one","new_text":"two"}),
+            None,
+        ),
+        (
+            files::read()?,
+            serde_json::json!({"path":"notes.txt"}),
+            Some("two"),
+        ),
+    ] {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "home-path".into(),
+            name: tool.definition.name.clone(),
+            arguments,
+        };
+        let context = ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+        let result = tool.executor.execute(invocation, Some(context)).await?;
+        if let Some(expected) = expected {
+            assert_eq!(result.value["text"], expected);
+        } else {
+            let published: acyclic_harness_core::tool::files::FileResult =
+                serde_json::from_value(result.value)?;
+            assert_eq!(published.file.volume(), storage.volume());
+            assert_eq!(
+                task.read_file(&published.file, None).await?.as_ref(),
+                b"two"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The attaching invocation owns this one wall/monotonic anchor and its
 /// native timer registrations; command stages never construct another clock.
 struct InvocationClock {
