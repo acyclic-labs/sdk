@@ -812,9 +812,9 @@ impl Outstanding {
 /// it ends or sent later, is answered with its reason; an exact replay of a
 /// prompt it answered still prints its saved answer. A prompt whose send
 /// outcome is unknown is resent exactly at the next event. Exits,
-/// successfully, once stdin closes and every prompt settled, whether
-/// answered or failed; a prompt still of unknown outcome then fails the
-/// run, and rerunning the operation replays it.
+/// once stdin closes and every prompt settled. Failed prompts and unresolved
+/// delivery outcomes make the exit status nonzero; rerunning the operation
+/// replays the same input identities.
 pub async fn jsonl(
     conversation: &Arc<Conversation>,
     operation: &str,

@@ -352,25 +352,23 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
     ));
     let connected = connect(Some(Arc::new(bound.changes()?)))?;
     let mut follow = connected.subscribe(subscription).await?;
-    let observed = tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        while let Some(update) = follow.next().await {
-            if let Some(session_wire::session_frame::Body::Data(data)) = update?.into_wire().body
-                && let Some(session_wire::session_data::Item::Record(record)) = data.item
+    // The already committed publication is replayed by this original follow;
+    // loss of its producer ends the same channel with a typed failure.
+    loop {
+        let update = follow.next().await.ok_or(StreamError::Unavailable)??;
+        if let Some(session_wire::session_frame::Body::Data(data)) = update.into_wire().body
+            && let Some(session_wire::session_data::Item::Record(record)) = data.item
+        {
+            let changes = acyclic_stream::decode_changes(&record.value)?;
+            if changes
+                .entries
+                .iter()
+                .any(|entry| entry.key.as_ref() == path.as_bytes())
             {
-                let changes = acyclic_stream::decode_changes(&record.value)?;
-                if changes
-                    .entries
-                    .iter()
-                    .any(|entry| entry.key.as_ref() == path.as_bytes())
-                {
-                    return Ok::<_, acyclic_stream::StreamError>(());
-                }
+                break;
             }
         }
-        Err(acyclic_stream::StreamError::Unavailable)
-    })
-    .await?;
-    observed?;
+    }
     for offset in [0, MAX_READ_BYTES, body.len() as u64] {
         // Reconnect between pages. Both exact FileRef and tool-path reads use
         // this same admitted reader, with no local filesystem provider.
