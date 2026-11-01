@@ -327,6 +327,25 @@ pub struct Response {
     pub body: Zeroizing<Vec<u8>>,
 }
 
+#[cfg(all(feature = "client", not(target_arch = "wasm32")))]
+impl Response {
+    /// Consumes the native response, protecting successful body storage and
+    /// suppressing failed bodies before collection. Transferable backing moves
+    /// without copying; other backing requires an isolated protected copy.
+    /// Transport failures expose neither response bytes nor their source chain.
+    pub async fn from_http(response: reqwest::Response) -> Result<Self, Error> {
+        let status = response.status().as_u16();
+        // Never consume an error body: even a malicious provider cannot
+        // attach a planted value to a propagated error or source chain.
+        let body = if (200..300).contains(&status) {
+            crate::operation::protect_bytes(response.bytes().await.map_err(|_| Error::Transport)?)
+        } else {
+            Zeroizing::new(Vec::new())
+        };
+        Ok(Self { status, body })
+    }
+}
+
 /// Native request future; cancellation drops the transport request.
 #[cfg(not(target_arch = "wasm32"))]
 pub type TransportFuture<'a> = Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + 'a>>;
@@ -559,22 +578,7 @@ impl Transport for HttpTransport {
                 .send()
                 .await
                 .map_err(|_| Error::Transport)?;
-            let status = response.status().as_u16();
-            // Never consume an error body: even a malicious provider cannot
-            // attach a planted value to a propagated error or source chain.
-            let body = if (200..300).contains(&status) {
-                response
-                    .bytes()
-                    .await
-                    .map_err(|_| Error::Transport)?
-                    .to_vec()
-            } else {
-                Vec::new()
-            };
-            Ok(Response {
-                status,
-                body: Zeroizing::new(body),
-            })
+            Response::from_http(response).await
         })
     }
 }

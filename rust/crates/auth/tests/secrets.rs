@@ -698,6 +698,86 @@ mod http {
     #[tokio::test]
     async fn secrets_native_http_runs_conformance_and_redacts_errors_without_following_redirects()
     -> TestResult {
+        use futures::FutureExt;
+
+        // Exercise the native response constructor used by HttpTransport::post,
+        // including reqwest body collection. The complete in-memory native body
+        // must finish on its first poll; an unexpected wait fails immediately.
+        // Sharing backing requires a copy that leaves the other owner intact.
+        let mut collection_control = None;
+        for length in [1024, 1024 * 1024] {
+            let response =
+                reqwest::Response::from(axum::http::Response::new(Bytes::from(vec![7; length])));
+            let mut collected = None;
+            let collection = acyclic_test_support::measure(|| {
+                collected = response.bytes().now_or_never();
+            });
+            assert_eq!(
+                collected
+                    .ok_or("complete native collection did not finish")??
+                    .len(),
+                length
+            );
+            let native_cost = (collection.count_total, collection.bytes_total);
+            if let Some(previous) = collection_control {
+                assert_eq!(native_cost, previous, "collection control copied payload");
+            }
+            collection_control = Some(native_cost);
+
+            let original = Bytes::from(vec![7; length]);
+            let pointer = original.as_ptr();
+            let response = reqwest::Response::from(axum::http::Response::new(original));
+            let receive = Response::from_http(response);
+            let mut protected = None;
+            let transfer = acyclic_test_support::measure(|| {
+                protected = receive.now_or_never();
+            });
+            let protected = protected.ok_or("complete native response did not finish")??;
+            assert_eq!(protected.status, 200);
+            assert_eq!(protected.body.as_ptr(), pointer);
+            assert_eq!(protected.body.len(), length);
+            assert_eq!(
+                (transfer.count_total, transfer.bytes_total),
+                native_cost,
+                "protected native response adds work beyond reqwest collection"
+            );
+            drop(protected);
+
+            // The former response handoff, on the same native response type,
+            // must fail the no-extra-allocation oracle with unique backing.
+            let response =
+                reqwest::Response::from(axum::http::Response::new(Bytes::from(vec![7; length])));
+            let mut copied = None;
+            let legacy = acyclic_test_support::measure(|| {
+                copied = response
+                    .bytes()
+                    .now_or_never()
+                    .map(|result| result.map(|bytes| Zeroizing::new(bytes.to_vec())));
+            });
+            assert_eq!(
+                copied
+                    .ok_or("complete native copy control did not finish")??
+                    .len(),
+                length
+            );
+            assert!(legacy.bytes_total >= collection.bytes_total + length as u64);
+
+            let original = Bytes::from(vec![7; length]);
+            let shared = original.clone();
+            let response = reqwest::Response::from(axum::http::Response::new(shared));
+            let receive = Response::from_http(response);
+            let mut protected = None;
+            let copy = acyclic_test_support::measure(|| {
+                protected = receive.now_or_never();
+            });
+            let protected = protected.ok_or("shared native response did not finish")??;
+            assert_ne!(protected.body.as_ptr(), original.as_ptr());
+            assert_eq!(protected.body.as_slice(), original.as_ref());
+            assert!(copy.bytes_total >= collection.bytes_total + length as u64);
+            drop(protected);
+            assert!(original.iter().all(|byte| *byte == 7));
+        }
+
         // The original bearer allocation survives the actual HTTP and gRPC
         // metadata constructors and clones. The old Vec route is a full-copy
         // negative control, measured independently of encoding the credential.
