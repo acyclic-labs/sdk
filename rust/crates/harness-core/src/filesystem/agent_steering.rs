@@ -161,7 +161,7 @@ where
             )?
             .authority(&external)
             .await?;
-            let reader = FilesystemContentVerifier::new(
+            let mut reader = FilesystemContentVerifier::new(
                 Arc::clone(&self.host),
                 &authority.verifier,
                 &authority.scope,
@@ -169,6 +169,27 @@ where
                 None,
             )?;
             let mut content = crate::agent::expand_attachments(content, &*reader).await?;
+            // The envelope delegates its validated immutable contents, not its
+            // own exact-file grant. Derive those files under the same original
+            // admission; an admitted caller's ceiling remains unchanged.
+            if !content.file_refs().eq(external.iter()) {
+                let expanded = content.file_refs().cloned().collect::<Vec<_>>();
+                let authority = AdmittedAgent::verify(
+                    &self.issuer,
+                    &self.admission,
+                    &self.agent.path,
+                    &self.agent.volumes,
+                )?
+                .authority(&expanded)
+                .await?;
+                reader = FilesystemContentVerifier::new(
+                    Arc::clone(&self.host),
+                    &authority.verifier,
+                    &authority.scope,
+                    crate::conversation::MAX_EXACT_JS_INTEGER,
+                    None,
+                )?;
+            }
             let parts = match &mut content {
                 ModelContent::Text(_) => &mut [][..],
                 ModelContent::Part(part) => std::slice::from_mut(part),
