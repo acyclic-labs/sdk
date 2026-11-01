@@ -4,26 +4,33 @@ use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 
 /// A validated agent-owned private writer, constructed only by
-/// [`TaskContext::summary_destination`].
+/// [`TaskContext::summary_destination`]. Summaries and derived immutable files
+/// share this destination and the same publication receipts.
 #[derive(Clone, Copy)]
-pub(crate) struct PrivateSummaries<'a>(&'a ContentBindings);
+pub(crate) struct PrivateContent<'a>(&'a ContentBindings);
+
+impl PrivateContent<'_> {
+    pub(crate) fn volume(&self) -> &VolumeRef {
+        &self.0.volume
+    }
+}
 
 /// Missing authority is data; failure to check authority remains an error.
 #[derive(Clone, Copy)]
 pub(crate) enum SummaryDestination<'a> {
-    Writer(PrivateSummaries<'a>),
+    Writer(PrivateContent<'a>),
     Unavailable(&'static str),
 }
 
 impl<'a> SummaryDestination<'a> {
-    pub(crate) fn writer(self) -> Option<PrivateSummaries<'a>> {
+    pub(crate) fn writer(self) -> Option<PrivateContent<'a>> {
         match self {
             Self::Writer(writer) => Some(writer),
             Self::Unavailable(_) => None,
         }
     }
 
-    pub(crate) fn require(self, io: Option<&ContentIo>) -> Result<PrivateSummaries<'a>> {
+    pub(crate) fn require(self, io: Option<&ContentIo>) -> Result<PrivateContent<'a>> {
         match self {
             Self::Writer(writer) => Ok(writer),
             Self::Unavailable(reason) => Err(content_error(io, ErrorCode::Unauthorized, reason)),
@@ -38,11 +45,35 @@ pub(super) enum ContentPublication<'a> {
 }
 
 impl TaskContext {
+    /// A cache commit must not advance the source volume's generation. Only
+    /// an independently bound private destination can retain projections.
+    pub(crate) fn projection_destination(
+        &self,
+        io: Option<&ContentIo>,
+    ) -> Result<Option<PrivateContent<'_>>> {
+        let destination = self
+            .summary_destination(io)?
+            .writer()
+            .filter(|destination| destination.volume() != &self.tool_read_content().volume);
+        let Some(destination) = destination else {
+            return Ok(None);
+        };
+        let readable = crate::executor::with_history_io(io, |work| {
+            crate::core::directory_read_granted_with_work(
+                self.scope.grants(),
+                destination.volume(),
+                "",
+                work,
+            )
+        })?;
+        Ok(readable.then_some(destination))
+    }
+
     /// The turn's validated summary writer: the
     /// runtime's private volume, or an output volume that is itself agent
     /// private. Compaction is armed only when this resolves, so a due summary
     /// never discovers a missing writer.
-    pub(crate) fn private_summaries(&self, io: Option<&ContentIo>) -> Result<PrivateSummaries<'_>> {
+    pub(crate) fn private_summaries(&self, io: Option<&ContentIo>) -> Result<PrivateContent<'_>> {
         self.summary_destination(io)?.require(io)
     }
 
@@ -75,30 +106,42 @@ impl TaskContext {
                 "private content requires an agent-owned private volume",
             ));
         }
-        Ok(Writer(PrivateSummaries(binding)))
+        Ok(Writer(PrivateContent(binding)))
     }
 
     pub(crate) async fn stage_private_file_once(
         &self,
-        summaries: PrivateSummaries<'_>,
+        destination: PrivateContent<'_>,
         operation_id: OperationId,
         path: &str,
         bytes: &[u8],
+        metadata: (&str, &str),
         io: Option<&ContentIo>,
-    ) -> Result<FileRef> {
+    ) -> Result<(FileRef, u64)> {
         self.stage_bound_file(
-            Some(summaries.0),
+            Some(destination.0),
             operation_id,
             path,
             bytes,
-            "text/plain",
-            "summary.txt",
+            metadata.0,
+            metadata.1,
             ContentPublication::OperationBound,
             &self.scope,
             io,
         )
         .await
-        .map(|(file, _)| file)
+    }
+
+    /// Reads the original receipt for a derived private file. A changed path
+    /// head cannot replace an immutable cached projection.
+    pub(crate) async fn observe_private_file_once(
+        &self,
+        destination: PrivateContent<'_>,
+        operation_id: OperationId,
+        io: Option<&ContentIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        self.observe_bound_file_once(Some(destination.0), operation_id, None, io, &self.scope)
+            .await
     }
 
     /// Stages exact bytes through the authenticated writer.
@@ -171,7 +214,7 @@ impl TaskContext {
         io: Option<&ContentIo>,
     ) -> Result<()> {
         if let Some(source) = source {
-            self.authorize_file_read(source, scope, scope.grants(), io)?;
+            self.authorize_file_read(source, scope, scope.grants(), None, io)?;
         }
         publication_destination(
             self.tool_content(source.map(FileRef::volume)),
@@ -225,7 +268,7 @@ impl TaskContext {
         writer.supports_stage(io)?;
         let output = match publication {
             ContentPublication::Replacement(source) => {
-                self.authorize_file_read(source, scope, scope.grants(), io)?;
+                self.authorize_file_read(source, scope, scope.grants(), None, io)?;
                 if source.volume() != volume || source.path() != relative.as_ref() {
                     return Err(content_error(
                         io,

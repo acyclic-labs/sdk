@@ -2,10 +2,6 @@ use super::*;
 
 const AUTHORED: &str = "authored-file-v1:";
 
-pub(super) fn is_authored(version: &str) -> bool {
-    version.starts_with(AUTHORED)
-}
-
 pub(super) fn decode_tool_version(
     context: Option<&ToolContext>,
     path: &str,
@@ -90,7 +86,7 @@ pub(super) fn decode_version(
     Ok((file, None))
 }
 
-pub(super) fn encode_version(
+pub(crate) fn encode_version(
     file: &FileRef,
     work: crate::NativeWork<'_>,
 ) -> Result<(String, crate::NativeCustody)> {

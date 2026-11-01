@@ -62,6 +62,9 @@ impl Alloc {
 #[doc(hidden)]
 #[derive(Clone, Copy)]
 pub enum JsonLayout {
+    /// A borrowed `RawValue`: any JSON shape, with no owned decoded subtree.
+    /// The walk still admits syntax, escape scratch and enclosing buffers.
+    BorrowedRaw,
     /// A scalar: a string, number, boolean, null or unit variant. Strings are
     /// charged at every position as though they decode to a `String`.
     Scalar,
@@ -175,6 +178,8 @@ struct Candidates {
     overflow: bool,
     /// Copies of the value alive together, relative to its container.
     scale: u64,
+    /// Some candidate retains decoded strings rather than a borrowed raw span.
+    owns_strings: bool,
 }
 impl Candidates {
     const NONE: Self = Self {
@@ -183,6 +188,7 @@ impl Candidates {
         buffers: 0,
         overflow: false,
         scale: 1,
+        owns_strings: false,
     };
     fn add(&mut self, layout: &'static JsonLayout, once: u64, depth: u32) {
         self.add_within(layout, once, depth, 0);
@@ -197,10 +203,13 @@ impl Candidates {
             JsonLayout::Scalar => {
                 self.once = self.once.max(once);
                 self.buffers = self.buffers.max(buffers);
+                self.owns_strings = true;
             }
-            JsonLayout::Node { tagged, .. } => {
+            JsonLayout::BorrowedRaw | JsonLayout::Node { .. } => {
+                let tagged = matches!(layout, JsonLayout::Node { tagged: true, .. });
                 self.once = self.once.max(once);
-                self.buffers = self.buffers.max(buffers + u64::from(*tagged));
+                self.buffers = self.buffers.max(buffers + u64::from(tagged));
+                self.owns_strings |= !matches!(layout, JsonLayout::BorrowedRaw);
                 if self.nodes().any(|node| std::ptr::eq(node, layout)) {
                     return;
                 }
@@ -244,6 +253,10 @@ impl Candidates {
     }
     fn elements(&self, index: usize, into: &mut Self) {
         for node in self.nodes() {
+            if matches!(node, JsonLayout::BorrowedRaw) {
+                into.add(node, 0, 0);
+                continue;
+            }
             if let JsonLayout::Node { elements, .. } = node {
                 let element = match elements {
                     [only] => Some(*only),
@@ -265,6 +278,10 @@ fn members(
     into: &mut Candidates,
     depth: u32,
 ) -> bool {
+    if matches!(node, JsonLayout::BorrowedRaw) {
+        into.add(node, 0, 0);
+        return true;
+    }
     let JsonLayout::Node {
         fields, flatten, ..
     } = node
@@ -356,6 +373,9 @@ pub(crate) struct LayoutCost {
     strings: u64,
     /// Longest decoded string, the bound on the decoder's escape scratch.
     longest: u64,
+    /// Deepest borrowed/ignored container; serde skips it with the same
+    /// scratch vector it uses to unescape strings, one byte per open frame.
+    skipped_depth: u64,
     /// Longest debug rendering of a string or key: a variant that rejects a
     /// string formats it into its error, which lives until the next try.
     message: u64,
@@ -377,7 +397,7 @@ impl LayoutCost {
         // doubling and is reused for every later string.
         self.kept
             .saturating_add(self.strings)
-            .saturating_add(vec_bytes(1, self.longest))
+            .saturating_add(vec_bytes(1, self.longest.max(self.skipped_depth)))
             .saturating_add(if self.message == 0 || !messages_counted() {
                 0
             } else {
@@ -417,9 +437,15 @@ impl LayoutCost {
         let mut kept = 0;
         if candidates.is_empty() {
             self.undescribed += 1;
+            self.skipped_depth = self.skipped_depth.max(u64::from(placement.depth) + 1);
         } else {
             let mut accepted = false;
             for node in candidates.nodes() {
+                if matches!(node, JsonLayout::BorrowedRaw) {
+                    accepted = true;
+                    self.skipped_depth = self.skipped_depth.max(u64::from(placement.depth) + 1);
+                    continue;
+                }
                 let JsonLayout::Node {
                     seq, map: object, ..
                 } = node
@@ -534,6 +560,7 @@ pub(super) struct Placement<'a> {
     buffers: u64,
     /// Copies of this value alive together.
     scale: u64,
+    depth: u32,
     cost: &'a RefCell<LayoutCost>,
 }
 impl<'a> Placement<'a> {
@@ -541,6 +568,7 @@ impl<'a> Placement<'a> {
         candidates: Candidates,
         buffers: u64,
         scale: u64,
+        depth: u32,
         cost: &'a RefCell<LayoutCost>,
     ) -> Self {
         let scale = scale.saturating_mul(candidates.scale);
@@ -553,13 +581,14 @@ impl<'a> Placement<'a> {
             candidates,
             buffers,
             scale,
+            depth,
             cost,
         }
     }
     pub(super) fn root(layout: &'static JsonLayout, cost: &'a RefCell<LayoutCost>) -> Self {
         let mut candidates = Candidates::NONE;
         candidates.add(layout, 0, 0);
-        Self::new(candidates, 0, 1, cost)
+        Self::new(candidates, 0, 1, 0, cost)
     }
     /// `Content` buffers holding this value: the enclosing ones, and each one
     /// its type nests around it before choosing a variant.
@@ -574,7 +603,11 @@ impl<'a> Placement<'a> {
     /// an `escaped` one is also owned by every buffer holding it.
     pub(super) fn string(self, text: &[u8], escaped: bool) {
         let mut cost = self.cost.borrow_mut();
-        cost.string(text, true, self.scale);
+        let raw = self
+            .candidates
+            .nodes()
+            .any(|node| matches!(node, JsonLayout::BorrowedRaw));
+        cost.string(text, !raw || self.candidates.owns_strings, self.scale);
         if escaped {
             cost.buffered_string(
                 text.len() as u64,
@@ -591,11 +624,25 @@ impl<'a> Placement<'a> {
             .nodes()
             .any(|node| std::ptr::eq(node, value))
     }
+    /// No candidate decodes this subtree, and no surrounding enum buffers it.
+    pub(super) fn opaque(self, maximum_depth: u32) -> bool {
+        let opaque = self.copies() == 0
+            && !self.candidates.owns_strings
+            && self
+                .candidates
+                .nodes()
+                .all(|node| matches!(node, JsonLayout::BorrowedRaw));
+        if opaque {
+            let mut cost = self.cost.borrow_mut();
+            cost.skipped_depth = cost.skipped_depth.max(u64::from(maximum_depth));
+        }
+        opaque
+    }
     /// The same position, for a raw JSON document a `Value` expands in place.
     pub(super) fn expanded(self) -> Self {
         let mut candidates = Candidates::NONE;
         candidates.add(<serde_json::Value as HeapLayout>::LAYOUT, 0, 0);
-        Self::new(candidates, self.buffers, self.scale, self.cost)
+        Self::new(candidates, self.buffers, self.scale, self.depth, self.cost)
     }
 }
 /// Counts one container's entries and charges it however its visit ends.
@@ -640,6 +687,7 @@ impl<'a> Entries<'a> {
                 children,
                 placement.copies(),
                 placement.scale,
+                placement.depth + 1,
                 placement.cost,
             )
         })

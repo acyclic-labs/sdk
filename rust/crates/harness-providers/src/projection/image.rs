@@ -11,8 +11,25 @@ pub(crate) fn part(
     policy: &NativeMediaPolicy,
     data: String,
 ) -> Result<Value> {
+    if matches!(policy.intent, NativeMediaIntent::Document { .. }) {
+        if media != "application/pdf" {
+            return Err(invalid("native document must be PDF"));
+        }
+        return Ok(match adapter {
+            Adapter::Responses => {
+                json!({"type":"message","role":"user","content":[{"type":"input_file","filename":"document.pdf","file_data":format!("data:application/pdf;base64,{data}")}]})
+            }
+            Adapter::Chat => {
+                json!({"type":"file","file":{"filename":"document.pdf","file_data":format!("data:application/pdf;base64,{data}")}})
+            }
+            Adapter::Anthropic => {
+                json!({"type":"document","source":{"type":"base64","media_type":"application/pdf","data":data}})
+            }
+            Adapter::Gemini => json!({"inlineData":{"mimeType":"application/pdf","data":data}}),
+        });
+    }
     let NativeMediaIntent::Image { detail } = policy.intent else {
-        return Err(invalid("native file is not an image"));
+        return Err(invalid("native file is not an image or PDF"));
     };
     let detail = serde_json::to_value(detail).map_err(|_| invalid("invalid image detail"))?;
     Ok(match adapter {

@@ -11,6 +11,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub mod edit;
 pub mod files;
+pub(crate) mod output;
 pub mod patch;
 pub mod schema;
 pub mod text;

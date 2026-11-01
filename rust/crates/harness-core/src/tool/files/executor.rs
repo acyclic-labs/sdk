@@ -15,6 +15,31 @@ pub(crate) enum FileTool {
     },
 }
 
+/// Keep source fields ahead of their admission on every return and unwind.
+pub(super) struct Source {
+    pub file: FileRef,
+    pub bytes: Option<acyclic_stream::OwnedBytes>,
+    _custody: crate::NativeCustody,
+}
+
+impl Source {
+    pub async fn read(
+        context: &ToolContext,
+        path: &str,
+        generation: Option<&crate::resources::GenerationRef>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Self> {
+        let custody;
+        let (file, bytes, retained) = context.read_tool_path(path, generation, io).await?;
+        custody = super::window::custody(io, retained)?;
+        Ok(Self {
+            file,
+            bytes: Some(bytes),
+            _custody: custody,
+        })
+    }
+}
+
 impl FileTool {
     pub(in crate::tool) fn is_read(&self) -> bool {
         matches!(self, Self::Read | Self::Search { .. })
@@ -159,195 +184,41 @@ impl FileTool {
             )
             .await
     }
-    async fn read(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
-        let invalid = |reason| rejection(work, reason);
-
-        let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        if (input.0.range.is_some() && input.0.version.is_none())
-            || input
-                .0
-                .version
-                .as_deref()
-                .is_some_and(super::version::is_authored)
-        {
-            let selected_version = input
-                .0
-                .version
-                .as_deref()
-                .map(|version| {
-                    super::version::decode_tool_version(Some(context), &input.0.path, version, work)
-                })
-                .transpose()?;
-            let authored = selected_version
-                .as_ref()
-                .and_then(|(source, _)| match source {
-                    FileReadSource::Authored(selected) => Some(selected),
-                    FileReadSource::Content(_) => None,
-                });
-            return self
-                .read_path_range(context, &input.0, authored, work, io)
-                .await;
-        }
-        let (file, resolved, _source_custody) = self
-            .source(context, &input.0.path, input.0.version.as_deref(), work, io)
-            .await?;
-        let length = file.descriptor().byte_length();
-        if input.0.range.is_some_and(|range| range.end > length) {
-            return Err(invalid("read range exceeds the file"));
-        }
-        let empty = input.0.range.is_some_and(|range| range.start == range.end);
-        let selected_length = input
-            .0
-            .range
-            .map_or(Some(length), |range| range.end.checked_sub(range.start));
-        if selected_length.is_none_or(|length| {
-            length
-                > context
-                    .effective_scope()
-                    .limits()
-                    .render_bytes
-                    .min(context.effective_scope().limits().file_bytes)
-        }) {
-            return Err(invalid("file selection exceeds text rendering bound"));
-        }
-        let bytes = if let Some(bytes) = resolved {
-            bytes
-        } else if let Some(range) = input.0.range {
-            let count = range
-                .end
-                .checked_sub(range.start)
-                .ok_or_else(|| invalid("read range is reversed"))?;
-            if range.end > length {
-                return Err(invalid("read range exceeds the file"));
-            }
-            context
-                .read_file_range(
-                    &file,
-                    acyclic_fs::ByteRange {
-                        offset: range.start,
-                        // An empty interval still has to lie on a UTF-8 boundary.
-                        length: if empty && range.start < length {
-                            1
-                        } else {
-                            count
-                        },
-                    },
-                    io,
-                )
-                .await?
-        } else {
-            context.read_file(&file, io).await?
-        };
-        let source = read_text(bytes.as_ref(), empty, work)?;
-        read_result(FileReadSource::Content(file), source, work)
-    }
-
-    async fn read_path_range(
-        &self,
-        context: &ToolContext,
-        input: &ReadFileInput,
-        original: Option<&crate::conversation::FilePathSelection>,
-        work: crate::NativeWork<'_>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
-        let invalid = |reason| rejection(work, reason);
-        let range = input
-            .range
-            .or_else(|| {
-                original.map(|file| super::text::TextRange {
-                    start: 0,
-                    end: file.byte_length,
-                })
-            })
-            .ok_or_else(|| invalid("path range is missing"))?;
-        let count = range
-            .end
-            .checked_sub(range.start)
-            .ok_or_else(|| invalid("read range is reversed"))?;
-        let maximum = context
-            .effective_scope()
-            .limits()
-            .render_bytes
-            .min(context.effective_scope().limits().file_bytes);
-        if count > maximum {
-            return Err(invalid("file selection exceeds text rendering bound"));
-        }
-        let empty = count == 0;
-        let (selected, bytes, retained) = context
-            .read_tool_path_range(
-                &input.path,
-                original.map(|file| &file.generation),
-                acyclic_fs::ByteRange {
-                    offset: range.start,
-                    length: if empty { 1 } else { count },
-                },
-                io,
-            )
-            .await?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let _source_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = retained;
-        if range.end > selected.byte_length || original.is_some_and(|file| file != &selected) {
-            return Err(invalid("read result belongs to another selection"));
-        }
-        let text = read_text(bytes.as_ref(), empty, work)?;
-        read_result(FileReadSource::Authored(selected), text, work)
-    }
-
-    async fn source(
+    pub(super) async fn source(
         &self,
         context: &ToolContext,
         path: &str,
         version: Option<&str>,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(
-        FileRef,
-        Option<acyclic_stream::OwnedBytes>,
-        crate::NativeCustody,
-    )> {
+    ) -> Result<Source> {
         if let Some(version) = version {
+            let original_custody;
             let (file, custody) =
                 super::version::decode_tool_version(Some(context), path, version, work)?;
+            original_custody = custody;
             match file {
-                FileReadSource::Content(file) => return Ok((file, None, custody)),
+                FileReadSource::Content(file) => {
+                    return Ok(Source {
+                        file,
+                        bytes: None,
+                        _custody: original_custody,
+                    });
+                }
                 FileReadSource::Authored(selected) => {
-                    let (file, bytes, retained) = context
-                        .read_tool_path(path, Some(&selected.generation), io)
-                        .await?;
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    let file_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
-                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                    let file_custody = {
-                        let _ = retained;
-                        None
-                    };
-                    if file.descriptor().byte_length() != selected.byte_length {
+                    let source =
+                        Source::read(context, path, Some(&selected.generation), io).await?;
+                    if source.file.descriptor().byte_length() != selected.byte_length {
                         return Err(rejection(
                             work,
                             "file version length differs from its selection",
                         ));
                     }
-                    return Ok((file, Some(bytes), file_custody));
+                    return Ok(source);
                 }
             }
         }
-        let (file, bytes, retained) = context.read_tool_path(path, None, io).await?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let custody = {
-            let _ = retained;
-            None
-        };
-        Ok((file, Some(bytes), custody))
+        Source::read(context, path, None, io).await
     }
     async fn edit(
         &self,
@@ -359,29 +230,56 @@ impl FileTool {
         let invalid = |reason| rejection(work, reason);
 
         let input = decode::<EditFileInput>(&invocation.arguments, work)?;
+        if input.0.notebook.is_some()
+            && (!input.0.old_text.is_empty() || !input.0.new_text.is_empty() || input.0.replace_all)
+        {
+            return Err(invalid("notebook and text edits are mutually exclusive"));
+        }
         let maximum = context.effective_scope().limits().file_bytes;
         if work.is_none() {
             super::edit::validate_edit_bound(maximum)?;
         }
-        let (file, resolved, _source_custody) = self
+        let selected = self
             .source(context, &input.0.path, input.0.version.as_deref(), work, io)
             .await?;
-        let bytes = match resolved {
+        let bytes = match selected.bytes {
             Some(bytes) => bytes,
-            None => context.read_file(&file, io).await?,
+            None => context.read_file(&selected.file, io).await?,
         };
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-        let edited = super::edit::exact_replace(
-            source,
-            &input.0.old_text,
-            &input.0.new_text,
-            maximum,
-            &mut allocation,
-        )?;
+        let _notebook_hold;
+        let _notebook_facts;
+        let (edited, notebook_hold, notebook_facts) = if let Some(operation) = &input.0.notebook {
+            let (edited, hold, facts) = super::notebook::edit(source, operation, work)?;
+            (edited, hold, Some(facts))
+        } else {
+            (
+                super::edit::replace(
+                    source,
+                    &input.0.old_text,
+                    &input.0.new_text,
+                    input.0.replace_all,
+                    maximum,
+                    &mut allocation,
+                )?,
+                None,
+                None,
+            )
+        };
+        _notebook_hold = notebook_hold;
+        _notebook_facts = notebook_facts;
+        if edited.len() as u64 > maximum {
+            return Err(invalid("edited file exceeds admitted file credit"));
+        }
         context
-            .stage_file_at(invocation.operation_id, &file, edited.as_bytes(), io)
+            .stage_file_at(
+                invocation.operation_id,
+                &selected.file,
+                edited.as_bytes(),
+                io,
+            )
             .await
     }
 }
@@ -438,11 +336,15 @@ impl ToolExecutor for FileTool {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             return if self.is_read() {
-                context.authorize_file_read_with_native_work(
+                context.authorize_file_selection_with_native_work(
                     file.as_ref().ok_or_else(|| Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Storage,
                         reason: "file read source is missing",
                     })?,
+                    matches!(self, Self::Read).then_some(acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: 0,
+                    }),
                     work,
                 )
             } else {
@@ -634,20 +536,6 @@ pub(super) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Er
     } else {
         Error::Invalid(reason.into())
     }
-}
-
-fn read_result(
-    file: FileReadSource,
-    text: &str,
-    work: crate::NativeWork<'_>,
-) -> Result<(ToolResult, crate::NativeCustody)> {
-    #[derive(Serialize)]
-    struct Read<'a> {
-        file: FileReadSource,
-        text: &'a str,
-    }
-    let encoded = super::value(&Read { file, text }, u64::MAX, work)?;
-    Ok((ToolResult { value: encoded.0 }, encoded.1))
 }
 
 pub(super) fn read_text<'a>(

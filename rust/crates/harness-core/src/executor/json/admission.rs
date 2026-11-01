@@ -2,7 +2,7 @@ use super::layout::{Entries, JsonLayout, LayoutCost, Placement};
 use super::schema::{JsonValueSchema, NONE, ROOT, UNKNOWN};
 use super::*;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
-use std::cell::RefCell;
+use std::{borrow::Cow, cell::RefCell};
 
 type Charge<'a> = RefCell<&'a mut dyn FnMut(JsonCodecCharge) -> Result<()>>;
 const RAW: &[u8] = b"$serde_json::private::RawValue";
@@ -72,6 +72,7 @@ struct Walk<'a, 'b> {
     schema: &'static JsonValueSchema,
     depth: u32,
     virtual_value: bool,
+    maximum_depth: u32,
     raw: Option<&'static JsonValueSchema>,
     layout: Option<Placement<'a>>,
     charge: &'a Charge<'b>,
@@ -106,6 +107,7 @@ impl<'a, 'b> Walk<'a, 'b> {
             layout,
             depth: self.depth + 1,
             virtual_value: self.virtual_value,
+            maximum_depth: self.maximum_depth,
             charge: self.charge,
             failed: self.failed,
         }
@@ -117,6 +119,14 @@ impl<'de> DeserializeSeed<'de> for Walk<'_, '_> {
         self,
         decoder: D,
     ) -> std::result::Result<Branches, D::Error> {
+        if std::ptr::eq(self.schema, &NONE)
+            && self
+                .layout
+                .is_some_and(|layout| layout.opaque(self.maximum_depth))
+        {
+            <IgnoredAny as serde::Deserialize>::deserialize(decoder)?;
+            return Ok(self.base());
+        }
         if self.depth > 256 + usize::BITS {
             <IgnoredAny as serde::Deserialize>::deserialize(decoder)?;
             return Ok(Branches {
@@ -156,6 +166,8 @@ impl Walk<'_, '_> {
                     self.layout.map(Placement::expanded),
                     self.depth,
                     true,
+                    self.maximum_depth,
+                    scratch_bound(text.len() as u64).map_err(|error| self.error::<E>(error))?,
                     self.charge,
                     self.failed,
                 )
@@ -234,8 +246,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         while let Some((key, escaped)) = fields.next_key_seed(Key)? {
             entries.count += 1;
             entries.key(key.as_bytes(), escaped);
-            let key = key.as_bytes();
-            let layout = entries.child(Some(key), index);
+            let layout = entries.child(Some(key.as_bytes()), index);
             if self.virtual_value {
                 counts
                     .always
@@ -246,8 +257,14 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
                     })
                     .map_err(|error| self.error::<A::Error>(error))?;
             }
-            let (schema, gate) = self.schema.child(key, None);
-            let mut child = if !self.schema.tag.is_empty() && key == self.schema.tag.as_bytes() {
+            let (schema, gate) = self.schema.child(key.as_bytes(), None);
+            let tag_field =
+                !self.schema.tag.is_empty() && key.as_bytes() == self.schema.tag.as_bytes();
+            let raw_field = index == 0 && key.as_bytes() == RAW;
+            // No key survives into its value's walk. Unescaped keys borrow
+            // the source; an escaped key holds one owned copy only here.
+            drop(key);
+            let mut child = if tag_field {
                 let label: &serde_json::value::RawValue = fields.next_value()?;
                 let escaped = label.get().contains('\\');
                 let label = serde_json::from_str::<String>(label.get()).unwrap_or_default();
@@ -261,11 +278,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
                 });
                 self.child(schema, None, layout).base()
             } else {
-                fields.next_value_seed(self.child(
-                    schema,
-                    (index == 0 && key == RAW).then_some(schema),
-                    layout,
-                ))?
+                fields.next_value_seed(self.child(schema, raw_field.then_some(schema), layout))?
             };
             if std::ptr::eq(schema, &NONE) {
                 child = Branches::default();
@@ -289,13 +302,11 @@ fn document(
     layout: Option<Placement<'_>>,
     depth: u32,
     virtual_value: bool,
+    maximum_depth: u32,
+    scratch: u64,
     charge: &Charge<'_>,
     failed: &RefCell<Option<Error>>,
 ) -> Result<Branches> {
-    let scratch = checked(
-        (bytes.len() as u64).max(8).checked_mul(4),
-        "JSON scratch bound overflow",
-    )?;
     charge.borrow_mut()(JsonCodecCharge::Retain { bytes: scratch })?;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     decoder.disable_recursion_limit();
@@ -303,6 +314,7 @@ fn document(
         schema,
         depth,
         virtual_value,
+        maximum_depth,
         raw: None,
         layout,
         charge,
@@ -314,21 +326,26 @@ fn document(
         Ok(counts)
     });
     drop(decoder);
-    let release = charge.borrow_mut()(JsonCodecCharge::Release { bytes: scratch });
-    if let Some(error) = failed.borrow_mut().take() {
-        return Err(error);
-    }
-    release?;
-    Ok(result.unwrap_or_else(|_| Branches {
+    let counts = result.unwrap_or_else(|_| Branches {
         always: Counts {
             unresolved: true,
             ..Default::default()
         },
         ..Default::default()
-    }))
+    });
+    let release = charge.borrow_mut()(JsonCodecCharge::Release { bytes: scratch });
+    if let Some(error) = failed.borrow_mut().take() {
+        return Err(error);
+    }
+    release?;
+    Ok(counts)
 }
+pub(super) type Lexical = Lexer<false>;
+
+/// Admission records scratch bounds in its existing lexical pass. Encoders
+/// and array indexing use the same lexer with that accounting compiled out.
 #[derive(Default)]
-pub(super) struct Lexical {
+pub(super) struct Lexer<const TRACK_SCRATCH: bool> {
     pub(super) items: u64,
     pub(super) containers: u64,
     pub(super) arrays: usize,
@@ -336,8 +353,20 @@ pub(super) struct Lexical {
     pub(super) string: bool,
     escape: bool,
     atom: bool,
+    string_bytes: u64,
+    escaped_string: bool,
+    longest_string: u64,
+    longest_escaped: u64,
+    maximum_depth: u32,
 }
-impl Lexical {
+impl<const TRACK_SCRATCH: bool> Lexer<TRACK_SCRATCH> {
+    fn scratch(&self, labels: bool) -> Result<u64> {
+        scratch_bound(u64::from(self.maximum_depth).max(if labels {
+            self.longest_string
+        } else {
+            self.longest_escaped
+        }))
+    }
     pub(super) fn byte(
         &mut self,
         byte: u8,
@@ -346,12 +375,24 @@ impl Lexical {
         charge: &Charge<'_>,
     ) -> Result<bool> {
         if self.string {
+            if TRACK_SCRATCH {
+                self.string_bytes += 1;
+            }
             if self.escape {
                 self.escape = false;
             } else if byte == b'\\' {
                 self.escape = true;
+                if TRACK_SCRATCH {
+                    self.escaped_string = true;
+                }
             } else if byte == b'"' {
                 self.string = false;
+                if TRACK_SCRATCH {
+                    self.longest_string = self.longest_string.max(self.string_bytes);
+                    if self.escaped_string {
+                        self.longest_escaped = self.longest_escaped.max(self.string_bytes);
+                    }
+                }
             }
             return Ok(false);
         }
@@ -359,6 +400,10 @@ impl Lexical {
         let item = match byte {
             b'"' => {
                 self.string = true;
+                if TRACK_SCRATCH {
+                    self.string_bytes = 0;
+                    self.escaped_string = false;
+                }
                 self.atom = false;
                 true
             }
@@ -366,6 +411,9 @@ impl Lexical {
                 self.containers += 1;
                 self.arrays += usize::from(byte == b'[');
                 self.depth += 1;
+                if TRACK_SCRATCH {
+                    self.maximum_depth = self.maximum_depth.max(self.depth);
+                }
                 self.atom = false;
                 true
             }
@@ -401,6 +449,19 @@ impl Lexical {
     }
 }
 
+/// One escaped key or enum label may be owned beside the decoder's growing
+/// scratch vector. Its last two capacities plus that copy fit four times
+/// the encoded token length. A skipped container uses one byte per frame.
+fn scratch_bound(bytes: u64) -> Result<u64> {
+    checked(
+        bytes
+            .max(8)
+            .checked_mul(4)
+            .and_then(|bytes| bytes.checked_add(sdk_json_diagnostic_bytes())),
+        "JSON scratch bound overflow",
+    )
+}
+
 fn laid_out(
     bytes: &[u8],
     mut bounds: JsonBounds,
@@ -414,7 +475,7 @@ fn laid_out(
         return Err(boundary("JSON input exceeds declared byte bound", code));
     }
     let charge = RefCell::new(charge);
-    let mut lexical = Lexical::default();
+    let mut lexical = Lexer::<true>::default();
     charge.borrow_mut()(JsonCodecCharge::Read {
         bytes: bytes.len() as u64,
     })?;
@@ -424,12 +485,21 @@ fn laid_out(
     if lexical.string || lexical.depth != 0 {
         return Err(input_error(JsonInputError::Incomplete, code));
     }
+    // None, Root and Unknown never decode discriminator labels. Every other
+    // schema may select a tagged child whose label serde decodes to String.
+    let labels = schema.is_some_and(|schema| {
+        !std::ptr::eq(schema, &NONE)
+            && !std::ptr::eq(schema, &ROOT)
+            && !std::ptr::eq(schema, &UNKNOWN)
+    });
     let counts = document(
         bytes,
         schema.unwrap_or(&UNKNOWN),
         layout,
         0,
         false,
+        lexical.maximum_depth,
+        lexical.scratch(labels)?,
         &charge,
         &RefCell::new(None),
     )?
@@ -623,7 +693,7 @@ mod owned;
 /// An object key, and whether the document escapes it.
 struct Key;
 impl<'de> de::DeserializeSeed<'de> for Key {
-    type Value = (String, bool);
+    type Value = (Cow<'de, str>, bool);
     fn deserialize<D: de::Deserializer<'de>>(
         self,
         decoder: D,
@@ -632,7 +702,7 @@ impl<'de> de::DeserializeSeed<'de> for Key {
     }
 }
 impl<'de> Visitor<'de> for Key {
-    type Value = (String, bool);
+    type Value = (Cow<'de, str>, bool);
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("object key")
     }
@@ -640,9 +710,9 @@ impl<'de> Visitor<'de> for Key {
         self,
         key: &'de str,
     ) -> std::result::Result<Self::Value, E> {
-        Ok((key.to_owned(), false))
+        Ok((Cow::Borrowed(key), false))
     }
     fn visit_str<E: de::Error>(self, key: &str) -> std::result::Result<Self::Value, E> {
-        Ok((key.to_owned(), true))
+        Ok((Cow::Owned(key.to_owned()), true))
     }
 }

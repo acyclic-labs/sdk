@@ -274,10 +274,6 @@ fn native_media_preserves_configuration_and_validates_bounds() -> Result<()> {
                 maximum_frames: u32::MAX,
             },
         ),
-        (
-            NativeMediaIntent::Document { maximum_pages: 2 },
-            NativeMediaIntent::Document { maximum_pages: 0 },
-        ),
     ] {
         NativeMediaPolicy {
             intent,

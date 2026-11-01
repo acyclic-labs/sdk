@@ -6,9 +6,18 @@ use serde_json::Value;
 mod admission;
 mod arrays;
 mod identity;
+mod object;
 mod sequence;
+mod spans;
 pub(crate) use identity::borrowed_json_digest;
+pub(crate) use object::{JsonObject, deserialize_object};
 pub(crate) use sequence::canonical_sequence_digests;
+pub(crate) use spans::{JsonSpans, SpanEvent, SpanKind};
+
+/// Typed scalar text that borrows unescaped source and owns only escape decoding.
+#[derive(serde::Deserialize, crate::HeapLayout)]
+#[serde(transparent)]
+pub(crate) struct BorrowedText<'a>(#[serde(borrow)] pub std::borrow::Cow<'a, str>);
 #[cfg(test)]
 mod item_budget_tests;
 mod records;

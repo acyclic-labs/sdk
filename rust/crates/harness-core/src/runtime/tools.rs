@@ -1,5 +1,37 @@
 use super::*;
 
+const SCRATCH_PREFIX: &str = ".volumes/scratch/";
+
+impl TaskContext {
+    /// Retains complete tool output through the existing volume publisher.
+    pub(crate) async fn spill_tool_output(
+        &self,
+        operation: OperationId,
+        bytes: &[u8],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, String, u64)> {
+        let operation =
+            crate::conversation::derived_operation_id(operation, b"tool-output-spill-v1");
+        let path = crate::executor::with_history_io(io, |history| {
+            crate::executor::preparation_format(
+                format_args!("{SCRATCH_PREFIX}tool-output/{operation}.json"),
+                history,
+            )
+        })?;
+        let file = self
+            .stage_private_file_once(
+                self.private_summaries(io)?,
+                operation,
+                &path[SCRATCH_PREFIX.len()..],
+                bytes,
+                ("application/json", "tool-output.json"),
+                io,
+            )
+            .await?;
+        Ok((file.0, path, file.1))
+    }
+}
+
 /// An admission decision for one exact, schema-valid tool invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolPolicyDecision {
@@ -375,10 +407,12 @@ impl std::ops::Deref for ToolContext {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ToolContext {
-    /// Checks effective READ and limits before replay or content IO.
-    pub fn authorize_file_read_with_native_work(
+    /// Checks effective READ and the selected byte credit before content IO.
+    /// `None` admits the complete body; an empty range admits metadata only.
+    pub fn authorize_file_selection_with_native_work(
         &self,
         file: &FileRef,
+        range: Option<acyclic_fs::ByteRange>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.task()
@@ -386,6 +420,7 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
+                range,
                 Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
             )
             .map(|_| ())
@@ -589,6 +624,19 @@ impl ToolContext {
         if let Some(targets) = self.task().harness.targets.as_ref() {
             return targets.read_path(path, work).map_err(Error::tool_input);
         }
+        // Match the scratch mount's public path when no execution target is
+        // bound. Keep the same private reader and ordinary directory grants.
+        if let Some(relative) = path.strip_prefix(SCRATCH_PREFIX) {
+            let binding = self
+                .task()
+                .harness
+                .artifacts
+                .as_ref()
+                .unwrap_or(&self.task().output_content);
+            if binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate {
+                return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
+            }
+        }
         Ok((
             &self.task().tool_read_content().volume,
             std::borrow::Cow::Borrowed(path),
@@ -634,7 +682,10 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
-        let content = self.task().tool_read_content();
+        let content = self
+            .task()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::tool_rejected("selected content reader is not bound"))?;
         self.task()
             .read_bound_path(
                 content,
@@ -666,7 +717,8 @@ impl ToolContext {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
         let (selected, bytes, hold) = self
             .task()
-            .tool_read_content()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::tool_rejected("selected content reader is not bound"))?
             .reader
             .read_private_range(
                 volume,
