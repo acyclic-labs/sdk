@@ -291,6 +291,7 @@ pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
 }
 
 /// Idempotently imports one manifest-aligned page of immutable object bodies.
+/// All writes share the page's original work and retained-allocation ledger.
 pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     store: &S,
     manifest: &GenerationExportManifest,
@@ -343,11 +344,11 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     }
     let start = usize::try_from(cursor.0)
         .map_err(|_| OperationFailure::before_work(GenerationTransferError::InvalidCursor))?;
-    let mut work = WorkCounters::default();
+    let mut work = crate::AuthorityWork::new(budget, cancellation);
     for (offset, body) in bodies.iter().enumerate() {
         cancellation
             .check()
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
+            .map_err(|error| OperationFailure::new(error.into(), work.spent()))?;
         #[allow(
             clippy::indexing_slicing,
             reason = "the check above rejects `body_count > maximum_objects` or \
@@ -357,25 +358,14 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
                       `start + offset < start + body_count <= manifest.objects.len()`"
         )]
         let object_id = manifest.objects[start + offset];
-        let receipt = {
-            let body = body.clone();
-            let mut object_work = crate::AuthorityWork::new(
-                work.remaining(budget).map_err(|error| {
-                    OperationFailure::new(GenerationTransferError::Work(error), work)
-                })?,
-                cancellation,
-            );
-            let result = store.put_stored(object_id, body, &mut object_work).await;
-            object_work.receipt(result)
-        }
-        .map_err(|failure| failure.map_with_prior_work(work, GenerationTransferError::from))?;
-        work = work
-            .checked_add(receipt.work)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        store
+            .put_stored(object_id, body.clone(), &mut work)
+            .await
+            .map_err(|error| OperationFailure::new(error.into(), work.spent()))?;
     }
     Ok(OperationReceipt {
         value: TransferCursor(cursor.0 + body_count),
-        work,
+        work: work.spent(),
     })
 }
 
