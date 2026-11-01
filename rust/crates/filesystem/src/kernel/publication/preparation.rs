@@ -247,29 +247,18 @@ impl<P: PublicationOwner> Preparation<'_, P> {
             objects: &prepared.authentication.proof.objects,
             proven_at: prepared.proven_at,
         };
-        let publication_hold = match accounting {
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting, self.cancellation)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = work.is_native();
+        let publication_hold = objects.flush_before_publish(scope, &mut work).await;
+        drop(work);
+        let publication_hold = publication_hold.map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => {
-                let mut work = crate::AuthorityWork::native(original, self.cancellation);
-                objects
-                    .flush_before_publish(scope, &mut work)
-                    .await
-                    .map_err(native_object_error)?
+            if native {
+                return native_object_error(error);
             }
-            _ => {
-                let mut work =
-                    crate::AuthorityWork::new(accounting.remaining()?, self.cancellation);
-                let result = objects.flush_before_publish(scope, &mut work).await;
-                let result = work
-                    .receipt(result)
-                    .map(|receipt| (receipt.value, Some(receipt.work)))
-                    .map_err(|failure| PublicationStepFailure {
-                        cause: crate::FsError::Object(failure.error),
-                        work: Some(*failure.work),
-                    });
-                accept_step(accounting, result)?
-            }
-        };
+            crate::FsError::Object(error)
+        })?;
         let append = GuardedAppend {
             authority_id: self.request.authority_id,
             epoch: self.request.epoch,
