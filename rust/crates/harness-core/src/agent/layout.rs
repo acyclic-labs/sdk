@@ -145,11 +145,17 @@ impl fmt::Display for AgentId {
 }
 
 /// The canonical path of an agent's root (inbox) stream; the agent's address.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(try_from = "String")]
 pub struct AgentPath {
     text: String,
     depth: usize,
+}
+
+impl Serialize for AgentPath {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
 }
 
 impl AgentPath {
