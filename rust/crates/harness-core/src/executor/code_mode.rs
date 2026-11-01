@@ -58,11 +58,6 @@ impl StockExecution<'_> {
             kind: &'static str,
             notices: [Notice<'a>; 1],
         }
-        #[derive(Serialize)]
-        struct Message<'a> {
-            role: ModelRole,
-            content: Content<'a>,
-        }
         fn content(json: &str, offset: usize, complete: bool) -> Content<'_> {
             Content {
                 kind: "notices",
@@ -133,10 +128,7 @@ impl StockExecution<'_> {
             if end == 0 {
                 return Err(invalid("render allowance cannot advance a tool notice"));
             }
-            let notice = Message {
-                role: ModelRole::User,
-                content: content(&remaining[..end], offset, offset + end == table.len()),
-            };
+            let notice = content(&remaining[..end], offset, offset + end == table.len());
             #[cfg(feature = "filesystem")]
             let funded = self
                 .io
@@ -157,14 +149,14 @@ impl StockExecution<'_> {
                 .io
                 .map(|io| {
                     io.decode(
-                        std::marker::PhantomData::<ModelMessage>,
+                        std::marker::PhantomData::<ModelContent>,
                         &bytes,
                         crate::wire::ErrorCode::Invalid,
                     )
                 })
                 .transpose()?;
             #[cfg(not(feature = "filesystem"))]
-            let decoded: Option<(ModelMessage, crate::conversation::ContentHold<'_>)> = None;
+            let decoded: Option<(ModelContent, crate::conversation::ContentHold<'_>)> = None;
             let decoded = match decoded {
                 Some((message, hold)) => (message, Some(hold)),
                 None => (
@@ -173,6 +165,13 @@ impl StockExecution<'_> {
                     None,
                 ),
             };
+            let decoded = (
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: decoded.0,
+                },
+                decoded.1,
+            );
             if pending.is_empty() && context.messages.get(index + matched) == Some(&decoded.0) {
                 matched += 1;
             } else {
