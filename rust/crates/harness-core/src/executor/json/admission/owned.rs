@@ -151,6 +151,7 @@ fn tree<'c>(
                 placement.map(Placement::expanded),
                 child_depth,
                 true,
+                super::scratch_bound(text.len() as u64)?,
                 charge,
                 &RefCell::new(None),
             )?;

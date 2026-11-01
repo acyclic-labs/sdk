@@ -76,7 +76,10 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
     let selected: crate::tool::files::ReadFileResult =
         serde_json::from_value(result.value.clone()).unwrap();
     assert_eq!(selected.outputs.len(), 2);
-    assert!(selected.file.byte_length() > limits.file_bytes);
+    let crate::tool::files::FileReadSource::Authored(source) = &selected.file else {
+        panic!("notebook selection lost its authored source");
+    };
+    assert!(source.byte_length > limits.file_bytes);
     for (index, output) in selected.outputs.iter().enumerate() {
         assert_eq!((output.cell_index, output.output_index), (1, index as u64));
         assert_eq!(output.file.descriptor().media_type(), "image/png");
