@@ -499,7 +499,7 @@ mod simulation {
             let mut operation = Box::pin(schedule.scope(operation));
             let mut phases = Vec::new();
             let mut control_observed = false;
-            let (output, custody) = loop {
+            let completed = loop {
                 tokio::select! {
                     biased;
                     boundary = boundaries.recv() => {
@@ -515,9 +515,16 @@ mod simulation {
                             release.send(()).expect("lost registered control waiter");
                         }
                     },
-                    output = &mut operation => break output?,
+                    output = &mut operation => break output,
                 }
             };
+            if !release_control {
+                assert!(
+                    control_observed,
+                    "capture failed before control registration"
+                );
+            }
+            let (output, custody) = completed?;
             schedule.drained().await;
             let output = output?.expect("native capture was interrupted");
             assert!(output.success, "{:?}", output.stop);
@@ -563,10 +570,12 @@ mod simulation {
             !retained_sources(&capture_probe(false, false, true)?),
             "source-erased process handoff escaped the same oracle"
         );
-        assert!(matches!(
-            capture_probe(true, false, false),
-            Err(Error::Process(crate::ProcessError::Io { .. }))
-        ));
+        match capture_probe(true, false, false) {
+            Err(Error::Process(crate::ProcessError::Io { message, .. })) => {
+                assert_eq!(message, "channel closed");
+            }
+            other => panic!("withdrawn control producer lost its original error: {other:?}"),
+        }
         Ok(())
     }
 
